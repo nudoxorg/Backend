@@ -142,10 +142,16 @@ enum ProjectionFault {
         )]
         owner: u32,
     },
+    /// Canonical fact admission rejected the exact projected fact.
+    Admission {
+        fact: u32,
+        name_len: u32,
+        cause: FactFault,
+    },
 }
 
 fn go_u32(value: usize, phase: GoProjectionIndexPhase) -> Result<u32, (GoProjectionIndexPhase, u64)> {
-    u32::try_from(value).map_err(|_| (phase, value as u64))
+    u32::try_from(value).map_err(|_| (phase, crate::lower::portable_count(value)))
 }
 
 fn go_plane(plane: &'static str) -> Option<GoImagePlane> {
@@ -252,7 +258,6 @@ const fn portable_lineage(fault: PackageLineageFault) -> ProjectionPackageLineag
         }
     }
 }
-
 fn portable_header_fault(
     error: HeaderError,
 ) -> Result<GoImageHeaderFault, (GoProjectionIndexPhase, u64)> {
@@ -795,14 +800,34 @@ fn terminal(fault: ProjectionFault) -> GoCollectError {
             PortableGoProjectionFault::RelativeSpan { row, start, end }
         }
         ProjectionFault::OrphanOwner { owner } => PortableGoProjectionFault::OrphanOwner { owner },
+        ProjectionFault::Admission {
+            fact,
+            name_len,
+            cause,
+        } => PortableGoProjectionFault::Admission {
+            fact,
+            name_len,
+            cause: crate::lower::portable_admission(cause),
+        },
     };
     GoCollectError::Lowering(LoweringUnsupported::GoProjection { fault })
 }
 
 /// Folds one bounded-lane fact rejection into the lane's closed terminal.
-fn lane_terminal(fault: FactFault) -> GoCollectError {
-    let _ = fault;
-    GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+fn lane_terminal(fact: usize, name_len: usize, fault: FactFault) -> GoCollectError {
+    let fact = match go_u32(fact, GoProjectionIndexPhase::FactOrdinal) {
+        Ok(value) => value,
+        Err((phase, observed)) => return terminal(ProjectionFault::IndexCapacity { phase, observed }),
+    };
+    let name_len = match go_u32(name_len, GoProjectionIndexPhase::Atom) {
+        Ok(value) => value,
+        Err((phase, observed)) => return terminal(ProjectionFault::IndexCapacity { phase, observed }),
+    };
+    terminal(ProjectionFault::Admission {
+        fact,
+        name_len,
+        cause: fault,
+    })
 }
 
 /// Admits one fact and returns its proven backward ordinal.
@@ -871,9 +896,15 @@ pub(crate) fn collect<'source>(
     }
     // Intern the three empty pooled lists first so the default
     // `::new(0)` coordinates always name genuine empty lists.
-    let _ = facts.intern_atom_list(&[]).map_err(lane_terminal)?;
-    let _ = facts.intern_type_list(&[]).map_err(lane_terminal)?;
-    let _ = facts.intern_entity_list(&[]).map_err(lane_terminal)?;
+    let _ = facts
+        .intern_atom_list(&[])
+        .map_err(|fault| lane_terminal(facts.len(), 0, fault))?;
+    let _ = facts
+        .intern_type_list(&[])
+        .map_err(|fault| lane_terminal(facts.len(), 0, fault))?;
+    let _ = facts
+        .intern_entity_list(&[])
+        .map_err(|fault| lane_terminal(facts.len(), 0, fault))?;
 
     let mut go = Projector::new(image, facts);
     // Pass one: named types, then aliases — the backward anchors every
@@ -1145,7 +1176,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         let type_parameters = self
             .facts
             .type_parameter_range(parameter_start)
-            .map_err(lane_terminal)?;
+            .map_err(|fault| lane_terminal(self.facts.len(), declaration.name.len(), fault))?;
         let mut fields = Vec::new();
         let mut interface_methods = Vec::new();
         if let Some(root_cell) = declaration.type_root {
@@ -1178,7 +1209,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             for name in blank_separated(method.receiver_type_params) {
                 self.facts
                     .push_type_parameter(name, None, None)
-                    .map_err(lane_terminal)?;
+                    .map_err(|fault| lane_terminal(self.facts.len(), method.name.len(), fault))?;
             }
             let ordinal = self.executable(method.name, method.type_root, receiver_start)?;
             methods.push(ordinal);
@@ -1241,7 +1272,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 }),
                 type_parameters,
             )
-            .map_err(lane_terminal)?;
+            .map_err(|fault| lane_terminal(self.facts.len(), declaration.name.len(), fault))?;
         Ok(())
     }
 
@@ -1274,7 +1305,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .and_then(|row| self.lookup(row.package, row.name));
             self.facts
                 .push_type_parameter(row.name, constraint, None)
-                .map_err(lane_terminal)?;
+                .map_err(|fault| lane_terminal(self.facts.len(), row.name.len(), fault))?;
         }
         Ok(())
     }
@@ -1372,11 +1403,11 @@ impl<'x, 'source> Projector<'x, 'source> {
                 let atom = self
                     .facts
                     .intern_atom(declaration.value)
-                    .map_err(lane_terminal)?;
+                    .map_err(|fault| lane_terminal(self.facts.len(), declaration.name.len(), fault))?;
                 let list = self
                     .facts
                     .intern_atom_list(core::slice::from_ref(&atom))
-                    .map_err(lane_terminal)?;
+                    .map_err(|fault| lane_terminal(self.facts.len(), declaration.name.len(), fault))?;
                 (list, declaration.const_group, u32::from(declaration.iota))
             }
         } else {
@@ -1429,11 +1460,11 @@ impl<'x, 'source> Projector<'x, 'source> {
             let atom = self
                 .facts
                 .intern_atom(row.constraint)
-                .map_err(lane_terminal)?;
+                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))?;
             let list = self
                 .facts
                 .intern_atom_list(core::slice::from_ref(&atom))
-                .map_err(lane_terminal)?;
+                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))?;
             let empty_type_parameters = u32::try_from(self.facts.type_parameter_len).map_err(|_| {
                 terminal(ProjectionFault::IndexCapacity {
                     phase: GoProjectionIndexPhase::TypeParameter,
@@ -1482,7 +1513,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         {
             self.facts
                 .mark_documentation_captured(owner)
-                .map_err(lane_terminal)?;
+                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))?;
         }
         for index in 0..self.image.doc_count() {
             let row = self.image.doc(index).map_err(GoCollectError::Image)?;
@@ -1505,7 +1536,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                     .flatten(),
             }
             .ok_or_else(|| terminal(ProjectionFault::OrphanOwner { owner: row.owner }))?;
-            push_doc_lines(self.facts, owner, row.text).map_err(lane_terminal)?;
+            push_doc_lines(self.facts, owner, row.text)
+                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))?;
         }
         Ok(())
     }
@@ -1612,7 +1644,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                         span,
                     },
                 )
-                .map_err(lane_terminal)?;
+                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))?;
         }
         Ok(())
     }
@@ -1708,7 +1740,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                         span,
                     },
                 )
-                .map_err(lane_terminal)?;
+                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))?;
         }
         Ok(())
     }
@@ -1792,11 +1824,11 @@ impl<'x, 'source> Projector<'x, 'source> {
         let parameter_list = self
             .facts
             .intern_type_list(&parameters)
-            .map_err(lane_terminal)?;
+            .map_err(|fault| lane_terminal(self.facts.len(), name.len(), fault))?;
         let result_list = self
             .facts
             .intern_type_list(&results)
-            .map_err(lane_terminal)?;
+            .map_err(|fault| lane_terminal(self.facts.len(), name.len(), fault))?;
         let arity = u32::try_from(parameters.len()).map_err(|_| {
             terminal(ProjectionFault::IndexCapacity {
                 phase: GoProjectionIndexPhase::TypeRow,
@@ -1999,7 +2031,9 @@ impl<'x, 'source> Projector<'x, 'source> {
                     record: {
                         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
                         record.payload1 = u32::try_from(children.len() - param_count)
-                            .map_err(|_| lane_terminal(FactFault::TypeChildCapacity))?;
+                            .map_err(|_| {
+                                lane_terminal(self.facts.len(), 0, FactFault::TypeChildCapacity)
+                            })?;
                         if row.variadic {
                             record.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
                         }
@@ -2363,7 +2397,9 @@ impl<'x, 'source> Projector<'x, 'source> {
                     .min(children.len());
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
                 record.payload1 = u32::try_from(children.len() - param_count)
-                    .map_err(|_| lane_terminal(FactFault::TypeChildCapacity))?;
+                    .map_err(|_| {
+                        lane_terminal(self.facts.len(), 0, FactFault::TypeChildCapacity)
+                    })?;
                 if row.variadic {
                     record.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
                 }
@@ -2493,7 +2529,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         for child in &row.children {
             self.facts
                 .anonymous_type_child(child.target, child.name, child.flags)
-                .map_err(lane_terminal)?;
+                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))?;
         }
         let fact_count = u32::try_from(self.facts.len()).map_err(|_| {
             terminal(ProjectionFault::IndexCapacity {
@@ -2503,11 +2539,11 @@ impl<'x, 'source> Projector<'x, 'source> {
         })?;
         if anchor < fact_count {
             self.facts.intern_anonymous_type_row(anchor, row.record)
-                .map_err(lane_terminal)
+                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))
         } else {
             self.facts
                 .intern_reserved_anchor_type_row(anchor, row.record)
-                .map_err(lane_terminal)
+                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))
         }
     }
 
@@ -2600,7 +2636,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         }
         self.facts
             .intern_entity_list(ordinals)
-            .map_err(lane_terminal)
+            .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))
     }
 }
 
@@ -2818,6 +2854,34 @@ mod tests {
             panic!("image fault lost its closed Go projection operands");
         };
         assert_eq!((index, found), (7, 0xfe));
+    }
+
+    #[test]
+    fn admission_projection_retains_exact_pool_operands() {
+        let error = lane_terminal(
+            17,
+            6,
+            FactFault::ProductChildPoolCapacity {
+                used: 3,
+                requested: 5,
+                capacity: 7,
+            },
+        );
+        let GoCollectError::Lowering(LoweringUnsupported::GoProjection {
+            fault: PortableGoProjectionFault::Admission {
+                fact,
+                name_len,
+                cause: compiler_vocabulary::ProjectionAdmissionFault::ProductChildPoolCapacity {
+                    used,
+                    requested,
+                    capacity,
+                },
+            },
+        }) = error
+        else {
+            panic!("admission fault lost its exact Go context or pool operands");
+        };
+        assert_eq!((fact, name_len, used, requested, capacity), (17, 6, 3, 5, 7));
     }
 
     #[derive(Clone, Copy)]

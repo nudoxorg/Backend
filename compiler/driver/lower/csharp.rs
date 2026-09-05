@@ -59,7 +59,7 @@ use sha2::{Digest, Sha256};
 
 use crate::lower::{
     EmissionExtension, FactSet, LEAF_PRODUCT, MAX_EMISSION_FACTS, MAX_REF_LIST_ELEMENTS,
-    MAX_TYPE_CHILDREN, SemanticFact, StagedSourceSpan, push_fact,
+    MAX_TYPE_CHILDREN, SemanticFact, StagedSourceSpan, portable_admission, push_fact,
 };
 use crate::types::{CSharpProjectionFault, FactFault, FactRejection};
 
@@ -99,6 +99,7 @@ enum ProjectionFault {
         owner_start: u32,
         reference_start: u32,
     },
+    Anchor { owner: u32 },
     Foreign { reference: u32 },
     AttributeCapacity { spellings: u32 },
     IndexCapacity {
@@ -106,7 +107,11 @@ enum ProjectionFault {
         observed: u64,
     },
     HeterogeneousArrayRank { first: u32, observed: u32 },
-    Fact(FactFault),
+    Admission {
+        fact: u32,
+        name_len: u32,
+        cause: FactFault,
+    },
 }
 
 fn terminal(fault: ProjectionFault) -> CSharpCollectError {
@@ -140,6 +145,11 @@ fn terminal(fault: ProjectionFault) -> CSharpCollectError {
                 reference_start,
             },
         }),
+        ProjectionFault::Anchor { owner } => {
+            CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+                fault: PortableCSharpProjectionFault::Anchor { owner },
+            })
+        }
         ProjectionFault::Foreign { reference } => {
             CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
                 fault: PortableCSharpProjectionFault::Foreign { reference },
@@ -160,7 +170,17 @@ fn terminal(fault: ProjectionFault) -> CSharpCollectError {
                 fault: PortableCSharpProjectionFault::HeterogeneousArrayRank { first, observed },
             })
         }
-        ProjectionFault::Fact(fault) => CSharpCollectError::Projection(CSharpProjectionFault::Fact(fault)),
+        ProjectionFault::Admission {
+            fact,
+            name_len,
+            cause,
+        } => CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+            fault: PortableCSharpProjectionFault::Admission {
+                fact,
+                name_len,
+                cause: portable_admission(cause),
+            },
+        }),
     }
 }
 
@@ -168,7 +188,7 @@ fn image_u32(
     value: usize,
     phase: CSharpProjectionIndexPhase,
 ) -> Result<u32, (CSharpProjectionIndexPhase, u64)> {
-    u32::try_from(value).map_err(|_| (phase, value as u64))
+    u32::try_from(value).map_err(|_| (phase, crate::lower::portable_count(value)))
 }
 
 const fn image_section(section: Section) -> CSharpImageSection {
@@ -316,8 +336,48 @@ fn portable_image_fault(
 }
 
 /// Retains a non-declaration lane rejection at the projection boundary.
-fn lane_terminal(fault: FactFault) -> CSharpCollectError {
-    terminal(ProjectionFault::Fact(fault))
+fn lane_terminal(fact: usize, name_len: usize, fault: FactFault) -> CSharpCollectError {
+    let fact = match u32::try_from(fact) {
+        Ok(value) => value,
+        Err(_) => {
+            return terminal(ProjectionFault::IndexCapacity {
+                phase: CSharpProjectionIndexPhase::FactOrdinal,
+                observed: crate::lower::portable_count(fact),
+            });
+        }
+    };
+    let name_len = match u32::try_from(name_len) {
+        Ok(value) => value,
+        Err(_) => {
+            return terminal(ProjectionFault::IndexCapacity {
+                phase: CSharpProjectionIndexPhase::Name,
+                observed: crate::lower::portable_count(name_len),
+            });
+        }
+    };
+    terminal(ProjectionFault::Admission {
+        fact,
+        name_len,
+        cause: fault,
+    })
+}
+
+/// Admission fold for an already emitted metadata owner ordinal.
+fn lane_terminal_ordinal(
+    fact: u32,
+    name_len: usize,
+    fault: FactFault,
+) -> CSharpCollectError {
+    let fact = match usize::try_from(fact) {
+        Ok(value) => value,
+        Err(_) => {
+            return terminal(ProjectionFault::IndexCapacity {
+                phase: CSharpProjectionIndexPhase::FactOrdinal,
+                observed: u64::from(fact),
+            });
+        }
+    };
+    lane_terminal(fact, name_len, fault)
 }
 
 impl From<ProjectionFault> for CSharpCollectError {
@@ -481,7 +541,14 @@ pub(crate) fn collect<'source>(
             | DeclarationKind::Method
             | DeclarationKind::Operator
             | DeclarationKind::Conversion => {
-                let ordinal = push_executable(facts, &image, &names, &ordinals, source, &declared)?;
+                let ordinal = push_executable(
+                    facts,
+                    &image,
+                    &names,
+                    &ordinals,
+                    source,
+                    &declared,
+                )?;
                 ordinals.record(coordinate, ordinal).map_err(terminal)?;
             }
         }
@@ -529,19 +596,21 @@ pub(crate) fn collect<'source>(
             })?;
         facts
             .attach_source_span(ordinal, span)
-            .map_err(lane_terminal)?;
+            .map_err(|fault| lane_terminal_ordinal(ordinal, declared.name.bytes.len(), fault))?;
         // The Roslyn image owns this declaration's XML-doc plane even when
         // the corresponding summary is absent or empty.
         facts
             .mark_documentation_captured(ordinal)
-            .map_err(lane_terminal)?;
+            .map_err(|fault| lane_terminal_ordinal(ordinal, declared.name.bytes.len(), fault))?;
         match owner {
-            None => facts.mark_parentage_root(ordinal).map_err(lane_terminal)?,
+            None => facts
+                .mark_parentage_root(ordinal)
+                .map_err(|fault| lane_terminal_ordinal(ordinal, declared.name.bytes.len(), fault))?,
             Some(owner) => {
                 if let Some(parent) = ordinals.lookup(owner) {
                     facts
                         .attach_parent(ordinal, parent)
-                        .map_err(lane_terminal)?;
+                        .map_err(|fault| lane_terminal_ordinal(ordinal, declared.name.bytes.len(), fault))?;
                 }
             }
         }
@@ -562,7 +631,7 @@ pub(crate) fn collect<'source>(
         if !owner_has_child[coordinate] {
             facts
                 .mark_members_captured(ordinal)
-                .map_err(lane_terminal)?;
+                .map_err(|fault| lane_terminal_ordinal(ordinal, 0, fault))?;
         }
     }
 
@@ -592,7 +661,7 @@ pub(crate) fn collect<'source>(
                 })?,
                 EmissionExtension::CSharp(extension),
             )
-            .map_err(lane_terminal)?;
+            .map_err(|fault| lane_terminal_ordinal(ordinal, declared.name.bytes.len(), fault))?;
     }
 
     // Pass four: compiler-resolved occurrences in image order.
@@ -878,26 +947,49 @@ fn push_type_root<'source>(
     )
 }
 
-/// Resolves the enclosing fact anchor for anonymous rows of one declaration:
-/// the owner declaration's fact when one exists, otherwise the first pushed
-/// fact. The pooled row lane only admits already-pushed owners, and owner
-/// declarations are always committed in pass one.
-fn anchor_for(ordinals: &Ordinals, declared: &Declaration<'_>) -> Result<u32, CSharpCollectError> {
-    let owner = declared
-        .owner
-        .map(|owner| {
-            usize::try_from(owner).map_err(|_| {
-                terminal(ProjectionFault::IndexCapacity {
-                    phase: CSharpProjectionIndexPhase::Declaration,
-                    observed: owner as u64,
-                })
-            })
+/// Resolves the enclosing fact anchor for anonymous rows of one declaration.
+/// The owner must be the declaration's actual authority parent; an absent or
+/// un-emitted parent is an exact projection terminal, never an unrelated
+/// ordinal-zero fallback.
+fn anchor_for(
+    ordinals: &Ordinals,
+    declared: &Declaration<'_>,
+) -> Result<Option<u32>, CSharpCollectError> {
+    let Some(owner) = declared.owner else {
+        // A top-level delegate/function has no enclosing fact yet. Callers
+        // materialize each carrier under the current fact prefix through the
+        // reserved-anchor protocol immediately before pushing that carrier.
+        return Ok(None);
+    };
+    let owner_index = usize::try_from(owner).map_err(|_| {
+        terminal(ProjectionFault::IndexCapacity {
+            phase: CSharpProjectionIndexPhase::Declaration,
+            observed: u64::from(owner),
         })
-        .transpose()?;
-    Ok(owner
-        .and_then(|owner| ordinals.lookup(owner))
-        .or_else(|| ordinals.lookup(0))
-        .unwrap_or(0))
+    })?;
+    ordinals
+        .lookup(owner_index)
+        .map(Some)
+        .ok_or_else(|| terminal(ProjectionFault::Anchor { owner }))
+}
+
+/// Chooses the exact enclosing owner for one compound carrier. A root
+/// executable has no owner row until its carrier is admitted, so its current
+/// fact prefix is a valid reserved anchor; nested members use their emitted
+/// declaration owner.
+fn carrier_anchor(
+    facts: &FactSet<'_>,
+    enclosing: Option<u32>,
+) -> Result<u32, CSharpCollectError> {
+    match enclosing {
+        Some(owner) => Ok(owner),
+        None => u32::try_from(facts.len()).map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: CSharpProjectionIndexPhase::FactOrdinal,
+                observed: crate::lower::portable_count(facts.len()),
+            })
+        }),
+    }
 }
 
 /// Pushes one delegate: its parameter facts first, then the delegate fact
@@ -911,18 +1003,20 @@ fn push_delegate<'source>(
     declared: &Declaration<'source>,
 ) -> Result<u32, CSharpCollectError> {
     let name = checked_name(source, declared)?;
-    let anchor = anchor_for(ordinals, declared)?;
+    let enclosing = anchor_for(ordinals, declared)?;
     let mut signature = Signature::new();
     for parameter in declared.parameters.iter() {
         let parameter = parameter
             .map_err(ProjectionFault::Image)
             .map_err(terminal)?;
+        let anchor = carrier_anchor(facts, enclosing)?;
         signature.push_parameter(facts, image, names, ordinals, anchor, parameter)?;
     }
     if let Some(return_type) = declared.declared_type {
+        let anchor = carrier_anchor(facts, enclosing)?;
         signature.push_result(facts, image, names, ordinals, anchor, return_type)?;
     }
-    let fact = signature.finish(name);
+    let fact = signature.finish(name)?;
     push(facts, fact)
 }
 
@@ -938,7 +1032,7 @@ fn push_member<'source>(
 ) -> Result<u32, CSharpCollectError> {
     let name = checked_name(source, declared)?;
     let kind = entity_kind(declared.kind, declared.flags.is_const);
-    let anchor = anchor_for(ordinals, declared)?;
+    let anchor = carrier_anchor(facts, anchor_for(ordinals, declared)?)?;
 
     // Indexer parameters become ordered product members of the member fact.
     let mut parameter_ordinals = Vec::new();
@@ -1002,18 +1096,20 @@ fn push_executable<'source>(
     declared: &Declaration<'source>,
 ) -> Result<u32, CSharpCollectError> {
     let name = checked_name(source, declared)?;
-    let anchor = anchor_for(ordinals, declared)?;
+    let enclosing = anchor_for(ordinals, declared)?;
     let mut signature = Signature::new();
     for parameter in declared.parameters.iter() {
         let parameter = parameter
             .map_err(ProjectionFault::Image)
             .map_err(terminal)?;
+        let anchor = carrier_anchor(facts, enclosing)?;
         signature.push_parameter(facts, image, names, ordinals, anchor, parameter)?;
     }
     if let Some(return_type) = declared.declared_type {
+        let anchor = carrier_anchor(facts, enclosing)?;
         signature.push_result(facts, image, names, ordinals, anchor, return_type)?;
     }
-    let fact = signature.finish(name);
+    let fact = signature.finish(name)?;
     push(facts, fact)
 }
 
@@ -1082,8 +1178,16 @@ impl Signature {
 
     /// Finishes the executable fact: function constructor over the carriers
     /// and the function-pointer record over the same ordered rows.
-    fn finish<'source>(self, name: &'source [u8]) -> SemanticFact<'source> {
-        let arity = u32::try_from(self.parameter_ordinals.len()).unwrap_or(u32::MAX);
+    fn finish<'source>(
+        self,
+        name: &'source [u8],
+    ) -> Result<SemanticFact<'source>, CSharpCollectError> {
+        let arity = u32::try_from(self.parameter_ordinals.len()).map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: CSharpProjectionIndexPhase::Signature,
+                observed: crate::lower::portable_count(self.parameter_ordinals.len()),
+            })
+        })?;
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
         if self.result_ordinal.is_some() {
             record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
@@ -1108,7 +1212,7 @@ impl Signature {
         {
             fact = fact.type_child(ordinal, None, 0);
         }
-        fact
+        Ok(fact)
     }
 }
 
@@ -1254,7 +1358,7 @@ fn child_target<'source>(
         Some(kind) => {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Annotated);
             record.payload0 = kind as u32;
-            intern_row(facts, anchor, record, &[(target, None)]).map_err(lane_terminal)
+            intern_row(facts, anchor, record, &[(target, None)])
         }
         None => Ok(target),
     }
@@ -1270,8 +1374,7 @@ fn projection_target<'source>(
 ) -> Result<u32, CSharpCollectError> {
     match projection.fact {
         Some(ordinal) => Ok(ordinal),
-        None => intern_row(facts, anchor, projection.record, &projection.children)
-            .map_err(lane_terminal),
+        None => intern_row(facts, anchor, projection.record, &projection.children),
     }
 }
 
@@ -1295,11 +1398,29 @@ fn intern_row<'source>(
     anchor: u32,
     record: SemanticTypeRecord<'source>,
     children: &[(u32, Option<&'source [u8]>)],
-) -> Result<u32, FactFault> {
+) -> Result<u32, CSharpCollectError> {
     for (target, name) in children {
-        facts.anonymous_type_child(*target, *name, 0)?;
+        facts
+            .anonymous_type_child(*target, *name, 0)
+            .map_err(|fault| lane_terminal(facts.len(), 0, fault))?;
     }
-    facts.intern_anonymous_type_row(anchor, record)
+    // `FactSet` is bounded by `MAX_EMISSION_FACTS`, which is const-checked
+    // against the wire coordinate width in the shared lower module.
+    let fact_count = u32::try_from(facts.len()).map_err(|_| {
+        terminal(ProjectionFault::IndexCapacity {
+            phase: CSharpProjectionIndexPhase::FactOrdinal,
+            observed: crate::lower::portable_count(facts.len()),
+        })
+    })?;
+    if anchor == fact_count {
+        facts
+            .intern_reserved_anchor_type_row(anchor, record)
+            .map_err(|fault| lane_terminal(facts.len(), 0, fault))
+    } else {
+        facts
+            .intern_anonymous_type_row(anchor, record)
+            .map_err(|fault| lane_terminal(facts.len(), 0, fault))
+    }
 }
 
 /// One owned compound node built bottom-up: its children are already
@@ -1779,7 +1900,7 @@ fn csharp_facts<'source>(
                     allows_ref_like: generic.allows_ref_like,
                 },
             )
-            .map_err(lane_terminal)?;
+            .map_err(|fault| lane_terminal_ordinal(anchor, declared.name.bytes.len(), fault))?;
     }
     extension.constraints = TypeParameterListId::new(start);
 
@@ -1805,10 +1926,14 @@ fn csharp_facts<'source>(
                 })?,
             }));
         }
-        let atom = facts.intern_atom(spelling).map_err(lane_terminal)?;
+        let atom = facts
+            .intern_atom(spelling)
+            .map_err(|fault| lane_terminal_ordinal(anchor, declared.name.bytes.len(), fault))?;
         atoms.push(atom);
     }
-    extension.attributes = facts.intern_atom_list(&atoms).map_err(lane_terminal)?;
+    extension.attributes = facts
+        .intern_atom_list(&atoms)
+        .map_err(|fault| lane_terminal_ordinal(anchor, declared.name.bytes.len(), fault))?;
 
     // XML provenance: the documented file travels as a provisional atom with
     // the comment's byte span; admission rewrites the coordinate.
@@ -1818,7 +1943,9 @@ fn csharp_facts<'source>(
         .and_then(|index| image.docs().nth(index))
         .and_then(|row| row.ok())
     {
-        let provisional = facts.intern_atom(doc.file.bytes).map_err(lane_terminal)?;
+        let provisional = facts
+            .intern_atom(doc.file.bytes)
+            .map_err(|fault| lane_terminal_ordinal(anchor, declared.name.bytes.len(), fault))?;
         extension.xml_provenance = SourceSpan::new(AtomId::new(provisional), doc.start, doc.end);
     }
     Ok(extension)
@@ -2307,6 +2434,34 @@ mod tests {
             panic!("image fault lost its closed C# projection operands");
         };
         assert_eq!((index, offset, length, atom_bytes), (7, 11, 13, 17));
+    }
+
+    #[test]
+    fn admission_projection_retains_exact_pool_operands() {
+        let error = super::lane_terminal(
+            17,
+            6,
+            crate::types::FactFault::ProductChildPoolCapacity {
+                used: 3,
+                requested: 5,
+                capacity: 7,
+            },
+        );
+        let CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+            fault: PortableCSharpProjectionFault::Admission {
+                fact,
+                name_len,
+                cause: compiler_vocabulary::ProjectionAdmissionFault::ProductChildPoolCapacity {
+                    used,
+                    requested,
+                    capacity,
+                },
+            },
+        }) = error
+        else {
+            panic!("admission fault lost its exact C# context or pool operands");
+        };
+        assert_eq!((fact, name_len, used, requested, capacity), (17, 6, 3, 5, 7));
     }
 
     #[derive(Clone)]

@@ -7,6 +7,7 @@
 //! that produced them.
 
 use compiler_ir::{EntityId, ProductChildRole, ProductConstructorFault, SemanticTypeFault};
+use compiler_vocabulary::ProjectionFactLane;
 use compiler_languages_clang::{
     DeclarationId as ClangDeclarationId, SourceSpan as ClangSourceSpan, SymbolIdentity,
     TypeId as ClangTypeId, TypeKind as ClangTypeKind, TypeQualifiers as ClangTypeQualifiers,
@@ -169,7 +170,7 @@ pub enum FactFault {
     /// A pooled reference targets a fact outside the pushed prefix.
     RefTarget {
         /// Closed lane name the reference targeted.
-        lane: &'static str,
+        lane: ProjectionFactLane,
         /// Raw ordinal the reference named.
         raw: u32,
         /// Ordinals admitted in that lane.

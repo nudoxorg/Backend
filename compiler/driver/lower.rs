@@ -31,7 +31,9 @@ use compiler_ir::{
 };
 use core::mem::size_of;
 use core::num::NonZeroU16;
+use compiler_vocabulary::ProjectionFactLane;
 
+mod admission;
 pub(crate) mod clang;
 pub(crate) mod csharp;
 pub(crate) mod go;
@@ -43,6 +45,7 @@ pub(crate) mod rust;
 pub(crate) mod typescript;
 
 pub(super) use provenance::StagedSourceSpan;
+pub(super) use admission::{portable_admission, portable_count};
 use provenance::{MemberSetCapture, Provenance, local_parent};
 
 /// Dense bound of the multi-declaration semantic emission lane.
@@ -518,6 +521,7 @@ impl RejectedFact<'_> {
     }
 }
 
+
 /// Caller-owned bounded SoA lanes for the ordered emission set. Only the
 /// admitted prefix is read by [`admit`]; slots past `len` are never observed.
 pub(super) struct FactSet<'source> {
@@ -604,6 +608,16 @@ pub(super) struct StagedTypeParameterRange {
 enum PendingTypeLane {
     Anonymous,
     Computed,
+}
+
+/// The three pooled reference-list lanes exposed by `FactSet`.  Keeping this
+/// staging selector closed prevents a caller from manufacturing a fact-lane
+/// spelling that the admission snapshot cannot describe exactly.
+#[derive(Clone, Copy)]
+enum ReferenceListLane {
+    Atoms,
+    Types,
+    Entities,
 }
 
 // The boxed lanes keep this caller-owned collector below the 64 KiB stack
@@ -1002,7 +1016,7 @@ impl<'source> FactSet<'source> {
             return self.reject_pending_type_run(
                 PendingTypeLane::Anonymous,
                 FactFault::RefTarget {
-                    lane: "type_rows",
+                    lane: compiler_vocabulary::ProjectionFactLane::TypeRows,
                     raw: owner,
                     fact_count: self.len,
                 },
@@ -1046,7 +1060,7 @@ impl<'source> FactSet<'source> {
             return self.reject_pending_type_run(
                 PendingTypeLane::Anonymous,
                 FactFault::RefTarget {
-                    lane: "reserved_type_rows",
+                    lane: compiler_vocabulary::ProjectionFactLane::ReservedTypeRows,
                     raw: reserved_owner,
                     fact_count: self.len,
                 },
@@ -1156,7 +1170,7 @@ impl<'source> FactSet<'source> {
             return self.reject_pending_type_run(
                 PendingTypeLane::Computed,
                 FactFault::RefTarget {
-                    lane: "computed_owners",
+                    lane: compiler_vocabulary::ProjectionFactLane::ComputedOwners,
                     raw: owner,
                     fact_count: self.len,
                 },
@@ -1271,7 +1285,7 @@ impl<'source> FactSet<'source> {
     ) -> Result<(), FactFault> {
         if ordinal >= self.len {
             return Err(FactFault::RefTarget {
-                lane: "extensions",
+                lane: compiler_vocabulary::ProjectionFactLane::Extensions,
                 raw: ordinal as u32,
                 fact_count: self.len,
             });
@@ -1284,7 +1298,7 @@ impl<'source> FactSet<'source> {
             && extension_type_parameter_start(&extension).is_some()
         {
             return Err(FactFault::RefTarget {
-                lane: "replacement_type_parameter_range",
+                lane: compiler_vocabulary::ProjectionFactLane::ReplacementTypeParameterRange,
                 raw: ordinal as u32,
                 fact_count: self.type_parameter_len,
             });
@@ -1306,7 +1320,7 @@ impl<'source> FactSet<'source> {
         let start = start as usize;
         if start > self.type_parameter_len {
             return Err(FactFault::RefTarget {
-                lane: "type_parameter_ranges",
+                lane: compiler_vocabulary::ProjectionFactLane::TypeParameterRanges,
                 raw: start as u32,
                 fact_count: self.type_parameter_len,
             });
@@ -1329,7 +1343,7 @@ impl<'source> FactSet<'source> {
             .copied()
             .flatten()
             .ok_or(FactFault::RefTarget {
-                lane: "captured_type_parameter_range",
+                lane: compiler_vocabulary::ProjectionFactLane::CapturedTypeParameterRange,
                 raw: ordinal as u32,
                 fact_count: self.len,
             })
@@ -1345,7 +1359,7 @@ impl<'source> FactSet<'source> {
     ) -> Result<(), FactFault> {
         if ordinal >= self.len {
             return Err(FactFault::RefTarget {
-                lane: "extensions",
+                lane: compiler_vocabulary::ProjectionFactLane::Extensions,
                 raw: ordinal as u32,
                 fact_count: self.len,
             });
@@ -1356,7 +1370,7 @@ impl<'source> FactSet<'source> {
             || matches!(self.type_parameter_ranges[ordinal], Some(existing) if existing != range)
         {
             return Err(FactFault::RefTarget {
-                lane: "type_parameter_ranges",
+                lane: compiler_vocabulary::ProjectionFactLane::TypeParameterRanges,
                 raw: range.start,
                 fact_count: self.type_parameter_len,
             });
@@ -1376,7 +1390,7 @@ impl<'source> FactSet<'source> {
         let start = start.raw as usize;
         if start > self.type_parameter_len {
             return Err(FactFault::RefTarget {
-                lane: "type_parameter_ranges",
+                lane: compiler_vocabulary::ProjectionFactLane::TypeParameterRanges,
                 raw: start as u32,
                 fact_count: self.type_parameter_len,
             });
@@ -1555,7 +1569,7 @@ impl<'source> FactSet<'source> {
         &mut self,
         atoms: &[u32],
     ) -> Result<compiler_ir::AtomListId, FactFault> {
-        self.intern_ref_list("atom_lists", atoms)
+        self.intern_ref_list(ReferenceListLane::Atoms, atoms)
             .map(compiler_ir::AtomListId::new)
     }
 
@@ -1564,7 +1578,7 @@ impl<'source> FactSet<'source> {
         &mut self,
         types: &[u32],
     ) -> Result<compiler_ir::TypeListId, FactFault> {
-        self.intern_ref_list("type_lists", types)
+        self.intern_ref_list(ReferenceListLane::Types, types)
             .map(compiler_ir::TypeListId::new)
     }
 
@@ -1573,29 +1587,37 @@ impl<'source> FactSet<'source> {
         &mut self,
         entities: &[u32],
     ) -> Result<compiler_ir::EntityListId, FactFault> {
-        self.intern_ref_list("entity_lists", entities)
+        self.intern_ref_list(ReferenceListLane::Entities, entities)
             .map(compiler_ir::EntityListId::new)
     }
 
-    fn intern_ref_list(&mut self, lane: &'static str, elements: &[u32]) -> Result<u32, FactFault> {
+    fn intern_ref_list(
+        &mut self,
+        lane: ReferenceListLane,
+        elements: &[u32],
+    ) -> Result<u32, FactFault> {
         if elements.len() > MAX_REF_LIST_ELEMENTS {
             return Err(FactFault::RefListElements);
         }
         for raw in elements {
             let limit = match lane {
-                "atom_lists" => self.extension_atom_len,
-                _ => self.len,
+                ReferenceListLane::Atoms => self.extension_atom_len,
+                ReferenceListLane::Types | ReferenceListLane::Entities => self.len,
             };
             if *raw >= limit as u32 {
                 return Err(FactFault::RefTarget {
-                    lane,
+                    lane: match lane {
+                        ReferenceListLane::Atoms => ProjectionFactLane::AtomLists,
+                        ReferenceListLane::Types => ProjectionFactLane::TypeLists,
+                        ReferenceListLane::Entities => ProjectionFactLane::EntityLists,
+                    },
                     raw: *raw,
                     fact_count: limit,
                 });
             }
         }
         let (count, matches) = match lane {
-            "atom_lists" => {
+            ReferenceListLane::Atoms => {
                 let count = self.atom_list_len;
                 let matches = (0..count).find(|index| {
                     usize::from(self.atom_list_lengths[*index]) == elements.len()
@@ -1603,7 +1625,7 @@ impl<'source> FactSet<'source> {
                 });
                 (count, matches)
             }
-            "type_lists" => {
+            ReferenceListLane::Types => {
                 let count = self.type_list_len;
                 let matches = (0..count).find(|index| {
                     usize::from(self.type_list_lengths[*index]) == elements.len()
@@ -1611,7 +1633,7 @@ impl<'source> FactSet<'source> {
                 });
                 (count, matches)
             }
-            _ => {
+            ReferenceListLane::Entities => {
                 let count = self.entity_list_len;
                 let matches = (0..count).find(|index| {
                     usize::from(self.entity_list_lengths[*index]) == elements.len()
@@ -1629,17 +1651,17 @@ impl<'source> FactSet<'source> {
         let mut row = [0; MAX_REF_LIST_ELEMENTS];
         row[..elements.len()].copy_from_slice(elements);
         match lane {
-            "atom_lists" => {
+            ReferenceListLane::Atoms => {
                 self.atom_lists[count] = row;
                 self.atom_list_lengths[count] = elements.len() as u8;
                 self.atom_list_len = count + 1;
             }
-            "type_lists" => {
+            ReferenceListLane::Types => {
                 self.type_lists[count] = row;
                 self.type_list_lengths[count] = elements.len() as u8;
                 self.type_list_len = count + 1;
             }
-            _ => {
+            ReferenceListLane::Entities => {
                 self.entity_lists[count] = row;
                 self.entity_list_lengths[count] = elements.len() as u8;
                 self.entity_list_len = count + 1;
@@ -1700,7 +1722,7 @@ impl<'source> FactSet<'source> {
                 && !self.is_computed_type_row(raw)
             {
                 return Err(FactFault::RefTarget {
-                    lane: "type_parameters",
+                    lane: compiler_vocabulary::ProjectionFactLane::TypeParameters,
                     raw,
                     fact_count: self.len,
                 });
