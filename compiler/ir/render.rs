@@ -1,4 +1,8 @@
-//! Allocation-free docs.rs-style rendering over the condensed semantic IR.
+//! Legacy compatibility formatter over the condensed semantic IR.
+//!
+//! This surface predates [`crate::SemanticReader`] and has no typed failure
+//! channel. New callers must use prepared semantic-document or canonical-type
+//! rendering, which validates every reference before caller output is touched.
 //!
 //! The `Display` wrappers write directly into any formatter. Callers that want
 //! an owned string may use the standard `ToString`; hot paths can stream into
@@ -64,6 +68,7 @@ pub struct EmbeddingDisplay<'ir> {
 impl Ir {
     /// Returns a zero-allocation signature renderer.
     #[must_use]
+    #[doc(hidden)]
     pub fn signature(&self, item: EntityId) -> Option<SignatureDisplay<'_>> {
         self.item(item)
             .map(|item| SignatureDisplay { ir: self, item })
@@ -71,18 +76,21 @@ impl Ir {
 
     /// Returns a zero-allocation semantic-type renderer.
     #[must_use]
+    #[doc(hidden)]
     pub fn display_type(&self, ty: TypeId) -> Option<TypeDisplay<'_>> {
         self.ty(ty).map(|_| TypeDisplay { ir: self, ty })
     }
 
     /// Returns a zero-allocation Markdown documentation renderer.
     #[must_use]
+    #[doc(hidden)]
     pub fn display_docs(&self, item: EntityId) -> Option<DocsDisplay<'_>> {
         self.item(item).map(|item| DocsDisplay { ir: self, item })
     }
 
     /// Returns a direct semantic stream suitable for vector tokenization.
     #[must_use]
+    #[doc(hidden)]
     pub fn embedding_text(
         &self,
         item: EntityId,

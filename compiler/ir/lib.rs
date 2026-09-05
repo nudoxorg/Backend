@@ -131,6 +131,7 @@ pub use semantic_image::{
     SemanticImageReopenError, SemanticImageView, TerminalPoolDomain,
     TerminalPoolFault,
 };
+#[doc(hidden)]
 pub use render::{DocsDisplay, EmbeddingDisplay, EmbeddingProfile, SignatureDisplay, TypeDisplay};
 pub use semantic::{
     ArrayShape, AtomListId, BorrowedTree, BuildError, BuiltinType, CSharpExtension, CSharpFacts,
@@ -184,9 +185,16 @@ pub use semantic_facts::{
 };
 pub use semantic_render::{
     CanonicalTypeRenderError, CanonicalTypeRenderLimits, CanonicalTypeRenderReference,
+    CFamilySemanticDocumentDialect, CSharpSemanticDocumentDialect, GoSemanticDocumentDialect,
+    JavaSemanticDocumentDialect,
     NeutralDialect, PreparedCanonicalType, PreparedCanonicalTypeView, PreparedNeutral,
-    PreparedNeutralView, RenderDialect, RenderFailure, UnsupportedSemanticStage,
-    prepare_canonical_type, prepare_neutral, prepare_profile,
+    PreparedNeutralView, PreparedSemanticDocument, PreparedSemanticDocumentView,
+    PythonSemanticDocumentDialect, RenderDialect, RenderFailure, RustSemanticDocumentDialect,
+    SemanticDocumentDialect, SemanticDocumentError, SemanticDocumentFact,
+    SemanticDocumentReference, SemanticImageSourceSyntaxDialect, SourceSyntaxDialect,
+    SourceSyntaxError, TypeScriptSemanticDocumentDialect, UnsupportedSemanticStage,
+    prepare_canonical_type, prepare_neutral, prepare_profile, prepare_semantic_document,
+    prepare_source_syntax,
 };
 pub use type_facts::{
     DecodedTypeFact, DecodedTypeFactChild, TypeFactChildCursor, TypeFactCounts, TypeFactCursor,

@@ -16,10 +16,20 @@ use crate::{
 
 #[path = "semantic_render/canonical.rs"]
 mod canonical;
+#[path = "semantic_render/document.rs"]
+mod document;
 
 pub use canonical::{
     CanonicalTypeRenderError, CanonicalTypeRenderLimits, CanonicalTypeRenderReference,
     PreparedCanonicalType, PreparedCanonicalTypeView, prepare_canonical_type,
+};
+pub use document::{
+    CFamilySemanticDocumentDialect, CSharpSemanticDocumentDialect, GoSemanticDocumentDialect,
+    JavaSemanticDocumentDialect, PreparedSemanticDocument, PreparedSemanticDocumentView,
+    PythonSemanticDocumentDialect, RustSemanticDocumentDialect, SemanticDocumentDialect,
+    SemanticDocumentError, SemanticDocumentFact, SemanticDocumentReference,
+    SemanticImageSourceSyntaxDialect, SourceSyntaxDialect, SourceSyntaxError,
+    TypeScriptSemanticDocumentDialect, prepare_semantic_document, prepare_source_syntax,
 };
 
 pub(crate) mod sealed {
