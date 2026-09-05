@@ -51,6 +51,163 @@ pub struct ShortcutFacts {
     pub other: &'static str,
 }
 
+/// One documented accelerator.
+///
+/// `apple` and `other` hold the exact keystrokes handed to `KeyBinding::new`,
+/// not a prettied spelling, so the map and the bindings cannot drift in text.
+/// The presentation form is derived when the row is drawn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KeyFacts {
+    /// Section this accelerator is listed under.
+    pub group: &'static str,
+    /// Action name, matching the `actions!` declaration.
+    pub action: &'static str,
+    /// Keystroke bound on macOS.
+    pub apple: &'static str,
+    /// Keystroke bound on Windows and Linux.
+    pub other: &'static str,
+    /// What pressing it does.
+    pub description: &'static str,
+}
+
+/// Every bound accelerator, in the order the shell binds them.
+///
+/// `DismissPalette` is deliberately absent: it is declared as an action but no
+/// keystroke reaches it, because `escape` is bound to `DismissForm`, which
+/// dismisses the palette as well. Listing it would advertise a key that does
+/// nothing.
+pub const KEYMAP: [KeyFacts; 18] = [
+    KeyFacts {
+        group: "Palette",
+        action: "OpenPalette",
+        apple: "cmd-k",
+        other: "ctrl-k",
+        description: "Open the command palette",
+    },
+    KeyFacts {
+        group: "Palette",
+        action: "ConfirmPaletteCommand",
+        apple: "enter",
+        other: "enter",
+        description: "Run the selected command",
+    },
+    KeyFacts {
+        group: "Palette",
+        action: "SelectNextPaletteCommand",
+        apple: "down",
+        other: "down",
+        description: "Move down one row",
+    },
+    KeyFacts {
+        group: "Palette",
+        action: "SelectPreviousPaletteCommand",
+        apple: "up",
+        other: "up",
+        description: "Move up one row",
+    },
+    KeyFacts {
+        group: "Palette",
+        action: "SelectFirstPaletteCommand",
+        apple: "home",
+        other: "home",
+        description: "Jump to the first row",
+    },
+    KeyFacts {
+        group: "Palette",
+        action: "SelectLastPaletteCommand",
+        apple: "end",
+        other: "end",
+        description: "Jump to the last row",
+    },
+    KeyFacts {
+        group: "Palette",
+        action: "SelectPreviousPalettePage",
+        apple: "pageup",
+        other: "pageup",
+        description: "Back one page of rows",
+    },
+    KeyFacts {
+        group: "Palette",
+        action: "SelectNextPalettePage",
+        apple: "pagedown",
+        other: "pagedown",
+        description: "Forward one page of rows",
+    },
+    KeyFacts {
+        group: "Navigation",
+        action: "OpenSettings",
+        apple: "cmd-,",
+        other: "ctrl-,",
+        description: "Open settings",
+    },
+    KeyFacts {
+        group: "Navigation",
+        action: "ToggleSidebar",
+        apple: "cmd-b",
+        other: "ctrl-b",
+        description: "Show or hide the package tree",
+    },
+    KeyFacts {
+        group: "Navigation",
+        action: "NavigateDocumentBack",
+        apple: "alt-left",
+        other: "alt-left",
+        description: "Back to the previous document",
+    },
+    KeyFacts {
+        group: "Navigation",
+        action: "NavigateDocumentForward",
+        apple: "alt-right",
+        other: "alt-right",
+        description: "Forward to the next document",
+    },
+    KeyFacts {
+        group: "Library",
+        action: "FocusDocumentationSearch",
+        apple: "cmd-l",
+        other: "ctrl-l",
+        description: "Focus the package and symbol search",
+    },
+    KeyFacts {
+        group: "Library",
+        action: "DiscoverPackages",
+        apple: "cmd-shift-p",
+        other: "ctrl-shift-p",
+        description: "Search packages to add to the library",
+    },
+    KeyFacts {
+        group: "Library",
+        action: "RemoveLibraryPackage",
+        apple: "cmd-backspace",
+        other: "ctrl-backspace",
+        description: "Remove the selected document's package from the library",
+    },
+    KeyFacts {
+        group: "Forms",
+        action: "NextFormField",
+        apple: "tab",
+        other: "tab",
+        description: "Move to the next field",
+    },
+    KeyFacts {
+        group: "Forms",
+        action: "PreviousFormField",
+        apple: "shift-tab",
+        other: "shift-tab",
+        description: "Move to the previous field",
+    },
+    KeyFacts {
+        group: "Forms",
+        action: "DismissForm",
+        apple: "escape",
+        other: "escape",
+        description: "Cancel the form, or dismiss the palette",
+    },
+];
+
+/// The sections of [`KEYMAP`], in presentation order.
+pub const KEY_GROUPS: [&str; 4] = ["Palette", "Navigation", "Library", "Forms"];
+
 /// The closed application information architecture, in rail order.
 pub const ROUTES: [RouteFacts; 5] = [
     RouteFacts {

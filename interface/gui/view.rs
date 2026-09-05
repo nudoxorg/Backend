@@ -13,12 +13,12 @@ use crate::{
     ApplicationInput, ApplicationReply, ApplicationService, ApplyError, CommandId,
     ConfirmPaletteCommand, DOCUMENT_ITEMS, DOCUMENT_PACKAGES, DiscoverPackages, DismissForm,
     DismissPalette, DocumentFilter, DocumentKind, DocumentSearchRow, DocumentSearchScope,
-    FocusDocumentationSearch, FormError, FormField, FormState, NavigateDocumentBack,
-    NavigateDocumentForward, NextFormField, OpenPalette, OpenSettings, PaletteDirection,
-    PreviousFormField, RemoveLibraryPackage, ResultLimit, Route, SelectFirstPaletteCommand,
-    SelectLastPaletteCommand, SelectNextPaletteCommand, SelectNextPalettePage,
-    SelectPreviousPaletteCommand,
-    SelectPreviousPalettePage, ServiceAction, ShellState, ToggleSidebar,
+    FocusDocumentationSearch, FormError, FormField, FormState, KEY_GROUPS, KEYMAP,
+    NavigateDocumentBack, NavigateDocumentForward, NextFormField, OpenPalette, OpenSettings,
+    PaletteDirection, PreviousFormField, RemoveLibraryPackage, ResultLimit, Route,
+    SelectFirstPaletteCommand, SelectLastPaletteCommand, SelectNextPaletteCommand,
+    SelectNextPalettePage, SelectPreviousPaletteCommand, SelectPreviousPalettePage, ServiceAction,
+    ShellState, ToggleSidebar,
 };
 use core::ops::Deref;
 use gpui::{
@@ -1730,6 +1730,20 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
             )
             .child(
                 div()
+                    .max_w(px(820.0))
+                    .p(px(18.0))
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(PANEL_BACKGROUND))
+                    .child(Self::section_heading(
+                        "Keyboard",
+                        "Every accelerator the shell binds, as bound",
+                    ))
+                    .child(Self::keyboard_map()),
+            )
+            .child(
+                div()
                     .flex()
                     .items_center()
                     .id("settings-notification-epoch")
@@ -2506,6 +2520,50 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                     .text_color(rgb(METADATA_TEXT))
                     .child(note),
             )
+    }
+
+    /// Renders every bound accelerator, grouped, with its platform spellings.
+    fn keyboard_map() -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .children(KEY_GROUPS.iter().map(|group| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(div().text_xs().text_color(rgb(METADATA_TEXT)).child(*group))
+                    .children(
+                        KEYMAP
+                            .iter()
+                            .filter(|facts| facts.group == *group)
+                            .map(|facts| {
+                                let apple = present_keystroke(facts.apple, true);
+                                let other = present_keystroke(facts.other, false);
+                                // Only spell both when the platforms differ;
+                                // "Enter · Enter" tells a reader nothing.
+                                let keys = if apple == other {
+                                    apple
+                                } else {
+                                    format!("{apple} · {other}")
+                                };
+                                div()
+                                    .h(px(24.0))
+                                    .flex()
+                                    .items_center()
+                                    .text_sm()
+                                    .child(facts.description)
+                                    .child(
+                                        div()
+                                            .ml_auto()
+                                            .text_xs()
+                                            .text_color(rgb(METADATA_TEXT))
+                                            .child(keys),
+                                    )
+                            }),
+                    )
+            }))
     }
 
     fn section_heading(title: &'static str, subtitle: &'static str) -> impl IntoElement {
@@ -3391,6 +3449,65 @@ impl<Compiler: CompilerCapability> Drop for GpuiShellView<Compiler> {
     }
 }
 
+/// Spells one raw GPUI keystroke the way a reader expects to see it.
+///
+/// The table stores exactly what `KeyBinding::new` was handed, so this is the
+/// only place a presentation form exists and the two cannot disagree.
+fn present_keystroke(raw: &str, apple: bool) -> String {
+    raw.split('-')
+        .map(|part| match part {
+            "cmd" => "\u{2318}".to_owned(),
+            "ctrl" => {
+                if apple {
+                    "\u{2303}".to_owned()
+                } else {
+                    "Ctrl".to_owned()
+                }
+            }
+            "shift" => {
+                if apple {
+                    "\u{21e7}".to_owned()
+                } else {
+                    "Shift".to_owned()
+                }
+            }
+            "alt" => {
+                if apple {
+                    "\u{2325}".to_owned()
+                } else {
+                    "Alt".to_owned()
+                }
+            }
+            "backspace" => {
+                if apple {
+                    "\u{232b}".to_owned()
+                } else {
+                    "Backspace".to_owned()
+                }
+            }
+            "escape" => "Esc".to_owned(),
+            "enter" => "Enter".to_owned(),
+            "tab" => "Tab".to_owned(),
+            "home" => "Home".to_owned(),
+            "end" => "End".to_owned(),
+            "pageup" => "PgUp".to_owned(),
+            "pagedown" => "PgDn".to_owned(),
+            "left" => "\u{2190}".to_owned(),
+            "right" => "\u{2192}".to_owned(),
+            "up" => "\u{2191}".to_owned(),
+            "down" => "\u{2193}".to_owned(),
+            other => {
+                let mut chars = other.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(if apple { "" } else { " " })
+}
+
 fn projection_label(state: crate::ProjectionState) -> &'static str {
     match state {
         crate::ProjectionState::Checking => "Checking",
@@ -3520,6 +3637,10 @@ const fn form_field_hint(field: FormField) -> &'static str {
         FormField::Language => "profile token, e.g. rust-2024, python-3.13, typescript, go-1.25",
         FormField::Stage => "parse validates syntax; lower-ir also lowers facts into canonical IR",
         FormField::Source => "the source text itself, not a path; up to 1 MiB",
+        // A purl: pkg: scheme, one of the seven accepted ecosystems, a name,
+        // and a pinned version -- PackageUrlError has a variant for each of
+        // those being absent.
+        FormField::PackageUrl => "pinned package URL, e.g. pkg:cargo/serde@1.0.219",
         FormField::Snapshot => "identity of an immutable published snapshot",
         FormField::Query => "bounded query text; at most 4 rows come back",
     }

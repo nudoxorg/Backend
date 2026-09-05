@@ -61,9 +61,9 @@ gpui::actions!(
 );
 
 pub use navigation::{
-    CommandFacts, CommandId, CommandPalette, MAX_PALETTE_RESULTS, NavigationState,
-    PALETTE_PAGE_ROWS, PaletteDirection, PaletteEditError, ROUTES, Route, RouteFacts, SURFACES,
-    ServiceAction, ShortcutFacts, SurfaceFacts,
+    CommandFacts, CommandId, CommandPalette, KEY_GROUPS, KEYMAP, KeyFacts, MAX_PALETTE_RESULTS,
+    NavigationState, PALETTE_PAGE_ROWS, PaletteDirection, PaletteEditError, ROUTES, Route,
+    RouteFacts, SURFACES, ServiceAction, ShortcutFacts, SurfaceFacts,
 };
 
 pub use forms::{

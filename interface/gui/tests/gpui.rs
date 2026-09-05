@@ -788,6 +788,67 @@ fn documentation_search_has_its_own_wide_ime_safe_query_boundary(cx: &mut TestAp
 
 #[cfg(feature = "real-gpui")]
 #[gpui::test]
+fn every_documented_accelerator_is_really_bound(cx: &mut TestAppContext) {
+    // The settings keyboard map stores the exact strings handed to
+    // KeyBinding::new, so this asks the keymap itself whether each one
+    // reaches the action the map claims. A shortcut renamed in one place and
+    // not the other fails here rather than in front of a reader.
+    let (_view, mut cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+
+    let unbound = cx.update(|_window, app| {
+        let mut missing = Vec::new();
+        for facts in interface_gui::KEYMAP {
+            for raw in [facts.apple, facts.other] {
+                let Ok(keystroke) = gpui::Keystroke::parse(raw) else {
+                    missing.push(format!("{} <- {raw} (unparseable)", facts.action));
+                    continue;
+                };
+                let bound = app
+                    .all_bindings_for_input(&[keystroke])
+                    .iter()
+                    .any(|binding| binding.action().name().ends_with(facts.action));
+                if !bound {
+                    missing.push(format!("{} <- {raw}", facts.action));
+                }
+            }
+        }
+        missing
+    });
+
+    assert!(
+        unbound.is_empty(),
+        "the keyboard map documents accelerators that are not bound: {unbound:?}"
+    );
+}
+
+#[gpui::test]
+fn the_keyboard_map_binds_each_keystroke_once(cx: &mut TestAppContext) {
+    let _ = cx;
+    let mut seen: Vec<&str> = Vec::new();
+    for facts in interface_gui::KEYMAP {
+        // A keystroke identical on both platforms is one binding, not two.
+        let mut keys = vec![facts.apple];
+        if facts.other != facts.apple {
+            keys.push(facts.other);
+        }
+        for raw in keys {
+            assert!(
+                !seen.contains(&raw),
+                "{raw} is documented against more than one action"
+            );
+            seen.push(raw);
+        }
+        assert!(
+            interface_gui::KEY_GROUPS.contains(&facts.group),
+            "{} sits in a group the map never renders: {}",
+            facts.action,
+            facts.group
+        );
+    }
+}
+
+#[gpui::test]
 fn removing_a_library_package_hides_it_and_keeps_the_reader_somewhere_real(
     cx: &mut TestAppContext,
 ) {
