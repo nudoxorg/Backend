@@ -11,7 +11,8 @@ use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEd
 use heart_identity::{
     ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, ContentId,
     DependencySetDomain, IrFragmentDomain, IrFragmentEncoding, IrManifestDomain,
-    IrManifestEncoding, SourceFactDomain, ToolchainDomain,
+    IrManifestEncoding, IrSemanticImageDomain, IrSemanticImageEncoding, SourceFactDomain,
+    ToolchainDomain,
 };
 use interface_core::{
     AdaptiveDisposition, ApplicationDisposition, ApplicationInput, ApplicationOutcome,
@@ -20,7 +21,7 @@ use interface_core::{
     GenerateRequest, GenerateTarget, GeneratedArtifact, GenerationAuthority, GenerationId,
     IndexSnapshotId, InputText, InputTextError, OperationBudget, Pin, Pressure,
     PublicationAuthority, ReplyBody, ResourceBudget, RetrievalCause, RetrievalQueryCause,
-    RetryBudget, SnapshotFacts, SourceAuthority, SourceText,
+    RetryBudget, SemanticImageAuthority, SnapshotFacts, SourceAuthority, SourceText,
 };
 use interface_gui::{
     AdaptiveProjection, ApplyError, BatchReceipt, CommandId, ExecutionProjection, FormError,
@@ -109,6 +110,12 @@ fn generated_artifact() -> GeneratedArtifact {
         fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
             b"gpui-fragment",
         ),
+        semantic_image: SemanticImageAuthority {
+            identity: ArtifactId::<IrSemanticImageEncoding, IrSemanticImageDomain>::from_encoded_bytes(
+                b"gpui-semantic-image",
+            ),
+            byte_len: 19,
+        },
         publication: PublicationAuthority {
             generation: GenerationAuthority {
                 pinned_root: GenerationId::from_canonical_bytes(b"gpui-generated-root"),

@@ -70,12 +70,32 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
                 atom_count: u32::try_from(atom_count).unwrap_or(u32::MAX),
             }),
         ),
+        CompileFailure::ExtensionTypeParametersUnbound { source_identity, recipe, row, start, length, element_count } => compile_from_driver(
+            source_identity,
+            recipe,
+            CompilerCause::Lowering(compiler_vocabulary::LoweringUnsupported::ExtensionTypeParametersUnbound {
+                row: u32::try_from(row).unwrap_or(u32::MAX),
+                start,
+                length,
+                element_count: u32::try_from(element_count).unwrap_or(u32::MAX),
+            }),
+        ),
         CompileFailure::FactRejected { source_identity, recipe, rejected } => compile_from_driver(
             source_identity,
             recipe,
             CompilerCause::Lowering(compiler_vocabulary::LoweringUnsupported::FactRejected {
                 fact: u32::try_from(rejected.fact).unwrap_or(u32::MAX),
             }),
+        ),
+        CompileFailure::CSharpProjection { source_identity, recipe, .. } => compile_from_driver(
+            source_identity,
+            recipe,
+            CompilerCause::Lowering(compiler_vocabulary::LoweringUnsupported::CSharpDeclarationForm),
+        ),
+        CompileFailure::ClangProjection { source_identity, recipe, .. } => compile_from_driver(
+            source_identity,
+            recipe,
+            CompilerCause::Lowering(compiler_vocabulary::LoweringUnsupported::ClangDeclarationForm),
         ),
         CompileFailure::Build { source_identity, recipe, .. } | CompileFailure::Prepare { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Prepare),
         CompileFailure::Write { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Write),

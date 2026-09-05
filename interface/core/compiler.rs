@@ -16,7 +16,8 @@ pub use compiler_vocabulary::{
 use heart_identity::{
     ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, CompileRecipeDomain,
     ContentId, DependencySetDomain, GenerationId, IrFragmentDomain, IrFragmentEncoding,
-    IrManifestDomain, IrManifestEncoding, SourceFactDomain,
+    IrManifestDomain, IrManifestEncoding, IrSemanticImageDomain, IrSemanticImageEncoding,
+    SourceFactDomain,
 };
 
 /// Typed source authority copied from a validated compiler result without importing its format.
@@ -55,8 +56,19 @@ pub struct GeneratedArtifact {
     pub recipe: CompileRecipeFact,
     /// Identity of the validated compact IR fragment.
     pub fragment: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
+    /// Complete semantic image independently reopened after durable publication.
+    pub semantic_image: SemanticImageAuthority,
     /// Complete durable-publication authority.
     pub publication: PublicationAuthority,
+}
+
+/// Immutable identity and exact extent of a complete reopened semantic image.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticImageAuthority {
+    /// Identity of the complete canonical semantic-image bytes.
+    pub identity: ArtifactId<IrSemanticImageEncoding, IrSemanticImageDomain>,
+    /// Exact byte length verified while reopening the durable image.
+    pub byte_len: u32,
 }
 
 /// Immutable authorities that connect a generated fragment to a stable local publication.
@@ -482,12 +494,16 @@ pub enum PublicationPhase {
     Manifest,
     /// Immutable fragment storage or range construction.
     Fragment,
+    /// Complete semantic-image measurement, encoding, validation, or storage.
+    SemanticImage,
     /// Complete generation construction.
     Generation,
     /// Generation-to-manifest binding write or storage.
     Binding,
     /// Durable publisher owner failed after admission.
     Durable,
+    /// Durable compact and semantic artifacts failed verified reopen.
+    Reopen,
 }
 
 /// One concrete cold allocation retaining a native diagnostic after its scratch lease ends.

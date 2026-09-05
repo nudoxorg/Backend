@@ -4,11 +4,13 @@
 //! One single-request local compiler specialization over explicit local ownership.
 
 use compiler_driver::{
-    CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledIr, ToolchainSelection,
-    compile, compile_ir,
+    CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledIr, DeclarationScope,
+    ToolchainSelection, compile_ir, compile_semantic as compile_fused_semantic,
 };
 use compiler_publication::{
-    PublicationScratch, PublishControl, PublishedCompilation, publish_compiled,
+    OpenSemanticPublicationScratch, PublishControl, PublishedCompilation,
+    SemanticImageArtifactFacts, SemanticPublicationScratch, open_published_semantic,
+    publish_semantic,
 };
 use compiler_registry::{AdapterRoute, FullRegistry};
 use heart_identity::{
@@ -16,13 +18,14 @@ use heart_identity::{
 };
 use interface_core::{
     CompilerCapability, CompilerReadiness, CompilerRequest as ApplicationCompilerRequest,
-    CompilerTerminal, GeneratedArtifact, PublicationAuthority, SourceAuthority,
+    CompilerTerminal, GeneratedArtifact, PublicationAuthority, SemanticImageAuthority,
+    SourceAuthority,
 };
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError};
 
 use crate::{
     LocalCompilerConfig, LocalCompilerOpenError, LocalCompilerPath, LocalCompilerScratch,
-    terminal::{compile_terminal, publication_terminal, source_authority},
+    terminal::{compile_terminal, source_authority},
 };
 
 /// Concrete local compiler with bounded explicit native toolchains, publisher, paths, and scratch.
@@ -110,6 +113,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 profile: request.profile,
                 stage: request.stage,
                 source: request.source.as_bytes(),
+                declaration_scope: DeclarationScope::standalone(request.profile),
                 toolchain,
                 authority: compiler_driver::SemanticAuthorityInput::None,
                 control: CompileControl {
@@ -145,11 +149,12 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 timeout: *timeout,
             }
         })?;
-        let compiled = compile(
+        let compiled = compile_fused_semantic(
             CompileRequest {
                 profile: request.profile,
                 stage: request.stage,
                 source: request.source.as_bytes(),
+                declaration_scope: DeclarationScope::standalone(request.profile),
                 toolchain,
                 authority: compiler_driver::SemanticAuthorityInput::None,
                 control: CompileControl {
@@ -166,26 +171,76 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             },
         )
         .map_err(compile_terminal)?;
-        let source = source_authority(compiled.source);
-        let recipe = compiled.recipe;
+        let source = source_authority(compiled.artifact.source);
+        let recipe = compiled.artifact.recipe;
         let fragment = ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
-            compiled.fragment.as_ref(),
+            compiled.artifact.fragment.as_ref(),
         );
-        let publication = publish_compiled(
+        let semantic_length =
+            compiler_ir::full_semantic_image_len(&compiled.ir).map_err(|cause| {
+                crate::terminal::semantic_publication_terminal(
+                    source,
+                    recipe,
+                    compiler_publication::PublishSemanticError::ImageMeasure {
+                        ordinal: 0,
+                        source: cause,
+                    },
+                )
+            })?;
+        self.scratch
+            .semantic_image_output
+            .resize(semantic_length, 0);
+        let publication = publish_semantic(
             &self.publisher,
             self.config.artifact_directory,
             core::slice::from_ref(&compiled),
             PublishControl::Observe(self.config.control.cancelled),
-            PublicationScratch {
+            SemanticPublicationScratch {
                 manifest_output: &mut self.scratch.manifest_output,
                 manifest_facts: &mut self.scratch.manifest_facts,
                 ordinals: &mut self.scratch.ordinals,
+                semantic_image_plan: &mut self.scratch.semantic_image_plan,
+                semantic_image_output: &mut self.scratch.semantic_image_output,
                 locality_output: &mut self.scratch.locality_output,
                 binding_output: &mut self.scratch.binding_output,
             },
         )
-        .map_err(|error| publication_terminal(source, recipe, error))?;
-        Ok(generated(source, recipe, fragment, &publication))
+        .map_err(|error| crate::terminal::semantic_publication_terminal(source, recipe, error))?;
+        drop(compiled);
+
+        let opened = open_published_semantic(
+            &self.publisher,
+            self.config.artifact_directory,
+            OpenSemanticPublicationScratch {
+                manifest_output: &mut self.scratch.manifest_output,
+                manifest_facts: &mut self.scratch.manifest_facts,
+                fragment_output: &mut self.scratch.fragment_output,
+                semantic_image_output: &mut self.scratch.semantic_image_output,
+                locality_output: &mut self.scratch.locality_output,
+            },
+        )
+        .map_err(|error| crate::terminal::semantic_reopen_terminal(source, recipe, error))?
+        .ok_or_else(|| crate::terminal::semantic_reopen_absent(source, recipe))?;
+        let mut artifacts = opened.artifacts();
+        let semantic = artifacts
+            .next()
+            .ok_or_else(|| crate::terminal::semantic_reopen_absent(source, recipe))?
+            .map_err(|error| crate::terminal::semantic_artifact_terminal(source, recipe, error))?;
+        let semantic_facts = semantic
+            .fragment
+            .facts
+            .semantic_image
+            .ok_or_else(|| crate::terminal::semantic_reopen_absent(source, recipe))?;
+        if artifacts.next().is_some() {
+            return Err(crate::terminal::semantic_reopen_cardinality(source, recipe));
+        }
+        Ok(generated(
+            source,
+            recipe,
+            fragment,
+            semantic_facts,
+            &publication,
+        ))
     }
 
     fn toolchain(
@@ -230,12 +285,17 @@ const fn generated(
     source: SourceAuthority,
     recipe: compiler_vocabulary::CompileRecipeFact,
     fragment: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
+    semantic_image: SemanticImageArtifactFacts,
     publication: &PublishedCompilation,
 ) -> GeneratedArtifact {
     GeneratedArtifact {
         source,
         recipe,
         fragment,
+        semantic_image: SemanticImageAuthority {
+            identity: semantic_image.identity,
+            byte_len: semantic_image.byte_length,
+        },
         publication: PublicationAuthority {
             generation: interface_core::GenerationAuthority {
                 pinned_root: publication.publication.generation.pinned_root,

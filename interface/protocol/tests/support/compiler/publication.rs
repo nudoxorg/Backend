@@ -22,9 +22,11 @@ pub(crate) enum GoldenPublicationPhase {
     Canonical,
     Manifest,
     Fragment,
+    SemanticImage,
     Generation,
     Binding,
     Durable,
+    Reopen,
 }
 
 impl From<PublicationCause> for GoldenPublicationCause {
@@ -49,9 +51,11 @@ impl From<PublicationPhase> for GoldenPublicationPhase {
             PublicationPhase::Canonical => Self::Canonical,
             PublicationPhase::Manifest => Self::Manifest,
             PublicationPhase::Fragment => Self::Fragment,
+            PublicationPhase::SemanticImage => Self::SemanticImage,
             PublicationPhase::Generation => Self::Generation,
             PublicationPhase::Binding => Self::Binding,
             PublicationPhase::Durable => Self::Durable,
+            PublicationPhase::Reopen => Self::Reopen,
         }
     }
 }

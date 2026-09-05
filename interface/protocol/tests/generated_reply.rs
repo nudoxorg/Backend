@@ -12,13 +12,14 @@ use compiler_vocabulary::{
 use heart_identity::{
     ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, ContentId,
     DependencySetDomain, IrFragmentDomain, IrFragmentEncoding, IrManifestDomain,
-    IrManifestEncoding, SourceFactDomain, ToolchainDomain,
+    IrManifestEncoding, IrSemanticImageDomain, IrSemanticImageEncoding, SourceFactDomain,
+    ToolchainDomain,
 };
 use interface_core::{
     ApplicationOutcome, ApplicationReply, CompilerAttempt, CompilerCause, CompilerDiagnostic,
     CompilerTerminal, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail,
     GeneratedArtifact, GenerationAuthority, NativeIoFact, NativeIoPhase, PublicationAuthority,
-    ReplyBody, SourceAuthority,
+    ReplyBody, SemanticImageAuthority, SourceAuthority,
 };
 use interface_protocol::{encode_cli_reply, mcp_reply};
 use serde_json::Value;
@@ -72,6 +73,12 @@ fn generated_artifact() -> GeneratedArtifact {
         fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
             b"wire-fragment",
         ),
+        semantic_image: SemanticImageAuthority {
+            identity: ArtifactId::<IrSemanticImageEncoding, IrSemanticImageDomain>::from_encoded_bytes(
+                b"wire-semantic-image",
+            ),
+            byte_len: 19,
+        },
         publication: PublicationAuthority {
             generation: GenerationAuthority {
                 pinned_root: interface_core::GenerationId::from_canonical_bytes(

@@ -2,7 +2,8 @@
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use interface_core::{
-    CompilerAttempt, GeneratedArtifact, GenerationAuthority, PublicationAuthority, SourceAuthority,
+    CompilerAttempt, GeneratedArtifact, GenerationAuthority, PublicationAuthority,
+    SemanticImageAuthority, SourceAuthority,
 };
 use serde::Deserialize;
 
@@ -11,7 +12,14 @@ pub(crate) struct GoldenGeneratedArtifact {
     pub source: GoldenSourceAuthority,
     pub recipe: GoldenCompileRecipe,
     pub fragment: String,
+    pub semantic_image: GoldenSemanticImageAuthority,
     pub publication: GoldenPublicationAuthority,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct GoldenSemanticImageAuthority {
+    pub identity: String,
+    pub byte_len: u32,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -165,7 +173,17 @@ impl From<GeneratedArtifact> for GoldenGeneratedArtifact {
             source: artifact.source.into(),
             recipe: artifact.recipe.into(),
             fragment: artifact.fragment.to_string(),
+            semantic_image: artifact.semantic_image.into(),
             publication: artifact.publication.into(),
+        }
+    }
+}
+
+impl From<SemanticImageAuthority> for GoldenSemanticImageAuthority {
+    fn from(image: SemanticImageAuthority) -> Self {
+        Self {
+            identity: image.identity.to_string(),
+            byte_len: image.byte_len,
         }
     }
 }

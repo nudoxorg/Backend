@@ -390,6 +390,21 @@ pub enum LoweringUnsupported {
         /// Atoms the admitted lane actually held.
         atom_count: u32,
     },
+    /// An extension row named a type-parameter interval the admitted lane
+    /// never carried.
+    #[error(
+        "extension type-parameter range {start}..+{length} at row {row} was not bound in {element_count} elements"
+    )]
+    ExtensionTypeParametersUnbound {
+        /// Zero-based extension row.
+        row: u32,
+        /// Provisional first type-parameter element.
+        start: u32,
+        /// Provisional element count.
+        length: u32,
+        /// Elements the admitted type-parameter lane actually held.
+        element_count: u32,
+    },
     /// Canonical admission rejected the fact at this ordinal; the bounded
     /// projection of the driver's exact terminal.
     #[error("fact {fact} was rejected by the canonical admission lane")]

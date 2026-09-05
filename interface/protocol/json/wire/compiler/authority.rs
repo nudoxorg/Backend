@@ -5,9 +5,12 @@ use compiler_vocabulary::CompileRecipeFact;
 use heart_identity::{
     ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, CompileRecipeDomain,
     DependencySetDomain, IrFragmentDomain, IrFragmentEncoding, IrManifestDomain,
-    IrManifestEncoding, SourceFactDomain, ToolchainDomain,
+    IrManifestEncoding, IrSemanticImageDomain, IrSemanticImageEncoding, SourceFactDomain,
+    ToolchainDomain,
 };
-use interface_core::{GenerationAuthority, PublicationAuthority, SourceAuthority};
+use interface_core::{
+    GenerationAuthority, PublicationAuthority, SemanticImageAuthority, SourceAuthority,
+};
 use serde::Serialize;
 
 use super::super::scalar::{
@@ -71,6 +74,15 @@ pub(crate) struct CompilerAttemptWire {
     recipe: heart_identity::ContentId<CompileRecipeDomain>,
 }
 
+/// Remote serde definition for one complete reopened semantic image.
+#[derive(Serialize)]
+#[serde(remote = "interface_core::SemanticImageAuthority")]
+pub(crate) struct SemanticImageAuthorityWire {
+    #[serde(serialize_with = "serialize_artifact")]
+    identity: ArtifactId<IrSemanticImageEncoding, IrSemanticImageDomain>,
+    byte_len: u32,
+}
+
 /// Remote serde definition for the only successful compiler body.
 #[derive(Serialize)]
 #[serde(remote = "interface_core::GeneratedArtifact")]
@@ -81,6 +93,8 @@ pub(crate) struct GeneratedArtifactWire {
     recipe: CompileRecipeFact,
     #[serde(serialize_with = "serialize_artifact")]
     fragment: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
+    #[serde(with = "SemanticImageAuthorityWire")]
+    semantic_image: SemanticImageAuthority,
     #[serde(with = "PublicationAuthorityWire")]
     publication: PublicationAuthority,
 }

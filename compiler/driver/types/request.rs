@@ -25,11 +25,48 @@ pub struct DeclarationScope<'source> {
 
 impl<'source> DeclarationScope<'source> {
     /// Enters one producer-proved package lineage and package-relative path.
-    pub const fn new(lineage: PackageLineage<'source>, path: &'source str) -> Result<Self, DeclarationKeyFault> {
+    pub const fn new(
+        lineage: PackageLineage<'source>,
+        path: &'source str,
+    ) -> Result<Self, DeclarationKeyFault> {
         match DeclarationKey::new(lineage, path, EntityKind::Module, b"_") {
             Ok(_) => Ok(Self { lineage, path }),
             Err(cause) => Err(cause),
         }
+    }
+
+    /// Enters the stable declaration scope used by the direct single-buffer
+    /// application surface.
+    ///
+    /// Package compilation must supply its real package lineage and relative
+    /// source path through [`Self::new`]. This scope is deliberately limited
+    /// to the editor-style, package-less source command: its lineage and path
+    /// remain stable across edits while source content remains version
+    /// provenance rather than declaration identity.
+    #[must_use]
+    pub fn standalone(profile: LanguageProfile) -> DeclarationScope<'static> {
+        let (ecosystem, path) = match profile {
+            LanguageProfile::Rust(_) => ("standalone-rust", "input.rs"),
+            LanguageProfile::TypeScript(compiler_vocabulary::TypeScriptSource::TypeScript) => {
+                ("standalone-typescript", "input.ts")
+            }
+            LanguageProfile::TypeScript(compiler_vocabulary::TypeScriptSource::Tsx) => {
+                ("standalone-typescript", "input.tsx")
+            }
+            LanguageProfile::Python(_) => ("standalone-python", "input.py"),
+            LanguageProfile::Go(_) => ("standalone-go", "input.go"),
+            LanguageProfile::Java(_) => ("standalone-java", "Input.java"),
+            LanguageProfile::CSharp(_) => ("standalone-csharp", "Input.cs"),
+            LanguageProfile::C(_) => ("standalone-clang", "input.c"),
+            LanguageProfile::Cxx(_) => ("standalone-clang", "input.cc"),
+        };
+        let Ok(lineage) = PackageLineage::new(ecosystem, "editor-buffer") else {
+            unreachable!("closed standalone package lineage is valid");
+        };
+        let Ok(scope) = DeclarationScope::<'static>::new(lineage, path) else {
+            unreachable!("closed standalone declaration path is valid");
+        };
+        scope
     }
 
     pub(crate) const fn lineage(self) -> PackageLineage<'source> {

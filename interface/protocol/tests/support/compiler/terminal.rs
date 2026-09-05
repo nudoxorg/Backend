@@ -110,6 +110,12 @@ pub(crate) enum GoldenLoweringCause {
         provisional: u32,
         atom_count: u32,
     },
+    ExtensionTypeParametersUnbound {
+        row: u32,
+        start: u32,
+        length: u32,
+        element_count: u32,
+    },
     FactRejected {
         fact: u32,
     },
@@ -321,6 +327,17 @@ impl From<LoweringUnsupported> for GoldenLoweringCause {
                 row,
                 provisional,
                 atom_count,
+            },
+            LoweringUnsupported::ExtensionTypeParametersUnbound {
+                row,
+                start,
+                length,
+                element_count,
+            } => Self::ExtensionTypeParametersUnbound {
+                row,
+                start,
+                length,
+                element_count,
             },
             LoweringUnsupported::FactRejected { fact } => Self::FactRejected { fact },
             LoweringUnsupported::RustFunction => Self::RustFunction,

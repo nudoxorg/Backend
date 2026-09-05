@@ -22,7 +22,7 @@ pub use compiler::{
     NativeIoFact, NativeIoPhase, NativePrimaryCause, NativeWorkCause, NativeWorkCleanupCause,
     NativeWorkPhase, NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass,
     NativeWorkerPanicMessage, PublicationAuthority, PublicationCause, PublicationPhase,
-    SourceAuthority, UnavailableCompiler,
+    SemanticImageAuthority, SourceAuthority, UnavailableCompiler,
 };
 pub use compiler_vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,

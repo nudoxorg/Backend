@@ -113,6 +113,12 @@ pub(crate) enum LoweringUnsupportedWire {
         provisional: u32,
         atom_count: u32,
     },
+    ExtensionTypeParametersUnbound {
+        row: u32,
+        start: u32,
+        length: u32,
+        element_count: u32,
+    },
     FactRejected {
         fact: u32,
     },

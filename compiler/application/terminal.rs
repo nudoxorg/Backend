@@ -11,7 +11,10 @@ use thiserror::Error;
 
 pub(crate) use common::source_authority;
 pub(crate) use native::compile_terminal;
-pub(crate) use publication::publication_terminal;
+pub(crate) use publication::{
+    semantic_artifact_terminal, semantic_publication_terminal, semantic_reopen_absent,
+    semantic_reopen_cardinality, semantic_reopen_terminal,
+};
 
 /// Rejection while creating the explicit durable publication owner.
 #[derive(Debug, Error)]

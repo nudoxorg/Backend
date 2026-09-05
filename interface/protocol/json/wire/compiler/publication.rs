@@ -11,9 +11,11 @@ pub(crate) enum PublicationPhaseWire {
     Canonical,
     Manifest,
     Fragment,
+    SemanticImage,
     Generation,
     Binding,
     Durable,
+    Reopen,
 }
 
 pub(crate) struct PublicationPhaseRef<'value>(pub(crate) &'value PublicationPhase);

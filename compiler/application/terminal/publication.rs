@@ -3,12 +3,15 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Durable-publication terminal projection.
 
-use compiler_publication::{PublishCompiledError, UncommittedPublication};
+use compiler_publication::{
+    OpenPublishedError, OpenedSemanticArtifactError, PublishCompiledError, PublishSemanticError,
+    UncommittedPublication,
+};
 use interface_core::{CompilerTerminal, PublicationCause, PublicationPhase};
 
 use super::common::attempt;
 
-pub(crate) fn publication_terminal(
+fn publication_terminal(
     source: interface_core::SourceAuthority,
     recipe: compiler_vocabulary::CompileRecipeFact,
     error: PublishCompiledError,
@@ -42,6 +45,88 @@ pub(crate) fn publication_terminal(
     CompilerTerminal::Publication {
         attempted: attempt(source, recipe),
         cause,
+    }
+}
+
+pub(crate) fn semantic_publication_terminal(
+    source: interface_core::SourceAuthority,
+    recipe: compiler_vocabulary::CompileRecipeFact,
+    error: PublishSemanticError,
+) -> CompilerTerminal {
+    match error {
+        PublishSemanticError::Publication(error) => publication_terminal(source, recipe, error),
+        PublishSemanticError::CancelledBeforeStorage => CompilerTerminal::Publication {
+            attempted: attempt(source, recipe),
+            cause: PublicationCause::CancelledBeforeStorage,
+        },
+        PublishSemanticError::Canonical(_) => rejected(source, recipe, PublicationPhase::Canonical),
+        PublishSemanticError::ManifestWrite(_) => {
+            rejected(source, recipe, PublicationPhase::Manifest)
+        }
+        PublishSemanticError::FragmentStorageOwner(_)
+        | PublishSemanticError::FragmentStorage { .. }
+        | PublishSemanticError::FragmentManifest { .. } => {
+            rejected(source, recipe, PublicationPhase::Fragment)
+        }
+        PublishSemanticError::ImagePlanTooSmall { .. }
+        | PublishSemanticError::ImageMeasure { .. }
+        | PublishSemanticError::ImageLengthAddressSpace { .. }
+        | PublishSemanticError::ImagePlanLengthAddressSpace { .. }
+        | PublishSemanticError::ImageExtentOverflow { .. }
+        | PublishSemanticError::ImageOutputTooSmall { .. }
+        | PublishSemanticError::ImageEncode { .. }
+        | PublishSemanticError::ImageWriteLengthMismatch { .. }
+        | PublishSemanticError::ImageReopen { .. }
+        | PublishSemanticError::ImageProvenanceUnavailable { .. }
+        | PublishSemanticError::ImageSource { .. }
+        | PublishSemanticError::ImageRecipe { .. }
+        | PublishSemanticError::SemanticStorageOwner(_)
+        | PublishSemanticError::SemanticStorage { .. }
+        | PublishSemanticError::SemanticStorageFacts { .. } => {
+            rejected(source, recipe, PublicationPhase::SemanticImage)
+        }
+        _ => rejected(source, recipe, PublicationPhase::SemanticImage),
+    }
+}
+
+pub(crate) fn semantic_reopen_terminal(
+    source: interface_core::SourceAuthority,
+    recipe: compiler_vocabulary::CompileRecipeFact,
+    _error: OpenPublishedError,
+) -> CompilerTerminal {
+    rejected(source, recipe, PublicationPhase::Reopen)
+}
+
+pub(crate) fn semantic_artifact_terminal(
+    source: interface_core::SourceAuthority,
+    recipe: compiler_vocabulary::CompileRecipeFact,
+    _error: OpenedSemanticArtifactError,
+) -> CompilerTerminal {
+    rejected(source, recipe, PublicationPhase::Reopen)
+}
+
+pub(crate) const fn semantic_reopen_absent(
+    source: interface_core::SourceAuthority,
+    recipe: compiler_vocabulary::CompileRecipeFact,
+) -> CompilerTerminal {
+    rejected(source, recipe, PublicationPhase::Reopen)
+}
+
+pub(crate) const fn semantic_reopen_cardinality(
+    source: interface_core::SourceAuthority,
+    recipe: compiler_vocabulary::CompileRecipeFact,
+) -> CompilerTerminal {
+    rejected(source, recipe, PublicationPhase::Reopen)
+}
+
+const fn rejected(
+    source: interface_core::SourceAuthority,
+    recipe: compiler_vocabulary::CompileRecipeFact,
+    phase: PublicationPhase,
+) -> CompilerTerminal {
+    CompilerTerminal::Publication {
+        attempted: attempt(source, recipe),
+        cause: PublicationCause::Rejected(phase),
     }
 }
 

@@ -68,6 +68,8 @@ pub(super) enum LocalCompilerTestError {
     GeneratedSourceLength { observed: u32 },
     #[error("generated publication binding was zero")]
     GeneratedBindingZero,
+    #[error("generated semantic image authority was absent or zero-width")]
+    GeneratedSemanticImageAbsent,
     #[error("compiler diagnostic did not preserve the expected closed terminal")]
     CompilerDiagnostic {
         observed: Box<interface_core::ApplicationOutcome>,

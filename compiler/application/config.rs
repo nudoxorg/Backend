@@ -224,6 +224,13 @@ pub struct LocalCompilerScratch {
     pub(crate) ordinals: [usize; MAX_MANIFEST_ENTRIES],
     pub(crate) locality_output: [u8; MAX_LOCALITY_OUTPUT_BYTES],
     pub(crate) binding_output: [u8; compiler_publication::binding::COMPILATION_BINDING_BYTES],
+    /// Reusable exact-demand storage for the complete semantic image.  The
+    /// first fused compile grows this lane to the measured image length;
+    /// later requests reuse its allocation and expose only the initialized
+    /// prefix to publication and reopen.
+    pub(crate) semantic_image_output: Vec<u8>,
+    pub(crate) semantic_image_plan:
+        [compiler_publication::manifest::SemanticImageRegion; MAX_MANIFEST_ENTRIES],
 }
 
 impl Default for LocalCompilerScratch {
@@ -236,6 +243,9 @@ impl Default for LocalCompilerScratch {
             ordinals: [0; MAX_MANIFEST_ENTRIES],
             locality_output: [0; MAX_LOCALITY_OUTPUT_BYTES],
             binding_output: [0; compiler_publication::binding::COMPILATION_BINDING_BYTES],
+            semantic_image_output: Vec::new(),
+            semantic_image_plan: [compiler_publication::manifest::SemanticImageRegion::EMPTY;
+                MAX_MANIFEST_ENTRIES],
         }
     }
 }

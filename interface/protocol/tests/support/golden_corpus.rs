@@ -496,6 +496,7 @@ fn generated_artifact(artifact: &GeneratedArtifact) -> GoldenGeneratedArtifact {
         source: artifact.source.into(),
         recipe: artifact.recipe.into(),
         fragment: artifact.fragment.to_string(),
+        semantic_image: artifact.semantic_image.into(),
         publication: artifact.publication.into(),
     }
 }

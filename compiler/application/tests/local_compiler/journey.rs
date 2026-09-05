@@ -9,8 +9,7 @@ use compiler_vocabulary::{
 use heart_identity::{ContentId, SourceFactDomain};
 use interface_core::{
     ApplicationDisposition, ApplicationOutcome, ApplicationReply, ApplicationService,
-    CompilerTerminal, Diagnostic, DiagnosticCode, DiagnosticDetail, PublicationCause,
-    PublicationPhase, ReplyBody,
+    CompilerTerminal, Diagnostic, DiagnosticCode, DiagnosticDetail, ReplyBody,
 };
 
 use super::support::{
@@ -110,6 +109,16 @@ fn assert_generated(
         .all(|byte| *byte == 0)
     {
         return Err(LocalCompilerTestError::GeneratedBindingZero);
+    }
+    if facts.semantic_image.byte_len == 0
+        || facts
+            .semantic_image
+            .identity
+            .as_ref()
+            .iter()
+            .all(|byte| *byte == 0)
+    {
+        return Err(LocalCompilerTestError::GeneratedSemanticImageAbsent);
     }
     Ok(facts)
 }
