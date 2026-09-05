@@ -19,8 +19,8 @@ use interface_core::{
     ApplicationReply, ApplicationService, BatteryState, ByteCount, Capability, CapabilityDomain,
     CapabilityHealth, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail, ExecutionState,
     GenerateRequest, GenerateTarget, GeneratedArtifact, GenerationAuthority, GenerationId,
-    IndexSnapshotId, InputText, InputTextError, OperationBudget, Pin, Pressure,
-    PublicationAuthority, ReplyBody, ResourceBudget, RetrievalCause, RetrievalQueryCause,
+    IndexSnapshotId, InputText, InputTextError, OperationBudget, PackageCompilePhase, Pin,
+    Pressure, PublicationAuthority, ReplyBody, ResourceBudget, RetrievalCause, RetrievalQueryCause,
     RetryBudget, SemanticImageAuthority, SnapshotFacts, SourceAuthority, SourceText,
 };
 use interface_gui::{
@@ -792,5 +792,47 @@ fn empty_boundary_is_fused_without_notification() -> Result<(), ApplyError> {
     assert_eq!(receipt.applied_replies, 0);
     assert_eq!(receipt.notifications, 0);
     assert_eq!(receipt.notification_epoch, 0);
+    Ok(())
+}
+
+#[test]
+fn package_phases_are_correlated_ordered_and_completed_only_by_a_reply() -> Result<(), ApplyError> {
+    let mut state = ShellState::default();
+    let correlation = CorrelationId(71);
+    state.apply_package_phase(correlation, PackageCompilePhase::Locate)?;
+    state.apply_package_phase(correlation, PackageCompilePhase::EnterSource)?;
+    state.apply_package_phase(correlation, PackageCompilePhase::Authority)?;
+    assert_eq!(
+        state.pages.home.package_journey,
+        Some(interface_gui::PackageJourneyProjection {
+            correlation,
+            last_phase: PackageCompilePhase::Authority,
+            entered_phases: 3,
+            complete: false,
+        })
+    );
+
+    let skipped = state.apply_package_phase(correlation, PackageCompilePhase::Publish);
+    assert_eq!(
+        skipped,
+        Err(ApplyError::PackagePhaseOrder {
+            correlation,
+            preceding: PackageCompilePhase::Authority,
+            observed: PackageCompilePhase::Publish,
+        })
+    );
+    state.apply(ApplicationReply {
+        correlation,
+        outcome: ApplicationOutcome::Resolved(ReplyBody::DependencyUnavailable {
+            capability: Capability::CompilerOutput,
+        }),
+    })?;
+    assert!(
+        state
+            .pages
+            .home
+            .package_journey
+            .is_some_and(|journey| journey.complete)
+    );
     Ok(())
 }

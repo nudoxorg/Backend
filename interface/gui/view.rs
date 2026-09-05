@@ -24,10 +24,11 @@ use gpui::{
     KeyDownEvent, Render, ScrollStrategy, SharedString, Task, UniformListScrollHandle, Window, div,
     prelude::*, px, rgb, uniform_list,
 };
+use heart_observe::Probe;
 use interface_core::{
-    ApplicationOutcome, Capability, CompilerCapability, CorrelationId, Diagnostic, DiagnosticCode,
-    DiagnosticDetail, ExecutionReply, ExecutionState, OperationKey, ReplyBody,
-    UnavailableCompiler,
+    ApplicationEvent, ApplicationObservation, ApplicationOutcome, Capability, CompilerCapability,
+    CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail, ExecutionReply, ExecutionState,
+    OperationKey, PackageCompileRequest, ReplyBody, UnavailableCompiler,
 };
 use std::{cell::RefCell, future::poll_fn, rc::Rc, time::Duration};
 
@@ -68,7 +69,7 @@ const INTERACTION_DURATION: Duration = Duration::from_millis(90);
 /// project those facts. The one retained foreground task is woken by the admitted execution future;
 /// no timer, polling loop, accessibility driver, or second command decoder participates in the
 /// shell.
-pub struct GpuiShellView<Compiler = UnavailableCompiler> {
+pub struct GpuiShellView<Compiler: CompilerCapability = UnavailableCompiler> {
     service: Rc<RefCell<ApplicationService<Compiler>>>,
     state: ShellState,
     focus: FocusHandle,
@@ -79,6 +80,7 @@ pub struct GpuiShellView<Compiler = UnavailableCompiler> {
     search_active: bool,
     next_correlation: u64,
     driven_execution: Option<DrivenExecution>,
+    driven_package: Option<DrivenPackage>,
     native_input: input::NativeInputState,
     native_input_bounds: input::SharedNativeInputGeometry,
 }
@@ -86,6 +88,38 @@ pub struct GpuiShellView<Compiler = UnavailableCompiler> {
 struct DrivenExecution {
     operation: OperationKey,
     task: Task<CompletionDelivery>,
+}
+
+struct DrivenPackage {
+    correlation: CorrelationId,
+    task: Task<CompletionDelivery>,
+}
+
+enum PackageDelivery {
+    Phase(ApplicationEvent),
+    Reply(ApplicationReply),
+}
+
+struct PackagePhaseProbe<Compiler> {
+    delivery: async_channel::Sender<PackageDelivery>,
+    compiler: Compiler,
+}
+
+impl<Compiler: CompilerCapability> Probe<ApplicationEvent> for PackagePhaseProbe<Compiler> {
+    fn record_with<Build>(&mut self, build: Build)
+    where
+        Build: FnOnce() -> ApplicationEvent,
+    {
+        let event = build();
+        if matches!(event.outcome, ApplicationObservation::PackagePhase { .. })
+            && self
+                .delivery
+                .send_blocking(PackageDelivery::Phase(event))
+                .is_err()
+        {
+            self.compiler.cancel_active();
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,7 +165,7 @@ fn execution_delivery(reply: &ApplicationReply) -> ExecutionDelivery {
     }
 }
 
-impl<Compiler: CompilerCapability + 'static> GpuiShellView<Compiler> {
+impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compiler> {
     /// Creates a focused product shell around the service that owns application behavior.
     #[must_use]
     pub fn new(
@@ -185,6 +219,7 @@ impl<Compiler: CompilerCapability + 'static> GpuiShellView<Compiler> {
             search_active: false,
             next_correlation: 2,
             driven_execution: None,
+            driven_package: None,
             native_input: input::NativeInputState::default(),
             native_input_bounds: Rc::new(std::cell::Cell::new(None)),
         }
@@ -201,6 +236,9 @@ impl<Compiler: CompilerCapability + 'static> GpuiShellView<Compiler> {
         input: &ApplicationInput,
         cx: &mut Context<Self>,
     ) -> Result<(), ApplyError> {
+        if let ApplicationInput::CompilePackage(request) = input {
+            return self.drive_package(request.clone(), cx);
+        }
         let reply = self.service.borrow_mut().execute(input);
         let delivery = execution_delivery(&reply);
         self.state.apply(reply)?;
@@ -221,6 +259,87 @@ impl<Compiler: CompilerCapability + 'static> GpuiShellView<Compiler> {
             }
             ExecutionDelivery::None => {}
         }
+        Ok(())
+    }
+
+    fn drive_package(
+        &mut self,
+        request: PackageCompileRequest,
+        cx: &mut Context<Self>,
+    ) -> Result<(), ApplyError> {
+        let correlation = request.target.correlation;
+        if let Some(active) = self.driven_package.as_ref() {
+            return self
+                .state
+                .retain_projection_error(ApplyError::PackageRequestInFlight {
+                    active: active.correlation,
+                    observed: correlation,
+                });
+        }
+        let compiler = self.service.borrow().compiler.clone();
+        let probe_compiler = compiler.clone();
+        let (delivery, deliveries) = async_channel::bounded(1);
+        let final_delivery = delivery.clone();
+        let background = cx.background_executor().spawn(async move {
+            let mut service = ApplicationService::with_compiler(compiler);
+            let mut probe = PackagePhaseProbe {
+                delivery,
+                compiler: probe_compiler,
+            };
+            let reply =
+                service.execute_observed(&ApplicationInput::CompilePackage(request), &mut probe);
+            if final_delivery
+                .send_blocking(PackageDelivery::Reply(reply))
+                .is_err()
+            {
+                service.compiler.cancel_active();
+            }
+        });
+        let task = cx.spawn(async move |this, cx| {
+            while let Ok(delivered) = deliveries.recv().await {
+                let update = this.update(cx, |view, cx| {
+                    let result = match delivered {
+                        PackageDelivery::Phase(ApplicationEvent {
+                            correlation,
+                            outcome: ApplicationObservation::PackagePhase { phase },
+                        }) => view.state.apply_package_phase(correlation, phase),
+                        PackageDelivery::Phase(_) => Ok(()),
+                        PackageDelivery::Reply(reply) => view.state.apply(reply).map(|_| ()),
+                    };
+                    match result {
+                        Ok(()) => cx.notify(),
+                        Err(error) => {
+                            debug_assert_eq!(view.state.projection_error, Some(error));
+                            cx.notify();
+                        }
+                    }
+                });
+                if update.is_err() {
+                    break;
+                }
+            }
+            background.await;
+            match this.update(cx, |view, cx| {
+                if view
+                    .driven_package
+                    .as_ref()
+                    .is_some_and(|driven| driven.correlation == correlation)
+                {
+                    let driven = view.driven_package.take();
+                    if let Some(driven) = driven {
+                        driven.task.detach();
+                    }
+                }
+                cx.notify();
+            }) {
+                Ok(()) => CompletionDelivery::Projected,
+                Err(view_released) => {
+                    drop(view_released);
+                    CompletionDelivery::ViewReleased
+                }
+            }
+        });
+        self.driven_package = Some(DrivenPackage { correlation, task });
         Ok(())
     }
 
@@ -1225,6 +1344,46 @@ impl<Compiler: CompilerCapability + 'static> GpuiShellView<Compiler> {
                         Self::metric_card("0", "fabricated capabilities", "Unavailable providers remain explicit"),
                     ]),
             )
+            .when_some(self.state.pages.home.package_journey, |home, journey| {
+                home.child(
+                    div()
+                        .max_w(px(1100.0))
+                        .p(px(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .rounded(px(9.0))
+                        .border_1()
+                        .border_color(rgb(BORDER))
+                        .bg(rgb(PANEL_BACKGROUND))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.0))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child("Pinned package compilation"),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(rgb(METADATA_TEXT))
+                                        .child(package_phase_label(journey.last_phase)),
+                                ),
+                        )
+                        .child(Self::status_pill(
+                            if journey.complete { "terminal" } else { "active" },
+                            if journey.complete {
+                                self.state.pages.home.generation
+                            } else {
+                                crate::ProjectionState::Active
+                            },
+                        )),
+                )
+            })
             .when_some(self.state.pages.home.generated, |home, generated| {
                 home.child(
                     div()
@@ -2970,7 +3129,7 @@ impl<Compiler: CompilerCapability + 'static> GpuiShellView<Compiler> {
     }
 }
 
-impl<Compiler: CompilerCapability + 'static> Render for GpuiShellView<Compiler> {
+impl<Compiler: CompilerCapability + Clone + Send + 'static> Render for GpuiShellView<Compiler> {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette_visible = self.state.navigation.palette.visible;
         div()
@@ -3014,11 +3173,21 @@ impl<Compiler: CompilerCapability + 'static> Render for GpuiShellView<Compiler> 
     }
 }
 
-impl<Compiler> Deref for GpuiShellView<Compiler> {
+impl<Compiler: CompilerCapability> Deref for GpuiShellView<Compiler> {
     type Target = ShellState;
 
     fn deref(&self) -> &Self::Target {
         &self.state
+    }
+}
+
+impl<Compiler: CompilerCapability> Drop for GpuiShellView<Compiler> {
+    fn drop(&mut self) {
+        if self.driven_package.is_some()
+            && let Ok(service) = self.service.try_borrow()
+        {
+            service.compiler.cancel_active();
+        }
     }
 }
 
@@ -3031,6 +3200,19 @@ fn projection_label(state: crate::ProjectionState) -> &'static str {
         crate::ProjectionState::Cancelled => "Cancelled",
         crate::ProjectionState::Failed => "Failed",
         crate::ProjectionState::Active => "Active",
+    }
+}
+
+const fn package_phase_label(phase: interface_core::PackageCompilePhase) -> &'static str {
+    match phase {
+        interface_core::PackageCompilePhase::Locate => "Locating the exact pinned package",
+        interface_core::PackageCompilePhase::EnterSource => "Entering exact package source",
+        interface_core::PackageCompilePhase::Authority => "Collecting native semantic authority",
+        interface_core::PackageCompilePhase::Lower => "Lowering canonical semantic IR",
+        interface_core::PackageCompilePhase::Publish => "Publishing a durable generation",
+        interface_core::PackageCompilePhase::Reopen => "Reopening and validating semantic bytes",
+        interface_core::PackageCompilePhase::Discover => "Building discovery facts",
+        interface_core::PackageCompilePhase::Render => "Projecting documentation and links",
     }
 }
 

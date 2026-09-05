@@ -26,6 +26,7 @@ publish = false
 allocation-counter = "0.8.1"
 arrayvec = { version = "0.7.6", default-features = false }
 atomic-waker = { version = "1.1.2", default-features = false }
+async-channel = "2.5.0"
 blake3 = { version = "1.8.2", default-features = false }
 bolero = "0.13.4"
 derive_more = { version = "2.1.1", default-features = false, features = ["debug"] }

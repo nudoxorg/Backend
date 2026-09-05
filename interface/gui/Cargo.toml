@@ -22,7 +22,9 @@ path = "main.rs"
 required-features = ["real-gpui"]
 
 [dependencies]
+async-channel.workspace = true
 compiler-vocabulary = { path = "../../compiler/vocabulary" }
+heart-observe = { path = "../../heart/observe" }
 interface-core = { path = "../core" }
 gpui = { workspace = true, optional = true }
 gpui_platform = { workspace = true, optional = true }

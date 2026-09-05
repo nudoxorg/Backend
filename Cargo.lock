@@ -1276,6 +1276,7 @@ dependencies = [
  "arrayvec",
  "compiler-driver",
  "compiler-ir",
+ "compiler-languages-csharp",
  "compiler-languages-go",
  "compiler-languages-java",
  "compiler-languages-python",
@@ -1356,6 +1357,7 @@ dependencies = [
 name = "compiler-languages-csharp"
 version = "0.1.0"
 dependencies = [
+ "compiler-vocabulary",
  "serde",
  "serde_json",
  "sha2",
@@ -3730,11 +3732,13 @@ dependencies = [
 name = "interface-gui"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "compiler-vocabulary",
  "gpui",
  "gpui_platform",
  "heart-adaptive",
  "heart-identity",
+ "heart-observe",
  "interface-core",
  "serde",
  "serde_json",

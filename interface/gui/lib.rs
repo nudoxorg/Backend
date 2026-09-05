@@ -77,9 +77,9 @@ pub use catalog::{
 pub use state::{
     AdaptiveProjection, ApplyError, BatchReceipt, ConnectionsPage, ExecutionProjection,
     GeneratedProjection, HealthProjection, HomePage, LibrariesPage, MAX_BATCH_REPLIES,
-    MotionPreference, NativeTextInputError, PageSnapshots, ProjectionState, SURFACE_COUNT,
-    SearchPage, SettingsPage, ShellProjection, ShellState, Surface, SurfaceStatus, SurfaceSummary,
-    TextInputTarget,
+    MotionPreference, NativeTextInputError, PackageJourneyProjection, PageSnapshots,
+    ProjectionState, SURFACE_COUNT, SearchPage, SettingsPage, ShellProjection, ShellState, Surface,
+    SurfaceStatus, SurfaceSummary, TextInputTarget,
 };
 
 // These are re-exports of the core types, not shell-owned DTOs. Re-exporting

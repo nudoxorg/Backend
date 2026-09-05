@@ -8,7 +8,7 @@ use core::ops::Deref;
 use interface_core::{
     AdaptiveDisposition, ApplicationDisposition, ApplicationInput, ApplicationOutcome,
     ApplicationReply, Capability, CapabilityHealth, CorrelationId, Diagnostic, DiagnosticCode,
-    DiagnosticDetail, ExecutionState, OperationKey, ReplyBody,
+    DiagnosticDetail, ExecutionState, OperationKey, PackageCompilePhase, ReplyBody,
 };
 
 use crate::{
@@ -110,6 +110,19 @@ impl SurfaceStatus {
 pub struct GeneratedProjection {
     /// Complete generated artifact authority from the core reply.
     pub artifact: interface_core::GeneratedArtifact,
+}
+
+/// Ordered visible progress for one exact pinned-package compilation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageJourneyProjection {
+    /// Correlation of the package request that owns these phase facts.
+    pub correlation: CorrelationId,
+    /// Most recently entered ordered phase.
+    pub last_phase: PackageCompilePhase,
+    /// Number of distinct ordered phases entered so far.
+    pub entered_phases: u8,
+    /// True only after the corresponding complete or diagnostic reply was projected.
+    pub complete: bool,
 }
 
 /// Direct projection of a pure adaptive policy decision.
@@ -214,6 +227,8 @@ pub struct HomePage {
     pub generation: ProjectionState,
     /// Last generated artifact, when one has been published.
     pub generated: Option<GeneratedProjection>,
+    /// Current or most recently completed pinned-package journey.
+    pub package_journey: Option<PackageJourneyProjection>,
     /// Current local execution lifecycle.
     pub execution: ProjectionState,
     /// Current capability-health state.
@@ -338,6 +353,8 @@ pub struct ShellProjection {
     pub generation: SurfaceStatus,
     /// Last successful generated artifact retained for the visible generation surface.
     pub generated: Option<GeneratedProjection>,
+    /// Current or most recently completed pinned-package journey.
+    pub package_journey: Option<PackageJourneyProjection>,
     /// Adaptive placement projection.
     pub adaptive: AdaptiveProjection,
     /// Service-owned execution projection.
@@ -380,6 +397,73 @@ impl Deref for ShellState {
 }
 
 impl ShellState {
+    /// Applies one ordered package-compilation phase without constructing a synthetic reply.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an out-of-order phase, a correlation change during active work, or notification
+    /// epoch exhaustion while retaining the exact observed operands.
+    pub fn apply_package_phase(
+        &mut self,
+        correlation: CorrelationId,
+        phase: PackageCompilePhase,
+    ) -> Result<(), ApplyError> {
+        let next = match self.projection.package_journey {
+            None if phase == PackageCompilePhase::Locate => PackageJourneyProjection {
+                correlation,
+                last_phase: phase,
+                entered_phases: 1,
+                complete: false,
+            },
+            None => {
+                return self.retain_projection_error(ApplyError::PackagePhaseWithoutLocate {
+                    correlation,
+                    observed: phase,
+                });
+            }
+            Some(previous) if previous.complete && phase == PackageCompilePhase::Locate => {
+                PackageJourneyProjection {
+                    correlation,
+                    last_phase: phase,
+                    entered_phases: 1,
+                    complete: false,
+                }
+            }
+            Some(previous) if previous.correlation != correlation => {
+                return self.retain_projection_error(ApplyError::PackagePhaseCorrelation {
+                    active: previous.correlation,
+                    observed: correlation,
+                });
+            }
+            Some(previous)
+                if package_phase_ordinal(phase)
+                    == package_phase_ordinal(previous.last_phase).saturating_add(1) =>
+            {
+                PackageJourneyProjection {
+                    correlation,
+                    last_phase: phase,
+                    entered_phases: previous.entered_phases.saturating_add(1),
+                    complete: false,
+                }
+            }
+            Some(previous) => {
+                return self.retain_projection_error(ApplyError::PackagePhaseOrder {
+                    correlation,
+                    preceding: previous.last_phase,
+                    observed: phase,
+                });
+            }
+        };
+        let Some(epoch) = self.projection.notification_epoch.checked_add(1) else {
+            return self.retain_projection_error(ApplyError::NotificationEpochExhausted);
+        };
+        self.projection.package_journey = Some(next);
+        self.projection.notification_epoch = epoch;
+        self.projection.projection_error = None;
+        self.refresh_pages();
+        Ok(())
+    }
+
     /// Selects a product route without changing application-service facts.
     pub fn select_route(&mut self, route: Route) {
         self.projection.navigation.select_route(route);
@@ -787,6 +871,11 @@ impl ShellState {
     }
 
     fn apply_reply(&mut self, reply: &ApplicationReply) {
+        if let Some(journey) = self.projection.package_journey.as_mut()
+            && journey.correlation == reply.correlation
+        {
+            journey.complete = true;
+        }
         match &reply.outcome {
             ApplicationOutcome::Resolved(body) => self.apply_resolved(body),
             ApplicationOutcome::Failed { diagnostic } => self.apply_failure(diagnostic),
@@ -916,6 +1005,7 @@ impl ShellState {
             home: HomePage {
                 generation: self.projection.generation.projection(),
                 generated: self.projection.generated,
+                package_journey: self.projection.package_journey,
                 execution: self.projection.execution.projection(),
                 health: self.projection.health.projection(),
             },
@@ -964,6 +1054,7 @@ impl Default for ShellState {
                 motion: MotionPreference::default(),
                 generation: SurfaceStatus::Checking,
                 generated: None,
+                package_journey: None,
                 adaptive: AdaptiveProjection::Checking,
                 execution: ExecutionProjection::Checking,
                 index: SurfaceStatus::Checking,
@@ -976,6 +1067,7 @@ impl Default for ShellState {
                     home: HomePage {
                         generation: ProjectionState::Checking,
                         generated: None,
+                        package_journey: None,
                         execution: ProjectionState::Checking,
                         health: ProjectionState::Checking,
                     },
@@ -1039,6 +1131,13 @@ impl SurfaceStatus {
     }
 }
 
+impl ShellState {
+    pub(crate) fn retain_projection_error(&mut self, error: ApplyError) -> Result<(), ApplyError> {
+        self.projection.projection_error = Some(error);
+        Err(error)
+    }
+}
+
 /// Result of one shell state boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BatchReceipt {
@@ -1062,6 +1161,49 @@ pub enum ApplyError {
     },
     /// The monotonically increasing notification epoch reached its finite bound.
     NotificationEpochExhausted,
+    /// A phase after `Locate` arrived without the journey's first fact.
+    PackagePhaseWithoutLocate {
+        /// Exact request correlation.
+        correlation: CorrelationId,
+        /// First phase incorrectly observed.
+        observed: PackageCompilePhase,
+    },
+    /// A second request attempted to interleave with one active package journey.
+    PackagePhaseCorrelation {
+        /// Correlation currently owning the journey.
+        active: CorrelationId,
+        /// Correlation that attempted to enter a phase.
+        observed: CorrelationId,
+    },
+    /// One package phase skipped, repeated, or moved backward.
+    PackagePhaseOrder {
+        /// Exact journey correlation.
+        correlation: CorrelationId,
+        /// Last valid phase.
+        preceding: PackageCompilePhase,
+        /// Invalid next phase.
+        observed: PackageCompilePhase,
+    },
+    /// A second package request was submitted while the first retained task remained active.
+    PackageRequestInFlight {
+        /// Correlation already owned by the compiler task.
+        active: CorrelationId,
+        /// Newly submitted correlation that was not admitted.
+        observed: CorrelationId,
+    },
+}
+
+const fn package_phase_ordinal(phase: PackageCompilePhase) -> u8 {
+    match phase {
+        PackageCompilePhase::Locate => 0,
+        PackageCompilePhase::EnterSource => 1,
+        PackageCompilePhase::Authority => 2,
+        PackageCompilePhase::Lower => 3,
+        PackageCompilePhase::Publish => 4,
+        PackageCompilePhase::Reopen => 5,
+        PackageCompilePhase::Discover => 6,
+        PackageCompilePhase::Render => 7,
+    }
 }
 
 const fn projection_from_disposition(disposition: ApplicationDisposition) -> ProjectionState {
