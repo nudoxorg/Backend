@@ -26,7 +26,8 @@ use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths, Shut
 
 use crate::{
     LocalCompilerConfig, LocalCompilerOpenError, LocalCompilerPath, LocalCompilerScratch,
-    LocalPackageRootSet, package_source,
+    LocalPackageRootSet, PackageAuthorityConfiguration, PackageAuthorityError,
+    PackageAuthorityRequest, enter_package_authority, package_source,
     terminal::{compile_terminal, source_authority},
 };
 
@@ -34,6 +35,7 @@ use crate::{
 pub struct LocalCompiler<'path, 'scratch, 'cancel> {
     config: LocalCompilerConfig<'path, 'cancel>,
     package_roots: LocalPackageRootSet<'path>,
+    package_authority: PackageAuthorityConfiguration<'path>,
     publisher: DurablePublisher,
     scratch: &'scratch mut LocalCompilerScratch,
 }
@@ -71,6 +73,31 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         limits: PublicationLimits,
         scratch: &'scratch mut LocalCompilerScratch,
     ) -> Result<Self, LocalCompilerOpenError> {
+        Self::create_with_package_authority(
+            config,
+            package_roots,
+            PackageAuthorityConfiguration::UNAVAILABLE,
+            limits,
+            scratch,
+        )
+    }
+
+    /// Creates a durable compiler with explicit package roots and sidecar authority producers.
+    ///
+    /// The configuration is borrowed for the compiler owner's complete lifetime. Package work
+    /// therefore cannot outlive a checker, oracle, JDK, or rust-analyzer configuration it uses.
+    /// C and C++ continue to use the driver's direct libclang authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same exact path or publisher terminal as [`Self::create`].
+    pub fn create_with_package_authority(
+        config: LocalCompilerConfig<'path, 'cancel>,
+        package_roots: LocalPackageRootSet<'path>,
+        package_authority: PackageAuthorityConfiguration<'path>,
+        limits: PublicationLimits,
+        scratch: &'scratch mut LocalCompilerScratch,
+    ) -> Result<Self, LocalCompilerOpenError> {
         for (path, role) in [
             (config.artifact_directory, LocalCompilerPath::Artifacts),
             (config.journal_directory, LocalCompilerPath::Journal),
@@ -86,6 +113,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         Ok(Self {
             config,
             package_roots,
+            package_authority,
             publisher,
             scratch,
         })
@@ -193,6 +221,38 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 timeout: *timeout,
             }
         })?;
+        self.compile_prepared_and_publish(
+            request,
+            source,
+            declaration_scope,
+            toolchain,
+            authority,
+            CompileControl {
+                deadline,
+                cancelled: self.config.control.cancelled,
+            },
+            progress,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::result_large_err,
+        reason = "the prepared boundary keeps one source, toolchain, permit, scope, and authority transaction coherent through publication"
+    )]
+    fn compile_prepared_and_publish<Progress>(
+        &mut self,
+        request: ApplicationCompilerRequest<'_>,
+        _source: SourceAuthority,
+        declaration_scope: DeclarationScope<'_>,
+        toolchain: ToolchainSelection<'_>,
+        authority: compiler_driver::SemanticAuthorityInput<'_>,
+        control: CompileControl<'_>,
+        progress: &mut Progress,
+    ) -> Result<GeneratedArtifact, CompilerTerminal>
+    where
+        Progress: FnMut(PackageCompilePhase),
+    {
         progress(PackageCompilePhase::Lower);
         let compiled = compile_fused_semantic(
             CompileRequest {
@@ -202,10 +262,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 declaration_scope,
                 toolchain,
                 authority,
-                control: CompileControl {
-                    deadline,
-                    cancelled: self.config.control.cancelled,
-                },
+                control,
             },
             CompileScratch {
                 diagnostic_output: &mut self.scratch.diagnostic_output,
@@ -403,32 +460,49 @@ impl CompilerCapability for LocalCompiler<'_, '_, '_> {
             stage: request.target.stage,
             source,
         };
-        match request.target.profile {
-            compiler_vocabulary::LanguageProfile::C(_)
-            | compiler_vocabulary::LanguageProfile::Cxx(_) => self.compile_scoped_and_publish(
-                application_request,
-                scope,
-                compiler_driver::SemanticAuthorityInput::None,
-                progress,
-            ),
-            compiler_vocabulary::LanguageProfile::Rust(_)
-            | compiler_vocabulary::LanguageProfile::TypeScript(_)
-            | compiler_vocabulary::LanguageProfile::Python(_)
-            | compiler_vocabulary::LanguageProfile::Go(_)
-            | compiler_vocabulary::LanguageProfile::Java(_)
-            | compiler_vocabulary::LanguageProfile::CSharp(_) => {
-                let _ = (
-                    resolved.package_root,
-                    resolved.source_path,
-                    application_request,
-                    scope,
-                );
-                Err(CompilerTerminal::Unavailable {
-                    language: request.target.profile.language(),
-                    stage: request.target.stage,
-                })
+        let source_authority = request_source(application_request).map_err(source_terminal)?;
+        let toolchain = self
+            .toolchain(application_request)
+            .map_err(|cause| toolchain_terminal(source_authority, application_request, cause))?;
+        let deadline = self.config.control.deadline().map_err(|timeout| {
+            CompilerTerminal::DeadlineConstruction {
+                source: source_authority,
+                language: application_request.profile.language(),
+                stage: application_request.stage,
+                timeout: *timeout,
             }
-        }
+        })?;
+        let control = CompileControl {
+            deadline,
+            cancelled: self.config.control.cancelled,
+        };
+        let authority = enter_package_authority(PackageAuthorityRequest {
+            package_root: &resolved.package_root,
+            source_path: &resolved.source_path,
+            source: &resolved.bytes,
+            profile: application_request.profile,
+            toolchain,
+            control,
+            configuration: self.package_authority,
+        })
+        .map_err(|cause| {
+            package_authority_terminal(
+                target,
+                application_request,
+                source_authority,
+                toolchain,
+                cause,
+            )
+        })?;
+        self.compile_prepared_and_publish(
+            application_request,
+            source_authority,
+            scope,
+            toolchain,
+            authority.input(),
+            control,
+            progress,
+        )
     }
 }
 
@@ -510,6 +584,124 @@ fn request_source(request: ApplicationCompilerRequest<'_>) -> Result<SourceAutho
         identity: ContentId::<SourceFactDomain>::from_canonical_bytes(request.source.as_bytes()),
         byte_len,
     })
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "the public compiler terminal retains one bounded cold authority diagnostic"
+)]
+fn package_authority_terminal(
+    target: ContentId<heart_identity::CompilationTargetDomain>,
+    request: ApplicationCompilerRequest<'_>,
+    source: SourceAuthority,
+    toolchain: ToolchainSelection<'_>,
+    cause: PackageAuthorityError,
+) -> CompilerTerminal {
+    match cause {
+        PackageAuthorityError::Cancelled { .. } => CompilerTerminal::PackageCancelled {
+            target,
+            phase: PackageCompilePhase::Authority,
+        },
+        PackageAuthorityError::AdapterUnavailable { .. }
+        | PackageAuthorityError::CSharpProducerUnavailable { .. } => {
+            CompilerTerminal::Unavailable {
+                language: request.profile.language(),
+                stage: request.stage,
+            }
+        }
+        PackageAuthorityError::ToolchainUnavailable { tool, .. } => CompilerTerminal::Toolchain {
+            source,
+            language: request.profile.language(),
+            stage: request.stage,
+            selected: tool,
+            configured: None,
+        },
+        PackageAuthorityError::Deadline { .. } => compiler_attempt_terminal(
+            request,
+            source,
+            toolchain,
+            interface_core::CompilerCause::DeadlineExceeded { diagnostic: None },
+        ),
+        cause => {
+            let (phase, class) = package_authority_projection(&cause);
+            compiler_attempt_terminal(
+                request,
+                source,
+                toolchain,
+                interface_core::CompilerCause::Authority {
+                    phase,
+                    class,
+                    diagnostic: None,
+                },
+            )
+        }
+    }
+}
+
+fn compiler_attempt_terminal(
+    request: ApplicationCompilerRequest<'_>,
+    source: SourceAuthority,
+    toolchain: ToolchainSelection<'_>,
+    cause: interface_core::CompilerCause,
+) -> CompilerTerminal {
+    let ToolchainSelection::ResolvedNative(resolved) = toolchain else {
+        return CompilerTerminal::Toolchain {
+            source,
+            language: request.profile.language(),
+            stage: request.stage,
+            selected: match toolchain {
+                ToolchainSelection::ExplicitlyUnavailable { tool } => tool,
+                ToolchainSelection::ResolvedNative(_) => unreachable!(),
+            },
+            configured: None,
+        };
+    };
+    let recipe = compiler_vocabulary::CompileRecipeFact::derive(
+        request.profile,
+        request.stage,
+        resolved.tool,
+        source.identity,
+        resolved.identity,
+    );
+    CompilerTerminal::Compile {
+        attempted: interface_core::CompilerAttempt {
+            source,
+            recipe: recipe.identity,
+        },
+        cause,
+    }
+}
+
+const fn package_authority_projection(
+    cause: &PackageAuthorityError,
+) -> (
+    compiler_vocabulary::AuthorityPhase,
+    compiler_vocabulary::AuthorityDiagnosticClass,
+) {
+    use compiler_vocabulary::{AuthorityDiagnosticClass as Class, AuthorityPhase as Phase};
+
+    match cause {
+        PackageAuthorityError::SourceOutsidePackage { .. }
+        | PackageAuthorityError::TypeScriptEntryPath { .. }
+        | PackageAuthorityError::RustToolchainExecutableMismatch { .. } => {
+            (Phase::Open, Class::Binding)
+        }
+        PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),
+        PackageAuthorityError::PythonPyrefly(_) => (Phase::TypeCheck, Class::Type),
+        PackageAuthorityError::RustProject(_) | PackageAuthorityError::GoOracle(_) => {
+            (Phase::Resolve, Class::Authority)
+        }
+        PackageAuthorityError::TypeScript(_) => (Phase::TypeCheck, Class::Authority),
+        PackageAuthorityError::JavaHarness(_)
+        | PackageAuthorityError::ImageTooLarge { .. }
+        | PackageAuthorityError::ToolchainUnavailable { .. }
+        | PackageAuthorityError::Cancelled { .. }
+        | PackageAuthorityError::Deadline { .. }
+        | PackageAuthorityError::AdapterUnavailable { .. }
+        | PackageAuthorityError::CSharpProducerUnavailable { .. } => {
+            (Phase::Open, Class::Authority)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

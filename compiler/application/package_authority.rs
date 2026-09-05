@@ -47,6 +47,22 @@ pub struct PackageAuthorityConfiguration<'config> {
     pub maximum_image_bytes: usize,
 }
 
+impl PackageAuthorityConfiguration<'static> {
+    /// Explicit absence of every sidecar authority producer.
+    ///
+    /// C and C++ remain usable because libclang is entered directly by the
+    /// driver. Every other package profile reaches a typed unavailable
+    /// terminal unless its caller selects a configured authority table.
+    pub const UNAVAILABLE: Self = Self {
+        typescript: None,
+        python: None,
+        rust: None,
+        go: None,
+        java: None,
+        maximum_image_bytes: 0,
+    };
+}
+
 /// Explicit Rust project authority inputs that cannot be inferred from source
 /// text or a native executable selection alone.
 #[derive(Clone, Copy, Debug)]
@@ -162,6 +178,7 @@ impl PackageAuthorityOwner<'_> {
                 project,
                 maximum_source_bytes,
                 features,
+                ..
             } => SemanticAuthorityInput::Rust {
                 project,
                 maximum_source_bytes: *maximum_source_bytes,
@@ -349,7 +366,7 @@ pub fn enter_package_authority<'request, 'config>(
                         HarnessRequest {
                             sources: &source,
                             classpath: configuration.classpath,
-                            release: profile,
+                            release: java_authority_release(profile),
                         },
                         &mut image,
                     )
@@ -383,6 +400,18 @@ pub fn enter_package_authority<'request, 'config>(
         PackageAuthorityStage::Admission,
     )?;
     Ok(owner)
+}
+
+const fn java_authority_release(
+    release: compiler_vocabulary::JavaRelease,
+) -> compiler_languages_java::JavaRelease {
+    match release {
+        compiler_vocabulary::JavaRelease::Java8 => compiler_languages_java::JavaRelease::Java8,
+        compiler_vocabulary::JavaRelease::Java11 => compiler_languages_java::JavaRelease::Java11,
+        compiler_vocabulary::JavaRelease::Java17 => compiler_languages_java::JavaRelease::Java17,
+        compiler_vocabulary::JavaRelease::Java21 => compiler_languages_java::JavaRelease::Java21,
+        compiler_vocabulary::JavaRelease::Java25 => compiler_languages_java::JavaRelease::Java25,
+    }
 }
 
 fn checkpoint(
@@ -636,7 +665,7 @@ mod tests {
     #[test]
     fn cancellation_is_retained_before_any_adapter_admission() {
         let cancelled = AtomicBool::new(true);
-        let error = enter_package_authority(PackageAuthorityRequest {
+        let error = match enter_package_authority(PackageAuthorityRequest {
             package_root: Path::new("/packages/example"),
             source_path: Path::new("/packages/example/main.c"),
             source: b"int main(void) { return 0; }",
@@ -647,8 +676,10 @@ mod tests {
                 cancelled: &cancelled,
             },
             configuration: configuration(),
-        })
-        .expect_err("cancelled work cannot expose even a direct authority owner");
+        }) {
+            Ok(_) => panic!("cancelled work cannot expose even a direct authority owner"),
+            Err(error) => error,
+        };
 
         assert!(matches!(
             error,

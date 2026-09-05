@@ -6,6 +6,7 @@
 mod compiler;
 mod config;
 mod documentation;
+mod package_authority;
 mod package_source;
 mod terminal;
 
@@ -24,6 +25,11 @@ pub use documentation::{
     DocumentationProjectionError, DocumentationReference, DocumentationRelation,
     DocumentationRelations, DocumentationSession, DocumentationSessionView, DocumentationTarget,
     DocumentationTextPart, DocumentationType, DocumentationTypeView,
+};
+pub use package_authority::{
+    JavaPackageAuthorityConfiguration, PackageAuthorityConfiguration, PackageAuthorityError,
+    PackageAuthorityOwner, PackageAuthorityRequest, PackageAuthorityStage,
+    RustPackageAuthorityConfiguration, enter_package_authority,
 };
 pub use package_source::MAX_LOCAL_PACKAGE_SOURCE_BYTES;
 pub use terminal::{LocalCompilerOpenError, LocalCompilerPath};
