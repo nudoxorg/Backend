@@ -830,6 +830,22 @@ fn lane_terminal(fact: usize, name_len: usize, fault: FactFault) -> GoCollectErr
     })
 }
 
+/// Admission fold for metadata that already names an emitted fact ordinal.
+/// A metadata rejection belongs to that owner, not to the current append
+/// cursor, so its portable context remains stable even after later passes.
+fn lane_terminal_ordinal(fact: u32, name_len: usize, fault: FactFault) -> GoCollectError {
+    let fact = match usize::try_from(fact) {
+        Ok(value) => value,
+        Err(_) => {
+            return terminal(ProjectionFault::IndexCapacity {
+                phase: GoProjectionIndexPhase::FactOrdinal,
+                observed: u64::from(fact),
+            });
+        }
+    };
+    lane_terminal(fact, name_len, fault)
+}
+
 /// Admits one fact and returns its proven backward ordinal.
 fn push<'source>(
     facts: &mut FactSet<'source>,
@@ -1272,7 +1288,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 }),
                 type_parameters,
             )
-            .map_err(|fault| lane_terminal(self.facts.len(), declaration.name.len(), fault))?;
+            .map_err(|fault| lane_terminal_ordinal(type_ordinal, declaration.name.len(), fault))?;
         Ok(())
     }
 
@@ -1513,7 +1529,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         {
             self.facts
                 .mark_documentation_captured(owner)
-                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))?;
+                .map_err(|fault| lane_terminal_ordinal(owner, 0, fault))?;
         }
         for index in 0..self.image.doc_count() {
             let row = self.image.doc(index).map_err(GoCollectError::Image)?;
@@ -1537,7 +1553,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
             .ok_or_else(|| terminal(ProjectionFault::OrphanOwner { owner: row.owner }))?;
             push_doc_lines(self.facts, owner, row.text)
-                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))?;
+                .map_err(|fault| lane_terminal_ordinal(owner, 0, fault))?;
         }
         Ok(())
     }
@@ -1644,7 +1660,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                         span,
                     },
                 )
-                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))?;
+                .map_err(|fault| lane_terminal_ordinal(owner, 0, fault))?;
         }
         Ok(())
     }
@@ -1740,7 +1756,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                         span,
                     },
                 )
-                .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))?;
+                .map_err(|fault| lane_terminal_ordinal(subject, 0, fault))?;
         }
         Ok(())
     }
@@ -2636,7 +2652,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         }
         self.facts
             .intern_entity_list(ordinals)
-            .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))
+            .map_err(|fault| lane_terminal_ordinal(owner, 0, fault))
     }
 }
 
@@ -2882,6 +2898,32 @@ mod tests {
             panic!("admission fault lost its exact Go context or pool operands");
         };
         assert_eq!((fact, name_len, used, requested, capacity), (17, 6, 3, 5, 7));
+    }
+
+    #[test]
+    fn metadata_admission_retains_its_known_owner_coordinate() {
+        let error = lane_terminal_ordinal(
+            23,
+            0,
+            FactFault::OccurrenceOwner {
+                owner: 23,
+                fact_count: 29,
+            },
+        );
+        let GoCollectError::Lowering(LoweringUnsupported::GoProjection {
+            fault: PortableGoProjectionFault::Admission {
+                fact: 23,
+                name_len: 0,
+                cause: compiler_vocabulary::ProjectionAdmissionFault::OccurrenceOwner {
+                    owner,
+                    fact_count,
+                },
+            },
+        }) = error
+        else {
+            panic!("metadata admission lost its known Go owner coordinate");
+        };
+        assert_eq!((owner, fact_count), (23, 29));
     }
 
     #[derive(Clone, Copy)]

@@ -16,7 +16,7 @@ pub use compiler_vocabulary::{LoweringUnsupported, NativeArtifactRole, NativeWor
 pub use database::{DatabaseCompileFailure, compile_database_translation_unit};
 pub use types::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, AuthorityFailureProjection,
-    AuthorityProfileMismatch, CSharpProjectionFault, ClangProjectionFault, CompileControl,
+    AuthorityProfileMismatch, ClangProjectionFault, CompileControl,
     CompileFailure, CompileOutput, CompileRecipeFact, CompileRequest, CompileScratch,
     CompiledFragment, CompiledIr, CompiledSemantic, DeclarationScope, FactFault, FactRejection,
     InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES, NativeDiagnostic, NativeTool, NativeWorkError,

@@ -430,13 +430,6 @@ pub enum CompileFailure<'diagnostic> {
         recipe: CompileRecipeFact,
         rejected: crate::types::FactRejection,
     },
-    /// C# projection rejected one exact authority fact before canonical admission.
-    #[error("{recipe:?} C# projection failed: {fault:?}")]
-    CSharpProjection {
-        source_identity: SourceIdentity,
-        recipe: CompileRecipeFact,
-        fault: crate::types::CSharpProjectionFault,
-    },
     /// Clang projection rejected one exact authority fact before canonical admission.
     #[error("{recipe:?} Clang projection failed: {fault:?}")]
     ClangProjection {

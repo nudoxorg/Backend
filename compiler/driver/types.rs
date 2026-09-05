@@ -16,7 +16,7 @@ pub use authority::{
 };
 pub use compile::{compile, compile_ir, compile_semantic};
 pub use lowering::{
-    CSharpProjectionFault, ClangProjectionFault, FactFault, FactRejection, ParentageState,
+    ClangProjectionFault, FactFault, FactRejection, ParentageState,
     SourceSpanFact, TypeChildLane,
 };
 pub(crate) use request::{NativeRecipe, SourceLease, WorkPermit, WorkStopped};

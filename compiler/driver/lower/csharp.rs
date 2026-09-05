@@ -61,7 +61,7 @@ use crate::lower::{
     EmissionExtension, FactSet, LEAF_PRODUCT, MAX_EMISSION_FACTS, MAX_REF_LIST_ELEMENTS,
     MAX_TYPE_CHILDREN, SemanticFact, StagedSourceSpan, portable_admission, push_fact,
 };
-use crate::types::{CSharpProjectionFault, FactFault, FactRejection};
+use crate::types::{FactFault, FactRejection};
 
 /// Exact rejection while lending source-bound Roslyn declaration facts.
 #[derive(Debug)]
@@ -81,8 +81,6 @@ pub(crate) enum CSharpCollectError {
     Lowering(LoweringUnsupported),
     /// Canonical admission rejected one exact fact; operands retained.
     Rejected(FactRejection),
-    /// Projection rejected one exact validated authority fact; operands retained.
-    Projection(CSharpProjectionFault),
 }
 
 /// One C# authority projection fault crossing the collector boundary.
@@ -107,6 +105,8 @@ enum ProjectionFault {
         observed: u64,
     },
     HeterogeneousArrayRank { first: u32, observed: u32 },
+    /// A non-void result had no authority spelling for its carrier fact.
+    ResultName { type_row: u32 },
     Admission {
         fact: u32,
         name_len: u32,
@@ -168,6 +168,11 @@ fn terminal(fault: ProjectionFault) -> CSharpCollectError {
         ProjectionFault::HeterogeneousArrayRank { first, observed } => {
             CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
                 fault: PortableCSharpProjectionFault::HeterogeneousArrayRank { first, observed },
+            })
+        }
+        ProjectionFault::ResultName { type_row } => {
+            CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+                fault: PortableCSharpProjectionFault::ResultName { type_row },
             })
         }
         ProjectionFault::Admission {
@@ -1164,8 +1169,14 @@ impl Signature {
             return Ok(());
         }
         // The result carrier belongs to the executable's key family: a
-        // `Parameter` fact named by the return type's written spelling.
-        let name = projection.spelling.unwrap_or(b"result");
+        // `Parameter` fact named by the return type's exact written spelling.
+        // An absent spelling is an authority projection fault, never a
+        // fabricated placeholder that could collide with a real parameter.
+        let name = projection.spelling.ok_or_else(|| {
+            terminal(ProjectionFault::ResultName {
+                type_row: return_type.ordinal(),
+            })
+        })?;
         let mut fact =
             SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT).typed(projection.record);
         for (target, label) in projection.children {
@@ -2462,6 +2473,85 @@ mod tests {
             panic!("admission fault lost its exact C# context or pool operands");
         };
         assert_eq!((fact, name_len, used, requested, capacity), (17, 6, 3, 5, 7));
+    }
+
+    #[test]
+    fn top_level_delegate_carriers_use_the_reserved_pending_anchor() -> Result<(), TestError> {
+        let source = b"class Widget {} delegate void D((int, string) value);";
+        let mut fix = Fixture::default();
+        let _widget = fix.class(b"demo.Widget", source);
+        let int_type = fix.named(b"System.Int32");
+        let string_type = fix.named(b"System.String");
+        let tuple_spelling = fix.atom(b"(int, string)");
+        let tuple_type = u32::try_from(fix.types.len()).map_err(|_| TestError::Num)?;
+        fix.types.push(TypeRow {
+            kind: KIND_TUPLE,
+            nullable: NULL_NONE,
+            has_return: 0,
+            spelling: Some(tuple_spelling),
+            children: vec![(None, int_type), (None, string_type)],
+        });
+        let delegate_name = fix.atom(b"D");
+        let value_name = fix.atom(b"value");
+        let (name_start, name_end) = Fixture::span_of(source, b"D");
+        fix.declarations.push(
+            Decl::new(5, delegate_name, None)
+                .with_param(ParamRow {
+                    ty: tuple_type,
+                    name: value_name,
+                    ref_kind: REF_VALUE,
+                })
+                .at(name_start, name_start, name_end),
+        );
+
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        // The class occupies fact ordinal zero. The ownerless delegate is
+        // therefore admitted at ordinal one; all rows built for its tuple
+        // parameter must retain that pending ordinal rather than borrowing
+        // the unrelated class at ordinal zero.
+        for ordinal in 0..3 {
+            if row(&view, ordinal)?.owner.raw != 1 {
+                return Err(TestError::Missing("reserved delegate anchor"));
+            }
+        }
+        if row(&view, 3)?.owner.raw != 0
+            || row(&view, 4)?.owner.raw != 1
+            || row(&view, 5)?.owner.raw != 2
+        {
+            return Err(TestError::Missing("delegate carrier ownership"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nonvoid_result_without_authority_spelling_is_not_fabricated() -> Result<(), TestError> {
+        let source = b"class Widget { object Run(); }";
+        let mut fix = Fixture::default();
+        let widget = fix.class(b"demo.Widget", source);
+        let missing_spelling = u32::try_from(fix.types.len()).map_err(|_| TestError::Num)?;
+        fix.types.push(TypeRow {
+            kind: 9,
+            nullable: NULL_NONE,
+            has_return: 0,
+            spelling: None,
+            children: Vec::new(),
+        });
+        let method = fix.method(widget, b"Run", Some(missing_spelling), source);
+        fix.declarations.push(method);
+
+        let Err(TestError::Collect(CSharpCollectError::Lowering(
+            LoweringUnsupported::CSharpProjection {
+                fault: PortableCSharpProjectionFault::ResultName { type_row },
+            },
+        ))) = lower(&fix, source)
+        else {
+            return Err(TestError::Missing("missing result spelling terminal"));
+        };
+        if type_row != missing_spelling {
+            return Err(TestError::Missing("result type coordinate"));
+        }
+        Ok(())
     }
 
     #[derive(Clone)]

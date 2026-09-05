@@ -12,7 +12,6 @@ use compiler_languages_clang::{
     DeclarationId as ClangDeclarationId, SourceSpan as ClangSourceSpan, SymbolIdentity,
     TypeId as ClangTypeId, TypeKind as ClangTypeKind, TypeQualifiers as ClangTypeQualifiers,
 };
-use compiler_languages_csharp::{ImageError, TypeRef as CSharpTypeRef};
 
 /// One closed authority-backed containment state for an emitted entity.
 ///
@@ -222,39 +221,6 @@ pub struct FactRejection {
     pub name_len: usize,
     /// Full typed rejection cause with every operand.
     pub cause: FactFault,
-}
-
-/// Exact C# projection failure retained across the compile terminal.
-#[derive(Debug)]
-pub enum CSharpProjectionFault {
-    /// The validated authority image rejected one row while it was lent.
-    Image(ImageError),
-    /// The recursive authority type graph exceeded its projection budget.
-    Depth,
-    /// A declaration name span did not name the bound source bytes.
-    NameSpan { start: u32, end: u32 },
-    /// A reference preceded its owning declaration.
-    OwnerOrder {
-        owner_start: u32,
-        reference_start: u32,
-    },
-    /// A foreign occurrence key could not be built from its spelling.
-    Foreign,
-    /// The bounded attribute lane exceeded its element capacity.
-    AttributeCapacity { spellings: usize },
-    /// A projection index exceeded its representable width.
-    IndexCapacity,
-    /// One rectangular-array authority row repeated non-identical element
-    /// coordinates.  Rank is a repetition of one element type, never a
-    /// lossy selection of the first child.
-    HeterogeneousArrayRank {
-        /// The first repeated element coordinate.
-        first: CSharpTypeRef,
-        /// The distinct coordinate observed later in the same rank row.
-        observed: CSharpTypeRef,
-    },
-    /// Canonical fact admission rejected the projected fact.
-    Fact(FactFault),
 }
 
 /// Exact Clang projection failure retained across the compile terminal.

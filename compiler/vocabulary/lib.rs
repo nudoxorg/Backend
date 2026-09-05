@@ -1804,6 +1804,8 @@ pub enum CSharpProjectionFault {
     },
     /// A rectangular-array row repeated distinct element references.
     HeterogeneousArrayRank { first: u32, observed: u32 },
+    /// A non-void result had no authority spelling for its carrier fact.
+    ResultName { type_row: u32 },
     /// Canonical fact admission rejected one exact projected fact.
     Admission {
         /// Zero-based fact ordinal that would have been occupied.
