@@ -39,6 +39,44 @@ pub(super) const NEIGHBORS_QUERY: &str = r#"
 }
 "#;
 
+/// GraphQL schema for lazy traversal of canonical semantic-image links.
+pub(super) const SEMANTIC_GRAPH_SCHEMA: &str = r#"
+schema { query: SemanticRootQuery }
+
+type SemanticRootQuery {
+  Entities: [SemanticEntity!]!
+}
+
+type SemanticEntity {
+  high: Int!
+  low: Int!
+  outgoing: [SemanticLink!]!
+}
+
+type SemanticLink {
+  entityHigh: Int!
+  entityLow: Int!
+  kind: Int!
+  confidence: Int!
+}
+"#;
+
+/// Fixed lazy operation executed by [`crate::SemanticTrustfallGraph::neighbors`].
+pub(super) const SEMANTIC_NEIGHBORS_QUERY: &str = r#"
+{
+  Entities {
+    high @filter(op: "=", value: ["$sourceHigh"])
+    low @filter(op: "=", value: ["$sourceLow"])
+    outgoing {
+      entityHigh @output
+      entityLow @output
+      kind @output
+      confidence @output
+    }
+  }
+}
+"#;
+
 #[cfg(test)]
 mod tests {
     use trustfall::Schema;

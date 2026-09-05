@@ -15,7 +15,9 @@ compiler-ir = { path = "../../../compiler/ir" }
 server-index-graph-vector = { path = "../graph-vector" }
 thiserror.workspace = true
 trustfall.workspace = true
-trustfall_core = "=0.8.1"
+trustfall_core.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true

@@ -5,32 +5,51 @@
 
 use std::{
     collections::BTreeMap,
+    convert::Infallible,
+    pin::Pin,
     sync::{Arc, OnceLock},
+    task::{Context, Poll},
 };
 
-use compiler_ir::{Confidence, EntityId, Ir, LinkKind, LinkTarget};
-use server_index_graph_vector::{GraphAuthority, PartitionId, ValidatedGraphView};
+use compiler_ir::{
+    Confidence, EntityId, Ir, LinkKind, LinkTarget, SemanticImageView, SemanticReader,
+};
+use futures_core::Stream;
+use futures_util::stream;
+use server_index_graph_vector::{
+    Cancellation, GraphAuthority, PartitionId, ValidatedGraphView,
+};
 use thiserror::Error;
 use trustfall::{
     FieldValue, Schema,
     provider::{
-        Adapter, AsVertex, ContextIterator, ContextOutcomeIterator, EdgeParameters,
-        ResolveEdgeInfo, ResolveInfo, Typename, VertexIterator, resolve_coercion_with,
-        resolve_neighbors_with, resolve_property_with, resolve_typename,
+        Adapter, AsVertex, AsyncBasicAdapter, AsyncContextOutcomeStream, AsyncContextStream,
+        AsyncNeighborStream, ContextIterator, ContextOutcomeIterator, EdgeParameters,
+        ResolveEdgeInfo, ResolveInfo, Typename, VertexIterator, async_helpers,
+        resolve_coercion_with, resolve_neighbors_with, resolve_property_with, resolve_typename,
     },
 };
 use trustfall_core::{
     frontend::{error::FrontendError, parse},
-    interpreter::{error::QueryArgumentsError, execution::interpret_ir},
+    interpreter::{
+        error::{ExecutionError, QueryArgumentsError}, execution::interpret_ir,
+        interpret_ir_async,
+    },
     ir::IndexedQuery,
     schema::error::InvalidSchemaError,
 };
 
-use crate::schema::{GRAPH_SCHEMA, NEIGHBORS_QUERY};
+use crate::schema::{
+    GRAPH_SCHEMA, NEIGHBORS_QUERY, SEMANTIC_GRAPH_SCHEMA, SEMANTIC_NEIGHBORS_QUERY,
+};
 
 const ENTITY_HALF_BITS: u32 = 16;
 static PARSED_GRAPH_SCHEMA: OnceLock<Result<Schema, TrustfallUpstreamDiagnostic>> = OnceLock::new();
 static PARSED_NEIGHBORS_QUERY: OnceLock<Result<Arc<IndexedQuery>, TrustfallUpstreamDiagnostic>> =
+    OnceLock::new();
+static PARSED_SEMANTIC_SCHEMA: OnceLock<Result<Schema, TrustfallUpstreamDiagnostic>> =
+    OnceLock::new();
+static PARSED_SEMANTIC_QUERY: OnceLock<Result<Arc<IndexedQuery>, TrustfallUpstreamDiagnostic>> =
     OnceLock::new();
 
 /// One typed graph fact returned by the synchronous Trustfall projection.
@@ -56,6 +75,110 @@ pub struct IrTrustfallHit {
     pub kind: LinkKind,
     /// Strongest compiler evidence retained for this logical edge.
     pub confidence: Confidence,
+}
+
+/// One canonical local link yielded by lazy Trustfall execution over a reopened semantic image.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticTrustfallHit {
+    /// Canonical neighboring declaration coordinate in the same image.
+    pub entity: EntityId,
+    /// Semantic relation retained by the compiler image.
+    pub kind: LinkKind,
+    /// Strongest compiler evidence retained for the relation.
+    pub confidence: Confidence,
+}
+
+type SemanticRows<'view> = Pin<
+    Box<
+        dyn Stream<
+                Item = Result<BTreeMap<Arc<str>, FieldValue>, ExecutionError<Infallible>>,
+            > + 'view,
+    >,
+>;
+
+/// Lazy bounded-memory result stream for a fixed semantic-image neighbor query.
+///
+/// The stream borrows both the validated image and cancellation authority. It owns only
+/// Trustfall's query pipeline; semantic rows and links are decoded from the image on demand.
+pub struct SemanticTrustfallStream<'view> {
+    rows: SemanticRows<'view>,
+    cancellation: &'view Cancellation,
+    done: bool,
+}
+
+impl Stream for SemanticTrustfallStream<'_> {
+    type Item = Result<SemanticTrustfallHit, TrustfallGraphError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
+        if self.cancellation.is_cancelled() {
+            self.done = true;
+            return Poll::Ready(Some(Err(TrustfallGraphError::Cancelled)));
+        }
+        match self.rows.as_mut().poll_next(context) {
+            Poll::Ready(Some(Ok(row))) => Poll::Ready(Some(decode_semantic_hit(&row))),
+            Poll::Ready(Some(Err(cause))) => {
+                self.done = true;
+                Poll::Ready(Some(Err(execution_error(cause))))
+            }
+            Poll::Ready(None) => {
+                self.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// Trustfall's async interpreter bound directly to one validated semantic image.
+pub struct SemanticTrustfallGraph<'view, 'bytes> {
+    image: &'view SemanticImageView<'bytes>,
+    cancellation: &'view Cancellation,
+}
+
+impl<'view, 'bytes: 'view> SemanticTrustfallGraph<'view, 'bytes> {
+    /// Borrows canonical semantic-image bytes and a cooperative cancellation authority.
+    #[must_use]
+    pub const fn new(
+        image: &'view SemanticImageView<'bytes>,
+        cancellation: &'view Cancellation,
+    ) -> Self {
+        Self {
+            image,
+            cancellation,
+        }
+    }
+
+    /// Starts a lazy fixed neighbor query without reconstructing graph rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed cancellation terminal before query setup, or a stable diagnostic if the
+    /// crate-owned schema, query, or arguments are rejected by Trustfall.
+    pub fn neighbors(
+        &self,
+        source: EntityId,
+    ) -> Result<SemanticTrustfallStream<'view>, TrustfallGraphError> {
+        if self.cancellation.is_cancelled() {
+            return Err(TrustfallGraphError::Cancelled);
+        }
+        let schema = parsed_semantic_schema()?;
+        let query = parsed_semantic_query(schema)?;
+        let adapter = Arc::new(BorrowedSemanticAdapter { image: self.image });
+        let arguments = Arc::new(source_arguments(source));
+        let rows = interpret_ir_async(adapter, query, arguments).map_err(|cause| {
+            TrustfallGraphError::UpstreamRejected {
+                diagnostic: TrustfallUpstreamDiagnostic::Arguments(argument_diagnostic(cause)),
+            }
+        })?;
+        Ok(SemanticTrustfallStream {
+            rows,
+            cancellation: self.cancellation,
+            done: false,
+        })
+    }
 }
 
 /// Allocation-free fixed Trustfall projection over the canonical IR itself.
@@ -131,6 +254,10 @@ pub enum TrustfallOutputField {
     EntityLow,
     /// Graph partition coordinate.
     Partition,
+    /// Compiler semantic-link kind.
+    LinkKind,
+    /// Compiler confidence lattice value.
+    Confidence,
 }
 
 /// Exact integral wire value rejected while decoding one fixed Trustfall output field.
@@ -153,6 +280,11 @@ pub enum TrustfallOutputCause {
     OutOfRange {
         /// Exact rejected signed or unsigned integer value.
         observed: TrustfallOutputNumber,
+    },
+    /// A bounded integer did not name a member of the compiler's closed vocabulary.
+    UnknownCode {
+        /// Rejected bounded integer.
+        observed: u16,
     },
 }
 
@@ -221,6 +353,12 @@ pub enum TrustfallGraphError {
         /// Closed stage and stable category retained from the upstream rejection.
         diagnostic: TrustfallUpstreamDiagnostic,
     },
+    /// Cooperative cancellation won before the next lazy result was decoded.
+    #[error("Trustfall semantic query was cancelled")]
+    Cancelled,
+    /// Trustfall reported an execution failure not attributable to this infallible image adapter.
+    #[error("Trustfall rejected lazy semantic query execution")]
+    ExecutionRejected,
     /// The caller's output cannot preserve every result from the immutable graph view.
     #[error("Trustfall graph output has {available} slots, required {required}")]
     InsufficientOutput {
@@ -300,6 +438,7 @@ impl<'view> TrustfallGraph<'view> {
         }
         let mut written = 0_usize;
         for row in rows {
+            let row = row.map_err(execution_error)?;
             let hit = decode_hit(&row, self.view.authority)?;
             insert_sorted(output, &mut written, hit);
         }
@@ -331,6 +470,14 @@ fn parsed_schema() -> Result<&'static Schema, TrustfallGraphError> {
 
 fn parsed_query(schema: &Schema) -> Result<Arc<IndexedQuery>, TrustfallGraphError> {
     cached_query(&PARSED_NEIGHBORS_QUERY, schema, NEIGHBORS_QUERY).map_err(upstream_error)
+}
+
+fn parsed_semantic_schema() -> Result<&'static Schema, TrustfallGraphError> {
+    cached_schema(&PARSED_SEMANTIC_SCHEMA, SEMANTIC_GRAPH_SCHEMA).map_err(upstream_error)
+}
+
+fn parsed_semantic_query(schema: &Schema) -> Result<Arc<IndexedQuery>, TrustfallGraphError> {
+    cached_query(&PARSED_SEMANTIC_QUERY, schema, SEMANTIC_NEIGHBORS_QUERY).map_err(upstream_error)
 }
 
 fn cached_schema<'schema>(
@@ -568,6 +715,160 @@ impl<'view> Adapter<'view> for BorrowedGraphAdapter<'view, '_> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum SemanticVertex {
+    Entity(EntityId),
+    Link {
+        entity: EntityId,
+        kind: LinkKind,
+        confidence: Confidence,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum SemanticProperty {
+    SourceHigh,
+    SourceLow,
+    EntityHigh,
+    EntityLow,
+    Kind,
+    Confidence,
+    Unknown,
+}
+
+impl SemanticProperty {
+    const fn from_name(name: &str) -> Self {
+        match name.as_bytes() {
+            b"high" => Self::SourceHigh,
+            b"low" => Self::SourceLow,
+            b"entityHigh" => Self::EntityHigh,
+            b"entityLow" => Self::EntityLow,
+            b"kind" => Self::Kind,
+            b"confidence" => Self::Confidence,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl Typename for SemanticVertex {
+    fn typename(&self) -> &'static str {
+        match self {
+            Self::Entity(_) => "SemanticEntity",
+            Self::Link { .. } => "SemanticLink",
+        }
+    }
+}
+
+struct BorrowedSemanticAdapter<'view, 'bytes> {
+    image: &'view SemanticImageView<'bytes>,
+}
+
+impl<'view, 'bytes: 'view> AsyncBasicAdapter<'view>
+    for BorrowedSemanticAdapter<'view, 'bytes>
+{
+    type Vertex = SemanticVertex;
+
+    fn resolve_starting_vertices(
+        &self,
+        edge_name: &str,
+        _parameters: &EdgeParameters,
+    ) -> AsyncNeighborStream<'view, Self::Vertex> {
+        if edge_name != "Entities" {
+            return Box::pin(stream::empty());
+        }
+        Box::pin(stream::iter(
+            self.image
+                .canonical_entities()
+                .map(|entity| SemanticVertex::Entity(entity.id)),
+        ))
+    }
+
+    fn resolve_property<Vertex: AsVertex<Self::Vertex> + 'view>(
+        &self,
+        contexts: AsyncContextStream<'view, Vertex>,
+        _type_name: &str,
+        property_name: &str,
+    ) -> AsyncContextOutcomeStream<'view, Vertex, FieldValue> {
+        let property = SemanticProperty::from_name(property_name);
+        async_helpers::resolve_property_with(contexts, move |vertex| match property {
+            SemanticProperty::SourceHigh => match vertex {
+                SemanticVertex::Entity(entity) => {
+                    FieldValue::Int64(i64::from(entity_high(*entity)))
+                }
+                SemanticVertex::Link { .. } => FieldValue::Null,
+            },
+            SemanticProperty::SourceLow => match vertex {
+                SemanticVertex::Entity(entity) => {
+                    FieldValue::Int64(i64::from(entity_low(*entity)))
+                }
+                SemanticVertex::Link { .. } => FieldValue::Null,
+            },
+            SemanticProperty::EntityHigh => match vertex {
+                SemanticVertex::Link { entity, .. } => {
+                    FieldValue::Int64(i64::from(entity_high(*entity)))
+                }
+                SemanticVertex::Entity(_) => FieldValue::Null,
+            },
+            SemanticProperty::EntityLow => match vertex {
+                SemanticVertex::Link { entity, .. } => {
+                    FieldValue::Int64(i64::from(entity_low(*entity)))
+                }
+                SemanticVertex::Entity(_) => FieldValue::Null,
+            },
+            SemanticProperty::Kind => match vertex {
+                SemanticVertex::Link { kind, .. } => {
+                    FieldValue::Int64(i64::from(link_kind_code(*kind)))
+                }
+                SemanticVertex::Entity(_) => FieldValue::Null,
+            },
+            SemanticProperty::Confidence => match vertex {
+                SemanticVertex::Link { confidence, .. } => {
+                    FieldValue::Int64(i64::from(confidence_code(*confidence)))
+                }
+                SemanticVertex::Entity(_) => FieldValue::Null,
+            },
+            SemanticProperty::Unknown => FieldValue::Null,
+        })
+    }
+
+    fn resolve_neighbors<Vertex: AsVertex<Self::Vertex> + 'view>(
+        &self,
+        contexts: AsyncContextStream<'view, Vertex>,
+        _type_name: &str,
+        edge_name: &str,
+        _parameters: &EdgeParameters,
+    ) -> AsyncContextOutcomeStream<'view, Vertex, AsyncNeighborStream<'view, Self::Vertex>> {
+        if edge_name != "outgoing" {
+            return async_helpers::resolve_neighbors_with(contexts, |_| Box::pin(stream::empty()));
+        }
+        let image = self.image;
+        async_helpers::resolve_neighbors_with(contexts, move |vertex| match *vertex {
+            SemanticVertex::Entity(source) => Box::pin(stream::iter(
+                image.links_from(source).filter_map(|(_, link)| {
+                    let LinkTarget::Local(entity) = link.target else {
+                        return None;
+                    };
+                    Some(SemanticVertex::Link {
+                        entity,
+                        kind: link.kind,
+                        confidence: link.confidence,
+                    })
+                }),
+            )),
+            SemanticVertex::Link { .. } => Box::pin(stream::empty()),
+        })
+    }
+
+    fn resolve_coercion<Vertex: AsVertex<Self::Vertex> + 'view>(
+        &self,
+        contexts: AsyncContextStream<'view, Vertex>,
+        _type_name: &str,
+        _coerce_to_type: &str,
+    ) -> AsyncContextOutcomeStream<'view, Vertex, bool> {
+        async_helpers::resolve_coercion_with(contexts, |_| false)
+    }
+}
+
 fn source_arguments(source: EntityId) -> BTreeMap<Arc<str>, FieldValue> {
     BTreeMap::from([
         (
@@ -593,6 +894,87 @@ fn decode_hit(
         partition: PartitionId::new(partition),
         entity: EntityId::new((u32::from(high) << ENTITY_HALF_BITS) | u32::from(low)),
     })
+}
+
+fn decode_semantic_hit(
+    row: &BTreeMap<Arc<str>, FieldValue>,
+) -> Result<SemanticTrustfallHit, TrustfallGraphError> {
+    let high = output_half(row, "entityHigh", TrustfallOutputField::EntityHigh)?;
+    let low = output_half(row, "entityLow", TrustfallOutputField::EntityLow)?;
+    let kind = output_half(row, "kind", TrustfallOutputField::LinkKind)?;
+    let confidence = output_half(row, "confidence", TrustfallOutputField::Confidence)?;
+    Ok(SemanticTrustfallHit {
+        entity: EntityId::new((u32::from(high) << ENTITY_HALF_BITS) | u32::from(low)),
+        kind: decode_link_kind(kind)?,
+        confidence: decode_confidence(confidence)?,
+    })
+}
+
+const fn link_kind_code(kind: LinkKind) -> u16 {
+    match kind {
+        LinkKind::Calls => 0,
+        LinkKind::MethodCall => 1,
+        LinkKind::TypeReference => 2,
+        LinkKind::Reads => 3,
+        LinkKind::Writes => 4,
+        LinkKind::Imports => 5,
+        LinkKind::Implements => 6,
+        LinkKind::Overrides => 7,
+        LinkKind::Reexports => 8,
+        LinkKind::Inherits => 9,
+        LinkKind::Documents => 10,
+    }
+}
+
+fn decode_link_kind(observed: u16) -> Result<LinkKind, TrustfallGraphError> {
+    match observed {
+        0 => Ok(LinkKind::Calls),
+        1 => Ok(LinkKind::MethodCall),
+        2 => Ok(LinkKind::TypeReference),
+        3 => Ok(LinkKind::Reads),
+        4 => Ok(LinkKind::Writes),
+        5 => Ok(LinkKind::Imports),
+        6 => Ok(LinkKind::Implements),
+        7 => Ok(LinkKind::Overrides),
+        8 => Ok(LinkKind::Reexports),
+        9 => Ok(LinkKind::Inherits),
+        10 => Ok(LinkKind::Documents),
+        _ => Err(TrustfallGraphError::InvalidOutputField {
+            field: TrustfallOutputField::LinkKind,
+            cause: TrustfallOutputCause::UnknownCode { observed },
+        }),
+    }
+}
+
+const fn confidence_code(confidence: Confidence) -> u16 {
+    match confidence {
+        Confidence::Syntactic => 0,
+        Confidence::Heuristic => 1,
+        Confidence::Indexed => 2,
+        Confidence::Imported => 3,
+        Confidence::Compiler => 4,
+    }
+}
+
+fn decode_confidence(observed: u16) -> Result<Confidence, TrustfallGraphError> {
+    match observed {
+        0 => Ok(Confidence::Syntactic),
+        1 => Ok(Confidence::Heuristic),
+        2 => Ok(Confidence::Indexed),
+        3 => Ok(Confidence::Imported),
+        4 => Ok(Confidence::Compiler),
+        _ => Err(TrustfallGraphError::InvalidOutputField {
+            field: TrustfallOutputField::Confidence,
+            cause: TrustfallOutputCause::UnknownCode { observed },
+        }),
+    }
+}
+
+fn execution_error(cause: ExecutionError<Infallible>) -> TrustfallGraphError {
+    match cause {
+        ExecutionError::Adapter(never) => match never {},
+        _ => TrustfallGraphError::ExecutionRejected,
+    }
 }
 
 fn output_half(
@@ -670,8 +1052,10 @@ mod tests {
 
     use allocation_counter::{AllocationInfo, measure};
     use compiler_ir::{
-        BorrowedTree, Confidence, EntityVersion, IrBuilder, ItemKind, LinkKind, PayloadHash,
-        StableEntityId, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, Visibility,
+        BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts,
+        EntityVersion, FactAvailability, IrBuilder, ItemKind, LinkKind, OccurrenceAuthorityFacts,
+        ParentageAuthority, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
+        VariantFingerprint, Visibility,
     };
     use server_index_graph_vector::{GraphEdge, GraphRow, ProjectionId};
     use server_index_vocabulary::IndexSnapshotId;
@@ -712,18 +1096,28 @@ mod tests {
     fn canonical_ir_fast_path_reads_csr_without_graph_projection() {
         let versions = [
             EntityVersion {
-                stable: StableEntityId::from_raw([1; 16]),
-                payload: PayloadHash::from_raw([1; 16]),
+                family: DeclarationFamilyId::from_raw([1; 16]),
+                variant: VariantFingerprint::from_raw([2; 16]),
+                core_payload: CorePayloadHash::from_raw([3; 16]),
             },
             EntityVersion {
-                stable: StableEntityId::from_raw([2; 16]),
-                payload: PayloadHash::from_raw([2; 16]),
+                family: DeclarationFamilyId::from_raw([4; 16]),
+                variant: VariantFingerprint::from_raw([5; 16]),
+                core_payload: CorePayloadHash::from_raw([6; 16]),
             },
         ];
         let items = [b"source".as_slice(), b"target".as_slice()].map(|name| TreeItemInput {
             name,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                visibility: FactAvailability::Captured,
+                members: FactAvailability::Captured,
+                documentation: FactAvailability::Captured,
+                attributes: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
             parent: None,
             semantic_type: None,
             members: &[],
@@ -737,6 +1131,7 @@ mod tests {
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
             confidence: Confidence::Compiler,
+            authority: OccurrenceAuthorityFacts::default(),
             source: None,
         }];
         let mut builder = IrBuilder::new();

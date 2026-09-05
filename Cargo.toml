@@ -33,6 +33,7 @@ derive_more = { version = "2.1.1", default-features = false, features = ["debug"
 fearless_simd = { version = "0.7.0", default-features = false }
 flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 futures-core = { version = "0.3.31", default-features = false }
+futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
 gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false }
 gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false, features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
 loom = "0.7.2"
@@ -49,7 +50,8 @@ tracing = "=0.1.44"
 tracing-opentelemetry = "=0.33.0"
 tracing-subscriber = { version = "=0.3.23", features = ["registry"] }
 trybuild = "1.0.118"
-trustfall = "=0.8.1"
+trustfall = { git = "https://github.com/philocalyst/trustfall", rev = "a1c7c3a07fe58ea3a5312d7972f9bd297d036c73", features = ["async"] }
+trustfall_core = { git = "https://github.com/philocalyst/trustfall", rev = "a1c7c3a07fe58ea3a5312d7972f9bd297d036c73", features = ["async"] }
 ureq = "=3.4.0"
 zerocopy = { version = "0.8.56", default-features = false, features = ["derive"] }
 

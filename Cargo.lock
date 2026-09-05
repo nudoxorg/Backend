@@ -439,6 +439,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-stream"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
+dependencies = [
+ "async-stream-impl",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "async-stream-impl"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "async-task"
 version = "4.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7668,6 +7690,8 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "compiler-ir",
+ "futures-core",
+ "futures-util",
  "server-index-graph-vector",
  "server-index-vocabulary",
  "thiserror 2.0.20",
@@ -7680,6 +7704,7 @@ name = "server-index-vocabulary"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "compiler-ir",
  "heart-identity",
 ]
 
@@ -8822,10 +8847,12 @@ checksum = "b40688ea6389c8171614b25491f71d4a27946e0c7ce2da1c6de27e25abf1a0ae"
 [[package]]
 name = "trustfall"
 version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2c4d6f50f158998ff48a905a4f12e918b9dfd1274c0711c0f4485d8f7ff015e"
+source = "git+https://github.com/philocalyst/trustfall?rev=a1c7c3a07fe58ea3a5312d7972f9bd297d036c73#a1c7c3a07fe58ea3a5312d7972f9bd297d036c73"
 dependencies = [
  "anyhow",
+ "futures-core",
+ "futures-util",
+ "thiserror 2.0.20",
  "trustfall_core",
  "trustfall_derive",
 ]
@@ -8833,25 +8860,26 @@ dependencies = [
 [[package]]
 name = "trustfall_core"
 version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "363322af9d4d04fb0e298d8e9f97d9ef316a796f6f4e5f241060ad50a07d0334"
+source = "git+https://github.com/philocalyst/trustfall?rev=a1c7c3a07fe58ea3a5312d7972f9bd297d036c73#a1c7c3a07fe58ea3a5312d7972f9bd297d036c73"
 dependencies = [
  "async-graphql-parser",
  "async-graphql-value",
- "itertools 0.13.0",
+ "async-stream",
+ "futures-core",
+ "futures-util",
+ "itertools 0.14.0",
  "maplit",
  "regex",
  "serde",
  "serde_json",
  "smallvec",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "trustfall_derive"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fb14eb4f23b3b669d232a5c7d2b3d6c89ad9e15be1cbdd2c1e14d87d62569ec"
+source = "git+https://github.com/philocalyst/trustfall?rev=a1c7c3a07fe58ea3a5312d7972f9bd297d036c73#a1c7c3a07fe58ea3a5312d7972f9bd297d036c73"
 dependencies = [
  "proc-macro2",
  "quote",

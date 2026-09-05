@@ -3,14 +3,15 @@
 //! Callers compose capabilities through explicit authority, ownership, and failure values.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-//! Synchronous Trustfall projection over a validated borrowed graph view.
+//! Trustfall projections over validated borrowed graph and semantic-image facts.
 
 mod graph;
 mod schema;
 
 pub use graph::{
-    IrTrustfallGraph, IrTrustfallHit, TrustfallArgumentDiagnostic, TrustfallGraph,
-    TrustfallGraphError, TrustfallHit, TrustfallOutputCause, TrustfallOutputField,
-    TrustfallOutputNumber, TrustfallQueryDiagnostic, TrustfallSchemaDiagnostic, TrustfallTerminal,
+    IrTrustfallGraph, IrTrustfallHit, SemanticTrustfallGraph, SemanticTrustfallHit,
+    SemanticTrustfallStream, TrustfallArgumentDiagnostic, TrustfallGraph, TrustfallGraphError,
+    TrustfallHit, TrustfallOutputCause, TrustfallOutputField, TrustfallOutputNumber,
+    TrustfallQueryDiagnostic, TrustfallSchemaDiagnostic, TrustfallTerminal,
     TrustfallUpstreamDiagnostic,
 };
