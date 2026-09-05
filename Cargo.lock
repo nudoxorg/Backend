@@ -1275,6 +1275,10 @@ version = "0.1.0"
 dependencies = [
  "compiler-driver",
  "compiler-ir",
+ "compiler-languages-go",
+ "compiler-languages-java",
+ "compiler-languages-python",
+ "compiler-languages-rust",
  "compiler-languages-typescript",
  "compiler-publication",
  "compiler-registry",

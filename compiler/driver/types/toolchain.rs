@@ -32,6 +32,14 @@ impl<'path> Deref for ResolvedToolchain<'path> {
     }
 }
 
+/// Exposes the already-validated executable path without granting a second
+/// mutable or ambient tool-resolution route.
+impl AsRef<Path> for ResolvedToolchain<'_> {
+    fn as_ref(&self) -> &Path {
+        self.executable
+    }
+}
+
 /// Rejection while binding an explicit executable to its version provenance.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum ToolchainResolutionError {

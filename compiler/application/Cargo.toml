@@ -18,11 +18,13 @@ compiler-vocabulary = { path = "../vocabulary" }
 server-journal = { path = "../../server/journal" }
 heart-identity = { path = "../../heart/identity" }
 compiler-ir = { path = "../ir" }
+compiler-languages-go = { path = "../languages/go" }
+compiler-languages-java = { path = "../languages/java" }
+compiler-languages-python = { path = "../languages/python" }
+compiler-languages-rust = { path = "../languages/rust" }
+compiler-languages-typescript = { path = "../languages/typescript" }
 thiserror.workspace = true
 interface-core = { path = "../../interface/core" }
-
-[dev-dependencies]
-compiler-languages-typescript = { path = "../languages/typescript" }
 
 [lints]
 workspace = true
