@@ -93,7 +93,7 @@ internal static class SourceLoader
         var targetFramework = TargetFrameworkMoniker();
 
         var parseOptions = new CSharpParseOptions(
-            LanguageVersion.Preview,
+            options.LanguageVersion,
             // Without this the binder discards doc comments outright and
             // GetDocumentationCommentXml returns empty for every symbol —
             // which would look exactly like "this package has no docs".

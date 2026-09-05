@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 
 namespace Nudox.Oracle;
 
@@ -135,6 +136,9 @@ internal sealed record OracleOptions
     /// <summary>Whether stdout or <c>--out</c> receives a binary authority image.</summary>
     public bool AuthorityImage { get; init; }
 
+    /// <summary>The closed C# language version used by Roslyn's parser.</summary>
+    public required LanguageVersion LanguageVersion { get; init; }
+
     /// <summary>Exact C# source file whose raw bytes bind a binary authority image.</summary>
     public string? SourceBinding { get; init; }
 
@@ -183,6 +187,7 @@ internal sealed record OracleOptions
           --out FILE            Write the JSON document here instead of stdout.
           --authority-image     Emit the fixed binary authority image, not JSON.
           --source-binding FILE Bind the authority image to this configured source file.
+          --lang-version VER   C# language version (csharp-10 through csharp-14).
           --assembly-name NAME  Override the inferred assembly name.
           --ref-dir DIR         Reference assemblies (default: the running runtime's).
           --define SYM          Extra preprocessor symbol. Repeatable.
@@ -207,6 +212,7 @@ internal sealed record OracleOptions
         var implicitUsings = true;
         var authorityImage = false;
         string? sourceBinding = null;
+        var languageVersion = LanguageVersion.Preview;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -242,6 +248,9 @@ internal sealed record OracleOptions
                     break;
                 case "--authority-image":
                     authorityImage = true;
+                    break;
+                case "--lang-version":
+                    languageVersion = ParseLanguageVersion(Value("--lang-version"));
                     break;
                 case "--source-binding":
                     sourceBinding = Value("--source-binding");
@@ -304,6 +313,7 @@ internal sealed record OracleOptions
             Roots = roots,
             OutputPath = outPath,
             AuthorityImage = authorityImage,
+            LanguageVersion = languageVersion,
             SourceBinding = sourceBinding,
             AssemblyName = assemblyName,
             ReferenceDirectory = refDir,
@@ -313,4 +323,16 @@ internal sealed record OracleOptions
             IncludeNonPublic = includeNonPublic,
         };
     }
+
+    private static LanguageVersion ParseLanguageVersion(string raw)
+        => raw switch
+        {
+            "csharp-10" => LanguageVersion.CSharp10,
+            "csharp-11" => LanguageVersion.CSharp11,
+            "csharp-12" => LanguageVersion.CSharp12,
+            "csharp-13" => LanguageVersion.CSharp13,
+            "csharp-14" => LanguageVersion.CSharp14,
+            _ => throw new OracleUsageException(
+                $"unknown C# language version '{raw}' (expected csharp-10 through csharp-14)"),
+        };
 }
