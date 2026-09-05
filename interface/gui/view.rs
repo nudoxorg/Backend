@@ -57,8 +57,6 @@ const CODE_BACKGROUND: u32 = 0x000b_1017;
 const SUCCESS: u32 = 0x004a_de80;
 const WARNING: u32 = 0x00fb_bd23;
 const BACKDROP: u32 = 0x0000_0000;
-const PALETTE_BORDER: u32 = 0x0046_505f;
-const PALETTE_BACKGROUND: u32 = 0x0020_252c;
 const SELECTED_ROW: u32 = 0x0020_4050;
 const HOVERED_ROW: u32 = 0x001b_2531;
 const INTERACTION_DURATION: Duration = Duration::from_millis(90);
@@ -2843,8 +2841,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
             .p(px(16.0))
             .rounded(px(8.0))
             .border_1()
-            .border_color(rgb(PALETTE_BORDER))
-            .bg(rgb(PALETTE_BACKGROUND))
+            .border_color(rgb(BORDER))
+            .bg(rgb(PANEL_BACKGROUND))
             .child(div().text_lg().child(action_label(action)))
             .child(
                 div()
@@ -3177,8 +3175,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                     .flex_col()
                     .rounded(px(10.0))
                     .border_1()
-                    .border_color(rgb(PALETTE_BORDER))
-                    .bg(rgb(PALETTE_BACKGROUND))
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(PANEL_BACKGROUND))
                     .text_color(rgb(FOREGROUND))
                     .child(self.palette_header(query_label, cx))
                     .child(self.palette_rows(cx)),
