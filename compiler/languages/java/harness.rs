@@ -45,12 +45,12 @@ impl<'jdk> JdkToolchain<'jdk> {
 }
 
 impl JdkToolchain<'static> {
-    /// Reads and validates the pinned JDK named by `NUDOX_JDK`.
-    pub fn from_env() -> Result<Self, HarnessError> {
-        let root = env::var_os("NUDOX_JDK").ok_or(HarnessError::MissingEnvironment {
-            variable: "NUDOX_JDK",
-        })?;
-        let root = PathBuf::from(root);
+    /// Admits and owns one caller-selected absolute JDK root without reading
+    /// an environment variable when the authority is entered later.
+    pub fn from_owned_root(root: PathBuf) -> Result<Self, HarnessError> {
+        if !root.is_absolute() {
+            return Err(HarnessError::RelativeJdkRoot { root });
+        }
         for executable in ["javac", "java"] {
             let path = root.join("bin").join(executable);
             if !path.is_file() {
@@ -60,6 +60,14 @@ impl JdkToolchain<'static> {
         Ok(Self {
             root: Cow::Owned(root),
         })
+    }
+
+    /// Reads and validates the pinned JDK named by `NUDOX_JDK`.
+    pub fn from_env() -> Result<Self, HarnessError> {
+        let root = env::var_os("NUDOX_JDK").ok_or(HarnessError::MissingEnvironment {
+            variable: "NUDOX_JDK",
+        })?;
+        Self::from_owned_root(PathBuf::from(root))
     }
 }
 
@@ -330,6 +338,13 @@ fn run_command(
 /// Failures retain the command and bounded compiler diagnostics where applicable.
 #[derive(Debug, Error)]
 pub enum HarnessError {
+    /// A retained JDK root must be absolute so the host cannot consult an
+    /// ambient working directory when the authority session starts.
+    #[error("JDK root is not absolute: {root:?}")]
+    RelativeJdkRoot {
+        /// Rejected caller-supplied root.
+        root: PathBuf,
+    },
     /// The environment variable was not set.
     #[error("environment variable {variable} is not set")]
     MissingEnvironment {
@@ -388,4 +403,21 @@ pub enum HarnessError {
         /// At most 64 KiB of stderr.
         stderr: String,
     },
+}
+
+#[cfg(test)]
+mod toolchain_tests {
+    use std::path::PathBuf;
+
+    use super::{HarnessError, JdkToolchain};
+
+    #[test]
+    fn owned_jdk_root_rejects_relative_path_before_executable_probe() {
+        let error = JdkToolchain::from_owned_root(PathBuf::from("jdk"))
+            .expect_err("relative JDK root must not enter host authority");
+        assert!(matches!(
+            error,
+            HarnessError::RelativeJdkRoot { root } if root == PathBuf::from("jdk")
+        ));
+    }
 }

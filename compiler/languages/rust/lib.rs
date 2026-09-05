@@ -41,6 +41,24 @@ pub struct RustToolchain {
 }
 
 impl RustToolchain {
+    /// Admits caller-selected absolute Rust compiler and sysroot paths
+    /// without running a discovery child or consulting ambient tool state.
+    pub fn from_paths(tool: PathBuf, sysroot: PathBuf) -> Result<Self, LoadError> {
+        if !tool.is_absolute() {
+            return Err(LoadError::RelativeTool { tool });
+        }
+        if !sysroot.is_absolute() {
+            return Err(LoadError::RelativeSysroot { sysroot });
+        }
+        if !tool.is_file() {
+            return Err(LoadError::InvalidTool { path: tool });
+        }
+        if !sysroot.is_dir() {
+            return Err(LoadError::InvalidSysroot { path: sysroot });
+        }
+        Ok(Self { tool, sysroot })
+    }
+
     /// Discovers the sysroot of one caller-selected Rust compiler.
     ///
     /// # Errors
@@ -69,6 +87,25 @@ impl RustToolchain {
 /// Failure to establish the native toolchain required by rust-analyzer HIR.
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
+    /// A relative compiler path would defer authority selection to ambient
+    /// process search state.
+    #[error("Rust compiler path is not absolute: {tool}")]
+    RelativeTool {
+        /// Rejected compiler path.
+        tool: PathBuf,
+    },
+    /// A relative sysroot path cannot be retained as host authority.
+    #[error("Rust sysroot path is not absolute: {sysroot}")]
+    RelativeSysroot {
+        /// Rejected sysroot path.
+        sysroot: PathBuf,
+    },
+    /// The explicit compiler path does not name a regular file.
+    #[error("configured Rust compiler is not a file: {path}")]
+    InvalidTool {
+        /// Exact unusable compiler path.
+        path: PathBuf,
+    },
     /// The selected compiler process could not be started.
     #[error("cannot run {tool} for Rust sysroot discovery: {source}")]
     SysrootQuery {
@@ -90,4 +127,21 @@ pub enum LoadError {
         /// Exact unusable path returned by the compiler.
         path: PathBuf,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{LoadError, RustToolchain};
+
+    #[test]
+    fn explicit_toolchain_rejects_relative_compiler_before_sysroot_admission() {
+        let error = RustToolchain::from_paths(PathBuf::from("rustc"), PathBuf::from("/sysroot"))
+            .expect_err("relative compiler must not enter host authority");
+        assert!(matches!(
+            error,
+            LoadError::RelativeTool { tool } if tool == PathBuf::from("rustc")
+        ));
+    }
 }

@@ -15,7 +15,7 @@ use compiler_languages_csharp::{
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
     CSharpAuthorityRequest, CSharpOracle,
 };
-use compiler_languages_go::{GoOracle, OracleError};
+use compiler_languages_go::{ConfiguredGoOracle, OracleError};
 use compiler_languages_java::harness::{
     Harness, HarnessError, HarnessRequest, JavaSource, JdkToolchain,
 };
@@ -26,8 +26,7 @@ use compiler_languages_rust::{
     RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
 use compiler_languages_typescript::{
-    Checker as TypeScriptChecker, CheckerError as TypeScriptCheckerError,
-    Report as TypeScriptReport,
+    CheckerError as TypeScriptCheckerError, ExplicitTypeScriptChecker, Report as TypeScriptReport,
 };
 use compiler_vocabulary::{LanguageProfile, NativeTool, TypeScriptSource};
 use thiserror::Error;
@@ -38,13 +37,13 @@ use thiserror::Error;
 #[derive(Clone, Copy, Debug)]
 pub struct PackageAuthorityConfiguration<'config> {
     /// TypeScript checker that stages the explicitly selected package root.
-    pub typescript: Option<&'config TypeScriptChecker>,
+    pub typescript: Option<&'config ExplicitTypeScriptChecker>,
     /// Python pyrefly adapter that owns inferred-type and resolution facts.
     pub python: Option<&'config Pyrefly>,
     /// Rust Analyzer/Cargo authority configuration.
     pub rust: Option<RustPackageAuthorityConfiguration<'config>>,
     /// Go package oracle selected by the application owner.
-    pub go: Option<&'config GoOracle>,
+    pub go: Option<&'config ConfiguredGoOracle>,
     /// Roslyn helper producer selected by the application owner.
     pub csharp: Option<CSharpPackageAuthorityConfiguration<'config>>,
     /// Java doclet/JDK authority configuration.
@@ -675,6 +674,8 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use compiler_languages_go::{GoOracle, GoOracleConfiguration};
+    use compiler_languages_typescript::Checker as TypeScriptChecker;
     use compiler_vocabulary::{CSharpVersion, CStandard};
 
     use super::*;
@@ -689,6 +690,28 @@ mod tests {
             java: None,
             maximum_image_bytes: 0,
         }
+    }
+
+    #[test]
+    fn retained_package_configuration_accepts_only_explicit_ts_and_go_authorities() {
+        let typescript = TypeScriptChecker::default()
+            .with_node(Path::new("/configured/node").to_path_buf())
+            .expect("absolute Node runtime is admissible");
+        let go = GoOracle::default().with_configuration(
+            GoOracleConfiguration::go_toolchain(Path::new("/configured/go").to_path_buf())
+                .expect("absolute Go toolchain is admissible"),
+        );
+        let configuration = PackageAuthorityConfiguration {
+            typescript: Some(&typescript),
+            python: None,
+            rust: None,
+            go: Some(&go),
+            csharp: None,
+            java: None,
+            maximum_image_bytes: 0,
+        };
+        assert!(configuration.typescript.is_some());
+        assert!(configuration.go.is_some());
     }
 
     fn clang_toolchain() -> ResolvedToolchain<'static> {

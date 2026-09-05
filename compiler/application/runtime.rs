@@ -19,11 +19,11 @@ use std::{
 use arrayvec::ArrayVec;
 use compiler_driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
 use compiler_languages_csharp::{CSharpAuthorityConfiguration, CSharpOracle};
-use compiler_languages_go::GoOracle;
+use compiler_languages_go::ConfiguredGoOracle;
 use compiler_languages_java::harness::JdkToolchain;
 use compiler_languages_python::Pyrefly;
 use compiler_languages_rust::{RustFeatureControl, RustToolchain, SourceByteLimit};
-use compiler_languages_typescript::Checker as TypeScriptChecker;
+use compiler_languages_typescript::ExplicitTypeScriptChecker;
 use compiler_vocabulary::{Language, LanguageProfile, NativeTool, Stage};
 use heart_identity::{CompilationTargetDomain, ContentId, ToolchainDomain};
 use interface_core::{
@@ -244,13 +244,13 @@ pub struct LocalRuntimeCSharpAuthority {
 #[derive(Debug, Default)]
 pub struct LocalRuntimePackageAuthority {
     /// TypeScript checker authority.
-    pub typescript: Option<TypeScriptChecker>,
+    pub typescript: Option<ExplicitTypeScriptChecker>,
     /// Python Pyrefly authority.
     pub python: Option<Pyrefly>,
     /// Rust Analyzer/Cargo authority.
     pub rust: Option<LocalRuntimeRustAuthority>,
     /// Go package oracle authority.
-    pub go: Option<GoOracle>,
+    pub go: Option<ConfiguredGoOracle>,
     /// C# Roslyn helper authority.
     pub csharp: Option<LocalRuntimeCSharpAuthority>,
     /// Java JDK/doclet authority.

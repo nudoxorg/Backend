@@ -667,15 +667,6 @@ pub enum OracleError {
         #[source]
         source: std::io::Error,
     },
-    /// One explicitly configured oracle command could not be started.
-    #[error("configured Go oracle could not be started ({program}): {source}")]
-    ConfiguredSpawn {
-        /// Exact caller-admitted program spelling.
-        program: String,
-        /// Operating system spawn failure.
-        #[source]
-        source: std::io::Error,
-    },
     /// The child exited unsuccessfully, retaining its diagnostic tail.
     #[error("Go oracle exited with {status}; stderr tail: {stderr}")]
     Exit { status: String, stderr: String },
@@ -979,7 +970,7 @@ impl GoOracle {
         }
         let mut child = command.spawn().map_err(|source| {
             if configured {
-                OracleError::ConfiguredSpawn {
+                OracleError::Spawn {
                     program: command.get_program().to_string_lossy().into_owned(),
                     source,
                 }
