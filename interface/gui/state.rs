@@ -823,6 +823,7 @@ impl ShellState {
                 self.select_route(crate::navigation::surface_destination(surface));
             }
             CommandId::FocusAction(action) => self.select_action(action),
+            CommandId::OpenKeyboardMap => self.select_route(Route::Settings),
         }
         Some(command)
     }

@@ -8,6 +8,20 @@
 //! service remains the sole owner of validation, capability facts, execution,
 //! and terminal semantics. The fallback projection is useful to headless
 //! callers; the `real-gpui` feature adds the entity-backed [`GpuiShellView`].
+//!
+//! # Running the tests
+//!
+//! `cargo test -p interface-gui` runs the projection tests only. The view
+//! layer — native text input, surrogate and IME composition handling, palette
+//! keyboard identity, entity lifecycle and cancellation — sits behind the
+//! feature and needs it named:
+//!
+//! ```text
+//! cargo test -p interface-gui --features real-gpui
+//! ```
+//!
+//! A suite nobody runs is a suite that can stop compiling without anyone
+//! noticing, which is what had happened here.
 
 mod catalog;
 mod forms;
@@ -21,8 +35,6 @@ gpui::actions!(
     [
         /// Opens the keyboard-first command palette.
         OpenPalette,
-        /// Dismisses the visible command palette.
-        DismissPalette,
         /// Moves the palette selection down one visible row.
         SelectNextPaletteCommand,
         /// Moves the palette selection up one visible row.

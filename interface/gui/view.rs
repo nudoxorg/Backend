@@ -12,13 +12,13 @@ use crate::semantic_documents::project_generated_documents;
 use crate::{
     ApplicationInput, ApplicationReply, ApplicationService, ApplyError, CommandId,
     ConfirmPaletteCommand, DOCUMENT_ITEMS, DOCUMENT_PACKAGES, DiscoverPackages, DismissForm,
-    DismissPalette, DocumentFilter, DocumentKind, DocumentSearchRow, DocumentSearchScope,
-    FocusDocumentationSearch, FormError, FormField, FormState, KEY_GROUPS, KEYMAP,
-    NavigateDocumentBack, NavigateDocumentForward, NextFormField, OpenPalette, OpenSettings,
-    PaletteDirection, PreviousFormField, RemoveLibraryPackage, ResultLimit, Route,
-    SelectFirstPaletteCommand, SelectLastPaletteCommand, SelectNextPaletteCommand,
-    SelectNextPalettePage, SelectPreviousPaletteCommand, SelectPreviousPalettePage, ServiceAction,
-    ShellState, ToggleSidebar,
+    DocumentFilter, DocumentKind, DocumentSearchRow, DocumentSearchScope, FocusDocumentationSearch,
+    FormError, FormField, FormState, KEY_GROUPS, KEYMAP, NavigateDocumentBack,
+    NavigateDocumentForward, NextFormField, OpenPalette, OpenSettings, PaletteDirection,
+    PreviousFormField, RemoveLibraryPackage, ResultLimit, Route, SelectFirstPaletteCommand,
+    SelectLastPaletteCommand, SelectNextPaletteCommand, SelectNextPalettePage,
+    SelectPreviousPaletteCommand, SelectPreviousPalettePage, ServiceAction, ShellState,
+    ToggleSidebar,
 };
 use core::ops::Deref;
 use gpui::{
@@ -498,18 +498,6 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
     ) {
         self.search_active = false;
         self.state.navigate_document_forward();
-        cx.notify();
-    }
-
-    fn dismiss_palette(&mut self, _: &DismissPalette, window: &mut Window, cx: &mut Context<Self>) {
-        if self.state.navigation.palette.visible {
-            self.state.dismiss_palette();
-        } else if self.search_active {
-            self.search_active = false;
-        } else {
-            self.state.cancel_form();
-        }
-        window.focus(&self.focus, cx);
         cx.notify();
     }
 
@@ -1118,6 +1106,12 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
     }
 
     fn package_tree(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let empty = !self
+            .state
+            .documentation
+            .library_packages
+            .iter()
+            .any(|added| *added);
         div()
             .id("documentation-package-tree")
             .flex_1()
@@ -1125,6 +1119,11 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
             .flex_col()
             .gap(px(2.0))
             .overflow_y_scroll()
+            .when(empty, |tree| {
+                tree.child(empty_state(
+                    "Your library is empty. Use Discover packages to add one.",
+                ))
+            })
             .children(DOCUMENT_PACKAGES.iter().enumerate().filter_map(
                 |(package_index, package)| {
                     if !self.state.documentation.library_packages[package_index] {
@@ -1270,9 +1269,7 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                             .ml_auto()
                             .text_sm()
                             .text_color(rgb(METADATA_TEXT))
-                            .child(shortcut.apple)
-                            .child(" · ")
-                            .child(shortcut.other),
+                            .child(shortcut_label(shortcut)),
                     )
                 })
             })
@@ -1578,6 +1575,9 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                     })
                     .child(self.index_provenance_strip()),
             )
+            .when(row_count == 0, |search| {
+                search.child(empty_state("No matches. Try a shorter query, or widen the scope above."))
+            })
             .when(row_count != 0, |search| {
                 search.child(
                     uniform_list(
@@ -3357,9 +3357,7 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                                         .ml_auto()
                                         .text_sm()
                                         .text_color(rgb(METADATA_TEXT))
-                                        .child(shortcut.apple)
-                                        .child(" · ")
-                                        .child(shortcut.other),
+                                        .child(shortcut_label(shortcut)),
                                 )
                             });
                         if row_selected && this.state.motion == crate::MotionPreference::Standard {
@@ -3394,7 +3392,6 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> Render for GpuiShell
             .key_context(SHELL_CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::open_palette))
-            .on_action(cx.listener(Self::dismiss_palette))
             .on_action(cx.listener(Self::dismiss_form))
             .on_action(cx.listener(Self::select_next_palette_command))
             .on_action(cx.listener(Self::select_previous_palette_command))
@@ -3446,6 +3443,31 @@ impl<Compiler: CompilerCapability> Drop for GpuiShellView<Compiler> {
         {
             service.compiler.cancel_active();
         }
+    }
+}
+
+/// A quiet line standing in for a list with nothing in it.
+///
+/// Every list here rendered nothing at all when empty, which reads as a broken
+/// pane rather than an answer -- and removing the last library package makes
+/// the blank sidebar reachable.
+fn empty_state(message: &'static str) -> impl IntoElement {
+    div()
+        .px(px(10.0))
+        .py(px(8.0))
+        .text_sm()
+        .text_color(rgb(METADATA_TEXT))
+        .child(message)
+}
+
+/// Spells one accelerator for display, collapsing the platforms when they agree.
+fn shortcut_label(shortcut: crate::ShortcutFacts) -> String {
+    let apple = present_keystroke(shortcut.apple, true);
+    let other = present_keystroke(shortcut.other, false);
+    if apple == other {
+        apple
+    } else {
+        format!("{apple} · {other}")
     }
 }
 
@@ -3604,6 +3626,7 @@ const fn command_element_id(command: CommandId) -> u64 {
         CommandId::InspectSurface(crate::Surface::Vector) => 15,
         CommandId::InspectSurface(crate::Surface::Health) => 16,
         CommandId::FocusAction(action) => 100 + action_element_id(action),
+        CommandId::OpenKeyboardMap => 20,
     }
 }
 

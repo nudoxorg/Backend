@@ -14,9 +14,7 @@ use compiler_ir::{
     EntityId, FullSemanticImageError, LanguageProfile, SemanticDiscoveryError,
     SemanticDocumentError, SemanticImageCensus,
 };
-use interface_core::{
-    CorrelationId, SemanticImageAccessError, SemanticImageAuthority,
-};
+use interface_core::{CorrelationId, SemanticImageAccessError, SemanticImageAuthority};
 
 #[cfg(feature = "real-gpui")]
 use compiler_ir::{

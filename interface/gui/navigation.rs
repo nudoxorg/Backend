@@ -238,9 +238,11 @@ pub const ROUTES: [RouteFacts; 5] = [
         route: Route::Settings,
         label: "Settings",
         element_id: "route-settings",
+        // Raw keystrokes, spelled for display by the same presenter the
+        // keyboard map uses, so one shortcut has one source of text.
         shortcut: Some(ShortcutFacts {
-            apple: "⌘,",
-            other: "Ctrl ,",
+            apple: "cmd-,",
+            other: "ctrl-,",
         }),
     },
 ];
@@ -254,6 +256,8 @@ pub enum CommandId {
     InspectSurface(Surface),
     /// Focus one real typed application action's form.
     FocusAction(ServiceAction),
+    /// Reveal the keyboard map at the destination that renders it.
+    OpenKeyboardMap,
 }
 
 /// A closed action that the shell can expose without parsing a stringly command.
@@ -429,8 +433,10 @@ impl CommandPalette {
         let selected = self.selected_index().unwrap_or(0);
         let last = count - 1;
         let next = match direction {
-            PaletteDirection::Next => selected.saturating_add(1).min(last),
-            PaletteDirection::Previous => selected.saturating_sub(1),
+            // Wrapping, not clamping: the form-field walk a few files over
+            // already wraps with the same modular step.
+            PaletteDirection::Next => (selected + 1) % count,
+            PaletteDirection::Previous => (selected + count - 1) % count,
             PaletteDirection::First => 0,
             PaletteDirection::Last => last,
             PaletteDirection::NextPage => selected.saturating_add(PALETTE_PAGE_ROWS).min(last),
@@ -579,6 +585,15 @@ pub(crate) const fn command_facts(command: CommandId) -> CommandFacts {
             label: surface_facts(surface).label,
             shortcut: None,
         },
+        // The map is rendered on the settings page, so that is where the row
+        // takes a reader. It carries no accelerator of its own: the palette is
+        // how it is reached.
+        CommandId::OpenKeyboardMap => CommandFacts {
+            id: command,
+            destination: Route::Settings,
+            label: "Keyboard map",
+            shortcut: None,
+        },
         CommandId::FocusAction(action) => CommandFacts {
             id: command,
             destination: action_destination(action),
@@ -692,7 +707,7 @@ pub const SURFACES: [SurfaceFacts; 7] = [
     },
 ];
 
-const COMMAND_COUNT: usize = 25;
+const COMMAND_COUNT: usize = 26;
 
 const fn command_at_unfiltered(index: usize) -> Option<CommandId> {
     match index {
@@ -721,6 +736,7 @@ const fn command_at_unfiltered(index: usize) -> Option<CommandId> {
         22 => Some(CommandId::FocusAction(ServiceAction::ReleaseLocal)),
         23 => Some(CommandId::FocusAction(ServiceAction::PollExecution)),
         24 => Some(CommandId::FocusAction(ServiceAction::Cancel)),
+        25 => Some(CommandId::OpenKeyboardMap),
         _ => None,
     }
 }

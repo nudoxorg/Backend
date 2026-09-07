@@ -269,8 +269,10 @@ fn keyboard_shortcuts_and_status_destinations_are_closed_visible_facts() {
     let Some(shortcut) = ROUTES[4].shortcut else {
         return;
     };
-    assert_eq!(shortcut.apple, "⌘,");
-    assert_eq!(shortcut.other, "Ctrl ,");
+    // Raw keystrokes now, matching KEYMAP; the view spells them for display
+    // through one presenter so no pretty form is stored twice.
+    assert_eq!(shortcut.apple, "cmd-,");
+    assert_eq!(shortcut.other, "ctrl-,");
 
     let mut state = ShellState::default();
     state.select_palette_command(CommandId::InspectSurface(Surface::Health));

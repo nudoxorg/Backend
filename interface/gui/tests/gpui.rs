@@ -386,7 +386,8 @@ fn entity_palette_filters_typed_text_without_a_polling_owner(cx: &mut TestAppCon
 
     cx.simulate_keystrokes("backspace");
     cx.read_entity(&view, |view, _| {
-        assert_eq!(view.navigation.palette.result_count(), 25);
+        // Every command, now including the keyboard map.
+        assert_eq!(view.navigation.palette.result_count(), 26);
     });
 }
 
@@ -787,6 +788,64 @@ fn documentation_search_has_its_own_wide_ime_safe_query_boundary(cx: &mut TestAp
 }
 
 #[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn the_palette_reaches_the_keyboard_map_by_name(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+
+    cx.simulate_keystrokes("ctrl-k");
+    cx.simulate_input("keyboard");
+    cx.read_entity(&view, |view, _| {
+        assert!(view.navigation.palette.visible);
+        assert_eq!(
+            view.navigation.palette.result_count(),
+            1,
+            "typing the map's name should leave exactly one row"
+        );
+    });
+
+    cx.simulate_keystrokes("enter");
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(
+            view.navigation.route,
+            Route::Settings,
+            "the map is rendered on the settings page"
+        );
+        assert!(!view.navigation.palette.visible, "the palette closed");
+    });
+}
+
+#[gpui::test]
+fn palette_selection_wraps_at_both_ends(cx: &mut TestAppContext) {
+    // The form-field walk already wraps, so the palette clamping at the last
+    // row disagreed with the rest of the shell.
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+
+    cx.simulate_keystrokes("ctrl-k");
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(view.navigation.palette.selected_index(), Some(0));
+    });
+
+    cx.simulate_keystrokes("up");
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(
+            view.navigation.palette.selected_index(),
+            Some(view.navigation.palette.result_count() - 1),
+            "up from the first row reaches the last"
+        );
+    });
+
+    cx.simulate_keystrokes("down");
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(
+            view.navigation.palette.selected_index(),
+            Some(0),
+            "down from the last row comes back to the first"
+        );
+    });
+}
+
 #[gpui::test]
 fn every_documented_accelerator_is_really_bound(cx: &mut TestAppContext) {
     // The settings keyboard map stores the exact strings handed to

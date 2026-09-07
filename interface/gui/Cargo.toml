@@ -14,6 +14,10 @@ license.workspace = true
 default = []
 # The fallback state projection is always available. This feature gates only the
 # actual GPUI entity/view so dependency resolution can be measured independently.
+#
+# It also gates tests/gpui.rs, so `cargo test -p interface-gui` on its own
+# leaves the entire view layer untested:
+#     cargo test -p interface-gui --features real-gpui
 real-gpui = ["dep:gpui", "dep:gpui_platform"]
 
 [[bin]]
