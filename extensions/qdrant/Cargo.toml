@@ -1,0 +1,18 @@
+[package]
+name = "backend-extension-qdrant"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+backend-version = { path = "../../crates/version" }
+backend-execution = { path = "../../crates/execution" }
+backend-replication = { path = "../../crates/replication" }
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
