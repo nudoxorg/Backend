@@ -13,8 +13,7 @@ mod frame;
 mod human;
 mod index;
 mod json;
-/// Static MCP registry and lifecycle projection vocabulary.
-pub mod mcp_tools;
+pub mod mcp;
 mod source;
 
 pub use cli::{
@@ -24,7 +23,8 @@ pub use cli::{
 };
 pub use field::AdapterField;
 pub use frame::{
-    MAX_FRAME_BYTES, MAX_HEADER_LINE_BYTES, MAX_HEADER_LINES, read_frame, write_frame,
+    MAX_FRAME_BYTES, MAX_HEADER_LINE_BYTES, MAX_HEADER_LINES, read_frame, read_frame_bounded,
+    write_frame, write_frame_bounded,
 };
 pub use human::write_human;
 pub use index::{
@@ -32,11 +32,7 @@ pub use index::{
     UntrustedDocumentIdError, UntrustedSourceSpan, UntrustedSourceSpanAuthorityError,
     UntrustedSourceSpanError,
 };
-pub use json::{
-    CancellationTarget, InitializeParams, McpDecode, McpDecodeError, McpEnvelope, McpError,
-    McpLifecycle, McpReply, McpRequest, McpRequestId, decode_mcp, encode_cli_adapter_error,
-    encode_cli_reply, mcp_error, mcp_initialize, mcp_pong, mcp_reply, mcp_tools_list,
-};
+pub use json::{encode_cli_adapter_error, encode_cli_reply};
 pub use source::{
     CliCommand, SourceEncodingError, SourceIngressPhase, SourceIngressRole, SourceIoFact,
 };

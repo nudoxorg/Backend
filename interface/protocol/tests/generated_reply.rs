@@ -21,7 +21,7 @@ use interface_core::{
     DurableReceiptAuthority, GeneratedArtifact, GenerationAuthority, NativeIoFact, NativeIoPhase,
     PublicationAuthority, ReplyBody, SemanticImageAuthority, SourceAuthority,
 };
-use interface_protocol::{encode_cli_reply, mcp_reply};
+use interface_protocol::encode_cli_reply;
 use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
@@ -163,15 +163,9 @@ fn authority_failure_reply() -> Result<ApplicationReply, TestError> {
 }
 
 #[test]
-fn generated_reply_is_byte_for_byte_the_same_cli_body_and_mcp_structured_content()
--> Result<(), TestError> {
+fn generated_reply_projects_every_retained_artifact_fact() -> Result<(), TestError> {
     let cli: Value = serde_json::from_slice(&encode_cli_reply(generated_reply())?)?;
-    let request_id = Value::String(String::from("generated-request"));
-    let mcp = serde_json::to_value(mcp_reply(&request_id, generated_reply()))?;
-    let structured = &mcp["result"]["structuredContent"];
 
-    expect_projection("cli/mcp body parity", &cli, structured.clone())?;
-    expect_projection("mcp request id", &mcp["id"], request_id.clone())?;
     expect_projection(
         "generated correlation",
         &cli["correlation"],
@@ -366,17 +360,11 @@ fn compiler_terminal_keeps_typed_attempt_and_bounded_native_diagnostic() -> Resu
 }
 
 #[test]
-fn authority_terminal_keeps_class_count_and_primary_bytes_across_cli_and_mcp()
--> Result<(), TestError> {
+fn authority_terminal_keeps_class_count_and_primary_bytes() -> Result<(), TestError> {
     let reply = authority_failure_reply()?;
     let cli: Value = serde_json::from_slice(&encode_cli_reply(reply)?)?;
-    let request_id = Value::String(String::from("authority-request"));
-    let mcp = serde_json::to_value(mcp_reply(&request_id, authority_failure_reply()?))?;
-    let structured = &mcp["result"]["structuredContent"];
     let cause = &cli["diagnostic"]["detail"]["terminal"]["cause"];
 
-    expect_projection("authority cli/mcp parity", &cli, structured.clone())?;
-    expect_projection("authority request id", &mcp["id"], request_id)?;
     expect_projection(
         "authority correlation",
         &cli["correlation"],

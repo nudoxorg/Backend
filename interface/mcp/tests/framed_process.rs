@@ -1,28 +1,30 @@
-//! Exercises the `interface-mcp` tests framed-process contract through its observable boundary.
-//! The cases target malformed, partial, reordered, and resource-constrained behavior.
+//! Exercises the `interface-mcp` framed-process contract through its observable boundary.
+//! The cases target handshake, registry, tool content, malformed arguments, and frame bounds.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
+//!
+//! Every case drives the real `nudox-mcp` binary over real frames against a temporary workspace
+//! root with the compiler detached. Nothing here inspects an internal value: what is asserted is
+//! the text and JSON a client actually receives, because a renderer that is only tested through
+//! its own types can be wrong in exactly the way a reader would notice first.
+
 use std::{
     error::Error,
     fmt,
-    io::{self, BufReader, Write},
-    process::{ChildStdin, ChildStdout, Command, Stdio},
+    io::{self, BufRead as _, BufReader, Write},
+    path::PathBuf,
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
 };
 
-use interface_core::{CapabilityDomain, ContentId, GenerationId, IndexSnapshotId};
-use interface_protocol::{read_frame, write_frame};
-use serde::Serialize;
-use serde_json::Value;
+use interface_protocol::{read_frame_bounded, write_frame_bounded};
+use serde_json::{Value, json};
 
-// The shared corpus also exposes CLI argument construction for the sibling process test.
-#[allow(dead_code)]
-#[path = "../../protocol/tests/support/golden_corpus.rs"]
-mod golden_corpus;
+const RESPONSE_BOUND: usize = 4 * 1024 * 1024;
 
 #[derive(Debug)]
 enum TestError {
     Io(io::Error),
     Json(serde_json::Error),
-    Golden(golden_corpus::GoldenError),
+    Shape(String),
 }
 
 impl fmt::Display for TestError {
@@ -30,7 +32,7 @@ impl fmt::Display for TestError {
         match self {
             Self::Io(source) => source.fmt(formatter),
             Self::Json(source) => source.fmt(formatter),
-            Self::Golden(source) => source.fmt(formatter),
+            Self::Shape(detail) => formatter.write_str(detail),
         }
     }
 }
@@ -49,600 +51,393 @@ impl From<serde_json::Error> for TestError {
     }
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum ApplicationAction {
-    Generate,
-    Health,
-    RecoverLocal,
-    PollExecution,
-    ReleaseLocal,
+/// One live server process over a temporary workspace root with no compiler attached.
+struct Session {
+    child: Child,
+    input: BufReader<ChildStdout>,
+    output: ChildStdin,
+    root: PathBuf,
+    next_id: u64,
 }
 
-#[derive(Serialize)]
-enum JsonRpcVersion {
-    #[serde(rename = "2.0")]
-    Version2,
-}
+impl Session {
+    fn start(name: &str) -> Result<Self, TestError> {
+        let root = std::env::temp_dir().join(format!(
+            "nudox-mcp-{name}-{}-{}",
+            std::process::id(),
+            name.len()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_nudox-mcp"))
+            .env("NUDOX_DATA_ROOT", &root)
+            .env("NUDOX_MCP_DETACHED", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let output = child
+            .stdin
+            .take()
+            .ok_or_else(|| TestError::Shape("the child has no stdin".to_owned()))?;
+        let input = BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| TestError::Shape("the child has no stdout".to_owned()))?,
+        );
+        Ok(Self {
+            child,
+            input,
+            output,
+            root,
+            next_id: 1,
+        })
+    }
 
-#[derive(Serialize)]
-enum RpcMethod {
-    #[serde(rename = "tools/call")]
-    ToolsCall,
-    #[serde(rename = "$/cancelRequest")]
-    CancelRequest,
-}
+    fn send(&mut self, body: &Value) -> Result<(), TestError> {
+        let bytes = serde_json::to_vec(body)?;
+        write_frame_bounded(&mut self.output, &bytes, RESPONSE_BOUND)?;
+        Ok(())
+    }
 
-#[derive(Serialize)]
-enum ToolName {
-    #[serde(rename = "interface.application")]
-    Application,
-}
+    fn receive(&mut self) -> Result<Value, TestError> {
+        let Some(frame) = read_frame_bounded(&mut self.input, RESPONSE_BOUND)? else {
+            return Err(TestError::Shape("the server closed without answering".to_owned()));
+        };
+        Ok(serde_json::from_slice(&frame)?)
+    }
 
-#[derive(Serialize)]
-enum SourceProfile {
-    #[serde(rename = "rust-2024")]
-    Rust2024,
-}
+    /// Sends one request and returns its `result`, failing loudly on a JSON-RPC error.
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, TestError> {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        self.send(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
+        let response = self.receive()?;
+        if response.get("id") != Some(&json!(id)) {
+            return Err(TestError::Shape(format!("answered the wrong request: {response}")));
+        }
+        response
+            .get("result")
+            .cloned()
+            .ok_or_else(|| TestError::Shape(format!("no result in {response}")))
+    }
 
-#[derive(Serialize)]
-#[serde(rename_all = "lowercase")]
-enum SourceStage {
-    #[serde(rename = "lower-ir")]
-    LowerIr,
-}
+    /// Calls one tool and returns its Markdown text with its `isError` flag.
+    fn call(&mut self, tool: &str, arguments: Value) -> Result<(String, bool), TestError> {
+        let result = self.request("tools/call", json!({"name":tool,"arguments":arguments}))?;
+        let text = result
+            .pointer("/content/0/text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| TestError::Shape(format!("no text content in {result}")))?
+            .to_owned();
+        let is_error = result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| TestError::Shape(format!("no isError in {result}")))?;
+        Ok((text, is_error))
+    }
 
-#[derive(Serialize)]
-#[serde(rename_all = "lowercase")]
-enum Pressure {
-    Relaxed,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "lowercase")]
-enum BatteryState {
-    Normal,
-    Critical,
-}
-
-#[derive(Serialize)]
-enum OperationId {
-    #[serde(rename = "1")]
-    First,
-    #[serde(rename = "2")]
-    Second,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum JsonRpcRequestId<'request_id> {
-    Null,
-    Number(u64),
-    Text(&'request_id str),
-}
-
-#[derive(Serialize)]
-struct ToolCallRequest<'request_id, Arguments> {
-    jsonrpc: JsonRpcVersion,
-    id: JsonRpcRequestId<'request_id>,
-    method: RpcMethod,
-    params: ToolCallParams<Arguments>,
-}
-
-#[derive(Serialize)]
-struct ToolCallNotification<Arguments> {
-    jsonrpc: JsonRpcVersion,
-    method: RpcMethod,
-    params: ToolCallParams<Arguments>,
-}
-
-#[derive(Serialize)]
-struct ToolCallParams<Arguments> {
-    name: ToolName,
-    arguments: ApplicationArguments<Arguments>,
-}
-
-#[derive(Serialize)]
-struct EmptyArguments {}
-
-#[derive(Serialize)]
-struct ApplicationArguments<Arguments> {
-    #[serde(flatten)]
-    fields: Arguments,
-    action: ApplicationAction,
-    correlation: u64,
-}
-
-#[derive(Serialize)]
-struct GenerateArguments<'source> {
-    profile: SourceProfile,
-    stage: SourceStage,
-    source: &'source str,
-}
-
-#[derive(Serialize)]
-struct PolicyArguments {
-    generation: String,
-    snapshot: String,
-    bundle: String,
-    ram_free: u64,
-    nvme_free: u64,
-    operations: u64,
-    retries: u64,
-    memory_pressure: Pressure,
-    storage_pressure: Pressure,
-    battery: BatteryState,
-}
-
-#[derive(Serialize)]
-struct PollExecutionArguments {
-    operation: OperationId,
-}
-
-#[derive(Serialize)]
-struct CancellationNotification<'request_id> {
-    jsonrpc: JsonRpcVersion,
-    method: RpcMethod,
-    params: CancellationParams<'request_id>,
-}
-
-#[derive(Serialize)]
-struct CancellationParams<'request_id> {
-    #[serde(rename = "requestId")]
-    request_id: &'request_id str,
-}
-
-#[derive(Serialize)]
-struct MalformedToolCallRequest<'request_id> {
-    jsonrpc: JsonRpcVersion,
-    id: JsonRpcRequestId<'request_id>,
-    method: RpcMethod,
-    params: MalformedToolCallParams,
-}
-
-#[derive(Serialize)]
-struct MalformedToolCallParams {
-    name: ToolName,
-}
-
-fn request<Arguments: Serialize>(
-    id: JsonRpcRequestId<'_>,
-    correlation: u64,
-    action: ApplicationAction,
-    arguments: Arguments,
-) -> Result<Value, TestError> {
-    Ok(serde_json::to_value(ToolCallRequest {
-        jsonrpc: JsonRpcVersion::Version2,
-        id,
-        method: RpcMethod::ToolsCall,
-        params: ToolCallParams {
-            name: ToolName::Application,
-            arguments: ApplicationArguments {
-                fields: arguments,
-                action,
-                correlation,
-            },
-        },
-    })?)
-}
-
-fn notification<Arguments: Serialize>(
-    correlation: u64,
-    action: ApplicationAction,
-    arguments: Arguments,
-) -> Result<Value, TestError> {
-    Ok(serde_json::to_value(ToolCallNotification {
-        jsonrpc: JsonRpcVersion::Version2,
-        method: RpcMethod::ToolsCall,
-        params: ToolCallParams {
-            name: ToolName::Application,
-            arguments: ApplicationArguments {
-                fields: arguments,
-                action,
-                correlation,
-            },
-        },
-    })?)
-}
-
-fn send(writer: &mut impl Write, value: &Value) -> Result<(), TestError> {
-    let body = serde_json::to_vec(value)?;
-    write_frame(writer, &body)?;
-    Ok(())
-}
-
-fn receive(reader: &mut BufReader<impl io::Read>) -> Result<Value, TestError> {
-    let body = read_frame(reader)?.ok_or_else(|| {
-        TestError::Io(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "MCP child closed before its framed response",
-        ))
-    })?;
-    Ok(serde_json::from_slice(&body)?)
-}
-
-fn generate(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-    id: u64,
-    source: &str,
-) -> Result<Value, TestError> {
-    let generation = request(
-        JsonRpcRequestId::Number(id),
-        id,
-        ApplicationAction::Generate,
-        GenerateArguments {
-            profile: SourceProfile::Rust2024,
-            stage: SourceStage::LowerIr,
-            source,
-        },
-    )?;
-    send(stdin, &generation)?;
-    receive(stdout)
-}
-
-fn policy_arguments() -> PolicyArguments {
-    PolicyArguments {
-        generation: GenerationId::from_digest([11; 32]).to_string(),
-        snapshot: IndexSnapshotId::from_digest([13; 32]).to_string(),
-        bundle: ContentId::<CapabilityDomain>::from_digest([17; 32]).to_string(),
-        ram_free: 4096,
-        nvme_free: 8192,
-        operations: 1,
-        retries: 1,
-        memory_pressure: Pressure::Relaxed,
-        storage_pressure: Pressure::Relaxed,
-        battery: BatteryState::Normal,
+    fn stderr(&mut self) -> String {
+        self.child.stderr.take().map_or_else(String::new, |stream| {
+            BufReader::new(stream)
+                .lines()
+                .map_while(Result::ok)
+                .collect::<Vec<String>>()
+                .join("\n")
+        })
     }
 }
 
-fn effect<Arguments: Serialize>(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-    id: JsonRpcRequestId<'_>,
-    correlation: u64,
-    action: ApplicationAction,
-    arguments: Arguments,
-) -> Result<Value, TestError> {
-    let begin_request = request(id, correlation, action, arguments)?;
-    send(stdin, &begin_request)?;
-    receive(stdout)
-}
-
-fn recover(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-    id: JsonRpcRequestId<'_>,
-    correlation: u64,
-) -> Result<Value, TestError> {
-    effect(
-        stdin,
-        stdout,
-        id,
-        correlation,
-        ApplicationAction::RecoverLocal,
-        policy_arguments(),
-    )
-}
-
-fn release_arguments() -> PolicyArguments {
-    PolicyArguments {
-        generation: GenerationId::from_digest([11; 32]).to_string(),
-        snapshot: IndexSnapshotId::from_digest([13; 32]).to_string(),
-        bundle: ContentId::<CapabilityDomain>::from_digest([17; 32]).to_string(),
-        ram_free: 4096,
-        nvme_free: 8192,
-        operations: 1,
-        retries: 0,
-        memory_pressure: Pressure::Relaxed,
-        storage_pressure: Pressure::Relaxed,
-        battery: BatteryState::Critical,
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
-fn assert_generation(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-    id: u64,
-    source: &str,
-) -> Result<(), TestError> {
-    let generated = generate(stdin, stdout, id, source)?;
-    let structured = &generated["result"]["structuredContent"];
-    assert_eq!(structured["correlation"], id);
-    assert_eq!(structured["body"]["kind"], "dependency_unavailable");
-    assert_eq!(structured["body"]["capability"], "compiler_output");
-    assert_eq!(structured["terminal"]["kind"], "degraded");
-    assert_eq!(structured["terminal"]["unavailable"], "compiler_output");
-    assert_eq!(structured["diagnostic"], Value::Null);
-    Ok(())
+fn handshake(name: &str) -> Result<Session, TestError> {
+    let mut session = Session::start(name)?;
+    let result = session.request(
+        "initialize",
+        json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}),
+    )?;
+    if result.get("protocolVersion") != Some(&json!("2025-06-18")) {
+        return Err(TestError::Shape(format!("bad negotiation: {result}")));
+    }
+    session.send(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))?;
+    Ok(session)
 }
 
-fn assert_first_completed(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-) -> Result<(), TestError> {
-    let admitted = recover(stdin, stdout, JsonRpcRequestId::Number(82), 82)?;
-    assert_eq!(
-        admitted["result"]["structuredContent"]["body"]["kind"],
-        "execution_started"
+#[test]
+fn initialize_teaches_the_shelf_first_workflow_and_the_fingerprint_rule(
+) -> Result<(), Box<dyn Error>> {
+    let mut session = Session::start("initialize")?;
+    let result = session.request("initialize", json!({"protocolVersion":"2025-06-18"}))?;
+    let instructions = result
+        .get("instructions")
+        .and_then(Value::as_str)
+        .ok_or_else(|| TestError::Shape("no instructions".to_owned()))?;
+    assert!(
+        instructions.contains("`packages` first"),
+        "instructions must send a reader to the shelf first: {instructions}"
     );
-
-    let pending_request = request(
-        JsonRpcRequestId::Number(83),
-        83,
-        ApplicationAction::PollExecution,
-        PollExecutionArguments {
-            operation: OperationId::First,
-        },
-    )?;
-    send(stdin, &pending_request)?;
-    let pending = receive(stdout)?;
-    assert_eq!(pending["id"], 83);
-    assert_eq!(
-        pending["result"]["structuredContent"]["body"]["state"]["kind"],
-        "pending"
+    assert!(
+        instructions.contains("fingerprint, never input"),
+        "instructions must say the 8-hex is not an input: {instructions}"
     );
-
-    let completed_request = request(
-        JsonRpcRequestId::Number(84),
-        84,
-        ApplicationAction::PollExecution,
-        PollExecutionArguments {
-            operation: OperationId::First,
-        },
-    )?;
-    send(stdin, &completed_request)?;
-    let completed = receive(stdout)?;
-    assert_eq!(completed["id"], 84);
-    assert_eq!(
-        completed["result"]["structuredContent"]["body"]["state"]["kind"],
-        "completed"
+    assert!(
+        instructions.contains("it runs a compiler"),
+        "instructions must warn that add is slow: {instructions}"
     );
-    Ok(())
-}
-
-fn assert_cancelled(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-) -> Result<(), TestError> {
-    let admitted = effect(
-        stdin,
-        stdout,
-        JsonRpcRequestId::Text("second-operation"),
-        85,
-        ApplicationAction::ReleaseLocal,
-        release_arguments(),
-    )?;
-    assert_eq!(admitted["id"], "second-operation");
     assert_eq!(
-        admitted["result"]["structuredContent"]["body"]["kind"],
-        "execution_started"
+        result.pointer("/serverInfo/name"),
+        Some(&json!("nudox")),
+        "the server names itself"
     );
-
-    let cancellation_request = serde_json::to_value(CancellationNotification {
-        jsonrpc: JsonRpcVersion::Version2,
-        method: RpcMethod::CancelRequest,
-        params: CancellationParams {
-            request_id: "second-operation",
-        },
-    })?;
-    send(stdin, &cancellation_request)?;
-
-    let progress_request = request(
-        JsonRpcRequestId::Number(86),
-        86,
-        ApplicationAction::PollExecution,
-        PollExecutionArguments {
-            operation: OperationId::Second,
-        },
-    )?;
-    send(stdin, &progress_request)?;
-    let progress = receive(stdout)?;
-    assert_eq!(progress["id"], 86);
-    assert_eq!(
-        progress["result"]["structuredContent"]["body"]["state"]["kind"],
-        "cancelled"
-    );
-    Ok(())
-}
-
-fn assert_malformed(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-) -> Result<(), TestError> {
-    let malformed = serde_json::to_value(MalformedToolCallRequest {
-        jsonrpc: JsonRpcVersion::Version2,
-        id: JsonRpcRequestId::Number(87),
-        method: RpcMethod::ToolsCall,
-        params: MalformedToolCallParams {
-            name: ToolName::Application,
-        },
-    })?;
-    send(stdin, &malformed)?;
-    let error = receive(stdout)?;
-    assert_eq!(error["id"], 87);
-    assert_eq!(error["error"]["data"]["code"], "missing_field");
+    assert!(result.pointer("/capabilities/resources").is_some());
     Ok(())
 }
 
 #[test]
-fn framed_mcp_process_preserves_structured_results_and_named_cancellation() -> Result<(), TestError>
-{
-    let mut child = Command::new(env!("CARGO_BIN_EXE_interface-mcp"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| io::Error::other("MCP child did not retain stdin"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("MCP child did not retain stdout"))?;
-    let mut stdout = BufReader::new(stdout);
-
-    assert_generation(&mut stdin, &mut stdout, 81, "fn mcp() {}")?;
-    assert_generation(&mut stdin, &mut stdout, 811, "fn mcp_second() {}")?;
-    assert_first_completed(&mut stdin, &mut stdout)?;
-    assert_cancelled(&mut stdin, &mut stdout)?;
-    assert_malformed(&mut stdin, &mut stdout)?;
-
-    drop(stdin);
-    let status = child.wait()?;
-    assert!(status.success());
+fn an_unknown_protocol_revision_is_answered_with_the_one_this_server_speaks(
+) -> Result<(), Box<dyn Error>> {
+    let mut session = Session::start("negotiate")?;
+    let result = session.request("initialize", json!({"protocolVersion":"2099-01-01"}))?;
+    assert_eq!(result.get("protocolVersion"), Some(&json!("2025-06-18")));
     Ok(())
 }
 
 #[test]
-fn framed_mcp_preserves_number_string_null_ids_and_silences_notifications() -> Result<(), TestError>
-{
-    let mut child = Command::new(env!("CARGO_BIN_EXE_interface-mcp"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| io::Error::other("MCP child did not retain stdin"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("MCP child did not retain stdout"))?;
-    let mut stdout = BufReader::new(stdout);
-
-    let notification = notification(
-        90,
-        ApplicationAction::Generate,
-        GenerateArguments {
-            profile: SourceProfile::Rust2024,
-            stage: SourceStage::LowerIr,
-            source: "fn notification() {}",
-        },
-    )?;
-    send(&mut stdin, &notification)?;
-    let health = request(
-        JsonRpcRequestId::Number(91),
-        91,
-        ApplicationAction::Health,
-        EmptyArguments {},
-    )?;
-    send(&mut stdin, &health)?;
-    let health_reply = receive(&mut stdout)?;
-    assert_eq!(health_reply["id"], 91);
+fn tools_list_publishes_exactly_the_nine_registry_rows() -> Result<(), Box<dyn Error>> {
+    let mut session = handshake("tools")?;
+    let result = session.request("tools/list", json!({}))?;
+    let tools = result
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or_else(|| TestError::Shape("no tools array".to_owned()))?;
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect();
     assert_eq!(
-        health_reply["result"]["structuredContent"]["body"]["kind"],
-        "health"
+        names,
+        [
+            "packages", "add", "remove", "show", "outline", "resolve", "search", "graph", "health"
+        ],
+        "tools/list is the registry in registry order"
     );
-
-    let null_id = request(
-        JsonRpcRequestId::Null,
-        92,
-        ApplicationAction::Generate,
-        GenerateArguments {
-            profile: SourceProfile::Rust2024,
-            stage: SourceStage::LowerIr,
-            source: "fn null_id() {}",
-        },
-    )?;
-    send(&mut stdin, &null_id)?;
-    let null_reply = receive(&mut stdout)?;
-    assert!(null_reply["id"].is_null());
-    assert_eq!(
-        null_reply["result"]["structuredContent"]["body"]["kind"],
-        "dependency_unavailable"
-    );
-
-    drop(stdin);
-    let status = child.wait()?;
-    assert!(status.success());
-    Ok(())
-}
-
-fn assert_golden_exchange(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
-    expected: &[golden_corpus::GoldenReply],
-) -> Result<(), TestError> {
-    let generated = generate(stdin, stdout, 101, "fn corpus() {}")?;
-    let generated =
-        golden_corpus::decode_mcp(&serde_json::to_vec(&generated)?).map_err(TestError::Golden)?;
-    assert_eq!(generated.id, golden_corpus::GoldenResponseId::Number(101));
-    assert_eq!(generated.result.structured_content, expected[0]);
-
-    let health = effect(
-        stdin,
-        stdout,
-        JsonRpcRequestId::Number(102),
-        102,
-        ApplicationAction::Health,
-        EmptyArguments {},
-    )?;
-    let health =
-        golden_corpus::decode_mcp(&serde_json::to_vec(&health)?).map_err(TestError::Golden)?;
-    assert_eq!(health.id, golden_corpus::GoldenResponseId::Number(102));
-    assert_eq!(health.result.structured_content, expected[1]);
-
-    let admitted = recover(
-        stdin,
-        stdout,
-        JsonRpcRequestId::Text("golden-operation"),
-        103,
-    )?;
-    let admitted =
-        golden_corpus::decode_mcp(&serde_json::to_vec(&admitted)?).map_err(TestError::Golden)?;
-    assert_eq!(
-        admitted.id,
-        golden_corpus::GoldenResponseId::Text("golden-operation".to_owned())
-    );
-    assert_eq!(admitted.result.structured_content, expected[2]);
-
-    let cancellation_request = serde_json::to_value(CancellationNotification {
-        jsonrpc: JsonRpcVersion::Version2,
-        method: RpcMethod::CancelRequest,
-        params: CancellationParams {
-            request_id: "golden-operation",
-        },
-    })?;
-    send(stdin, &cancellation_request)?;
-    let cancelled_request = request(
-        JsonRpcRequestId::Number(104),
-        104,
-        ApplicationAction::PollExecution,
-        PollExecutionArguments {
-            operation: OperationId::First,
-        },
-    )?;
-    send(stdin, &cancelled_request)?;
-    let cancelled = receive(stdout)?;
-    let cancelled =
-        golden_corpus::decode_mcp(&serde_json::to_vec(&cancelled)?).map_err(TestError::Golden)?;
-    assert_eq!(cancelled.id, golden_corpus::GoldenResponseId::Number(104));
-    assert_eq!(cancelled.result.structured_content, expected[3]);
+    for (tool, spec) in tools.iter().zip(interface_library::COMMANDS) {
+        let description = tool
+            .get("description")
+            .and_then(Value::as_str)
+            .ok_or_else(|| TestError::Shape("a tool has no description".to_owned()))?;
+        assert!(
+            description.starts_with(spec.description),
+            "{} must lead with the registry sentence verbatim, got {description}",
+            spec.name
+        );
+        assert!(
+            description.len() > spec.description.len() + 20,
+            "{} must add its own guidance sentence",
+            spec.name
+        );
+    }
     Ok(())
 }
 
 #[test]
-fn deterministic_golden_corpus_matches_independent_service_and_mcp_process() -> Result<(), TestError>
-{
-    let expected = golden_corpus::direct_replies().map_err(TestError::Golden)?;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_interface-mcp"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| io::Error::other("MCP child did not retain stdin"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("MCP child did not retain stdout"))?;
-    let mut stdout = BufReader::new(stdout);
-    assert_golden_exchange(&mut stdin, &mut stdout, &expected)?;
+fn an_empty_shelf_says_so_and_hands_back_the_call_that_would_fill_it(
+) -> Result<(), Box<dyn Error>> {
+    let mut session = handshake("empty")?;
+    let (text, is_error) = session.call("packages", json!({}))?;
+    assert!(!is_error, "an empty shelf is a fact, not a failure");
+    assert!(text.contains("(no packages)"), "got: {text}");
+    assert!(
+        text.contains("→ add {\"package\":\"pkg:cargo/serde@1.0.196\"}"),
+        "the empty shelf must teach the exact add call: {text}"
+    );
+    Ok(())
+}
 
-    drop(stdin);
-    let status = child.wait()?;
-    assert!(status.success());
+#[test]
+fn add_without_a_compiler_names_the_refused_url_and_the_capability_to_check(
+) -> Result<(), Box<dyn Error>> {
+    let mut session = handshake("detached")?;
+    let (text, is_error) = session.call("add", json!({"package":"pkg:cargo/serde@1.0.196"}))?;
+    assert!(is_error, "a refused add is flagged: {text}");
+    assert!(
+        text.contains("✗ compiler-detached pkg:cargo/serde@1.0.196"),
+        "the fault must name the slug and the refused url verbatim: {text}"
+    );
+    assert!(
+        text.contains("→ health {}"),
+        "the affordance must be the call that explains it: {text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn show_on_an_absent_package_names_the_exact_coordinate_and_offers_the_add(
+) -> Result<(), Box<dyn Error>> {
+    let mut session = handshake("absent")?;
+    let (text, is_error) = session.call(
+        "show",
+        json!({"address":"cargo:serde@1.0.196::de::Deserializer[trait]"}),
+    )?;
+    assert!(is_error);
+    assert!(
+        text.contains("✗ package-not-on-shelf cargo:serde@1.0.196"),
+        "got: {text}"
+    );
+    assert!(
+        text.contains("absent here never means absent everywhere"),
+        "got: {text}"
+    );
+    assert!(
+        text.contains("→ add {\"package\":\"pkg:cargo/serde@1.0.196\"}"),
+        "got: {text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn search_states_every_lane_and_its_reason_before_any_row() -> Result<(), Box<dyn Error>> {
+    let mut session = handshake("lanes")?;
+    let (text, is_error) = session.call("search", json!({"query":"deserialize"}))?;
+    assert!(!is_error, "a search with no rows is still an answer: {text}");
+    let lanes = text
+        .lines()
+        .find(|line| line.starts_with("~lanes "))
+        .ok_or_else(|| TestError::Shape(format!("no ~lanes line in {text}")))?;
+    for lane in ["exact", "names", "graph", "semantic"] {
+        assert!(lanes.contains(lane), "{lane} is missing from {lanes}");
+    }
+    assert!(
+        lanes.contains("no-packages"),
+        "an empty shelf is why every lane is down, and the line must say so: {lanes}"
+    );
+    assert!(text.contains("(no matches)"), "got: {text}");
+    Ok(())
+}
+
+#[test]
+fn a_misspelled_argument_is_named_with_the_fields_that_exist() -> Result<(), Box<dyn Error>> {
+    let mut session = handshake("fields")?;
+    let (text, is_error) = session.call("add", json!({"packages":"serde"}))?;
+    assert!(is_error);
+    assert!(text.contains("✗ unknown-argument packages"), "got: {text}");
+    assert!(text.contains("this tool accepts package"), "got: {text}");
+
+    let (text, is_error) = session.call("show", json!({"address":"serde::de"}))?;
+    assert!(is_error);
+    assert!(text.contains("✗ address serde::de"), "got: {text}");
+    assert!(
+        text.contains("no `@version`"),
+        "the fault must name the part that was missing: {text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_schema_card_reads_back_with_its_worked_calls() -> Result<(), Box<dyn Error>> {
+    let mut session = handshake("card")?;
+    let listed = session.request("resources/list", json!({}))?;
+    let uris: Vec<&str> = listed
+        .get("resources")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("uri").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(uris.contains(&"nudox://packages"), "got: {uris:?}");
+    assert!(uris.contains(&"nudox://schema-card"), "got: {uris:?}");
+
+    let result = session.request("resources/read", json!({"uri":"nudox://schema-card"}))?;
+    let text = result
+        .pointer("/contents/0/text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| TestError::Shape(format!("no card text in {result}")))?;
+    assert!(text.contains("# nudox schema card"), "got: {text}");
+    assert!(text.contains("`called-by`"), "the card names both directions");
+    assert!(
+        text.contains("never accepted as input"),
+        "the card must state the fingerprint rule"
+    );
+    assert_eq!(
+        interface_mcp::card::worked_examples(text).len(),
+        3,
+        "the card carries three worked calls"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unknown_resource_names_what_this_server_does_publish() -> Result<(), Box<dyn Error>> {
+    let mut session = handshake("resource")?;
+    session.send(&json!({
+        "jsonrpc":"2.0","id":900,"method":"resources/read",
+        "params":{"uri":"nudox://invented"}
+    }))?;
+    let response = session.receive()?;
+    let message = response
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .ok_or_else(|| TestError::Shape(format!("expected an error, got {response}")))?;
+    assert!(message.contains("nudox://invented"), "got: {message}");
+    assert!(message.contains("nudox://schema-card"), "got: {message}");
+    Ok(())
+}
+
+#[test]
+fn a_cancellation_for_an_unknown_request_is_ignored_and_the_session_continues(
+) -> Result<(), Box<dyn Error>> {
+    let mut session = handshake("cancel")?;
+    session.send(&json!({
+        "jsonrpc":"2.0","method":"notifications/cancelled",
+        "params":{"requestId":4242,"reason":"user"}
+    }))?;
+    // A notification is never answered; the next request proves the stream stayed in step.
+    let (text, _) = session.call("health", json!({}))?;
+    assert!(text.contains("compiler"), "got: {text}");
+    assert!(
+        text.contains("detached"),
+        "health must report this process has no compiler: {text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_oversized_request_frame_is_refused_before_it_is_parsed() -> Result<(), Box<dyn Error>> {
+    let mut session = handshake("bounds")?;
+    let oversized = 64 * 1024 + 1;
+    write!(
+        session.output,
+        "Content-Length: {oversized}\r\n\r\n"
+    )?;
+    session.output.flush()?;
+    let closed = session.receive().is_err();
+    assert!(closed, "an oversized frame must not be answered");
+    let stderr = session.stderr();
+    assert!(
+        stderr.is_empty() || stderr.contains("exceeds"),
+        "the refusal must name the bound it broke: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unimplemented_method_is_named_rather_than_silently_dropped() -> Result<(), Box<dyn Error>> {
+    let mut session = handshake("method")?;
+    session.send(&json!({"jsonrpc":"2.0","id":77,"method":"prompts/list"}))?;
+    let response = session.receive()?;
+    assert_eq!(response.pointer("/error/code"), Some(&json!(-32_601)));
+    let message = response
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(message.contains("prompts/list"), "got: {message}");
     Ok(())
 }

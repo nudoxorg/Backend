@@ -29,6 +29,22 @@ impl HeaderLine {
 ///
 /// Returns an I/O error for malformed headers, an oversized frame, truncated body, or reader I/O.
 pub fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
+    read_frame_bounded(reader, MAX_FRAME_BYTES)
+}
+
+/// Reads exactly one framed body under a caller-chosen bound, or `None` on clean EOF.
+///
+/// Requests and responses are bounded separately: a request that needs more than a small budget is
+/// almost always a mistake, while a legitimate answer can be large.
+///
+/// # Errors
+///
+/// Returns an I/O error for malformed headers, a frame over `maximum`, a truncated body, or
+/// reader I/O.
+pub fn read_frame_bounded(
+    reader: &mut impl BufRead,
+    maximum: usize,
+) -> io::Result<Option<Vec<u8>>> {
     let mut length = None;
     let mut saw_header = false;
     let mut header_lines = 0;
@@ -64,7 +80,7 @@ pub fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
         let (name, value) = line.split_at(separator);
         if name.eq_ignore_ascii_case(b"content-length") {
             let parsed = decimal(trim_ascii(&value[1..]))?;
-            if parsed > MAX_FRAME_BYTES {
+            if parsed > maximum {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "MCP content length exceeds the bounded adapter frame",
@@ -155,7 +171,20 @@ fn decimal(value: &[u8]) -> io::Result<usize> {
 ///
 /// Returns an I/O error when the response exceeds the bounded frame or the writer rejects output.
 pub fn write_frame(writer: &mut impl Write, body: &[u8]) -> io::Result<()> {
-    if body.len() > MAX_FRAME_BYTES {
+    write_frame_bounded(writer, body, MAX_FRAME_BYTES)
+}
+
+/// Writes one complete framed body under a caller-chosen bound and flushes it.
+///
+/// # Errors
+///
+/// Returns an I/O error when the body exceeds `maximum` or the writer rejects output.
+pub fn write_frame_bounded(
+    writer: &mut impl Write,
+    body: &[u8],
+    maximum: usize,
+) -> io::Result<()> {
+    if body.len() > maximum {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "MCP response exceeds the bounded adapter frame",

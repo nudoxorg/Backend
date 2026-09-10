@@ -1,0 +1,23 @@
+# Defines the `interface-documents` package and its explicit dependency boundary.
+# The crate exists to project semantic images into one presentation-neutral document model every surface renders.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "interface-documents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+compiler-ir = { path = "../../compiler/ir" }
+compiler-ir-vocabulary = { path = "../../compiler/ir-vocabulary" }
+compiler-vocabulary = { path = "../../compiler/vocabulary" }
+heart-identity = { path = "../../heart/identity" }
+interface-identity = { path = "../identity" }
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"

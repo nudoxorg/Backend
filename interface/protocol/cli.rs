@@ -494,7 +494,9 @@ impl AdapterError {
         }
     }
 
-    pub(crate) fn invalid_json(field: AdapterField, source: serde_json::Error) -> Self {
+    /// Blames one field for a JSON shape the decoder rejected, retaining the parser's own cause.
+    #[must_use]
+    pub fn invalid_json(field: AdapterField, source: serde_json::Error) -> Self {
         Self {
             code: AdapterErrorCode::InvalidShape,
             field,

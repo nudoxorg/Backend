@@ -1,13 +1,11 @@
-//! Proves CLI and MCP package commands share one typed package admission path.
+//! Proves the CLI package command enters one typed package admission path.
 
 use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 use interface_core::{ApplicationInput, CorrelationId, PackageEcosystem};
-use interface_protocol::{
-    AdapterErrorCause, AdapterErrorCode, McpDecode, McpRequest, decode_cli, decode_mcp,
-};
+use interface_protocol::{AdapterErrorCause, AdapterErrorCode, decode_cli};
 
 #[test]
-fn cli_and_mcp_admit_the_same_pinned_package_facts() {
+fn the_cli_admits_pinned_package_facts() {
     let cli = decode_cli(&[
         "compile-package".to_owned(),
         "17".to_owned(),
@@ -16,17 +14,7 @@ fn cli_and_mcp_admit_the_same_pinned_package_facts() {
         "pkg:cargo/serde@1.0.229".to_owned(),
     ])
     .expect("typed CLI package command");
-    let mcp = decode_mcp(
-        br#"{"jsonrpc":"2.0","id":"package-17","method":"tools/call","params":{"name":"compile-package","arguments":{"correlation":17,"profile":"rust-2024","stage":"lower-ir","purl":"pkg:cargo/serde@1.0.229"}}}"#,
-    );
-    let McpDecode::Accepted(envelope) = mcp else {
-        panic!("typed MCP package command was rejected");
-    };
-    let McpRequest::Application(mcp) = envelope.request else {
-        panic!("MCP package command did not enter application dispatch");
-    };
     assert_package(cli);
-    assert_package(mcp);
 }
 
 #[test]

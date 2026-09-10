@@ -1,164 +1,62 @@
-//! Runs the `interface-mcp` executable, which exists to serve the unified application protocol over framed MCP JSON-RPC.
+//! Runs the `nudox-mcp` executable, which exists to serve the one shared local library to agents over MCP.
 //! Process setup is kept here while product policy remains in library crates.
 //! Every external failure crosses this boundary as a structured diagnostic.
-//! Stateless framed MCP process shell over the in-process application service.
+//! Frames in, one dispatch, Markdown out: the process shell owns nothing else.
 
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, Write as _};
 
-use interface_core::{
-    ApplicationInput, ApplicationOutcome, ApplicationReply, ApplicationService, CorrelationId,
-    ExecutionReply, OperationKey, ReplyBody,
-};
+use interface_library::{CompilerAttachment, Library, OpenOptions, WorkspaceRoot};
+use interface_mcp::server::{Server, fault_response};
 use interface_protocol::{
-    CancellationTarget, McpDecode, McpRequest, McpRequestId, decode_mcp, mcp_error, mcp_initialize,
-    mcp_pong, mcp_reply, mcp_tools_list, read_frame, write_frame,
+    mcp::{MAX_REQUEST_FRAME_BYTES, MAX_RESPONSE_FRAME_BYTES, decode},
+    read_frame_bounded, write_frame_bounded,
 };
-
-/// The concrete application service permits one active adaptive effect, so one inline mapping is
-/// the complete request-id cancellation table for this process.
-struct ActiveRequest {
-    request_id: McpRequestId,
-    operation: OperationKey,
-    correlation: CorrelationId,
-}
-
-#[derive(Default)]
-struct ActiveRequests(Option<ActiveRequest>);
-
-impl ActiveRequests {
-    fn resolve(&self, target: &CancellationTarget) -> Option<(OperationKey, CorrelationId)> {
-        self.0.as_ref().and_then(|active| {
-            (active.request_id == target.request_id)
-                .then_some((active.operation, active.correlation))
-        })
-    }
-
-    fn observe(
-        &mut self,
-        request_id: Option<McpRequestId>,
-        input: &ApplicationInput,
-        reply: &ApplicationReply,
-    ) {
-        if starts_effect(input) {
-            if let (
-                Some(request_id),
-                ApplicationOutcome::Resolved(ReplyBody::ExecutionStarted { operation, .. }),
-            ) = (request_id, &reply.outcome)
-            {
-                self.0 = Some(ActiveRequest {
-                    request_id,
-                    operation: *operation,
-                    correlation: reply.correlation,
-                });
-            }
-            return;
-        }
-
-        let Some(operation) = named_operation(input) else {
-            return;
-        };
-        if !matches!(
-            &reply.outcome,
-            ApplicationOutcome::Resolved(
-                ReplyBody::ExecutionStarted { .. }
-                    | ReplyBody::Execution(ExecutionReply::Pending { .. }),
-            )
-        ) {
-            self.0 = self.0.take().filter(|active| active.operation != operation);
-        }
-    }
-}
-
-fn starts_effect(input: &ApplicationInput) -> bool {
-    matches!(
-        input,
-        ApplicationInput::RecoverLocal { .. }
-            | ApplicationInput::RecoverInconsistent(_)
-            | ApplicationInput::ReleaseLocal { .. }
-    )
-}
-
-fn named_operation(input: &ApplicationInput) -> Option<OperationKey> {
-    match input {
-        ApplicationInput::PollExecution { operation, .. }
-        | ApplicationInput::Cancel { operation, .. } => Some(*operation),
-        _ => None,
-    }
-}
 
 fn main() -> io::Result<()> {
+    let root = WorkspaceRoot::resolve().map_err(|error| io::Error::other(format!("{error:?}")))?;
+    let library = Library::open(OpenOptions {
+        root,
+        compiler: attachment(),
+    })
+    .map_err(|error| io::Error::other(format!("{error:?}")))?;
+    let mut server = Server::new(library);
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut input = BufReader::new(stdin.lock());
     let mut output = stdout.lock();
-    let mut service = ApplicationService::new();
-    let mut active_requests = ActiveRequests::default();
-    while let Some(frame) = read_frame(&mut input)? {
-        let body = match decode_mcp(&frame) {
-            McpDecode::Accepted(envelope) => {
-                match envelope.request {
-                    McpRequest::Application(input) => {
-                        let reply = service.execute(&input);
-                        active_requests.observe(envelope.request_id, &input, &reply);
-                        let Some(id) = envelope.id.as_ref() else {
-                            // JSON-RPC notifications apply their service side effect without
-                            // producing a response frame.
-                            continue;
-                        };
-                        serde_json::to_vec(&mcp_reply(id, reply)).map_err(io::Error::other)?
-                    }
-                    McpRequest::Initialize(_) => {
-                        let Some(id) = envelope.id.as_ref() else {
-                            continue;
-                        };
-                        serde_json::to_vec(&mcp_initialize(id)).map_err(io::Error::other)?
-                    }
-                    McpRequest::Initialized => {
-                        let Some(id) = envelope.id.as_ref() else {
-                            continue;
-                        };
-                        serde_json::to_vec(&mcp_pong(id)).map_err(io::Error::other)?
-                    }
-                    McpRequest::ListTools => {
-                        let Some(id) = envelope.id.as_ref() else {
-                            continue;
-                        };
-                        serde_json::to_vec(&mcp_tools_list(id)).map_err(io::Error::other)?
-                    }
-                    McpRequest::Ping => {
-                        let Some(id) = envelope.id.as_ref() else {
-                            continue;
-                        };
-                        serde_json::to_vec(&mcp_pong(id)).map_err(io::Error::other)?
-                    }
-                    McpRequest::Cancellation(target) => {
-                        let Some((operation, correlation)) = active_requests.resolve(&target)
-                        else {
-                            // An unknown request id cannot name an operation. It remains a
-                            // notification with no response or fabricated fallback operation.
-                            continue;
-                        };
-                        let input = ApplicationInput::Cancel {
-                            correlation,
-                            operation,
-                        };
-                        let reply = service.execute(&input);
-                        active_requests.observe(None, &input, &reply);
-                        // Standard cancellation is always a no-id notification.
-                        continue;
-                    }
-                }
-            }
-            McpDecode::Rejected(error) => {
-                let Some(id) = error.id.as_ref() else {
-                    // A failure without a request id cannot be correlated and is a notification-
-                    // level error, so it is intentionally not emitted.
-                    continue;
-                };
-                serde_json::to_vec(&mcp_error(id, &error.error)).map_err(io::Error::other)?
+    loop {
+        let frame = match read_frame_bounded(&mut input, MAX_REQUEST_FRAME_BYTES) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break,
+            Err(error) => {
+                // A frame that never parsed carries no request identity, so there is nobody to
+                // answer. The process reports it once and stops rather than resynchronising onto
+                // a byte stream whose boundaries it no longer trusts.
+                return Err(error);
             }
         };
-        write_frame(&mut output, &body)?;
+        let response = match decode(&frame) {
+            Ok(envelope) => server.handle(envelope, &mut output)?,
+            Err(fault) => fault_response(&fault),
+        };
+        if let Some(response) = response {
+            let body = serde_json::to_vec(&response).map_err(io::Error::other)?;
+            write_frame_bounded(&mut output, &body, MAX_RESPONSE_FRAME_BYTES)?;
+        }
+        output.flush()?;
     }
     Ok(())
+}
+
+/// Whether this process brings a compiler.
+///
+/// A server started without one is not broken: it reads everything already on the shelf and refuses
+/// `add` with `compiler-detached`, which `health` then explains. That is the honest read-only mode,
+/// and it is what the integration tests exercise.
+fn attachment() -> CompilerAttachment {
+    if std::env::var_os("NUDOX_MCP_DETACHED").is_some() {
+        CompilerAttachment::Detached
+    } else {
+        CompilerAttachment::Production
+    }
 }

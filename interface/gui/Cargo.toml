@@ -1,5 +1,5 @@
 # Defines the `interface-gui` package and its explicit dependency boundary.
-# The crate exists to render and control the unified application service through GPUI.
+# The crate exists to read the shared local library through a GPUI desktop reader.
 # Workspace policy supplies shared versions, lints, and release behavior.
 [package]
 name = "interface-gui"
@@ -9,37 +9,44 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
-
 [features]
 default = []
-# The fallback state projection is always available. This feature gates only the
-# actual GPUI entity/view so dependency resolution can be measured independently.
-real-gpui = ["dep:gpui", "dep:gpui_platform"]
+# Typed fixtures rich enough to drive screenshots and rendering tests offline.
+preview = []
 
 [[bin]]
-name = "interface-gui"
+name = "nudox-gui"
 path = "main.rs"
-required-features = ["real-gpui"]
 
 [dependencies]
 async-channel.workspace = true
-compiler-application = { path = "../../compiler/application" }
 compiler-ir = { path = "../../compiler/ir" }
+compiler-ir-vocabulary = { path = "../../compiler/ir-vocabulary" }
 compiler-vocabulary = { path = "../../compiler/vocabulary" }
-heart-observe = { path = "../../heart/observe" }
+heart-identity = { path = "../../heart/identity" }
 interface-core = { path = "../core" }
-gpui = { workspace = true, optional = true }
-gpui_platform = { workspace = true, optional = true }
+interface-documents = { path = "../documents" }
+interface-identity = { path = "../identity" }
+interface-library = { path = "../library" }
+interface-search = { path = "../search" }
+gpui.workspace = true
+gpui_elements.workspace = true
+gpui_platform.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-heart-adaptive = { path = "../../heart/adaptive" }
-heart-identity = { path = "../../heart/identity" }
-serde.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true
 
 [lib]
 path = "lib.rs"
+
+[[test]]
+name = "state"
+path = "tests/state.rs"
+
+[[test]]
+name = "gpui"
+path = "tests/gpui.rs"
+required-features = ["preview"]

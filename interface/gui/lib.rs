@@ -1,104 +1,42 @@
-//! The `interface-gui` crate exists to render and control the unified application service through GPUI.
+//! The `interface-gui` crate exists to read one shared local library through a desktop reader.
 //! Its public types are the complete boundary; implementation details remain private.
 //! Callers compose capabilities through explicit authority, ownership, and failure values.
-//! Bounded GPUI projection for the shared application service.
 //!
-//! The shell owns presentation state only. Its input is the production
-//! [`interface_core::ApplicationReply`] value, so the entity-owned
-//! service remains the sole owner of validation, capability facts, execution,
-//! and terminal semantics. The fallback projection is useful to headless
-//! callers; the `real-gpui` feature adds the entity-backed [`GpuiShellView`].
+//! # Shape
+//!
+//! ```text
+//! theme/    colour, type, space: one palette, one accent, one rule
+//! motion/   springs and reveals; an idle window requests no frames
+//! prefs     the typed file loaded before the first frame
+//! store/    the state DAG: library → search/document → palette/shell
+//! preview/  typed fixtures (feature `preview`)
+//! ui/       the element library
+//! views/    the shell
+//! app/      window, actions, keymap, and the resident engine
+//! ```
+//!
+//! The stores, the theme, the motion integrator, and the preference codec are headless and tested
+//! without a window; the element library, views, and app draw them with real GPUI, unconditionally.
+//! That is not a testing convenience — it is what makes the interface's behaviour a value rather
+//! than a side effect of drawing. There is no `real-gpui` feature: the desktop surface is the
+//! product, and a crate that could compile without its window could silently stop having one.
+//!
+//! # The one dispatch
+//!
+//! No view ever reaches past `interface_library::Library::execute`. A click, a palette row, and a
+//! keystroke all produce the same closed [`interface_library::Command`], and every failure the
+//! engine returns is drawn in place as a typed fault with its exact operand retained.
 
-mod catalog;
-mod forms;
-mod navigation;
-mod semantic_documents;
-mod state;
+pub mod motion;
+pub mod prefs;
+pub mod store;
+pub mod theme;
 
-#[cfg(feature = "real-gpui")]
-gpui::actions!(
-    interface_gui_shell,
-    [
-        /// Opens the keyboard-first command palette.
-        OpenPalette,
-        /// Dismisses the visible command palette.
-        DismissPalette,
-        /// Moves the palette selection down one visible row.
-        SelectNextPaletteCommand,
-        /// Moves the palette selection up one visible row.
-        SelectPreviousPaletteCommand,
-        /// Confirms the selected palette command.
-        ConfirmPaletteCommand,
-        /// Selects the first visible command-palette row.
-        SelectFirstPaletteCommand,
-        /// Selects the final visible command-palette row.
-        SelectLastPaletteCommand,
-        /// Advances the palette selection by one fixed render window.
-        SelectNextPalettePage,
-        /// Moves the palette selection back by one fixed render window.
-        SelectPreviousPalettePage,
-        /// Opens the Settings destination.
-        OpenSettings,
-        /// Advances keyboard focus to the next active form field.
-        NextFormField,
-        /// Moves keyboard focus to the previous active form field.
-        PreviousFormField,
-        /// Cancels the active form or dismisses the visible palette.
-        DismissForm,
-        /// Focuses the persistent package and symbol search field.
-        FocusDocumentationSearch,
-        /// Contracts or expands the package navigation tree.
-        ToggleSidebar,
-        /// Opens package discovery in the indexed search surface.
-        DiscoverPackages,
-        /// Navigates to the previous visited document.
-        NavigateDocumentBack,
-        /// Navigates to the next visited document.
-        NavigateDocumentForward
-    ]
-);
+pub mod app;
+pub mod ui;
+pub mod views;
 
-pub use navigation::{
-    CommandFacts, CommandId, CommandPalette, MAX_PALETTE_RESULTS, NavigationState,
-    PALETTE_PAGE_ROWS, PaletteDirection, PaletteEditError, ROUTES, Route, RouteFacts, SURFACES,
-    ServiceAction, ShortcutFacts, SurfaceFacts,
-};
+#[cfg(feature = "preview")]
+pub mod preview;
 
-pub use forms::{
-    FormError, FormField, FormState, OperationAction, RecoveryAction, RecoverySelection,
-    ResultLimit, SnapshotAction,
-};
-
-pub use catalog::{
-    DOCUMENT_ITEMS, DOCUMENT_PACKAGES, DocumentFilter, DocumentItem, DocumentKind, DocumentMember,
-    DocumentPackage, DocumentSearchHit, DocumentSearchRow, DocumentSearchScope, DocumentationState,
-    MAX_DOCUMENT_QUERY_BYTES, MAX_DOCUMENT_RESULTS, PACKAGE_COUNT,
-};
-
-pub use state::{
-    AdaptiveProjection, ApplyError, BatchReceipt, ConnectionsPage, ExecutionProjection,
-    GeneratedProjection, HealthProjection, HomePage, LibrariesPage, MAX_BATCH_REPLIES,
-    MotionPreference, NativeTextInputError, PackageJourneyProjection, PageSnapshots,
-    ProjectionState, SURFACE_COUNT, SearchPage, SettingsPage, ShellProjection, ShellState, Surface,
-    SurfaceStatus, SurfaceSummary, TextInputTarget,
-};
-
-pub use semantic_documents::{
-    MAX_RENDERED_SEMANTIC_BYTES, PackageDocumentationError, PackageDocumentationFailure,
-    PackageDocumentationOutcome, PackageDocumentationProjection, RenderedSemanticDocument,
-};
-
-// These are re-exports of the core types, not shell-owned DTOs. Re-exporting
-// them keeps a GPUI consumer's import surface small while preserving one
-// business vocabulary.
-pub use interface_core::{
-    AdaptiveDisposition, ApplicationDisposition, ApplicationInput, ApplicationOutcome,
-    ApplicationReply, ApplicationService, Capability, CapabilityHealth, CapabilityTransition,
-    CorrelationId, DiagnosticCode, ExecutionReply, ExecutionState, OperationKey, ReplyBody,
-};
-
-#[cfg(feature = "real-gpui")]
-mod view;
-
-#[cfg(feature = "real-gpui")]
-pub use view::GpuiShellView;
+pub use app::{Workspace, run};

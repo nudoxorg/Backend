@@ -1,0 +1,22 @@
+# Defines the `interface-search` package and its explicit dependency boundary.
+# The crate exists to define one honest multi-lane search vocabulary and its ranking over every retrieval backend.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "interface-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+compiler-ir = { path = "../../compiler/ir" }
+compiler-ir-vocabulary = { path = "../../compiler/ir-vocabulary" }
+interface-documents = { path = "../documents" }
+interface-identity = { path = "../identity" }
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
