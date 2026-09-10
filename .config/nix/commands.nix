@@ -43,7 +43,21 @@ let
     pkgs.nuenv.writeShellApplication {
       name = "backend";
       text = source;
-      runtimeInputs = tools.qualityTools ++ tools.serviceTools ++ runtimeInputs;
+      # serviceTools is qdrant + curl, and the command surface invokes
+      # neither — the only "qdrant" under .config/nu is the live-qdrant
+      # nextest *group name*. Carrying it here puts qdrant in the closure of
+      # every shell that includes a backend command, `compiler` among them,
+      # and qdrant 1.18.2 cannot be built on x86_64-linux: it emits
+      # llvm.x86.avx512.vpdpwssd.512 from a path compiled without that target
+      # feature, so rustc aborts with "Cannot select". It is in no binary
+      # cache either, so the build cannot be skipped. Darwin keeps the exact
+      # closure it had; the `services` and `complete` shells still get qdrant
+      # directly from tools.services / tools.complete, so nothing that
+      # actually runs the service loses it.
+      runtimeInputs =
+        tools.qualityTools
+        ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin tools.serviceTools
+        ++ runtimeInputs;
       runtimeEnv = {
         CARGO_TARGET_DIR = ".local/target";
         BACKEND_CONFIG_SNAPSHOT = toString ../.;

@@ -52,6 +52,14 @@
         pkgs.libiconv
         pkgs.zlib
       ];
+    }
+    // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+      # apple-sdk is darwin-only. Unguarded, it makes nix refuse the whole
+      # `checks` output on Linux — "Refusing to evaluate package
+      # 'apple-sdk-14.4' ... hostPlatform.system = x86_64-linux" — so
+      # `nix flake check` cannot run there at all, however platform-neutral
+      # the other seven checks are. Same shape as tools.nix's isLinux guard
+      # on valgrind.
       SDKROOT = pkgs.apple-sdk.sdkroot;
     };
     build = ''
