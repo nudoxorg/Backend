@@ -74,6 +74,60 @@ const fn guidance(id: CommandId) -> &'static str {
             "One call for the whole version history and the latest version of one registry \
              package, when `packages` is about the shelf and this is about the registry."
         }
+        CommandId::Source => {
+            "Read the code behind a page when the signature and docs are not enough; the excerpt \
+             is bounded, so raise `context` rather than asking for a whole file."
+        }
+        CommandId::Related => {
+            "One call for what to read next from a page: linked, sibling, and semantically close \
+             declarations, each with its reason."
+        }
+        CommandId::Explore => {
+            "Browse before adding: this reaches the live registries and needs no compiler, but \
+             every page carries a provenance line that says whether it is live or cached."
+        }
+        CommandId::Package => {
+            "The one call for everything a registry knows about a package; pass `@version` to \
+             read another version's dependencies and install line."
+        }
+        CommandId::Dependents => {
+            "Who uses this package; count and coverage differ per ecosystem and the reply says so."
+        }
+        CommandId::Owner => {
+            "Everything one publisher ships, across ecosystems when `ecosystem` is omitted."
+        }
+        CommandId::Subscribe => {
+            "Follow a package so `releases` reports new versions; filing into a project keeps the \
+             reader's folders in sync with what you watch."
+        }
+        CommandId::Unsubscribe => "Stop following; the shelf is untouched.",
+        CommandId::Subscriptions => {
+            "What is followed and how many releases the reader has not seen."
+        }
+        CommandId::Releases => {
+            "New versions since last seen; pass `mark_seen` only when the reader has been told."
+        }
+        CommandId::Projects => "The reader's folders: members and lockfile bindings.",
+        CommandId::ProjectCreate => {
+            "Bind a folder to a lockfile so `project-sync` keeps its members at the versions the \
+             code builds with."
+        }
+        CommandId::ProjectDelete => "Delete a folder only; its subscriptions remain.",
+        CommandId::ProjectAdd => "Put one pinned coordinate into a folder.",
+        CommandId::ProjectRemove => "Take one coordinate out of a folder.",
+        CommandId::ProjectSync => {
+            "Reconcile a bound folder with its lockfile; `compile` also admits adds for members \
+             not yet on the shelf, which runs the compiler."
+        }
+        CommandId::Tree => {
+            "What is open across the desktop reader, the terminal, and this session; nodes you \
+             open are marked as yours so the reader can find them."
+        }
+        CommandId::TreeOpen => {
+            "Record what you are reading so the reader sees it in their tree; pass `parent` to \
+             nest under the node you came from."
+        }
+        CommandId::TreeClose => "Close a node you opened, or a whole branch with `branch`.",
     }
 }
 
@@ -136,6 +190,116 @@ fn input_schema(id: CommandId) -> Value {
                 },
             }),
             &["package"],
+        ),
+        CommandId::Source => object_schema(
+            json!({
+                "address": { "type": "string", "description": "An address copied verbatim from any result, or a full 65-character key." },
+                "context": { "type": "integer", "description": "Lines of context either side of the declaration, 0 to 200, default 12." },
+            }),
+            &["address"],
+        ),
+        CommandId::Related => object_schema(
+            json!({
+                "address": { "type": "string", "description": "An address copied verbatim from any result, or a full 65-character key." },
+                "limit": { "type": "integer", "description": "Most rows, 1 to 200, default 25." },
+            }),
+            &["address"],
+        ),
+        CommandId::Explore => object_schema(
+            json!({
+                "query": { "type": "string", "description": "Free text to match; omit to browse the top of the sort." },
+                "ecosystem": { "type": "string", "description": "One of `cargo` `npm` `pypi` `go` `maven` `nuget` `cpp`; omit for all." },
+                "sort": { "type": "string", "description": "One of `downloads` `updated` `relevance` `name`; default downloads." },
+                "page": { "type": "integer", "description": "One-based page, default 1." },
+                "limit": { "type": "integer", "description": "Cards per page, 1 to 100, default 40." },
+            }),
+            &[],
+        ),
+        CommandId::Package => object_schema(
+            json!({
+                "package": { "type": "string", "description": "`ecosystem:name`, optionally `@version`, as `cargo:serde` or `cargo:serde@1.0.196`." },
+            }),
+            &["package"],
+        ),
+        CommandId::Dependents => object_schema(
+            json!({
+                "package": { "type": "string", "description": "`ecosystem:name`, as `cargo:serde`." },
+                "page": { "type": "integer", "description": "One-based page, default 1." },
+                "limit": { "type": "integer", "description": "Cards per page, 1 to 100, default 40." },
+            }),
+            &["package"],
+        ),
+        CommandId::Owner => object_schema(
+            json!({
+                "handle": { "type": "string", "description": "The owner's handle as the registry spells it." },
+                "ecosystem": { "type": "string", "description": "Restrict to one ecosystem; omit to ask every registry." },
+            }),
+            &["handle"],
+        ),
+        CommandId::Subscribe => object_schema(
+            json!({
+                "package": { "type": "string", "description": "`ecosystem:name`, as `cargo:serde`." },
+                "project": { "type": "string", "description": "A project folder name or identity to file it under." },
+            }),
+            &["package"],
+        ),
+        CommandId::Unsubscribe => object_schema(
+            json!({
+                "package": { "type": "string", "description": "`ecosystem:name`, as `cargo:serde`." },
+            }),
+            &["package"],
+        ),
+        CommandId::Subscriptions | CommandId::Projects | CommandId::Tree => object_schema(json!({}), &[]),
+        CommandId::Releases => object_schema(
+            json!({
+                "mark_seen": { "type": "boolean", "description": "Record every listed release as seen." },
+            }),
+            &[],
+        ),
+        CommandId::ProjectCreate => object_schema(
+            json!({
+                "name": { "type": "string", "description": "Folder name, up to 64 bytes." },
+                "lockfile": { "type": "string", "description": "Absolute path to a lockfile the folder tracks: Cargo.lock, package-lock.json, pnpm-lock.yaml, yarn.lock, uv.lock, poetry.lock, requirements.txt, go.mod, pom.xml, packages.lock.json, conan.lock, vcpkg.json." },
+                "hue": { "type": "string", "description": "Tile hue: caramel teal forest green red olive sand." },
+            }),
+            &["name"],
+        ),
+        CommandId::ProjectDelete => object_schema(
+            json!({
+                "project": { "type": "string", "description": "Folder name or identity." },
+            }),
+            &["project"],
+        ),
+        CommandId::ProjectAdd | CommandId::ProjectRemove => object_schema(
+            json!({
+                "package": { "type": "string", "description": "Pinned coordinate, as `cargo:serde@1.0.196`." },
+                "project": { "type": "string", "description": "Folder name or identity." },
+            }),
+            &["package", "project"],
+        ),
+        CommandId::ProjectSync => object_schema(
+            json!({
+                "project": { "type": "string", "description": "Folder name or identity." },
+                "compile": { "type": "boolean", "description": "Also admit an add for every member not yet on the shelf." },
+            }),
+            &["project"],
+        ),
+        CommandId::TreeOpen => object_schema(
+            json!({
+                "subject": { "type": "string", "description": "A coordinate, an address, `ecosystem:name`, `@handle`, or search words." },
+                "kind": { "type": "string", "description": "Force the subject kind: package page registry owner explore search." },
+                "parent": { "type": "integer", "description": "Node identity to nest under, from `tree`." },
+                "focus": { "type": "boolean", "description": "Make it the active node; default false so the reader's focus is not stolen." },
+                "title": { "type": "string", "description": "Label override." },
+            }),
+            &["subject"],
+        ),
+        CommandId::TreeClose => object_schema(
+            json!({
+                "node": { "type": "integer", "description": "Node identity from `tree`." },
+                "branch": { "type": "boolean", "description": "Close every descendant too." },
+            }),
+            &["node"],
         ),
     }
 }

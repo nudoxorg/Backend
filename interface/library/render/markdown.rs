@@ -18,21 +18,25 @@ use interface_documents::{
     Block, Direction, Inline, MemberGroup, Outline, Page, PageVisitor, RelationGroup, Signature,
     SourceLocation, Symbol, walk_page,
 };
-use interface_identity::{KindTag, PackageCoordinate};
+use interface_identity::{KindTag, PackageCoordinate, ecosystem_tag};
 use interface_search::{
     Coverage, GraphTerminal, KindSet, SearchTerminal, Truncation, relation_label,
 };
 
 use crate::{
-    AddFailure, AddOutcome, AddRejection, ExploreError, Health, IndexSearchPage, PackageProfile,
-    PackageVersionRows, PageError, RejectedAdd, RemoveOutcome, Reply, Resolution, ResolveError,
-    Shelf, ShelfEntry, ShelfError, ShelfStatus,
+    AddFailure, AddOutcome, AddRejection, DependentsPage, ExploreError, ExplorePage, FollowOutcome,
+    Health, IndexSearchPage, Origin, OwnerKind, OwnerPage, PackageDetail, PackageProfile,
+    PackageVersionRows, PageError, Project, Projects, Provenance, RegistryCard, RejectedAdd,
+    Related, Relation, Releases, RemoveOutcome, Reply, Resolution, ResolveError, SessionTree,
+    Shelf, ShelfEntry, ShelfError, ShelfStatus, SourceText, Subscription, Subscriptions,
+    SyncReport, TreeNode, TreeOutcome,
     render::common::{
         self, Affordance, Affordances, EXAMPLE_PACKAGE_URL, Fault, RenderContext, RelativeAddress,
         add_affordance, blamed_capability, capability_glyph, capability_slug, census_line,
-        explore_coverage_signal, explore_error_detail, explore_error_slug, fence_tag, lane_signal,
-        package_url_slug, phase_dots, rejection_slug, relative_age, shelf_failure_slug,
-        unavailability_slug, visibility_label, write_affordance, write_fault,
+        coverage_word, explore_coverage_signal, explore_error_detail, explore_error_slug,
+        fence_tag, follow_fault, lane_signal, package_url_slug, phase_dots, project_fault,
+        registry_fault, rejection_slug, relative_age, shelf_failure_slug, source_fault,
+        tree_fault, unavailability_slug, visibility_label, write_affordance, write_fault,
     },
 };
 
@@ -85,6 +89,82 @@ pub fn render(reply: &Reply, context: &RenderContext) -> String {
         Reply::Profiled(result) => match result {
             Ok(profile) => profile_markdown(profile),
             Err(error) => fault_markdown("package-profile", &explore_error_fault(error)),
+        },
+        Reply::Source(result) => match result {
+            Ok(source) => source_markdown(source),
+            Err(error) => fault_markdown("source", &source_fault(error, page_fault)),
+        },
+        Reply::Related(result) => match result {
+            Ok(related) => related_markdown(related),
+            Err(error) => page_error_markdown("related", error),
+        },
+        Reply::Explored(result) => match result {
+            Ok(page) => explore_markdown(page, context),
+            Err(error) => fault_markdown("explore", &registry_fault(error)),
+        },
+        Reply::Detailed(result) => match result {
+            Ok(detail) => detail_markdown(detail, context),
+            Err(error) => fault_markdown("package", &registry_fault(error)),
+        },
+        Reply::Dependents(result) => match result {
+            Ok(page) => dependents_markdown(page, context),
+            Err(error) => fault_markdown("dependents", &registry_fault(error)),
+        },
+        Reply::Owned(result) => match result {
+            Ok(page) => owner_markdown(page, context),
+            Err(error) => fault_markdown("owner", &registry_fault(error)),
+        },
+        Reply::Subscribed(result) => match result {
+            Ok(outcome) => follow_outcome_markdown("subscribe", outcome),
+            Err(error) => fault_markdown("subscribe", &follow_fault(error)),
+        },
+        Reply::Unsubscribed(result) => match result {
+            Ok(outcome) => follow_outcome_markdown("unsubscribe", outcome),
+            Err(error) => fault_markdown("unsubscribe", &follow_fault(error)),
+        },
+        Reply::Subscriptions(result) => match result {
+            Ok(subscriptions) => subscriptions_markdown(subscriptions),
+            Err(error) => fault_markdown("subscriptions", &follow_fault(error)),
+        },
+        Reply::Releases(result) => match result {
+            Ok(releases) => releases_markdown(releases, context),
+            Err(error) => fault_markdown("releases", &follow_fault(error)),
+        },
+        Reply::Projects(result) => match result {
+            Ok(projects) => projects_markdown(projects, context),
+            Err(error) => fault_markdown("projects", &project_fault(error)),
+        },
+        Reply::ProjectCreated(result) => match result {
+            Ok(project) => project_markdown("project-create", project, context),
+            Err(error) => fault_markdown("project-create", &project_fault(error)),
+        },
+        Reply::ProjectDeleted(result) => match result {
+            Ok(id) => format!("# project-delete\n\ndeleted {id}\n"),
+            Err(error) => fault_markdown("project-delete", &project_fault(error)),
+        },
+        Reply::ProjectAdded(result) => match result {
+            Ok(project) => project_markdown("project-add", project, context),
+            Err(error) => fault_markdown("project-add", &project_fault(error)),
+        },
+        Reply::ProjectRemoved(result) => match result {
+            Ok(project) => project_markdown("project-remove", project, context),
+            Err(error) => fault_markdown("project-remove", &project_fault(error)),
+        },
+        Reply::ProjectSynced(result) => match result {
+            Ok(report) => sync_markdown(report, context),
+            Err(error) => fault_markdown("project-sync", &project_fault(error)),
+        },
+        Reply::Tree(result) => match result {
+            Ok(tree) => tree_markdown(tree),
+            Err(error) => fault_markdown("tree", &tree_fault(error)),
+        },
+        Reply::TreeOpened(result) => match result {
+            Ok(outcome) => tree_outcome_markdown("tree-open", outcome),
+            Err(error) => fault_markdown("tree-open", &tree_fault(error)),
+        },
+        Reply::TreeClosed(result) => match result {
+            Ok(outcome) => tree_outcome_markdown("tree-close", outcome),
+            Err(error) => fault_markdown("tree-close", &tree_fault(error)),
         },
     }
 }
@@ -670,6 +750,36 @@ fn resolve_error_fault(error: &ResolveError) -> Fault {
 
 // ── page failures ───────────────────────────────────────────────────────────────────────────────
 
+/// One page failure as the fault an agent reads; ambiguity names the candidate count and sends
+/// the agent to `resolve`, every other cause keeps its own slug.
+fn page_fault(error: &PageError) -> Fault {
+    match error {
+        PageError::Ambiguous(candidates) => Fault::new(
+            "ambiguous",
+            String::new(),
+            Affordance::None,
+        )
+        .detailed(format!("{} declarations share this spelling; pick one", candidates.len())),
+        PageError::Resolve(resolve) => resolve_error_fault(resolve),
+        PageError::Reopen(reopen) => {
+            Fault::new("image-unreadable", reopen.package.to_string(), Affordance::Health)
+                .detailed(format!(
+                    "{}: {}",
+                    common::reopen_phase_slug(reopen.phase),
+                    reopen.detail
+                ))
+        }
+        PageError::Projection(projection) => {
+            Fault::new("projection", String::new(), Affordance::Health)
+                .detailed(common::projection_detail(projection))
+        }
+        PageError::KeyUnknown { key } => {
+            Fault::new("key-unknown", key.to_string(), Affordance::Packages)
+                .detailed("no loaded package declares this key")
+        }
+    }
+}
+
 fn page_error_markdown(title: &str, error: &PageError) -> String {
     let mut out = String::new();
     heading(&mut out, title);
@@ -953,6 +1063,460 @@ fn health_markdown(health: &Health) -> String {
     out
 }
 
+
+// ── source and related ──────────────────────────────────────────────────────────────────────────
+
+fn source_markdown(source: &SourceText) -> String {
+    let mut out = String::new();
+    heading(&mut out, "source");
+    let _ = writeln!(
+        out,
+        "{}  {}:{}{}\n",
+        source.symbol.address,
+        source.file.as_str(),
+        source.first_line.0,
+        if source.truncated { "  (truncated)" } else { "" }
+    );
+    write_fenced(&mut out, source.language, source.text.as_str());
+    out
+}
+
+fn related_markdown(related: &Related) -> String {
+    let mut out = String::new();
+    heading(&mut out, "related");
+    let relative = RelativeAddress::to(related.symbol.package());
+    let _ = writeln!(
+        out,
+        "{}\n~graph {}  ~semantic {}\n",
+        related.symbol.address,
+        coverage_word(related.graph),
+        coverage_word(related.semantic)
+    );
+    if related.rows.is_empty() {
+        out.push_str("(nothing related)\n");
+    }
+    for row in &related.rows {
+        let reason = match row.relation {
+            Relation::Linked { kind, direction } => {
+                relation_label(kind, direction).as_str().to_owned()
+            }
+            Relation::Sibling => "sibling".to_owned(),
+            Relation::Semantic { score } => format!("semantic {}", score.0),
+            Relation::Lexical { score } => format!("lexical {}", score.0),
+        };
+        let _ = writeln!(
+            out,
+            "- {} {}  {reason}",
+            KindTag::of(row.symbol.kind).as_str(),
+            relative.symbol(&row.symbol)
+        );
+        if let Some(summary) = &row.summary {
+            let _ = writeln!(out, "  {}", summary.as_str());
+        }
+    }
+    out
+}
+
+// ── registry ────────────────────────────────────────────────────────────────────────────────────
+
+fn write_card(out: &mut String, card: &RegistryCard) {
+    let version = card
+        .offered_version()
+        .map_or(String::new(), |version| format!(" {}", version.as_str()));
+    let downloads = card
+        .downloads
+        .and_then(|downloads| downloads.total.or(downloads.recent))
+        .map_or(String::new(), |count| format!("  {}", count.compact()));
+    let shelf = card
+        .on_shelf
+        .as_ref()
+        .map_or(String::new(), |coordinate| format!("  on-shelf {coordinate}"));
+    let _ = writeln!(
+        out,
+        "- {}:{}{version}{downloads}{shelf}",
+        ecosystem_tag(card.ecosystem).as_str(),
+        card.name.as_str()
+    );
+    if let Some(description) = &card.description {
+        let _ = writeln!(out, "  {}", description.as_str());
+    }
+}
+
+fn provenance_markdown(provenance: Provenance, context: &RenderContext) -> String {
+    let origin = match provenance.origin {
+        Origin::Live => "live",
+        Origin::Cached if provenance.stale => "cached stale",
+        Origin::Cached => "cached",
+    };
+    format!(
+        "~registry {origin} {}",
+        relative_age(context.now, provenance.fetched_at)
+    )
+}
+
+fn explore_markdown(page: &ExplorePage, context: &RenderContext) -> String {
+    let mut out = String::new();
+    heading(&mut out, "explore");
+    let more = if page.has_more { "  more" } else { "" };
+    let _ = writeln!(
+        out,
+        "page {} · {} · {} rows{}{more}  {}\n",
+        page.request.page.get(),
+        page.request.sort.name(),
+        page.cards.len(),
+        page.total
+            .map_or(String::new(), |count| format!(" of {}", count.0)),
+        provenance_markdown(page.provenance, context)
+    );
+    if page.cards.is_empty() {
+        out.push_str("(no packages)\n");
+    }
+    for card in &page.cards {
+        write_card(&mut out, card);
+    }
+    out
+}
+
+fn detail_markdown(detail: &PackageDetail, context: &RenderContext) -> String {
+    let mut out = String::new();
+    heading(&mut out, "package");
+    write_card(&mut out, &detail.card);
+    let _ = writeln!(
+        out,
+        "\nselected {}\ninstall `{}`\nmanifest `{}`",
+        detail.selected.as_str(),
+        detail.install.command.as_str(),
+        detail.install.manifest.as_str()
+    );
+    if let Some(license) = &detail.card.license {
+        let _ = writeln!(out, "license {}", license.as_str());
+    }
+    for (label, url) in [
+        ("repository", detail.links.repository.as_ref()),
+        ("homepage", detail.links.homepage.as_ref()),
+        ("documentation", detail.links.documentation.as_ref()),
+    ] {
+        if let Some(url) = url {
+            let _ = writeln!(out, "{label} {}", url.as_str());
+        }
+    }
+    if !detail.owners.is_empty() {
+        out.push_str("\n## owners\n");
+        for owner in &detail.owners {
+            let _ = writeln!(
+                out,
+                "- {}:{}{}",
+                ecosystem_tag(owner.ecosystem).as_str(),
+                owner.handle.as_str(),
+                owner
+                    .display
+                    .as_ref()
+                    .map_or(String::new(), |display| format!("  {}", display.as_str()))
+            );
+        }
+    }
+    if !detail.versions.is_empty() {
+        let _ = writeln!(out, "\n## versions ({})", detail.versions.len());
+        for version in detail.versions.iter().take(20) {
+            let _ = writeln!(
+                out,
+                "- {}{}{}",
+                version.version.as_str(),
+                version
+                    .published_at
+                    .map_or(String::new(), |at| format!("  {}", relative_age(context.now, at))),
+                if version.yanked { "  yanked" } else { "" }
+            );
+        }
+    }
+    if !detail.dependencies.is_empty() {
+        let _ = writeln!(out, "\n## dependencies ({})", detail.dependencies.len());
+        for dependency in &detail.dependencies {
+            let _ = writeln!(
+                out,
+                "- {} {}  {}{}",
+                dependency.name.as_str(),
+                dependency.requirement.as_str(),
+                dependency.kind.label(),
+                if dependency.optional { "  optional" } else { "" }
+            );
+        }
+    }
+    let _ = writeln!(
+        out,
+        "\n## dependents ({})",
+        detail.dependents.count.map_or_else(
+            || detail.dependents.sample.len().to_string(),
+            |count| count.0.to_string()
+        )
+    );
+    for card in &detail.dependents.sample {
+        write_card(&mut out, card);
+    }
+    if let Some(readme) = &detail.readme {
+        out.push_str("\n## readme\n\n");
+        out.push_str(readme.markdown.as_str());
+        out.push('\n');
+    }
+    let _ = writeln!(out, "\n{}", provenance_markdown(detail.provenance, context));
+    out
+}
+
+fn dependents_markdown(page: &DependentsPage, context: &RenderContext) -> String {
+    let mut out = String::new();
+    heading(&mut out, "dependents");
+    let more = if page.has_more { "  more" } else { "" };
+    let _ = writeln!(
+        out,
+        "{}:{} · page {} · {} rows{more}  {}\n",
+        ecosystem_tag(page.ecosystem).as_str(),
+        page.name.as_str(),
+        page.page.get(),
+        page.cards.len(),
+        provenance_markdown(page.provenance, context)
+    );
+    if page.cards.is_empty() {
+        out.push_str("(no dependents)\n");
+    }
+    for card in &page.cards {
+        write_card(&mut out, card);
+    }
+    out
+}
+
+fn owner_markdown(page: &OwnerPage, context: &RenderContext) -> String {
+    let mut out = String::new();
+    heading(&mut out, "owner");
+    let _ = writeln!(
+        out,
+        "{} {}{}  {}\n",
+        page.owner.handle.as_str(),
+        match page.owner.kind {
+            OwnerKind::User => "user",
+            OwnerKind::Team => "team",
+        },
+        page.owner
+            .display
+            .as_ref()
+            .map_or(String::new(), |display| format!("  {}", display.as_str())),
+        provenance_markdown(page.provenance, context)
+    );
+    for card in &page.cards {
+        write_card(&mut out, card);
+    }
+    for (ecosystem, error) in &page.faults {
+        let _ = writeln!(out, "- {} ✗ {}", ecosystem_tag(*ecosystem).as_str(), error.slug());
+    }
+    out
+}
+
+// ── subscriptions ───────────────────────────────────────────────────────────────────────────────
+
+fn write_subscription(out: &mut String, row: &Subscription) {
+    let _ = writeln!(
+        out,
+        "- {}  seen {}{}{}",
+        row.key,
+        row.seen
+            .as_ref()
+            .map_or("none", |version| version.as_str()),
+        if row.unseen.0 == 0 {
+            String::new()
+        } else {
+            format!("  +{} new", row.unseen.0)
+        },
+        row.project
+            .map_or(String::new(), |project| format!("  project {project}"))
+    );
+}
+
+fn follow_outcome_markdown(title: &str, outcome: &FollowOutcome) -> String {
+    let mut out = String::new();
+    heading(&mut out, title);
+    match outcome {
+        FollowOutcome::Followed { subscription } => {
+            out.push_str("following\n");
+            write_subscription(&mut out, subscription);
+        }
+        FollowOutcome::AlreadyFollowing { subscription } => {
+            out.push_str("already following\n");
+            write_subscription(&mut out, subscription);
+        }
+        FollowOutcome::Unfollowed { key } => {
+            let _ = writeln!(out, "unfollowed {key}");
+        }
+        FollowOutcome::NotFollowing { key } => {
+            let _ = writeln!(out, "was not following {key}");
+        }
+    }
+    out
+}
+
+fn subscriptions_markdown(subscriptions: &Subscriptions) -> String {
+    let mut out = String::new();
+    heading(&mut out, "subscriptions");
+    let _ = writeln!(
+        out,
+        "{} followed · {} unseen · epoch {}\n",
+        subscriptions.rows.len(),
+        subscriptions.unseen.0,
+        subscriptions.epoch.0
+    );
+    if subscriptions.rows.is_empty() {
+        out.push_str("(no subscriptions)\n");
+    }
+    for row in &subscriptions.rows {
+        write_subscription(&mut out, row);
+    }
+    out
+}
+
+fn releases_markdown(releases: &Releases, context: &RenderContext) -> String {
+    let mut out = String::new();
+    heading(&mut out, "releases");
+    let _ = writeln!(out, "{}\n", provenance_markdown(releases.provenance, context));
+    if releases.rows.is_empty() {
+        out.push_str("(nothing new)\n");
+    }
+    for row in &releases.rows {
+        let _ = writeln!(
+            out,
+            "- {} {}{}{}{}",
+            row.key,
+            row.version.as_str(),
+            row.published_at
+                .map_or(String::new(), |at| format!("  {}", relative_age(context.now, at))),
+            if row.prerelease { "  pre-release" } else { "" },
+            if row.seen { "  seen" } else { "" }
+        );
+    }
+    for fault_row in &releases.faults {
+        let _ = writeln!(out, "- {} ✗ {}", fault_row.key, fault_row.error.slug());
+    }
+    out
+}
+
+// ── projects ────────────────────────────────────────────────────────────────────────────────────
+
+fn write_project(out: &mut String, project: &Project, context: &RenderContext) {
+    let _ = writeln!(
+        out,
+        "- {} {}  {}  {} members{}{}",
+        project.id,
+        project.name.as_str(),
+        project.hue.name(),
+        project.members.len(),
+        project
+            .binding
+            .as_ref()
+            .map_or(String::new(), |binding| format!("  {}", binding.path.display())),
+        project
+            .synced_at
+            .map_or(String::new(), |at| format!("  synced {}", relative_age(context.now, at)))
+    );
+    for member in &project.members {
+        let _ = writeln!(out, "  - {member}");
+    }
+}
+
+fn project_markdown(title: &str, project: &Project, context: &RenderContext) -> String {
+    let mut out = String::new();
+    heading(&mut out, title);
+    write_project(&mut out, project, context);
+    out
+}
+
+fn projects_markdown(projects: &Projects, context: &RenderContext) -> String {
+    let mut out = String::new();
+    heading(&mut out, "projects");
+    if projects.rows.is_empty() {
+        out.push_str("(no projects)\n");
+    }
+    for project in &projects.rows {
+        write_project(&mut out, project, context);
+    }
+    out
+}
+
+fn sync_markdown(report: &SyncReport, context: &RenderContext) -> String {
+    let mut out = String::new();
+    heading(&mut out, "project-sync");
+    write_project(&mut out, &report.project, context);
+    let _ = writeln!(
+        out,
+        "\n{} added · {} removed · {} repinned · {} unchanged",
+        report.added.len(),
+        report.removed.len(),
+        report.repinned.len(),
+        report.unchanged.0
+    );
+    for coordinate in &report.added {
+        let _ = writeln!(out, "- + {coordinate}");
+    }
+    for coordinate in &report.removed {
+        let _ = writeln!(out, "- - {coordinate}");
+    }
+    for repin in &report.repinned {
+        let _ = writeln!(out, "- ~ {} → {}", repin.from, repin.to);
+    }
+    for coordinate in &report.compiles {
+        let _ = writeln!(out, "- compiling {coordinate}");
+    }
+    for text in &report.unreadable {
+        let _ = writeln!(out, "- unreadable  {}", text.as_str());
+    }
+    out
+}
+
+// ── session tree ────────────────────────────────────────────────────────────────────────────────
+
+fn write_tree_node(out: &mut String, node: &TreeNode, depth: usize, active: bool) {
+    let _ = writeln!(
+        out,
+        "{}- {}{} {}  {}{}{}",
+        "  ".repeat(depth),
+        if active { "▸ " } else { "" },
+        node.id,
+        node.title.as_str(),
+        node.subject,
+        if node.collapsed { "  collapsed" } else { "" },
+        if node.opener.is_agent() {
+            format!("  {}", node.opener)
+        } else {
+            String::new()
+        }
+    );
+}
+
+fn tree_markdown(tree: &SessionTree) -> String {
+    let mut out = String::new();
+    heading(&mut out, "tree");
+    if tree.nodes.is_empty() {
+        out.push_str("(nothing open)\n");
+    }
+    for (node, depth, hidden) in tree.walk() {
+        if hidden {
+            continue;
+        }
+        write_tree_node(&mut out, node, depth, tree.active == Some(node.id));
+    }
+    out
+}
+
+fn tree_outcome_markdown(title: &str, outcome: &TreeOutcome) -> String {
+    let mut out = String::new();
+    heading(&mut out, title);
+    match outcome {
+        TreeOutcome::Opened { node, reused } => {
+            out.push_str(if *reused { "focused\n" } else { "opened\n" });
+            write_tree_node(&mut out, node, 0, true);
+        }
+        TreeOutcome::Closed { removed } => {
+            let _ = writeln!(out, "closed {} node(s)", removed.0);
+        }
+    }
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -1437,6 +2001,7 @@ mod tests {
             },
             census: census(),
             published_at: Timestamp(1_000_000 - 7_200),
+            source_root: None,
         };
         let text = render(
             &Reply::Packages(Ok(shelf(ShelfStatus::Ready { card }))),

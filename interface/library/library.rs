@@ -342,6 +342,8 @@ impl Library {
             (Capability::Graph, CapabilityState::Ready),
             (Capability::Vector, CapabilityState::Unconfigured),
             (Capability::Embedder, CapabilityState::Unconfigured),
+            (Capability::Registry, CapabilityState::Unconfigured),
+            (Capability::Sources, CapabilityState::Unconfigured),
         ])
     }
 
@@ -364,10 +366,33 @@ impl Library {
             }
             Command::PackageVersions { name } => Reply::Versions(self.package_versions(&name)),
             Command::PackageProfile { name } => Reply::Profiled(self.package_profile(&name)),
+            Command::Source(request) => Reply::Source(self.source(&request)),
+            Command::Related(request) => Reply::Related(self.related(&request)),
+            Command::Read(request) => Reply::Read(self.read_pages(&request)),
+            Command::Diff(request) => Reply::Diffed(self.diff(&request)),
+            Command::Explore(request) => Reply::Explored(self.explore(&request)),
+            Command::Package(request) => Reply::Detailed(self.package_detail(&request)),
+            Command::Dependents(request) => Reply::Dependents(self.dependents(&request)),
+            Command::Owner(request) => Reply::Owned(self.owner(&request)),
+            Command::Subscribe(request) => Reply::Subscribed(self.subscribe(&request)),
+            Command::Unsubscribe { key } => Reply::Unsubscribed(self.unsubscribe(&key)),
+            Command::Subscriptions => Reply::Subscriptions(self.subscriptions()),
+            Command::Releases(request) => Reply::Releases(self.releases(&request)),
+            Command::Projects => Reply::Projects(self.projects()),
+            Command::ProjectCreate(request) => Reply::ProjectCreated(self.project_create(&request)),
+            Command::ProjectDelete { selector } => {
+                Reply::ProjectDeleted(self.project_delete(&selector))
+            }
+            Command::ProjectAdd(change) => Reply::ProjectAdded(self.project_add(&change)),
+            Command::ProjectRemove(change) => Reply::ProjectRemoved(self.project_remove(&change)),
+            Command::ProjectSync(request) => Reply::ProjectSynced(self.project_sync(&request)),
+            Command::Tree => Reply::Tree(self.tree()),
+            Command::TreeOpen(request) => Reply::TreeOpened(self.tree_open(&request)),
+            Command::TreeClose(request) => Reply::TreeClosed(self.tree_close(&request)),
         }
     }
 
-    fn show(
+    pub(crate) fn show(
         &self,
         locator: &PageLocator,
         limits: interface_documents::ProjectionLimits,

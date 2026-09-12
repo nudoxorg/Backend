@@ -110,6 +110,26 @@ impl IdentifiedWorker for ModeBackend<'_> {
     }
 }
 
+struct ReplyBackend<'hits> {
+    id: WorkerId,
+    reply: WorkerReply<'hits, 'hits>,
+}
+
+impl WorkerBackend for ReplyBackend<'_> {
+    fn execute<'worker>(
+        &'worker self,
+        _request: WorkerRequest<'_>,
+    ) -> WorkerResponse<'worker, 'worker> {
+        WorkerResponse::Reply(self.reply)
+    }
+}
+
+impl IdentifiedWorker for ReplyBackend<'_> {
+    fn id(&self) -> WorkerId {
+        self.id
+    }
+}
+
 fn retry(attempts: u8) -> Option<RetryPolicy> {
     RetryPolicy::new(attempts).ok()
 }
@@ -591,6 +611,67 @@ fn wrong_terminal_attempt_and_top_k_are_typed_failures() {
             &mut output,
         ),
         Err(ExecuteError::PlanMismatch)
+    );
+}
+
+#[test]
+fn reply_for_another_valid_assignment_is_rejected() {
+    let segments = [segment(1), segment(2)];
+    let workers = [WorkerId::new(1), WorkerId::new(2)];
+    let snapshot = index_snapshot(&segments).expect("two-segment fixture must be valid");
+    let retry = retry(1).expect("one-attempt retry policy must be valid");
+    let coordinator = Coordinator::new(snapshot, &workers, retry)
+        .expect("two-worker coordinator fixture must be valid");
+    let plan = coordinator
+        .plan(Query::new(b"q", OrderingRecipe::new(1)))
+        .expect("two-segment query plan must be valid");
+    let first_assignment = assignment(&plan, 0, segments[0])
+        .expect("first selected segment must have an assignment");
+    let second_assignment = assignment(&plan, 1, segments[1])
+        .expect("second selected segment must have an assignment");
+    let first_worker = first_assignment
+        .candidate(0)
+        .expect("first assignment must have a primary worker");
+    let second_worker = second_assignment
+        .candidate(0)
+        .expect("second assignment must have a primary worker");
+    let second_attempt = RouteAttempt {
+        route: plan.route(),
+        snapshot: plan.snapshot(),
+        query: plan.query(),
+        segment_ordinal: second_assignment.ordinal,
+        segment: second_assignment.segment,
+        range: second_assignment.range,
+        worker: second_worker,
+        ordinal: AttemptOrdinal::new(0),
+    };
+    let rows = [hit(segments[1], 9, 1)];
+    let backend = [ReplyBackend {
+        id: first_worker,
+        reply: WorkerReply::new(second_attempt, &rows),
+    }];
+    let cancellation = Cancellation::new();
+    let mut seen = [None; 2];
+    let mut missing = [MissingAssignment {
+        ordinal: SegmentOrdinal(0),
+        segment: segment(0),
+        range: SegmentRange::whole(),
+    }; 2];
+    let mut output = [RoutedHitSlot::vacant(); 2];
+
+    assert_eq!(
+        coordinator.execute(
+            plan,
+            Query::new(b"q", OrderingRecipe::new(1)),
+            &backend,
+            &cancellation,
+            &mut seen,
+            &mut missing,
+            &mut output,
+        ),
+        Err(ExecuteError::Merge(MergeError::Reply(
+            ReplyError::ResponseAttempt
+        )))
     );
 }
 

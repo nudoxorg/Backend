@@ -559,6 +559,7 @@ fn card() -> PackageCard {
         },
         census,
         published_at: Timestamp(1_700_000_000),
+        source_root: None,
     }
 }
 

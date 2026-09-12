@@ -1,0 +1,23 @@
+# Defines the `server-index-registry` package and its explicit dependency boundary.
+# The crate exists to read live package registries into typed, cached package facts for every ecosystem.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "server-index-registry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+server-index-acquire = { path = "../acquire" }
+thiserror.workspace = true
+ureq.workspace = true
+
+[lints]
+workspace = true

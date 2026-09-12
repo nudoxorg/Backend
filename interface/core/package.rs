@@ -16,7 +16,7 @@ use crate::GenerateTarget;
 pub const MAX_PACKAGE_URL_BYTES: usize = 2_048;
 
 /// One supported package ecosystem with exactly one compiler language family.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum PackageEcosystem {
     /// Rust crates.io or Cargo-vendored package.
     Cargo,

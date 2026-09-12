@@ -4,6 +4,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "GUI2",
     "compiler/*",
     "compiler/languages/*",
     "heart/*",

@@ -24,7 +24,7 @@ use interface_documents::{
 };
 use interface_identity::{
     AddressParseError, CoordinateParseError, KeyParseError, KindTag, PackageCoordinate,
-    PathParseError,
+    PathParseError, ecosystem_tag,
 };
 use interface_search::{
     GraphTerminal, Hit, Lane, LaneReport, SearchTerminal, Truncation, relation_label,
@@ -32,14 +32,18 @@ use interface_search::{
 
 use crate::{
     AddFailure, AddOutcome, AddRejection, Capability, CapabilityState, CompilePhaseProgress,
-    ExploreCoverage, ExploreError, Health, IndexSearchPage, PackageProfile, PackageVersionRow,
-    PackageVersionRows, PageError, RejectedAdd, RemoveOutcome, Reply, Resolution, ResolveError,
-    Shelf, ShelfEntry, ShelfError, ShelfFailure, ShelfStatus, Timestamp,
+    DependencyKind, DependentsPage, ExploreCoverage, ExploreError, ExplorePage, FollowOutcome,
+    Health, IndexSearchPage, Origin, OwnerKind, OwnerPage, PackageDetail, PackageProfile,
+    PackageVersionRow, PackageVersionRows, PageError, Project, Projects, Provenance, RegistryCard,
+    RejectedAdd, Related, Relation, Releases, RemoveOutcome, Reply, Resolution, ResolveError,
+    SessionTree, Shelf, ShelfEntry, ShelfError, ShelfFailure, ShelfStatus, SourceText,
+    Subscription, Subscriptions, SyncReport, Timestamp, TreeNode, TreeOutcome,
     render::common::{
         Affordance, Affordances, EXAMPLE_PACKAGE_URL, Fault, RelativeAddress, RenderContext,
-        add_affordance, capability_glyph, capability_slug, explore_error_detail,
-        explore_error_slug, explore_unavailable_slug, lane_signal, package_url_slug, phase_dots,
-        rejection_slug, shelf_failure_slug, visibility_label, write_fault,
+        add_affordance, capability_glyph, capability_slug, coverage_word, explore_error_detail,
+        explore_error_slug, explore_unavailable_slug, follow_fault, lane_signal, package_url_slug,
+        phase_dots, project_fault, registry_fault, rejection_slug, shelf_failure_slug,
+        source_fault, tree_fault, visibility_label, write_fault,
     },
 };
 
@@ -266,6 +270,50 @@ pub fn render(reply: &Reply, options: &TextOptions<'_>) -> String {
         Reply::IndexSearched(Err(error))
         | Reply::Versions(Err(error))
         | Reply::Profiled(Err(error)) => fault(&explore_fault(error, options), options),
+        Reply::Source(Ok(source)) => source_text(source, options),
+        Reply::Source(Err(error)) => {
+            fault(&source_fault(error, |inner| page_fault(inner, options)), options)
+        }
+        Reply::Related(Ok(related)) => related_text(related, options),
+        Reply::Related(Err(error)) => page_error_text(error, options),
+        Reply::Explored(Ok(page)) => explore_text(page, options),
+        Reply::Detailed(Ok(detail)) => detail_text(detail, options),
+        Reply::Dependents(Ok(page)) => dependents_text(page, options),
+        Reply::Owned(Ok(page)) => owner_text(page, options),
+        Reply::Explored(Err(error))
+        | Reply::Detailed(Err(error))
+        | Reply::Dependents(Err(error))
+        | Reply::Owned(Err(error)) => fault(&registry_fault(error), options),
+        Reply::Subscribed(Ok(outcome)) | Reply::Unsubscribed(Ok(outcome)) => {
+            follow_outcome_text(outcome, options)
+        }
+        Reply::Subscriptions(Ok(subscriptions)) => subscriptions_text(subscriptions, options),
+        Reply::Releases(Ok(releases)) => releases_text(releases, options),
+        Reply::Subscribed(Err(error))
+        | Reply::Unsubscribed(Err(error))
+        | Reply::Subscriptions(Err(error))
+        | Reply::Releases(Err(error)) => fault(&follow_fault(error), options),
+        Reply::Projects(Ok(projects)) => projects_text(projects, options),
+        Reply::ProjectCreated(Ok(project))
+        | Reply::ProjectAdded(Ok(project))
+        | Reply::ProjectRemoved(Ok(project)) => project_text(project, options),
+        Reply::ProjectDeleted(Ok(id)) => {
+            format!("{} project {id}\n", options.palette.dim("deleted"))
+        }
+        Reply::ProjectSynced(Ok(report)) => sync_text(report, options),
+        Reply::Projects(Err(error))
+        | Reply::ProjectCreated(Err(error))
+        | Reply::ProjectDeleted(Err(error))
+        | Reply::ProjectAdded(Err(error))
+        | Reply::ProjectRemoved(Err(error))
+        | Reply::ProjectSynced(Err(error)) => fault(&project_fault(error), options),
+        Reply::Tree(Ok(tree)) => tree_text(tree, options),
+        Reply::TreeOpened(Ok(outcome)) | Reply::TreeClosed(Ok(outcome)) => {
+            tree_outcome_text(outcome, options)
+        }
+        Reply::Tree(Err(error)) | Reply::TreeOpened(Err(error)) | Reply::TreeClosed(Err(error)) => {
+            fault(&tree_fault(error), options)
+        }
     }
 }
 
@@ -319,6 +367,25 @@ pub fn fault_of(reply: &Reply, options: &TextOptions<'_>) -> Option<Fault> {
             ),
             _ => None,
         },
+        Reply::Source(Err(error)) => Some(source_fault(error, |inner| page_fault(inner, options))),
+        Reply::Related(Err(error)) => Some(page_fault(error, options)),
+        Reply::Explored(Err(error))
+        | Reply::Detailed(Err(error))
+        | Reply::Dependents(Err(error))
+        | Reply::Owned(Err(error)) => Some(registry_fault(error)),
+        Reply::Subscribed(Err(error))
+        | Reply::Unsubscribed(Err(error))
+        | Reply::Subscriptions(Err(error))
+        | Reply::Releases(Err(error)) => Some(follow_fault(error)),
+        Reply::Projects(Err(error))
+        | Reply::ProjectCreated(Err(error))
+        | Reply::ProjectDeleted(Err(error))
+        | Reply::ProjectAdded(Err(error))
+        | Reply::ProjectRemoved(Err(error))
+        | Reply::ProjectSynced(Err(error)) => Some(project_fault(error)),
+        Reply::Tree(Err(error)) | Reply::TreeOpened(Err(error)) | Reply::TreeClosed(Err(error)) => {
+            Some(tree_fault(error))
+        }
         _ => None,
     }
 }
@@ -1303,6 +1370,582 @@ fn ellipsize(text: &str, budget: usize) -> String {
     }
     let mut out: String = text.chars().take(budget.saturating_sub(1)).collect();
     out.push('\u{2026}');
+    out
+}
+
+// ---------------------------------------------------------------- source and related
+
+fn source_text(source: &SourceText, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = String::new();
+    line(
+        &mut out,
+        &format!(
+            "{} {}:{}{}",
+            palette.strong(source.symbol.name.as_str()),
+            source.file.as_str(),
+            source.first_line.0,
+            if source.truncated { "  (truncated)" } else { "" }
+        ),
+    );
+    let start = usize::try_from(source.highlight.start.0).unwrap_or(usize::MAX);
+    let end = usize::try_from(source.highlight.end.0).unwrap_or(usize::MAX);
+    let mut offset = 0_usize;
+    for (index, text) in source.text.as_str().lines().enumerate() {
+        let number = u64::from(source.first_line.0).saturating_add(u64::try_from(index).unwrap_or(u64::MAX));
+        let inside = offset < end && offset.saturating_add(text.len()) >= start;
+        let mark = if inside { "▎" } else { " " };
+        line(
+            &mut out,
+            &format!("{}{mark} {text}", palette.dim(&format!("{number:>5}"))),
+        );
+        offset = offset.saturating_add(text.len()).saturating_add(1);
+    }
+    out
+}
+
+fn related_text(related: &Related, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let home = related.symbol.package().clone();
+    let relative = RelativeAddress::to(&home);
+    let mut out = String::new();
+    line(
+        &mut out,
+        &format!(
+            "{}  ~graph {}  ~semantic {}",
+            palette.strong(&related.symbol.address.to_string()),
+            coverage_word(related.graph),
+            coverage_word(related.semantic)
+        ),
+    );
+    if related.rows.is_empty() {
+        line(&mut out, &palette.dim("nothing related"));
+    }
+    for row in &related.rows {
+        let reason = match row.relation {
+            Relation::Linked { kind, direction } => format!(
+                "{}{}",
+                relation_arrow(direction),
+                relation_label(kind, direction).as_str()
+            ),
+            Relation::Sibling => "sibling".to_owned(),
+            Relation::Semantic { score } => format!("semantic {}", score.0),
+            Relation::Lexical { score } => format!("lexical {}", score.0),
+        };
+        let summary = row.summary.as_ref().map_or(String::new(), |summary| {
+            format!("  {}", palette.dim(&ellipsize(summary.as_str(), 60)))
+        });
+        line(
+            &mut out,
+            &format!(
+                "  {} {}  {}{summary}",
+                palette.dim(KindTag::of(row.symbol.kind).as_str()),
+                relative.symbol(&row.symbol),
+                palette.dim(&reason)
+            ),
+        );
+    }
+    out
+}
+
+const fn relation_arrow(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Outgoing => "→ ",
+        Direction::Incoming => "← ",
+    }
+}
+
+// ---------------------------------------------------------------- registry
+
+fn card_line(card: &RegistryCard, palette: Palette) -> String {
+    let version = card
+        .offered_version()
+        .map_or(String::new(), |version| format!(" {}", version.as_str()));
+    let downloads = card
+        .downloads
+        .and_then(|downloads| downloads.total.or(downloads.recent))
+        .map_or(String::new(), |count| format!("  {}", palette.dim(&count.compact())));
+    let shelf = if card.on_shelf.is_some() {
+        palette.good("  ✓ shelf")
+    } else {
+        String::new()
+    };
+    let description = card.description.as_ref().map_or(String::new(), |text| {
+        format!("  {}", ellipsize(&collapse(text.as_str()), 72))
+    });
+    format!(
+        "{}:{}{version}{downloads}{shelf}{description}",
+        ecosystem_tag(card.ecosystem).as_str(),
+        palette.strong(card.name.as_str())
+    )
+}
+
+fn provenance_line(provenance: Provenance, options: &TextOptions<'_>) -> String {
+    let origin = match provenance.origin {
+        Origin::Live => "live",
+        Origin::Cached if provenance.stale => "cached · stale",
+        Origin::Cached => "cached",
+    };
+    options.palette.dim(&format!(
+        "~registry {origin} {}",
+        compact_age(options.context.now, provenance.fetched_at)
+    ))
+}
+
+fn explore_text(page: &ExplorePage, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = String::new();
+    for card in &page.cards {
+        line(&mut out, &card_line(card, palette));
+    }
+    if page.cards.is_empty() {
+        line(&mut out, &palette.dim("no packages"));
+    }
+    let more = if page.has_more { "  more →" } else { "" };
+    let total = page
+        .total
+        .map_or(String::new(), |count| format!("  of {}", count.0));
+    line(
+        &mut out,
+        &format!(
+            "{}  {}",
+            palette.dim(&format!(
+                "page {} · {} · {}{total}{more}",
+                page.request.page.get(),
+                page.request.sort.name(),
+                page.cards.len()
+            )),
+            provenance_line(page.provenance, options)
+        ),
+    );
+    out
+}
+
+fn detail_text(detail: &PackageDetail, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = String::new();
+    line(&mut out, &card_line(&detail.card, palette));
+    line(
+        &mut out,
+        &format!(
+            "{} {}  {} {}",
+            palette.dim("selected"),
+            detail.selected.as_str(),
+            palette.dim("install"),
+            detail.install.command.as_str()
+        ),
+    );
+    if let Some(license) = &detail.card.license {
+        line(
+            &mut out,
+            &format!("{} {}", palette.dim("license"), license.as_str()),
+        );
+    }
+    for (label, url) in [
+        ("repository", detail.links.repository.as_ref()),
+        ("homepage", detail.links.homepage.as_ref()),
+        ("documentation", detail.links.documentation.as_ref()),
+    ] {
+        if let Some(url) = url {
+            line(&mut out, &format!("{} {}", palette.dim(label), url.as_str()));
+        }
+    }
+    if !detail.owners.is_empty() {
+        let owners: Vec<&str> = detail
+            .owners
+            .iter()
+            .map(|owner| owner.handle.as_str())
+            .collect();
+        line(
+            &mut out,
+            &format!("{} {}", palette.dim("owners"), owners.join(" ")),
+        );
+    }
+    if !detail.versions.is_empty() {
+        line(
+            &mut out,
+            &palette.dim(&format!("versions {}", detail.versions.len())),
+        );
+        for version in detail.versions.iter().take(12) {
+            let yanked = if version.yanked {
+                palette.dim("  yanked")
+            } else {
+                String::new()
+            };
+            let when = version.published_at.map_or(String::new(), |at| {
+                format!("  {}", compact_age(options.context.now, at))
+            });
+            line(
+                &mut out,
+                &format!("  {}{when}{yanked}", version.version.as_str()),
+            );
+        }
+    }
+    if !detail.dependencies.is_empty() {
+        line(
+            &mut out,
+            &palette.dim(&format!("dependencies {}", detail.dependencies.len())),
+        );
+        for dependency in &detail.dependencies {
+            let kind = if matches!(dependency.kind, DependencyKind::Normal) {
+                String::new()
+            } else {
+                format!("  {}", palette.dim(dependency.kind.label()))
+            };
+            let optional = if dependency.optional {
+                palette.dim("  optional")
+            } else {
+                String::new()
+            };
+            line(
+                &mut out,
+                &format!(
+                    "  {} {}{kind}{optional}",
+                    dependency.name.as_str(),
+                    palette.dim(dependency.requirement.as_str())
+                ),
+            );
+        }
+    }
+    let dependents = detail.dependents.count.map_or_else(
+        || detail.dependents.sample.len().to_string(),
+        |count| count.0.to_string(),
+    );
+    line(&mut out, &palette.dim(&format!("dependents {dependents}")));
+    for card in detail.dependents.sample.iter().take(8) {
+        line(&mut out, &format!("  {}", card_line(card, palette)));
+    }
+    if let Some(readme) = &detail.readme {
+        line(&mut out, &palette.dim("readme"));
+        for text in readme.markdown.as_str().lines().take(40) {
+            line(&mut out, &format!("  {text}"));
+        }
+    }
+    line(&mut out, &provenance_line(detail.provenance, options));
+    out
+}
+
+fn dependents_text(page: &DependentsPage, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = String::new();
+    for card in &page.cards {
+        line(&mut out, &card_line(card, palette));
+    }
+    if page.cards.is_empty() {
+        line(&mut out, &palette.dim("no dependents"));
+    }
+    let more = if page.has_more { "  more →" } else { "" };
+    line(
+        &mut out,
+        &format!(
+            "{}  {}",
+            palette.dim(&format!(
+                "page {} · {}{more}",
+                page.page.get(),
+                page.cards.len()
+            )),
+            provenance_line(page.provenance, options)
+        ),
+    );
+    out
+}
+
+fn owner_text(page: &OwnerPage, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = String::new();
+    let kind = match page.owner.kind {
+        OwnerKind::User => "user",
+        OwnerKind::Team => "team",
+    };
+    let display = page
+        .owner
+        .display
+        .as_ref()
+        .map_or(String::new(), |display| format!("  {}", display.as_str()));
+    line(
+        &mut out,
+        &format!(
+            "{} {}{display}",
+            palette.strong(page.owner.handle.as_str()),
+            palette.dim(kind)
+        ),
+    );
+    for card in &page.cards {
+        line(&mut out, &card_line(card, palette));
+    }
+    for (ecosystem, error) in &page.faults {
+        line(
+            &mut out,
+            &palette.dim(&format!(
+                "{} ✗ {}",
+                ecosystem_tag(*ecosystem).as_str(),
+                error.slug()
+            )),
+        );
+    }
+    line(&mut out, &provenance_line(page.provenance, options));
+    out
+}
+
+// ---------------------------------------------------------------- subscriptions
+
+fn subscription_line(row: &Subscription, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let seen = row.seen.as_ref().map_or_else(
+        || palette.dim("unchecked"),
+        |version| version.as_str().to_owned(),
+    );
+    let unseen = if row.unseen.0 == 0 {
+        String::new()
+    } else {
+        palette.accent(&format!("  +{} new", row.unseen.0))
+    };
+    let project = row.project.map_or(String::new(), |project| {
+        format!("  {}", palette.dim(&format!("project {project}")))
+    });
+    format!(
+        "{}  {seen}{unseen}{project}",
+        palette.strong(&row.key.to_string())
+    )
+}
+
+fn follow_outcome_text(outcome: &FollowOutcome, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = String::new();
+    match outcome {
+        FollowOutcome::Followed { subscription } => line(
+            &mut out,
+            &format!(
+                "{} {}",
+                palette.good("following"),
+                subscription_line(subscription, options)
+            ),
+        ),
+        FollowOutcome::AlreadyFollowing { subscription } => line(
+            &mut out,
+            &format!(
+                "{} {}",
+                palette.dim("already following"),
+                subscription_line(subscription, options)
+            ),
+        ),
+        FollowOutcome::Unfollowed { key } => {
+            line(&mut out, &format!("{} {key}", palette.dim("unfollowed")));
+        }
+        FollowOutcome::NotFollowing { key } => {
+            line(&mut out, &format!("{} {key}", palette.dim("was not following")));
+        }
+    }
+    out
+}
+
+fn subscriptions_text(subscriptions: &Subscriptions, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = String::new();
+    for row in &subscriptions.rows {
+        line(&mut out, &subscription_line(row, options));
+    }
+    if subscriptions.rows.is_empty() {
+        line(&mut out, &palette.dim("no subscriptions"));
+    }
+    line(
+        &mut out,
+        &palette.dim(&format!(
+            "{} followed · {} unseen · epoch {}",
+            subscriptions.rows.len(),
+            subscriptions.unseen.0,
+            subscriptions.epoch.0
+        )),
+    );
+    out
+}
+
+fn releases_text(releases: &Releases, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = String::new();
+    for row in &releases.rows {
+        let when = row.published_at.map_or(String::new(), |at| {
+            format!("  {}", compact_age(options.context.now, at))
+        });
+        let pre = if row.prerelease {
+            palette.dim("  pre-release")
+        } else {
+            String::new()
+        };
+        let seen = if row.seen {
+            palette.dim("  seen")
+        } else {
+            String::new()
+        };
+        line(
+            &mut out,
+            &format!(
+                "{} {}{when}{pre}{seen}",
+                palette.strong(&row.key.to_string()),
+                row.version.as_str()
+            ),
+        );
+    }
+    if releases.rows.is_empty() {
+        line(&mut out, &palette.dim("nothing new"));
+    }
+    for fault_row in &releases.faults {
+        line(
+            &mut out,
+            &palette.dim(&format!("{} ✗ {}", fault_row.key, fault_row.error.slug())),
+        );
+    }
+    line(&mut out, &provenance_line(releases.provenance, options));
+    out
+}
+
+// ---------------------------------------------------------------- projects
+
+fn project_text(project: &Project, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = String::new();
+    let binding = project.binding.as_ref().map_or(String::new(), |binding| {
+        format!("  {}", palette.dim(&binding.path.display().to_string()))
+    });
+    let synced = project.synced_at.map_or(String::new(), |at| {
+        format!(
+            "  {}",
+            palette.dim(&format!("synced {}", compact_age(options.context.now, at)))
+        )
+    });
+    line(
+        &mut out,
+        &format!(
+            "{} {}  {}  {} members{binding}{synced}",
+            palette.dim(&project.id.to_string()),
+            palette.strong(project.name.as_str()),
+            palette.dim(project.hue.name()),
+            project.members.len()
+        ),
+    );
+    for member in &project.members {
+        line(&mut out, &format!("  {member}"));
+    }
+    out
+}
+
+fn projects_text(projects: &Projects, options: &TextOptions<'_>) -> String {
+    let mut out = String::new();
+    for project in &projects.rows {
+        out.push_str(&project_text(project, options));
+    }
+    if projects.rows.is_empty() {
+        line(&mut out, &options.palette.dim("no projects"));
+    }
+    out
+}
+
+fn sync_text(report: &SyncReport, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = project_text(&report.project, options);
+    for coordinate in &report.added {
+        line(&mut out, &format!("{} {coordinate}", palette.good("+")));
+    }
+    for coordinate in &report.removed {
+        line(&mut out, &format!("{} {coordinate}", palette.dim("-")));
+    }
+    for repin in &report.repinned {
+        line(
+            &mut out,
+            &format!("{} {} → {}", palette.accent("~"), repin.from, repin.to),
+        );
+    }
+    for coordinate in &report.compiles {
+        line(&mut out, &format!("{} {coordinate}", palette.dim("compiling")));
+    }
+    for text in &report.unreadable {
+        line(
+            &mut out,
+            &palette.dim(&format!("unreadable  {}", text.as_str())),
+        );
+    }
+    line(
+        &mut out,
+        &palette.dim(&format!(
+            "{} added · {} removed · {} repinned · {} unchanged",
+            report.added.len(),
+            report.removed.len(),
+            report.repinned.len(),
+            report.unchanged.0
+        )),
+    );
+    out
+}
+
+// ---------------------------------------------------------------- session tree
+
+fn tree_node_line(
+    node: &TreeNode,
+    depth: usize,
+    active: bool,
+    options: &TextOptions<'_>,
+) -> String {
+    let palette = options.palette;
+    let indent = "  ".repeat(depth);
+    let mark = if active {
+        palette.accent("▸")
+    } else {
+        " ".to_owned()
+    };
+    let collapsed = if node.collapsed {
+        palette.dim(" +")
+    } else {
+        String::new()
+    };
+    let opener = if node.opener.is_agent() {
+        format!("  {}", palette.accent(&node.opener.to_string()))
+    } else {
+        String::new()
+    };
+    format!(
+        "{mark}{indent}{} {}  {}{collapsed}{opener}",
+        palette.dim(&node.id.to_string()),
+        palette.strong(node.title.as_str()),
+        palette.dim(&node.subject.to_string())
+    )
+}
+
+fn tree_text(tree: &SessionTree, options: &TextOptions<'_>) -> String {
+    let mut out = String::new();
+    for (node, depth, hidden) in tree.walk() {
+        if hidden {
+            continue;
+        }
+        line(
+            &mut out,
+            &tree_node_line(node, depth, tree.active == Some(node.id), options),
+        );
+    }
+    if tree.nodes.is_empty() {
+        line(&mut out, &options.palette.dim("nothing open"));
+    }
+    out
+}
+
+fn tree_outcome_text(outcome: &TreeOutcome, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = String::new();
+    match outcome {
+        TreeOutcome::Opened { node, reused } => line(
+            &mut out,
+            &format!(
+                "{} {}",
+                palette.dim(if *reused { "focused" } else { "opened" }),
+                tree_node_line(node, 0, true, options)
+            ),
+        ),
+        TreeOutcome::Closed { removed } => {
+            line(
+                &mut out,
+                &palette.dim(&format!("closed {} node(s)", removed.0)),
+            );
+        }
+    }
     out
 }
 

@@ -88,7 +88,10 @@ in
       {
         name = "interface-gui";
         description = "Native graphical interface projection";
-        patterns = [ "^/interface/(gui|gpui)/" ];
+        patterns = [
+          "^/interface/(gui|gpui)/"
+          "^/GUI2/"
+        ];
       }
       {
         name = "server-index";

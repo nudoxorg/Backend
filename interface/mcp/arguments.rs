@@ -11,9 +11,15 @@
 use interface_core::PackageUrl;
 use interface_documents::ProjectionLimits;
 use interface_identity::{Address, ContentKey, KindTag, PackageCoordinate};
+use interface_documents::Text;
+use interface_identity::{PackageVersion, parse_ecosystem_tag};
 use interface_library::{
-    Command, CommandId, ExploreLimit, ExplorePackageName, ExploreQuery, ExploreQueryError,
-    ExplorePackageNameError, PageLocator,
+    Command, CommandId, ContextLines, CreateProject, DependentsRequest, DetailRequest,
+    ExploreLimit, ExplorePackageName, ExploreQuery, ExploreQueryError, ExplorePackageNameError,
+    ExploreRequest, ExploreSort, FollowKey, FollowRequest, LockfileBinding, MemberChange, Opener,
+    OwnerHandle, OwnerRequest, PageLocator, PageNumber, ProjectHue, ProjectName, ProjectSelector,
+    RelatedRequest, ReleasesRequest, SourceRequest, SyncCompile, SyncRequest, TreeCloseRequest,
+    TreeCloseScope, TreeNodeId, TreeOpenRequest, TreeSubject,
     render::common::{Affordance, Fault, add_affordance},
 };
 use interface_search::{
@@ -71,8 +77,88 @@ pub fn decode(tool: &str, arguments: &Map<String, Value>) -> Result<Command, Fau
         CommandId::PackageProfile => Ok(Command::PackageProfile {
             name: package_name(arguments)?,
         }),
+        CommandId::Source => Ok(Command::Source(SourceRequest {
+            locator: locator(text(arguments, "address")?)?,
+            context: whole_number(arguments, "context")?.map_or_else(ContextLines::default, |value| {
+                ContextLines::clamped(u8::try_from(value).unwrap_or(u8::MAX))
+            }),
+        })),
+        CommandId::Related => Ok(Command::Related(RelatedRequest {
+            locator: locator(text(arguments, "address")?)?,
+            limit: limit(arguments)?,
+        })),
+        CommandId::Explore => explore(arguments).map(Command::Explore),
+        CommandId::Package => {
+            let (key, version) = follow_key(arguments, "package")?;
+            Ok(Command::Package(DetailRequest {
+                ecosystem: key.ecosystem,
+                name: explore_name(&key)?,
+                version,
+            }))
+        }
+        CommandId::Dependents => {
+            let (key, _) = follow_key(arguments, "package")?;
+            Ok(Command::Dependents(DependentsRequest {
+                ecosystem: key.ecosystem,
+                name: explore_name(&key)?,
+                page: page(arguments)?,
+                limit: explore_limit(arguments)?,
+            }))
+        }
+        CommandId::Owner => Ok(Command::Owner(OwnerRequest {
+            ecosystem: ecosystem(arguments)?,
+            handle: owner_handle(arguments)?,
+        })),
+        CommandId::Subscribe => {
+            let (key, _) = follow_key(arguments, "package")?;
+            Ok(Command::Subscribe(FollowRequest {
+                key,
+                project: project_selector(arguments, "project")?,
+            }))
+        }
+        CommandId::Unsubscribe => {
+            let (key, _) = follow_key(arguments, "package")?;
+            Ok(Command::Unsubscribe { key })
+        }
+        CommandId::Subscriptions => Ok(Command::Subscriptions),
+        CommandId::Releases => Ok(Command::Releases(ReleasesRequest {
+            mark_seen: flag(arguments, "mark_seen")?,
+        })),
+        CommandId::Projects => Ok(Command::Projects),
+        CommandId::ProjectCreate => Ok(Command::ProjectCreate(CreateProject {
+            name: project_name(arguments)?,
+            binding: lockfile(arguments)?,
+            hue: hue(arguments)?,
+        })),
+        CommandId::ProjectDelete => Ok(Command::ProjectDelete {
+            selector: project_selector(arguments, "project")?.ok_or_else(|| missing("project"))?,
+        }),
+        CommandId::ProjectAdd => member_change(arguments).map(Command::ProjectAdd),
+        CommandId::ProjectRemove => member_change(arguments).map(Command::ProjectRemove),
+        CommandId::ProjectSync => Ok(Command::ProjectSync(SyncRequest {
+            selector: project_selector(arguments, "project")?.ok_or_else(|| missing("project"))?,
+            compile: if flag(arguments, "compile")? {
+                SyncCompile::Missing
+            } else {
+                SyncCompile::Never
+            },
+        })),
+        CommandId::Tree => Ok(Command::Tree),
+        CommandId::TreeOpen => tree_open(arguments).map(Command::TreeOpen),
+        CommandId::TreeClose => Ok(Command::TreeClose(TreeCloseRequest {
+            node: node_id(arguments, "node")?.ok_or_else(|| missing("node"))?,
+            scope: if flag(arguments, "branch")? {
+                TreeCloseScope::Branch
+            } else {
+                TreeCloseScope::Node
+            },
+        })),
     }
 }
+
+/// The client name this process records as the opener of every tree node it touches, until the
+/// handshake supplies the client's own name.
+pub const DEFAULT_CLIENT: &str = "agent";
 
 /// The fields each tool accepts, in the order its schema publishes them.
 const fn accepted_fields(id: CommandId) -> &'static [&'static str] {
@@ -85,6 +171,21 @@ const fn accepted_fields(id: CommandId) -> &'static [&'static str] {
         CommandId::Graph => &["address", "relation", "depth", "limit"],
         CommandId::IndexSearch => &["query", "limit"],
         CommandId::PackageVersions | CommandId::PackageProfile => &["package"],
+        CommandId::Source => &["address", "context"],
+        CommandId::Related => &["address", "limit"],
+        CommandId::Explore => &["query", "ecosystem", "sort", "page", "limit"],
+        CommandId::Package | CommandId::Unsubscribe => &["package"],
+        CommandId::Dependents => &["package", "page", "limit"],
+        CommandId::Owner => &["handle", "ecosystem"],
+        CommandId::Subscribe => &["package", "project"],
+        CommandId::Subscriptions | CommandId::Projects | CommandId::Tree => &[],
+        CommandId::Releases => &["mark_seen"],
+        CommandId::ProjectCreate => &["name", "lockfile", "hue"],
+        CommandId::ProjectDelete => &["project"],
+        CommandId::ProjectAdd | CommandId::ProjectRemove => &["package", "project"],
+        CommandId::ProjectSync => &["project", "compile"],
+        CommandId::TreeOpen => &["subject", "kind", "parent", "focus", "title"],
+        CommandId::TreeClose => &["node", "branch"],
     }
 }
 
@@ -365,6 +466,212 @@ fn graph(arguments: &Map<String, Value>) -> Result<GraphRequest, Fault> {
             Depth::clamped(u8::try_from(value).unwrap_or(u8::MAX))
         }),
         limit: limit(arguments)?,
+    })
+}
+
+// ── the rewritten surface's rows ────────────────────────────────────────────────────────────────
+
+fn flag(arguments: &Map<String, Value>, field: &'static str) -> Result<bool, Fault> {
+    match arguments.get(field) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(Fault::new("argument-type", field, Affordance::None)
+            .detailed("this argument must be true or false")),
+    }
+}
+
+fn optional_text<'arguments>(
+    arguments: &'arguments Map<String, Value>,
+    field: &'static str,
+) -> Result<Option<&'arguments str>, Fault> {
+    match arguments.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => text(arguments, field).map(Some),
+    }
+}
+
+fn ecosystem(arguments: &Map<String, Value>) -> Result<Option<interface_core::PackageEcosystem>, Fault> {
+    let Some(spelling) = optional_text(arguments, "ecosystem")? else {
+        return Ok(None);
+    };
+    parse_ecosystem_tag(spelling).map(Some).ok_or_else(|| {
+        Fault::new("ecosystem", spelling, Affordance::None)
+            .detailed("the seven ecosystems are cargo npm pypi go maven nuget cpp")
+    })
+}
+
+fn page(arguments: &Map<String, Value>) -> Result<PageNumber, Fault> {
+    Ok(whole_number(arguments, "page")?.map_or(PageNumber::FIRST, |value| {
+        PageNumber::clamped(u32::try_from(value).unwrap_or(u32::MAX))
+    }))
+}
+
+fn explore_limit(arguments: &Map<String, Value>) -> Result<ExploreLimit, Fault> {
+    Ok(whole_number(arguments, "limit")?.map_or_else(ExploreLimit::default, |value| {
+        ExploreLimit::clamped(usize::try_from(value).unwrap_or(usize::MAX))
+    }))
+}
+
+fn explore(arguments: &Map<String, Value>) -> Result<ExploreRequest, Fault> {
+    let query = match optional_text(arguments, "query")? {
+        Some(spelling) => Some(ExploreQuery::new(spelling).map_err(|cause| {
+            Fault::new("query", spelling, Affordance::None).detailed(explore_query_detail(cause))
+        })?),
+        None => None,
+    };
+    let sort = match optional_text(arguments, "sort")? {
+        Some(spelling) => ExploreSort::parse(spelling).ok_or_else(|| {
+            Fault::new("sort", spelling, Affordance::None)
+                .detailed("the sorts are downloads updated relevance name")
+        })?,
+        None => ExploreSort::default(),
+    };
+    Ok(ExploreRequest {
+        ecosystem: ecosystem(arguments)?,
+        query,
+        sort,
+        page: page(arguments)?,
+        limit: explore_limit(arguments)?,
+    })
+}
+
+/// `ecosystem:name` with an optional `@version`, as every registry row is spelled.
+fn follow_key(
+    arguments: &Map<String, Value>,
+    field: &'static str,
+) -> Result<(FollowKey, Option<PackageVersion>), Fault> {
+    let spelling = text(arguments, field)?;
+    FollowKey::parse_pinned(spelling).map_err(|cause| {
+        Fault::new(field, spelling, Affordance::None).detailed(match cause {
+            interface_library::FollowKeyError::MissingEcosystem => {
+                "spell the package as ecosystem:name, such as cargo:serde".to_owned()
+            }
+            interface_library::FollowKeyError::UnknownEcosystem => {
+                "the seven ecosystems are cargo npm pypi go maven nuget cpp".to_owned()
+            }
+            interface_library::FollowKeyError::Name(cause) => coordinate_detail(cause),
+        })
+    })
+}
+
+fn explore_name(key: &FollowKey) -> Result<ExplorePackageName, Fault> {
+    ExplorePackageName::new(key.name.as_str()).map_err(|cause| {
+        Fault::new("package", key.name.as_str(), Affordance::None).detailed(match cause {
+            ExplorePackageNameError::Empty => "the package name is empty".to_owned(),
+            ExplorePackageNameError::TooLong { observed, maximum } => {
+                format!("{observed} bytes exceeds the {maximum}-byte package-name budget")
+            }
+        })
+    })
+}
+
+fn owner_handle(arguments: &Map<String, Value>) -> Result<OwnerHandle, Fault> {
+    let spelling = text(arguments, "handle")?;
+    OwnerHandle::new(spelling.trim_start_matches('@')).map_err(|cause| {
+        Fault::new("handle", spelling, Affordance::None).detailed(match cause {
+            interface_library::OwnerHandleError::Empty => "the handle is empty".to_owned(),
+            interface_library::OwnerHandleError::TooLong { observed, maximum } => {
+                format!("{observed} bytes exceeds the {maximum}-byte handle budget")
+            }
+            interface_library::OwnerHandleError::Character => "the handle carries whitespace".to_owned(),
+        })
+    })
+}
+
+fn project_name_detail(cause: interface_library::ProjectNameError) -> String {
+    match cause {
+        interface_library::ProjectNameError::Empty => "the project name is empty".to_owned(),
+        interface_library::ProjectNameError::TooLong { observed, maximum } => {
+            format!("{observed} bytes exceeds the {maximum}-byte project-name budget")
+        }
+        interface_library::ProjectNameError::Character => {
+            "the project name carries a control character".to_owned()
+        }
+    }
+}
+
+fn project_selector(
+    arguments: &Map<String, Value>,
+    field: &'static str,
+) -> Result<Option<ProjectSelector>, Fault> {
+    let Some(spelling) = optional_text(arguments, field)? else {
+        return Ok(None);
+    };
+    ProjectSelector::parse(spelling).map(Some).map_err(|cause| {
+        Fault::new(field, spelling, Affordance::None).detailed(project_name_detail(cause))
+    })
+}
+
+fn project_name(arguments: &Map<String, Value>) -> Result<ProjectName, Fault> {
+    let spelling = text(arguments, "name")?;
+    ProjectName::new(spelling).map_err(|cause| {
+        Fault::new("name", spelling, Affordance::None).detailed(project_name_detail(cause))
+    })
+}
+
+fn lockfile(arguments: &Map<String, Value>) -> Result<Option<LockfileBinding>, Fault> {
+    let Some(spelling) = optional_text(arguments, "lockfile")? else {
+        return Ok(None);
+    };
+    LockfileBinding::new(std::path::PathBuf::from(spelling))
+        .map(Some)
+        .map_err(|cause| Fault::new("lockfile", spelling, Affordance::None).detailed(cause.detail()))
+}
+
+fn hue(arguments: &Map<String, Value>) -> Result<Option<ProjectHue>, Fault> {
+    let Some(spelling) = optional_text(arguments, "hue")? else {
+        return Ok(None);
+    };
+    ProjectHue::parse(spelling).map(Some).ok_or_else(|| {
+        Fault::new("hue", spelling, Affordance::None)
+            .detailed("the hues are caramel teal forest green red olive sand")
+    })
+}
+
+fn member_change(arguments: &Map<String, Value>) -> Result<MemberChange, Fault> {
+    Ok(MemberChange {
+        selector: project_selector(arguments, "project")?.ok_or_else(|| missing("project"))?,
+        coordinate: coordinate(arguments, "package")?,
+    })
+}
+
+fn node_id(arguments: &Map<String, Value>, field: &'static str) -> Result<Option<TreeNodeId>, Fault> {
+    match arguments.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(_)) => Ok(whole_number(arguments, field)?
+            .and_then(|value| TreeNodeId::parse(&value.to_string()))),
+        Some(Value::String(spelling)) => TreeNodeId::parse(spelling.trim()).map(Some).ok_or_else(|| {
+            Fault::new(field, spelling.as_str(), Affordance::None)
+                .detailed("a node identity is a positive whole number from `tree`")
+        }),
+        Some(_) => Err(Fault::new("argument-type", field, Affordance::None)
+            .detailed("this argument must be a node identity")),
+    }
+}
+
+fn tree_open(arguments: &Map<String, Value>) -> Result<TreeOpenRequest, Fault> {
+    let spelling = text(arguments, "subject")?;
+    let spelled = match optional_text(arguments, "kind")? {
+        Some(kind) => format!("{kind} {spelling}"),
+        None => spelling.to_owned(),
+    };
+    let subject = TreeSubject::infer(&spelled).map_err(|cause| {
+        Fault::new("subject", spelling, Affordance::None).detailed(format!(
+            "a subject is a coordinate, an address, ecosystem:name, @handle, or search words ({cause:?})"
+        ))
+    })?;
+    let focus = match arguments.get("focus") {
+        None | Some(Value::Null) => false,
+        Some(_) => flag(arguments, "focus")?,
+    };
+    Ok(TreeOpenRequest {
+        subject,
+        parent: node_id(arguments, "parent")?,
+        opener: Opener::Mcp {
+            client: Text::new(DEFAULT_CLIENT),
+        },
+        focus,
+        title: optional_text(arguments, "title")?.map(Text::new),
     })
 }
 

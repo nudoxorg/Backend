@@ -18,7 +18,8 @@ use interface_search::{Coverage, Degradation, LaneReport, Unavailability};
 
 use crate::{
     AddRejection, Capability, CapabilityState, CompilePhaseProgress, ExploreCoverage, ExploreError,
-    ExploreUnavailable, ShelfFailure, Timestamp,
+    ExploreUnavailable, FollowError, ProjectError, RegistryError, ShelfFailure, SourceError,
+    Timestamp, TreeError,
 };
 
 /// Everything a renderer needs that a [`crate::Reply`] does not carry.
@@ -647,5 +648,99 @@ mod tests {
             unreachable!("add_affordance returns an add");
         };
         assert_eq!(package, "pkg:cargo/serde@1.0.196");
+    }
+}
+
+/// One registry refusal as the fault every surface draws.
+///
+/// An unreachable or throttled registry sends the reader to `health`; an unknown name sends them
+/// to `search`, because the most common cause is a package that lives under another spelling.
+#[must_use]
+pub fn registry_fault(error: &RegistryError) -> Fault {
+    let affordance = match error {
+        RegistryError::Offline { .. }
+        | RegistryError::RateLimited { .. }
+        | RegistryError::Cache { .. }
+        | RegistryError::Unconfigured { .. } => Affordance::Health,
+        RegistryError::NotFound { name, .. } => Affordance::Search {
+            query: name.as_str().to_owned(),
+        },
+        RegistryError::VersionUnknown { .. }
+        | RegistryError::Malformed { .. }
+        | RegistryError::Unsupported { .. } => Affordance::None,
+    };
+    Fault::new(error.slug(), error.operand(), affordance).detailed(error.detail())
+}
+
+/// One subscription refusal as the fault every surface draws.
+#[must_use]
+pub fn follow_fault(error: &FollowError) -> Fault {
+    match error {
+        FollowError::Registry(inner) => registry_fault(inner),
+        FollowError::Project(inner) => project_fault(inner),
+        FollowError::Store { .. } | FollowError::Full { .. } => {
+            Fault::new(error.slug(), String::new(), Affordance::Health).detailed(error.detail())
+        }
+    }
+}
+
+/// One project refusal as the fault every surface draws.
+#[must_use]
+pub fn project_fault(error: &ProjectError) -> Fault {
+    let affordance = match error {
+        ProjectError::Store { .. } | ProjectError::Full { .. } => Affordance::Health,
+        ProjectError::Unknown { .. }
+        | ProjectError::Duplicate { .. }
+        | ProjectError::Unbound { .. }
+        | ProjectError::Lockfile { .. }
+        | ProjectError::UnknownLockfile { .. }
+        | ProjectError::Name(_) => Affordance::None,
+    };
+    Fault::new(error.slug(), error.operand(), affordance).detailed(error.detail())
+}
+
+/// One session-tree refusal as the fault every surface draws.
+#[must_use]
+pub fn tree_fault(error: &TreeError) -> Fault {
+    let affordance = match error {
+        TreeError::Store { .. } | TreeError::Full { .. } => Affordance::Health,
+        TreeError::UnknownNode { .. } => Affordance::None,
+    };
+    Fault::new(error.slug(), error.operand(), affordance).detailed(error.detail())
+}
+
+/// One source refusal as the fault every surface draws, given the page fault the surface
+/// already knows how to build for the locate step.
+#[must_use]
+pub fn source_fault(error: &SourceError, page: impl FnOnce(&crate::PageError) -> Fault) -> Fault {
+    match error {
+        SourceError::Page(inner) => page(inner),
+        SourceError::NoSpan { symbol } => {
+            Fault::new(error.slug(), symbol.address.to_string(), Affordance::None)
+                .detailed(error.detail())
+        }
+        SourceError::NoSourceRoot { package } => Fault::new(
+            error.slug(),
+            package.to_string(),
+            Affordance::Add {
+                package: package.to_string(),
+            },
+        )
+        .detailed(error.detail()),
+        SourceError::Unreadable { file, .. } | SourceError::SpanOutOfFile { file, .. } => {
+            Fault::new(error.slug(), file.as_str(), Affordance::Health).detailed(error.detail())
+        }
+    }
+}
+
+/// One coverage value as the word every surface shows beside a lane: `✓`, `◐ 3/9`, `~ stale`,
+/// or `✗ cause`.
+#[must_use]
+pub fn coverage_word(coverage: Coverage) -> String {
+    match coverage {
+        Coverage::Complete => "✓".to_owned(),
+        Coverage::Partial { searched, total } => format!("◐ {}/{}", searched.0, total.0),
+        Coverage::Degraded { reason } => format!("~ {}", degradation_slug(reason)),
+        Coverage::Unavailable { reason } => format!("✗ {}", unavailability_slug(reason)),
     }
 }

@@ -24,6 +24,7 @@ server-index-catalog = { path = "../../server/index/catalog" }
 server-index-core = { path = "../../server/index/core" }
 server-index-graph-vector = { path = "../../server/index/graph-vector" }
 server-index-qdrant = { path = "../../server/index/qdrant" }
+server-index-registry = { path = "../../server/index/registry" }
 server-index-tantivy = { path = "../../server/index/tantivy" }
 server-index-trustfall = { path = "../../server/index/trustfall" }
 server-index-vocabulary = { path = "../../server/index/vocabulary" }

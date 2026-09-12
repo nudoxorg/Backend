@@ -18,17 +18,26 @@ pub enum Capability {
     Vector,
     /// An embedding model for query vectors.
     Embedder,
+    /// The package registries over the network.
+    Registry,
+    /// Materialised package sources on this machine.
+    Sources,
 }
+
+/// How many capabilities the library composes.
+pub const CAPABILITY_COUNT: usize = 8;
 
 impl Capability {
     /// Every capability in display order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; CAPABILITY_COUNT] = [
         Self::Compiler,
         Self::Shelf,
         Self::Lexical,
         Self::Graph,
         Self::Vector,
         Self::Embedder,
+        Self::Registry,
+        Self::Sources,
     ];
 
     /// Reader-facing label.
@@ -41,6 +50,8 @@ impl Capability {
             Self::Graph => "relation graph",
             Self::Vector => "vector search",
             Self::Embedder => "embedding model",
+            Self::Registry => "package registries",
+            Self::Sources => "package sources",
         }
     }
 }
@@ -64,17 +75,17 @@ pub enum CapabilityState {
 /// Health of every capability.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Health {
-    rows: [(Capability, CapabilityState); 6],
+    rows: [(Capability, CapabilityState); CAPABILITY_COUNT],
 }
 
 impl Health {
-    pub(crate) fn new(rows: [(Capability, CapabilityState); 6]) -> Self {
+    pub(crate) fn new(rows: [(Capability, CapabilityState); CAPABILITY_COUNT]) -> Self {
         Self { rows }
     }
 
     /// Rows in display order.
     #[must_use]
-    pub fn rows(&self) -> &[(Capability, CapabilityState); 6] {
+    pub fn rows(&self) -> &[(Capability, CapabilityState); CAPABILITY_COUNT] {
         &self.rows
     }
 

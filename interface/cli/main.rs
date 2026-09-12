@@ -19,8 +19,8 @@ use std::{
 use interface_documents::ProjectionLimits;
 use interface_identity::PackageCoordinate;
 use interface_library::{
-    AddOutcome, Command, CompilerAttachment, ExploreCoverage, Library, LibraryOpenError,
-    OpenOptions, RemoveOutcome, Reply, Resolution, Shelf, Timestamp, WorkspaceRoot,
+    AddOutcome, Command, CompilerAttachment, Library, LibraryOpenError, OpenOptions, Reply, Shelf,
+    Timestamp, WorkspaceRoot,
     WorkspaceRootError,
     render::{
         common::RenderContext,
@@ -203,6 +203,30 @@ fn command_of(plan: Plan, shelf: &[PackageCoordinate]) -> Result<Command, UsageE
         } => Command::IndexSearch { query, limit },
         Plan::PackageVersions { name, .. } => Command::PackageVersions { name },
         Plan::PackageProfile { name, .. } => Command::PackageProfile { name },
+        Plan::Source { locator, context, .. } => Command::Source(interface_library::SourceRequest {
+            locator,
+            context,
+        }),
+        Plan::Related { locator, limit, .. } => {
+            Command::Related(interface_library::RelatedRequest { locator, limit })
+        }
+        Plan::Explore(request) => Command::Explore(request),
+        Plan::Package { request, .. } => Command::Package(request),
+        Plan::Dependents { request, .. } => Command::Dependents(request),
+        Plan::Owner { request, .. } => Command::Owner(request),
+        Plan::Subscribe { request, .. } => Command::Subscribe(request),
+        Plan::Unsubscribe { key, .. } => Command::Unsubscribe { key },
+        Plan::Subscriptions => Command::Subscriptions,
+        Plan::Releases { request } => Command::Releases(request),
+        Plan::Projects => Command::Projects,
+        Plan::ProjectCreate { request, .. } => Command::ProjectCreate(request),
+        Plan::ProjectDelete { selector, .. } => Command::ProjectDelete { selector },
+        Plan::ProjectAdd { change, .. } => Command::ProjectAdd(change),
+        Plan::ProjectRemove { change, .. } => Command::ProjectRemove(change),
+        Plan::ProjectSync { request, .. } => Command::ProjectSync(request),
+        Plan::Tree => Command::Tree,
+        Plan::TreeOpen { request, .. } => Command::TreeOpen(request),
+        Plan::TreeClose { request, .. } => Command::TreeClose(request),
     })
 }
 
@@ -309,22 +333,8 @@ fn elapsed_suffix(
 /// the command working, not the command failing.
 fn carries_failure(reply: &Reply) -> bool {
     match reply {
-        Reply::Health(_) => false,
-        Reply::Packages(result) => result.is_err(),
-        Reply::Added(outcome) => !matches!(outcome, AddOutcome::Ready { .. }),
-        Reply::Removed(outcome) => !matches!(outcome, RemoveOutcome::Removed),
-        Reply::Page(result) => result.is_err(),
-        Reply::Outline(result) => result.is_err(),
-        Reply::Graphed(result) => result.is_err(),
-        Reply::Resolved(Err(_)) => true,
-        Reply::Resolved(Ok(resolution)) => !matches!(resolution, Resolution::Exact(_)),
         Reply::Searched(terminal) => every_requested_lane_unavailable(terminal),
-        Reply::IndexSearched(result) => match result {
-            Err(_) => true,
-            Ok(page) => matches!(page.coverage, ExploreCoverage::Unavailable { .. }),
-        },
-        Reply::Versions(result) => result.is_err(),
-        Reply::Profiled(result) => result.is_err(),
+        other => other.is_failure(),
     }
 }
 
@@ -439,6 +449,7 @@ fn fail(detail: &str) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use interface_library::RemoveOutcome;
     use interface_core::PackageEcosystem;
 
     use super::*;

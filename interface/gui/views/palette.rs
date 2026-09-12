@@ -3,7 +3,7 @@
 //! Its narrow surface is one filtered list whose rows are the same twelve rows every surface shows.
 
 use gpui::{AnyElement, Context, InteractiveElement, IntoElement, Styled, div, prelude::*};
-use interface_library::{CommandId, CommandSpec, Mutation};
+use interface_library::{CommandSpec, Mutation};
 
 use crate::app::Workspace;
 use crate::theme::{Radius, Role, Space, Status};
@@ -135,19 +135,12 @@ fn domain_column(theme: &crate::theme::Theme, spec: &CommandSpec) -> AnyElement 
 /// The three index commands read the shared registry index rather than the shelf; every other row
 /// serves the shelf this window holds.
 const fn domain_glyph(spec: &CommandSpec) -> &'static str {
-    match spec.id {
-        CommandId::IndexSearch | CommandId::PackageVersions | CommandId::PackageProfile => {
-            INDEX_GLYPH
-        }
-        CommandId::Packages
-        | CommandId::Add
-        | CommandId::Remove
-        | CommandId::Show
-        | CommandId::Outline
-        | CommandId::Resolve
-        | CommandId::Search
-        | CommandId::Graph
-        | CommandId::Health => SHELF_GLYPH,
+    match spec.domain {
+        interface_library::Domain::Registry => INDEX_GLYPH,
+        interface_library::Domain::Library
+        | interface_library::Domain::Home
+        | interface_library::Domain::Session
+        | interface_library::Domain::System => SHELF_GLYPH,
     }
 }
 

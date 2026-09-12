@@ -317,6 +317,11 @@ impl<'selection, 'workers> Coordinator<'selection, 'workers> {
                 };
                 match worker.execute(request) {
                     WorkerResponse::Reply(reply) => {
+                        if reply.attempt != attempt {
+                            return Err(ExecuteError::Merge(MergeError::Reply(
+                                ReplyError::ResponseAttempt,
+                            )));
+                        }
                         validate_reply(&plan, reply)
                             .map_err(|error| ExecuteError::Merge(MergeError::Reply(error)))?;
                         replies[ordinal] = Some(reply);

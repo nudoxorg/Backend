@@ -54,6 +54,7 @@ let
   qualityTools = [
     pkgs.ast-grep
     pkgs.cargo-audit
+    pkgs.cargo-bundle
     pkgs.cargo-deny
     pkgs.cargo-nextest
     pkgs.coreutils

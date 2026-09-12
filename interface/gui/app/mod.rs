@@ -739,6 +739,29 @@ impl Workspace {
             | CommandId::IndexSearch | CommandId::PackageVersions | CommandId::PackageProfile => {
                 self.omnibar_focus.focus(window, cx);
             }
+            // The registry, home, session, and source rows belong to the rewritten surface; this
+            // window keeps the palette honest by focusing the field rather than pretending.
+            CommandId::Source
+            | CommandId::Related
+            | CommandId::Explore
+            | CommandId::Package
+            | CommandId::Dependents
+            | CommandId::Owner
+            | CommandId::Subscribe
+            | CommandId::Unsubscribe
+            | CommandId::Subscriptions
+            | CommandId::Releases
+            | CommandId::Projects
+            | CommandId::ProjectCreate
+            | CommandId::ProjectDelete
+            | CommandId::ProjectAdd
+            | CommandId::ProjectRemove
+            | CommandId::ProjectSync
+            | CommandId::Tree
+            | CommandId::TreeOpen
+            | CommandId::TreeClose => {
+                self.omnibar_focus.focus(window, cx);
+            }
         }
     }
 

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Reviewed Rust Gem"
-  short_description: "Mandatory Rust craft and review protocol"
-  default_prompt: "Apply $deliver-reviewed-rust-slice before the relevant domain skill and deliver one reviewed Rust capability."

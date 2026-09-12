@@ -17,6 +17,26 @@ pub const MAX_COORDINATE_BYTES: usize = 512;
 pub struct PackageName(Box<str>);
 
 impl PackageName {
+    /// Admits one registry package name on its own, under the same byte rules as a coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty name, a name that would overflow the coordinate budget on its own, or a
+    /// byte that can never appear inside a coordinate.
+    pub fn new(name: &str) -> Result<Self, CoordinateParseError> {
+        if name.is_empty() {
+            return Err(CoordinateParseError::EmptyName);
+        }
+        if name.len() > MAX_COORDINATE_BYTES {
+            return Err(CoordinateParseError::TooLong {
+                observed: name.len(),
+                maximum: MAX_COORDINATE_BYTES,
+            });
+        }
+        reject_coordinate_bytes(name.bytes(), 0)?;
+        Ok(Self(name.into()))
+    }
+
     /// Returns the exact name text.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -29,11 +49,55 @@ impl PackageName {
 pub struct PackageVersion(Box<str>);
 
 impl PackageVersion {
+    /// Admits one version spelling on its own, under the same byte rules as a coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty version, one that would overflow the coordinate budget on its own, or a
+    /// byte that can never appear inside a coordinate.
+    pub fn new(version: &str) -> Result<Self, CoordinateParseError> {
+        if version.is_empty() {
+            return Err(CoordinateParseError::EmptyVersion);
+        }
+        if version.len() > MAX_COORDINATE_BYTES {
+            return Err(CoordinateParseError::TooLong {
+                observed: version.len(),
+                maximum: MAX_COORDINATE_BYTES,
+            });
+        }
+        reject_coordinate_bytes(version.bytes(), 0)?;
+        Ok(Self(version.into()))
+    }
+
+    /// Whether the spelling carries a pre-release tag (`1.0.0-alpha.1`), by the semver rule of a
+    /// hyphen before any build metadata.
+    #[must_use]
+    pub fn is_prerelease(&self) -> bool {
+        let core = self.0.split('+').next().unwrap_or_default();
+        core.contains('-')
+    }
+
     /// Returns the exact version text.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// Rejects any byte a coordinate can never carry, reporting its offset from `base`.
+fn reject_coordinate_bytes(
+    bytes: impl Iterator<Item = u8>,
+    base: usize,
+) -> Result<(), CoordinateParseError> {
+    for (offset, byte) in bytes.enumerate() {
+        if matches!(byte, b':' | b'#' | b'?' | b' ' | b'\n' | b'\t') || byte == 0 {
+            return Err(CoordinateParseError::Character {
+                offset: base + offset,
+                observed: byte,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// One pinned package as every surface names it.
@@ -71,14 +135,7 @@ impl PackageCoordinate {
                 maximum: MAX_COORDINATE_BYTES,
             });
         }
-        for (offset, byte) in name.bytes().chain(version.bytes()).enumerate() {
-            if matches!(byte, b':' | b'#' | b'?' | b' ' | b'\n' | b'\t') || byte == 0 {
-                return Err(CoordinateParseError::Character {
-                    offset,
-                    observed: byte,
-                });
-            }
-        }
+        reject_coordinate_bytes(name.bytes().chain(version.bytes()), 0)?;
         Ok(Self {
             ecosystem,
             name: PackageName(name.into()),

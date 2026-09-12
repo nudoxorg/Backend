@@ -15,8 +15,13 @@ default = []
 preview = []
 
 [[bin]]
-name = "nudox-gui"
+name = "nudox-gui-legacy"
 path = "main.rs"
+
+[package.metadata.bundle]
+name = "Nudox GUI"
+identifier = "dev.nudox.gui"
+short_description = "Local GUI reader for the Nudox compiler host"
 
 [dependencies]
 async-channel.workspace = true

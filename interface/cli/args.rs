@@ -17,8 +17,17 @@ use std::path::PathBuf;
 use compiler_ir::LinkKind;
 use interface_core::PackageUrl;
 use interface_documents::Direction;
-use interface_identity::{Address, ContentKey, KindTag, PackageCoordinate};
-use interface_library::{COMMANDS, CommandId, CommandSpec, PageLocator, spec_named};
+use interface_identity::{
+    ALL_ECOSYSTEMS, Address, ContentKey, KindTag, PackageCoordinate, PackageVersion,
+    ecosystem_tag, parse_ecosystem_tag,
+};
+use interface_library::{
+    COMMANDS, CommandId, CommandSpec, ContextLines, CreateProject, DependentsRequest,
+    DetailRequest, ExploreLimit, ExploreRequest, ExploreSort, FollowKey, FollowRequest,
+    LockfileBinding, MemberChange, Opener, OwnerHandle, OwnerRequest, PageLocator, PageNumber,
+    ProjectHue, ProjectName, ProjectSelector, ReleasesRequest, SyncCompile, SyncRequest,
+    TreeCloseRequest, TreeCloseScope, TreeNodeId, TreeOpenRequest, TreeSubject, spec_named,
+};
 use interface_search::{
     Cursor, Depth, KindSet, Lane, LaneSet, QueryText, QueryTextError, ResultLimit,
     parse_relation,
@@ -154,6 +163,121 @@ pub(crate) enum Plan {
         /// Exact spelling the caller typed.
         spelled: String,
     },
+    /// One declaration's source excerpt.
+    Source {
+        /// How the declaration is named.
+        locator: PageLocator,
+        /// Context lines either side.
+        context: ContextLines,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// Symbols related to one declaration.
+    Related {
+        /// How the declaration is named.
+        locator: PageLocator,
+        /// Most rows.
+        limit: ResultLimit,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// Browse or search the registries.
+    Explore(ExploreRequest),
+    /// One registry package's profile.
+    Package {
+        /// Validated request.
+        request: DetailRequest,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// One registry package's dependents.
+    Dependents {
+        /// Validated request.
+        request: DependentsRequest,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// One owner's packages.
+    Owner {
+        /// Validated request.
+        request: OwnerRequest,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// Follow one package.
+    Subscribe {
+        /// Validated request.
+        request: FollowRequest,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// Stop following one package.
+    Unsubscribe {
+        /// What to stop following.
+        key: FollowKey,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// Every followed package.
+    Subscriptions,
+    /// New releases.
+    Releases {
+        /// Whether to mark them seen.
+        request: ReleasesRequest,
+    },
+    /// Every project folder.
+    Projects,
+    /// Create a folder.
+    ProjectCreate {
+        /// Validated request.
+        request: CreateProject,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// Delete a folder.
+    ProjectDelete {
+        /// Which folder.
+        selector: ProjectSelector,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// Add a member.
+    ProjectAdd {
+        /// Validated change.
+        change: MemberChange,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// Remove a member.
+    ProjectRemove {
+        /// Validated change.
+        change: MemberChange,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// Reconcile a folder with its lockfile.
+    ProjectSync {
+        /// Validated request.
+        request: SyncRequest,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// The session tree.
+    Tree,
+    /// Open a subject in the tree.
+    TreeOpen {
+        /// Validated request.
+        request: TreeOpenRequest,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// Close a node or branch.
+    TreeClose {
+        /// Validated request.
+        request: TreeCloseRequest,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
 }
 
 impl Plan {
@@ -173,6 +297,25 @@ impl Plan {
             Self::IndexSearch { .. } => "index-search",
             Self::PackageVersions { .. } => "package-versions",
             Self::PackageProfile { .. } => "package-profile",
+            Self::Source { .. } => "source",
+            Self::Related { .. } => "related",
+            Self::Explore(_) => "explore",
+            Self::Package { .. } => "package",
+            Self::Dependents { .. } => "dependents",
+            Self::Owner { .. } => "owner",
+            Self::Subscribe { .. } => "subscribe",
+            Self::Unsubscribe { .. } => "unsubscribe",
+            Self::Subscriptions => "subscriptions",
+            Self::Releases { .. } => "releases",
+            Self::Projects => "projects",
+            Self::ProjectCreate { .. } => "project-create",
+            Self::ProjectDelete { .. } => "project-delete",
+            Self::ProjectAdd { .. } => "project-add",
+            Self::ProjectRemove { .. } => "project-remove",
+            Self::ProjectSync { .. } => "project-sync",
+            Self::Tree => "tree",
+            Self::TreeOpen { .. } => "tree-open",
+            Self::TreeClose { .. } => "tree-close",
         }
     }
 
@@ -189,7 +332,23 @@ impl Plan {
             Self::Graph(plan) => Some(&plan.spelled),
             Self::IndexSearch { spelled, .. }
             | Self::PackageVersions { spelled, .. }
-            | Self::PackageProfile { spelled, .. } => Some(spelled),
+            | Self::PackageProfile { spelled, .. }
+            | Self::Source { spelled, .. }
+            | Self::Related { spelled, .. }
+            | Self::Package { spelled, .. }
+            | Self::Dependents { spelled, .. }
+            | Self::Owner { spelled, .. }
+            | Self::Subscribe { spelled, .. }
+            | Self::Unsubscribe { spelled, .. }
+            | Self::ProjectCreate { spelled, .. }
+            | Self::ProjectDelete { spelled, .. }
+            | Self::ProjectAdd { spelled, .. }
+            | Self::ProjectRemove { spelled, .. }
+            | Self::ProjectSync { spelled, .. }
+            | Self::TreeOpen { spelled, .. }
+            | Self::TreeClose { spelled, .. } => Some(spelled),
+            Self::Explore(request) => request.query.as_ref().map(|query| query.as_str()),
+            Self::Subscriptions | Self::Releases { .. } | Self::Projects | Self::Tree => None,
         }
     }
 }
@@ -318,11 +477,50 @@ const GRAPH_FLAGS: [FlagSpec; 5] = [
 const INDEX_SEARCH_FLAGS: [FlagSpec; 1] =
     [FlagSpec { name: "--limit", value: true }];
 
+const CONTEXT_FLAGS: [FlagSpec; 1] = [FlagSpec { name: "--context", value: true }];
+const LIMIT_FLAGS: [FlagSpec; 1] = [FlagSpec { name: "--limit", value: true }];
+const EXPLORE_FLAGS: [FlagSpec; 4] = [
+    FlagSpec { name: "--ecosystem", value: true },
+    FlagSpec { name: "--sort", value: true },
+    FlagSpec { name: "--page", value: true },
+    FlagSpec { name: "--limit", value: true },
+];
+const PAGED_FLAGS: [FlagSpec; 2] = [
+    FlagSpec { name: "--page", value: true },
+    FlagSpec { name: "--limit", value: true },
+];
+const ECOSYSTEM_FLAGS: [FlagSpec; 1] = [FlagSpec { name: "--ecosystem", value: true }];
+const PROJECT_FLAGS: [FlagSpec; 1] = [FlagSpec { name: "--project", value: true }];
+const SEEN_FLAGS: [FlagSpec; 1] = [FlagSpec { name: "--seen", value: false }];
+const PROJECT_CREATE_FLAGS: [FlagSpec; 2] = [
+    FlagSpec { name: "--lockfile", value: true },
+    FlagSpec { name: "--hue", value: true },
+];
+const COMPILE_FLAGS: [FlagSpec; 1] = [FlagSpec { name: "--compile", value: false }];
+const TREE_OPEN_FLAGS: [FlagSpec; 4] = [
+    FlagSpec { name: "--parent", value: true },
+    FlagSpec { name: "--as", value: true },
+    FlagSpec { name: "--title", value: true },
+    FlagSpec { name: "--no-focus", value: false },
+];
+const BRANCH_FLAGS: [FlagSpec; 1] = [FlagSpec { name: "--branch", value: false }];
+
 const fn flags_of(id: CommandId) -> &'static [FlagSpec] {
     match id {
         CommandId::Search => &SEARCH_FLAGS,
         CommandId::Graph => &GRAPH_FLAGS,
         CommandId::IndexSearch => &INDEX_SEARCH_FLAGS,
+        CommandId::Source => &CONTEXT_FLAGS,
+        CommandId::Related => &LIMIT_FLAGS,
+        CommandId::Explore => &EXPLORE_FLAGS,
+        CommandId::Dependents => &PAGED_FLAGS,
+        CommandId::Owner => &ECOSYSTEM_FLAGS,
+        CommandId::Subscribe | CommandId::ProjectAdd | CommandId::ProjectRemove => &PROJECT_FLAGS,
+        CommandId::Releases => &SEEN_FLAGS,
+        CommandId::ProjectCreate => &PROJECT_CREATE_FLAGS,
+        CommandId::ProjectSync => &COMPILE_FLAGS,
+        CommandId::TreeOpen => &TREE_OPEN_FLAGS,
+        CommandId::TreeClose => &BRANCH_FLAGS,
         _ => &[],
     }
 }
@@ -338,6 +536,22 @@ const fn operand_of(id: CommandId) -> Option<&'static str> {
         CommandId::Search => Some("<query>"),
         CommandId::IndexSearch => Some("<query>"),
         CommandId::PackageVersions | CommandId::PackageProfile => Some("<package>"),
+        CommandId::Source | CommandId::Related => Some("<address>"),
+        CommandId::Explore
+        | CommandId::Subscriptions
+        | CommandId::Releases
+        | CommandId::Projects
+        | CommandId::Tree => None,
+        CommandId::Package
+        | CommandId::Dependents
+        | CommandId::Subscribe
+        | CommandId::Unsubscribe => Some("<ecosystem:name>"),
+        CommandId::Owner => Some("<handle>"),
+        CommandId::ProjectCreate => Some("<name>"),
+        CommandId::ProjectDelete | CommandId::ProjectSync => Some("<project>"),
+        CommandId::ProjectAdd | CommandId::ProjectRemove => Some("<coordinate>"),
+        CommandId::TreeOpen => Some("<subject>"),
+        CommandId::TreeClose => Some("<node>"),
     }
 }
 
@@ -519,6 +733,9 @@ fn build(spec: CommandSpec, operands: Vec<String>, flags: &[Flag]) -> Result<Pla
             command: Some(spec.name),
         });
     }
+    if spec.id == CommandId::Explore {
+        return explore_plan(spec, first, flags);
+    }
     let operand = match (operand_of(spec.id), first) {
         (Some(_), Some(operand)) => Some(operand),
         (Some(name), None) => {
@@ -554,6 +771,31 @@ fn build(spec: CommandSpec, operands: Vec<String>, flags: &[Flag]) -> Result<Pla
             package_name_plan(spec, operand.unwrap_or_default(), false)
         }
         CommandId::PackageProfile => package_name_plan(spec, operand.unwrap_or_default(), true),
+        CommandId::Source => source_plan(spec, operand.unwrap_or_default(), flags),
+        CommandId::Related => related_plan(spec, operand.unwrap_or_default(), flags),
+        CommandId::Explore => explore_plan(spec, operand, flags),
+        CommandId::Package => package_plan(spec, operand.unwrap_or_default()),
+        CommandId::Dependents => dependents_plan(spec, operand.unwrap_or_default(), flags),
+        CommandId::Owner => owner_plan(spec, operand.unwrap_or_default(), flags),
+        CommandId::Subscribe => subscribe_plan(spec, operand.unwrap_or_default(), flags),
+        CommandId::Unsubscribe => unsubscribe_plan(spec, operand.unwrap_or_default()),
+        CommandId::Subscriptions => Ok(Plan::Subscriptions),
+        CommandId::Releases => Ok(Plan::Releases {
+            request: ReleasesRequest {
+                mark_seen: flags.iter().any(|flag| flag.name == "--seen"),
+            },
+        }),
+        CommandId::Projects => Ok(Plan::Projects),
+        CommandId::ProjectCreate => project_create_plan(spec, operand.unwrap_or_default(), flags),
+        CommandId::ProjectDelete => project_delete_plan(spec, operand.unwrap_or_default()),
+        CommandId::ProjectAdd => member_change_plan(spec, operand.unwrap_or_default(), flags, true),
+        CommandId::ProjectRemove => {
+            member_change_plan(spec, operand.unwrap_or_default(), flags, false)
+        }
+        CommandId::ProjectSync => project_sync_plan(spec, operand.unwrap_or_default(), flags),
+        CommandId::Tree => Ok(Plan::Tree),
+        CommandId::TreeOpen => tree_open_plan(spec, operand.unwrap_or_default(), flags),
+        CommandId::TreeClose => tree_close_plan(spec, operand.unwrap_or_default(), flags),
     }
 }
 
@@ -872,6 +1114,444 @@ fn package_name_detail(cause: interface_library::ExplorePackageNameError) -> Str
     }
 }
 
+// ── the rewritten surface's rows ────────────────────────────────────────────────────────────────
+
+/// `source` and `related` take the same locator `show` does.
+fn locator_of(spec: CommandSpec, spelled: &str) -> Result<PageLocator, UsageError> {
+    if let Ok((key, _)) = ContentKey::parse(spelled) {
+        return Ok(PageLocator::Key(key));
+    }
+    Address::parse(spelled)
+        .map(PageLocator::Address)
+        .map_err(|cause| UsageError {
+            kind: UsageKind::BadOperand {
+                cause: interface_library::render::text::address_parse_detail(cause),
+            },
+            token: spelled.to_owned(),
+            command: Some(spec.name),
+        })
+}
+
+fn source_plan(spec: CommandSpec, spelled: String, flags: &[Flag]) -> Result<Plan, UsageError> {
+    let locator = locator_of(spec, &spelled)?;
+    let mut context = ContextLines::default();
+    for flag in flags {
+        if flag.name == "--context" {
+            let value = flag.value.clone().unwrap_or_default();
+            context = ContextLines::clamped(parse_number(flag.name, &value, spec)?);
+        }
+    }
+    Ok(Plan::Source {
+        locator,
+        context,
+        spelled,
+    })
+}
+
+fn related_plan(spec: CommandSpec, spelled: String, flags: &[Flag]) -> Result<Plan, UsageError> {
+    let locator = locator_of(spec, &spelled)?;
+    let mut limit = ResultLimit::default();
+    for flag in flags {
+        if flag.name == "--limit" {
+            let value = flag.value.clone().unwrap_or_default();
+            limit = ResultLimit::clamped(parse_number(flag.name, &value, spec)?);
+        }
+    }
+    Ok(Plan::Related {
+        locator,
+        limit,
+        spelled,
+    })
+}
+
+fn ecosystem_flag(
+    spec: CommandSpec,
+    flags: &[Flag],
+) -> Result<Option<interface_core::PackageEcosystem>, UsageError> {
+    let Some(flag) = flags.iter().find(|flag| flag.name == "--ecosystem") else {
+        return Ok(None);
+    };
+    let value = flag.value.clone().unwrap_or_default();
+    parse_ecosystem_tag(&value).map(Some).ok_or_else(|| UsageError {
+        kind: UsageKind::BadValue {
+            accepted: ecosystem_spellings(),
+        },
+        token: value,
+        command: Some(spec.name),
+    })
+}
+
+fn ecosystem_spellings() -> Vec<String> {
+    ALL_ECOSYSTEMS
+        .into_iter()
+        .map(|ecosystem| ecosystem_tag(ecosystem).as_str().to_owned())
+        .collect()
+}
+
+fn page_flag(spec: CommandSpec, flags: &[Flag]) -> Result<PageNumber, UsageError> {
+    let Some(flag) = flags.iter().find(|flag| flag.name == "--page") else {
+        return Ok(PageNumber::FIRST);
+    };
+    let value = flag.value.clone().unwrap_or_default();
+    Ok(PageNumber::clamped(parse_number(flag.name, &value, spec)?))
+}
+
+fn explore_limit_flag(spec: CommandSpec, flags: &[Flag]) -> Result<ExploreLimit, UsageError> {
+    let Some(flag) = flags.iter().find(|flag| flag.name == "--limit") else {
+        return Ok(ExploreLimit::default());
+    };
+    let value = flag.value.clone().unwrap_or_default();
+    Ok(ExploreLimit::clamped(parse_number(flag.name, &value, spec)?))
+}
+
+/// `explore` takes an optional query and browses the top of the sort without one.
+fn explore_plan(spec: CommandSpec, spelled: Option<String>, flags: &[Flag]) -> Result<Plan, UsageError> {
+    let query = match spelled.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => Some(interface_library::ExploreQuery::new(text).map_err(|cause| UsageError {
+            kind: UsageKind::BadOperand {
+                cause: explore_query_detail(cause),
+            },
+            token: text.to_owned(),
+            command: Some(spec.name),
+        })?),
+        None => None,
+    };
+    let mut sort = ExploreSort::default();
+    for flag in flags {
+        if flag.name == "--sort" {
+            let value = flag.value.clone().unwrap_or_default();
+            sort = ExploreSort::parse(&value).ok_or_else(|| UsageError {
+                kind: UsageKind::BadValue {
+                    accepted: ExploreSort::ALL
+                        .into_iter()
+                        .map(|sort| sort.name().to_owned())
+                        .collect(),
+                },
+                token: value,
+                command: Some(spec.name),
+            })?;
+        }
+    }
+    Ok(Plan::Explore(ExploreRequest {
+        ecosystem: ecosystem_flag(spec, flags)?,
+        query,
+        sort,
+        page: page_flag(spec, flags)?,
+        limit: explore_limit_flag(spec, flags)?,
+    }))
+}
+
+/// `ecosystem:name` with an optional `@version`, as every registry row is spelled.
+fn follow_key_of(spec: CommandSpec, spelled: &str) -> Result<(FollowKey, Option<PackageVersion>), UsageError> {
+    FollowKey::parse_pinned(spelled).map_err(|cause| UsageError {
+        kind: UsageKind::BadOperand {
+            cause: follow_key_detail(cause),
+        },
+        token: spelled.to_owned(),
+        command: Some(spec.name),
+    })
+}
+
+fn follow_key_detail(cause: interface_library::FollowKeyError) -> String {
+    match cause {
+        interface_library::FollowKeyError::MissingEcosystem => {
+            "spell the package as ecosystem:name, such as cargo:serde".to_owned()
+        }
+        interface_library::FollowKeyError::UnknownEcosystem => format!(
+            "the ecosystem must be one of {}",
+            ecosystem_spellings().join(" ")
+        ),
+        interface_library::FollowKeyError::Name(cause) => {
+            interface_library::render::text::coordinate_parse_detail(cause).to_owned()
+        }
+    }
+}
+
+fn explore_name_of(spec: CommandSpec, key: &FollowKey) -> Result<interface_library::ExplorePackageName, UsageError> {
+    interface_library::ExplorePackageName::new(key.name.as_str()).map_err(|cause| UsageError {
+        kind: UsageKind::BadOperand {
+            cause: package_name_detail(cause),
+        },
+        token: key.name.as_str().to_owned(),
+        command: Some(spec.name),
+    })
+}
+
+fn package_plan(spec: CommandSpec, spelled: String) -> Result<Plan, UsageError> {
+    let (key, version) = follow_key_of(spec, &spelled)?;
+    let name = explore_name_of(spec, &key)?;
+    Ok(Plan::Package {
+        request: DetailRequest {
+            ecosystem: key.ecosystem,
+            name,
+            version,
+        },
+        spelled,
+    })
+}
+
+fn dependents_plan(spec: CommandSpec, spelled: String, flags: &[Flag]) -> Result<Plan, UsageError> {
+    let (key, _) = follow_key_of(spec, &spelled)?;
+    let name = explore_name_of(spec, &key)?;
+    Ok(Plan::Dependents {
+        request: DependentsRequest {
+            ecosystem: key.ecosystem,
+            name,
+            page: page_flag(spec, flags)?,
+            limit: explore_limit_flag(spec, flags)?,
+        },
+        spelled,
+    })
+}
+
+/// `owner` takes `handle` or `ecosystem:handle`; `--ecosystem` narrows a bare handle.
+fn owner_plan(spec: CommandSpec, spelled: String, flags: &[Flag]) -> Result<Plan, UsageError> {
+    let (ecosystem, handle) = match spelled.split_once(':') {
+        Some((tag, handle)) if parse_ecosystem_tag(tag).is_some() => {
+            (parse_ecosystem_tag(tag), handle)
+        }
+        _ => (ecosystem_flag(spec, flags)?, spelled.trim_start_matches('@')),
+    };
+    let handle = OwnerHandle::new(handle).map_err(|cause| UsageError {
+        kind: UsageKind::BadOperand {
+            cause: match cause {
+                interface_library::OwnerHandleError::Empty => "the handle is empty".to_owned(),
+                interface_library::OwnerHandleError::TooLong { observed, maximum } => {
+                    format!("the handle is {observed} bytes; at most {maximum} are accepted")
+                }
+                interface_library::OwnerHandleError::Character => {
+                    "the handle carries whitespace".to_owned()
+                }
+            },
+        },
+        token: spelled.clone(),
+        command: Some(spec.name),
+    })?;
+    Ok(Plan::Owner {
+        request: OwnerRequest { ecosystem, handle },
+        spelled,
+    })
+}
+
+fn project_selector_of(spec: CommandSpec, spelled: &str) -> Result<ProjectSelector, UsageError> {
+    ProjectSelector::parse(spelled).map_err(|cause| UsageError {
+        kind: UsageKind::BadOperand {
+            cause: project_name_detail(cause),
+        },
+        token: spelled.to_owned(),
+        command: Some(spec.name),
+    })
+}
+
+fn project_name_detail(cause: interface_library::ProjectNameError) -> String {
+    match cause {
+        interface_library::ProjectNameError::Empty => "the project name is empty".to_owned(),
+        interface_library::ProjectNameError::TooLong { observed, maximum } => {
+            format!("the project name is {observed} bytes; at most {maximum} are accepted")
+        }
+        interface_library::ProjectNameError::Character => {
+            "the project name carries a control character".to_owned()
+        }
+    }
+}
+
+fn project_flag(spec: CommandSpec, flags: &[Flag]) -> Result<Option<ProjectSelector>, UsageError> {
+    let Some(flag) = flags.iter().find(|flag| flag.name == "--project") else {
+        return Ok(None);
+    };
+    let value = flag.value.clone().unwrap_or_default();
+    project_selector_of(spec, &value).map(Some)
+}
+
+fn subscribe_plan(spec: CommandSpec, spelled: String, flags: &[Flag]) -> Result<Plan, UsageError> {
+    let (key, _) = follow_key_of(spec, &spelled)?;
+    Ok(Plan::Subscribe {
+        request: FollowRequest {
+            key,
+            project: project_flag(spec, flags)?,
+        },
+        spelled,
+    })
+}
+
+fn unsubscribe_plan(spec: CommandSpec, spelled: String) -> Result<Plan, UsageError> {
+    let (key, _) = follow_key_of(spec, &spelled)?;
+    Ok(Plan::Unsubscribe { key, spelled })
+}
+
+fn project_create_plan(spec: CommandSpec, spelled: String, flags: &[Flag]) -> Result<Plan, UsageError> {
+    let name = ProjectName::new(&spelled).map_err(|cause| UsageError {
+        kind: UsageKind::BadOperand {
+            cause: project_name_detail(cause),
+        },
+        token: spelled.clone(),
+        command: Some(spec.name),
+    })?;
+    let mut binding = None;
+    let mut hue = None;
+    for flag in flags {
+        let value = flag.value.clone().unwrap_or_default();
+        match flag.name {
+            "--lockfile" => {
+                let path = std::path::PathBuf::from(&value);
+                let absolute = if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir().map_or(path.clone(), |cwd| cwd.join(path))
+                };
+                binding = Some(LockfileBinding::new(absolute).map_err(|cause| UsageError {
+                    kind: UsageKind::BadValue {
+                        accepted: match cause {
+                            interface_library::ProjectError::UnknownLockfile { .. } => {
+                                interface_library::LockfileKind::ALL
+                                    .into_iter()
+                                    .map(|kind| kind.file_name().to_owned())
+                                    .collect()
+                            }
+                            _ => vec![cause.detail()],
+                        },
+                    },
+                    token: value.clone(),
+                    command: Some(spec.name),
+                })?);
+            }
+            "--hue" => {
+                hue = Some(ProjectHue::parse(&value).ok_or_else(|| UsageError {
+                    kind: UsageKind::BadValue {
+                        accepted: ProjectHue::ALL
+                            .into_iter()
+                            .map(|hue| hue.name().to_owned())
+                            .collect(),
+                    },
+                    token: value.clone(),
+                    command: Some(spec.name),
+                })?);
+            }
+            _ => {}
+        }
+    }
+    Ok(Plan::ProjectCreate {
+        request: CreateProject { name, binding, hue },
+        spelled,
+    })
+}
+
+fn project_delete_plan(spec: CommandSpec, spelled: String) -> Result<Plan, UsageError> {
+    let selector = project_selector_of(spec, &spelled)?;
+    Ok(Plan::ProjectDelete { selector, spelled })
+}
+
+/// `project-add` and `project-remove` take the package as the operand and the folder as
+/// `--project`, because the package is the thing a reader has just copied.
+fn member_change_plan(
+    spec: CommandSpec,
+    spelled: String,
+    flags: &[Flag],
+    add: bool,
+) -> Result<Plan, UsageError> {
+    let coordinate = PackageCoordinate::parse(&spelled).map_err(|cause| UsageError {
+        kind: UsageKind::BadOperand {
+            cause: interface_library::render::text::coordinate_parse_detail(cause).to_owned(),
+        },
+        token: spelled.clone(),
+        command: Some(spec.name),
+    })?;
+    let Some(selector) = project_flag(spec, flags)? else {
+        return Err(UsageError {
+            kind: UsageKind::MissingValue,
+            token: "--project".to_owned(),
+            command: Some(spec.name),
+        });
+    };
+    let change = MemberChange {
+        selector,
+        coordinate,
+    };
+    Ok(if add {
+        Plan::ProjectAdd { change, spelled }
+    } else {
+        Plan::ProjectRemove { change, spelled }
+    })
+}
+
+fn project_sync_plan(spec: CommandSpec, spelled: String, flags: &[Flag]) -> Result<Plan, UsageError> {
+    let selector = project_selector_of(spec, &spelled)?;
+    let compile = if flags.iter().any(|flag| flag.name == "--compile") {
+        SyncCompile::Missing
+    } else {
+        SyncCompile::Never
+    };
+    Ok(Plan::ProjectSync {
+        request: SyncRequest { selector, compile },
+        spelled,
+    })
+}
+
+fn tree_open_plan(spec: CommandSpec, spelled: String, flags: &[Flag]) -> Result<Plan, UsageError> {
+    let mut parent = None;
+    let mut focus = true;
+    let mut title = None;
+    let mut kind: Option<String> = None;
+    for flag in flags {
+        let value = flag.value.clone().unwrap_or_default();
+        match flag.name {
+            "--parent" => {
+                parent = Some(TreeNodeId::parse(&value).ok_or_else(|| UsageError {
+                    kind: UsageKind::BadValue {
+                        accepted: vec!["a node identity from `nudox tree`".to_owned()],
+                    },
+                    token: value.clone(),
+                    command: Some(spec.name),
+                })?);
+            }
+            "--no-focus" => focus = false,
+            "--title" => title = Some(interface_documents::Text::new(value.clone())),
+            "--as" => kind = Some(value.clone()),
+            _ => {}
+        }
+    }
+    let text = match kind {
+        Some(kind) => format!("{kind} {spelled}"),
+        None => spelled.clone(),
+    };
+    let subject = TreeSubject::infer(&text).map_err(|cause| UsageError {
+        kind: UsageKind::BadOperand {
+            cause: format!("{cause:?}"),
+        },
+        token: spelled.clone(),
+        command: Some(spec.name),
+    })?;
+    Ok(Plan::TreeOpen {
+        request: TreeOpenRequest {
+            subject,
+            parent,
+            opener: Opener::Cli,
+            focus,
+            title,
+        },
+        spelled,
+    })
+}
+
+fn tree_close_plan(spec: CommandSpec, spelled: String, flags: &[Flag]) -> Result<Plan, UsageError> {
+    let node = TreeNodeId::parse(&spelled).ok_or_else(|| UsageError {
+        kind: UsageKind::BadOperand {
+            cause: "a node identity from `nudox tree`".to_owned(),
+        },
+        token: spelled.clone(),
+        command: Some(spec.name),
+    })?;
+    let scope = if flags.iter().any(|flag| flag.name == "--branch") {
+        TreeCloseScope::Branch
+    } else {
+        TreeCloseScope::Node
+    };
+    Ok(Plan::TreeClose {
+        request: TreeCloseRequest { node, scope },
+        spelled,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -914,6 +1594,26 @@ mod tests {
             }
             CommandId::Resolve | CommandId::Search | CommandId::IndexSearch => vec!["deserialize"],
             CommandId::PackageVersions | CommandId::PackageProfile => vec!["serde"],
+            CommandId::Source | CommandId::Related => {
+                vec!["cargo:serde@1.0.196::de::Deserializer"]
+            }
+            CommandId::Explore
+            | CommandId::Subscriptions
+            | CommandId::Releases
+            | CommandId::Projects
+            | CommandId::Tree => Vec::new(),
+            CommandId::Package
+            | CommandId::Dependents
+            | CommandId::Subscribe
+            | CommandId::Unsubscribe => vec!["cargo:serde"],
+            CommandId::Owner => vec!["dtolnay"],
+            CommandId::ProjectCreate => vec!["backend"],
+            CommandId::ProjectDelete | CommandId::ProjectSync => vec!["backend"],
+            CommandId::ProjectAdd | CommandId::ProjectRemove => {
+                vec!["cargo:serde@1.0.196", "--project", "backend"]
+            }
+            CommandId::TreeOpen => vec!["cargo:serde@1.0.196"],
+            CommandId::TreeClose => vec!["7"],
         }
     }
 
@@ -993,7 +1693,7 @@ mod tests {
                 UsageKind::UnknownCommand { nearest } => Some(nearest),
                 _ => None,
             }),
-            Some(vec!["search", "show"]),
+            Some(vec!["search", "show", "source"]),
             "every registry row sharing a leading run is offered, longest run first"
         );
     }

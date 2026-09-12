@@ -3,6 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! The shelf: every package a person asked for, what happened to it, and what it became.
 
+use std::path::Path;
+
 use compiler_vocabulary::LanguageProfile;
 use heart_identity::GenerationId;
 use interface_core::{CorrelationId, PackageCompilePhase, SemanticImageAuthority};
@@ -33,6 +35,8 @@ pub struct PackageCard {
     pub census: Census,
     /// When the publication became visible.
     pub published_at: Timestamp,
+    /// Where the package sources the compiler read live on this machine, when they still do.
+    pub source_root: Option<Box<Path>>,
 }
 
 /// Why an add did not produce a card.

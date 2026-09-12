@@ -32,14 +32,26 @@
 mod add;
 mod admission;
 mod command;
+mod compose;
+mod compose_service;
 mod epoch;
 mod explore;
+mod follow;
+mod follow_service;
 mod health;
 mod image;
 mod library;
 mod page;
+mod project;
+mod project_service;
+mod registry;
+mod registry_service;
 pub mod render;
+mod session;
+mod session_service;
 mod shelf;
+mod source;
+mod source_service;
 mod workspace;
 
 pub use add::{
@@ -47,7 +59,14 @@ pub use add::{
     RemoveOutcome,
 };
 pub use admission::Admission;
-pub use command::{COMMANDS, Command, CommandId, CommandSpec, Mutation, Reply, spec, spec_named};
+pub use command::{
+    COMMANDS, Command, CommandId, CommandSpec, Domain, Mutation, Reply, package_name_of, spec,
+    spec_named,
+};
+pub use compose::{
+    DiffChange, DiffRequest, MAX_DIFF_SYMBOLS, MAX_READ_LOCATORS, PackageDiff, ReadPage,
+    ReadRequest, ReadTerminal,
+};
 pub use epoch::{EpochError, EpochPhase, LibraryEpoch, LibraryWatcher};
 pub use explore::{
     Cycle, ExploreCoverage, ExploreError, ExploreLimit, ExplorePackageName, ExplorePackageNameError,
@@ -56,7 +75,32 @@ pub use explore::{
     PackageProfile, PackageVersionRow, PackageVersionRows, PackageVersionText, VersionActive,
     checksum_hex,
 };
-pub use health::{Capability, CapabilityState, Health};
+pub use follow::{
+    FollowError, FollowKey, FollowKeyError, FollowOutcome, FollowRequest, MAX_SUBSCRIPTIONS,
+    Release, ReleaseFault, Releases, ReleasesRequest, Subscription, Subscriptions,
+};
+pub use health::{CAPABILITY_COUNT, Capability, CapabilityState, Health};
+pub use project::{
+    CreateProject, LockfileBinding, LockfileKind, MAX_PROJECT_MEMBERS, MAX_PROJECT_NAME_BYTES,
+    MAX_PROJECTS, MemberChange, Project, ProjectError, ProjectHue, ProjectId, ProjectName,
+    ProjectNameError, ProjectSelector, Projects, Repin, SyncCompile, SyncReport, SyncRequest,
+};
+pub use registry::{
+    Dependency, DependencyKind, Dependents, DependentsPage, DependentsRequest, DetailRequest,
+    DownloadCount, DownloadWindow, Downloads, ExplorePage, ExploreRequest, ExploreSort, Install,
+    Links, MAX_EXPLORE_CARDS, MAX_OWNER_HANDLE_BYTES, MAX_PAGE_NUMBER, MAX_URL_BYTES, Origin,
+    Owner, OwnerHandle, OwnerHandleError, OwnerKind, OwnerPage, OwnerRequest, PackageDetail,
+    PageNumber, Provenance, Readme, ReadmeOrigin, RegistryCapability, RegistryCard, RegistryError,
+    RegistryVersion, Url, UrlError, install_snippet,
+};
+pub use session::{
+    MAX_TREE_NODES, Opener, SessionTree, TreeCloseRequest, TreeCloseScope, TreeError, TreeNode,
+    TreeNodeId, TreeOpenRequest, TreeOutcome, TreeSubject, TreeSubjectError,
+};
+pub use source::{
+    ContextLines, DEFAULT_CONTEXT_LINES, LineNumber, MAX_CONTEXT_LINES, MAX_SOURCE_BYTES, Related,
+    RelatedRequest, RelatedRow, Relation, SourceError, SourceRequest, SourceText,
+};
 pub use image::Image;
 pub use library::{CompilerAttachment, Library, LibraryOpenError, OpenOptions};
 pub use page::{PageError, PageLocator, ReopenError, ReopenPhase, Resolution, ResolveError};
