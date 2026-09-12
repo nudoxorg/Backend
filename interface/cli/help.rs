@@ -40,6 +40,9 @@ const GRAPH_FLAGS: [(&str, &str); 4] = [
     ("--limit <n>", "Edge budget."),
 ];
 
+const INDEX_SEARCH_FLAGS: [(&str, &str); 1] =
+    [("--limit <n>", "Rows per page, 1 to 100; 40 by default.")];
+
 /// The full help: usage, every registry row with its shared description, and every option.
 #[must_use]
 pub(crate) fn help_text(palette: Palette, width: Width) -> String {
@@ -57,6 +60,7 @@ pub(crate) fn help_text(palette: Palette, width: Width) -> String {
     section(&mut out, "options", &GLOBALS, palette, width);
     section(&mut out, "search flags", &SEARCH_FLAGS, palette, width);
     section(&mut out, "graph flags", &GRAPH_FLAGS, palette, width);
+    section(&mut out, "index-search flags", &INDEX_SEARCH_FLAGS, palette, width);
     out
 }
 
@@ -200,7 +204,7 @@ pub(crate) fn usage_text(error: &UsageError, palette: Palette) -> String {
 pub(crate) fn usage_detail(error: &UsageError) -> String {
     let scope = error.command.unwrap_or("nudox");
     match &error.kind {
-        UsageKind::UnknownCommand { .. } => "not one of the nine commands".to_owned(),
+        UsageKind::UnknownCommand { .. } => "not one of the twelve commands".to_owned(),
         UsageKind::UnknownFlag => format!("`{scope}` does not accept this flag"),
         UsageKind::MissingValue => "this flag needs a value".to_owned(),
         UsageKind::MissingOperand { operand } => format!("`{scope}` needs {operand}"),

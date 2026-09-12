@@ -4136,6 +4136,7 @@ dependencies = [
  "interface-documents",
  "interface-identity",
  "interface-search",
+ "server-index-catalog",
  "server-index-core",
  "server-index-graph-vector",
  "server-index-qdrant",

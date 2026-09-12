@@ -359,6 +359,11 @@ impl Library {
             Command::Search(request) => Reply::Searched(self.search(&request)),
             Command::Graph(request) => Reply::Graphed(self.graph(&request)),
             Command::Health => Reply::Health(self.health()),
+            Command::IndexSearch { query, limit } => {
+                Reply::IndexSearched(self.index_search(&query, limit))
+            }
+            Command::PackageVersions { name } => Reply::Versions(self.package_versions(&name)),
+            Command::PackageProfile { name } => Reply::Profiled(self.package_profile(&name)),
         }
     }
 

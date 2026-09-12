@@ -24,14 +24,15 @@ use interface_search::{
 };
 
 use crate::{
-    AddFailure, AddOutcome, AddRejection, Health, PageError, RejectedAdd, RemoveOutcome, Reply,
-    Resolution, ResolveError, Shelf, ShelfEntry, ShelfError, ShelfStatus,
+    AddFailure, AddOutcome, AddRejection, ExploreError, Health, IndexSearchPage, PackageProfile,
+    PackageVersionRows, PageError, RejectedAdd, RemoveOutcome, Reply, Resolution, ResolveError,
+    Shelf, ShelfEntry, ShelfError, ShelfStatus,
     render::common::{
         self, Affordance, Affordances, EXAMPLE_PACKAGE_URL, Fault, RenderContext, RelativeAddress,
         add_affordance, blamed_capability, capability_glyph, capability_slug, census_line,
-        fence_tag, lane_signal, package_url_slug, phase_dots, rejection_slug,
-        relative_age, shelf_failure_slug, unavailability_slug, visibility_label, write_affordance,
-        write_fault,
+        explore_coverage_signal, explore_error_detail, explore_error_slug, fence_tag, lane_signal,
+        package_url_slug, phase_dots, rejection_slug, relative_age, shelf_failure_slug,
+        unavailability_slug, visibility_label, write_affordance, write_fault,
     },
 };
 
@@ -73,6 +74,18 @@ pub fn render(reply: &Reply, context: &RenderContext) -> String {
             Err(error) => page_error_markdown("graph", error),
         },
         Reply::Health(health) => health_markdown(health),
+        Reply::IndexSearched(result) => match result {
+            Ok(page) => index_search_markdown(page),
+            Err(error) => fault_markdown("index-search", &explore_error_fault(error)),
+        },
+        Reply::Versions(result) => match result {
+            Ok(rows) => versions_markdown(rows),
+            Err(error) => fault_markdown("package-versions", &explore_error_fault(error)),
+        },
+        Reply::Profiled(result) => match result {
+            Ok(profile) => profile_markdown(profile),
+            Err(error) => fault_markdown("package-profile", &explore_error_fault(error)),
+        },
     }
 }
 
@@ -821,6 +834,105 @@ fn coverage_signal(coverage: Coverage) -> String {
     }
 }
 
+// ── explore ─────────────────────────────────────────────────────────────────────────────────────
+
+fn index_search_markdown(page: &IndexSearchPage) -> String {
+    let mut out = String::new();
+    heading(&mut out, "index-search");
+    let _ = writeln!(out, "~index {}\n", explore_coverage_signal(page.coverage));
+    if page.hits.is_empty() {
+        out.push_str("(no matches)\n");
+    }
+    for hit in &page.hits {
+        let _ = writeln!(out, "- {}", hit.matched);
+    }
+    out
+}
+
+fn versions_markdown(rows: &PackageVersionRows) -> String {
+    let mut out = String::new();
+    heading(&mut out, "package-versions");
+    if rows.rows.is_empty() {
+        out.push_str("(no versions)\n");
+    }
+    for row in &rows.rows {
+        let _ = writeln!(
+            out,
+            "- {}  {}  cycle {}{}",
+            row.version.as_str(),
+            row.checksum.abbreviation(),
+            row.cycle.get(),
+            yank_suffix(row.active)
+        );
+    }
+    out
+}
+
+fn profile_markdown(profile: &PackageProfile) -> String {
+    let mut out = String::new();
+    heading(&mut out, "package-profile");
+    match &profile.latest {
+        Some(latest) => {
+            let _ = writeln!(
+                out,
+                "latest {}  {}\n",
+                latest.version.as_str(),
+                latest.checksum.abbreviation()
+            );
+        }
+        None => out.push_str("(no versions)\n"),
+    }
+    for row in &profile.versions.rows {
+        let _ = writeln!(
+            out,
+            "- {}  {}  cycle {}{}",
+            row.version.as_str(),
+            row.checksum.abbreviation(),
+            row.cycle.get(),
+            yank_suffix(row.active)
+        );
+    }
+    out
+}
+
+/// A row says `yanked` only in the weak case, as relation rows say `heuristic` only in theirs.
+const fn yank_suffix(active: crate::VersionActive) -> &'static str {
+    if active.is_active() {
+        ""
+    } else {
+        "  yanked"
+    }
+}
+
+fn explore_error_fault(error: &ExploreError) -> Fault {
+    match error {
+        ExploreError::QueryTooLong { .. } => {
+            Fault::new(explore_error_slug(error), String::new(), Affordance::None)
+                .detailed(explore_error_detail(error))
+        }
+        ExploreError::IndexStore { .. }
+        | ExploreError::CatalogAbsent
+        | ExploreError::Catalog { .. } => {
+            Fault::new(explore_error_slug(error), String::new(), Affordance::Health)
+                .detailed(explore_error_detail(error))
+        }
+        ExploreError::NotFound { package } => Fault::new(
+            explore_error_slug(error),
+            package.as_str(),
+            Affordance::Search {
+                query: package.as_str().to_owned(),
+            },
+        )
+        .detailed(explore_error_detail(error)),
+        ExploreError::Ambiguous { package, .. } => Fault::new(
+            explore_error_slug(error),
+            package.as_str(),
+            Affordance::Health,
+        )
+        .detailed(explore_error_detail(error)),
+    }
+}
+
 // ── health ──────────────────────────────────────────────────────────────────────────────────────
 
 fn health_markdown(health: &Health) -> String {
@@ -848,10 +960,10 @@ mod tests {
     use compiler_ir_vocabulary::{
         DeclarationFamilyId, DeclarationIdentity, EntityKind, VariantFingerprint,
     };
-    use interface_core::{PackageEcosystem, PackageUrl};
+    use interface_core::{CorrelationId, PackageEcosystem, PackageUrl};
     use interface_documents::{
-        Census, Count, Direction, ExternalRef, ForeignOrigin, MemberRow, Name, Prose,
-        RelationRole, RelationRow, Text, Token, TokenKind,
+        Census, Count, Direction, ExternalRef, ForeignOrigin, MemberRow, Name, PageTruncation,
+        Prose, RelationRole, RelationRow, Target, Text, Token, TokenKind,
     };
     use interface_identity::{ContentKey, ExactAddress, SymbolPath};
     use interface_search::{
@@ -859,7 +971,7 @@ mod tests {
         SearchRequest, SearchScope, Unavailability,
     };
 
-    use crate::{AddRejection, LibraryEpoch, PackageCard, ShelfStatus};
+    use crate::{AddRejection, LibraryEpoch, PackageCard, ShelfStatus, Timestamp};
 
     use super::*;
 
@@ -895,7 +1007,7 @@ mod tests {
             });
         Symbol {
             address: ExactAddress::mint(package.clone(), parsed, key(seed)),
-            entity: EntityId(u32::from(seed)),
+            entity: EntityId::new(u32::from(seed)),
             name: Name::displayable(leaf.as_bytes()),
             kind,
             visibility: Visibility::Public,
@@ -930,6 +1042,11 @@ mod tests {
             signature: signature(
                 "fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>",
             ),
+            truncation: PageTruncation {
+                members: None,
+                relations: None,
+                signature_tokens: None,
+            },
             prose: Prose::new(vec![Block::Paragraph(Box::new([Inline::Text(Text::new(
                 "Hint that the `Deserialize` type is expecting a map of key-value pairs.",
             ))]))]),
@@ -1045,10 +1162,11 @@ mod tests {
     #[test]
     fn the_coordinate_appears_exactly_once_and_only_in_the_heading() {
         let text = rendered_page();
+        let heading = text.lines().next().unwrap_or_default();
         assert_eq!(
-            text.matches("cargo:serde@1.0.196").count(),
+            heading.matches("cargo:serde@1.0.196").count(),
             1,
-            "the page's own coordinate must be written once: {text}"
+            "the page's own coordinate must be written once, in its heading: {text}"
         );
         assert!(
             text.contains("- cargo:serde_json › value::Value[enum]"),
@@ -1214,7 +1332,7 @@ mod tests {
             "got: {text}"
         );
         let mut wide = terminal();
-        wide.request.scope.kinds = interface_search::KindSet::ALL;
+        wide.request.scope.kinds = KindSet::ALL;
         let text = render(&Reply::Searched(wide), &context());
         assert!(
             !text.contains("~scope"),
@@ -1238,7 +1356,7 @@ mod tests {
                 coordinate: coordinate("serde", "1.0.196"),
                 status,
                 requested_at: Timestamp(0),
-                correlation: interface_core::CorrelationId(1),
+                correlation: CorrelationId(1),
             }]),
             epoch: LibraryEpoch::default(),
         }
@@ -1310,9 +1428,11 @@ mod tests {
             profile: compiler_vocabulary::LanguageProfile::Rust(
                 compiler_vocabulary::RustEdition::Rust2021,
             ),
-            generation: heart_identity::GenerationId::default(),
+            generation: heart_identity::GenerationId::from_canonical_bytes(
+                b"markdown-fixture-generation",
+            ),
             image: interface_core::SemanticImageAuthority {
-                identity: Default::default(),
+                identity: heart_identity::ArtifactId::from_encoded_bytes(b"markdown-fixture-image"),
                 byte_len: 0,
             },
             census: census(),

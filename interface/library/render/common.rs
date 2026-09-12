@@ -16,7 +16,10 @@ use interface_documents::{Census, Symbol, Target};
 use interface_identity::{PackageCoordinate, ecosystem_tag};
 use interface_search::{Coverage, Degradation, LaneReport, Unavailability};
 
-use crate::{AddRejection, Capability, CapabilityState, CompilePhaseProgress, ShelfFailure, Timestamp};
+use crate::{
+    AddRejection, Capability, CapabilityState, CompilePhaseProgress, ExploreCoverage, ExploreError,
+    ExploreUnavailable, ShelfFailure, Timestamp,
+};
 
 /// Everything a renderer needs that a [`crate::Reply`] does not carry.
 ///
@@ -262,6 +265,64 @@ pub const fn degradation_slug(reason: Degradation) -> &'static str {
         Degradation::StaleProjection => "stale-projection",
         Degradation::CandidateBudget => "candidate-budget",
         Degradation::RemoteTimeout => "remote-timeout",
+    }
+}
+
+/// Stable slug for why an index search covered less than everything, or nothing at all.
+#[must_use]
+pub const fn explore_unavailable_slug(reason: ExploreUnavailable) -> &'static str {
+    match reason {
+        ExploreUnavailable::EmptyIndex => "empty-index",
+        ExploreUnavailable::StoreFault { slug } => slug,
+        ExploreUnavailable::CatalogAbsent => "catalog-absent",
+    }
+}
+
+/// Stable slug naming which explore failure a reply carried.
+#[must_use]
+pub const fn explore_error_slug(error: &ExploreError) -> &'static str {
+    match error {
+        ExploreError::QueryTooLong { .. } => "query-too-long",
+        ExploreError::IndexStore { .. } => "index-store",
+        ExploreError::CatalogAbsent => "catalog-absent",
+        ExploreError::Catalog { .. } => "catalog",
+        ExploreError::NotFound { .. } => "package-not-found",
+        ExploreError::Ambiguous { .. } => "ambiguous",
+    }
+}
+
+/// One line naming exactly what the index store or the catalog reported, in its own words.
+#[must_use]
+pub fn explore_error_detail(error: &ExploreError) -> String {
+    match error {
+        ExploreError::QueryTooLong { observed, maximum } => {
+            format!("{observed} bytes exceeds the {maximum}-byte index-search query budget")
+        }
+        ExploreError::IndexStore { detail } | ExploreError::Catalog { detail } => {
+            detail.as_ref().to_owned()
+        }
+        ExploreError::CatalogAbsent => {
+            "no registry catalog exists at library/catalog.db, so the index knows no packages"
+                .to_owned()
+        }
+        ExploreError::NotFound { package } => {
+            format!("the registry catalog records no versions for {}", package.as_str())
+        }
+        ExploreError::Ambiguous { observed, .. } => {
+            format!("{observed} registry rows share this name across ecosystems")
+        }
+    }
+}
+
+/// One-line coverage of an index search, in the shared signal vocabulary.
+#[must_use]
+pub fn explore_coverage_signal(coverage: ExploreCoverage) -> String {
+    match coverage {
+        ExploreCoverage::Complete => "complete".to_owned(),
+        ExploreCoverage::Partial { searched, total } => format!("partial {searched}/{total}"),
+        ExploreCoverage::Unavailable { reason } => {
+            format!("unavailable {}", explore_unavailable_slug(reason))
+        }
     }
 }
 

@@ -19,8 +19,9 @@ use std::{
 use interface_documents::ProjectionLimits;
 use interface_identity::PackageCoordinate;
 use interface_library::{
-    AddOutcome, AddProgress, Command, CompilerAttachment, Library, LibraryOpenError, OpenOptions,
-    RemoveOutcome, Reply, Resolution, Shelf, Timestamp, WorkspaceRoot, WorkspaceRootError,
+    AddOutcome, Command, CompilerAttachment, ExploreCoverage, Library, LibraryOpenError,
+    OpenOptions, RemoveOutcome, Reply, Resolution, Shelf, Timestamp, WorkspaceRoot,
+    WorkspaceRootError,
     render::{
         common::RenderContext,
         text::{self, Attachment, Palette, TextOptions, Width, every_requested_lane_unavailable},
@@ -94,6 +95,7 @@ fn dispatch(invocation: args::Invocation) -> ExitCode {
     };
     let shelf = library.shelf().ok();
     let neighbours = coordinates(shelf.as_ref());
+    let subject = invocation.plan.subject().map(str::to_owned);
     let options = TextOptions {
         width: terminal_width(),
         palette,
@@ -103,7 +105,7 @@ fn dispatch(invocation: args::Invocation) -> ExitCode {
             Attach::Detached => Attachment::Detached,
         },
         neighbours: &neighbours,
-        subject: invocation.plan.subject(),
+        subject: subject.as_deref(),
     };
     if matches!(invocation.plan, Plan::Dashboard) {
         return emit(&help::dashboard_text(shelf.as_ref(), &library.health(), &options));
@@ -194,6 +196,13 @@ fn command_of(plan: Plan, shelf: &[PackageCoordinate]) -> Result<Command, UsageE
             limit: graph.limit,
         }),
         Plan::Health => Command::Health,
+        Plan::IndexSearch {
+            query,
+            limit,
+            ..
+        } => Command::IndexSearch { query, limit },
+        Plan::PackageVersions { name, .. } => Command::PackageVersions { name },
+        Plan::PackageProfile { name, .. } => Command::PackageProfile { name },
     })
 }
 
@@ -310,6 +319,12 @@ fn carries_failure(reply: &Reply) -> bool {
         Reply::Resolved(Err(_)) => true,
         Reply::Resolved(Ok(resolution)) => !matches!(resolution, Resolution::Exact(_)),
         Reply::Searched(terminal) => every_requested_lane_unavailable(terminal),
+        Reply::IndexSearched(result) => match result {
+            Err(_) => true,
+            Ok(page) => matches!(page.coverage, ExploreCoverage::Unavailable { .. }),
+        },
+        Reply::Versions(result) => result.is_err(),
+        Reply::Profiled(result) => result.is_err(),
     }
 }
 

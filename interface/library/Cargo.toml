@@ -20,6 +20,7 @@ interface-core = { path = "../core" }
 interface-documents = { path = "../documents" }
 interface-identity = { path = "../identity" }
 interface-search = { path = "../search" }
+server-index-catalog = { path = "../../server/index/catalog" }
 server-index-core = { path = "../../server/index/core" }
 server-index-graph-vector = { path = "../../server/index/graph-vector" }
 server-index-qdrant = { path = "../../server/index/qdrant" }

@@ -209,7 +209,7 @@ fn an_unknown_protocol_revision_is_answered_with_the_one_this_server_speaks(
 }
 
 #[test]
-fn tools_list_publishes_exactly_the_nine_registry_rows() -> Result<(), Box<dyn Error>> {
+fn tools_list_publishes_exactly_the_twelve_registry_rows() -> Result<(), Box<dyn Error>> {
     let mut session = handshake("tools")?;
     let result = session.request("tools/list", json!({}))?;
     let tools = result
@@ -223,7 +223,18 @@ fn tools_list_publishes_exactly_the_nine_registry_rows() -> Result<(), Box<dyn E
     assert_eq!(
         names,
         [
-            "packages", "add", "remove", "show", "outline", "resolve", "search", "graph", "health"
+            "packages",
+            "add",
+            "remove",
+            "show",
+            "outline",
+            "resolve",
+            "search",
+            "graph",
+            "health",
+            "index-search",
+            "package-versions",
+            "package-profile"
         ],
         "tools/list is the registry in registry order"
     );
@@ -333,7 +344,7 @@ fn a_misspelled_argument_is_named_with_the_fields_that_exist() -> Result<(), Box
     assert!(is_error);
     assert!(text.contains("✗ address serde::de"), "got: {text}");
     assert!(
-        text.contains("no `@version`"),
+        text.contains("no `ecosystem:` prefix"),
         "the fault must name the part that was missing: {text}"
     );
     Ok(())

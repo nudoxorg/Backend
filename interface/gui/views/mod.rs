@@ -3,6 +3,7 @@
 //! Its narrow surface is the whole chrome: omnibar on top, library and context panels flanking the
 //! reader, status bar beneath, and the palette floating over all of it when summoned.
 
+mod explore;
 mod library_panel;
 mod omnibar;
 mod outline_panel;
@@ -10,12 +11,10 @@ mod palette;
 mod reader;
 mod results;
 
-use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, SharedString, Styled, div, prelude::*,
-};
+use gpui::{AnyElement, Context, InteractiveElement, IntoElement, Styled, div, prelude::*};
 
-use crate::app::{Cancel, CancelCompile, CancelAdd, CloseTab, CycleAppearance, FocusOmnibar, GrowInterface, NavigateBack, NavigateForward, NextTab, PageDown, PageUp, PreviousTab, Refresh, SelectFirst, SelectLast, ShrinkInterface, StepDown, StepUp, Submit, SubmitAdd, ToggleLibraryPanel, ToggleMotion, ToggleOutlinePanel, Workspace};
-use crate::theme::{Space, tokens::Role};
+use crate::app::{Cancel, CancelCompile, CancelAdd, CloseTab, CycleAppearance, FocusOmnibar, GrowInterface, NavigateBack, NavigateForward, NextTab, PageDown, PageUp, PreviousTab, QuickAdd, Refresh, SelectFirst, SelectLast, ShrinkInterface, StepDown, StepUp, Submit, SubmitAdd, ToggleLibraryPanel, ToggleMotion, ToggleOutlinePanel, Workspace};
+use crate::theme::{Role, Space};
 use crate::ui::{self, hsla};
 
 /// Draws the whole window from the workspace's stores.
@@ -47,14 +46,17 @@ pub(crate) fn shell(
                 let selected = workspace.command_cursor().min(rows.len().saturating_sub(1));
                 if let Some(spec) = rows.get(selected) {
                     let id = spec.id;
-                    workspace.execute_registry(id, window);
+                    workspace.execute_registry(id, window, cx);
                 }
+            } else if workspace.search().mode().is_index() {
+                explore::submit_index(workspace);
             } else {
                 workspace.submit();
             }
             cx.notify();
         }))
         .on_action(cx.listener(|workspace, _: &Cancel, _, cx| {
+            workspace.cancel_pending_search();
             if workspace.search().mode().is_commands() || workspace.search().mode().scope().is_none()
             {
                 workspace.search_mut().clear();
@@ -66,6 +68,11 @@ pub(crate) fn shell(
         .on_action(cx.listener(|workspace, _: &StepDown, _, cx| {
             if workspace.search().mode().is_commands() {
                 workspace.step_registry(true);
+            } else if workspace.search().mode().is_index() {
+                let last = explore::index_rows(workspace).len().saturating_sub(1);
+                workspace.search_mut().step_index_selection(true);
+                let clamped = workspace.search().index_cursor().min(last);
+                workspace.search_mut().select_index(clamped);
             } else {
                 workspace.search_mut().step(true);
             }
@@ -74,27 +81,41 @@ pub(crate) fn shell(
         .on_action(cx.listener(|workspace, _: &StepUp, _, cx| {
             if workspace.search().mode().is_commands() {
                 workspace.step_registry(false);
+            } else if workspace.search().mode().is_index() {
+                let last = explore::index_rows(workspace).len().saturating_sub(1);
+                workspace.search_mut().step_index_selection(false);
+                let clamped = workspace.search().index_cursor().min(last);
+                workspace.search_mut().select_index(clamped);
             } else {
                 workspace.search_mut().step(false);
             }
             cx.notify();
         }))
         .on_action(cx.listener(|workspace, _: &PageDown, _, cx| {
-            workspace.search_mut().page(true);
+            workspace.page_results(true);
             cx.notify();
         }))
         .on_action(cx.listener(|workspace, _: &PageUp, _, cx| {
-            workspace.search_mut().page(false);
+            workspace.page_results(false);
             cx.notify();
         }))
         .on_action(cx.listener(|workspace, _: &SelectFirst, _, cx| {
-            workspace.search_mut().select_first();
-            workspace.step_registry_first();
+            if workspace.search().mode().is_index() {
+                workspace.search_mut().select_index(0);
+            } else {
+                workspace.search_mut().select_first();
+                workspace.step_registry_first();
+            }
             cx.notify();
         }))
         .on_action(cx.listener(|workspace, _: &SelectLast, _, cx| {
-            workspace.search_mut().select_last();
-            workspace.step_registry_last();
+            if workspace.search().mode().is_index() {
+                let last = explore::index_rows(workspace).len().saturating_sub(1);
+                workspace.search_mut().select_index(last);
+            } else {
+                workspace.search_mut().select_last();
+                workspace.step_registry_last();
+            }
             cx.notify();
         }))
         .on_action(cx.listener(|workspace, _: &SubmitAdd, _, cx| {
@@ -102,7 +123,11 @@ pub(crate) fn shell(
             cx.notify();
         }))
         .on_action(cx.listener(|workspace, _: &CancelAdd, window, cx| {
-            workspace.close_add_flow(window);
+            workspace.close_add_flow(window, cx);
+            cx.notify();
+        }))
+        .on_action(cx.listener(|workspace, _: &QuickAdd, window, cx| {
+            workspace.quick_add_from_clipboard(window, cx);
             cx.notify();
         }))
         .on_action(cx.listener(|workspace, _: &ToggleLibraryPanel, _, cx| {
@@ -161,6 +186,16 @@ pub(crate) fn shell(
             cx.notify();
         }))
         .child(omnibar::bar(workspace, window, cx))
+        .when(
+            !workspace.search().mode().is_commands() && workspace.search().terminal().is_some(),
+            |root| root.child(results::sheet(workspace, cx)),
+        )
+        .when(
+            workspace.search().mode().is_index()
+                && (workspace.explore().index_page().is_some()
+                    || workspace.store().rows().is_empty()),
+            |root| root.child(explore::sheet(workspace, cx)),
+        )
         .child(
             div()
                 .id("body")
@@ -229,14 +264,14 @@ fn status_bar(workspace: &Workspace, cx: &Context<Workspace>) -> AnyElement {
     if let Some(fault) = fault {
         right = right.child(
             ui::with_role(div(), &theme, Role::Dense)
-                .text_color(hsla(theme::Status::Warn.color(theme.appearance())))
+                .text_color(hsla(crate::theme::Status::Warn.color(theme.appearance())))
                 .child(fault),
         );
     }
     if let Some(lines) = workspace.unreadable_pref_lines().first() {
         right = right.child(
             ui::with_role(div(), &theme, Role::Dense)
-                .text_color(hsla(theme::Status::Warn.color(theme.appearance())))
+                .text_color(hsla(crate::theme::Status::Warn.color(theme.appearance())))
                 .child(format!("gui.prefs:{} ignored", lines.get())),
         );
     }
@@ -265,11 +300,11 @@ fn status_bar(workspace: &Workspace, cx: &Context<Workspace>) -> AnyElement {
     ));
     right = right.child(ui::button(
         &theme,
-        SharedString::from(if workspace.preferences().motion.animates() {
+        if workspace.preferences().motion.animates() {
             "motion"
         } else {
             "still"
-        }),
+        },
         false,
         cx.listener(|workspace, _: &gpui::ClickEvent, _, cx| workspace.toggle_motion(cx)),
     ));

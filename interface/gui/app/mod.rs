@@ -18,23 +18,26 @@ use std::{
 };
 
 use async_channel::Sender;
+use compiler_ir_vocabulary::EntityKind;
 use gpui::{
-    App, Bounds, Context, FocusHandle, Focusable, IntoElement, KeyBinding, Render, SharedString,
-    TitlebarOptions, WindowBounds, WindowOptions, actions, px, size,
+    App, AppContext, Bounds, ClipboardItem, Context, FocusHandle, Focusable, IntoElement, KeyBinding,
+    Render, SharedString, TitlebarOptions, WindowBounds, WindowOptions, actions, px, size,
 };
-use interface_documents::{Outline, PageError};
+use interface_core::PackageUrl;
+use interface_documents::Outline;
 use interface_identity::{Address, PackageCoordinate};
 use interface_library::{
-    Command, CommandId, CommandSpec, CompilerAttachment, Library, LibraryOpenError, OpenOptions,
-    Reply, WorkspaceRoot, WorkspaceRootError, COMMANDS,
+    Command, CommandId, CommandSpec, CompilerAttachment, ExploreLimit, ExplorePackageName,
+    ExploreQuery, Library, LibraryOpenError, OpenOptions, Reply, WorkspaceRoot, WorkspaceRootError,
+    COMMANDS,
 };
 use interface_search::SearchTerminal;
-use interface_library::render::common::Fault;
+use interface_library::render::common::{Affordance, Fault};
 
 use crate::{
     motion::Motion,
     prefs::{Decoded, LineNumber, Preferences, PreferencesError},
-    store::document::PageKey,
+    store::{document::PageKey, explore::ExploreStore, search::OmnibarMode},
     theme::Theme,
 };
 
@@ -57,6 +60,7 @@ actions!(
         SelectLast,
         SubmitAdd,
         CancelAdd,
+        QuickAdd,
         ToggleLibraryPanel,
         ToggleOutlinePanel,
         NavigateBack,
@@ -84,6 +88,13 @@ const DEFAULT_WINDOW: (f32, f32) = (1280.0, 820.0);
 
 /// The smallest window the layout can honour.
 const MINIMUM_WINDOW: (f32, f32) = (940.0, 650.0);
+
+/// How long the omnibar waits after the last keystroke before it searches on its own.
+///
+/// Enter never waits: submitting stays immediate. The debounce only decides when typing alone
+/// runs the search, so the reader sees results while typing without one engine round trip per
+/// character.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 
 /// Why the process could not open a window at all.
 pub enum LaunchRefusal {
@@ -137,6 +148,31 @@ pub struct Startup {
     pub(crate) fault: Option<String>,
 }
 
+impl Startup {
+    /// Opens a workspace read-only: no compiler host, first-run defaults allowed.
+    ///
+    /// This is the headless embedding path for tests and future hosts; the window path is
+    /// [`gather_startup`], which degrades a refusing compiler host instead of failing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact library or preference refusal.
+    pub fn detached(root: WorkspaceRoot) -> Result<Self, LaunchRefusal> {
+        let decoded = Preferences::load(&root).map_err(LaunchRefusal::Preferences)?;
+        let library = Library::open(OpenOptions {
+            root: root.clone(),
+            compiler: CompilerAttachment::Detached,
+        })
+        .map_err(LaunchRefusal::Library)?;
+        Ok(Self {
+            library,
+            root,
+            decoded,
+            fault: None,
+        })
+    }
+}
+
 /// What the context panel draws.
 #[derive(Clone, Debug)]
 pub enum ContextSlot {
@@ -178,11 +214,14 @@ pub struct Workspace {
     store: crate::store::LibraryStore,
     search: crate::store::SearchStore,
     documents: crate::store::DocumentStore,
+    explore: ExploreStore,
     context: ContextSlot,
     motion: Motion,
     shelf_cursor: usize,
     command_cursor: usize,
     submitted_query: Option<Box<str>>,
+    search_generation: u64,
+    search_dispatches: u32,
     hovered: Option<PageKey>,
     requests: Sender<EngineRequest>,
     field_bounds: SharedFieldGeometry,
@@ -226,11 +265,14 @@ impl Workspace {
             store: crate::store::LibraryStore::default(),
             search: crate::store::SearchStore::default(),
             documents: crate::store::DocumentStore::default(),
+            explore: ExploreStore::default(),
             context: ContextSlot::Idle,
             motion,
             shelf_cursor: 0,
             command_cursor: 0,
             submitted_query: None,
+            search_generation: 0,
+            search_dispatches: 0,
             hovered: None,
             requests,
             field_bounds: Default::default(),
@@ -285,6 +327,12 @@ impl Workspace {
     #[must_use]
     pub const fn documents(&self) -> &crate::store::DocumentStore {
         &self.documents
+    }
+
+    /// The exploration state: index pages, version rows, and profiles, keyed by what asked.
+    #[must_use]
+    pub const fn explore(&self) -> &ExploreStore {
+        &self.explore
     }
 
     /// The context panel state.
@@ -387,9 +435,35 @@ impl Workspace {
 
     /// Sends one command to the resident engine.
     fn dispatch(&mut self, errand: Errand, command: Command) {
-        let _ = self
-            .requests
-            .send_blocking(engine::EngineRequest { errand, command });
+        let _ = self.requests.send_blocking(EngineRequest { errand, command });
+    }
+
+    /// Searches the index catalogue for packages matching the query.
+    pub fn search_index(&mut self, query: ExploreQuery) {
+        self.explore.begin_index_search();
+        let limit = ExploreLimit::default();
+        self.dispatch(
+            Errand::IndexSearch { query: query.clone() },
+            Command::IndexSearch { query, limit },
+        );
+    }
+
+    /// Asks for one package's published versions.
+    pub fn package_versions(&mut self, name: ExplorePackageName) {
+        self.explore.begin_versions(&name);
+        self.dispatch(
+            Errand::Versions { name: name.clone() },
+            Command::PackageVersions { name },
+        );
+    }
+
+    /// Asks for one package's descriptive profile.
+    pub fn package_profile(&mut self, name: ExplorePackageName) {
+        self.explore.begin_profile(&name);
+        self.dispatch(
+            Errand::Profile { name: name.clone() },
+            Command::PackageProfile { name },
+        );
     }
 
     /// Re-reads the shelf and the capability report.
@@ -445,6 +519,7 @@ impl Workspace {
     /// Submits the omnibar: a query that already ran opens its selected hit, and a fresh query
     /// runs as a search. Command rows are executed by the Submit action, which owns the window.
     pub fn submit(&mut self) {
+        self.supersede_search_debounce();
         let already_ran = self
             .submitted_query
             .as_deref()
@@ -460,6 +535,11 @@ impl Workspace {
             }
             return;
         }
+        self.run_search();
+    }
+
+    /// Runs the omnibar's current search against the shelf, recording the query as submitted.
+    fn run_search(&mut self) {
         let coordinates: Vec<PackageCoordinate> = self
             .store
             .rows()
@@ -468,8 +548,140 @@ impl Workspace {
             .collect();
         if let Some(request) = self.search.request(&coordinates) {
             self.submitted_query = Some(request.text.as_str().into());
+            self.search_dispatches = self.search_dispatches.saturating_add(1);
             self.dispatch(Errand::Search, Command::Search(request));
         }
+    }
+
+    /// How many searches this window has dispatched, so the debounce and continuation laws are
+    /// observable without stepping the scheduler.
+    #[must_use]
+    pub const fn search_dispatches(&self) -> u32 {
+        self.search_dispatches
+    }
+
+    /// The current search generation, so a test can fire one debounce arm and prove a superseded
+    /// arm does nothing.
+    #[must_use]
+    pub const fn search_generation(&self) -> u64 {
+        self.search_generation
+    }
+
+    /// Fires one debounce arm exactly as its timer would, ignoring superseded generations.
+    pub fn fire_debounced_search(&mut self, generation: u64) {
+        if self.search_generation == generation {
+            self.run_search();
+        }
+    }
+
+    /// Supersedes any pending debounced search, so only the newest arm can fire.
+    const fn supersede_search_debounce(&mut self) {
+        self.search_generation = self.search_generation.saturating_add(1);
+    }
+
+    /// Cancels the pending debounced search, as clearing or escaping the field does.
+    pub const fn cancel_pending_search(&mut self) {
+        self.supersede_search_debounce();
+    }
+
+    /// Arms the debounced search for the omnibar's current text, superseding any pending arm.
+    ///
+    /// The timer runs on the background executor and dispatches [`Command::Search`] only if no
+    /// newer retype, submit, or cancel happened while it waited, so a fast typist costs one
+    /// engine round trip rather than one per keystroke. It requests no frame: an idle window
+    /// stays idle.
+    fn arm_search_debounce(&mut self, cx: &mut Context<Self>) {
+        self.supersede_search_debounce();
+        let OmnibarMode::Search { query, .. } = self.search.mode() else {
+            return;
+        };
+        if query.is_empty() {
+            return;
+        }
+        let generation = self.search_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            let _ = this.update(cx, |workspace, _cx| {
+                workspace.fire_debounced_search(generation);
+            });
+        })
+        .detach();
+    }
+
+    /// Pages the results sheet, continuing the search when the reader steps past the loaded rows.
+    ///
+    /// A page step past the last loaded row of a truncated sheet asks for the rows that were
+    /// cut, so the truncation line stops being the end of the story.
+    pub fn page_results(&mut self, forward: bool) {
+        let count = self.search.hits().len();
+        let selected = self.search.selected();
+        let stepping_past = forward && count > 0 && selected.saturating_add(1) >= count;
+        self.search.page(forward);
+        if stepping_past && self.search.is_truncated() {
+            self.continue_search();
+        }
+    }
+
+    /// Fetches the next page of a truncated search, appending it past the loaded rows.
+    pub fn continue_search(&mut self) {
+        let Some(request) = self.search.continuation_request() else {
+            return;
+        };
+        self.search_dispatches = self.search_dispatches.saturating_add(1);
+        self.dispatch(Errand::Search, Command::Search(request));
+    }
+
+    /// Flips one kind chip and re-runs the search on the debounce, exactly as retyping does.
+    pub fn toggle_search_kind(&mut self, kind: EntityKind, cx: &mut Context<Self>) {
+        self.search.toggle_kind(kind);
+        self.arm_search_debounce(cx);
+        cx.notify();
+    }
+
+    /// Adds whatever the seed names, or opens the add flow stating why the seed was refused.
+    ///
+    /// A seed that parses as a pinned coordinate seeds the flow exactly as offered; a canonical
+    /// package URL seeds it with the URL's derived coordinate, which is the spelling the flow's
+    /// draft grammar admits. Anything else opens the flow with a fault line carrying the refused
+    /// text, so the reader sees and edits exactly what was offered.
+    pub fn quick_add(&mut self, seed: &str, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let trimmed = seed.trim();
+        let coordinate = match PackageCoordinate::parse(trimmed) {
+            Ok(coordinate) => Some(coordinate),
+            Err(_) => {
+                PackageUrl::try_from(trimmed.to_owned())
+                    .ok()
+                    .and_then(|url| PackageCoordinate::from_package_url(&url))
+            }
+        };
+        let derived = coordinate.as_ref().map(ToString::to_string);
+        let seeded = derived.as_deref().unwrap_or(trimmed);
+        self.open_add_flow(seeded, window, cx);
+        if coordinate.is_none() {
+            self.store.add.fault = Some(
+                Fault::new(
+                    "clipboard-not-a-package",
+                    trimmed.to_owned(),
+                    Affordance::Add {
+                        package: trimmed.to_owned(),
+                    },
+                )
+                .detailed("the clipboard held no pinned coordinate or package URL".to_owned()),
+            );
+        }
+    }
+
+    /// The `QuickAdd` action: adds whatever the platform clipboard names.
+    pub fn quick_add_from_clipboard(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default();
+        self.quick_add(&text, window, cx);
     }
 
     /// Submits the add flow's valid draft as one compile.
@@ -505,10 +717,15 @@ impl Workspace {
 
     /// Performs one registry row the way this surface can: by acting, or by pointing the reader at
     /// the omnibar, which is where an operand is collected on this surface.
-    pub fn execute_registry(&mut self, id: CommandId, window: &mut gpui::Window) {
+    pub fn execute_registry(
+        &mut self,
+        id: CommandId,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
         match id {
             CommandId::Packages | CommandId::Health => self.refresh(),
-            CommandId::Add => self.open_add_flow("", window),
+            CommandId::Add => self.open_add_flow("", window, cx),
             CommandId::Remove => self.remove_selected(),
             CommandId::Outline => {
                 let Some(row) = self.store.rows().get(self.shelf_cursor) else {
@@ -518,17 +735,23 @@ impl Workspace {
                 let coordinate = row.coordinate.clone();
                 self.open_outline(&coordinate);
             }
-            CommandId::Search | CommandId::Resolve | CommandId::Show | CommandId::Graph => {
-                self.omnibar_focus.focus(window);
+            CommandId::Search | CommandId::Resolve | CommandId::Show | CommandId::Graph
+            | CommandId::IndexSearch | CommandId::PackageVersions | CommandId::PackageProfile => {
+                self.omnibar_focus.focus(window, cx);
             }
         }
     }
 
     /// Opens the inline add flow, seeded with optional text such as an example chip.
-    pub fn open_add_flow(&mut self, seed: &str, window: &mut gpui::Window) {
+    pub fn open_add_flow(
+        &mut self,
+        seed: &str,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
         self.store.add.open_with(seed);
         self.motion.set_add_flow_open(true);
-        self.add_focus.focus(window);
+        self.add_focus.focus(window, cx);
     }
 
     /// Records the reader's selection of one shelf row.
@@ -568,9 +791,19 @@ impl Workspace {
         &mut self.search
     }
 
+    /// The library store, mutably, for the panel's inline actions.
+    pub fn store_mut(&mut self) -> &mut crate::store::LibraryStore {
+        &mut self.store
+    }
+
     /// The reader store, mutably, for the shell's tab and history actions.
     pub fn documents_mut(&mut self) -> &mut crate::store::DocumentStore {
         &mut self.documents
+    }
+
+    /// The exploration store, mutably, for views that fold or clear its slots.
+    pub const fn explore_mut(&mut self) -> &mut ExploreStore {
+        &mut self.explore
     }
 
     /// Fetches one page without the double-open guard, for internal navigation.
@@ -604,59 +837,59 @@ impl Workspace {
     }
 
     /// Collapses the add flow and returns focus to the shell.
-    pub fn close_add_flow(&mut self, window: &mut gpui::Window) {
+    pub fn close_add_flow(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
         self.store.add.close();
         self.motion.set_add_flow_open(false);
-        self.omnibar_focus.focus(window);
+        self.omnibar_focus.focus(window, cx);
     }
 
     /// Shows or hides the library panel, persisting the choice.
-    pub fn toggle_library_panel(&mut self, cx: &Context<Self>) {
+    pub fn toggle_library_panel(&mut self, cx: &mut Context<Self>) {
         let open = !self.preferences.library_panel.is_open();
         self.preferences.library_panel = crate::prefs::PanelState::from_open(open);
         self.motion.set_library_open(open);
-        self.persist_preferences(cx);
+        self.persist_preferences(&*cx);
         cx.notify();
     }
 
     /// Shows or hides the context panel, persisting the choice.
-    pub fn toggle_outline_panel(&mut self, cx: &Context<Self>) {
+    pub fn toggle_outline_panel(&mut self, cx: &mut Context<Self>) {
         let open = !self.preferences.outline_panel.is_open();
         self.preferences.outline_panel = crate::prefs::PanelState::from_open(open);
         self.motion.set_outline_open(open);
-        self.persist_preferences(cx);
+        self.persist_preferences(&*cx);
         cx.notify();
     }
 
     /// Flips the appearance, persisting the choice.
-    pub fn cycle_appearance(&mut self, cx: &Context<Self>) {
+    pub fn cycle_appearance(&mut self, cx: &mut Context<Self>) {
         self.preferences.appearance = self.preferences.appearance.flipped();
         self.theme = Theme::resolve(self.preferences.appearance, self.preferences.size);
-        self.persist_preferences(cx);
+        self.persist_preferences(&*cx);
         cx.notify();
     }
 
     /// Steps the interface size, persisting the choice.
-    pub fn step_interface(&mut self, larger: bool, cx: &Context<Self>) {
+    pub fn step_interface(&mut self, larger: bool, cx: &mut Context<Self>) {
         self.preferences.size = if larger {
             self.preferences.size.larger()
         } else {
             self.preferences.size.smaller()
         };
         self.theme = Theme::resolve(self.preferences.appearance, self.preferences.size);
-        self.persist_preferences(cx);
+        self.persist_preferences(&*cx);
         cx.notify();
     }
 
     /// Flips the motion preference, landing anything in flight, persisting the choice.
-    pub fn toggle_motion(&mut self, cx: &Context<Self>) {
+    pub fn toggle_motion(&mut self, cx: &mut Context<Self>) {
         let next = match self.preferences.motion {
             crate::motion::MotionPreference::Full => crate::motion::MotionPreference::Reduced,
             crate::motion::MotionPreference::Reduced => crate::motion::MotionPreference::Full,
         };
         self.preferences.motion = next;
         self.motion.set_preference(next);
-        self.persist_preferences(cx);
+        self.persist_preferences(&*cx);
         cx.notify();
     }
 
@@ -666,7 +899,7 @@ impl Workspace {
     }
 
     /// Folds one engine event into exactly one store.
-    pub fn fold(&mut self, event: EngineEvent, cx: &Context<Self>) {
+    pub fn fold(&mut self, event: EngineEvent, cx: &mut Context<Self>) {
         match event {
             EngineEvent::Progress(progress) => self.store.apply_progress(progress),
             EngineEvent::ShelfChanged => {
@@ -676,9 +909,7 @@ impl Workspace {
             }
             EngineEvent::Replied { errand, reply } => {
                 if errand.command_id() != reply.id() {
-                    self.action_fault = Some(
-                        "an engine reply arrived on the errand of another command".to_owned(),
-                    );
+                    self.note_crossed(&errand, &reply);
                     cx.notify();
                     return;
                 }
@@ -692,8 +923,8 @@ impl Workspace {
         match (errand, reply) {
             (Errand::Shelf, Reply::Packages(result)) => self.store.apply_shelf(result),
             (Errand::Health, Reply::Health(health)) => self.store.apply_health(health),
-            (Errand::Add { .. }, Reply::Added(outcome)) => {
-                self.store.finish_job(&outcome);
+            (Errand::Add { coordinate }, Reply::Added(outcome)) => {
+                self.store.finish_job_for(&coordinate, &outcome);
                 self.dispatch(Errand::Shelf, Command::Packages);
             }
             (Errand::Remove { coordinate }, Reply::Removed(outcome)) => {
@@ -710,15 +941,31 @@ impl Workspace {
                     },
                 };
             }
-            (Errand::Search, Reply::Searched(terminal)) => self.search.apply(terminal),
-            (Errand::Shelf, other) => self.note_misroute(&other),
+            (Errand::Search, Reply::Searched(terminal)) => {
+                if terminal.request.cursor.is_some() {
+                    self.search.apply_continuation(terminal);
+                } else {
+                    self.search.apply(terminal);
+                }
+            }
+            (Errand::IndexSearch { .. }, Reply::IndexSearched(page)) => {
+                self.explore.apply_index_search(page);
+            }
+            (Errand::Versions { name }, Reply::Versions(rows)) => {
+                self.explore.apply_versions(&name, rows);
+            }
+            (Errand::Profile { name }, Reply::Profiled(profile)) => {
+                self.explore.apply_profile(&name, profile);
+            }
+            (errand, reply) => self.note_crossed(&errand, &reply),
         }
     }
 
-    fn note_misroute(&mut self, reply: &Reply) {
+    fn note_crossed(&mut self, errand: &Errand, reply: &Reply) {
         self.action_fault = Some(format!(
-            "a {} reply arrived on a shelf errand",
-            reply.id().name()
+            "a {} reply arrived on the errand of a {}",
+            interface_library::spec(reply.id()).name,
+            interface_library::spec(errand.command_id()).name
         ));
     }
 
@@ -816,7 +1063,8 @@ pub fn run() -> Result<(), LaunchRefusal> {
             },
             move |window, cx| {
                 let workspace = cx.new(|cx| Workspace::new(startup, window, cx));
-                workspace.read(cx).omnibar_focus.focus(window, cx);
+                let omnibar = workspace.read(cx).omnibar_focus.clone();
+                omnibar.focus(window, cx);
                 workspace
             },
         );
@@ -846,7 +1094,8 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
         KeyBinding::new("cmd-r", Refresh, None),
-        KeyBinding::new("cmd-shift-a", CycleAppearance, None),
+        KeyBinding::new("cmd-shift-a", QuickAdd, None),
+        KeyBinding::new("cmd-shift-c", CycleAppearance, None),
         KeyBinding::new("cmd-=", GrowInterface, None),
         KeyBinding::new("cmd--", ShrinkInterface, None),
         KeyBinding::new("cmd-shift-m", ToggleMotion, None),
@@ -870,6 +1119,28 @@ pub(crate) fn now_timestamp() -> interface_library::Timestamp {
         .map_or_else(|_| interface_library::Timestamp(0), |since| {
             interface_library::Timestamp(since.as_secs())
         })
+}
+
+/// Writes one string to the platform clipboard.
+///
+/// The reader's copy affordances consume this; the shell itself never writes.
+#[allow(
+    dead_code,
+    reason = "the card lands this for the reader and search waves, which consume it"
+)]
+pub(crate) fn write_clipboard(text: &str, cx: &App) {
+    cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+}
+
+/// Opens one URL in the platform's default browser.
+///
+/// The reader's outbound links consume this; the shell itself never opens.
+#[allow(
+    dead_code,
+    reason = "the card lands this for the reader and search waves, which consume it"
+)]
+pub(crate) fn open_external(url: &str, cx: &App) {
+    cx.open_url(url);
 }
 
 /// The page a search terminal's selected hit points at, for tests that drive submission.

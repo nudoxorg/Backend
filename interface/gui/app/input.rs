@@ -116,6 +116,7 @@ impl Workspace {
         &mut self,
         range: Option<Range<usize>>,
         replacement: &str,
+        cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
         let target = self.native_input.target?;
         let current = self.field_text(target);
@@ -127,7 +128,10 @@ impl Workspace {
         value.push_str(replacement);
         value.push_str(&current[range.end..]);
         match target {
-            FieldTarget::Omnibar => self.search.retype(value),
+            FieldTarget::Omnibar => {
+                self.search.retype(value);
+                self.arm_search_debounce(cx);
+            }
             FieldTarget::AddCoordinate => self.store.add.retype(value),
         }
         let inserted = insertion_start..insertion_start + replacement.encode_utf16().count();
@@ -183,7 +187,7 @@ impl EntityInputHandler for Workspace {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.replace_native_text(range, text).is_some() {
+        if self.replace_native_text(range, text, cx).is_some() {
             cx.notify();
         }
     }
@@ -196,7 +200,7 @@ impl EntityInputHandler for Workspace {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let inserted = match self.replace_native_text(range, new_text) {
+        let inserted = match self.replace_native_text(range, new_text, cx) {
             Some(inserted) => inserted,
             None => return,
         };

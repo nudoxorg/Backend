@@ -10,8 +10,9 @@ use interface_identity::PackageCoordinate;
 use interface_search::{GraphRequest, GraphTerminal, SearchRequest, SearchTerminal};
 
 use crate::{
-    AddOutcome, Health, PageError, PageLocator, RemoveOutcome, Resolution, ResolveError, Shelf,
-    ShelfError,
+    AddOutcome, ExploreError, ExploreLimit, ExplorePackageName, ExploreQuery, Health, IndexSearchPage,
+    PackageProfile, PackageVersionRows, PageError, PageLocator, RemoveOutcome, Resolution,
+    ResolveError, Shelf, ShelfError,
 };
 
 /// Stable identity of one command, shared by every surface's registry.
@@ -35,6 +36,12 @@ pub enum CommandId {
     Graph,
     /// Capability health.
     Health,
+    /// Index search over the local registry index.
+    IndexSearch,
+    /// One package's recorded versions.
+    PackageVersions,
+    /// One package's latest version and history.
+    PackageProfile,
 }
 
 /// Registry row: the words every surface uses for one command.
@@ -62,7 +69,7 @@ pub enum Mutation {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 9] = [
+pub const COMMANDS: [CommandSpec; 12] = [
     CommandSpec {
         id: CommandId::Packages,
         name: "packages",
@@ -126,6 +133,28 @@ pub const COMMANDS: [CommandSpec; 9] = [
         description: "Report every capability as ready, unreachable, unconfigured, or detached.",
         mutation: Mutation::Read,
     },
+    CommandSpec {
+        id: CommandId::IndexSearch,
+        name: "index-search",
+        title: "Index Search",
+        description: "Search every package the local registry index knows by name prefix and term.",
+        mutation: Mutation::Read,
+    },
+    CommandSpec {
+        id: CommandId::PackageVersions,
+        name: "package-versions",
+        title: "Package Versions",
+        description:
+            "List every version of one package the index recorded, with checksum and yanked state.",
+        mutation: Mutation::Read,
+    },
+    CommandSpec {
+        id: CommandId::PackageProfile,
+        name: "package-profile",
+        title: "Package Profile",
+        description: "Show one package's latest version and full version history from the index.",
+        mutation: Mutation::Read,
+    },
 ];
 
 /// Finds one registry row.
@@ -178,6 +207,23 @@ pub enum Command {
     Graph(GraphRequest),
     /// Capability health.
     Health,
+    /// Index search over the local registry index.
+    IndexSearch {
+        /// Validated search text.
+        query: ExploreQuery,
+        /// Page size.
+        limit: ExploreLimit,
+    },
+    /// One package's recorded versions.
+    PackageVersions {
+        /// Validated registry package name.
+        name: ExplorePackageName,
+    },
+    /// One package's latest version and history.
+    PackageProfile {
+        /// Validated registry package name.
+        name: ExplorePackageName,
+    },
 }
 
 impl Command {
@@ -194,6 +240,9 @@ impl Command {
             Self::Search(_) => CommandId::Search,
             Self::Graph(_) => CommandId::Graph,
             Self::Health => CommandId::Health,
+            Self::IndexSearch { .. } => CommandId::IndexSearch,
+            Self::PackageVersions { .. } => CommandId::PackageVersions,
+            Self::PackageProfile { .. } => CommandId::PackageProfile,
         }
     }
 }
@@ -219,6 +268,12 @@ pub enum Reply {
     Graphed(Result<GraphTerminal, PageError>),
     /// Health rows.
     Health(Health),
+    /// Index search page or its exact failure.
+    IndexSearched(Result<IndexSearchPage, ExploreError>),
+    /// Version rows or their exact failure.
+    Versions(Result<PackageVersionRows, ExploreError>),
+    /// Package profile or its exact failure.
+    Profiled(Result<PackageProfile, ExploreError>),
 }
 
 impl Reply {
@@ -235,6 +290,9 @@ impl Reply {
             Self::Searched(_) => CommandId::Search,
             Self::Graphed(_) => CommandId::Graph,
             Self::Health(_) => CommandId::Health,
+            Self::IndexSearched(_) => CommandId::IndexSearch,
+            Self::Versions(_) => CommandId::PackageVersions,
+            Self::Profiled(_) => CommandId::PackageProfile,
         }
     }
 }

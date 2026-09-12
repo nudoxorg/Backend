@@ -2,7 +2,7 @@
 //! The cases target example decoding, vocabulary coverage, and drift against the shared registry.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 //!
-//! The card is the one document an agent reads instead of nine long tool descriptions, so a
+//! The card is the one document an agent reads instead of twelve long tool descriptions, so a
 //! sentence in it that is no longer true is worse than a missing one. Every worked call it prints
 //! is pushed through [`interface_mcp::arguments::decode`] — the same decoder the server uses — and
 //! every relation spelling it names is checked against the shared vocabulary.
@@ -79,7 +79,9 @@ fn the_search_example_actually_narrows_what_it_claims_to_narrow() -> Result<(), 
         .iter()
         .find(|call| call.tool == "search")
         .ok_or("no search example")?;
-    let Command::Search(request) = arguments::decode("search", &search.arguments)? else {
+    let Command::Search(request) = arguments::decode("search", &search.arguments)
+        .map_err(|fault| format!("the search example does not decode: {fault:?}"))?
+    else {
         return Err("the search example is not a search".into());
     };
     assert_eq!(request.text.as_str(), "deserialize map");
@@ -109,7 +111,9 @@ fn the_graph_example_carries_a_direction_the_shared_vocabulary_parses(
         .iter()
         .find(|call| call.tool == "graph")
         .ok_or("no graph example")?;
-    let Command::Graph(request) = arguments::decode("graph", &graph.arguments)? else {
+    let Command::Graph(request) = arguments::decode("graph", &graph.arguments)
+        .map_err(|fault| format!("the graph example does not decode: {fault:?}"))?
+    else {
         return Err("the graph example is not a graph".into());
     };
     assert_eq!(
@@ -133,7 +137,7 @@ fn the_card_names_every_relation_in_both_directions_and_nothing_else() -> Result
                 "the card never spells `{label}`"
             );
             assert_eq!(
-                parse_relation(label),
+                parse_relation(label.as_str()),
                 Some((kind, direction)),
                 "the card spells a relation the parser does not accept"
             );

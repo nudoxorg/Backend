@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! `nudox://schema-card`: everything an agent must know once, and nothing it can learn from a row.
 //!
-//! The card is read once per session instead of being repeated in nine tool descriptions. Its
+//! The card is read once per session instead of being repeated in twelve tool descriptions. Its
 //! prose is a constant; its relation table is generated from [`interface_search::LINK_KINDS`] and
 //! [`interface_search::relation_label`], so the card cannot claim a link kind the engine does not
 //! traverse or spell one differently. Its worked examples are extracted by `tests/schema_card.rs`
@@ -71,12 +71,11 @@ cargo:serde@1.0.196::de::Deserializer[trait]::deserialize_map[fn]#<key>
   qualified by `[fn]`, `[struct]`, `[trait]`, `[mod]`, `[enum]`, `[impl]`, `[type]`, `[const]`,
   `[static]`, `[macro]`, `[use]`, `[field]`, `[variant]`, `[param]`, `[ns]`.
 * Every address a result prints is resolvable. Pass it back **verbatim**, including the kind tags.
-* The `~1c4b7e02` beside a row is an eight-character **fingerprint for your eyes**. It is never
-  accepted as input. The one full key on a page appears in that page's meta line.
+* The `~1c4b7e02` beside a row is an eight-character **fingerprint for your eyes**. It is never accepted as input. The one full key on a page appears in that page's meta line.
 * An address is spelled relative to the page you are reading. A bare path belongs to the page's own
   package. `cargo:serde › de::Error[trait]` names another loaded package; hand `cargo:serde::de::Error`
-  to `resolve` to learn its pinned version. `⟨cargo serde⟩ de::Error` means **that package is not
-  loaded here** — never that the declaration does not exist.
+  to `resolve` to learn its pinned version. `⟨cargo serde⟩ de::Error` means that package
+  **is not loaded here** — never that the declaration does not exist.
 
 ## Signals
 
@@ -88,6 +87,10 @@ Lines beginning with `~` are signals, not prose.
   **A lane that could not run also returns zero rows. Read this line before concluding nothing exists.**
 * `~scope` — narrowing that was applied but not asked for.
 * `~graph` — coverage of one relation traversal.
+* `~index` — how much of the local registry index `index-search` actually searched. It answers from
+  durable projections without running a compiler, so it only knows what this machine's index has
+  observed; an empty result with `~index ✗` never means the package does not exist. The index knows
+  name, version, checksum, yanked state, and nothing else — no descriptions, no dependencies.
 
 ## Faults
 

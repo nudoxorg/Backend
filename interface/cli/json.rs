@@ -16,8 +16,10 @@ use interface_library::{
     AddOutcome, Capability, CapabilityState, Health, PackageCard, RemoveOutcome, Reply, Resolution,
     Shelf, ShelfEntry, ShelfStatus,
     render::{
-        common::{Affordances, capability_slug, confidence_label, unavailability_slug},
-        text::{TerminalAffordances, TextOptions, degradation_slug, fault_of},
+        common::{
+            Affordances, capability_slug, confidence_label, degradation_slug, unavailability_slug,
+        },
+        text::{TerminalAffordances, TextOptions, fault_of},
     },
 };
 use interface_search::{Coverage, GraphTerminal, LaneReport, SearchTerminal, Truncation};
@@ -53,6 +55,12 @@ struct Envelope {
     graph: Option<GraphDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     health: Option<HealthDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index_search: Option<IndexSearchDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_versions: Option<PackageVersionsDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_profile: Option<PackageProfileDto>,
 }
 
 #[derive(Serialize)]
@@ -297,6 +305,50 @@ struct CapabilityDto {
     detail: Option<String>,
 }
 
+#[derive(Serialize)]
+struct IndexSearchDto {
+    hits: Vec<IndexHitDto>,
+    coverage: ExploreCoverageDto,
+}
+
+#[derive(Serialize)]
+struct IndexHitDto {
+    document: String,
+    matched: String,
+    score: u32,
+}
+
+#[derive(Serialize)]
+struct ExploreCoverageDto {
+    state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    searched: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct PackageVersionsDto {
+    versions: Vec<PackageVersionDto>,
+}
+
+#[derive(Serialize)]
+struct PackageProfileDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest: Option<PackageVersionDto>,
+    versions: Vec<PackageVersionDto>,
+}
+
+#[derive(Serialize)]
+struct PackageVersionDto {
+    version: String,
+    checksum: String,
+    active: bool,
+    cycle: u64,
+}
+
 /// Renders one reply as one JSON object.
 ///
 /// # Errors
@@ -330,6 +382,13 @@ pub(crate) fn reply_json(
         Reply::Searched(terminal) => envelope.search = Some(search_dto(terminal)),
         Reply::Graphed(Ok(terminal)) => envelope.graph = Some(graph_dto(terminal)),
         Reply::Health(health) => envelope.health = Some(health_dto(health)),
+        Reply::IndexSearched(Ok(page)) => envelope.index_search = Some(index_search_dto(page)),
+        Reply::Versions(Ok(rows)) => {
+            envelope.package_versions = Some(package_versions_dto(rows));
+        }
+        Reply::Profiled(Ok(profile)) => {
+            envelope.package_profile = Some(package_profile_dto(profile));
+        }
         _ => {}
     }
     serde_json::to_string(&envelope)
@@ -717,5 +776,77 @@ fn health_dto(health: &Health) -> HealthDto {
                 },
             })
             .collect(),
+    }
+}
+
+fn index_search_dto(page: &interface_library::IndexSearchPage) -> IndexSearchDto {
+    IndexSearchDto {
+        hits: page
+            .hits
+            .iter()
+            .map(|hit| IndexHitDto {
+                document: hit.document.as_str().to_owned(),
+                matched: hit.matched.as_ref().to_owned(),                score: hit.score.0,
+            })
+            .collect(),
+        coverage: explore_coverage_dto(page.coverage),
+    }
+}
+
+fn explore_coverage_dto(
+    coverage: interface_library::ExploreCoverage,
+) -> ExploreCoverageDto {
+    match coverage {
+        interface_library::ExploreCoverage::Complete => ExploreCoverageDto {
+            state: "complete",
+            reason: None,
+            searched: None,
+            total: None,
+        },
+        interface_library::ExploreCoverage::Partial { searched, total } => ExploreCoverageDto {
+            state: "partial",
+            reason: None,
+            searched: Some(searched),
+            total: Some(total),
+        },
+        interface_library::ExploreCoverage::Unavailable { reason } => ExploreCoverageDto {
+            state: "unavailable",
+            reason: Some(match reason {
+                interface_library::ExploreUnavailable::EmptyIndex => "empty-index",
+                interface_library::ExploreUnavailable::StoreFault { slug } => slug,
+                interface_library::ExploreUnavailable::CatalogAbsent => "catalog-absent",
+            }),
+            searched: None,
+            total: None,
+        },
+    }
+}
+
+fn package_versions_dto(rows: &interface_library::PackageVersionRows) -> PackageVersionsDto {
+    PackageVersionsDto {
+        versions: rows.rows.iter().map(package_version_dto).collect(),
+    }
+}
+
+fn package_profile_dto(
+    profile: &interface_library::PackageProfile,
+) -> PackageProfileDto {
+    PackageProfileDto {
+        latest: profile.latest.as_ref().map(package_version_dto),
+        versions: profile
+            .versions
+            .rows
+            .iter()
+            .map(package_version_dto)
+            .collect(),
+    }
+}
+
+fn package_version_dto(row: &interface_library::PackageVersionRow) -> PackageVersionDto {
+    PackageVersionDto {
+        version: row.version.as_str().to_owned(),
+        checksum: interface_library::checksum_hex(row.checksum),
+        active: row.active.is_active(),
+        cycle: row.cycle.get(),
     }
 }

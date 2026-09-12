@@ -15,10 +15,11 @@
 //!   artifacts/   compiler-owned immutable publications
 //!   journal/     compiler-owned publication journal
 //!   library/
-//!     shelf.db   requested packages, their status, and their publication locators
+//!     shelf      requested packages, their status, and their publication locators
 //!     epoch      monotone counter bumped after every shelf mutation
 //!     lock       held for the duration of one compile so two processes never publish at once
 //!     tantivy/   durable lexical projections keyed by segment identity
+//!     catalog.db registry feed observations recorded by the acquire pipeline
 //! ```
 //!
 //! # Invariants the types carry
@@ -32,6 +33,7 @@ mod add;
 mod admission;
 mod command;
 mod epoch;
+mod explore;
 mod health;
 mod image;
 mod library;
@@ -47,6 +49,13 @@ pub use add::{
 pub use admission::Admission;
 pub use command::{COMMANDS, Command, CommandId, CommandSpec, Mutation, Reply, spec, spec_named};
 pub use epoch::{EpochError, EpochPhase, LibraryEpoch, LibraryWatcher};
+pub use explore::{
+    Cycle, ExploreCoverage, ExploreError, ExploreLimit, ExplorePackageName, ExplorePackageNameError,
+    ExploreQuery, ExploreQueryError, ExploreUnavailable, FeedChecksum, IndexHitRow, IndexSearchPage,
+    DEFAULT_EXPLORE_LIMIT, MAX_EXPLORE_LIMIT, MAX_EXPLORE_QUERY_BYTES, MAX_PACKAGE_NAME_BYTES,
+    PackageProfile, PackageVersionRow, PackageVersionRows, PackageVersionText, VersionActive,
+    checksum_hex,
+};
 pub use health::{Capability, CapabilityState, Health};
 pub use image::Image;
 pub use library::{CompilerAttachment, Library, LibraryOpenError, OpenOptions};

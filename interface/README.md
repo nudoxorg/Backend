@@ -31,7 +31,7 @@ let reply: Reply = library.execute(Command::Search(request), &mut progress);
 
 `Command` is a closed enum (`library/command.rs`). `COMMANDS` is the registry
 every surface projects: CLI subcommand names, MCP `tools/list`, and the GUI
-palette are three renderings of the same nine rows, with the same one-sentence
+palette are three renderings of the same twelve rows, with the same one-sentence
 descriptions. A capability that exists on one surface and not another is a bug
 in that surface, not a product decision.
 
@@ -68,11 +68,16 @@ spellings `golang` and `generic` are accepted on input and never emitted.
   artifacts/       compiler-owned immutable publications
   journal/         compiler-owned publication journal
   library/
-    shelf.db       requested packages, status, publication locators (SQLite via turso)
     epoch          decimal counter, atomically renamed into place after every mutation
     lock           compile lock: pid + heartbeat; stale after 3 missed heartbeats
     tantivy/       durable lexical projections keyed by lexical segment identity
+    catalog.db     registry feed observations per package (SQLite via turso)
+    gui.prefs      the reader's own preferences, one `key value` line each
 ```
+
+The shelf itself is held in memory in this build: `packages` reads the epoch and the
+rows this session knows, adds record their rows durably through the compile path, and a
+durable shelf store is deliberately not claimed until one is attached.
 
 ## Faults are content, not chrome
 

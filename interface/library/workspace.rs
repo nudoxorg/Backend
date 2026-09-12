@@ -128,6 +128,12 @@ impl WorkspaceRoot {
         self.library_dir().join("tantivy")
     }
 
+    /// The durable registry catalog database.
+    #[must_use]
+    pub fn catalog_db(&self) -> PathBuf {
+        self.library_dir().join("catalog.db")
+    }
+
     /// The parent of every per-compile scratch root.
     ///
     /// A compiler host takes an exclusive lock on the publication journal beneath the data root it

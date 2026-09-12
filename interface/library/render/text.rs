@@ -31,13 +31,15 @@ use interface_search::{
 };
 
 use crate::{
-    AddFailure, AddOutcome, AddRejection, Capability, CapabilityState, CompilePhaseProgress, Health,
-    PageError, RejectedAdd, RemoveOutcome, Reply, Resolution, ResolveError, Shelf, ShelfEntry,
-    ShelfError, ShelfFailure, ShelfStatus, Timestamp,
+    AddFailure, AddOutcome, AddRejection, Capability, CapabilityState, CompilePhaseProgress,
+    ExploreCoverage, ExploreError, Health, IndexSearchPage, PackageProfile, PackageVersionRow,
+    PackageVersionRows, PageError, RejectedAdd, RemoveOutcome, Reply, Resolution, ResolveError,
+    Shelf, ShelfEntry, ShelfError, ShelfFailure, ShelfStatus, Timestamp,
     render::common::{
         Affordance, Affordances, EXAMPLE_PACKAGE_URL, Fault, RelativeAddress, RenderContext,
-        add_affordance, capability_glyph, capability_slug, lane_signal, package_url_slug,
-        phase_dots, rejection_slug, shelf_failure_slug, visibility_label, write_fault,
+        add_affordance, capability_glyph, capability_slug, explore_error_detail,
+        explore_error_slug, explore_unavailable_slug, lane_signal, package_url_slug, phase_dots,
+        rejection_slug, shelf_failure_slug, visibility_label, write_fault,
     },
 };
 
@@ -258,6 +260,12 @@ pub fn render(reply: &Reply, options: &TextOptions<'_>) -> String {
         Reply::Searched(terminal) => search_text(terminal, options),
         Reply::Graphed(Ok(terminal)) => graph_text(terminal, options),
         Reply::Health(health) => health_text(health, options),
+        Reply::IndexSearched(Ok(page)) => index_search_text(page, options),
+        Reply::Versions(Ok(rows)) => versions_text(rows, options),
+        Reply::Profiled(Ok(profile)) => profile_text(profile, options),
+        Reply::IndexSearched(Err(error))
+        | Reply::Versions(Err(error))
+        | Reply::Profiled(Err(error)) => fault(&explore_fault(error, options), options),
     }
 }
 
@@ -297,6 +305,20 @@ pub fn fault_of(reply: &Reply, options: &TextOptions<'_>) -> Option<Fault> {
             )
             .detailed("every requested lane refused to run, so zero rows means nothing"),
         ),
+        Reply::IndexSearched(Err(error))
+        | Reply::Versions(Err(error))
+        | Reply::Profiled(Err(error)) => Some(explore_fault(error, options)),
+        Reply::IndexSearched(Ok(page)) => match page.coverage {
+            ExploreCoverage::Unavailable { reason } => Some(
+                Fault::new(
+                    explore_unavailable_slug(reason),
+                    options.subject.unwrap_or_default(),
+                    Affordance::Health,
+                )
+                .detailed("the durable index could not be searched, so zero rows means nothing"),
+            ),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -879,6 +901,111 @@ pub fn every_requested_lane_unavailable(terminal: &SearchTerminal) -> bool {
                 .find(|report| report.lane == lane)
                 .is_none_or(|report| !report.coverage.ran())
         })
+}
+
+// ---------------------------------------------------------------- explore
+
+/// The one-line coverage signal for an index search, in the shared `~` vocabulary.
+#[must_use]
+pub fn index_coverage_signal(page: &IndexSearchPage) -> String {
+    let hits = page.hits.len();
+    match page.coverage {
+        ExploreCoverage::Complete => format!("\u{2713}{hits}"),
+        ExploreCoverage::Partial { searched, total } => {
+            format!("\u{25d0}{hits} {searched}/{total}")
+        }
+        ExploreCoverage::Unavailable { reason } => {
+            format!("\u{2717} {}", explore_unavailable_slug(reason))
+        }
+    }
+}
+
+fn index_search_text(page: &IndexSearchPage, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = String::new();
+    if page.hits.is_empty() {
+        line(&mut out, &palette.dim("no rows"));
+    }
+    for (index, hit) in page.hits.iter().enumerate() {
+        let _ = writeln!(out, "{:>2} {}", index + 1, hit.matched);
+    }
+    line(&mut out, &palette.dim(&format!("~index {}", index_coverage_signal(page))));
+    out
+}
+
+fn versions_text(rows: &PackageVersionRows, options: &TextOptions<'_>) -> String {
+    let mut out = String::new();
+    for (index, row) in rows.rows.iter().enumerate() {
+        line(&mut out, &version_row(index, row, options.palette));
+    }
+    out
+}
+
+fn profile_text(profile: &PackageProfile, options: &TextOptions<'_>) -> String {
+    let palette = options.palette;
+    let mut out = String::new();
+    match &profile.latest {
+        Some(latest) => line(
+            &mut out,
+            &format!(
+                "{} {}  {}",
+                palette.strong("latest"),
+                latest.version.as_str(),
+                latest.checksum.abbreviation()
+            ),
+        ),
+        None => line(&mut out, &palette.dim("no versions")),
+    }
+    for (index, row) in profile.versions.rows.iter().enumerate() {
+        line(&mut out, &version_row(index, row, palette));
+    }
+    out
+}
+
+fn version_row(index: usize, row: &PackageVersionRow, palette: Palette) -> String {
+    let mut row_text = format!(
+        "{:>2} {}  {}  cycle {}",
+        index + 1,
+        row.version.as_str(),
+        row.checksum.abbreviation(),
+        row.cycle.get()
+    );
+    if !row.active.is_active() {
+        row_text.push_str("  ");
+        row_text.push_str(&palette.dim("yanked"));
+    }
+    row_text
+}
+
+fn explore_fault(error: &ExploreError, options: &TextOptions<'_>) -> Fault {
+    match error {
+        ExploreError::QueryTooLong { .. } => Fault::new(
+            explore_error_slug(error),
+            options.subject.unwrap_or_default(),
+            Affordance::None,
+        )
+        .detailed(explore_error_detail(error)),
+        ExploreError::IndexStore { .. }
+        | ExploreError::CatalogAbsent
+        | ExploreError::Catalog { .. } => {
+            Fault::new(explore_error_slug(error), "", Affordance::Health)
+                .detailed(explore_error_detail(error))
+        }
+        ExploreError::NotFound { package } => Fault::new(
+            explore_error_slug(error),
+            package.as_str(),
+            Affordance::Search {
+                query: package.as_str().to_owned(),
+            },
+        )
+        .detailed(explore_error_detail(error)),
+        ExploreError::Ambiguous { package, .. } => Fault::new(
+            explore_error_slug(error),
+            package.as_str(),
+            Affordance::Health,
+        )
+        .detailed(explore_error_detail(error)),
+    }
 }
 
 // ---------------------------------------------------------------- graph

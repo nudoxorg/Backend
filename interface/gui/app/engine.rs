@@ -7,7 +7,8 @@ use std::thread;
 
 use async_channel::{Receiver, Sender, bounded};
 use interface_library::{
-    AddProgress, Command, CommandId, Library, LibraryWatcher, Reply,
+    AddProgress, Command, CommandId, ExplorePackageName, ExploreQuery, Library, LibraryWatcher,
+    Reply,
 };
 
 use crate::store::document::PageKey;
@@ -50,6 +51,21 @@ pub enum Errand {
     },
     /// Replaces the results sheet.
     Search,
+    /// Replaces the exploration index page.
+    IndexSearch {
+        /// The query being searched.
+        query: ExploreQuery,
+    },
+    /// Replaces one package's version rows.
+    Versions {
+        /// The package whose versions are read.
+        name: ExplorePackageName,
+    },
+    /// Replaces one package's profile.
+    Profile {
+        /// The package whose profile is read.
+        name: ExplorePackageName,
+    },
 }
 
 impl Errand {
@@ -65,6 +81,9 @@ impl Errand {
             Self::Card { .. } => CommandId::Show,
             Self::Outline { .. } => CommandId::Outline,
             Self::Search => CommandId::Search,
+            Self::IndexSearch { .. } => CommandId::IndexSearch,
+            Self::Versions { .. } => CommandId::PackageVersions,
+            Self::Profile { .. } => CommandId::PackageProfile,
             Self::Health => CommandId::Health,
         }
     }
@@ -107,7 +126,8 @@ pub fn start(library: Library) -> (Sender<EngineRequest>, Receiver<EngineEvent>)
     let (request_sender, request_receiver) = bounded::<EngineRequest>(64);
     let (event_sender, event_receiver) = bounded::<EngineEvent>(512);
     if let Some(watcher) = library.watch().ok() {
-        thread::spawn(move || watch_loop(watcher, event_sender.clone()));
+        let watcher_sender = event_sender.clone();
+        thread::spawn(move || watch_loop(watcher, watcher_sender));
     }
     thread::spawn(move || command_loop(library, request_receiver, event_sender));
     (request_sender, event_receiver)

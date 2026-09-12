@@ -131,6 +131,29 @@ pub(crate) enum Plan {
     Graph(GraphPlan),
     /// Capability health.
     Health,
+    /// Index search over the local registry index.
+    IndexSearch {
+        /// Validated search text.
+        query: interface_library::ExploreQuery,
+        /// Page size.
+        limit: interface_library::ExploreLimit,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// One package's recorded versions.
+    PackageVersions {
+        /// Validated registry package name.
+        name: interface_library::ExplorePackageName,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
+    /// One package's latest version and history.
+    PackageProfile {
+        /// Validated registry package name.
+        name: interface_library::ExplorePackageName,
+        /// Exact spelling the caller typed.
+        spelled: String,
+    },
 }
 
 impl Plan {
@@ -147,6 +170,9 @@ impl Plan {
             Self::Search(_) => "search",
             Self::Graph(_) => "graph",
             Self::Health => "health",
+            Self::IndexSearch { .. } => "index-search",
+            Self::PackageVersions { .. } => "package-versions",
+            Self::PackageProfile { .. } => "package-profile",
         }
     }
 
@@ -161,6 +187,9 @@ impl Plan {
             | Self::Resolve { spelled } => Some(spelled),
             Self::Search(plan) => Some(&plan.spelled),
             Self::Graph(plan) => Some(&plan.spelled),
+            Self::IndexSearch { spelled, .. }
+            | Self::PackageVersions { spelled, .. }
+            | Self::PackageProfile { spelled, .. } => Some(spelled),
         }
     }
 }
@@ -286,10 +315,14 @@ const GRAPH_FLAGS: [FlagSpec; 5] = [
     FlagSpec { name: "--limit", value: true },
 ];
 
+const INDEX_SEARCH_FLAGS: [FlagSpec; 1] =
+    [FlagSpec { name: "--limit", value: true }];
+
 const fn flags_of(id: CommandId) -> &'static [FlagSpec] {
     match id {
         CommandId::Search => &SEARCH_FLAGS,
         CommandId::Graph => &GRAPH_FLAGS,
+        CommandId::IndexSearch => &INDEX_SEARCH_FLAGS,
         _ => &[],
     }
 }
@@ -303,6 +336,8 @@ const fn operand_of(id: CommandId) -> Option<&'static str> {
         CommandId::Show | CommandId::Graph => Some("<address>"),
         CommandId::Resolve => Some("<text>"),
         CommandId::Search => Some("<query>"),
+        CommandId::IndexSearch => Some("<query>"),
+        CommandId::PackageVersions | CommandId::PackageProfile => Some("<package>"),
     }
 }
 
@@ -512,6 +547,13 @@ fn build(spec: CommandSpec, operands: Vec<String>, flags: &[Flag]) -> Result<Pla
         CommandId::Show => show_plan(spec, operand.unwrap_or_default()),
         CommandId::Search => search_plan(spec, operand.unwrap_or_default(), flags),
         CommandId::Graph => graph_plan(spec, operand.unwrap_or_default(), flags),
+        CommandId::IndexSearch => {
+            index_search_plan(spec, operand.unwrap_or_default(), flags)
+        }
+        CommandId::PackageVersions => {
+            package_name_plan(spec, operand.unwrap_or_default(), false)
+        }
+        CommandId::PackageProfile => package_name_plan(spec, operand.unwrap_or_default(), true),
     }
 }
 
@@ -773,6 +815,63 @@ fn query_detail(cause: QueryTextError) -> String {
     }
 }
 
+/// `index-search` takes bounded query text and an optional page size.
+fn index_search_plan(
+    spec: CommandSpec,
+    spelled: String,
+    flags: &[Flag],
+) -> Result<Plan, UsageError> {
+    let query = interface_library::ExploreQuery::new(&spelled).map_err(|cause| UsageError {
+        kind: UsageKind::BadOperand { cause: explore_query_detail(cause) },
+        token: spelled.clone(),
+        command: Some(spec.name),
+    })?;
+    let mut limit = interface_library::ExploreLimit::default();
+    for flag in flags {
+        if flag.name == "--limit" {
+            let value = flag.value.clone().unwrap_or_default();
+            limit = interface_library::ExploreLimit::clamped(parse_number(flag.name, &value, spec)?);
+        }
+    }
+    Ok(Plan::IndexSearch { query, limit, spelled })
+}
+
+/// `package-versions` and `package-profile` take one validated registry package name.
+fn package_name_plan(
+    spec: CommandSpec,
+    spelled: String,
+    profile: bool,
+) -> Result<Plan, UsageError> {
+    let name = interface_library::ExplorePackageName::new(&spelled).map_err(|cause| UsageError {
+        kind: UsageKind::BadOperand { cause: package_name_detail(cause) },
+        token: spelled.clone(),
+        command: Some(spec.name),
+    })?;
+    Ok(if profile {
+        Plan::PackageProfile { name, spelled }
+    } else {
+        Plan::PackageVersions { name, spelled }
+    })
+}
+
+fn explore_query_detail(cause: interface_library::ExploreQueryError) -> String {
+    match cause {
+        interface_library::ExploreQueryError::Empty => "the query is empty".to_owned(),
+        interface_library::ExploreQueryError::TooLong { observed, maximum } => {
+            format!("the query is {observed} bytes; at most {maximum} are accepted")
+        }
+    }
+}
+
+fn package_name_detail(cause: interface_library::ExplorePackageNameError) -> String {
+    match cause {
+        interface_library::ExplorePackageNameError::Empty => "the package name is empty".to_owned(),
+        interface_library::ExplorePackageNameError::TooLong { observed, maximum } => {
+            format!("the package name is {observed} bytes; at most {maximum} are accepted")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,7 +912,8 @@ mod tests {
             CommandId::Show | CommandId::Graph => {
                 vec!["cargo:serde@1.0.196::de::Deserializer"]
             }
-            CommandId::Resolve | CommandId::Search => vec!["deserialize"],
+            CommandId::Resolve | CommandId::Search | CommandId::IndexSearch => vec!["deserialize"],
+            CommandId::PackageVersions | CommandId::PackageProfile => vec!["serde"],
         }
     }
 
@@ -893,7 +993,8 @@ mod tests {
                 UsageKind::UnknownCommand { nearest } => Some(nearest),
                 _ => None,
             }),
-            Some(vec!["search"])
+            Some(vec!["search", "show"]),
+            "every registry row sharing a leading run is offered, longest run first"
         );
     }
 

@@ -1,7 +1,7 @@
 //! Defines tools behavior for `interface-mcp`, whose purpose is to serve the one shared local library to agents over MCP.
 //! This module owns the tools invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-//! The nine registry rows projected as MCP tools, and the instructions sent once at handshake.
+//! The twelve registry rows projected as MCP tools, and the instructions sent once at handshake.
 //!
 //! A tool's description is the registry sentence verbatim plus exactly one sentence of guidance
 //! that only this surface needs: when to reach for the tool, and what its result will not tell you.
@@ -51,8 +51,8 @@ const fn guidance(id: CommandId) -> &'static str {
              numbered candidates and never picks between them."
         }
         CommandId::Search => {
-            "Prefer this first for a symbol by name, kind or concept; read the ~lanes line before \
-             concluding nothing exists, because a lane that could not run also returns zero rows."
+            "Prefer this first for a symbol by name, kind or concept; a lane that could not run \
+             also returns zero rows, so read the ~lanes line before concluding nothing exists."
         }
         CommandId::Graph => {
             "The relation tool (who calls this, what implements this); read nudox://schema-card \
@@ -61,6 +61,18 @@ const fn guidance(id: CommandId) -> &'static str {
         CommandId::Health => {
             "Call this when a lane says unavailable or an add is refused, to learn whether the \
              capability is unconfigured, unreachable, or detached from this process."
+        }
+        CommandId::IndexSearch => {
+            "Search the registry index before reaching for `add`: no compiler runs, but it only \
+             knows what this machine's index observed; read its coverage line."
+        }
+        CommandId::PackageVersions => {
+            "Use this to pin or compare versions with exact registry checksums; yanked rows are \
+             marked, never hidden."
+        }
+        CommandId::PackageProfile => {
+            "One call for the whole version history and the latest version of one registry \
+             package, when `packages` is about the shelf and this is about the registry."
         }
     }
 }
@@ -115,6 +127,16 @@ fn input_schema(id: CommandId) -> Value {
         ),
         CommandId::Search => search_schema(),
         CommandId::Graph => graph_schema(),
+        CommandId::IndexSearch => index_search_schema(),
+        CommandId::PackageVersions | CommandId::PackageProfile => object_schema(
+            json!({
+                "package": {
+                    "type": "string",
+                    "description": "Exact registry package name, as `serde`.",
+                },
+            }),
+            &["package"],
+        ),
     }
 }
 
@@ -156,6 +178,19 @@ fn graph_schema() -> Value {
             "limit": { "type": "integer", "description": "Edge budget, 1 to 200, default 25." },
         }),
         &["address"],
+    )
+}
+
+fn index_search_schema() -> Value {
+    object_schema(
+        json!({
+            "query": {
+                "type": "string",
+                "description": "Package or entity name to match by prefix or exact term, 1 to 128 bytes.",
+            },
+            "limit": { "type": "integer", "description": "Rows per page, 1 to 100, default 40." },
+        }),
+        &["query"],
     )
 }
 

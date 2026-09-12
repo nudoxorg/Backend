@@ -12,7 +12,8 @@ use interface_core::PackageUrl;
 use interface_documents::ProjectionLimits;
 use interface_identity::{Address, ContentKey, KindTag, PackageCoordinate};
 use interface_library::{
-    Command, CommandId, PageLocator,
+    Command, CommandId, ExploreLimit, ExplorePackageName, ExploreQuery, ExploreQueryError,
+    ExplorePackageNameError, PageLocator,
     render::common::{Affordance, Fault, add_affordance},
 };
 use interface_search::{
@@ -60,6 +61,16 @@ pub fn decode(tool: &str, arguments: &Map<String, Value>) -> Result<Command, Fau
         }),
         CommandId::Search => search(arguments).map(Command::Search),
         CommandId::Graph => graph(arguments).map(Command::Graph),
+        CommandId::IndexSearch => {
+            let (query, limit) = index_search(arguments)?;
+            Ok(Command::IndexSearch { query, limit })
+        }
+        CommandId::PackageVersions => Ok(Command::PackageVersions {
+            name: package_name(arguments)?,
+        }),
+        CommandId::PackageProfile => Ok(Command::PackageProfile {
+            name: package_name(arguments)?,
+        }),
     }
 }
 
@@ -72,6 +83,8 @@ const fn accepted_fields(id: CommandId) -> &'static [&'static str] {
         CommandId::Resolve => &["text"],
         CommandId::Search => &["query", "kinds", "packages", "lanes", "limit", "cursor"],
         CommandId::Graph => &["address", "relation", "depth", "limit"],
+        CommandId::IndexSearch => &["query", "limit"],
+        CommandId::PackageVersions | CommandId::PackageProfile => &["package"],
     }
 }
 
@@ -287,6 +300,37 @@ fn limit(arguments: &Map<String, Value>) -> Result<ResultLimit, Fault> {
         .map_or_else(ResultLimit::default, |value| {
             ResultLimit::clamped(u16::try_from(value).unwrap_or(u16::MAX))
         }))
+}
+
+fn index_search(arguments: &Map<String, Value>) -> Result<(ExploreQuery, ExploreLimit), Fault> {
+    let query = ExploreQuery::new(text(arguments, "query")?).map_err(|cause| {
+        Fault::new("query", String::new(), Affordance::None).detailed(explore_query_detail(cause))
+    })?;
+    let limit = whole_number(arguments, "limit")?.map_or_else(ExploreLimit::default, |value| {
+        ExploreLimit::clamped(usize::try_from(value).unwrap_or(usize::MAX))
+    });
+    Ok((query, limit))
+}
+
+fn explore_query_detail(cause: ExploreQueryError) -> String {
+    match cause {
+        ExploreQueryError::Empty => "a query cannot be empty".to_owned(),
+        ExploreQueryError::TooLong { observed, maximum } => {
+            format!("{observed} bytes exceeds the {maximum}-byte index-search query budget")
+        }
+    }
+}
+
+fn package_name(arguments: &Map<String, Value>) -> Result<ExplorePackageName, Fault> {
+    let spelling = text(arguments, "package")?;
+    ExplorePackageName::new(spelling).map_err(|cause| {
+        Fault::new("package", spelling, Affordance::None).detailed(match cause {
+            ExplorePackageNameError::Empty => "the package name is empty".to_owned(),
+            ExplorePackageNameError::TooLong { observed, maximum } => {
+                format!("{observed} bytes exceeds the {maximum}-byte package-name budget")
+            }
+        })
+    })
 }
 
 fn graph(arguments: &Map<String, Value>) -> Result<GraphRequest, Fault> {

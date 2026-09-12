@@ -177,8 +177,12 @@ fn is_failure(reply: &Reply) -> bool {
         Reply::Graphed(result) => result.is_err(),
         Reply::Added(outcome) => !matches!(outcome, interface_library::AddOutcome::Ready { .. }),
         // A search with every lane down is still an honest answer, and its `~lanes` line says so;
-        // a remove that found nothing changed nothing; health always answers.
+        // a remove that found nothing changed nothing; health always answers. An index search
+        // that reports its own coverage is likewise an answer, not a fault.
         Reply::Removed(_) | Reply::Searched(_) | Reply::Health(_) => false,
+        Reply::IndexSearched(result) => result.is_err(),
+        Reply::Versions(result) => result.is_err(),
+        Reply::Profiled(result) => result.is_err(),
     }
 }
 

@@ -303,6 +303,7 @@ pub struct LibraryStore {
     health: Option<Health>,
     active: Option<ActiveJob>,
     shelf_fault: Option<Fault>,
+    last_orphan_fault: Option<Fault>,
     /// The inline add flow at the foot of the panel.
     pub add: AddFlow,
 }
@@ -342,6 +343,17 @@ impl LibraryStore {
     #[must_use]
     pub const fn shelf_fault(&self) -> Option<&Fault> {
         self.shelf_fault.as_ref()
+    }
+
+    /// The fault from the last add whose outcome outlived its job and could name no row.
+    ///
+    /// A window that restarted mid-compile, or a shelf that was refreshed underneath a running
+    /// one, can receive a terminal for a job it no longer remembers. A rejection still names its
+    /// URL and becomes a row; a failure without a coordinate names nobody, so its fault is kept
+    /// here instead of being dropped.
+    #[must_use]
+    pub const fn last_orphan_fault(&self) -> Option<&Fault> {
+        self.last_orphan_fault.as_ref()
     }
 
     /// The last capability report.
@@ -409,20 +421,60 @@ impl LibraryStore {
     }
 
     /// Folds the terminal outcome of a compile into its row and clears the active job.
+    ///
+    /// An outcome that arrives with no active job is an orphan: the window restarted, the shelf
+    /// was refreshed, or another surface drove the compile. A rejection still names its URL, so
+    /// the failed row is derived from it and pushed; a failure without a coordinate names
+    /// nobody, so its fault is retained on the store rather than dropped.
     pub fn finish_job(&mut self, outcome: &AddOutcome) {
         let coordinate = self.active.take().map(|job| job.coordinate);
+        match outcome {
+            AddOutcome::Ready { card } => {
+                let Some(coordinate) = coordinate else {
+                    return;
+                };
+                self.settle_row(coordinate, RowStatus::Ready { card: card.clone() });
+            }
+            AddOutcome::Rejected(rejected) => {
+                let fault = rejection_fault(rejected);
+                let derived = coordinate.or_else(|| PackageCoordinate::from_package_url(&rejected.url));
+                match derived {
+                    Some(coordinate) => self.settle_row(coordinate, RowStatus::Failed { fault }),
+                    None => self.last_orphan_fault = Some(fault),
+                }
+            }
+            AddOutcome::Failed(failure) => {
+                let fault = failure_fault(coordinate.as_ref(), failure);
+                match coordinate {
+                    Some(coordinate) => self.settle_row(coordinate, RowStatus::Failed { fault }),
+                    None => self.last_orphan_fault = Some(fault),
+                }
+            }
+        }
+    }
+
+    /// Folds one compile terminal with the coordinate the errand itself carried, so every orphan
+    /// still names its row: the errand's coordinate outlives the active job it may have outlived.
+    pub fn finish_job_for(&mut self, errand: &PackageCoordinate, outcome: &AddOutcome) {
+        if self.active.as_ref().is_some_and(|job| &job.coordinate == errand) {
+            let outcome = outcome.clone();
+            self.finish_job(&outcome);
+            return;
+        }
         let status = match outcome {
             AddOutcome::Ready { card } => RowStatus::Ready { card: card.clone() },
             AddOutcome::Rejected(rejected) => RowStatus::Failed {
                 fault: rejection_fault(rejected),
             },
             AddOutcome::Failed(failure) => RowStatus::Failed {
-                fault: failure_fault(coordinate.as_ref(), failure),
+                fault: failure_fault(Some(errand), failure),
             },
         };
-        let Some(coordinate) = coordinate else {
-            return;
-        };
+        self.settle_row(errand.clone(), status);
+    }
+
+    /// Lands one terminal status on the row the coordinate names, or opens a new row for it.
+    fn settle_row(&mut self, coordinate: PackageCoordinate, status: RowStatus) {
         match self.rows.iter_mut().find(|row| row.coordinate == coordinate) {
             Some(row) => row.status = status,
             None => self.push_row(coordinate, status),
@@ -547,5 +599,112 @@ fn shelf_fault(error: &ShelfError) -> Fault {
             fault.detailed(format!("the shelf holds at most {maximum} packages"))
         }
         ShelfError::Epoch(_) => fault.detailed("the epoch file could not be read".to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use interface_core::CorrelationId;
+
+    /// The canonical URL of the package an orphan fixture names.
+    const ORPHAN_URL: &str = "pkg:cargo/serde@1.0.196";
+
+    /// The same package as a bare coordinate, which the add field would spell.
+    const ORPHAN_COORDINATE: &str = "cargo:serde@1.0.196";
+
+    /// One rejected add whose job the store never began, as a restart mid-flight produces.
+    fn orphan_rejection() -> Option<AddOutcome> {
+        let url = PackageUrl::try_from(ORPHAN_URL.to_owned()).ok()?;
+        Some(AddOutcome::Rejected(RejectedAdd {
+            url,
+            rejection: AddRejection::CompilerDetached,
+        }))
+    }
+
+    /// One failed add that names no coordinate, as a lost correlation produces.
+    fn orphan_failure() -> AddOutcome {
+        AddOutcome::Failed(AddFailure {
+            correlation: CorrelationId(1),
+            cause: ShelfFailure::PackageNotFound,
+        })
+    }
+
+    #[test]
+    fn an_orphan_rejection_becomes_a_failed_row_derived_from_its_url() {
+        let mut store = LibraryStore::default();
+        let built = orphan_rejection();
+        assert!(built.is_some(), "the orphan rejection fixture must build");
+        let Some(outcome) = built else {
+            return;
+        };
+        store.finish_job(&outcome);
+        assert!(store.active().is_none(), "no job was begun, so none is active");
+        let rows = store.rows();
+        assert_eq!(rows.len(), 1, "the rejection still names a row's coordinate");
+        let Some(row) = rows.first() else {
+            return;
+        };
+        let url = PackageUrl::try_from(ORPHAN_URL.to_owned());
+        assert!(url.is_ok(), "the fixture URL must parse twice");
+        let Some(url) = url.ok() else {
+            return;
+        };
+        let Some(derived) = PackageCoordinate::from_package_url(&url) else {
+            return;
+        };
+        assert_eq!(row.coordinate, derived);
+        assert_eq!(
+            row.status,
+            RowStatus::Failed {
+                fault: rejection_fault(&RejectedAdd {
+                    url,
+                    rejection: AddRejection::CompilerDetached,
+                }),
+            }
+        );
+        assert!(store.last_orphan_fault().is_none());
+    }
+
+    #[test]
+    fn an_orphan_failure_retains_its_fault_instead_of_dropping_it() {
+        let mut store = LibraryStore::default();
+        let outcome = orphan_failure();
+        store.finish_job(&outcome);
+        assert!(
+            store.rows().is_empty(),
+            "a failure that names no coordinate cannot open a row"
+        );
+        let fault = store.last_orphan_fault();
+        assert!(
+            fault.is_some(),
+            "the orphan fault is retained, never dropped"
+        );
+        let Some(fault) = fault else {
+            return;
+        };
+        let AddOutcome::Failed(failure) = &outcome else {
+            return;
+        };
+        assert_eq!(fault.slug, shelf_failure_slug(&failure.cause));
+        assert_eq!(fault.operand, String::new());
+    }
+
+    #[test]
+    fn an_active_job_still_lands_on_its_own_row_and_leaves_no_orphan() {
+        let mut store = LibraryStore::default();
+        let Some(coordinate) = PackageCoordinate::parse(ORPHAN_COORDINATE).ok() else {
+            return;
+        };
+        store.begin_job(coordinate.clone());
+        let outcome = orphan_failure();
+        store.finish_job(&outcome);
+        let row = store.row(&coordinate);
+        assert!(row.is_some(), "the active job's own row carries the outcome");
+        let Some(row) = row else {
+            return;
+        };
+        assert!(matches!(row.status, RowStatus::Failed { .. }));
+        assert!(store.last_orphan_fault().is_none(), "the job was not orphaned");
     }
 }
