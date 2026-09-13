@@ -1,6 +1,6 @@
 //! Public borrowed-query bridge checks for the thin local client wrappers.
 
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use interface_core::{query_local_exact, query_local_lexical};
 use server_index_core::{

@@ -11,7 +11,7 @@ use std::{
 use compiler_driver::{
     CompileFailure, CompileOutput, CompileScratch, NativeTool, ToolchainSelection, compile,
 };
-use compiler_ir::EntityKind;
+use backend_semantic::ir::EntityKind;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };

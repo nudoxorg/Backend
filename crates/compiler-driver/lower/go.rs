@@ -43,7 +43,7 @@
 //! occurrence carries the documented position-free spelling: a zero-width
 //! owner-relative span at the owner's start.
 
-use compiler_ir::{
+use backend_semantic::ir::{
     AtomListId, ChannelDirection, DocFragmentInput, EntityId, EntityKind, EntityListId, ForeignKey,
     ForeignKeyFault, ForeignOrigin, GoFacts, GoSignature, NominalRef, Occurrence,
     OccurrenceConfidence, OccurrenceTarget, PackageLineage, PackageLineageFault, ProductChildRole,
@@ -2741,7 +2741,7 @@ mod tests {
     use super::*;
     use crate::lower::{FactSet, MAX_REF_LISTS};
     use crate::types::FactFault;
-    use compiler_ir::{ChannelDirection, FragmentView, SourceIdentity};
+    use backend_semantic::ir::{ChannelDirection, FragmentView, SourceIdentity};
     use backend_semantic::vocabulary::{
         CompileRecipeFact, GoImageFault, GoProjectionFault as PortableGoProjectionFault,
         LanguageProfile, LoweringUnsupported, NativeTool, Stage,
@@ -2787,13 +2787,13 @@ mod tests {
         #[error("lane admission rejected the fact set: {0:?}")]
         Admission(crate::lower::AdmissionFault),
         #[error("fragment validation rejected the bytes: {0:?}")]
-        Validate(compiler_ir::FragmentError),
+        Validate(backend_semantic::ir::FragmentError),
         #[error("type fact cursor rejected: {0:?}")]
-        TypeFact(compiler_ir::TypeFactFault),
+        TypeFact(backend_semantic::ir::TypeFactFault),
         #[error("occurrence cursor rejected: {0:?}")]
-        Occurrence(compiler_ir::OccurrenceFault),
+        Occurrence(backend_semantic::ir::OccurrenceFault),
         #[error("documentation cursor rejected: {0:?}")]
-        Doc(compiler_ir::DocFactFault),
+        Doc(backend_semantic::ir::DocFactFault),
         #[error("fixture scalar conversion failed: {0}")]
         Num(core::num::TryFromIntError),
         #[error("expected {0}")]
@@ -2808,20 +2808,20 @@ mod tests {
         }
     }
 
-    impl From<compiler_ir::TypeFactFault> for TestError {
-        fn from(error: compiler_ir::TypeFactFault) -> Self {
+    impl From<backend_semantic::ir::TypeFactFault> for TestError {
+        fn from(error: backend_semantic::ir::TypeFactFault) -> Self {
             Self::TypeFact(error)
         }
     }
 
-    impl From<compiler_ir::OccurrenceFault> for TestError {
-        fn from(error: compiler_ir::OccurrenceFault) -> Self {
+    impl From<backend_semantic::ir::OccurrenceFault> for TestError {
+        fn from(error: backend_semantic::ir::OccurrenceFault) -> Self {
             Self::Occurrence(error)
         }
     }
 
-    impl From<compiler_ir::DocFactFault> for TestError {
-        fn from(error: compiler_ir::DocFactFault) -> Self {
+    impl From<backend_semantic::ir::DocFactFault> for TestError {
+        fn from(error: backend_semantic::ir::DocFactFault) -> Self {
             Self::Doc(error)
         }
     }
@@ -2832,8 +2832,8 @@ mod tests {
         }
     }
 
-    impl From<compiler_ir::FragmentError> for TestError {
-        fn from(error: compiler_ir::FragmentError) -> Self {
+    impl From<backend_semantic::ir::FragmentError> for TestError {
+        fn from(error: backend_semantic::ir::FragmentError) -> Self {
             Self::Validate(error)
         }
     }
@@ -3698,7 +3698,7 @@ mod tests {
     fn row<'fragment>(
         view: &FragmentView<'fragment>,
         ordinal: usize,
-    ) -> Result<compiler_ir::DecodedTypeFact<'fragment>, TestError> {
+    ) -> Result<backend_semantic::ir::DecodedTypeFact<'fragment>, TestError> {
         let mut cursor = view.type_facts().ok_or(TestError::Missing("type facts"))?;
         cursor
             .nth(ordinal)
@@ -3725,7 +3725,7 @@ mod tests {
     fn row_for_entity<'fragment>(
         view: &'fragment FragmentView<'fragment>,
         entity: EntityId,
-    ) -> Result<compiler_ir::DecodedTypeFact<'fragment>, TestError> {
+    ) -> Result<backend_semantic::ir::DecodedTypeFact<'fragment>, TestError> {
         view.type_facts()
             .ok_or(TestError::Missing("type facts"))?
             .collect::<Result<Vec<_>, _>>()?
@@ -3738,7 +3738,7 @@ mod tests {
     fn row_for_name<'fragment>(
         view: &'fragment FragmentView<'fragment>,
         name: &[u8],
-    ) -> Result<compiler_ir::DecodedTypeFact<'fragment>, TestError> {
+    ) -> Result<backend_semantic::ir::DecodedTypeFact<'fragment>, TestError> {
         row_for_entity(view, entity_of(view, name)?)
     }
 
@@ -3746,7 +3746,7 @@ mod tests {
     fn go_extension(
         view: &FragmentView<'_>,
         ordinal: usize,
-    ) -> Result<compiler_ir::GoFacts, TestError> {
+    ) -> Result<backend_semantic::ir::GoFacts, TestError> {
         view.discover()
             .language_extensions()
             .map_err(|_| TestError::Missing("extension section"))?
@@ -3763,7 +3763,7 @@ mod tests {
     /// than advancing over type-parameter rows with a historical byte stride.
     fn pooled_list<'a>(
         view: &'a FragmentView<'a>,
-        lane: compiler_ir::ExtensionPoolListLane,
+        lane: backend_semantic::ir::ExtensionPoolListLane,
         ordinal: u32,
     ) -> Result<Vec<u32>, TestError> {
         let pools = view
@@ -3858,7 +3858,7 @@ mod tests {
     /// Borrows local child coordinates from the validated typed child cursor.
     fn field_children<'fragment>(
         view: &FragmentView<'fragment>,
-        fact: &compiler_ir::DecodedTypeFact<'fragment>,
+        fact: &backend_semantic::ir::DecodedTypeFact<'fragment>,
     ) -> Result<Vec<u32>, TestError> {
         let start = fact.record.children.start;
         let end = start
@@ -3874,7 +3874,7 @@ mod tests {
             if child.ordinal < start || child.ordinal >= end {
                 continue;
             }
-            let compiler_ir::TypeChildTarget::Type(compiler_ir::TypeRef::Local(target)) =
+            let backend_semantic::ir::TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(target)) =
                 child.child.target
             else {
                 return Err(TestError::Missing("local child"));
@@ -4074,18 +4074,18 @@ mod tests {
         // 7 int param, 8 error result, 9 Put.
         let node_facts = go_extension(&view, 0)?;
         if node_facts.fields.raw != 1
-            || pooled_list(&view, compiler_ir::ExtensionPoolListLane::Entities, 1)? != vec![3, 4]
+            || pooled_list(&view, backend_semantic::ir::ExtensionPoolListLane::Entities, 1)? != vec![3, 4]
         {
             return Err(TestError::Missing("node field list"));
         }
         if node_facts.method_set.raw != 2
-            || pooled_list(&view, compiler_ir::ExtensionPoolListLane::Entities, 2)? != vec![6]
+            || pooled_list(&view, backend_semantic::ir::ExtensionPoolListLane::Entities, 2)? != vec![6]
         {
             return Err(TestError::Missing("node method set"));
         }
         let store_facts = go_extension(&view, 1)?;
         if store_facts.method_set.raw != 3
-            || pooled_list(&view, compiler_ir::ExtensionPoolListLane::Entities, 3)? != vec![9]
+            || pooled_list(&view, backend_semantic::ir::ExtensionPoolListLane::Entities, 3)? != vec![9]
         {
             return Err(TestError::Missing("store method set"));
         }
@@ -4135,7 +4135,7 @@ mod tests {
             let facts = go_extension(&view, entity_of(&view, b"Authority")?.index())?;
             if pooled_list(
                 &view,
-                compiler_ir::ExtensionPoolListLane::Entities,
+                backend_semantic::ir::ExtensionPoolListLane::Entities,
                 facts.method_set.raw,
             )?
             .len()
@@ -4293,15 +4293,15 @@ mod tests {
         for ordinal in 0..pools.type_parameter_count() {
             let parameter = pools.type_parameter(ordinal).map_err(|_| TestError::Tail)?;
             let constraint = match parameter.semantics {
-                compiler_ir::DecodedTypeParameterSemantics::Exact { .. } => pools
+                backend_semantic::ir::DecodedTypeParameterSemantics::Exact { .. } => pools
                     .type_parameter_bounds(parameter)
                     .map_err(|_| TestError::Tail)?
                     .and_then(|bounds| bounds.get(0).ok())
                     .and_then(|bound| match bound {
-                        compiler_ir::DecodedTypeParameterBound::Type(raw) => Some(raw),
-                        compiler_ir::DecodedTypeParameterBound::Lifetime(_) => None,
+                        backend_semantic::ir::DecodedTypeParameterBound::Type(raw) => Some(raw),
+                        backend_semantic::ir::DecodedTypeParameterBound::Lifetime(_) => None,
                     }),
-                compiler_ir::DecodedTypeParameterSemantics::Legacy { constraint } => constraint,
+                backend_semantic::ir::DecodedTypeParameterSemantics::Legacy { constraint } => constraint,
             };
             parameters.push((parameter.name, constraint));
         }
@@ -4345,7 +4345,7 @@ mod tests {
     fn row_by_payload_text<'fragment>(
         view: &FragmentView<'fragment>,
         text: &[u8],
-    ) -> Result<compiler_ir::DecodedTypeFact<'fragment>, TestError> {
+    ) -> Result<backend_semantic::ir::DecodedTypeFact<'fragment>, TestError> {
         let mut cursor = view.type_facts().ok_or(TestError::Missing("type facts"))?;
         while let Some(fact) = cursor.next() {
             let fact = fact.map_err(TestError::from)?;
@@ -4533,7 +4533,7 @@ mod tests {
         if facts.build_constraints.raw != 1 {
             return Err(TestError::Missing("constraint atom list"));
         }
-        let listed = pooled_list(&view, compiler_ir::ExtensionPoolListLane::Atoms, 1)?;
+        let listed = pooled_list(&view, backend_semantic::ir::ExtensionPoolListLane::Atoms, 1)?;
         if listed != vec![1] {
             return Err(TestError::Missing("constraint atom coordinate"));
         }
@@ -4727,7 +4727,7 @@ mod tests {
         }
         let listed = pooled_list(
             &view,
-            compiler_ir::ExtensionPoolListLane::Atoms,
+            backend_semantic::ir::ExtensionPoolListLane::Atoms,
             facts.constant_value.raw,
         )?;
         if listed.len() != 1 {
@@ -4784,7 +4784,7 @@ mod tests {
         }
         if pooled_list(
             &view,
-            compiler_ir::ExtensionPoolListLane::Atoms,
+            backend_semantic::ir::ExtensionPoolListLane::Atoms,
             ungrouped.constant_value.raw,
         )?
         .len()

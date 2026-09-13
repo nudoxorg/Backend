@@ -6,7 +6,7 @@
 
 use core::{ops::Range, str::Utf8Error};
 
-use compiler_ir::{BuiltinType, EntityKind, PrimitiveType};
+use backend_semantic::ir::{BuiltinType, EntityKind, PrimitiveType};
 
 /// Seven language lanes with the same deterministic row budget.
 pub(crate) const PACKAGE_COUNT: usize = 210;

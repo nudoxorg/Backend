@@ -13,14 +13,13 @@ publish.workspace = true
 compiler-publication = { path = "../compiler-publication" }
 backend-version = { path = "../version" }
 server-index-core = { path = "../server-index-core" }
-compiler-ir = { path = "../compiler-ir" }
+backend-semantic = { path = "../semantic" }
 thiserror.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true
 compiler-driver = { path = "../compiler-driver" }
-backend-semantic = { path = "../semantic" }
 server-journal = { path = "../server-journal" }
 [lints]
 workspace = true

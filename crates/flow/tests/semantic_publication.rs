@@ -13,7 +13,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile_semantic,
 };
-use compiler_ir::{
+use backend_semantic::ir::{
     AtomId, CanonicalTypeRenderLimits, ImageProvenance, SemanticCoreReader, SemanticEntity,
     SemanticImageCensus, SemanticImageDiscovery, SemanticImageFacts, SemanticReader,
     full_semantic_image_len, prepare_canonical_type,
@@ -51,15 +51,15 @@ enum SemanticJourneyError {
     #[error(transparent)]
     Publisher(#[from] server_journal::PublicationOpenError),
     #[error("semantic image measurement failed")]
-    Measure(#[from] compiler_ir::SemanticImageEncodeError),
+    Measure(#[from] backend_semantic::ir::SemanticImageEncodeError),
     #[error("the fused compiler output did not reach a stable semantic publication")]
     Publish(#[from] compiler_publication::PublishSemanticError),
     #[error("the stable semantic publication did not reopen")]
     Open(#[from] compiler_publication::OpenPublishedError),
     #[error("semantic discovery found an invalid pooled reference")]
-    Discovery(#[from] compiler_ir::SemanticDiscoveryError),
+    Discovery(#[from] backend_semantic::ir::SemanticDiscoveryError),
     #[error("canonical semantic type rendering failed")]
-    Render(#[from] compiler_ir::CanonicalTypeRenderError),
+    Render(#[from] backend_semantic::ir::CanonicalTypeRenderError),
     #[error("the publisher did not shut down cleanly")]
     Shutdown(#[from] server_journal::ShutdownError),
     #[error("the stable publication contained no semantic package")]

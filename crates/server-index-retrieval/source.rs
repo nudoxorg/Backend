@@ -1,6 +1,6 @@
 //! Source provenance for disposable Tantivy membership hits.
 
-use compiler_ir::{
+use backend_semantic::ir::{
     LinkId, LinkOccurrenceId, SemanticCoreReader, SemanticImageIdentity, SemanticImageView,
     SemanticReader, SourceSpan,
 };
@@ -180,7 +180,7 @@ pub struct CanonicalOccurrenceSource<'image, 'bytes> {
     publication: VerifiedSemanticPublication,
     occurrence: LinkOccurrenceId,
     link: LinkId,
-    entity: compiler_ir::EntityId,
+    entity: backend_semantic::ir::EntityId,
     provenance: OccurrenceSourceEvidence<'image>,
 }
 
@@ -211,7 +211,7 @@ impl<'image, 'bytes> CanonicalOccurrenceSource<'image, 'bytes> {
 
     /// Returns the local target declaration associated with this occurrence.
     #[must_use]
-    pub const fn entity(self) -> compiler_ir::EntityId {
+    pub const fn entity(self) -> backend_semantic::ir::EntityId {
         self.entity
     }
 
@@ -295,7 +295,7 @@ pub struct OwnedCanonicalOccurrenceSpan {
     publication: VerifiedSemanticPublication,
     occurrence: LinkOccurrenceId,
     link: LinkId,
-    entity: compiler_ir::EntityId,
+    entity: backend_semantic::ir::EntityId,
 }
 
 impl OwnedCanonicalOccurrenceSpan {
@@ -331,7 +331,7 @@ impl OwnedCanonicalOccurrenceSpan {
 
     /// Returns the relation target entity in the canonical image.
     #[must_use]
-    pub const fn entity(&self) -> compiler_ir::EntityId {
+    pub const fn entity(&self) -> backend_semantic::ir::EntityId {
         self.entity
     }
 
@@ -361,7 +361,7 @@ pub struct OwnedUnavailableOccurrenceSource {
     publication: VerifiedSemanticPublication,
     occurrence: LinkOccurrenceId,
     link: LinkId,
-    entity: compiler_ir::EntityId,
+    entity: backend_semantic::ir::EntityId,
 }
 
 impl OwnedUnavailableOccurrenceSource {
@@ -397,7 +397,7 @@ impl OwnedUnavailableOccurrenceSource {
 
     /// Returns the relation target entity in the canonical image.
     #[must_use]
-    pub const fn entity(&self) -> compiler_ir::EntityId {
+    pub const fn entity(&self) -> backend_semantic::ir::EntityId {
         self.entity
     }
 }

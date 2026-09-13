@@ -12,7 +12,6 @@ publish.workspace = true
 [dependencies]
 backend-semantic = { path = "../semantic" }
 compiler-registry = { path = "../compiler-registry" }
-compiler-ir = { path = "../compiler-ir" }
 compiler-languages-clang = { path = "../compiler-language-clang" }
 compiler-languages-csharp = { path = "../compiler-language-csharp" }
 compiler-languages-go = { path = "../compiler-language-go" }

@@ -117,9 +117,9 @@ enum BenchmarkError {
         cause: Box<runner::CompileFailureFact>,
     },
     #[error("fresh compact fragment validation failed")]
-    FragmentValidate(#[source] Box<compiler_ir::FragmentError>),
+    FragmentValidate(#[source] Box<backend_semantic::ir::FragmentError>),
     #[error("canonical semantic IR construction failed")]
-    SemanticIr(#[source] compiler_ir::BuildError),
+    SemanticIr(#[source] backend_semantic::ir::BuildError),
     #[error("canonical semantic IR prerequisite was not constructed")]
     MissingSemanticIr,
     #[error("canonical semantic rendering exceeded its accounting width")]

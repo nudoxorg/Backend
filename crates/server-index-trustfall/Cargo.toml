@@ -11,7 +11,7 @@ publish.workspace = true
 
 
 [dependencies]
-compiler-ir = { path = "../compiler-ir" }
+backend-semantic = { path = "../semantic" }
 server-index-graph-vector = { path = "../server-index-graph-vector" }
 thiserror.workspace = true
 trustfall.workspace = true

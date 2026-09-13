@@ -3,7 +3,7 @@
 //! Results support capacity decisions without changing the measured implementation.
 //! Lexical row derivation and Tantivy adapter build/query phases.
 
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
     EntityArtifactIdentity, EntityDocumentId, GenerationId, IndexSnapshot, LexicalManifest,

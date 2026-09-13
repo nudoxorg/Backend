@@ -335,8 +335,8 @@ fn mutated_computed_report_changes_the_ir_extension_plane() -> Result<(), Checke
     );
     let differing_rows: Vec<_> = (0..original_plane.ids.row_count())
         .filter_map(|row| {
-            (original_plane.get(compiler_ir::EntityId::new(row as u32))
-                != changed_plane.get(compiler_ir::EntityId::new(row as u32)))
+            (original_plane.get(backend_semantic::ir::EntityId::new(row as u32))
+                != changed_plane.get(backend_semantic::ir::EntityId::new(row as u32)))
             .then_some(row)
         })
         .collect();

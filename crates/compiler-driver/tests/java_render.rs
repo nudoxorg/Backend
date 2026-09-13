@@ -1,6 +1,6 @@
 mod java_support;
 
-use compiler_ir::{EmbeddingProfile, EntityId, Ir, ItemKind};
+use backend_semantic::ir::{EmbeddingProfile, EntityId, Ir, ItemKind};
 use java_support::ImageBuilder;
 
 const SOURCE: &[u8] =

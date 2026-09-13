@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::path::Path;
 
-use compiler_ir::{FragmentRangeManifest, ImageProvenance, SemanticCoreReader};
+use backend_semantic::ir::{FragmentRangeManifest, ImageProvenance, SemanticCoreReader};
 use server_journal::DurablePublisher;
 
 use super::types::{

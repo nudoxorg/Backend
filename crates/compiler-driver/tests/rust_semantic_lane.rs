@@ -15,8 +15,8 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use compiler_ir::LanguageExtensionWireFact as _;
-use compiler_ir::{
+use backend_semantic::ir::LanguageExtensionWireFact as _;
+use backend_semantic::ir::{
     DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, RustOwnership,
     SemanticTypeTag,
 };
@@ -272,7 +272,7 @@ enum TestError {
     Compile(&'static str),
     /// The fragment failed validation.
     #[error("fragment validation failed")]
-    Validate(#[from] compiler_ir::FragmentError),
+    Validate(#[from] backend_semantic::ir::FragmentError),
     /// A decoded plane disagreed with the emitted lane.
     #[error("lane falsifier failed: {0}")]
     Falsified(&'static str),
@@ -345,7 +345,7 @@ fn word(payload: &[u8], at: usize) -> Result<u32, TestError> {
 /// Decodes the raw Rust extension row of one entity ordinal: a 16-byte
 /// header, seven 20-byte directory entries (Rust is the fourth), then the
 /// row table and the fixed-width fact pool.
-fn rust_extension(lane: &Lane<'_>, ordinal: usize) -> Result<compiler_ir::RustFacts, TestError> {
+fn rust_extension(lane: &Lane<'_>, ordinal: usize) -> Result<backend_semantic::ir::RustFacts, TestError> {
     let payload = lane
         .view
         .language_extension_payload()
@@ -364,7 +364,7 @@ fn rust_extension(lane: &Lane<'_>, ordinal: usize) -> Result<compiler_ir::RustFa
     }
     let at =
         offset + rows * 4 + usize::try_from(fact_ordinal).map_err(|_| TestError::Coordinate)? * 16;
-    compiler_ir::RustFacts::decode(payload, at).ok_or(TestError::Falsified("rust row decode"))
+    backend_semantic::ir::RustFacts::decode(payload, at).ok_or(TestError::Falsified("rust row decode"))
 }
 
 /// Decodes the child coordinates of one type-fact row from the raw payload.
@@ -539,7 +539,7 @@ fn recursive_field_closes_on_the_self_nominal_through_option_box() -> Result<(),
         .iter()
         .position(|fact| {
             fact.owner.raw as usize == node
-                && matches!(fact.record.nominal, Some(compiler_ir::NominalRef::Local(target)) if target.raw as usize == node)
+                && matches!(fact.record.nominal, Some(backend_semantic::ir::NominalRef::Local(target)) if target.raw as usize == node)
         })
         .ok_or(TestError::Falsified("Node nominal row absent"))?;
     let field = entity_ordinal(&lane, b"next", EntityKind::Field)?;
@@ -595,7 +595,7 @@ fn record_carries_the_diagonal_self_nominal() -> Result<(), TestError> {
         .iter()
         .find(|fact| fact.owner.raw as usize == node)
         .ok_or(TestError::Falsified("record type row absent"))?;
-    let Some(compiler_ir::NominalRef::Local(target)) = fact.record.nominal else {
+    let Some(backend_semantic::ir::NominalRef::Local(target)) = fact.record.nominal else {
         return Err(TestError::Falsified("record type is not a local nominal"));
     };
     if target.raw as usize != node {
@@ -667,12 +667,12 @@ fn method_call_resolves_locally_and_u8_width_is_exact() -> Result<(), TestError>
     let call = lane
         .occurrences
         .iter()
-        .find(|occurrence| occurrence.occurrence.kind == compiler_ir::ReferenceKind::MethodCall)
+        .find(|occurrence| occurrence.occurrence.kind == backend_semantic::ir::ReferenceKind::MethodCall)
         .ok_or(TestError::Falsified("no method-call occurrence"))?;
-    if call.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle {
+    if call.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle {
         return Err(TestError::Falsified("method call is not oracle tier"));
     }
-    let compiler_ir::OccurrenceTarget::Local(target) = call.occurrence.target else {
+    let backend_semantic::ir::OccurrenceTarget::Local(target) = call.occurrence.target else {
         return Err(TestError::Falsified("method call target is not local"));
     };
     if target.raw as usize != visit {
@@ -685,7 +685,7 @@ fn method_call_resolves_locally_and_u8_width_is_exact() -> Result<(), TestError>
         .find(|fact| fact.owner.raw as usize == weight)
         .ok_or(TestError::Falsified("weight type row absent"))?;
     if fact.record.tag != SemanticTypeTag::Primitive
-        || fact.record.payload0 != u32::from(compiler_ir::PrimitiveShape::Integer)
+        || fact.record.payload0 != u32::from(backend_semantic::ir::PrimitiveShape::Integer)
         || fact.record.payload1 != (8 << 1)
     {
         return Err(TestError::Falsified("u8 width or signedness is wrong"));
@@ -706,14 +706,14 @@ fn docs_lower_prose_and_local_links() -> Result<(), TestError> {
         .find(|fact| {
             matches!(
                 &fact.fragment,
-                compiler_ir::DocFragmentInput::Link { label, .. } if *label == b"Node"
+                backend_semantic::ir::DocFragmentInput::Link { label, .. } if *label == b"Node"
             )
         })
         .ok_or(TestError::Falsified("no Node doc link"))?;
-    let compiler_ir::DocFragmentInput::Link { target, .. } = next_doc.fragment else {
+    let backend_semantic::ir::DocFragmentInput::Link { target, .. } = next_doc.fragment else {
         return Err(TestError::Falsified("doc link target is not local"));
     };
-    let compiler_ir::DocLinkTarget::Local(target) = target else {
+    let backend_semantic::ir::DocLinkTarget::Local(target) = target else {
         return Err(TestError::Falsified("doc link target is not local"));
     };
     if target.raw as usize != node {
@@ -722,7 +722,7 @@ fn docs_lower_prose_and_local_links() -> Result<(), TestError> {
     if !lane
         .docs
         .iter()
-        .any(|fact| matches!(&fact.fragment, compiler_ir::DocFragmentInput::Text(text) if *text == b"The weight."))
+        .any(|fact| matches!(&fact.fragment, backend_semantic::ir::DocFragmentInput::Text(text) if *text == b"The weight."))
     {
         return Err(TestError::Falsified("prose fragment lost"));
     }

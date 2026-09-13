@@ -18,7 +18,6 @@ backend-version = { path = "../version" }
 server-index-core = { path = "../server-index-core" }
 [dev-dependencies]
 allocation-counter.workspace = true
-compiler-ir = { path = "../compiler-ir" }
 
 [lints]
 workspace = true

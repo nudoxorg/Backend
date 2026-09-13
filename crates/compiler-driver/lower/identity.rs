@@ -6,7 +6,7 @@
 //! variant. Type and member content remain in the payload plane, so ordinary
 //! edits do not remint declaration families.
 
-use compiler_ir::{
+use backend_semantic::ir::{
     CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, DeclarationKey,
     DeclarationParentage, EntityId, EntityVersion, NominalRef, ScopedDeclarationKey,
     SemanticTypeRecord, VariantFingerprint,
@@ -25,7 +25,7 @@ pub(super) fn versions(
     facts: &FactSet<'_>,
     scope: DeclarationScope<'_>,
     profile: LanguageProfile,
-) -> Result<Box<[EntityVersion]>, compiler_ir::BuildError> {
+) -> Result<Box<[EntityVersion]>, backend_semantic::ir::BuildError> {
     let count = facts.len;
     let signature_seeds = declaration_signature_seeds(facts)?;
     // Variant framing must not depend on a lexical locator that already
@@ -67,7 +67,7 @@ pub(super) fn versions(
                 )?,
             })
         })
-        .collect::<Result<Vec<_>, compiler_ir::BuildError>>()
+        .collect::<Result<Vec<_>, backend_semantic::ir::BuildError>>()
         .map(Vec::into_boxed_slice)
 }
 
@@ -79,7 +79,7 @@ fn declaration_identities(
     scope: DeclarationScope<'_>,
     profile: LanguageProfile,
     variants: &[VariantFingerprint],
-) -> Result<Box<[DeclarationIdentity]>, compiler_ir::BuildError> {
+) -> Result<Box<[DeclarationIdentity]>, backend_semantic::ir::BuildError> {
     let mut values = vec![None; facts.len].into_boxed_slice();
     let mut state = vec![0_u8; facts.len].into_boxed_slice();
     for root in 0..facts.len {
@@ -118,20 +118,20 @@ fn declaration_identities(
                     facts.kinds[ordinal],
                     facts.names[ordinal],
                 )
-                .map_err(|cause| compiler_ir::BuildError::DeclarationKey {
+                .map_err(|cause| backend_semantic::ir::BuildError::DeclarationKey {
                     entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
                     cause,
                 })?;
                 let scoped = ScopedDeclarationKey::new(key, profile, parentage);
                 let length = scoped.family_preimage_len().map_err(|cause| {
-                    compiler_ir::BuildError::ScopedDeclarationPreimage {
+                    backend_semantic::ir::BuildError::ScopedDeclarationPreimage {
                         entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
                         cause,
                     }
                 })?;
                 let mut preimage = vec![0_u8; length];
                 let family = scoped.family_id(&mut preimage).map_err(|cause| {
-                    compiler_ir::BuildError::ScopedDeclarationPreimage {
+                    backend_semantic::ir::BuildError::ScopedDeclarationPreimage {
                         entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
                         cause,
                     }
@@ -148,7 +148,7 @@ fn declaration_identities(
             match state[ordinal] {
                 2 => continue,
                 1 => {
-                    return Err(compiler_ir::BuildError::ParentCycle {
+                    return Err(backend_semantic::ir::BuildError::ParentCycle {
                         entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
                     });
                 }
@@ -187,7 +187,7 @@ fn member_payloads(
     facts: &FactSet<'_>,
     locators: &[CorePayloadHash],
     variants: &[VariantFingerprint],
-) -> Result<Box<[CorePayloadHash]>, compiler_ir::BuildError> {
+) -> Result<Box<[CorePayloadHash]>, backend_semantic::ir::BuildError> {
     let empty = CorePayloadHash::from_canonical_bytes(b"compiler.local-members.v2\0");
     let mut summaries = vec![empty; facts.len].into_boxed_slice();
     for parent in 0..facts.len {
@@ -208,7 +208,7 @@ fn member_payloads(
         let count = u32::try_from(
             roles
                 .iter()
-                .filter(|role| **role == compiler_ir::ProductChildRole::ProductMember)
+                .filter(|role| **role == backend_semantic::ir::ProductChildRole::ProductMember)
                 .count(),
         )
         .map_err(|_| dangling_entity(parent))?;
@@ -218,7 +218,7 @@ fn member_payloads(
         for (target, role) in targets
             .iter()
             .zip(roles)
-            .filter(|(_, role)| **role == compiler_ir::ProductChildRole::ProductMember)
+            .filter(|(_, role)| **role == backend_semantic::ir::ProductChildRole::ProductMember)
         {
             let child = usize::try_from(*target).map_err(|_| dangling_entity(parent))?;
             let ParentageState::Bound { parent: bound } = *facts
@@ -257,7 +257,7 @@ fn member_payloads(
 fn variant_fingerprints(
     facts: &FactSet<'_>,
     locators: &[CorePayloadHash],
-) -> Result<Box<[VariantFingerprint]>, compiler_ir::BuildError> {
+) -> Result<Box<[VariantFingerprint]>, backend_semantic::ir::BuildError> {
     let mut shapes = vec![None; facts.len].into_boxed_slice();
     let mut type_shapes =
         vec![None; facts.len + facts.anonymous_rows + facts.computed_rows].into_boxed_slice();
@@ -274,7 +274,7 @@ fn variant_fingerprints(
             )?;
             Ok(VariantFingerprint::from_raw(*shape.as_bytes()))
         })
-        .collect::<Result<Vec<_>, compiler_ir::BuildError>>()
+        .collect::<Result<Vec<_>, backend_semantic::ir::BuildError>>()
         .map(Vec::into_boxed_slice)
 }
 
@@ -284,7 +284,7 @@ fn variant_fingerprints(
 fn lexical_locators(
     facts: &FactSet<'_>,
     parent_bases: &[CorePayloadHash],
-) -> Result<Box<[CorePayloadHash]>, compiler_ir::BuildError> {
+) -> Result<Box<[CorePayloadHash]>, backend_semantic::ir::BuildError> {
     let mut values = vec![None::<CorePayloadHash>; facts.len].into_boxed_slice();
     let mut state = vec![0_u8; facts.len].into_boxed_slice();
     for root in 0..facts.len {
@@ -355,7 +355,7 @@ fn lexical_locators(
             match state[ordinal] {
                 2 => continue,
                 1 => {
-                    return Err(compiler_ir::BuildError::ParentCycle {
+                    return Err(backend_semantic::ir::BuildError::ParentCycle {
                         entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
                     });
                 }
@@ -391,7 +391,7 @@ fn lexical_locators(
 /// ordered local members remain exclusively in the core payload plane.
 fn declaration_signature_seeds(
     facts: &FactSet<'_>,
-) -> Result<Box<[CorePayloadHash]>, compiler_ir::BuildError> {
+) -> Result<Box<[CorePayloadHash]>, backend_semantic::ir::BuildError> {
     let total = facts.len + facts.anonymous_rows + facts.computed_rows;
     let mut cache = vec![None; total].into_boxed_slice();
     let mut state = vec![0_u8; total].into_boxed_slice();
@@ -425,7 +425,7 @@ fn declaration_signature_seeds(
 fn signature_cycle_markers(
     facts: &FactSet<'_>,
     total: usize,
-) -> Result<Box<[Option<CorePayloadHash>]>, compiler_ir::BuildError> {
+) -> Result<Box<[Option<CorePayloadHash>]>, backend_semantic::ir::BuildError> {
     #[derive(Clone, Copy)]
     struct Frame {
         slot: usize,
@@ -528,7 +528,7 @@ fn signature_discover(
     active: &mut [bool],
     tarjan: &mut Vec<usize>,
     next: &mut u32,
-) -> Result<(), compiler_ir::BuildError> {
+) -> Result<(), backend_semantic::ir::BuildError> {
     let value = *next;
     *next = next.checked_add(1).ok_or_else(|| dangling_entity(slot))?;
     *discovery
@@ -543,7 +543,7 @@ fn signature_discover(
 fn signature_row_from_slot(
     facts: &FactSet<'_>,
     slot: usize,
-) -> Result<u32, compiler_ir::BuildError> {
+) -> Result<u32, backend_semantic::ir::BuildError> {
     if slot < facts.len {
         return u32::try_from(slot).map_err(|_| dangling_entity(slot));
     }
@@ -569,7 +569,7 @@ fn signature_row_from_slot(
 fn signature_dependency_count(
     facts: &FactSet<'_>,
     row: u32,
-) -> Result<usize, compiler_ir::BuildError> {
+) -> Result<usize, backend_semantic::ir::BuildError> {
     let (record, targets, _, _) = staged_type_row(facts, row)?;
     let nominal = if matches!(record.nominal, Some(NominalRef::Local(_))) {
         1
@@ -583,7 +583,7 @@ fn signature_dependency_at(
     facts: &FactSet<'_>,
     row: u32,
     position: usize,
-) -> Result<Option<u32>, compiler_ir::BuildError> {
+) -> Result<Option<u32>, backend_semantic::ir::BuildError> {
     let (record, targets, _, _) = staged_type_row(facts, row)?;
     let local_nominal = match record.nominal {
         Some(NominalRef::Local(local)) => Some(local.raw),
@@ -599,7 +599,7 @@ fn signature_dependency_at(
     Ok((target != STAGED_TEXT_CHILD).then_some(target))
 }
 
-fn signature_has_self_edge(facts: &FactSet<'_>, row: u32) -> Result<bool, compiler_ir::BuildError> {
+fn signature_has_self_edge(facts: &FactSet<'_>, row: u32) -> Result<bool, backend_semantic::ir::BuildError> {
     let count = signature_dependency_count(facts, row)?;
     for position in 0..count {
         if signature_dependency_at(facts, row, position)? == Some(row) {
@@ -612,7 +612,7 @@ fn signature_has_self_edge(facts: &FactSet<'_>, row: u32) -> Result<bool, compil
 fn signature_component_marker(
     facts: &FactSet<'_>,
     component: &[usize],
-) -> Result<CorePayloadHash, compiler_ir::BuildError> {
+) -> Result<CorePayloadHash, backend_semantic::ir::BuildError> {
     let mut headers = Vec::with_capacity(component.len());
     for slot in component {
         let row = signature_row_from_slot(facts, *slot)?;
@@ -644,7 +644,7 @@ fn signature_component_marker(
 fn signature_direct_header(
     facts: &FactSet<'_>,
     row: u32,
-) -> Result<CorePayloadHash, compiler_ir::BuildError> {
+) -> Result<CorePayloadHash, backend_semantic::ir::BuildError> {
     let (record, _, _, _) = staged_type_row(facts, row)?;
     let mut header = Vec::with_capacity(64);
     header.extend_from_slice(b"compiler.declaration-signature-direct-header.v2");
@@ -676,7 +676,7 @@ fn signature_shape(
     cache: &mut [Option<CorePayloadHash>],
     state: &mut [u8],
     cycle_markers: &[Option<CorePayloadHash>],
-) -> Result<CorePayloadHash, compiler_ir::BuildError> {
+) -> Result<CorePayloadHash, backend_semantic::ir::BuildError> {
     let slot = staged_type_slot(facts, row).ok_or_else(|| dangling_type(row))?;
     if let Some(shape) = cache[slot] {
         return Ok(shape);
@@ -755,7 +755,7 @@ fn signature_push_dependency(
     cache: &[Option<CorePayloadHash>],
     state: &[u8],
     stack: &mut Vec<(u32, bool)>,
-) -> Result<(), compiler_ir::BuildError> {
+) -> Result<(), backend_semantic::ir::BuildError> {
     if target == STAGED_TEXT_CHILD {
         return Ok(());
     }
@@ -770,7 +770,7 @@ fn append_signature_row_header(
     out: &mut Vec<u8>,
     facts: &FactSet<'_>,
     row: u32,
-) -> Result<(), compiler_ir::BuildError> {
+) -> Result<(), backend_semantic::ir::BuildError> {
     if row < facts.len as u32 {
         let ordinal = usize::try_from(row).map_err(|_| dangling_entity(0))?;
         let _ = facts
@@ -795,7 +795,7 @@ fn append_optional_signature_text(
     out: &mut Vec<u8>,
     text: Option<&[u8]>,
     row: u32,
-) -> Result<(), compiler_ir::BuildError> {
+) -> Result<(), backend_semantic::ir::BuildError> {
     match text {
         Some(text) => {
             out.push(1);
@@ -818,7 +818,7 @@ fn append_signature_target(
     target: u32,
     cache: &[Option<CorePayloadHash>],
     cycle_markers: &[Option<CorePayloadHash>],
-) -> Result<(), compiler_ir::BuildError> {
+) -> Result<(), backend_semantic::ir::BuildError> {
     if target == STAGED_TEXT_CHILD {
         out.push(0);
         return Ok(());
@@ -917,7 +917,7 @@ fn declaration_variant_for(
     shapes: &mut [Option<CorePayloadHash>],
     type_shapes: &mut [Option<CorePayloadHash>],
     type_visiting: &mut [bool],
-) -> Result<CorePayloadHash, compiler_ir::BuildError> {
+) -> Result<CorePayloadHash, backend_semantic::ir::BuildError> {
     let Some(slot) = shapes.get(ordinal) else {
         return Err(dangling_entity(ordinal));
     };
@@ -996,7 +996,7 @@ fn payload_for(
     payloads: &mut [Option<CorePayloadHash>],
     type_shapes: &mut [Option<CorePayloadHash>],
     type_visiting: &mut [bool],
-) -> Result<CorePayloadHash, compiler_ir::BuildError> {
+) -> Result<CorePayloadHash, backend_semantic::ir::BuildError> {
     let Some(slot) = payloads.get(ordinal) else {
         return Err(dangling_entity(ordinal));
     };
@@ -1072,7 +1072,7 @@ fn append_nominal_payload(
     locators: &[CorePayloadHash],
     type_shapes: &mut [Option<CorePayloadHash>],
     type_visiting: &mut [bool],
-) -> Result<(), compiler_ir::BuildError> {
+) -> Result<(), backend_semantic::ir::BuildError> {
     match nominal {
         NominalRef::Local(target) => {
             preimage.push(0);
@@ -1105,7 +1105,7 @@ fn append_type_target_payload(
     locators: &[CorePayloadHash],
     type_shapes: &mut [Option<CorePayloadHash>],
     type_visiting: &mut [bool],
-) -> Result<(), compiler_ir::BuildError> {
+) -> Result<(), backend_semantic::ir::BuildError> {
     match name {
         Some(name) => {
             preimage.push(1);
@@ -1144,9 +1144,9 @@ fn type_shape(
     locators: &[CorePayloadHash],
     cache: &mut [Option<CorePayloadHash>],
     visiting: &mut [bool],
-) -> Result<CorePayloadHash, compiler_ir::BuildError> {
-    let slot = staged_type_slot(facts, row).ok_or_else(|| compiler_ir::BuildError::Dangling {
-        space: compiler_ir::SemanticSpace::Type,
+) -> Result<CorePayloadHash, backend_semantic::ir::BuildError> {
+    let slot = staged_type_slot(facts, row).ok_or_else(|| backend_semantic::ir::BuildError::Dangling {
+        space: backend_semantic::ir::SemanticSpace::Type,
         raw: row,
     })?;
     if let Some(shape) = cache[slot] {
@@ -1172,7 +1172,7 @@ fn type_shape(
                     let nested =
                         staged_type_slot(facts, target).ok_or_else(|| dangling_type(target))?;
                     if visiting[nested] {
-                        return Err(compiler_ir::BuildError::RecursiveType { raw: target });
+                        return Err(backend_semantic::ir::BuildError::RecursiveType { raw: target });
                     }
                     if cache[nested].is_none() {
                         stack.push((target, false));
@@ -1256,7 +1256,7 @@ fn type_shape(
             let nested = staged_type_slot(facts, *target).ok_or_else(|| dangling_type(*target))?;
             preimage.extend_from_slice(
                 cache[nested]
-                    .ok_or(compiler_ir::BuildError::RecursiveType { raw: *target })?
+                    .ok_or(backend_semantic::ir::BuildError::RecursiveType { raw: *target })?
                     .as_bytes(),
             );
         }
@@ -1270,7 +1270,7 @@ fn type_shape(
 /// Structural target/list coordinates are represented by ordered child or
 /// nominal frames below; they are never hashed as staging coordinates.
 fn append_tag_owned_scalars(out: &mut Vec<u8>, record: SemanticTypeRecord<'_>) {
-    use compiler_ir::SemanticTypeTag as Tag;
+    use backend_semantic::ir::SemanticTypeTag as Tag;
     match record.tag {
         Tag::Primitive
         | Tag::Array
@@ -1315,7 +1315,7 @@ fn staged_type_row<'facts, 'source>(
         &'facts [Option<&'source [u8]>],
         &'facts [u8],
     ),
-    compiler_ir::BuildError,
+    backend_semantic::ir::BuildError,
 > {
     if row < ANONYMOUS_ROW_BASE {
         let ordinal = row as usize;
@@ -1364,16 +1364,16 @@ fn staged_type_row<'facts, 'source>(
     ))
 }
 
-fn dangling_entity(ordinal: usize) -> compiler_ir::BuildError {
-    compiler_ir::BuildError::Dangling {
-        space: compiler_ir::SemanticSpace::Entity,
+fn dangling_entity(ordinal: usize) -> backend_semantic::ir::BuildError {
+    backend_semantic::ir::BuildError::Dangling {
+        space: backend_semantic::ir::SemanticSpace::Entity,
         raw: u32::try_from(ordinal).unwrap_or(u32::MAX),
     }
 }
 
-fn dangling_type(row: u32) -> compiler_ir::BuildError {
-    compiler_ir::BuildError::Dangling {
-        space: compiler_ir::SemanticSpace::Type,
+fn dangling_type(row: u32) -> backend_semantic::ir::BuildError {
+    backend_semantic::ir::BuildError::Dangling {
+        space: backend_semantic::ir::SemanticSpace::Type,
         raw: row,
     }
 }

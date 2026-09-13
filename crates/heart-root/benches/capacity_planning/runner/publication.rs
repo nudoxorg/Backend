@@ -111,9 +111,9 @@ fn build_opened_fragment(
         array::from_fn(|_| MaybeUninit::uninit());
     let mut lexical_rows: [MaybeUninit<LexicalRow<'_>>; MAX_CORPUS] =
         array::from_fn(|_| MaybeUninit::uninit());
-    let mut atoms: [MaybeUninit<compiler_ir::Atom<'_>>; MAX_CORPUS] =
+    let mut atoms: [MaybeUninit<backend_semantic::ir::Atom<'_>>; MAX_CORPUS] =
         array::from_fn(|_| MaybeUninit::uninit());
-    let mut type_nodes: [MaybeUninit<compiler_ir::TypeNode>; MAX_CORPUS] =
+    let mut type_nodes: [MaybeUninit<backend_semantic::ir::TypeNode>; MAX_CORPUS] =
         array::from_fn(|_| MaybeUninit::uninit());
     let built = build(
         fragment,

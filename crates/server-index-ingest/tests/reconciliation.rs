@@ -1,4 +1,4 @@
-use compiler_ir::{
+use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,
     FactAvailability, IrBuilder, ItemKind, ParentageAuthority, SemanticCoreReader,
     SemanticImageIdentity, SemanticImageView, SemanticReader, SourceSpan, TreeItemInput,
@@ -126,7 +126,7 @@ fn row<'a>(
     view: &'static SemanticImageView<'static>,
     image: SemanticImageLocator,
 ) -> Result<IngestedVersion<'a, 'static>, String> {
-    let lineage = compiler_ir::PackageLineage::new("cargo", name).map_err(|e| format!("{e:?}"))?;
+    let lineage = backend_semantic::ir::PackageLineage::new("cargo", name).map_err(|e| format!("{e:?}"))?;
     IngestedVersion::new(
         IngestionOrigin::RegistryUpdate,
         PackageCoordinate::new(

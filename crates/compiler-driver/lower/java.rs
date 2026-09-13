@@ -18,7 +18,7 @@
 
 use core::{iter::ExactSizeIterator, str};
 
-use compiler_ir::{
+use backend_semantic::ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, EntityListId, ForeignKey,
     ForeignKeyFault, ForeignOrigin, JavaFacts, NominalRef, Occurrence, OccurrenceConfidence,
     OccurrenceTarget, ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor,
@@ -1759,8 +1759,8 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compiler_ir::{DocFactFault, OccurrenceFault};
-    use compiler_ir::{FragmentView, SourceIdentity, TypeFactFault};
+    use backend_semantic::ir::{DocFactFault, OccurrenceFault};
+    use backend_semantic::ir::{FragmentView, SourceIdentity, TypeFactFault};
     use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use sha2::Sha256;
@@ -1779,7 +1779,7 @@ mod tests {
         #[error("lane admission rejected the fact set: {0:?}")]
         Admission(crate::lower::AdmissionFault),
         #[error("fragment validation rejected the bytes: {0:?}")]
-        Validate(compiler_ir::FragmentError),
+        Validate(backend_semantic::ir::FragmentError),
         #[error("type fact cursor rejected: {0:?}")]
         TypeFact(TypeFactFault),
         #[error("occurrence cursor rejected: {0:?}")]
@@ -1806,8 +1806,8 @@ mod tests {
         }
     }
 
-    impl From<compiler_ir::FragmentError> for TestError {
-        fn from(error: compiler_ir::FragmentError) -> Self {
+    impl From<backend_semantic::ir::FragmentError> for TestError {
+        fn from(error: backend_semantic::ir::FragmentError) -> Self {
             Self::Validate(error)
         }
     }
@@ -2079,7 +2079,7 @@ mod tests {
     fn row<'fragment>(
         view: &FragmentView<'fragment>,
         ordinal: usize,
-    ) -> Result<compiler_ir::DecodedTypeFact<'fragment>, TestError> {
+    ) -> Result<backend_semantic::ir::DecodedTypeFact<'fragment>, TestError> {
         let mut cursor = view.type_facts().ok_or(TestError::Missing("type facts"))?;
         cursor
             .nth(ordinal)

@@ -6,7 +6,7 @@
 use core::{num::TryFromIntError, ops::Deref};
 
 use compiler_driver::{CompiledFragment, CompiledSemantic};
-use compiler_ir::{
+use backend_semantic::ir::{
     FragmentRangeManifest, FragmentRangeManifestError, FragmentView, RecipeFact, SectionKind,
     SourceIdentity,
 };
@@ -45,7 +45,7 @@ pub(super) const FRAGMENT_LENGTH_OFFSET: usize = 136;
 pub(super) const RANGE_OFFSET: usize = 140;
 pub(super) const SEMANTIC_IMAGE_IDENTITY_OFFSET: usize = COMPILATION_MANIFEST_ENTRY_BYTES;
 pub(super) const SEMANTIC_IMAGE_LENGTH_OFFSET: usize = SEMANTIC_IMAGE_IDENTITY_OFFSET + 32;
-pub(super) const SECTION_ORDER: [compiler_ir::SectionKind; RANGE_COUNT] = [
+pub(super) const SECTION_ORDER: [backend_semantic::ir::SectionKind; RANGE_COUNT] = [
     SectionKind::EntityTypes,
     SectionKind::TypeNodes,
     SectionKind::AtomRecords,
@@ -215,7 +215,7 @@ impl SemanticImageRegion {
     pub(crate) fn facts_for(self, bytes: &[u8]) -> Option<SemanticImageArtifactFacts> {
         (bytes.len() == usize::try_from(self.byte_length).ok()?).then(|| {
             SemanticImageArtifactFacts {
-                identity: compiler_ir::SemanticImageIdentity::from_encoded_bytes(bytes),
+                identity: backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(bytes),
                 byte_length: self.byte_length,
             }
         })

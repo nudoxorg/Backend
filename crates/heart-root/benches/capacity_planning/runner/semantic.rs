@@ -6,7 +6,7 @@ use core::{
     mem::{size_of, size_of_val},
 };
 
-use compiler_ir::{
+use backend_semantic::ir::{
     Confidence, CorePayloadHash, DeclarationFamilyId, Diff, EntityAuthorityFacts, EntityVersion,
     FrontendTree, GenerationId, Ir, IrBuilder, ItemKind, LinkId, LinkKind, LinkTarget,
     OccurrenceAuthorityFacts, Snapshot, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
@@ -122,7 +122,7 @@ pub(crate) fn render(ir: &Ir) -> Result<StageWork, BenchmarkError> {
             write!(output, "{signature}").map_err(|_| BenchmarkError::SemanticRender)?;
         }
         if let Some(embedding) =
-            ir.embedding_text(item.id(), compiler_ir::EmbeddingProfile::CONTEXTUAL)
+            ir.embedding_text(item.id(), backend_semantic::ir::EmbeddingProfile::CONTEXTUAL)
         {
             write!(output, "{embedding}").map_err(|_| BenchmarkError::SemanticRender)?;
         }
@@ -162,7 +162,7 @@ pub(crate) fn trustfall(ir: &Ir) -> Result<StageWork, BenchmarkError> {
         written = written.saturating_add(
             graph
                 .neighbors(
-                    compiler_ir::EntityId::new(
+                    backend_semantic::ir::EntityId::new(
                         u32::try_from(index).map_err(BenchmarkError::ByteCount)?,
                     ),
                     &mut output,
@@ -213,7 +213,7 @@ pub(crate) fn vector(ir: &Ir) -> Result<StageWork, BenchmarkError> {
     }
     let points: [VectorPoint<'_>; MAX_CORPUS] = core::array::from_fn(|index| {
         VectorPoint::new(
-            compiler_ir::EntityId::new(u32::try_from(index).unwrap_or(u32::MAX)),
+            backend_semantic::ir::EntityId::new(u32::try_from(index).unwrap_or(u32::MAX)),
             &coordinates[index],
         )
     });

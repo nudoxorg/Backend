@@ -6,7 +6,7 @@
 //! never by borrow. Name bytes stay inspectable at the collector boundary
 //! that produced them.
 
-use compiler_ir::{EntityId, ProductChildRole, ProductConstructorFault, SemanticTypeFault};
+use backend_semantic::ir::{EntityId, ProductChildRole, ProductConstructorFault, SemanticTypeFault};
 use compiler_languages_clang::{
     DeclarationId as ClangDeclarationId, SourceSpan as ClangSourceSpan, SymbolIdentity,
     TypeId as ClangTypeId, TypeKind as ClangTypeKind, TypeQualifiers as ClangTypeQualifiers,

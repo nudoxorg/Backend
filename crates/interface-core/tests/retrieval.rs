@@ -3,7 +3,7 @@
 //! The adapter is intentionally local to this integration test: production `interface-core`
 //! owns only the capability contract, not a fixture catalogue or a server-index dependency.
 
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use interface_core::{
     ApplicationInput, ApplicationOutcome, ApplicationService, Capability, CorrelationId,

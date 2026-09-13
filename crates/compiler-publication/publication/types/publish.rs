@@ -9,7 +9,7 @@ use std::sync::{
     mpsc::RecvError,
 };
 
-use compiler_ir::{
+use backend_semantic::ir::{
     FragmentRangeManifestError, RecipeFact, SemanticImageEncodeError, SemanticImageReopenError,
     SourceIdentity,
 };

@@ -11,7 +11,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use compiler_ir::{
+use backend_semantic::ir::{
     Confidence, EntityId, FactAvailability, Ir, LinkId, LinkKind, LinkOccurrenceId, LinkTarget,
     SemanticCoreReader, SemanticImageView, SemanticReader, SourceSpan,
 };
@@ -1289,7 +1289,7 @@ mod tests {
     use std::hint::black_box;
 
     use allocation_counter::{AllocationInfo, measure};
-    use compiler_ir::{
+    use backend_semantic::ir::{
         BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts,
         EntityVersion, FactAvailability, IrBuilder, ItemKind, LinkKind, OccurrenceAuthorityFacts,
         ParentageAuthority, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,

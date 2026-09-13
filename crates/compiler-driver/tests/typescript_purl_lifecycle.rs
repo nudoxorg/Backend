@@ -7,7 +7,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use compiler_ir::FragmentView;
+use backend_semantic::ir::FragmentView;
 use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
@@ -52,7 +52,7 @@ enum TestError {
     #[error("fragment failed: {source}")]
     Fragment {
         #[source]
-        source: compiler_ir::FragmentError,
+        source: backend_semantic::ir::FragmentError,
     },
     #[error("publication failed: {cause}")]
     Publication { cause: String },

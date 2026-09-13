@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::num::TryFromIntError;
 
-use compiler_ir::{BuildError, FragmentError, FragmentView, Ir, PrepareError, WriteError};
+use backend_semantic::ir::{BuildError, FragmentError, FragmentView, Ir, PrepareError, WriteError};
 use backend_semantic::vocabulary::{
     CompileRecipeFact, FrontendError, InvalidUtf8Fact, Language, LanguageProfile,
     LoweringUnsupported, NativeArtifactRole, NativeTool, NativeWorkPhase, NativeWorkerPanic, Stage,

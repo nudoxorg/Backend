@@ -7,7 +7,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{FragmentView, ImageProvenance};
+use backend_semantic::ir::{FragmentView, ImageProvenance};
 use compiler_languages_go::{GoImage, GoOracle};
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published,
@@ -299,7 +299,7 @@ fn row(
         Err(failure) => return Err(Error::Failure(format!("compile_ir: {failure:?}"))),
     };
     let names = ir.ir.entity_columns().names;
-    let atom = |id: compiler_ir::AtomId| ir.ir.atom(id);
+    let atom = |id: backend_semantic::ir::AtomId| ir.ir.atom(id);
     for symbol in symbols {
         if !names
             .iter()

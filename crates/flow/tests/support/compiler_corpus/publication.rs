@@ -47,7 +47,7 @@ impl PassPublisher {
         compiled: &compiler_driver::CompiledSemantic<'_>,
         inspect: impl FnOnce(
             &compiler_publication::OpenedFragment<'_>,
-            &compiler_ir::SemanticImageView<'_>,
+            &backend_semantic::ir::SemanticImageView<'_>,
         ) -> Result<T, CorpusAuditError>,
     ) -> Result<T, CorpusAuditError> {
         let mut manifest = vec![0_u8; MANIFEST_BYTES];

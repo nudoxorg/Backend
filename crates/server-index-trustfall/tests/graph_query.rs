@@ -1,7 +1,7 @@
 //! Exercises the `server-index-trustfall` tests graph-query contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use core::{
     mem::size_of,
     pin::Pin,

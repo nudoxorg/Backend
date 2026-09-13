@@ -10,7 +10,7 @@ use std::{
 use compiler_driver::{
     CompileOutput, CompileScratch, NativeTool, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{EntityKind, SemanticImageAuthority};
+use backend_semantic::ir::{EntityKind, SemanticImageAuthority};
 use backend_semantic::vocabulary::{Language, LanguageProfile, PythonVersion};
 
 use super::support::*;

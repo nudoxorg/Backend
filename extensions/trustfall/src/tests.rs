@@ -11,7 +11,7 @@ use backend_version::{
     ProducerObservationVerifier, RelationState, ScopeRoot, UntrustedProducerObservation,
     WorkspaceManifest, WorkspaceRoot, admit_complete_scope, admit_producer_observation,
 };
-use compiler_ir::{
+use backend_semantic::ir::{
     DeclarationFamilyId, DeclarationIdentity, ExternalFragmentId, ExternalTarget,
     ExternalTargetIdentity, IrBuilder, SemanticCoreReader as _, SourceIdentity, StableRef,
     VariantFingerprint,
@@ -103,7 +103,7 @@ fn compiler_external_fixture() -> (
     LanguageProfile,
     DeclarationIdentity,
     ExternalTargetIdentity,
-    compiler_ir::SemanticImageFacts,
+    backend_semantic::ir::SemanticImageFacts,
 ) {
     let coordinate = PackageUrl::parse("pkg:cargo/acme/demo@1.0.0".to_owned())
         .expect("canonical compiler package URL");

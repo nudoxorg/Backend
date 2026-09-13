@@ -64,7 +64,7 @@
 
 use std::{collections::HashMap, vec::Vec};
 
-use compiler_ir::{
+use backend_semantic::ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey, ForeignOrigin,
     ListSpan, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PrimitiveShape,
     ProductChildRole, ReferenceKind, RelSpan, RustFacts, RustOwnership, SemanticProductConstructor,
@@ -904,31 +904,31 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     }
 
     /// Captures only the written visibility prefix; omitted visibility is Rust-private.
-    fn declaration_visibility(&self, declaration: &Decl<'source>) -> compiler_ir::Visibility {
+    fn declaration_visibility(&self, declaration: &Decl<'source>) -> backend_semantic::ir::Visibility {
         if declaration.expanded {
-            return compiler_ir::Visibility::Unknown;
+            return backend_semantic::ir::Visibility::Unknown;
         }
         let Some(visibility) = ast::AnyHasVisibility::cast(declaration.syntax.clone())
             .and_then(|item| item.visibility())
         else {
-            return compiler_ir::Visibility::Private;
+            return backend_semantic::ir::Visibility::Private;
         };
         let range = visibility.syntax().text_range();
         let Some(start) = usize::try_from(u32::from(range.start())).ok() else {
-            return compiler_ir::Visibility::Unknown;
+            return backend_semantic::ir::Visibility::Unknown;
         };
         let Some(end) = usize::try_from(u32::from(range.end())).ok() else {
-            return compiler_ir::Visibility::Unknown;
+            return backend_semantic::ir::Visibility::Unknown;
         };
         let Some(bytes) = self.source.get(start..end) else {
-            return compiler_ir::Visibility::Unknown;
+            return backend_semantic::ir::Visibility::Unknown;
         };
         if bytes == b"pub(crate)" {
-            compiler_ir::Visibility::Package
+            backend_semantic::ir::Visibility::Package
         } else if bytes.starts_with(b"pub(") {
-            compiler_ir::Visibility::Restricted
+            backend_semantic::ir::Visibility::Restricted
         } else {
-            compiler_ir::Visibility::Public
+            backend_semantic::ir::Visibility::Public
         }
     }
 
@@ -1056,12 +1056,12 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         for bound in bounds {
                             if let Some(lifetime) = bound.lifetime() {
                                 staged_bounds.push(
-                                    compiler_ir::ExtensionTypeParameterBound::Lifetime(
+                                    backend_semantic::ir::ExtensionTypeParameterBound::Lifetime(
                                         self.bytes_of_node(lifetime.syntax())?,
                                     ),
                                 );
                             } else if let Some(bound_ty) = bound.ty() {
-                                staged_bounds.push(compiler_ir::ExtensionTypeParameterBound::Type(
+                                staged_bounds.push(backend_semantic::ir::ExtensionTypeParameterBound::Type(
                                     self.generic_type_bound_target(&bound_ty)?,
                                 ));
                             } else {
@@ -1073,11 +1073,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                                 name,
                                 &staged_bounds,
                                 None,
-                                compiler_ir::ExtensionTypeParameterKind::Type {
-                                    inference: compiler_ir::TypeParameterInference::Ordinary,
+                                backend_semantic::ir::ExtensionTypeParameterKind::Type {
+                                    inference: backend_semantic::ir::TypeParameterInference::Ordinary,
                                 },
-                                compiler_ir::Variance::Invariant,
-                                compiler_ir::TypeParameterRequirements::none(),
+                                backend_semantic::ir::Variance::Invariant,
+                                backend_semantic::ir::TypeParameterRequirements::none(),
                             )
                             .map_err(|_| admission())?;
                         parameters_written = true;
@@ -1111,9 +1111,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                                 self.bytes_of_node(name.syntax())?,
                                 &[],
                                 None,
-                                compiler_ir::ExtensionTypeParameterKind::ConstValue { value_type },
-                                compiler_ir::Variance::Invariant,
-                                compiler_ir::TypeParameterRequirements::none(),
+                                backend_semantic::ir::ExtensionTypeParameterKind::ConstValue { value_type },
+                                backend_semantic::ir::Variance::Invariant,
+                                backend_semantic::ir::TypeParameterRequirements::none(),
                             )
                             .map_err(|_| admission())?;
                         parameters_written = true;
@@ -1131,7 +1131,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                             let Some(bound_lifetime) = bound.lifetime() else {
                                 return Err(unsupported_generic());
                             };
-                            staged_bounds.push(compiler_ir::ExtensionTypeParameterBound::Lifetime(
+                            staged_bounds.push(backend_semantic::ir::ExtensionTypeParameterBound::Lifetime(
                                 self.bytes_of_node(bound_lifetime.syntax())?,
                             ));
                         }
@@ -1140,9 +1140,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                                 self.bytes_of_node(lifetime.syntax())?,
                                 &staged_bounds,
                                 None,
-                                compiler_ir::ExtensionTypeParameterKind::Lifetime,
-                                compiler_ir::Variance::Invariant,
-                                compiler_ir::TypeParameterRequirements::none(),
+                                backend_semantic::ir::ExtensionTypeParameterKind::Lifetime,
+                                backend_semantic::ir::Variance::Invariant,
+                                backend_semantic::ir::TypeParameterRequirements::none(),
                             )
                             .map_err(|_| admission())?;
                         parameters_written = true;
@@ -2485,7 +2485,7 @@ fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::lower::{AdmissionFault, admit};
-    use compiler_ir::{
+    use backend_semantic::ir::{
         DocFactFault, DocFragmentInput, DocLinkTarget, EntityKind, FragmentError, FragmentView,
         Occurrence, OccurrenceConfidence, OccurrenceFault, ReferenceKind, SourceIdentity,
         TypeFactFault,
@@ -2634,7 +2634,7 @@ mod tests {
     /// Decodes one validated fragment's type rows into owned snapshots.
     fn rows<'fragment>(
         view: &'fragment FragmentView<'fragment>,
-    ) -> Result<Vec<compiler_ir::DecodedTypeFact<'fragment>>, TestError> {
+    ) -> Result<Vec<backend_semantic::ir::DecodedTypeFact<'fragment>>, TestError> {
         view.type_facts()
             .ok_or(TestError::Missing("type facts"))?
             .map(|fact| fact.map_err(TestError::from))
@@ -2647,7 +2647,7 @@ mod tests {
     fn row_for_entity<'fragment>(
         view: &'fragment FragmentView<'fragment>,
         entity: u32,
-    ) -> Result<compiler_ir::DecodedTypeFact<'fragment>, TestError> {
+    ) -> Result<backend_semantic::ir::DecodedTypeFact<'fragment>, TestError> {
         rows(view)?
             .into_iter()
             .filter(|row| row.owner.raw == entity)
@@ -2658,8 +2658,8 @@ mod tests {
     /// Resolves one record's ordered local type children after validation.
     fn local_type_children(
         view: &FragmentView<'_>,
-        record: compiler_ir::SemanticTypeRecord<'_>,
-    ) -> Result<Vec<compiler_ir::TypeId>, TestError> {
+        record: backend_semantic::ir::SemanticTypeRecord<'_>,
+    ) -> Result<Vec<backend_semantic::ir::TypeId>, TestError> {
         let end = record
             .children
             .start
@@ -2671,11 +2671,11 @@ mod tests {
             .filter_map(|child| match child {
                 Ok(child) if child.ordinal >= record.children.start && child.ordinal < end => {
                     match child.child.target {
-                        compiler_ir::TypeChildTarget::Type(compiler_ir::TypeRef::Local(target)) => {
+                        backend_semantic::ir::TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(target)) => {
                             Some(Ok(target))
                         }
-                        compiler_ir::TypeChildTarget::Text
-                        | compiler_ir::TypeChildTarget::Type(compiler_ir::TypeRef::External(_)) => {
+                        backend_semantic::ir::TypeChildTarget::Text
+                        | backend_semantic::ir::TypeChildTarget::Type(backend_semantic::ir::TypeRef::External(_)) => {
                             None
                         }
                     }
@@ -2795,7 +2795,7 @@ mod tests {
         }
         let f32_row = &rows[4];
         if f32_row.record.payload0 != PrimitiveShape::Float as u32
-            || f32_row.record.payload1 != compiler_ir::TypeWidth::Fixed(32).to_cell()
+            || f32_row.record.payload1 != backend_semantic::ir::TypeWidth::Fixed(32).to_cell()
         {
             return Err(TestError::Missing("f32 width cell"));
         }
@@ -2828,7 +2828,7 @@ mod tests {
         let node_row = row_for_entity(&view, node_ordinal)?;
         if node_row.record.tag != SemanticTypeTag::Nominal
             || node_row.record.nominal
-                != Some(NominalRef::Local(compiler_ir::EntityId::new(node_ordinal)))
+                != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(node_ordinal)))
         {
             return Err(TestError::Missing("recursive self nominal"));
         }
@@ -2887,7 +2887,7 @@ mod tests {
             || receiver.record.children.length != 1
             || receiver_referent.record.tag != SemanticTypeTag::Nominal
             || receiver_referent.record.nominal
-                != Some(NominalRef::Local(compiler_ir::EntityId::new(cafe)))
+                != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(cafe)))
         {
             return Err(TestError::Missing("self receiver type"));
         }
@@ -2987,7 +2987,7 @@ mod tests {
             .iter()
             .find(|(_, occurrence)| occurrence.kind == ReferenceKind::TypeReference)
             .ok_or(TestError::Missing("impl trait edge"))?;
-        if trait_edge.1.target != OccurrenceTarget::Local(compiler_ir::EntityId::new(service))
+        if trait_edge.1.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(service))
             || trait_edge.1.confidence != OccurrenceConfidence::Oracle
         {
             return Err(TestError::Missing("local trait edge at oracle confidence"));
@@ -3038,7 +3038,7 @@ mod tests {
             .iter()
             .find(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
             .ok_or(TestError::Missing("field access occurrence"))?;
-        if access.1.target != OccurrenceTarget::Local(compiler_ir::EntityId::new(score))
+        if access.1.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score))
             || access.1.confidence != OccurrenceConfidence::Oracle
         {
             return Err(TestError::Missing(
@@ -3078,7 +3078,7 @@ mod tests {
         let generated = fact_of(&view, b"Generated", EntityKind::Record)?;
         let generated_row = row_for_entity(&view, generated)?;
         if generated_row.record.nominal
-            != Some(NominalRef::Local(compiler_ir::EntityId::new(generated)))
+            != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(generated)))
         {
             return Err(TestError::Missing(
                 "projected expanded declaration structure",

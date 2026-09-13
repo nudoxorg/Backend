@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-compiler-ir = { path = "../compiler-ir" }
+backend-semantic = { path = "../semantic" }
 server-index-catalog = { path = "../server-index-catalog" }
 server-index-ingest = { path = "../server-index-ingest" }
 server-index-vocabulary = { path = "../server-index-vocabulary" }

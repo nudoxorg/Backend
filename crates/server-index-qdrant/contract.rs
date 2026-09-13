@@ -9,7 +9,7 @@ use std::{
 };
 
 use arrayvec::ArrayVec;
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use serde::Serialize;
 use server_index_graph_vector::{
     MAX_VECTOR_DIMENSION, Metric, ModelId, PartitionId, VectorAuthority,

@@ -15,7 +15,7 @@ use compiler_application::{
     LocalCompilerClient, OwnedPackageSource, OwnedPackageSourceSet, PackageSemanticError,
     PackageSemanticRuntimeError,
 };
-use compiler_ir::{
+use backend_semantic::ir::{
     LinkTarget, SemanticReader as _, SemanticSnapshot, SemanticStableLinks, StableLinkKey,
 };
 use backend_semantic::vocabulary::{Language, LanguageProfile};
@@ -137,7 +137,7 @@ fn execute_semantic_graph(
             let activated = activate_semantic_publication(compiler, key, *claim)?;
             for bytes in activated.images() {
                 let image =
-                    compiler_ir::SemanticImageView::reopen(bytes.as_ref()).map_err(|error| {
+                    backend_semantic::ir::SemanticImageView::reopen(bytes.as_ref()).map_err(|error| {
                         BuiltinModelError(format!("reopen semantic graph image: {error}"))
                     })?;
                 if let Some(ids) =
@@ -159,7 +159,7 @@ fn execute_semantic_graph(
 }
 
 fn semantic_graph_ids(
-    image: &compiler_ir::SemanticImageView<'_>,
+    image: &backend_semantic::ir::SemanticImageView<'_>,
     package: backend_engine::PackageKey,
     symbol: backend_engine::SymbolKey,
     source_id: backend_engine::RowId,
@@ -201,7 +201,7 @@ fn semantic_graph_ids(
     for (_, link) in image.links_from(source_entity) {
         if let LinkTarget::External(target) = link.target {
             let identity =
-                compiler_ir::ExternalTargetIdentity::capture(image, target).map_err(|error| {
+                backend_semantic::ir::ExternalTargetIdentity::capture(image, target).map_err(|error| {
                     BuiltinModelError(format!("identify semantic graph target: {error}"))
                 })?;
             ids.insert(backend_engine::RowId::Symbol(
@@ -218,10 +218,10 @@ fn semantic_graph_ids(
 }
 
 fn semantic_graph_targets(
-    image: &compiler_ir::SemanticImageView<'_>,
-    source: compiler_ir::EntityId,
+    image: &backend_semantic::ir::SemanticImageView<'_>,
+    source: backend_semantic::ir::EntityId,
     include_incoming: bool,
-) -> Result<BTreeSet<compiler_ir::EntityId>, BuiltinModelError> {
+) -> Result<BTreeSet<backend_semantic::ir::EntityId>, BuiltinModelError> {
     let cancellation = server_index_graph_vector::Cancellation::new();
     let graph = server_index_trustfall::SemanticTrustfallGraph::new(image, &cancellation);
     futures_executor::block_on(async {
@@ -253,12 +253,12 @@ fn semantic_graph_targets(
 #[derive(Clone, Copy)]
 struct SemanticDeclaration<'view> {
     label: &'view str,
-    version: compiler_ir::EntityVersion,
-    parent: Option<compiler_ir::DeclarationIdentity>,
+    version: backend_semantic::ir::EntityVersion,
+    parent: Option<backend_semantic::ir::DeclarationIdentity>,
 }
 
 struct SemanticPackageSnapshot<'view> {
-    declarations: Vec<(compiler_ir::DeclarationIdentity, SemanticDeclaration<'view>)>,
+    declarations: Vec<(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'view>)>,
     links: Vec<SemanticLinkSummary>,
 }
 
@@ -270,7 +270,7 @@ struct SemanticLinkSummary {
 
 const MAX_DIFF_DECLARATIONS: usize = (super::MAX_REBUILD_BYTES / 4)
     / size_of::<(
-        compiler_ir::DeclarationIdentity,
+        backend_semantic::ir::DeclarationIdentity,
         SemanticDeclaration<'static>,
     )>();
 const MAX_DIFF_LINKS: usize = (super::MAX_REBUILD_BYTES / 4) / size_of::<SemanticLinkSummary>();
@@ -337,10 +337,10 @@ fn append_semantic_image<'view>(
     view: &'view backend_engine::ViewRoot,
     package: backend_engine::PackageKey,
     bytes: &[u8],
-    declarations: &mut Vec<(compiler_ir::DeclarationIdentity, SemanticDeclaration<'view>)>,
+    declarations: &mut Vec<(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'view>)>,
     links: &mut Vec<SemanticLinkSummary>,
 ) -> Result<(), BuiltinModelError> {
-    let image = compiler_ir::SemanticImageView::reopen(bytes)
+    let image = backend_semantic::ir::SemanticImageView::reopen(bytes)
         .map_err(|error| BuiltinModelError(format!("reopen semantic diff image: {error}")))?;
     for entity in image.canonical_entities() {
         let identity = entity.version.identity();
@@ -376,7 +376,7 @@ fn append_semantic_image<'view>(
         ));
     }
     let snapshot = SemanticSnapshot {
-        generation: compiler_ir::GenerationId::from_canonical_bytes(bytes),
+        generation: backend_semantic::ir::GenerationId::from_canonical_bytes(bytes),
         reader: &image,
     };
     for link in SemanticStableLinks::new(snapshot) {
@@ -398,7 +398,7 @@ fn append_semantic_image<'view>(
 
 fn finish_semantic_snapshot(
     found_publication: bool,
-    mut declarations: Vec<(compiler_ir::DeclarationIdentity, SemanticDeclaration<'_>)>,
+    mut declarations: Vec<(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'_>)>,
     mut links: Vec<SemanticLinkSummary>,
 ) -> Result<Option<SemanticPackageSnapshot<'_>>, BuiltinModelError> {
     declarations.sort_unstable_by_key(|(identity, _)| *identity);
@@ -419,9 +419,9 @@ fn finish_semantic_snapshot(
     }))
 }
 
-fn semantic_link_evidence<Reader: compiler_ir::SemanticReader + ?Sized>(
+fn semantic_link_evidence<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &Reader,
-    link: compiler_ir::Link,
+    link: backend_semantic::ir::Link,
 ) -> Result<backend_engine::SemanticLinkEvidence, BuiltinModelError> {
     let source = link
         .source
@@ -447,19 +447,19 @@ fn semantic_link_evidence<Reader: compiler_ir::SemanticReader + ?Sized>(
 }
 
 const fn semantic_confidence(
-    confidence: compiler_ir::Confidence,
+    confidence: backend_semantic::ir::Confidence,
 ) -> backend_engine::SemanticConfidence {
     match confidence {
-        compiler_ir::Confidence::Syntactic => backend_engine::SemanticConfidence::Syntactic,
-        compiler_ir::Confidence::Heuristic => backend_engine::SemanticConfidence::Heuristic,
-        compiler_ir::Confidence::Indexed => backend_engine::SemanticConfidence::Indexed,
-        compiler_ir::Confidence::Imported => backend_engine::SemanticConfidence::Imported,
-        compiler_ir::Confidence::Compiler => backend_engine::SemanticConfidence::Compiler,
+        backend_semantic::ir::Confidence::Syntactic => backend_engine::SemanticConfidence::Syntactic,
+        backend_semantic::ir::Confidence::Heuristic => backend_engine::SemanticConfidence::Heuristic,
+        backend_semantic::ir::Confidence::Indexed => backend_engine::SemanticConfidence::Indexed,
+        backend_semantic::ir::Confidence::Imported => backend_engine::SemanticConfidence::Imported,
+        backend_semantic::ir::Confidence::Compiler => backend_engine::SemanticConfidence::Compiler,
     }
 }
 
 const fn semantic_declaration_identity(
-    identity: compiler_ir::DeclarationIdentity,
+    identity: backend_semantic::ir::DeclarationIdentity,
 ) -> backend_engine::SemanticDeclarationIdentity {
     backend_engine::SemanticDeclarationIdentity {
         family: *identity.family.as_bytes(),
@@ -467,47 +467,47 @@ const fn semantic_declaration_identity(
     }
 }
 
-const fn semantic_link_kind(kind: compiler_ir::LinkKind) -> backend_engine::SemanticLinkKind {
+const fn semantic_link_kind(kind: backend_semantic::ir::LinkKind) -> backend_engine::SemanticLinkKind {
     match kind {
-        compiler_ir::LinkKind::Calls => backend_engine::SemanticLinkKind::Calls,
-        compiler_ir::LinkKind::MethodCall => backend_engine::SemanticLinkKind::MethodCall,
-        compiler_ir::LinkKind::TypeReference => backend_engine::SemanticLinkKind::TypeReference,
-        compiler_ir::LinkKind::Reads => backend_engine::SemanticLinkKind::Reads,
-        compiler_ir::LinkKind::Writes => backend_engine::SemanticLinkKind::Writes,
-        compiler_ir::LinkKind::Imports => backend_engine::SemanticLinkKind::Imports,
-        compiler_ir::LinkKind::Implements => backend_engine::SemanticLinkKind::Implements,
-        compiler_ir::LinkKind::Overrides => backend_engine::SemanticLinkKind::Overrides,
-        compiler_ir::LinkKind::Reexports => backend_engine::SemanticLinkKind::Reexports,
-        compiler_ir::LinkKind::Inherits => backend_engine::SemanticLinkKind::Inherits,
-        compiler_ir::LinkKind::Documents => backend_engine::SemanticLinkKind::Documents,
+        backend_semantic::ir::LinkKind::Calls => backend_engine::SemanticLinkKind::Calls,
+        backend_semantic::ir::LinkKind::MethodCall => backend_engine::SemanticLinkKind::MethodCall,
+        backend_semantic::ir::LinkKind::TypeReference => backend_engine::SemanticLinkKind::TypeReference,
+        backend_semantic::ir::LinkKind::Reads => backend_engine::SemanticLinkKind::Reads,
+        backend_semantic::ir::LinkKind::Writes => backend_engine::SemanticLinkKind::Writes,
+        backend_semantic::ir::LinkKind::Imports => backend_engine::SemanticLinkKind::Imports,
+        backend_semantic::ir::LinkKind::Implements => backend_engine::SemanticLinkKind::Implements,
+        backend_semantic::ir::LinkKind::Overrides => backend_engine::SemanticLinkKind::Overrides,
+        backend_semantic::ir::LinkKind::Reexports => backend_engine::SemanticLinkKind::Reexports,
+        backend_semantic::ir::LinkKind::Inherits => backend_engine::SemanticLinkKind::Inherits,
+        backend_semantic::ir::LinkKind::Documents => backend_engine::SemanticLinkKind::Documents,
     }
 }
 
 fn semantic_link_target(
-    target: compiler_ir::DeclarationLinkTarget,
+    target: backend_semantic::ir::DeclarationLinkTarget,
 ) -> backend_engine::SemanticLinkTarget {
     match target {
-        compiler_ir::DeclarationLinkTarget::Local(declaration) => {
+        backend_semantic::ir::DeclarationLinkTarget::Local(declaration) => {
             backend_engine::SemanticLinkTarget::Local {
                 declaration: semantic_declaration_identity(declaration),
             }
         }
-        compiler_ir::DeclarationLinkTarget::Stable(target) => {
+        backend_semantic::ir::DeclarationLinkTarget::Stable(target) => {
             backend_engine::SemanticLinkTarget::Stable {
                 fragment: *target.fragment.as_ref(),
                 declaration: semantic_declaration_identity(target.declaration),
             }
         }
-        compiler_ir::DeclarationLinkTarget::Foreign(target) => {
+        backend_semantic::ir::DeclarationLinkTarget::Foreign(target) => {
             backend_engine::SemanticLinkTarget::Foreign {
                 declaration: *target.foreign.as_bytes(),
                 variant: match target.variant {
-                    compiler_ir::VariantAvailability::Known(variant) => Some(*variant.as_bytes()),
-                    compiler_ir::VariantAvailability::Unavailable => None,
+                    backend_semantic::ir::VariantAvailability::Known(variant) => Some(*variant.as_bytes()),
+                    backend_semantic::ir::VariantAvailability::Unavailable => None,
                 },
             }
         }
-        compiler_ir::DeclarationLinkTarget::FragmentEntity(target) => {
+        backend_semantic::ir::DeclarationLinkTarget::FragmentEntity(target) => {
             backend_engine::SemanticLinkTarget::FragmentEntity {
                 fragment: *target.fragment.as_ref(),
                 ordinal: target.ordinal,
@@ -569,16 +569,16 @@ fn diff_semantic_snapshots(
 }
 
 fn family_end(
-    declarations: &[(compiler_ir::DeclarationIdentity, SemanticDeclaration<'_>)],
+    declarations: &[(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'_>)],
     start: usize,
-    family: compiler_ir::DeclarationFamilyId,
+    family: backend_semantic::ir::DeclarationFamilyId,
 ) -> usize {
     start + declarations[start..].partition_point(|(identity, _)| identity.family == family)
 }
 
 fn diff_semantic_family(
-    before: &[(compiler_ir::DeclarationIdentity, SemanticDeclaration<'_>)],
-    after: &[(compiler_ir::DeclarationIdentity, SemanticDeclaration<'_>)],
+    before: &[(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'_>)],
+    after: &[(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'_>)],
     rows: &mut Vec<backend_engine::DiffRecord>,
 ) -> Result<(), BuiltinModelError> {
     if let ([(before_id, before)], [(after_id, after)]) = (before, after) {
@@ -665,8 +665,8 @@ fn diff_semantic_family(
 }
 
 fn unmatched_counts(
-    before: &[(compiler_ir::DeclarationIdentity, SemanticDeclaration<'_>)],
-    after: &[(compiler_ir::DeclarationIdentity, SemanticDeclaration<'_>)],
+    before: &[(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'_>)],
+    after: &[(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'_>)],
 ) -> (usize, usize) {
     let mut left = 0;
     let mut right = 0;
@@ -692,7 +692,7 @@ fn unmatched_counts(
 }
 
 type SemanticLinkDeltas =
-    BTreeMap<compiler_ir::DeclarationIdentity, Vec<backend_engine::SemanticLinkDelta>>;
+    BTreeMap<backend_semantic::ir::DeclarationIdentity, Vec<backend_engine::SemanticLinkDelta>>;
 
 fn diff_semantic_links(
     before: &SemanticPackageSnapshot<'_>,
@@ -757,7 +757,7 @@ fn semantic_link_delta(
     newer: Option<&SemanticLinkSummary>,
 ) -> Result<
     (
-        compiler_ir::DeclarationIdentity,
+        backend_semantic::ir::DeclarationIdentity,
         backend_engine::SemanticLinkDelta,
     ),
     BuiltinModelError,
@@ -820,7 +820,7 @@ fn semantic_diff_row(
     before: &SemanticPackageSnapshot<'_>,
     after: &SemanticPackageSnapshot<'_>,
     rows: &mut Vec<backend_engine::DiffRecord>,
-    source: compiler_ir::DeclarationIdentity,
+    source: backend_semantic::ir::DeclarationIdentity,
     link_count: usize,
 ) -> Result<usize, BuiltinModelError> {
     let identity = semantic_declaration_identity(source);
@@ -865,7 +865,7 @@ fn ensure_semantic_diff_bound(
 
 fn declaration<'snapshot, 'view>(
     snapshot: &'snapshot SemanticPackageSnapshot<'view>,
-    identity: compiler_ir::DeclarationIdentity,
+    identity: backend_semantic::ir::DeclarationIdentity,
 ) -> Option<&'snapshot SemanticDeclaration<'view>> {
     snapshot
         .declarations
@@ -878,8 +878,8 @@ fn push_diff(
     rows: &mut Vec<backend_engine::DiffRecord>,
     label: &str,
     change: backend_engine::DeclarationChange,
-    before: Option<compiler_ir::DeclarationIdentity>,
-    after: Option<compiler_ir::DeclarationIdentity>,
+    before: Option<backend_semantic::ir::DeclarationIdentity>,
+    after: Option<backend_semantic::ir::DeclarationIdentity>,
 ) -> Result<(), BuiltinModelError> {
     if rows.len() == backend_engine::MAX_PRODUCT_ROWS {
         return Err(BuiltinModelError(
@@ -2130,7 +2130,7 @@ fn commit_builtin_intent(
 #[cfg(test)]
 mod semantic_diff_tests {
     use super::*;
-    use compiler_ir::{
+    use backend_semantic::ir::{
         CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, EntityVersion,
         VariantFingerprint,
     };
@@ -2230,8 +2230,8 @@ mod semantic_diff_tests {
         let target = declaration(2, 1, 1, "target");
         let key = StableLinkKey {
             from: source.0,
-            target: compiler_ir::DeclarationLinkTarget::Local(target.0),
-            kind: compiler_ir::LinkKind::Calls,
+            target: backend_semantic::ir::DeclarationLinkTarget::Local(target.0),
+            kind: backend_semantic::ir::LinkKind::Calls,
         };
         let source_path = backend_engine::ProductText::new("src/lib.rs")
             .map_err(|error| BuiltinModelError(error.to_string()))?;

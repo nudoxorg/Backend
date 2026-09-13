@@ -9,8 +9,8 @@ use std::{
 };
 
 use compiler_driver::{CompiledFragment, CompiledSemantic};
-use compiler_ir::{AtomId, TypeId};
-use compiler_ir::{
+use backend_semantic::ir::{AtomId, TypeId};
+use backend_semantic::ir::{
     AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, IrBuilder,
     PackageLineage, PreparedFragment, PrimitiveType, SemanticCoreReader, SourceIdentity, TypeNode,
 };
@@ -45,19 +45,19 @@ enum TestError {
     #[error("could not shut down the durable publisher")]
     Shutdown(#[from] server_journal::ShutdownError),
     #[error("could not prepare a compact IR fixture")]
-    Prepare(#[from] compiler_ir::PrepareError),
+    Prepare(#[from] backend_semantic::ir::PrepareError),
     #[error("could not write a compact IR fixture")]
-    Write(#[from] compiler_ir::WriteError),
+    Write(#[from] backend_semantic::ir::WriteError),
     #[error("could not build a complete semantic fixture image")]
-    SemanticBuild(#[from] compiler_ir::BuildError),
+    SemanticBuild(#[from] backend_semantic::ir::BuildError),
     #[error("could not enter the semantic fixture package lineage")]
-    Lineage(compiler_ir::PackageLineageFault),
+    Lineage(backend_semantic::ir::PackageLineageFault),
     #[error("could not validate a compact IR fixture")]
-    Fragment(#[from] compiler_ir::FragmentError),
+    Fragment(#[from] backend_semantic::ir::FragmentError),
     #[error("could not validate a stored compiler manifest")]
     Manifest(#[from] compiler_publication::manifest::CompilationManifestError),
     #[error("could not commit complete fixture fragment ranges")]
-    Ranges(#[from] compiler_ir::FragmentRangeManifestError),
+    Ranges(#[from] backend_semantic::ir::FragmentRangeManifestError),
     #[error("could not reuse a stored fixture fragment")]
     Artifact(#[from] compiler_publication::immutable::ImmutableArtifactError),
     #[error("compiler publication failed")]
@@ -548,11 +548,11 @@ fn semantic_publication_is_order_stable_and_rejects_corrupted_paired_image() -> 
     for artifact in opened.artifacts() {
         let artifact = artifact?;
         match artifact.semantic_image.image_facts().provenance {
-            compiler_ir::ImageProvenance::Captured { source, recipe, .. } => {
+            backend_semantic::ir::ImageProvenance::Captured { source, recipe, .. } => {
                 assert_eq!(source, artifact.fragment.view.source);
                 assert_eq!(recipe, artifact.fragment.view.recipe);
             }
-            compiler_ir::ImageProvenance::Unavailable => {
+            backend_semantic::ir::ImageProvenance::Unavailable => {
                 return Err(TestError::Assertion {
                     expected: "captured semantic provenance paired with the compact artifact",
                     observed: "unavailable semantic provenance",

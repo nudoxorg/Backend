@@ -24,7 +24,6 @@ backend-runtime = { path = "../runtime" }
 backend-semantic = { path = "../semantic" }
 backend-version = { path = "../version" }
 compiler-application = { path = "../compiler-application" }
-compiler-ir = { path = "../compiler-ir" }
 interface-core = { path = "../interface-core" }
 server-index-graph-vector = { path = "../server-index-graph-vector" }
 server-index-trustfall = { path = "../server-index-trustfall" }

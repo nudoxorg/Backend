@@ -24,7 +24,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{EntityKind, FragmentView, ItemKind};
+use backend_semantic::ir::{EntityKind, FragmentView, ItemKind};
 use compiler_languages_java::{DeclarationKind, JavaAuthorityImage};
 use compiler_languages_java::{
     JavaRelease as HarnessRelease,
@@ -460,8 +460,8 @@ struct IndexScratch<'bytes> {
     entities: [MaybeUninit<server_index_build::EntityFact<'bytes>>; 512],
     exact: [MaybeUninit<server_index_core::ExactRow<'bytes>>; 512],
     lexical: [MaybeUninit<server_index_core::LexicalRow<'bytes>>; 512],
-    atoms: [MaybeUninit<compiler_ir::Atom<'bytes>>; 512],
-    types: [MaybeUninit<compiler_ir::TypeNode>; 512],
+    atoms: [MaybeUninit<backend_semantic::ir::Atom<'bytes>>; 512],
+    types: [MaybeUninit<backend_semantic::ir::TypeNode>; 512],
 }
 
 impl IndexScratch<'_> {

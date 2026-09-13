@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::ops::Deref;
 
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use backend_version::{ContentHasher, FixedCanonicalRecord, IndexVectorSegmentDomain};
 use server_index_vocabulary::VectorSegmentId;
 

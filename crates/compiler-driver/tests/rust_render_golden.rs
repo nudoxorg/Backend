@@ -11,7 +11,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainResolutionError, ToolchainSelection, compile_ir,
 };
-use compiler_ir::{EntityId, ItemKind};
+use backend_semantic::ir::{EntityId, ItemKind};
 use compiler_languages_rust::{
     RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
@@ -174,7 +174,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
     }
 }
 
-fn compile_fixture() -> Result<compiler_ir::Ir, TestError> {
+fn compile_fixture() -> Result<backend_semantic::ir::Ir, TestError> {
     let root = fixture_root()?;
     let source_path = root.join("src/lib.rs");
     let tool = std::env::var_os("RUSTC")
@@ -225,7 +225,7 @@ fn compile_fixture() -> Result<compiler_ir::Ir, TestError> {
     result
 }
 
-fn item(ir: &compiler_ir::Ir, name: &'static [u8], kind: ItemKind) -> Result<EntityId, TestError> {
+fn item(ir: &backend_semantic::ir::Ir, name: &'static [u8], kind: ItemKind) -> Result<EntityId, TestError> {
     ir.items()
         .find(|item| item.name() == name && item.kind() == kind)
         .map(|item| item.id())
@@ -249,7 +249,7 @@ fn assert_golden(name: &'static str, actual: String, expected: &str) -> Result<(
     Ok(())
 }
 
-fn signature(ir: &compiler_ir::Ir, id: EntityId, name: &'static str) -> Result<String, TestError> {
+fn signature(ir: &backend_semantic::ir::Ir, id: EntityId, name: &'static str) -> Result<String, TestError> {
     ir.signature(id)
         .map(|display| display.to_string())
         .ok_or(TestError::MissingEntity {
@@ -376,7 +376,7 @@ fn rust_visibility_is_preserved_for_same_shaped_declarations() -> Result<(), Tes
                 kind: ItemKind::Function,
             })?
             .visibility(),
-        compiler_ir::Visibility::Public
+        backend_semantic::ir::Visibility::Public
     );
     assert_eq!(
         ir.item(private)
@@ -385,7 +385,7 @@ fn rust_visibility_is_preserved_for_same_shaped_declarations() -> Result<(), Tes
                 kind: ItemKind::Function,
             })?
             .visibility(),
-        compiler_ir::Visibility::Private
+        backend_semantic::ir::Visibility::Private
     );
     assert_eq!(
         signature(&ir, private, "private_total")?,

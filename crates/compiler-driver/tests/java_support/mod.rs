@@ -8,7 +8,7 @@ use compiler_driver::{
     CompileControl, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
-use compiler_ir::Ir;
+use backend_semantic::ir::Ir;
 use backend_semantic::vocabulary::{JavaRelease, LanguageProfile, Stage};
 use sha2::{Digest, Sha256};
 

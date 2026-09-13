@@ -12,7 +12,7 @@ use compiler_driver::{
     CompileControl, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
-use compiler_ir::{EntityId, Ir, ItemKind};
+use backend_semantic::ir::{EntityId, Ir, ItemKind};
 use compiler_languages_go::GoOracle;
 use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
 use thiserror::Error;

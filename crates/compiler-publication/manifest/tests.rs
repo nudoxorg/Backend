@@ -2,8 +2,8 @@
 //! This module owns the manifest tests invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use compiler_driver::CompiledFragment;
-use compiler_ir::{AtomId, TypeId};
-use compiler_ir::{
+use backend_semantic::ir::{AtomId, TypeId};
+use backend_semantic::ir::{
     AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
     SourceIdentity, TypeNode,
 };
@@ -21,11 +21,11 @@ use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeToo
 #[derive(Debug, Error)]
 enum TestError {
     #[error(transparent)]
-    Prepare(#[from] compiler_ir::PrepareError),
+    Prepare(#[from] backend_semantic::ir::PrepareError),
     #[error(transparent)]
-    Write(#[from] compiler_ir::WriteError),
+    Write(#[from] backend_semantic::ir::WriteError),
     #[error(transparent)]
-    Fragment(#[from] compiler_ir::FragmentError),
+    Fragment(#[from] backend_semantic::ir::FragmentError),
     #[error(transparent)]
     Canonical(#[from] CompilationPrepareError),
     #[error(transparent)]

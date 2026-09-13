@@ -25,7 +25,7 @@
 //! let _ = SemanticImageLocator::new(segment, extent);
 //! ```
 
-use compiler_ir::{
+use backend_semantic::ir::{
     DeclarationIdentity, PackageLineage, SemanticImageIdentity, SemanticImageView, SemanticReader,
 };
 use backend_version::{

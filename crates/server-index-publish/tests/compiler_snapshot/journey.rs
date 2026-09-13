@@ -15,11 +15,11 @@ use std::{
 
 use allocation_counter::{AllocationInfo, measure};
 use compiler_driver::CompiledFragment;
-use compiler_ir::{
+use backend_semantic::ir::{
     Atom, AtomInput, EntityKind, EntityRecord, FragmentError, FragmentView, PrepareError,
     PreparedFragment, PrimitiveType, SourceIdentity, TypeNode, WriteError,
 };
-use compiler_ir::{AtomId, TypeId};
+use backend_semantic::ir::{AtomId, TypeId};
 use compiler_publication::{
     OpenPublicationScratch, OpenPublishedError, OpenedCompilation, OpenedFragmentError,
     PublicationScratch, PublishCompiledError, PublishControl, PublishedCompilation,

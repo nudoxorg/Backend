@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Bounded graph-acquisition composition and synchronous Trustfall classification.
 
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use server_index_graph_vector::{
     GraphAuthority, GraphDegradation, GraphTerminal, MissingPartitions, ValidatedGraphView,
 };

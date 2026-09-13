@@ -14,7 +14,7 @@ use backend_library::{PackageKey, PackageReference, package_key};
 use backend_version::{
     CanonicalRelation, Relation, RelationDecodeError, RelationState, StateRoot, WorkspaceRoot,
 };
-use compiler_ir::{ImageProvenance, PackageLineage, SemanticCoreReader, SemanticImageAuthority};
+use backend_semantic::ir::{ImageProvenance, PackageLineage, SemanticCoreReader, SemanticImageAuthority};
 use compiler_publication::{
     OpenedSemanticArtifactCursor, OpenedSemanticGeneration,
     binding::{
@@ -915,7 +915,7 @@ fn take_u32(bytes: &[u8]) -> Result<(u32, &[u8]), RelationDecodeError> {
 mod tests {
     use super::*;
     use compiler_driver::{CompiledFragment, CompiledSemantic};
-    use compiler_ir::{
+    use backend_semantic::ir::{
         AtomId, AtomInput, EntityKind, EntityRecord, FragmentView, IrBuilder, PreparedFragment,
         PrimitiveType, SourceIdentity, TypeId, TypeNode,
     };

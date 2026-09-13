@@ -11,7 +11,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use compiler_ir::{EntityKind, FragmentView, SemanticTypeTag, TypeFactSegment};
+use backend_semantic::ir::{EntityKind, FragmentView, SemanticTypeTag, TypeFactSegment};
 use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 

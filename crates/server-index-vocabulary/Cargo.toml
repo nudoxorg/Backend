@@ -10,7 +10,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-compiler-ir = { path = "../compiler-ir" }
+backend-semantic = { path = "../semantic" }
 backend-version = { path = "../version" }
 [dev-dependencies]
 allocation-counter.workspace = true

@@ -14,7 +14,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{
+use backend_semantic::ir::{
     DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
     OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag, TypeReason, TypeWidth,
 };
@@ -168,8 +168,8 @@ fn occurrences<'a>(view: &'a FragmentView<'a>) -> Vec<DecodedOccurrence<'a>> {
     view.occurrences().into_iter().flatten().flatten().collect()
 }
 
-fn ir_tag_shape(ir: &compiler_ir::Ir, id: compiler_ir::TypeId) -> (SemanticTypeTag, u8) {
-    use compiler_ir::{ComputedType, ConcreteType, TypeExpr};
+fn ir_tag_shape(ir: &backend_semantic::ir::Ir, id: backend_semantic::ir::TypeId) -> (SemanticTypeTag, u8) {
+    use backend_semantic::ir::{ComputedType, ConcreteType, TypeExpr};
     match ir.ty(id).unwrap() {
         TypeExpr::Concrete(ConcreteType::Builtin(_) | ConcreteType::Literal(_)) => {
             (SemanticTypeTag::Primitive, 0)
@@ -213,14 +213,14 @@ fn ir_tag_shape(ir: &compiler_ir::Ir, id: compiler_ir::TypeId) -> (SemanticTypeT
     }
 }
 
-fn expected_kind_matches(actual: compiler_ir::ItemKind, expected: EntityKind) -> bool {
+fn expected_kind_matches(actual: backend_semantic::ir::ItemKind, expected: EntityKind) -> bool {
     matches!(
         (actual, expected),
-        (compiler_ir::ItemKind::Constant, EntityKind::Constant)
-            | (compiler_ir::ItemKind::Function, EntityKind::Function)
-            | (compiler_ir::ItemKind::Record, EntityKind::Record)
-            | (compiler_ir::ItemKind::Trait, EntityKind::Trait)
-            | (compiler_ir::ItemKind::Static, EntityKind::Static)
+        (backend_semantic::ir::ItemKind::Constant, EntityKind::Constant)
+            | (backend_semantic::ir::ItemKind::Function, EntityKind::Function)
+            | (backend_semantic::ir::ItemKind::Record, EntityKind::Record)
+            | (backend_semantic::ir::ItemKind::Trait, EntityKind::Trait)
+            | (backend_semantic::ir::ItemKind::Static, EntityKind::Static)
     )
 }
 
@@ -251,7 +251,7 @@ fn mutually_recursive_interfaces_keep_diagonal_self_nominals_and_linked_members(
         assert_eq!(k, EntityKind::Trait);
         assert_eq!(
             fact(&v, id).record.nominal,
-            Some(compiler_ir::NominalRef::Local(compiler_ir::EntityId::new(
+            Some(backend_semantic::ir::NominalRef::Local(backend_semantic::ir::EntityId::new(
                 id
             )))
         );
@@ -407,7 +407,7 @@ fn self_referential_alias_is_bounded_on_a_small_stack() {
                 .into_iter()
                 .find(|record| {
                     record.owner.raw == owner
-                        && record.segment == compiler_ir::TypeFactSegment::Computed
+                        && record.segment == backend_semantic::ir::TypeFactSegment::Computed
                 })
                 .unwrap();
             (
@@ -445,7 +445,7 @@ fn plugin_union_keeps_all_forty_literal_members_reachable() {
     let view = view(SOURCE, Some(&checker));
     let literals = facts(&view)
         .into_iter()
-        .filter(|record| record.segment == compiler_ir::TypeFactSegment::Computed)
+        .filter(|record| record.segment == backend_semantic::ir::TypeFactSegment::Computed)
         .filter(|record| record.record.tag == SemanticTypeTag::Primitive)
         .count();
     assert_eq!(literals, 40);
@@ -505,20 +505,20 @@ fn checker_mapped_types_map_their_modifier_vocabularies_and_as_child_exactly() {
     for (name, readonly, optional, children) in [
         (
             b"added".as_slice(),
-            compiler_ir::LatticeMappedModifier::Add,
-            compiler_ir::LatticeMappedModifier::Add,
+            backend_semantic::ir::LatticeMappedModifier::Add,
+            backend_semantic::ir::LatticeMappedModifier::Add,
             3,
         ),
         (
             b"removed".as_slice(),
-            compiler_ir::LatticeMappedModifier::Remove,
-            compiler_ir::LatticeMappedModifier::Remove,
+            backend_semantic::ir::LatticeMappedModifier::Remove,
+            backend_semantic::ir::LatticeMappedModifier::Remove,
             2,
         ),
         (
             b"preserved".as_slice(),
-            compiler_ir::LatticeMappedModifier::Absent,
-            compiler_ir::LatticeMappedModifier::Absent,
+            backend_semantic::ir::LatticeMappedModifier::Absent,
+            backend_semantic::ir::LatticeMappedModifier::Absent,
             2,
         ),
     ] {
@@ -527,7 +527,7 @@ fn checker_mapped_types_map_their_modifier_vocabularies_and_as_child_exactly() {
             .into_iter()
             .find(|row| {
                 row.owner.raw == owner
-                    && row.segment == compiler_ir::TypeFactSegment::Computed
+                    && row.segment == backend_semantic::ir::TypeFactSegment::Computed
                     && row.record.tag == SemanticTypeTag::Mapped
             })
             .expect("computed mapped row");
@@ -548,7 +548,7 @@ fn direct_mapped_conditional_key_does_not_fabricate_an_optional_modifier() {
         .expect("direct mapped row");
     assert_eq!(
         mapped.record.payload1,
-        u32::from(compiler_ir::LatticeMappedModifier::Absent)
+        u32::from(backend_semantic::ir::LatticeMappedModifier::Absent)
     );
 }
 #[test]
@@ -909,10 +909,10 @@ fn forward_nominal_checker_and_lowering_keep_the_later_class() {
                         .into_iter()
                         .find(|fact| {
                             fact.owner.raw == a_owner
-                                && fact.segment == compiler_ir::TypeFactSegment::Computed
+                                && fact.segment == backend_semantic::ir::TypeFactSegment::Computed
                         })
                         .and_then(|fact| fact.record.nominal),
-                    Some(compiler_ir::NominalRef::Local(compiler_ir::EntityId::new(
+                    Some(backend_semantic::ir::NominalRef::Local(backend_semantic::ir::EntityId::new(
                         b_owner
                     ))),
                 );

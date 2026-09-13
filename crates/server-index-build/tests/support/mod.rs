@@ -16,7 +16,7 @@ use std::{
 };
 
 use compiler_driver::CompiledFragment;
-use compiler_ir::{
+use backend_semantic::ir::{
     Atom, AtomInput, EntityRecord, FragmentView, PreparedFragment, SourceIdentity, TypeNode,
 };
 use compiler_publication::{
@@ -49,15 +49,15 @@ pub(crate) enum TestError {
     #[error("durable publisher shutdown failed")]
     Shutdown(#[from] server_journal::ShutdownError),
     #[error("compact fragment preparation failed")]
-    Prepare(#[from] compiler_ir::PrepareError),
+    Prepare(#[from] backend_semantic::ir::PrepareError),
     #[error("compact fragment encoding failed")]
-    Write(#[from] compiler_ir::WriteError),
+    Write(#[from] backend_semantic::ir::WriteError),
     #[error("compact fragment validation failed")]
-    Fragment(#[from] compiler_ir::FragmentError),
+    Fragment(#[from] backend_semantic::ir::FragmentError),
     #[error("persisted exact entity value was malformed")]
     ExactEntityValue(#[from] server_index_build::ExactEntityValueError),
     #[error("compact fragment range manifest failed")]
-    Ranges(#[from] compiler_ir::FragmentRangeManifestError),
+    Ranges(#[from] backend_semantic::ir::FragmentRangeManifestError),
     #[error("immutable fragment artifact operation failed")]
     Artifact {
         #[source]

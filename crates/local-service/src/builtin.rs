@@ -172,7 +172,7 @@ pub(super) fn activate_semantic_publication(
         .activate_semantic_generation(key.profile(), claim.manifest(), claim.binding())
         .map_err(|error| BuiltinModelError(format!("activate semantic publication: {error}")))?;
     for image in &publication.images {
-        let view = compiler_ir::SemanticImageView::reopen(image.as_ref()).map_err(|error| {
+        let view = backend_semantic::ir::SemanticImageView::reopen(image.as_ref()).map_err(|error| {
             BuiltinModelError(format!("reopen activated semantic publication: {error}"))
         })?;
         key.admit_image(&view).map_err(|error| {

@@ -10,7 +10,7 @@ use compiler_driver::{
     CompileControl, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
-use compiler_ir::{EntityId, Ir, ItemKind};
+use backend_semantic::ir::{EntityId, Ir, ItemKind};
 use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
 
 const CASES: &[(&str, &[u8])] = &[
@@ -218,7 +218,7 @@ fn jsdoc_renders() {
     assert_eq!(
         ir.embedding_text(
             item(&ir, "add", ItemKind::Function),
-            compiler_ir::EmbeddingProfile::DOCUMENTED,
+            backend_semantic::ir::EmbeddingProfile::DOCUMENTED,
         )
         .expect("embedding")
         .to_string(),

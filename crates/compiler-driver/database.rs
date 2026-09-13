@@ -9,7 +9,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use compiler_ir::{
+use backend_semantic::ir::{
     CanonicalDataError, FragmentError, FragmentView, PrepareError, SourceIdentity, WriteError,
 };
 use compiler_languages_clang::{

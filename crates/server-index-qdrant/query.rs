@@ -63,7 +63,7 @@ impl QdrantBlockingAdapter {
 
 #[cfg(test)]
 mod tests {
-    use compiler_ir::EntityId;
+    use backend_semantic::ir::EntityId;
     use server_index_graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
     use server_index_vocabulary::{IndexSnapshotId, VectorSegmentId};
 

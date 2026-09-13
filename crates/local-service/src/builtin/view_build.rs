@@ -7,7 +7,7 @@ use super::{
 use backend_engine::builtin::ProductSemanticPublicationRecord;
 use backend_engine::{DeclarationKind, Fragment, Row, RowId, ViewRoot, product_source_file_key};
 use compiler_application::{DocumentationFragment, DocumentationSession, LocalCompilerClient};
-use compiler_ir::{
+use backend_semantic::ir::{
     DeclarationIdentity, ExternalTargetIdentity, ItemKind, LinkTarget, SemanticCoreReader as _,
     SemanticImageView, SemanticReader as _,
 };
@@ -457,7 +457,7 @@ fn append_image_rows(
     Ok(())
 }
 
-fn semantic_row_content<Reader: compiler_ir::SemanticReader + ?Sized>(
+fn semantic_row_content<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     profile: backend_semantic::vocabulary::LanguageProfile,
     reader: &Reader,
     entity: &compiler_application::DocumentationEntity<'_, Reader>,
@@ -466,11 +466,11 @@ fn semantic_row_content<Reader: compiler_ir::SemanticReader + ?Sized>(
 ) -> Result<SemanticRowContent, BuiltinModelError> {
     let type_depth = NonZeroUsize::new(MAX_SEMANTIC_TYPE_DEPTH)
         .ok_or_else(|| BuiltinModelError("semantic type depth bound must be nonzero".to_owned()))?;
-    let prepared = compiler_ir::prepare_semantic_document(
+    let prepared = backend_semantic::ir::prepare_semantic_document(
         profile,
         reader,
         entity.entity.id,
-        compiler_ir::CanonicalTypeRenderLimits::new(type_depth),
+        backend_semantic::ir::CanonicalTypeRenderLimits::new(type_depth),
     )
     .map_err(|error| BuiltinModelError(format!("prepare project semantic document: {error}")))?;
     if prepared.encoded_len > MAX_SEMANTIC_DOCUMENT_BYTES {
@@ -525,7 +525,7 @@ fn documentation_bytes(
     })
 }
 
-fn documentation_fragment<Reader: compiler_ir::SemanticReader + ?Sized>(
+fn documentation_fragment<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &Reader,
     package: backend_engine::PackageKey,
     image: [u8; 32],
@@ -564,7 +564,7 @@ pub(super) fn external_semantic_symbol(
     backend_engine::symbol_key(&backend_engine::encode_id(scoped.as_bytes()))
 }
 
-fn semantic_signature<Reader: compiler_ir::SemanticReader + ?Sized>(
+fn semantic_signature<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     entity: &compiler_application::DocumentationEntity<'_, Reader>,
 ) -> Result<Option<String>, BuiltinModelError> {
     let Some(semantic_type) = entity
@@ -576,7 +576,7 @@ fn semantic_signature<Reader: compiler_ir::SemanticReader + ?Sized>(
     let type_depth = NonZeroUsize::new(MAX_SEMANTIC_TYPE_DEPTH)
         .ok_or_else(|| BuiltinModelError("semantic type depth bound must be nonzero".to_owned()))?;
     let prepared = semantic_type
-        .prepare_canonical(compiler_ir::CanonicalTypeRenderLimits::new(type_depth))
+        .prepare_canonical(backend_semantic::ir::CanonicalTypeRenderLimits::new(type_depth))
         .map_err(|error| BuiltinModelError(format!("render project semantic type: {error}")))?;
     if prepared.encoded_len > MAX_SEMANTIC_SIGNATURE_BYTES {
         return Err(BuiltinModelError(

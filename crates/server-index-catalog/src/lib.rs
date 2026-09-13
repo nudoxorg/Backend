@@ -7,7 +7,7 @@ mod feed;
 mod page;
 mod schema;
 
-use compiler_ir::{DeclarationIdentity, PackageLineage};
+use backend_semantic::ir::{DeclarationIdentity, PackageLineage};
 use server_index_ingest::{Checkpoint, CheckpointFault};
 use server_index_vocabulary::{
     CanonicalEntityLocator, IndexLocatorFacts, PackageCoordinate, PackageVersion,

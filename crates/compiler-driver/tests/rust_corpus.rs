@@ -5,7 +5,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{EntityKind, FragmentError, FragmentView, OccurrenceConfidence, TypeFactSegment};
+use backend_semantic::ir::{EntityKind, FragmentError, FragmentView, OccurrenceConfidence, TypeFactSegment};
 use compiler_languages_rust::{RustAuthorityError, RustPackageUrl, RustPurlError, RustToolchain};
 use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{

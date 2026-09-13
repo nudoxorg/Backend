@@ -2,7 +2,7 @@
 
 use core::mem::MaybeUninit;
 
-use compiler_ir::{SemanticCoreReader, SemanticReader};
+use backend_semantic::ir::{SemanticCoreReader, SemanticReader};
 use compiler_publication::{
     OpenedSemanticArtifact, semantic_immutable::SemanticImageArtifactFacts,
 };

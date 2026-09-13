@@ -13,7 +13,7 @@ use compiler_driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainResolutionError, ToolchainSelection,
     compile, compile_semantic,
 };
-use compiler_ir::EntityKind;
+use backend_semantic::ir::EntityKind;
 use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -143,7 +143,7 @@ fn fused_go_authority_result_binds_owned_and_compact_truth_once() -> Result<(), 
         return Err(TestError::Binding);
     }
     match compiled.ir.image_provenance() {
-        compiler_ir::ImageProvenance::Captured { source, recipe, .. }
+        backend_semantic::ir::ImageProvenance::Captured { source, recipe, .. }
             if source == compiled.artifact.source && recipe == compiled.artifact.recipe => {}
         _ => return Err(TestError::Binding),
     }
@@ -153,7 +153,7 @@ fn fused_go_authority_result_binds_owned_and_compact_truth_once() -> Result<(), 
         || census.canonical_entity_roots != 1
         || compiled.ir.entity_authority_columns().row_count() != compiled.ir.items().len()
         || compiled.ir.entity_authority_columns().semantic_type.first()
-            != Some(&compiler_ir::FactAvailability::Captured)
+            != Some(&backend_semantic::ir::FactAvailability::Captured)
         || !compiled.ir.items().any(|item| item.name() == b"Brew")
     {
         return Err(TestError::FusedCensus);

@@ -239,8 +239,8 @@ pub(super) enum CorpusMismatch {
         observed_fragment: Digest,
         expected_ranges: Digest,
         observed_ranges: Digest,
-        expected_census: compiler_ir::SemanticCensus,
-        observed_census: compiler_ir::SemanticCensus,
+        expected_census: backend_semantic::ir::SemanticCensus,
+        observed_census: backend_semantic::ir::SemanticCensus,
     },
     SemanticImage {
         key: CaseKey,
