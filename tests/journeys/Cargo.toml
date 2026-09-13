@@ -1,0 +1,56 @@
+[package]
+name = "backend-journeys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+backend-library = { path = "../../crates/library" }
+backend-semantic = { path = "../../crates/semantic" }
+backend-store = { path = "../../crates/store" }
+backend-version = { path = "../../crates/version" }
+backend-cli = { path = "../../apps/cli" }
+backend-mcp = { path = "../../apps/mcp" }
+backend-engine = { path = "../../crates/engine" }
+backend-execution = { path = "../../crates/execution" }
+backend-replication = { path = "../../crates/replication" }
+backend-locald = { package = "backend-local-service", path = "../../crates/local-service" }
+backend-worker = { path = "../../apps/worker" }
+backend-desktop = { path = "../../apps/desktop" }
+backend-extension-turso = { path = "../../extensions/turso" }
+backend-compile = { path = "../../crates/compile" }
+compiler-vocabulary = { path = "../../crates/compiler-vocabulary" }
+backend-frontend-clang = { path = "../../frontends/clang" }
+backend-frontend-csharp = { path = "../../frontends/csharp" }
+backend-frontend-go = { path = "../../frontends/go" }
+backend-frontend-java = { path = "../../frontends/java" }
+backend-frontend-python = { path = "../../frontends/python" }
+backend-frontend-rust = { path = "../../frontends/rust" }
+backend-frontend-typescript = { path = "../../frontends/typescript" }
+blake3.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "backend-journey-cancel-worker"
+path = "src/bin/cancel_worker.rs"
+
+[[bin]]
+name = "backend-journey-locald"
+path = "src/bin/locald.rs"
+
+[[bin]]
+name = "backend-journey-worker"
+path = "src/bin/worker.rs"
+
+[[bin]]
+name = "backend-journey-cli"
+path = "src/bin/cli.rs"
+
+[[bin]]
+name = "backend-journey-mcp"
+path = "src/bin/mcp.rs"
+
+[lints]
+workspace = true

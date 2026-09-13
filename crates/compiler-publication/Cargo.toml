@@ -1,0 +1,27 @@
+# Defines the `compiler-publication` package and its explicit dependency boundary.
+# The crate exists to publish verified compiler fragments as immutable generations.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "compiler-publication"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+compiler-vocabulary = { path = "../compiler-vocabulary" }
+compiler-driver = { path = "../compiler-driver" }
+server-journal = { path = "../server-journal" }
+heart-hydration = { path = "../heart-hydration" }
+heart-identity = { path = "../heart-identity" }
+compiler-ir = { path = "../compiler-ir" }
+heart-object = { path = "../heart-object" }
+heart-root = { path = "../heart-root" }
+heart-schema = { path = "../heart-schema" }
+heart-memory = { path = "../heart-memory" }
+thiserror.workspace = true
+
+[dev-dependencies]
+[lib]
+path = "lib.rs"

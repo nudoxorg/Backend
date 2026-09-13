@@ -1,0 +1,19 @@
+[package]
+name = "backend-laws"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+backend-flow = { path = "../../crates/flow" }
+backend-store = { path = "../../crates/store" }
+backend-version = { path = "../../crates/version" }
+
+[dev-dependencies]
+blake3.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

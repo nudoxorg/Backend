@@ -1,0 +1,1986 @@
+{
+  "coverage": {
+    "advertisedTools": [
+      "backend.status",
+      "backend.projects",
+      "backend.search",
+      "backend.names",
+      "backend.document",
+      "backend.source",
+      "backend.outline",
+      "backend.graph",
+      "backend.related",
+      "backend.diff",
+      "backend.query",
+      "backend.index",
+      "backend.remove",
+      "backend.surface"
+    ],
+    "allAdvertisedToolsCalled": true,
+    "expectedTools": [
+      "backend.status",
+      "backend.projects",
+      "backend.search",
+      "backend.names",
+      "backend.document",
+      "backend.source",
+      "backend.outline",
+      "backend.graph",
+      "backend.related",
+      "backend.diff",
+      "backend.query",
+      "backend.index",
+      "backend.remove",
+      "backend.surface"
+    ],
+    "jsonRpcServices": [
+      "initialize",
+      "notifications/initialized",
+      "ping",
+      "tools/list",
+      "tools/call",
+      "resources/list",
+      "resources/templates/list",
+      "resources/read",
+      "prompts/list",
+      "prompts/get",
+      "DELETE /mcp"
+    ]
+  },
+  "evidence": {
+    "capabilitiesAdvertised": 28,
+    "capabilitiesReady": 9,
+    "capabilitiesUnavailable": 19,
+    "coverageAtFirstRows": [
+      {
+        "state": "complete"
+      },
+      {
+        "completed": 0,
+        "lane": "semantic",
+        "state": "partial",
+        "total": 1
+      }
+    ],
+    "diffIsError": true,
+    "diffUnavailableReason": "command failed: invalid query: older package has no complete semantic publication",
+    "documentHasSignature": true,
+    "embeddingLifecycle": "unavailable",
+    "nameRows": 2,
+    "promptCount": 1,
+    "queryRows": 7,
+    "queryTerminal": "complete",
+    "readinessAtFirstRows": "indexing",
+    "removeIsError": false,
+    "resourceCount": 2,
+    "resourceTemplateCount": 2,
+    "searchCoordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:4::DemoWidget",
+    "searchRows": 2,
+    "sourceState": "captured",
+    "surfaceIsError": false
+  },
+  "generatedAt": "2026-09-13T14:47:43.692827+00:00",
+  "note": "Historical first pass submitted indexing during Axum startup; the superseding demonstration invokes backend.index through MCP.",
+  "process": {
+    "exitBeforeShutdown": null,
+    "stderr": [
+      "backend-mcp: ready {\"authorization\":\"Bearer [redacted]\",\"maxInFlight\":64,\"maxRequestBytes\":4194304,\"maxSessions\":64,\"transport\":\"streamable-http\",\"url\":\"http://127.0.0.1:60945/mcp\"}"
+    ]
+  },
+  "requests": [
+    {
+      "httpStatus": 401,
+      "latencyMs": 21.528,
+      "rpcError": {
+        "code": -32001,
+        "message": "missing or invalid bearer token"
+      },
+      "surface": "auth.rejection"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 0.473,
+      "rpcError": null,
+      "surface": "initialize"
+    },
+    {
+      "httpStatus": 202,
+      "latencyMs": 0.297,
+      "rpcError": null,
+      "surface": "notifications/initialized"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 0.338,
+      "rpcError": null,
+      "surface": "ping"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 0.831,
+      "rpcError": null,
+      "surface": "tools/list"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 212.731,
+      "rpcError": null,
+      "surface": "backend.status"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 4.551,
+      "rpcError": null,
+      "surface": "backend.projects"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 8.253,
+      "rpcError": null,
+      "surface": "backend.index"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 46.619,
+      "rpcError": null,
+      "surface": "backend.search"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 13.287,
+      "rpcError": null,
+      "surface": "backend.names"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 10.893,
+      "rpcError": null,
+      "surface": "backend.document"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 12.948,
+      "rpcError": null,
+      "surface": "backend.source"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 13.364,
+      "rpcError": null,
+      "surface": "backend.outline"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 13.431,
+      "rpcError": null,
+      "surface": "backend.graph"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 13.378,
+      "rpcError": null,
+      "surface": "backend.related"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 6.558,
+      "rpcError": null,
+      "surface": "backend.diff"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 21.226,
+      "rpcError": null,
+      "surface": "backend.query"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 5.646,
+      "rpcError": null,
+      "surface": "backend.surface"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 7.4,
+      "rpcError": null,
+      "surface": "resources/list"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 0.311,
+      "rpcError": null,
+      "surface": "resources/templates/list"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 219.634,
+      "rpcError": null,
+      "surface": "resources/read"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 0.437,
+      "rpcError": null,
+      "surface": "prompts/list"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 4.084,
+      "rpcError": null,
+      "surface": "prompts/get"
+    },
+    {
+      "httpStatus": 200,
+      "latencyMs": 184.782,
+      "rpcError": null,
+      "surface": "backend.remove"
+    },
+    {
+      "httpStatus": 204,
+      "latencyMs": 0.48,
+      "rpcError": null,
+      "surface": "session.delete"
+    },
+    {
+      "httpStatus": 404,
+      "latencyMs": 0.38,
+      "rpcError": {
+        "code": -32001,
+        "message": "MCP session not found"
+      },
+      "surface": "session.after_delete"
+    }
+  ],
+  "responses": {
+    "auth.rejection": {
+      "error": {
+        "code": -32001,
+        "message": "missing or invalid bearer token"
+      },
+      "id": null,
+      "jsonrpc": "2.0"
+    },
+    "backend.diff": {
+      "id": 15,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"error\": {\n    \"kind\": \"transport\",\n    \"message\": \"command failed: invalid query: older package has no complete semantic publication\"\n  }\n}",
+            "type": "text"
+          }
+        ],
+        "isError": true,
+        "structuredContent": {
+          "error": {
+            "kind": "transport",
+            "message": "command failed: invalid query: older package has no complete semantic publication"
+          }
+        }
+      }
+    },
+    "backend.document": {
+      "id": 10,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"documentation\": \"struct in src/lib.rs:4\",\n  \"excerpt\": {\n    \"available\": true,\n    \"extent\": \"complete\",\n    \"state\": \"captured\",\n    \"text\": \"pub struct DemoWidget {\\n    /// Stable identifier.\\n    pub id: u64,\\n}\"\n  },\n  \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n  \"signature\": \"pub struct DemoWidget\",\n  \"source\": {\n    \"available\": true,\n    \"path\": \"src/lib.rs\",\n    \"startLine\": 4,\n    \"state\": \"captured\"\n  },\n  \"symbol\": \"8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9\"\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "documentation": "struct in src/lib.rs:4",
+          "excerpt": {
+            "available": true,
+            "extent": "complete",
+            "state": "captured",
+            "text": "pub struct DemoWidget {\n    /// Stable identifier.\n    pub id: u64,\n}"
+          },
+          "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+          "signature": "pub struct DemoWidget",
+          "source": {
+            "available": true,
+            "path": "src/lib.rs",
+            "startLine": 4,
+            "state": "captured"
+          },
+          "symbol": "8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9"
+        }
+      }
+    },
+    "backend.graph": {
+      "id": 13,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"coverage\": [\n    {\n      \"state\": \"complete\"\n    },\n    {\n      \"completed\": 0,\n      \"lane\": \"semantic\",\n      \"state\": \"partial\",\n      \"total\": 1\n    }\n  ],\n  \"freshness\": \"current\",\n  \"kind\": \"graph\",\n  \"next\": null,\n  \"readiness\": \"indexing\",\n  \"revision\": \"f6148a31a7993c09a6602066bf7d91431849d502a5810bde13bc7ba1d19633e4\",\n  \"rows\": [\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:4::DemoWidget\",\n      \"declarationKind\": \"struct\",\n      \"documentation\": \"struct in src/lib.rs:4\",\n      \"excerpt\": {\n        \"available\": true,\n        \"extent\": \"complete\",\n        \"state\": \"captured\",\n        \"text\": \"pub struct DemoWidget {\\n    /// Stable identifier.\\n    pub id: u64,\\n}\"\n      },\n      \"id\": \"symbol:8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9\",\n      \"kind\": \"declaration\",\n      \"name\": \"DemoWidget\",\n      \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n      \"score\": null,\n      \"signature\": \"pub struct DemoWidget\",\n      \"source\": {\n        \"available\": true,\n        \"path\": \"src/lib.rs\",\n        \"startLine\": 4,\n        \"state\": \"captured\"\n      },\n      \"state\": \"ready\"\n    },\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs\",\n      \"declarationKind\": \"module\",\n      \"documentation\": \"rust source \u00b7 src/lib.rs\",\n      \"excerpt\": {\n        \"available\": false,\n        \"state\": \"not_captured\"\n      },\n      \"id\": \"symbol:c55990b061c4db2cd9d0bd21df0749b37db1fdfbe3198681efa50dc4bc3be75a\",\n      \"kind\": \"declaration\",\n      \"name\": \"src/lib.rs\",\n      \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n      \"score\": null,\n      \"signature\": \"rust module lib\",\n      \"source\": {\n        \"available\": true,\n        \"path\": \"src/lib.rs\",\n        \"startLine\": 1,\n        \"state\": \"captured\"\n      },\n      \"state\": \"ready\"\n    }\n  ]\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "coverage": [
+            {
+              "state": "complete"
+            },
+            {
+              "completed": 0,
+              "lane": "semantic",
+              "state": "partial",
+              "total": 1
+            }
+          ],
+          "freshness": "current",
+          "kind": "graph",
+          "next": null,
+          "readiness": "indexing",
+          "revision": "f6148a31a7993c09a6602066bf7d91431849d502a5810bde13bc7ba1d19633e4",
+          "rows": [
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:4::DemoWidget",
+              "declarationKind": "struct",
+              "documentation": "struct in src/lib.rs:4",
+              "excerpt": {
+                "available": true,
+                "extent": "complete",
+                "state": "captured",
+                "text": "pub struct DemoWidget {\n    /// Stable identifier.\n    pub id: u64,\n}"
+              },
+              "id": "symbol:8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9",
+              "kind": "declaration",
+              "name": "DemoWidget",
+              "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+              "score": null,
+              "signature": "pub struct DemoWidget",
+              "source": {
+                "available": true,
+                "path": "src/lib.rs",
+                "startLine": 4,
+                "state": "captured"
+              },
+              "state": "ready"
+            },
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs",
+              "declarationKind": "module",
+              "documentation": "rust source \u00b7 src/lib.rs",
+              "excerpt": {
+                "available": false,
+                "state": "not_captured"
+              },
+              "id": "symbol:c55990b061c4db2cd9d0bd21df0749b37db1fdfbe3198681efa50dc4bc3be75a",
+              "kind": "declaration",
+              "name": "src/lib.rs",
+              "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+              "score": null,
+              "signature": "rust module lib",
+              "source": {
+                "available": true,
+                "path": "src/lib.rs",
+                "startLine": 1,
+                "state": "captured"
+              },
+              "state": "ready"
+            }
+          ]
+        }
+      }
+    },
+    "backend.index": {
+      "id": 7,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"accepted\": true,\n  \"completion\": \"pending\",\n  \"intent\": \"212d621dc97036357a1e0ad2cabe7e9ea22c3c73d5a70e7a72a9f4253446e8e6\",\n  \"message\": \"Index request accepted. Check backend.status for source readiness.\",\n  \"operation\": \"index\"\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "accepted": true,
+          "completion": "pending",
+          "intent": "212d621dc97036357a1e0ad2cabe7e9ea22c3c73d5a70e7a72a9f4253446e8e6",
+          "message": "Index request accepted. Check backend.status for source readiness.",
+          "operation": "index"
+        }
+      }
+    },
+    "backend.names": {
+      "id": 9,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"coverage\": [\n    {\n      \"state\": \"complete\"\n    },\n    {\n      \"completed\": 0,\n      \"lane\": \"semantic\",\n      \"state\": \"partial\",\n      \"total\": 1\n    }\n  ],\n  \"freshness\": \"current\",\n  \"kind\": \"names\",\n  \"next\": null,\n  \"readiness\": \"indexing\",\n  \"revision\": \"3b02c6158d6e3ad20f9f3c6ccf973e62778a2a2e9921babbebc2d6f75308c639\",\n  \"rows\": [\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:4::DemoWidget\",\n      \"declarationKind\": \"struct\",\n      \"documentation\": \"struct in src/lib.rs:4\",\n      \"excerpt\": {\n        \"available\": true,\n        \"extent\": \"complete\",\n        \"state\": \"captured\",\n        \"text\": \"pub struct DemoWidget {\\n    /// Stable identifier.\\n    pub id: u64,\\n}\"\n      },\n      \"id\": \"symbol:8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9\",\n      \"kind\": \"declaration\",\n      \"name\": \"DemoWidget\",\n      \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n      \"score\": null,\n      \"signature\": \"pub struct DemoWidget\",\n      \"source\": {\n        \"available\": true,\n        \"path\": \"src/lib.rs\",\n        \"startLine\": 4,\n        \"state\": \"captured\"\n      },\n      \"state\": \"ready\"\n    },\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:18::find_widget\",\n      \"declarationKind\": \"function\",\n      \"documentation\": \"function in src/lib.rs:18\",\n      \"excerpt\": {\n        \"available\": true,\n        \"extent\": \"complete\",\n        \"state\": \"captured\",\n        \"text\": \"pub fn find_widget(id: u64) -> Option<DemoWidget> {\\n    (id != 0).then(|| DemoWidget::new(id))\\n}\"\n      },\n      \"id\": \"symbol:d2f62332b91e9dd2cc75cd4c2f6897b1a45e2df49eb985e0c23a312bed19a176\",\n      \"kind\": \"declaration\",\n      \"name\": \"find_widget\",\n      \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n      \"score\": null,\n      \"signature\": \"pub fn find_widget(id: u64) -> Option<DemoWidget>\",\n      \"source\": {\n        \"available\": true,\n        \"path\": \"src/lib.rs\",\n        \"startLine\": 18,\n        \"state\": \"captured\"\n      },\n      \"state\": \"ready\"\n    }\n  ]\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "coverage": [
+            {
+              "state": "complete"
+            },
+            {
+              "completed": 0,
+              "lane": "semantic",
+              "state": "partial",
+              "total": 1
+            }
+          ],
+          "freshness": "current",
+          "kind": "names",
+          "next": null,
+          "readiness": "indexing",
+          "revision": "3b02c6158d6e3ad20f9f3c6ccf973e62778a2a2e9921babbebc2d6f75308c639",
+          "rows": [
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:4::DemoWidget",
+              "declarationKind": "struct",
+              "documentation": "struct in src/lib.rs:4",
+              "excerpt": {
+                "available": true,
+                "extent": "complete",
+                "state": "captured",
+                "text": "pub struct DemoWidget {\n    /// Stable identifier.\n    pub id: u64,\n}"
+              },
+              "id": "symbol:8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9",
+              "kind": "declaration",
+              "name": "DemoWidget",
+              "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+              "score": null,
+              "signature": "pub struct DemoWidget",
+              "source": {
+                "available": true,
+                "path": "src/lib.rs",
+                "startLine": 4,
+                "state": "captured"
+              },
+              "state": "ready"
+            },
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:18::find_widget",
+              "declarationKind": "function",
+              "documentation": "function in src/lib.rs:18",
+              "excerpt": {
+                "available": true,
+                "extent": "complete",
+                "state": "captured",
+                "text": "pub fn find_widget(id: u64) -> Option<DemoWidget> {\n    (id != 0).then(|| DemoWidget::new(id))\n}"
+              },
+              "id": "symbol:d2f62332b91e9dd2cc75cd4c2f6897b1a45e2df49eb985e0c23a312bed19a176",
+              "kind": "declaration",
+              "name": "find_widget",
+              "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+              "score": null,
+              "signature": "pub fn find_widget(id: u64) -> Option<DemoWidget>",
+              "source": {
+                "available": true,
+                "path": "src/lib.rs",
+                "startLine": 18,
+                "state": "captured"
+              },
+              "state": "ready"
+            }
+          ]
+        }
+      }
+    },
+    "backend.outline": {
+      "id": 12,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"extent\": \"complete\",\n  \"project\": \"66bd4facb38ecd24ec301e800c726db93bbc925f4a41e0f4495a56d772430659\",\n  \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n  \"root\": {\n    \"children\": [\n      {\n        \"children\": [],\n        \"symbol\": \"12d7f874b51687aaf30c2ba9b24997c123c9f7ea96c66e49ebd935d71f0692df\"\n      },\n      {\n        \"children\": [],\n        \"symbol\": \"58db9533ddb0633313d6f3a582976669fe74f6823dd56fc8d4610b911da8a761\"\n      },\n      {\n        \"children\": [],\n        \"symbol\": \"8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9\"\n      },\n      {\n        \"children\": [],\n        \"symbol\": \"a94d97d5d1ccc9347001139c0dacf7f1e0ca65cfd60f054e890e57bc8d8e82c3\"\n      },\n      {\n        \"children\": [],\n        \"symbol\": \"c73a53f520f151add58b02ecd29811d411baaed64472a4be328d966eb8f817de\"\n      },\n      {\n        \"children\": [],\n        \"symbol\": \"d2f62332b91e9dd2cc75cd4c2f6897b1a45e2df49eb985e0c23a312bed19a176\"\n      }\n    ],\n    \"symbol\": \"c55990b061c4db2cd9d0bd21df0749b37db1fdfbe3198681efa50dc4bc3be75a\"\n  },\n  \"roots\": [\n    {\n      \"children\": [\n        {\n          \"children\": [],\n          \"symbol\": \"12d7f874b51687aaf30c2ba9b24997c123c9f7ea96c66e49ebd935d71f0692df\"\n        },\n        {\n          \"children\": [],\n          \"symbol\": \"58db9533ddb0633313d6f3a582976669fe74f6823dd56fc8d4610b911da8a761\"\n        },\n        {\n          \"children\": [],\n          \"symbol\": \"8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9\"\n        },\n        {\n          \"children\": [],\n          \"symbol\": \"a94d97d5d1ccc9347001139c0dacf7f1e0ca65cfd60f054e890e57bc8d8e82c3\"\n        },\n        {\n          \"children\": [],\n          \"symbol\": \"c73a53f520f151add58b02ecd29811d411baaed64472a4be328d966eb8f817de\"\n        },\n        {\n          \"children\": [],\n          \"symbol\": \"d2f62332b91e9dd2cc75cd4c2f6897b1a45e2df49eb985e0c23a312bed19a176\"\n        }\n      ],\n      \"symbol\": \"c55990b061c4db2cd9d0bd21df0749b37db1fdfbe3198681efa50dc4bc3be75a\"\n    }\n  ]\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "extent": "complete",
+          "project": "66bd4facb38ecd24ec301e800c726db93bbc925f4a41e0f4495a56d772430659",
+          "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+          "root": {
+            "children": [
+              {
+                "children": [],
+                "symbol": "12d7f874b51687aaf30c2ba9b24997c123c9f7ea96c66e49ebd935d71f0692df"
+              },
+              {
+                "children": [],
+                "symbol": "58db9533ddb0633313d6f3a582976669fe74f6823dd56fc8d4610b911da8a761"
+              },
+              {
+                "children": [],
+                "symbol": "8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9"
+              },
+              {
+                "children": [],
+                "symbol": "a94d97d5d1ccc9347001139c0dacf7f1e0ca65cfd60f054e890e57bc8d8e82c3"
+              },
+              {
+                "children": [],
+                "symbol": "c73a53f520f151add58b02ecd29811d411baaed64472a4be328d966eb8f817de"
+              },
+              {
+                "children": [],
+                "symbol": "d2f62332b91e9dd2cc75cd4c2f6897b1a45e2df49eb985e0c23a312bed19a176"
+              }
+            ],
+            "symbol": "c55990b061c4db2cd9d0bd21df0749b37db1fdfbe3198681efa50dc4bc3be75a"
+          },
+          "roots": [
+            {
+              "children": [
+                {
+                  "children": [],
+                  "symbol": "12d7f874b51687aaf30c2ba9b24997c123c9f7ea96c66e49ebd935d71f0692df"
+                },
+                {
+                  "children": [],
+                  "symbol": "58db9533ddb0633313d6f3a582976669fe74f6823dd56fc8d4610b911da8a761"
+                },
+                {
+                  "children": [],
+                  "symbol": "8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9"
+                },
+                {
+                  "children": [],
+                  "symbol": "a94d97d5d1ccc9347001139c0dacf7f1e0ca65cfd60f054e890e57bc8d8e82c3"
+                },
+                {
+                  "children": [],
+                  "symbol": "c73a53f520f151add58b02ecd29811d411baaed64472a4be328d966eb8f817de"
+                },
+                {
+                  "children": [],
+                  "symbol": "d2f62332b91e9dd2cc75cd4c2f6897b1a45e2df49eb985e0c23a312bed19a176"
+                }
+              ],
+              "symbol": "c55990b061c4db2cd9d0bd21df0749b37db1fdfbe3198681efa50dc4bc3be75a"
+            }
+          ]
+        }
+      }
+    },
+    "backend.projects": {
+      "id": 6,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"coverage\": [\n    {\n      \"state\": \"complete\"\n    },\n    {\n      \"completed\": 0,\n      \"lane\": \"semantic\",\n      \"state\": \"partial\",\n      \"total\": 1\n    }\n  ],\n  \"freshness\": \"current\",\n  \"kind\": \"projects\",\n  \"next\": null,\n  \"readiness\": \"indexing\",\n  \"revision\": \"8a9fbe826246b60fa0eb48fb49293148378dcd9398e59f9eeb967f656a5aec53\",\n  \"rows\": [\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project\",\n      \"declarationKind\": null,\n      \"documentation\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project\",\n      \"excerpt\": {\n        \"available\": false,\n        \"state\": \"not_captured\"\n      },\n      \"id\": \"package:66bd4facb38ecd24ec301e800c726db93bbc925f4a41e0f4495a56d772430659\",\n      \"kind\": \"project\",\n      \"name\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project\",\n      \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n      \"score\": null,\n      \"signature\": null,\n      \"source\": {\n        \"available\": false,\n        \"state\": \"not_captured\"\n      },\n      \"state\": \"ready\"\n    }\n  ]\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "coverage": [
+            {
+              "state": "complete"
+            },
+            {
+              "completed": 0,
+              "lane": "semantic",
+              "state": "partial",
+              "total": 1
+            }
+          ],
+          "freshness": "current",
+          "kind": "projects",
+          "next": null,
+          "readiness": "indexing",
+          "revision": "8a9fbe826246b60fa0eb48fb49293148378dcd9398e59f9eeb967f656a5aec53",
+          "rows": [
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project",
+              "declarationKind": null,
+              "documentation": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project",
+              "excerpt": {
+                "available": false,
+                "state": "not_captured"
+              },
+              "id": "package:66bd4facb38ecd24ec301e800c726db93bbc925f4a41e0f4495a56d772430659",
+              "kind": "project",
+              "name": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project",
+              "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+              "score": null,
+              "signature": null,
+              "source": {
+                "available": false,
+                "state": "not_captured"
+              },
+              "state": "ready"
+            }
+          ]
+        }
+      }
+    },
+    "backend.query": {
+      "id": 16,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"emitted\": 7,\n  \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n  \"rows\": [\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs\",\n      \"name\": \"lib\"\n    },\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:4::DemoWidget\",\n      \"name\": \"DemoWidget\"\n    },\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:11::new\",\n      \"name\": \"new\"\n    },\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:11::new\",\n      \"name\": \"new\"\n    },\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:14::label\",\n      \"name\": \"label\"\n    },\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:14::label\",\n      \"name\": \"label\"\n    },\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:18::find_widget\",\n      \"name\": \"find_widget\"\n    }\n  ],\n  \"terminal\": \"complete\"\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "emitted": 7,
+          "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+          "rows": [
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs",
+              "name": "lib"
+            },
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:4::DemoWidget",
+              "name": "DemoWidget"
+            },
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:11::new",
+              "name": "new"
+            },
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:11::new",
+              "name": "new"
+            },
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:14::label",
+              "name": "label"
+            },
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:14::label",
+              "name": "label"
+            },
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:18::find_widget",
+              "name": "find_widget"
+            }
+          ],
+          "terminal": "complete"
+        }
+      }
+    },
+    "backend.related": {
+      "id": 14,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"coverage\": [\n    {\n      \"state\": \"complete\"\n    },\n    {\n      \"completed\": 0,\n      \"lane\": \"semantic\",\n      \"state\": \"partial\",\n      \"total\": 1\n    }\n  ],\n  \"freshness\": \"current\",\n  \"kind\": \"graph\",\n  \"next\": null,\n  \"readiness\": \"indexing\",\n  \"revision\": \"f6148a31a7993c09a6602066bf7d91431849d502a5810bde13bc7ba1d19633e4\",\n  \"rows\": [\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:4::DemoWidget\",\n      \"declarationKind\": \"struct\",\n      \"documentation\": \"struct in src/lib.rs:4\",\n      \"excerpt\": {\n        \"available\": true,\n        \"extent\": \"complete\",\n        \"state\": \"captured\",\n        \"text\": \"pub struct DemoWidget {\\n    /// Stable identifier.\\n    pub id: u64,\\n}\"\n      },\n      \"id\": \"symbol:8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9\",\n      \"kind\": \"declaration\",\n      \"name\": \"DemoWidget\",\n      \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n      \"score\": null,\n      \"signature\": \"pub struct DemoWidget\",\n      \"source\": {\n        \"available\": true,\n        \"path\": \"src/lib.rs\",\n        \"startLine\": 4,\n        \"state\": \"captured\"\n      },\n      \"state\": \"ready\"\n    },\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs\",\n      \"declarationKind\": \"module\",\n      \"documentation\": \"rust source \u00b7 src/lib.rs\",\n      \"excerpt\": {\n        \"available\": false,\n        \"state\": \"not_captured\"\n      },\n      \"id\": \"symbol:c55990b061c4db2cd9d0bd21df0749b37db1fdfbe3198681efa50dc4bc3be75a\",\n      \"kind\": \"declaration\",\n      \"name\": \"src/lib.rs\",\n      \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n      \"score\": null,\n      \"signature\": \"rust module lib\",\n      \"source\": {\n        \"available\": true,\n        \"path\": \"src/lib.rs\",\n        \"startLine\": 1,\n        \"state\": \"captured\"\n      },\n      \"state\": \"ready\"\n    }\n  ]\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "coverage": [
+            {
+              "state": "complete"
+            },
+            {
+              "completed": 0,
+              "lane": "semantic",
+              "state": "partial",
+              "total": 1
+            }
+          ],
+          "freshness": "current",
+          "kind": "graph",
+          "next": null,
+          "readiness": "indexing",
+          "revision": "f6148a31a7993c09a6602066bf7d91431849d502a5810bde13bc7ba1d19633e4",
+          "rows": [
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:4::DemoWidget",
+              "declarationKind": "struct",
+              "documentation": "struct in src/lib.rs:4",
+              "excerpt": {
+                "available": true,
+                "extent": "complete",
+                "state": "captured",
+                "text": "pub struct DemoWidget {\n    /// Stable identifier.\n    pub id: u64,\n}"
+              },
+              "id": "symbol:8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9",
+              "kind": "declaration",
+              "name": "DemoWidget",
+              "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+              "score": null,
+              "signature": "pub struct DemoWidget",
+              "source": {
+                "available": true,
+                "path": "src/lib.rs",
+                "startLine": 4,
+                "state": "captured"
+              },
+              "state": "ready"
+            },
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs",
+              "declarationKind": "module",
+              "documentation": "rust source \u00b7 src/lib.rs",
+              "excerpt": {
+                "available": false,
+                "state": "not_captured"
+              },
+              "id": "symbol:c55990b061c4db2cd9d0bd21df0749b37db1fdfbe3198681efa50dc4bc3be75a",
+              "kind": "declaration",
+              "name": "src/lib.rs",
+              "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+              "score": null,
+              "signature": "rust module lib",
+              "source": {
+                "available": true,
+                "path": "src/lib.rs",
+                "startLine": 1,
+                "state": "captured"
+              },
+              "state": "ready"
+            }
+          ]
+        }
+      }
+    },
+    "backend.remove": {
+      "id": 23,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"accepted\": true,\n  \"completion\": \"pending\",\n  \"intent\": \"ad602ff4318a0c0bd9a6eced996531ada0d5220d59672873223ac0c657d1f873\",\n  \"message\": \"Remove request accepted. Check backend.status for source readiness.\",\n  \"operation\": \"remove\"\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "accepted": true,
+          "completion": "pending",
+          "intent": "ad602ff4318a0c0bd9a6eced996531ada0d5220d59672873223ac0c657d1f873",
+          "message": "Remove request accepted. Check backend.status for source readiness.",
+          "operation": "remove"
+        }
+      }
+    },
+    "backend.search": {
+      "id": 8,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"coverage\": [\n    {\n      \"state\": \"complete\"\n    },\n    {\n      \"completed\": 0,\n      \"lane\": \"semantic\",\n      \"state\": \"partial\",\n      \"total\": 1\n    }\n  ],\n  \"freshness\": \"current\",\n  \"kind\": \"search\",\n  \"next\": null,\n  \"readiness\": \"indexing\",\n  \"revision\": \"3b02c6158d6e3ad20f9f3c6ccf973e62778a2a2e9921babbebc2d6f75308c639\",\n  \"rows\": [\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:4::DemoWidget\",\n      \"declarationKind\": \"struct\",\n      \"documentation\": \"struct in src/lib.rs:4\",\n      \"excerpt\": {\n        \"available\": true,\n        \"extent\": \"complete\",\n        \"state\": \"captured\",\n        \"text\": \"pub struct DemoWidget {\\n    /// Stable identifier.\\n    pub id: u64,\\n}\"\n      },\n      \"id\": \"symbol:8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9\",\n      \"kind\": \"declaration\",\n      \"name\": \"DemoWidget\",\n      \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n      \"score\": null,\n      \"signature\": \"pub struct DemoWidget\",\n      \"source\": {\n        \"available\": true,\n        \"path\": \"src/lib.rs\",\n        \"startLine\": 4,\n        \"state\": \"captured\"\n      },\n      \"state\": \"ready\"\n    },\n    {\n      \"coordinate\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:18::find_widget\",\n      \"declarationKind\": \"function\",\n      \"documentation\": \"function in src/lib.rs:18\",\n      \"excerpt\": {\n        \"available\": true,\n        \"extent\": \"complete\",\n        \"state\": \"captured\",\n        \"text\": \"pub fn find_widget(id: u64) -> Option<DemoWidget> {\\n    (id != 0).then(|| DemoWidget::new(id))\\n}\"\n      },\n      \"id\": \"symbol:d2f62332b91e9dd2cc75cd4c2f6897b1a45e2df49eb985e0c23a312bed19a176\",\n      \"kind\": \"declaration\",\n      \"name\": \"find_widget\",\n      \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n      \"score\": null,\n      \"signature\": \"pub fn find_widget(id: u64) -> Option<DemoWidget>\",\n      \"source\": {\n        \"available\": true,\n        \"path\": \"src/lib.rs\",\n        \"startLine\": 18,\n        \"state\": \"captured\"\n      },\n      \"state\": \"ready\"\n    }\n  ]\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "coverage": [
+            {
+              "state": "complete"
+            },
+            {
+              "completed": 0,
+              "lane": "semantic",
+              "state": "partial",
+              "total": 1
+            }
+          ],
+          "freshness": "current",
+          "kind": "search",
+          "next": null,
+          "readiness": "indexing",
+          "revision": "3b02c6158d6e3ad20f9f3c6ccf973e62778a2a2e9921babbebc2d6f75308c639",
+          "rows": [
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:4::DemoWidget",
+              "declarationKind": "struct",
+              "documentation": "struct in src/lib.rs:4",
+              "excerpt": {
+                "available": true,
+                "extent": "complete",
+                "state": "captured",
+                "text": "pub struct DemoWidget {\n    /// Stable identifier.\n    pub id: u64,\n}"
+              },
+              "id": "symbol:8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9",
+              "kind": "declaration",
+              "name": "DemoWidget",
+              "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+              "score": null,
+              "signature": "pub struct DemoWidget",
+              "source": {
+                "available": true,
+                "path": "src/lib.rs",
+                "startLine": 4,
+                "state": "captured"
+              },
+              "state": "ready"
+            },
+            {
+              "coordinate": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project::src/lib.rs:18::find_widget",
+              "declarationKind": "function",
+              "documentation": "function in src/lib.rs:18",
+              "excerpt": {
+                "available": true,
+                "extent": "complete",
+                "state": "captured",
+                "text": "pub fn find_widget(id: u64) -> Option<DemoWidget> {\n    (id != 0).then(|| DemoWidget::new(id))\n}"
+              },
+              "id": "symbol:d2f62332b91e9dd2cc75cd4c2f6897b1a45e2df49eb985e0c23a312bed19a176",
+              "kind": "declaration",
+              "name": "find_widget",
+              "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+              "score": null,
+              "signature": "pub fn find_widget(id: u64) -> Option<DemoWidget>",
+              "source": {
+                "available": true,
+                "path": "src/lib.rs",
+                "startLine": 18,
+                "state": "captured"
+              },
+              "state": "ready"
+            }
+          ]
+        }
+      }
+    },
+    "backend.source": {
+      "id": 11,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"documentation\": \"struct in src/lib.rs:4\",\n  \"excerpt\": {\n    \"available\": true,\n    \"extent\": \"complete\",\n    \"state\": \"captured\",\n    \"text\": \"pub struct DemoWidget {\\n    /// Stable identifier.\\n    pub id: u64,\\n}\"\n  },\n  \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n  \"signature\": \"pub struct DemoWidget\",\n  \"source\": {\n    \"available\": true,\n    \"path\": \"src/lib.rs\",\n    \"startLine\": 4,\n    \"state\": \"captured\"\n  },\n  \"symbol\": \"8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9\"\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "documentation": "struct in src/lib.rs:4",
+          "excerpt": {
+            "available": true,
+            "extent": "complete",
+            "state": "captured",
+            "text": "pub struct DemoWidget {\n    /// Stable identifier.\n    pub id: u64,\n}"
+          },
+          "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+          "signature": "pub struct DemoWidget",
+          "source": {
+            "available": true,
+            "path": "src/lib.rs",
+            "startLine": 4,
+            "state": "captured"
+          },
+          "symbol": "8cca482f1e2e425fbe5186c24eb9da02ff3506d0c384374fbb5bf248ed22b9b9"
+        }
+      }
+    },
+    "backend.status": {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"capabilities\": [\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"CSharp(CSharp14)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"0b8ab5ca86d9914073c052179159850c8c065be2885168d50d898716964e4a44\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"C(C23)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"0e81e27addf855da31931288c3dae109a840335b26356e743777790614756e13\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Cxx(Cxx23)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"193707b50e5b1bcdc95a8dff0a388db7ab21fa541c2dd278045849742efa4eae\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"e3919455f011a521f8526ae8653a9316bb10488f6d5e3e8403cca399f5113ff6\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"Rust(Rust2024)\"\n      },\n      \"id\": \"19f6006015b898bd17b72f0acdb6890fc5be2e952fd7297c50b5f04f49efb845\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"e3919455f011a521f8526ae8653a9316bb10488f6d5e3e8403cca399f5113ff6\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"TypeScript(Tsx)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"27967d0a16c5c22a8d65129a481943609dfc7e77ce245fcb0e3e450e808bf467\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"f9ce5b43833b41d29da2a2bcf7a44ebf46c29ea0fe17a5986091e05c4d37a6ac\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"Python(Python314)\"\n      },\n      \"id\": \"2d2cee421ad9c1c30135b04d58e4169ad6a6d71f16190cbaf8c41efadc172cb2\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"f9ce5b43833b41d29da2a2bcf7a44ebf46c29ea0fe17a5986091e05c4d37a6ac\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"CSharp(CSharp14)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"327afb229664438052e08ea10129cb4eea38f43031ea05a95b0b62a2b36e2f4c\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"TypeScript(TypeScript)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"3356e871b50a5e585ef4a15600f6363bc7fd769fcda7d1016e1ca31bdfeb1739\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Java(Java25)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"4994ae5320943e2e3b38fdcf3990217f53f6a8aef89c9355920f815c807088b4\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"TypeScript(Tsx)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"4ab94358e43d6864c57c6a18f00b31c3b59fcbbb402924e0a806efbe35945c9d\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"0b7a09439ed1c0742c65d3ceedb56867ed1e3800402d97a59b27651b24f4d26c\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"Java(Java25)\"\n      },\n      \"id\": \"5350183626503015b4391dacc41d70fa23362352f05976e967b0798cc08c888a\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"0b7a09439ed1c0742c65d3ceedb56867ed1e3800402d97a59b27651b24f4d26c\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"77a6100a159c69374b8fa51ca44a07d613ecbd58825bab45209480473d75b62f\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"CSharp(CSharp14)\"\n      },\n      \"id\": \"549be7d1808ebc8e424dec05721b805c5fb4d0cab43aba61b545d1609c5b3a5c\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"77a6100a159c69374b8fa51ca44a07d613ecbd58825bab45209480473d75b62f\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"f0ba69d581f4cceedec15b37182612ffcc9d3f9a2b89423e7c3056ece260b788\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"TypeScript(Tsx)\"\n      },\n      \"id\": \"6edd19ed06db4e17e5eba6dfd103586f1b972bf326a6e1ec46342bbf1c785512\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"f0ba69d581f4cceedec15b37182612ffcc9d3f9a2b89423e7c3056ece260b788\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Python(Python314)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"7b4a44216d4b61e5790ef7c9c5e3cc36907697c72550da4a002e2e4be728deef\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Rust(Rust2024)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"7c8d0dfb8741c2ca76100d652c26c2ab9beab2336e179a2bc1e601706dcfce28\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"69c7622020311eda0a02684b7d98afbc76a80d3bb0a63e8705b4e7632a525f11\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"Cxx(Cxx23)\"\n      },\n      \"id\": \"8eadf3884bb9cb5d5a7d9549fc757ca016d0f20483912c00ca1e01dcfd6c0852\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"69c7622020311eda0a02684b7d98afbc76a80d3bb0a63e8705b4e7632a525f11\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Cxx(Cxx23)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"96cd127a015218a2156bda87349c76d746e992942b4dbf59f6f30107eeb1ef03\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Go(Go125)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"a2862ea33881a84af4ea4627eaa262812266d25f5d4b899d2df1e7454a2c90c6\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Python(Python314)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"aae98d32545aee5a003264b14b189564f2a647fa478cf6bc02cf0752de16e046\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"embedding\",\n        \"recipe\": null\n      },\n      \"id\": \"ac44a5bf60076378b5bbeed7b079572e42fb335cdc00b3d42a912e6a6bb00ebe\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Java(Java25)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"b5e1fc68ac0bad0953893850e856675cf442179d7eb4b8d39375a0909c837608\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"TypeScript(TypeScript)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"b7721d7f6852b07db6cc4e0398e6790db2e6ba744acfe0cf693498498d0c6416\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"f0ba69d581f4cceedec15b37182612ffcc9d3f9a2b89423e7c3056ece260b788\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"TypeScript(TypeScript)\"\n      },\n      \"id\": \"bd2d14c2aca8b4aad292c73cecde32131c69f5bf6ca5e3203284e5c8b6e85d53\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"f0ba69d581f4cceedec15b37182612ffcc9d3f9a2b89423e7c3056ece260b788\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"C(C23)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"c19d9eafd46d07611a2b1c0f08cd32fdc74b1811a76c8acf827b314c17201548\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Rust(Rust2024)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"dbee06eb522dab2bbc696c46f2079060e116f9c5b2401f6763c9ef3f1c74f339\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"69c7622020311eda0a02684b7d98afbc76a80d3bb0a63e8705b4e7632a525f11\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"C(C23)\"\n      },\n      \"id\": \"f211092f3dce9d7e99028d237e64cbf8ad1b017c095dc62c836df9f1a1855c1a\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"69c7622020311eda0a02684b7d98afbc76a80d3bb0a63e8705b4e7632a525f11\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Go(Go125)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"fd306fdea7d8fd60243db0d22ff4d3f90a657f251c24dc3c0fa7bf306651a178\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"cb7a8f316241d98097a1f665542270a09e6d0a40fa98c7a895cde2f40534a7ee\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"Go(Go125)\"\n      },\n      \"id\": \"ffa3fe6cebd40865bb2831f7561443918ae7f7f112c043ee6fafeaed57545bc9\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"cb7a8f316241d98097a1f665542270a09e6d0a40fa98c7a895cde2f40534a7ee\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    }\n  ],\n  \"coverage\": [\n    {\n      \"state\": \"complete\"\n    },\n    {\n      \"completed\": 0,\n      \"lane\": \"semantic\",\n      \"state\": \"partial\",\n      \"total\": 1\n    }\n  ],\n  \"project\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project\",\n  \"readiness\": \"indexing\",\n  \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n  \"rows\": 8,\n  \"sequence\": 1,\n  \"sourceObject\": \"8fa305e9e3cea9f2f4eb2c5179d6e0b239f6d94428928382865de979fcbb865c\",\n  \"sourceRevision\": \"4910ad5ec516a3d7c6f2b5ee9a84c985b2817bae5a1c09f2e810a726d74541fb\"\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "capabilities": [
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "CSharp(CSharp14)",
+                "task": "type_check"
+              },
+              "id": "0b8ab5ca86d9914073c052179159850c8c065be2885168d50d898716964e4a44",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "C(C23)",
+                "task": "semantic_index"
+              },
+              "id": "0e81e27addf855da31931288c3dae109a840335b26356e743777790614756e13",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "Cxx(Cxx23)",
+                "task": "type_check"
+              },
+              "id": "193707b50e5b1bcdc95a8dff0a388db7ab21fa541c2dd278045849742efa4eae",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": {
+                "kind": "structural",
+                "producer": "e3919455f011a521f8526ae8653a9316bb10488f6d5e3e8403cca399f5113ff6"
+              },
+              "family": {
+                "kind": "structural_frontend",
+                "profile": "Rust(Rust2024)"
+              },
+              "id": "19f6006015b898bd17b72f0acdb6890fc5be2e952fd7297c50b5f04f49efb845",
+              "lifecycle": "ready",
+              "manifest": "e3919455f011a521f8526ae8653a9316bb10488f6d5e3e8403cca399f5113ff6",
+              "protocolAbi": 1,
+              "target": {
+                "architecture": 1,
+                "kind": "native",
+                "os": 1
+              },
+              "unavailableReason": null
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "TypeScript(Tsx)",
+                "task": "type_check"
+              },
+              "id": "27967d0a16c5c22a8d65129a481943609dfc7e77ce245fcb0e3e450e808bf467",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": {
+                "kind": "structural",
+                "producer": "f9ce5b43833b41d29da2a2bcf7a44ebf46c29ea0fe17a5986091e05c4d37a6ac"
+              },
+              "family": {
+                "kind": "structural_frontend",
+                "profile": "Python(Python314)"
+              },
+              "id": "2d2cee421ad9c1c30135b04d58e4169ad6a6d71f16190cbaf8c41efadc172cb2",
+              "lifecycle": "ready",
+              "manifest": "f9ce5b43833b41d29da2a2bcf7a44ebf46c29ea0fe17a5986091e05c4d37a6ac",
+              "protocolAbi": 1,
+              "target": {
+                "architecture": 1,
+                "kind": "native",
+                "os": 1
+              },
+              "unavailableReason": null
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "CSharp(CSharp14)",
+                "task": "semantic_index"
+              },
+              "id": "327afb229664438052e08ea10129cb4eea38f43031ea05a95b0b62a2b36e2f4c",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "TypeScript(TypeScript)",
+                "task": "type_check"
+              },
+              "id": "3356e871b50a5e585ef4a15600f6363bc7fd769fcda7d1016e1ca31bdfeb1739",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "Java(Java25)",
+                "task": "semantic_index"
+              },
+              "id": "4994ae5320943e2e3b38fdcf3990217f53f6a8aef89c9355920f815c807088b4",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "TypeScript(Tsx)",
+                "task": "semantic_index"
+              },
+              "id": "4ab94358e43d6864c57c6a18f00b31c3b59fcbbb402924e0a806efbe35945c9d",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": {
+                "kind": "structural",
+                "producer": "0b7a09439ed1c0742c65d3ceedb56867ed1e3800402d97a59b27651b24f4d26c"
+              },
+              "family": {
+                "kind": "structural_frontend",
+                "profile": "Java(Java25)"
+              },
+              "id": "5350183626503015b4391dacc41d70fa23362352f05976e967b0798cc08c888a",
+              "lifecycle": "ready",
+              "manifest": "0b7a09439ed1c0742c65d3ceedb56867ed1e3800402d97a59b27651b24f4d26c",
+              "protocolAbi": 1,
+              "target": {
+                "architecture": 1,
+                "kind": "native",
+                "os": 1
+              },
+              "unavailableReason": null
+            },
+            {
+              "authority": {
+                "kind": "structural",
+                "producer": "77a6100a159c69374b8fa51ca44a07d613ecbd58825bab45209480473d75b62f"
+              },
+              "family": {
+                "kind": "structural_frontend",
+                "profile": "CSharp(CSharp14)"
+              },
+              "id": "549be7d1808ebc8e424dec05721b805c5fb4d0cab43aba61b545d1609c5b3a5c",
+              "lifecycle": "ready",
+              "manifest": "77a6100a159c69374b8fa51ca44a07d613ecbd58825bab45209480473d75b62f",
+              "protocolAbi": 1,
+              "target": {
+                "architecture": 1,
+                "kind": "native",
+                "os": 1
+              },
+              "unavailableReason": null
+            },
+            {
+              "authority": {
+                "kind": "structural",
+                "producer": "f0ba69d581f4cceedec15b37182612ffcc9d3f9a2b89423e7c3056ece260b788"
+              },
+              "family": {
+                "kind": "structural_frontend",
+                "profile": "TypeScript(Tsx)"
+              },
+              "id": "6edd19ed06db4e17e5eba6dfd103586f1b972bf326a6e1ec46342bbf1c785512",
+              "lifecycle": "ready",
+              "manifest": "f0ba69d581f4cceedec15b37182612ffcc9d3f9a2b89423e7c3056ece260b788",
+              "protocolAbi": 1,
+              "target": {
+                "architecture": 1,
+                "kind": "native",
+                "os": 1
+              },
+              "unavailableReason": null
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "Python(Python314)",
+                "task": "semantic_index"
+              },
+              "id": "7b4a44216d4b61e5790ef7c9c5e3cc36907697c72550da4a002e2e4be728deef",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "Rust(Rust2024)",
+                "task": "type_check"
+              },
+              "id": "7c8d0dfb8741c2ca76100d652c26c2ab9beab2336e179a2bc1e601706dcfce28",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": {
+                "kind": "structural",
+                "producer": "69c7622020311eda0a02684b7d98afbc76a80d3bb0a63e8705b4e7632a525f11"
+              },
+              "family": {
+                "kind": "structural_frontend",
+                "profile": "Cxx(Cxx23)"
+              },
+              "id": "8eadf3884bb9cb5d5a7d9549fc757ca016d0f20483912c00ca1e01dcfd6c0852",
+              "lifecycle": "ready",
+              "manifest": "69c7622020311eda0a02684b7d98afbc76a80d3bb0a63e8705b4e7632a525f11",
+              "protocolAbi": 1,
+              "target": {
+                "architecture": 1,
+                "kind": "native",
+                "os": 1
+              },
+              "unavailableReason": null
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "Cxx(Cxx23)",
+                "task": "semantic_index"
+              },
+              "id": "96cd127a015218a2156bda87349c76d746e992942b4dbf59f6f30107eeb1ef03",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "Go(Go125)",
+                "task": "semantic_index"
+              },
+              "id": "a2862ea33881a84af4ea4627eaa262812266d25f5d4b899d2df1e7454a2c90c6",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "Python(Python314)",
+                "task": "type_check"
+              },
+              "id": "aae98d32545aee5a003264b14b189564f2a647fa478cf6bc02cf0752de16e046",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "embedding",
+                "recipe": null
+              },
+              "id": "ac44a5bf60076378b5bbeed7b079572e42fb335cdc00b3d42a912e6a6bb00ebe",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "Java(Java25)",
+                "task": "type_check"
+              },
+              "id": "b5e1fc68ac0bad0953893850e856675cf442179d7eb4b8d39375a0909c837608",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "TypeScript(TypeScript)",
+                "task": "semantic_index"
+              },
+              "id": "b7721d7f6852b07db6cc4e0398e6790db2e6ba744acfe0cf693498498d0c6416",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": {
+                "kind": "structural",
+                "producer": "f0ba69d581f4cceedec15b37182612ffcc9d3f9a2b89423e7c3056ece260b788"
+              },
+              "family": {
+                "kind": "structural_frontend",
+                "profile": "TypeScript(TypeScript)"
+              },
+              "id": "bd2d14c2aca8b4aad292c73cecde32131c69f5bf6ca5e3203284e5c8b6e85d53",
+              "lifecycle": "ready",
+              "manifest": "f0ba69d581f4cceedec15b37182612ffcc9d3f9a2b89423e7c3056ece260b788",
+              "protocolAbi": 1,
+              "target": {
+                "architecture": 1,
+                "kind": "native",
+                "os": 1
+              },
+              "unavailableReason": null
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "C(C23)",
+                "task": "type_check"
+              },
+              "id": "c19d9eafd46d07611a2b1c0f08cd32fdc74b1811a76c8acf827b314c17201548",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "Rust(Rust2024)",
+                "task": "semantic_index"
+              },
+              "id": "dbee06eb522dab2bbc696c46f2079060e116f9c5b2401f6763c9ef3f1c74f339",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": {
+                "kind": "structural",
+                "producer": "69c7622020311eda0a02684b7d98afbc76a80d3bb0a63e8705b4e7632a525f11"
+              },
+              "family": {
+                "kind": "structural_frontend",
+                "profile": "C(C23)"
+              },
+              "id": "f211092f3dce9d7e99028d237e64cbf8ad1b017c095dc62c836df9f1a1855c1a",
+              "lifecycle": "ready",
+              "manifest": "69c7622020311eda0a02684b7d98afbc76a80d3bb0a63e8705b4e7632a525f11",
+              "protocolAbi": 1,
+              "target": {
+                "architecture": 1,
+                "kind": "native",
+                "os": 1
+              },
+              "unavailableReason": null
+            },
+            {
+              "authority": null,
+              "family": {
+                "kind": "language_oracle",
+                "profile": "Go(Go125)",
+                "task": "type_check"
+              },
+              "id": "fd306fdea7d8fd60243db0d22ff4d3f90a657f251c24dc3c0fa7bf306651a178",
+              "lifecycle": "unavailable",
+              "manifest": null,
+              "protocolAbi": null,
+              "target": null,
+              "unavailableReason": "no_manifest"
+            },
+            {
+              "authority": {
+                "kind": "structural",
+                "producer": "cb7a8f316241d98097a1f665542270a09e6d0a40fa98c7a895cde2f40534a7ee"
+              },
+              "family": {
+                "kind": "structural_frontend",
+                "profile": "Go(Go125)"
+              },
+              "id": "ffa3fe6cebd40865bb2831f7561443918ae7f7f112c043ee6fafeaed57545bc9",
+              "lifecycle": "ready",
+              "manifest": "cb7a8f316241d98097a1f665542270a09e6d0a40fa98c7a895cde2f40534a7ee",
+              "protocolAbi": 1,
+              "target": {
+                "architecture": 1,
+                "kind": "native",
+                "os": 1
+              },
+              "unavailableReason": null
+            }
+          ],
+          "coverage": [
+            {
+              "state": "complete"
+            },
+            {
+              "completed": 0,
+              "lane": "semantic",
+              "state": "partial",
+              "total": 1
+            }
+          ],
+          "project": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project",
+          "readiness": "indexing",
+          "revision": "0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a",
+          "rows": 8,
+          "sequence": 1,
+          "sourceObject": "8fa305e9e3cea9f2f4eb2c5179d6e0b239f6d94428928382865de979fcbb865c",
+          "sourceRevision": "4910ad5ec516a3d7c6f2b5ee9a84c985b2817bae5a1c09f2e810a726d74541fb"
+        }
+      }
+    },
+    "backend.surface": {
+      "id": 17,
+      "jsonrpc": "2.0",
+      "result": {
+        "content": [
+          {
+            "text": "{\n  \"surface\": {\n    \"data\": [],\n    \"result\": \"subscriptions\"\n  }\n}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "structuredContent": {
+          "surface": {
+            "data": [],
+            "result": "subscriptions"
+          }
+        }
+      }
+    },
+    "initialize": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "prompts": {
+            "listChanged": false
+          },
+          "resources": {
+            "listChanged": false,
+            "subscribe": false
+          },
+          "tools": {
+            "listChanged": false
+          }
+        },
+        "instructions": "An index request is submitted for the current project at startup. Check backend.status for source readiness before querying. Use backend.search to find declarations, then backend.document or backend.graph with the returned coordinate. Every result is pinned to an immutable local revision.",
+        "protocolVersion": "2025-11-25",
+        "serverInfo": {
+          "name": "backend",
+          "title": "Backend Code Intelligence",
+          "version": "0.1.0"
+        }
+      }
+    },
+    "ping": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {}
+    },
+    "prompts/get": {
+      "id": 22,
+      "jsonrpc": "2.0",
+      "result": {
+        "description": "Explore the current immutable code index.",
+        "messages": [
+          {
+            "content": {
+              "text": "Explore DemoWidget in the indexed project. Search broadly, open the most relevant declarations, inspect their graph neighbors, and ground the answer in revision 0e4b8f873ccc.",
+              "type": "text"
+            },
+            "role": "user"
+          }
+        ]
+      }
+    },
+    "prompts/list": {
+      "id": 21,
+      "jsonrpc": "2.0",
+      "result": {
+        "prompts": [
+          {
+            "arguments": [
+              {
+                "description": "Feature or concept to investigate.",
+                "name": "query",
+                "required": false
+              }
+            ],
+            "description": "Search, read, and trace declarations from one immutable revision.",
+            "name": "backend.explore",
+            "title": "Explore indexed code"
+          }
+        ]
+      }
+    },
+    "resources/list": {
+      "id": 18,
+      "jsonrpc": "2.0",
+      "result": {
+        "resources": [
+          {
+            "description": "Immutable revision, source readiness, honest lane coverage, project count, and declaration count.",
+            "mimeType": "application/json",
+            "name": "current-workspace",
+            "title": "Current indexed workspace",
+            "uri": "backend://workspace/current"
+          },
+          {
+            "description": "Version-pinned project outline.",
+            "mimeType": "application/json",
+            "name": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project",
+            "title": "/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project",
+            "uri": "backend://outline/%2Fprivate%2Fvar%2Ffolders%2Fvf%2Fqpw72bpn65g0y01bnbwf90n80000gn%2FT%2Fbackend-axum-cold-xolu5h5v%2Fproject"
+          }
+        ]
+      }
+    },
+    "resources/read": {
+      "id": 20,
+      "jsonrpc": "2.0",
+      "result": {
+        "contents": [
+          {
+            "mimeType": "application/json",
+            "text": "{\n  \"capabilities\": [\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"CSharp(CSharp14)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"0b8ab5ca86d9914073c052179159850c8c065be2885168d50d898716964e4a44\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"C(C23)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"0e81e27addf855da31931288c3dae109a840335b26356e743777790614756e13\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Cxx(Cxx23)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"193707b50e5b1bcdc95a8dff0a388db7ab21fa541c2dd278045849742efa4eae\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"e3919455f011a521f8526ae8653a9316bb10488f6d5e3e8403cca399f5113ff6\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"Rust(Rust2024)\"\n      },\n      \"id\": \"19f6006015b898bd17b72f0acdb6890fc5be2e952fd7297c50b5f04f49efb845\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"e3919455f011a521f8526ae8653a9316bb10488f6d5e3e8403cca399f5113ff6\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"TypeScript(Tsx)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"27967d0a16c5c22a8d65129a481943609dfc7e77ce245fcb0e3e450e808bf467\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"f9ce5b43833b41d29da2a2bcf7a44ebf46c29ea0fe17a5986091e05c4d37a6ac\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"Python(Python314)\"\n      },\n      \"id\": \"2d2cee421ad9c1c30135b04d58e4169ad6a6d71f16190cbaf8c41efadc172cb2\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"f9ce5b43833b41d29da2a2bcf7a44ebf46c29ea0fe17a5986091e05c4d37a6ac\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"CSharp(CSharp14)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"327afb229664438052e08ea10129cb4eea38f43031ea05a95b0b62a2b36e2f4c\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"TypeScript(TypeScript)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"3356e871b50a5e585ef4a15600f6363bc7fd769fcda7d1016e1ca31bdfeb1739\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Java(Java25)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"4994ae5320943e2e3b38fdcf3990217f53f6a8aef89c9355920f815c807088b4\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"TypeScript(Tsx)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"4ab94358e43d6864c57c6a18f00b31c3b59fcbbb402924e0a806efbe35945c9d\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"0b7a09439ed1c0742c65d3ceedb56867ed1e3800402d97a59b27651b24f4d26c\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"Java(Java25)\"\n      },\n      \"id\": \"5350183626503015b4391dacc41d70fa23362352f05976e967b0798cc08c888a\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"0b7a09439ed1c0742c65d3ceedb56867ed1e3800402d97a59b27651b24f4d26c\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"77a6100a159c69374b8fa51ca44a07d613ecbd58825bab45209480473d75b62f\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"CSharp(CSharp14)\"\n      },\n      \"id\": \"549be7d1808ebc8e424dec05721b805c5fb4d0cab43aba61b545d1609c5b3a5c\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"77a6100a159c69374b8fa51ca44a07d613ecbd58825bab45209480473d75b62f\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"f0ba69d581f4cceedec15b37182612ffcc9d3f9a2b89423e7c3056ece260b788\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"TypeScript(Tsx)\"\n      },\n      \"id\": \"6edd19ed06db4e17e5eba6dfd103586f1b972bf326a6e1ec46342bbf1c785512\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"f0ba69d581f4cceedec15b37182612ffcc9d3f9a2b89423e7c3056ece260b788\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Python(Python314)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"7b4a44216d4b61e5790ef7c9c5e3cc36907697c72550da4a002e2e4be728deef\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Rust(Rust2024)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"7c8d0dfb8741c2ca76100d652c26c2ab9beab2336e179a2bc1e601706dcfce28\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"69c7622020311eda0a02684b7d98afbc76a80d3bb0a63e8705b4e7632a525f11\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"Cxx(Cxx23)\"\n      },\n      \"id\": \"8eadf3884bb9cb5d5a7d9549fc757ca016d0f20483912c00ca1e01dcfd6c0852\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"69c7622020311eda0a02684b7d98afbc76a80d3bb0a63e8705b4e7632a525f11\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Cxx(Cxx23)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"96cd127a015218a2156bda87349c76d746e992942b4dbf59f6f30107eeb1ef03\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Go(Go125)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"a2862ea33881a84af4ea4627eaa262812266d25f5d4b899d2df1e7454a2c90c6\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Python(Python314)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"aae98d32545aee5a003264b14b189564f2a647fa478cf6bc02cf0752de16e046\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"embedding\",\n        \"recipe\": null\n      },\n      \"id\": \"ac44a5bf60076378b5bbeed7b079572e42fb335cdc00b3d42a912e6a6bb00ebe\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Java(Java25)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"b5e1fc68ac0bad0953893850e856675cf442179d7eb4b8d39375a0909c837608\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"TypeScript(TypeScript)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"b7721d7f6852b07db6cc4e0398e6790db2e6ba744acfe0cf693498498d0c6416\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"f0ba69d581f4cceedec15b37182612ffcc9d3f9a2b89423e7c3056ece260b788\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"TypeScript(TypeScript)\"\n      },\n      \"id\": \"bd2d14c2aca8b4aad292c73cecde32131c69f5bf6ca5e3203284e5c8b6e85d53\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"f0ba69d581f4cceedec15b37182612ffcc9d3f9a2b89423e7c3056ece260b788\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"C(C23)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"c19d9eafd46d07611a2b1c0f08cd32fdc74b1811a76c8acf827b314c17201548\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Rust(Rust2024)\",\n        \"task\": \"semantic_index\"\n      },\n      \"id\": \"dbee06eb522dab2bbc696c46f2079060e116f9c5b2401f6763c9ef3f1c74f339\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"69c7622020311eda0a02684b7d98afbc76a80d3bb0a63e8705b4e7632a525f11\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"C(C23)\"\n      },\n      \"id\": \"f211092f3dce9d7e99028d237e64cbf8ad1b017c095dc62c836df9f1a1855c1a\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"69c7622020311eda0a02684b7d98afbc76a80d3bb0a63e8705b4e7632a525f11\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    },\n    {\n      \"authority\": null,\n      \"family\": {\n        \"kind\": \"language_oracle\",\n        \"profile\": \"Go(Go125)\",\n        \"task\": \"type_check\"\n      },\n      \"id\": \"fd306fdea7d8fd60243db0d22ff4d3f90a657f251c24dc3c0fa7bf306651a178\",\n      \"lifecycle\": \"unavailable\",\n      \"manifest\": null,\n      \"protocolAbi\": null,\n      \"target\": null,\n      \"unavailableReason\": \"no_manifest\"\n    },\n    {\n      \"authority\": {\n        \"kind\": \"structural\",\n        \"producer\": \"cb7a8f316241d98097a1f665542270a09e6d0a40fa98c7a895cde2f40534a7ee\"\n      },\n      \"family\": {\n        \"kind\": \"structural_frontend\",\n        \"profile\": \"Go(Go125)\"\n      },\n      \"id\": \"ffa3fe6cebd40865bb2831f7561443918ae7f7f112c043ee6fafeaed57545bc9\",\n      \"lifecycle\": \"ready\",\n      \"manifest\": \"cb7a8f316241d98097a1f665542270a09e6d0a40fa98c7a895cde2f40534a7ee\",\n      \"protocolAbi\": 1,\n      \"target\": {\n        \"architecture\": 1,\n        \"kind\": \"native\",\n        \"os\": 1\n      },\n      \"unavailableReason\": null\n    }\n  ],\n  \"coverage\": [\n    {\n      \"state\": \"complete\"\n    },\n    {\n      \"completed\": 0,\n      \"lane\": \"semantic\",\n      \"state\": \"partial\",\n      \"total\": 1\n    }\n  ],\n  \"project\": \"/private/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/backend-axum-cold-xolu5h5v/project\",\n  \"readiness\": \"indexing\",\n  \"revision\": \"0e4b8f873ccc0cf171e048544b03b6b25408ffa82ad61a7a5421496da4ccaa8a\",\n  \"rows\": 8,\n  \"sequence\": 1,\n  \"sourceObject\": \"8fa305e9e3cea9f2f4eb2c5179d6e0b239f6d94428928382865de979fcbb865c\",\n  \"sourceRevision\": \"4910ad5ec516a3d7c6f2b5ee9a84c985b2817bae5a1c09f2e810a726d74541fb\"\n}",
+            "uri": "backend://workspace/current"
+          }
+        ]
+      }
+    },
+    "resources/templates/list": {
+      "id": 19,
+      "jsonrpc": "2.0",
+      "result": {
+        "resourceTemplates": [
+          {
+            "description": "A version-pinned declaration selected by an exact coordinate.",
+            "mimeType": "application/json",
+            "name": "declaration-document",
+            "title": "Declaration document",
+            "uriTemplate": "backend://document/{coordinate}"
+          },
+          {
+            "description": "A version-pinned outline selected by project path.",
+            "mimeType": "application/json",
+            "name": "project-outline",
+            "title": "Project outline",
+            "uriTemplate": "backend://outline/{path}"
+          }
+        ]
+      }
+    },
+    "session.after_delete": {
+      "error": {
+        "code": -32001,
+        "message": "MCP session not found"
+      },
+      "id": null,
+      "jsonrpc": "2.0"
+    },
+    "session.delete": null,
+    "tools/list": {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "result": {
+        "tools": [
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+              "title": "Workspace status"
+            },
+            "description": "Read the current immutable revision, source readiness, lane coverage, and index counts.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {},
+              "required": [],
+              "type": "object"
+            },
+            "name": "backend.status",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Workspace status"
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+              "title": "Indexed projects"
+            },
+            "description": "List projects in the current workspace revision.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {},
+              "required": [],
+              "type": "object"
+            },
+            "name": "backend.projects",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Indexed projects"
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+              "title": "Search code"
+            },
+            "description": "Search declaration names, signatures, and documentation. Returned coordinates can be passed directly to other tools.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "limit": {
+                  "default": 50,
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "query": {
+                  "description": "Text to find.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "query"
+              ],
+              "type": "object"
+            },
+            "name": "backend.search",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Search code"
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+              "title": "Find names"
+            },
+            "description": "Find declaration names in the current immutable revision.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "limit": {
+                  "default": 50,
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "query": {
+                  "description": "Optional name prefix or substring.",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "type": "object"
+            },
+            "name": "backend.names",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Find names"
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+              "title": "Read declaration"
+            },
+            "description": "Read the signature and documentation for an exact coordinate returned by search.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "coordinate": {
+                  "description": "Exact declaration coordinate.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "coordinate"
+              ],
+              "type": "object"
+            },
+            "name": "backend.document",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Read declaration"
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+              "title": "Read source"
+            },
+            "description": "Read captured source for an exact declaration coordinate returned by search.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "coordinate": {
+                  "description": "Exact declaration coordinate.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "coordinate"
+              ],
+              "type": "object"
+            },
+            "name": "backend.source",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Read source"
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+              "title": "Project outline"
+            },
+            "description": "Read the declaration tree for a project path.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "description": "Project path; defaults to the active project.",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "type": "object"
+            },
+            "name": "backend.outline",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Project outline"
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+              "title": "Declaration graph"
+            },
+            "description": "Read the bounded graph neighborhood for an exact declaration coordinate.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "coordinate": {
+                  "description": "Exact declaration coordinate.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "coordinate"
+              ],
+              "type": "object"
+            },
+            "name": "backend.graph",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Declaration graph"
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+              "title": "Related declarations"
+            },
+            "description": "Read incoming and outgoing semantic relations for an exact declaration coordinate.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "coordinate": {
+                  "description": "Exact declaration coordinate.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "coordinate"
+              ],
+              "type": "object"
+            },
+            "name": "backend.related",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Related declarations"
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+              "title": "Compare package versions"
+            },
+            "description": "Compare declarations from two indexed package versions using compiler semantic identity and payloads.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "from": {
+                  "description": "Older pinned package URL or exact local package label.",
+                  "type": "string"
+                },
+                "to": {
+                  "description": "Newer pinned package URL or exact local package label.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "from",
+                "to"
+              ],
+              "type": "object"
+            },
+            "name": "backend.diff",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Compare package versions"
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": true,
+              "title": "Query the code graph"
+            },
+            "description": "Run a typed Trustfall query over the current immutable revision. Starting edges are Item, Project, and Declaration; fields include coordinate, name, kind, signature, documentation, revision, project, parent, children, related, and sameProject.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "limit": {
+                  "default": 50,
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "query": {
+                  "description": "Trustfall query text.",
+                  "type": "string"
+                },
+                "variables": {
+                  "additionalProperties": true,
+                  "description": "Scalar or list query variables.",
+                  "type": "object"
+                }
+              },
+              "required": [
+                "query"
+              ],
+              "type": "object"
+            },
+            "name": "backend.query",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Query the code graph"
+          },
+          {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": false,
+              "title": "Refresh project index"
+            },
+            "description": "Submit an incremental index request. The accepted intent is returned immediately; use backend.status to observe source readiness.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "description": "Project path; defaults to the active project.",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "type": "object"
+            },
+            "name": "backend.index",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Refresh project index"
+          },
+          {
+            "annotations": {
+              "destructiveHint": true,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": false,
+              "title": "Remove project"
+            },
+            "description": "Submit a request to remove a project and its file frontier. The accepted intent is returned immediately.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "description": "Project path; defaults to the active project.",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "type": "object"
+            },
+            "name": "backend.remove",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Remove project"
+          },
+          {
+            "annotations": {
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false,
+              "readOnlyHint": false,
+              "title": "Product surface"
+            },
+            "description": "Execute any daemon-owned typed product operation. The command is the tagged SurfaceCommand object; parsing and admission reject unknown operations, fields, identities, and bounds.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "command": {
+                  "additionalProperties": true,
+                  "description": "A tagged SurfaceCommand object with an operation field and its typed operands.",
+                  "properties": {
+                    "operation": {
+                      "enum": [
+                        "read",
+                        "diff",
+                        "explore",
+                        "package",
+                        "dependents",
+                        "owner",
+                        "index-search",
+                        "package-versions",
+                        "semantic-versions",
+                        "select-semantic-version",
+                        "package-profile",
+                        "subscribe",
+                        "unsubscribe",
+                        "subscriptions",
+                        "releases",
+                        "projects",
+                        "project-create",
+                        "project-delete",
+                        "project-add",
+                        "project-remove",
+                        "project-sync",
+                        "tree",
+                        "tree-open",
+                        "tree-close"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "name": "backend.surface",
+            "outputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Product surface"
+          }
+        ]
+      }
+    }
+  },
+  "runKind": "cold durable workspace; binaries prebuilt",
+  "supersededBy": "mcp-axum-command-demo-2026-09-13.json",
+  "timing": {
+    "indexObservedRowsMs": 212.852,
+    "serviceReadyMs": 1197.917,
+    "statusPolls": 1
+  },
+  "transport": {
+    "bearerProtected": true,
+    "implementation": "Axum 0.8 HTTP/1.1",
+    "maxInFlight": 64,
+    "maxRequestBytes": 4194304,
+    "maxSessions": 64,
+    "sessionHeader": true,
+    "url": "http://127.0.0.1:<ephemeral>/mcp"
+  }
+}

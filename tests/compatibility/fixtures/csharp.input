@@ -1,0 +1,5 @@
+source=class C{}
+toolchain=dotnet-v2
+config=roslyn-options:net8
+negative=reference-assemblies/optional
+fact=roslyn-image

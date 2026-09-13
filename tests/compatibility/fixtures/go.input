@@ -1,0 +1,5 @@
+source=package p
+toolchain=go-v2
+config=tags:linux
+negative=vendor/optional
+fact=go-authority-image

@@ -1,0 +1,330 @@
+{
+  "source_count": 54,
+  "target_count": 28,
+  "mapping": [
+    {
+      "source": "agent-control-dispatch",
+      "manifest": "/Users/mileswirht/Downloads/backend/tools/control/Cargo.toml",
+      "target": "tools/control (non-product)",
+      "rule": "Repository-agent work ledger and exact-base dispatch adapter; shares backend-version identities and backend-store publication but has zero runtime product dependents and is excluded from the 28-package product DAG."
+    },
+    {
+      "source": "compiler-application",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/application/Cargo.toml",
+      "target": "engine",
+      "rule": "Workspace/compiler service composition; remove independent one-slot owner after shared scheduler cutover."
+    },
+    {
+      "source": "compiler-driver",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/driver/Cargo.toml",
+      "target": "compile + frontends/*",
+      "rule": "Shared extraction/coverage/manifest contracts in compile; authority-specific projections in leaves; remove all-native imports."
+    },
+    {
+      "source": "compiler-ir",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/ir/Cargo.toml",
+      "target": "semantic",
+      "rule": "Keep semantic/type kernels and owned/wire compatibility readers; replace mandatory whole-image ownership with pinned relations."
+    },
+    {
+      "source": "compiler-ir-vocabulary",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/ir-vocabulary/Cargo.toml",
+      "target": "semantic",
+      "rule": "Merge canonical semantic schema next to generated lanes/codecs; do not create another vocabulary crate."
+    },
+    {
+      "source": "compiler-languages",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/languages/Cargo.toml",
+      "target": "compile",
+      "rule": "Delete umbrella crate; retain only genuinely common authority metadata/contracts as modules."
+    },
+    {
+      "source": "compiler-languages-clang",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/languages/clang/Cargo.toml",
+      "target": "frontends/clang",
+      "rule": "Preserve native authority/language semantics and oracle fixtures; implement shared manifest/session/scoped-delta contracts."
+    },
+    {
+      "source": "compiler-languages-csharp",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/languages/csharp/Cargo.toml",
+      "target": "frontends/csharp",
+      "rule": "Preserve native authority/language semantics and oracle fixtures; implement shared manifest/session/scoped-delta contracts."
+    },
+    {
+      "source": "compiler-languages-go",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/languages/go/Cargo.toml",
+      "target": "frontends/go",
+      "rule": "Preserve native authority/language semantics and oracle fixtures; implement shared manifest/session/scoped-delta contracts."
+    },
+    {
+      "source": "compiler-languages-java",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/languages/java/Cargo.toml",
+      "target": "frontends/java",
+      "rule": "Preserve native authority/language semantics and oracle fixtures; implement shared manifest/session/scoped-delta contracts."
+    },
+    {
+      "source": "compiler-languages-python",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/languages/python/Cargo.toml",
+      "target": "frontends/python",
+      "rule": "Preserve native authority/language semantics and oracle fixtures; implement shared manifest/session/scoped-delta contracts."
+    },
+    {
+      "source": "compiler-languages-rust",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/languages/rust/Cargo.toml",
+      "target": "frontends/rust",
+      "rule": "Preserve native authority/language semantics and oracle fixtures; implement shared manifest/session/scoped-delta contracts."
+    },
+    {
+      "source": "compiler-languages-typescript",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/languages/typescript/Cargo.toml",
+      "target": "frontends/typescript",
+      "rule": "Preserve native authority/language semantics and oracle fixtures; implement shared manifest/session/scoped-delta contracts."
+    },
+    {
+      "source": "compiler-publication",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/publication/Cargo.toml",
+      "target": "semantic + store + engine",
+      "rule": "Produce complete semantic fact transition; generic atomic publication in store; composition/fencing in engine. Remove driver dependency."
+    },
+    {
+      "source": "compiler-registry",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/registry/Cargo.toml",
+      "target": "compile + engine",
+      "rule": "Pure authority descriptors/contracts below leaves; active provider registration/composition only in engine."
+    },
+    {
+      "source": "compiler-vocabulary",
+      "manifest": "/Users/mileswirht/Downloads/backend/compiler/vocabulary/Cargo.toml",
+      "target": "semantic + compile",
+      "rule": "Portable provenance/language/schema facts in semantic; authority/discovery policy in compile."
+    },
+    {
+      "source": "heart-adaptive",
+      "manifest": "/Users/mileswirht/Downloads/backend/heart/adaptive/Cargo.toml",
+      "target": "execution",
+      "rule": "Retain pure resource/locality policy strengths; extend to joint refresh/placement costs."
+    },
+    {
+      "source": "heart-frame",
+      "manifest": "/Users/mileswirht/Downloads/backend/heart/frame/Cargo.toml",
+      "target": "version + replication",
+      "rule": "Generic validated frame contract in version; actual transport framing/negotiation in replication."
+    },
+    {
+      "source": "heart-hydration",
+      "manifest": "/Users/mileswirht/Downloads/backend/heart/hydration/Cargo.toml",
+      "target": "store + replication",
+      "rule": "Local decode/residency in store; missing immutable object transfer in replication; no duplicated hydration authority."
+    },
+    {
+      "source": "heart-identity",
+      "manifest": "/Users/mileswirht/Downloads/backend/heart/identity/Cargo.toml",
+      "target": "version",
+      "rule": "Domain-separated logical/object/state/workspace identities, preserving distinction from packs and attempts."
+    },
+    {
+      "source": "heart-memory",
+      "manifest": "/Users/mileswirht/Downloads/backend/heart/memory/Cargo.toml",
+      "target": "store + flow",
+      "rule": "Immutable owner/pin and pool mechanics in store; mutable operator scratch/batch leasing in flow."
+    },
+    {
+      "source": "heart-object",
+      "manifest": "/Users/mileswirht/Downloads/backend/heart/object/Cargo.toml",
+      "target": "version + store",
+      "rule": "Logical object descriptors in version; admission/residency/pin implementation in store."
+    },
+    {
+      "source": "heart-object-pack",
+      "manifest": "/Users/mileswirht/Downloads/backend/heart/object-pack/Cargo.toml",
+      "target": "store",
+      "rule": "One typed columnar pack codec/location/admission lifecycle."
+    },
+    {
+      "source": "heart-observe",
+      "manifest": "/Users/mileswirht/Downloads/backend/heart/observe/Cargo.toml",
+      "target": "version + execution",
+      "rule": "Small observation value contracts in version; resource/work instrumentation in execution; no standalone crate."
+    },
+    {
+      "source": "heart-root",
+      "manifest": "/Users/mileswirht/Downloads/backend/heart/root/Cargo.toml",
+      "target": "store",
+      "rule": "Persistent ordered map, exact root diff and atomic WorkspaceRoot; retain linear diff as oracle/import fallback."
+    },
+    {
+      "source": "heart-schema",
+      "manifest": "/Users/mileswirht/Downloads/backend/heart/schema/Cargo.toml",
+      "target": "version",
+      "rule": "Canonical value/batch schema and complete encoding contracts."
+    },
+    {
+      "source": "heart-telemetry",
+      "manifest": "/Users/mileswirht/Downloads/backend/heart/telemetry/Cargo.toml",
+      "target": "engine",
+      "rule": "Subscriber/export wiring and product observability; lower crates emit structured observations without upward imports."
+    },
+    {
+      "source": "heart-view",
+      "manifest": "/Users/mileswirht/Downloads/backend/heart/view/Cargo.toml",
+      "target": "store",
+      "rule": "Pinned physical object view; product ViewRoot belongs separately to library/flow."
+    },
+    {
+      "source": "interface-cli",
+      "manifest": "/Users/mileswirht/Downloads/backend/interface/cli/Cargo.toml",
+      "target": "apps/cli + client + runtime",
+      "rule": "CLI syntax/output over the shared typed client and zero-setup runtime discovery; no native compile owner."
+    },
+    {
+      "source": "interface-core",
+      "manifest": "/Users/mileswirht/Downloads/backend/interface/core/Cargo.toml",
+      "target": "library + engine",
+      "rule": "One portable product command/reply contract in library; concrete service composition in engine; remove competing facade."
+    },
+    {
+      "source": "interface-documents",
+      "manifest": "/Users/mileswirht/Downloads/backend/interface/documents/Cargo.toml",
+      "target": "library",
+      "rule": "Versioned document fragment recipes and borrowed projections."
+    },
+    {
+      "source": "interface-gui",
+      "manifest": "/Users/mileswirht/Downloads/backend/interface/gui/Cargo.toml",
+      "target": "apps/desktop + client + runtime",
+      "rule": "UI rendering over the shared typed client, zero-setup discovery, and bounded ViewRoot subscriptions; no library-wide refresh authority."
+    },
+    {
+      "source": "interface-identity",
+      "manifest": "/Users/mileswirht/Downloads/backend/interface/identity/Cargo.toml",
+      "target": "library + semantic",
+      "rule": "Product address/selection identity in library; semantic logical declaration keys in semantic."
+    },
+    {
+      "source": "interface-library",
+      "manifest": "/Users/mileswirht/Downloads/backend/interface/library/Cargo.toml",
+      "target": "library + engine",
+      "rule": "Implement durable intent/query recipes in library and their concrete engine execution; preserve intended command model."
+    },
+    {
+      "source": "interface-mcp",
+      "manifest": "/Users/mileswirht/Downloads/backend/interface/mcp/Cargo.toml",
+      "target": "apps/mcp + client + runtime",
+      "rule": "MCP protocol over the shared typed client and zero-setup discovery; share query/command semantics."
+    },
+    {
+      "source": "interface-protocol",
+      "manifest": "/Users/mileswirht/Downloads/backend/interface/protocol/Cargo.toml",
+      "target": "library + client + replication",
+      "rule": "Portable product DTOs in library, one client session owner, and transport/wire mechanics in replication."
+    },
+    {
+      "source": "interface-search",
+      "manifest": "/Users/mileswirht/Downloads/backend/interface/search/Cargo.toml",
+      "target": "library + semantic",
+      "rule": "Product query/freshness and semantic ranking/operator recipes."
+    },
+    {
+      "source": "server-index-acquire",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/acquire/Cargo.toml",
+      "target": "compile + replication",
+      "rule": "Package/source acquisition and input manifests in compile; immutable transfer in replication; effects executed by engine."
+    },
+    {
+      "source": "server-index-build",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/build/Cargo.toml",
+      "target": "flow + semantic",
+      "rule": "Consolidation/arrangement construction plus semantic projection kernels; remove private build lifecycle."
+    },
+    {
+      "source": "server-index-catalog",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/catalog/Cargo.toml",
+      "target": "engine + extensions/turso + library + store",
+      "rule": "Three bounded catalog relations and selection live in engine/library; Turso transactionally projects selected roots without becoming an authority."
+    },
+    {
+      "source": "server-index-core",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/core/Cargo.toml",
+      "target": "flow + semantic",
+      "rule": "Generic retained arrangements in flow; semantic relation/recipe definitions in semantic."
+    },
+    {
+      "source": "server-index-graph-vector",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/graph-vector/Cargo.toml",
+      "target": "flow + semantic",
+      "rule": "Shared graph arrangements, vector facts and versioned ANN overlay/barrier."
+    },
+    {
+      "source": "server-index-ingest",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/ingest/Cargo.toml",
+      "target": "compile + semantic + flow",
+      "rule": "Complete fact delta producer, semantic validation and shared batch admission; no downstream repeated whole-image diff."
+    },
+    {
+      "source": "server-index-publish",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/publish/Cargo.toml",
+      "target": "store + flow",
+      "rule": "Shared atomic result admission and input-bound view checkpoint; remove independent snapshot authority."
+    },
+    {
+      "source": "server-index-qdrant",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/qdrant/Cargo.toml",
+      "target": "extensions/qdrant",
+      "rule": "Optional authenticated remote vector provider; no independent canonical identity."
+    },
+    {
+      "source": "server-index-retrieval",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/retrieval/Cargo.toml",
+      "target": "semantic + library",
+      "rule": "Semantic query operators and product query contracts/ranking/freshness."
+    },
+    {
+      "source": "server-index-routing",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/routing/Cargo.toml",
+      "target": "execution + replication",
+      "rule": "Cost-based placement/attempt assignment in execution; version-bound request/reply wire and transfers in replication."
+    },
+    {
+      "source": "server-index-tantivy",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/tantivy/Cargo.toml",
+      "target": "extensions/tantivy",
+      "rule": "Optional specialized lexical materialization/query backend under shared roots and coverage."
+    },
+    {
+      "source": "server-index-trustfall",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/trustfall/Cargo.toml",
+      "target": "extensions/trustfall",
+      "rule": "Query-language adapter over semantic/flow contracts."
+    },
+    {
+      "source": "server-index-vocabulary",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/index/vocabulary/Cargo.toml",
+      "target": "semantic",
+      "rule": "Index/query fact schemas colocated with semantic meaning; common root IDs come from version."
+    },
+    {
+      "source": "server-journal",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/journal/Cargo.toml",
+      "target": "store",
+      "rule": "Durable commit/effect receipt journal and recovery sequence."
+    },
+    {
+      "source": "server-operation",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/operation/Cargo.toml",
+      "target": "flow",
+      "rule": "Lending batch/trace cursors and typed operator state; eliminate separate stream lifecycle."
+    },
+    {
+      "source": "server-runtime",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/runtime/Cargo.toml",
+      "target": "execution + runtime",
+      "rule": "Admission, cancellation, fenced attempts, workers, resource accounting, waiter laws, and zero-setup local runtime discovery."
+    },
+    {
+      "source": "server-workflow",
+      "manifest": "/Users/mileswirht/Downloads/backend/server/workflow/Cargo.toml",
+      "target": "store + execution + engine",
+      "rule": "Generic durable reducer/receipt in store, physical retry/cancel in execution, domain effect wiring in engine."
+    }
+  ]
+}

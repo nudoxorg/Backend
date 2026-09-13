@@ -1,0 +1,28 @@
+[package]
+name = "server-index-routing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blake3.workspace = true
+server-index-core = { path = "../server-index-core" }
+server-index-vocabulary = { path = "../server-index-vocabulary" }
+thiserror.workspace = true
+
+[dev-dependencies]
+compiler-ir = { path = "../compiler-ir" }
+heart-identity = { path = "../heart-identity" }
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[[bench]]
+name = "routing"
+path = "benches/routing.rs"
+harness = false

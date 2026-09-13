@@ -1,0 +1,20 @@
+[package]
+name = "backend-frontend-clang"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[lints]
+workspace = true
+[dependencies]
+backend-compile = { path = "../../crates/compile" }
+clang = { version = "1.0.3", features = ["clang_10_0", "runtime"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tree-sitter-cpp = "=0.23.4"
+
+[dev-dependencies]
+tempfile = "3"
+[lib]
+path = "lib.rs"

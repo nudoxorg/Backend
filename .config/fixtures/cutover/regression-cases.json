@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "suite": "versioned-engine-cutover-regressions",
+  "runner": "cargo test --manifest-path implementation/Cargo.toml -p backend-laws --test cutover_regressions -- --nocapture",
+  "bounded": {
+    "wall_seconds": 45,
+    "large_join_rows_per_side": 100000,
+    "large_payload_bytes": 28672,
+    "compaction_epochs": 64
+  },
+  "cases": [
+    {
+      "id": "randomized_multi_leaf_orderings",
+      "test": "randomized_multi_leaf_orderings_match_full_rebuild_oracle",
+      "oracle": "fresh BTreeMap plus backend-version canonical_root",
+      "fault": "arrangement build/admission/lookup ordering disagreement"
+    },
+    {
+      "id": "large_payload_budget",
+      "test": "large_payload_is_rejected_before_a_budgeted_page_clones_it",
+      "oracle": "payload length plus Delta<String> owned footprint",
+      "fault": "fixed row header hides variable payload allocation"
+    },
+    {
+      "id": "one_row_delta",
+      "test": "one_row_delta_delivery_does_not_hydrate_the_growing_view",
+      "oracle": "subscription event contains exactly one changed row",
+      "fault": "live delivery serializes a complete view"
+    },
+    {
+      "id": "broad_disjoint_join",
+      "test": "disjoint_hundred_thousand_row_join_is_bounded_and_matches_full_oracle",
+      "oracle": "empty full join and checked probe counter",
+      "fault": "nested-loop cross product for disjoint changes"
+    },
+    {
+      "id": "stalled_observer_compaction",
+      "test": "stalled_observer_gets_bounded_compaction_debt_then_releases_it",
+      "oracle": "pin fence blocks since advancement, release permits rebuild",
+      "fault": "compaction promotes runs indefinitely or crosses observer"
+    },
+    {
+      "id": "shadow_delta",
+      "test": "full_recompute_shadow_and_delta_transition_have_the_same_state",
+      "oracle": "full before/after join with explicit three-term delta",
+      "fault": "simultaneous cross term omitted or counted twice"
+    },
+    {
+      "id": "large_map_budget",
+      "test": "large_payload_map_budget_fails_without_claiming_a_completed_update",
+      "oracle": "original immutable map remains byte-for-byte equivalent",
+      "fault": "over-budget update publishes a partial target"
+    }
+  ]
+}

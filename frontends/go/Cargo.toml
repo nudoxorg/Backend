@@ -1,0 +1,13 @@
+[package]
+name = "backend-frontend-go"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[lints]
+workspace = true
+[dependencies]
+backend-compile = { path = "../../crates/compile" }
+tree-sitter-go = "=0.25.0"
+[lib]
+path = "lib.rs"

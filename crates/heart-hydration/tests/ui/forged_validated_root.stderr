@@ -1,0 +1,15 @@
+error[E0594]: cannot assign to data in dereference of `ValidatedRoot<'_, ObjectDomain>`
+  --> tests/ui/forged_validated_root.rs:11:5
+   |
+11 |     root.entry_count = RootEntryCount::from(1);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot assign
+   |
+   = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `ValidatedRoot<'_, ObjectDomain>`
+
+error[E0594]: cannot assign to data in dereference of `ValidatedLocality<'_, ObjectDomain>`
+  --> tests/ui/forged_validated_root.rs:15:5
+   |
+15 |     locality.root_count = RootEntryCount::from(1);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot assign
+   |
+   = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `ValidatedLocality<'_, ObjectDomain>`

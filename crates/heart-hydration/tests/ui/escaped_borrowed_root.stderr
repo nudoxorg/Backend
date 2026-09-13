@@ -1,0 +1,7 @@
+error: lifetime may not live long enough
+ --> tests/ui/escaped_borrowed_root.rs:8:5
+  |
+7 | fn escape(bytes: &[u8]) -> ValidatedRoot<'static, ObjectDomain> {
+  |                  - let's call the lifetime of this reference `'1`
+8 |     ValidatedRoot::try_from(bytes).unwrap()
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'static`

@@ -1,0 +1,30 @@
+[package]
+name = "backend-extension-trustfall"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+backend-version = { path = "../../crates/version" }
+backend-flow = { path = "../../crates/flow" }
+backend-semantic = { path = "../../crates/semantic" }
+backend-library = { path = "../../crates/library" }
+compiler-ir = { path = "../../crates/compiler-ir" }
+compiler-vocabulary = { path = "../../crates/compiler-vocabulary" }
+blake3.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+thiserror.workspace = true
+trustfall.workspace = true
+
+[dev-dependencies]
+futures-executor.workspace = true
+heart-identity = { path = "../../crates/heart-identity" }
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"

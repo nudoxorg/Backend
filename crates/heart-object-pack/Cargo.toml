@@ -1,0 +1,23 @@
+# Defines the `heart-object-pack` package and its explicit dependency boundary.
+# The crate exists to write and borrow indexed immutable object packs.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "heart-object-pack"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+[dependencies]
+heart-identity = { path = "../heart-identity" }
+heart-object = { path = "../heart-object" }
+heart-schema = { path = "../heart-schema" }
+thiserror.workspace = true
+zerocopy.workspace = true
+[dev-dependencies]
+allocation-counter.workspace = true
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"

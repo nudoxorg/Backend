@@ -1,0 +1,25 @@
+# Defines the `server-index-graph-vector` package and its explicit dependency boundary.
+# The crate exists to execute typed graph and vector work through bounded leased storage.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "server-index-graph-vector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+compiler-ir = { path = "../compiler-ir" }
+heart-identity = { path = "../heart-identity" }
+server-index-vocabulary = { path = "../server-index-vocabulary" }
+loom = { workspace = true, optional = true }
+
+[dev-dependencies]
+allocation-counter.workspace = true
+
+[features]
+loom-model = ["dep:loom"]
+
+[lib]
+path = "lib.rs"

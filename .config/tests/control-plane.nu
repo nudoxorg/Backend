@@ -26,7 +26,7 @@ cd $sandbox
 {
     workspace: {
         resolver: "3"
-        members: ["heart/seed"]
+        members: ["crates/seed"]
         package: {
             version: "0.0.0"
             edition: "2024"
@@ -39,7 +39,7 @@ cd $sandbox
         }
     }
 } | to toml | save --raw Cargo.toml
-mkdir heart/seed
+mkdir crates/seed
 {
     package: {
         name: "fixture-seed"
@@ -51,10 +51,10 @@ mkdir heart/seed
     }
     lib: {path: "lib.rs"}
     lints: {workspace: true}
-} | to toml | save --raw heart/seed/Cargo.toml
-"//! Defines the fixture seed package.\n//! Keeps initial Cargo metadata nonempty.\n//! Provides no product behavior.\n" | save --raw heart/seed/lib.rs
+} | to toml | save --raw crates/seed/Cargo.toml
+"//! Defines the fixture seed package.\n//! Keeps initial Cargo metadata nonempty.\n//! Provides no product behavior.\n" | save --raw crates/seed/lib.rs
 ^$env.BACKEND_STABLE_CARGO generate-lockfile
-^git add Cargo.toml Cargo.lock heart/seed
+^git add Cargo.toml Cargo.lock crates/seed
 ^git commit --quiet --message "test: initialize fixture"
 
 let doctor = (^backend doctor | complete)
@@ -65,37 +65,37 @@ assert equal $scope.exit_code 0 $scope.stderr
 
 let purpose = "Defines a generated fixture file. Keeps path ownership explicit. Proves bounded creation behavior."
 let workspace = (open Cargo.toml)
-$workspace | upsert workspace.members ["heart/seed" "compiler/*"] | to toml | save --force Cargo.toml
+$workspace | upsert workspace.members ["crates/*"] | to toml | save --force Cargo.toml
 let created = (
-    ^backend create crate compiler/example --name fixture-example --purpose $purpose | complete
+    ^backend create crate crates/example --name fixture-example --purpose $purpose | complete
 )
 assert equal $created.exit_code 0 $created.stderr
-assert ($sandbox | path join "compiler/example/lib.rs" | path exists)
+assert ($sandbox | path join "crates/example/lib.rs" | path exists)
 
-let manifest = (open compiler/example/Cargo.toml)
+let manifest = (open crates/example/Cargo.toml)
 assert equal $manifest.package.name "fixture-example"
 assert equal $manifest.lib.path "lib.rs"
 assert equal $manifest.package.version.workspace true
 
 ^$env.BACKEND_STABLE_CARGO generate-lockfile
-^git add compiler/example Cargo.toml Cargo.lock
+^git add crates/example Cargo.toml Cargo.lock
 ^git commit --quiet --message "test: add generated crate"
 
 let source = (
-    ^backend create file compiler/example/model.rs --purpose $purpose | complete
+    ^backend create file crates/example/model.rs --purpose $purpose | complete
 )
 assert equal $source.exit_code 0
 let test_file = (
-    ^backend create test compiler/example public_contract --purpose $purpose | complete
+    ^backend create test crates/example public_contract --purpose $purpose | complete
 )
 assert equal $test_file.exit_code 0 $test_file.stderr
-"#[test]\nfn generated_fixture_runs() {\n    assert_eq!(2 + 2, 4);\n}\n" | save --append compiler/example/tests/public_contract.rs
+"#[test]\nfn generated_fixture_runs() {\n    assert_eq!(2 + 2, 4);\n}\n" | save --append crates/example/tests/public_contract.rs
 let unit_file = (
-    ^backend create file compiler/example/tests.rs --purpose $purpose | complete
+    ^backend create file crates/example/tests.rs --purpose $purpose | complete
 )
 assert equal $unit_file.exit_code 0 $unit_file.stderr
-"#[test]\nfn changed_scope_runs_unit_tests() {\n    assert_eq!(2 + 2, 4);\n}\n" | save --append compiler/example/tests.rs
-"#[cfg(test)]\nmod tests;\n" | save --append compiler/example/lib.rs
+"#[test]\nfn changed_scope_runs_unit_tests() {\n    assert_eq!(2 + 2, 4);\n}\n" | save --append crates/example/tests.rs
+"#[cfg(test)]\nmod tests;\n" | save --append crates/example/lib.rs
 
 let escaped = (
     ^backend create file ../escaped.rs --purpose $purpose | complete
@@ -104,7 +104,7 @@ assert not equal $escaped.exit_code 0
 assert str contains $escaped.stderr "backend::path-escape"
 
 let reviewer_write = (
-    with-env (role-environment "terra-reviewer" "inspect") { ^backend create file compiler/example/reviewer.rs --purpose $purpose | complete }
+    with-env (role-environment "terra-reviewer" "inspect") { ^backend create file crates/example/reviewer.rs --purpose $purpose | complete }
 )
 assert not equal $reviewer_write.exit_code 0
 assert str contains $reviewer_write.stderr "backend::role-tool-mismatch"
@@ -167,7 +167,7 @@ let role_outcome = $role_outcomes | first
 assert equal $role_outcome.status "failed" "evaluator truth must remain distinct from successful process transport"
 let nested_role_test = (
     do {
-        cd compiler/example
+        cd crates/example
         with-env {
             BACKEND_AGENT_ROLE: "human",
             BACKEND_AGENT_RUN: "nested-role-toolbox-fixture",
@@ -186,7 +186,7 @@ let first_candidate_digest = (
     | first
     | get changed_paths_digest
 )
-"pub const CANDIDATE_MUTATION: u8 = 1;\n" | save --append compiler/example/model.rs
+"pub const CANDIDATE_MUTATION: u8 = 1;\n" | save --append crates/example/model.rs
 let mutated_role_test = (
     with-env {
         BACKEND_AGENT_ROLE: "human",
@@ -393,7 +393,7 @@ rm --recursive .direnv
 let changed_scope = (
     with-env (role-environment "terra-academic" "scope") { ^backend scope changed --base HEAD --json | from json }
 )
-assert ("compiler/example/model.rs" in $changed_scope.paths)
+assert ("crates/example/model.rs" in $changed_scope.paths)
 assert equal $changed_scope.packages.name ["fixture-example"]
 
 let changed_lint = (
@@ -406,7 +406,7 @@ let changed_test = (
 assert equal $changed_test.exit_code 0 $changed_test.stderr
 
 let adversarial = "//! Demonstrates a forbidden public accessor.\n//! Exercises changed-file syntax policy.\n//! Must remain red under the generated lint.\n\npub struct Count(pub u64);\nimpl Count { pub const fn get(self) -> u64 { self.0 } }\n"
-$adversarial | save --force compiler/example/model.rs
+$adversarial | save --force crates/example/model.rs
 let rejected_lint = (
     with-env (role-environment "terra-academic" "lint") { ^backend lint changed --base HEAD | complete }
 )

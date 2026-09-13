@@ -7,11 +7,11 @@ def crate-boundary [path: path]: nothing -> string {
     let relative = $path | into string | str trim --char '/'
     let components = $relative | split row '/'
     if (($components | length) < 2) or ($components | any {|component| ($component | is-empty) or ($component in ["." ".."]) }) {
-        tooling-fail "invalid-crate-path" "crate paths need a product boundary and one or more invariant-named directories" "use compiler/<area>, heart/<area>, interface/<area>, or server/<area>"
+        tooling-fail "invalid-crate-path" "crate paths need a product boundary and one or more invariant-named directories" "use crates/<area>, frontends/<language>, extensions/<adapter>, or apps/<surface>"
     }
     let boundary = $components | first
-    if $boundary not-in ["compiler" "heart" "interface" "server"] {
-        tooling-fail "invalid-crate-boundary" $"crate path must begin with compiler, heart, interface, or server; observed ($relative)"
+    if $boundary not-in ["crates" "frontends" "extensions" "apps"] {
+        tooling-fail "invalid-crate-boundary" $"crate path must begin with crates, frontends, extensions, or apps; observed ($relative)"
     }
     $boundary
 }

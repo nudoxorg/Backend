@@ -1,0 +1,18 @@
+[package]
+name = "backend-crash-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+[dependencies]
+backend-engine = { path = "../../crates/engine" }
+backend-execution = { path = "../../crates/execution" }
+backend-replication = { path = "../../crates/replication" }
+backend-store = { path = "../../crates/store" }
+backend-version = { path = "../../crates/version" }
+blake3.workspace = true
+[lints]
+workspace = true
+[lib]
+path = "src/lib.rs"

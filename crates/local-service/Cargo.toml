@@ -1,0 +1,48 @@
+[package]
+name = "backend-local-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+backend-compile = { path = "../compile" }
+backend-engine = { path = "../engine" }
+backend-extension-turso = { path = "../../extensions/turso" }
+backend-extension-qdrant = { path = "../../extensions/qdrant" }
+backend-extension-tantivy = { path = "../../extensions/tantivy" }
+backend-extension-trustfall = { path = "../../extensions/trustfall" }
+backend-frontend-clang = { path = "../../frontends/clang" }
+backend-frontend-csharp = { path = "../../frontends/csharp" }
+backend-frontend-go = { path = "../../frontends/go" }
+backend-frontend-java = { path = "../../frontends/java" }
+backend-frontend-python = { path = "../../frontends/python" }
+backend-frontend-rust = { path = "../../frontends/rust" }
+backend-frontend-typescript = { path = "../../frontends/typescript" }
+backend-runtime = { path = "../runtime" }
+backend-semantic = { path = "../semantic" }
+backend-version = { path = "../version" }
+compiler-application = { path = "../compiler-application" }
+compiler-ir = { path = "../compiler-ir" }
+compiler-vocabulary = { path = "../compiler-vocabulary" }
+interface-core = { path = "../interface-core" }
+server-index-graph-vector = { path = "../server-index-graph-vector" }
+server-index-trustfall = { path = "../server-index-trustfall" }
+blake3.workspace = true
+futures-executor.workspace = true
+futures-util.workspace = true
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }
+
+[dev-dependencies]
+compiler-publication = { path = "../compiler-publication" }
+heart-hydration = { path = "../heart-hydration" }
+heart-identity = { path = "../heart-identity" }
+
+[lints]
+workspace = true

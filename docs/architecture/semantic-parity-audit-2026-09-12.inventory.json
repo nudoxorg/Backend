@@ -1,0 +1,1000 @@
+{
+  "schema": "backend.whole-system-parity-inventory/v4",
+  "generated_at": "2026-09-13",
+  "purpose": "Path-level evidence inventory for the whole-system parity audit. Paths are comparison evidence, not proof of active product wiring.",
+  "requested_path_resolution": {
+    "requested": "/Users/mileswirht/Downloads/workspace_1",
+    "exists": false,
+    "used": [
+      "/Users/mileswirht/Downloads/backend_1/workspace",
+      "/Users/mileswirht/Downloads/backend_1/workspace2",
+      "/Users/mileswirht/Downloads/backend-go-*",
+      "/Users/mileswirht/Downloads/backend-ts-*"
+    ]
+  },
+  "excluded": [
+    "Turso product implementation"
+  ],
+  "legacy_tree": {
+    "root_command": "git show HEAD:<path>",
+    "top_level": [
+      "compiler",
+      "heart",
+      "interface",
+      "server"
+    ],
+    "compiler": {
+      "systems": [
+        "compiler/application",
+        "compiler/driver",
+        "compiler/ir",
+        "compiler/ir-vocabulary",
+        "compiler/languages",
+        "compiler/publication",
+        "compiler/registry",
+        "compiler/vocabulary"
+      ],
+      "canonical_semantic_evidence": [
+        "compiler/ir/semantic_image",
+        "compiler/ir/semantic_facts.rs",
+        "compiler/ir/type_facts.rs",
+        "compiler/ir/docs_facts.rs",
+        "compiler/ir/semantic_render",
+        "compiler/ir-vocabulary/entity.rs",
+        "compiler/ir-vocabulary/occurrence.rs",
+        "compiler/ir-vocabulary/type_lattice.rs",
+        "compiler/publication"
+      ],
+      "languages": {
+        "clang": [
+          "compiler/languages/clang/collect.rs",
+          "compiler/languages/clang/facts.rs",
+          "compiler/languages/clang/ffi.rs",
+          "compiler/languages/clang/input.rs",
+          "compiler/languages/clang/purl.rs",
+          "compiler/languages/clang/tests/live_authority.rs"
+        ],
+        "csharp": [
+          "compiler/languages/csharp/helper/AuthorityImage.cs",
+          "compiler/languages/csharp/helper/DocComments.cs",
+          "compiler/languages/csharp/helper/Extractor.cs",
+          "compiler/languages/csharp/helper/Program.cs",
+          "compiler/languages/csharp/helper/SourceLoader.cs",
+          "compiler/languages/csharp/helper/TypeSigWriter.cs",
+          "compiler/languages/csharp/tests/fixtures/producer/fidelity.cs",
+          "compiler/languages/csharp/tests/fixtures/producer/unicode.cs"
+        ],
+        "go": [
+          "compiler/languages/go/image.rs",
+          "compiler/languages/go/oracle.rs",
+          "compiler/driver/tests/go_corpus.rs",
+          "compiler/driver/tests/go_image.rs",
+          "compiler/driver/tests/go_purl_lifecycle.rs",
+          "compiler/driver/tests/go_render.rs"
+        ],
+        "java": [
+          "compiler/languages/java/bound.rs",
+          "compiler/languages/java/doclet.rs",
+          "compiler/languages/java/jar.rs",
+          "compiler/languages/java/purl.rs",
+          "compiler/languages/java/repo.rs",
+          "compiler/driver/tests/java_corpus.rs",
+          "compiler/driver/tests/java_image.rs"
+        ],
+        "python": [
+          "compiler/languages/python/checker.rs",
+          "compiler/languages/python/lib.rs",
+          "compiler/driver/tests/python_authority.rs",
+          "compiler/driver/tests/python_lower_facts.rs",
+          "compiler/driver/tests/python_packages.rs"
+        ],
+        "rust": [
+          "compiler/languages/rust/authority.rs",
+          "compiler/languages/rust/purl.rs",
+          "compiler/driver/tests/rust_corpus.rs",
+          "compiler/driver/tests/rust_features.rs",
+          "compiler/driver/tests/rust_hir.rs",
+          "compiler/driver/tests/rust_semantic_lane.rs",
+          "compiler/driver/tests/rust_traits.rs"
+        ],
+        "typescript": [
+          "compiler/languages/typescript/authority.rs",
+          "compiler/languages/typescript/checker.rs",
+          "compiler/languages/typescript/coordinate.rs",
+          "compiler/languages/typescript/error.rs",
+          "compiler/driver/tests/typescript_corpus.rs",
+          "compiler/driver/tests/typescript_lower.rs"
+        ]
+      }
+    },
+    "heart": {
+      "systems": [
+        "heart/adaptive",
+        "heart/frame",
+        "heart/hydration",
+        "heart/identity",
+        "heart/memory",
+        "heart/object",
+        "heart/object-pack",
+        "heart/observe",
+        "heart/root",
+        "heart/schema",
+        "heart/telemetry",
+        "heart/view"
+      ],
+      "critical_evidence": [
+        "heart/hydration/tests.rs",
+        "heart/object-pack/tests/object_pack.rs",
+        "heart/root/tests/canonical_root_view.rs",
+        "heart/observe/flight.rs",
+        "heart/telemetry/lib.rs",
+        "heart/telemetry/tests/adapter.rs"
+      ]
+    },
+    "interface": {
+      "systems": [
+        "interface/GUI2",
+        "interface/cli",
+        "interface/core",
+        "interface/documents",
+        "interface/gui",
+        "interface/identity",
+        "interface/library",
+        "interface/mcp",
+        "interface/protocol",
+        "interface/search"
+      ],
+      "critical_evidence": [
+        "interface/library/command.rs",
+        "interface/core/tests/semantic_image_snapshot.rs",
+        "interface/core/tests/source.rs",
+        "interface/core/tests/client_sync_integration.rs",
+        "interface/mcp/tests/framed_process.rs",
+        "interface/protocol/tests/package_command.rs",
+        "interface/gui/tests/gpui.rs"
+      ]
+    },
+    "server": {
+      "systems": [
+        "server/journal",
+        "server/workflow",
+        "server/operation",
+        "server/runtime",
+        "server/index/acquire",
+        "server/index/build",
+        "server/index/catalog",
+        "server/index/core",
+        "server/index/graph-vector",
+        "server/index/ingest",
+        "server/index/publish",
+        "server/index/qdrant",
+        "server/index/registry",
+        "server/index/retrieval",
+        "server/index/routing",
+        "server/index/tantivy",
+        "server/index/trustfall",
+        "server/index/vocabulary"
+      ],
+      "critical_evidence": [
+        "server/journal/tests/durable_publisher.rs",
+        "server/workflow/tests/durable_shared.rs",
+        "server/operation/tests/compiler_corpus.rs",
+        "server/operation/tests/semantic_publication.rs",
+        "server/index/publish/tests/compiler_snapshot.rs",
+        "server/index/qdrant/tests/real_service.rs",
+        "server/index/tantivy/tests/differential.rs",
+        "server/index/tantivy/tests/durable.rs",
+        "server/index/trustfall/tests/semantic_async.rs",
+        "server/index/retrieval/tests/sealed_boundary_public.rs"
+      ]
+    }
+  },
+  "historical_workspaces": {
+    "workspace": {
+      "path": "/Users/mileswirht/Downloads/backend_1/workspace",
+      "critical_roots": [
+        "compiler/languages/oracle",
+        "compiler/languages/src",
+        "compiler/languages/tests",
+        "compiler/sandbox",
+        "heart",
+        "heart/transport",
+        "gui",
+        "index",
+        "nudox-engine",
+        "registry"
+      ],
+      "language_corpus": {
+        "clang": [
+          "compiler/languages/tests/clang/corpus_sweep.rs",
+          "compiler/languages/tests/clang/real_package.rs",
+          "compiler/languages/tests/clang/ref_snapshots.rs",
+          "compiler/languages/tests/clang/refs_resolution.rs"
+        ],
+        "csharp": [
+          "compiler/languages/tests/csharp/nuget_corpus.rs",
+          "compiler/languages/tests/csharp/oracle_end_to_end.rs",
+          "compiler/languages/tests/csharp/ref_snapshots.rs"
+        ],
+        "go": [
+          "compiler/languages/tests/go/cross_package_implements.rs",
+          "compiler/languages/tests/go/cross_target_build_constraints.rs",
+          "compiler/languages/tests/go/grpc_corpus.rs",
+          "compiler/languages/tests/go/ref_snapshots.rs",
+          "compiler/languages/tests/go/reference_hardening.rs"
+        ],
+        "java": [
+          "compiler/languages/tests/java/overload_survival.rs",
+          "compiler/languages/tests/java/producer_tests.rs",
+          "compiler/languages/tests/java/ref_snapshots.rs"
+        ],
+        "python": [
+          "compiler/languages/tests/python/corpus_sweep.rs",
+          "compiler/languages/tests/python/pyrefly_feature_path.rs",
+          "compiler/languages/tests/python/pyrefly_inference_spot_check.rs",
+          "compiler/languages/tests/python/refs_resolution.rs",
+          "compiler/languages/tests/python/type_lattice_census.rs"
+        ],
+        "rust": [
+          "compiler/languages/tests/rust/build_script_cfgs.rs",
+          "compiler/languages/tests/rust/dependency_resolution.rs",
+          "compiler/languages/tests/rust/ref_snapshots.rs",
+          "compiler/languages/tests/rust/universal_pipeline.rs"
+        ],
+        "typescript": [
+          "compiler/languages/tests/typescript/real_npm_packages.rs",
+          "compiler/languages/tests/typescript/ref_snapshots.rs",
+          "compiler/languages/tests/typescript/refs_resolution.rs"
+        ]
+      },
+      "whole_system_tests": [
+        "index/tests/ingest_pipeline_e2e.rs",
+        "index/tests/live_download.rs",
+        "index/tests/semantic_search_gating.rs",
+        "index/tests/ranking_eval_product.rs",
+        "index/tests/vector_adversarial.rs",
+        "index/tests/telemetry_survives_pyroscope.rs",
+        "nudox-engine/tests/mcp_dump_responses.rs",
+        "nudox-engine/tests/local_persistence.rs",
+        "nudox-engine/tests/remote_source.rs"
+      ]
+    },
+    "workspace2": {
+      "path": "/Users/mileswirht/Downloads/backend_1/workspace2",
+      "critical_roots": [
+        "crates/compiler/core",
+        "crates/compiler/driver",
+        "crates/compiler/ir",
+        "crates/heart",
+        "crates/heart/hydration",
+        "crates/interface/cli",
+        "crates/interface/core",
+        "crates/interface/gui",
+        "crates/interface/mcp",
+        "crates/nudox-id",
+        "crates/nudox-object",
+        "crates/nudox-object-pack",
+        "crates/nudox-observe",
+        "crates/nudox-observability-adapter",
+        "crates/nudox-operation",
+        "crates/nudox-root",
+        "crates/nudox-store-memory",
+        "crates/nudox-view",
+        "crates/server/core",
+        "crates/server/runtime"
+      ]
+    }
+  },
+  "active_product_inventory": {
+    "applications": [
+      "apps/cli",
+      "apps/desktop",
+      "apps/locald",
+      "apps/mcp",
+      "apps/worker"
+    ],
+    "core_crates": [
+      "crates/client",
+      "crates/compile",
+      "crates/compiler-ir",
+      "crates/compiler-ir-vocabulary",
+      "crates/compiler-driver",
+      "crates/compiler-publication",
+      "crates/compiler-vocabulary",
+      "crates/engine",
+      "crates/execution",
+      "crates/flow",
+      "crates/heart-frame",
+      "crates/heart-object-pack",
+      "crates/heart-telemetry",
+      "crates/heart-view",
+      "crates/interface-protocol",
+      "crates/library",
+      "crates/local-service",
+      "crates/replication",
+      "crates/runtime",
+      "crates/semantic",
+      "crates/server-index-acquire",
+      "crates/server-index-catalog",
+      "crates/server-index-ingest",
+      "crates/server-index-registry",
+      "crates/server-index-retrieval",
+      "crates/server-index-routing",
+      "crates/store",
+      "crates/version",
+      "crates/server-operation"
+    ],
+    "provider_extensions": [
+      "extensions/qdrant",
+      "extensions/tantivy",
+      "extensions/trustfall"
+    ],
+    "language_frontends": [
+      "frontends/clang",
+      "frontends/csharp",
+      "frontends/go",
+      "frontends/java",
+      "frontends/python",
+      "frontends/rust",
+      "frontends/typescript"
+    ],
+    "product_entrypoints": {
+      "locald": "apps/locald -> backend_local_service::main_entry -> builtin::compose_owner",
+      "cli": "apps/cli -> locald protocol",
+      "mcp": "apps/mcp -> locald protocol",
+      "desktop": "apps/desktop -> locald protocol",
+      "worker": "apps/worker -> BuiltinExecutor::execute_product"
+    },
+    "semantic_ingest": {
+      "selector": "crates/local-service/src/builtin/ingest.rs::FrontendSet",
+      "compiler_publication_trace": "Command::Add -> compile_semantic_publications -> LocalCompilerClient::compile_package_sources -> compiler publication -> BuiltinSemanticRelation -> activate_semantic_publication -> validated SemanticImageView projection",
+      "all_structural_languages": [
+        "rust",
+        "python",
+        "typescript",
+        "go",
+        "java",
+        "csharp",
+        "clang"
+      ],
+      "native_product_selected_at_audit_cutoff": [],
+      "persisted_form": "crates/engine/src/builtin/relation.rs::ProductSourceRecord PSR7 structural-only plus crates/engine/src/builtin/semantic_relation.rs::ProductSemanticPublicationRelation",
+      "view_projection": "crates/local-service/src/builtin/view_build.rs pages BuiltinSemanticRelation; each Complete claim activates/reopens through LocalCompilerClient and renders canonical entity/type/document/link/parent fields into generic Row. Partial/Unavailable exact profiles retain PSR7 structural fallback.",
+      "profile_scope_repair": "complete fallback suppression is keyed by PackageKey plus LanguageProfile, and view coverage counts exact publication records; C and C++ cannot collapse through the Clang language family",
+      "projection_bound_repair": "semantic traversal reserves MAX_REBUILD_PACKAGES minus package rows, then checks exact unsuppressed structural fallback plus semantic rows before final allocation",
+      "remaining_typed_gap": "public Diff retains typed entity/link evidence; generic search, arbitrary Trustfall, Qdrant, and remote rows still omit typed occurrences, diagnostics, dependencies, extension pools, image ownership, and most graph evidence",
+      "versioned_diff_gap": "SurfaceCommand::Diff activates exact complete claims and returns typed entity/link evidence for distinct PackageReference versions. ProductSemanticPublicationRelation still replaces history under one exact package/profile key."
+    },
+    "capability_authority_checkpoint": {
+      "shared_type_owner": "compiler_vocabulary::{Language, LanguageOracleTask}; library and engine are re-exports and backend_compile::SourceLanguage is an alias",
+      "source_checkpoint": "LocalCompilerCapabilities constructs a fixed seven-Language snapshot from explicit NativeTool identities and configured package authority. semantic_capabilities uses it for TypeCheck and SemanticIndex; legacy PATH/helper synthesis is removed.",
+      "remaining_typed_closure": [
+        "LanguageProfile is absent from CapabilityFamily and wire",
+        "raw manifest instead of CompileRecipeFact or LanguageOracleRecipe",
+        "NativeTool/package-authority identity is not projected as typed closure",
+        "C and C++ share the Clang language slot because semantic_recipe omits profile",
+        "Ready means compiler owner alive, not completed profile/task proof",
+        "remote admission, query, and Qdrant do not share/prove this closure"
+      ],
+      "host_limit": "No Go/local-service execution may run on this host because Go 1.27.1 is wedged; the update is source evidence, not a green all-profile gate.",
+      "hard_gate": "PARITY-CAPABILITY-AUTHORITY-001"
+    },
+    "package_identity_protocol_checkpoint": {
+      "parser_owner": "compiler-vocabulary::PackageUrl and PackageType; interface-core and backend-library re-export/use the shared parser",
+      "resolved_compile_checkpoint": "cargo test -p interface-core --test package --quiet passed 2/2; no stale local parser remains",
+      "protocol_checkpoint": "canonical PURL uses Generic for C/C++ while RegistryEcosystem::Cpp selects acquisition; cargo test -p interface-protocol --all-targets --quiet passed 24 tests",
+      "remaining_gap": "semantic-image provenance commits lineage/profile rather than exact coordinate identity/version/qualifiers/subpath; no acquisition-to-index restart journey proves the full coordinate",
+      "required_gate": "PARITY-PACKAGE-IDENTITY-001",
+      "publication_key": "ProductSemanticPublicationKey retains the exact product PackageReference, version-pinned PackageUrl, and LanguageProfile; relation family is domain 0x97/type 3/version 2",
+      "compiler_projection": "compiler-application borrows package type and contiguous namespace/name lineage directly from PackageUrl without reparsing",
+      "target_admission": "every reopened image must match key authority, lower-IR recipe, ecosystem, and namespace/name before product projection"
+    },
+    "restored_unmatched_systems_checkpoint": {
+      "cargo_metadata_package_count": 81,
+      "source_status": "heart frame/object-pack/telemetry/view and server-index acquire/catalog/ingest/registry/retrieval/routing are restored; this replaces the earlier missing-source snapshot",
+      "representative_sha256_comparison": "byte-identical against deleted HEAD for the audit-sampled lib and core implementation files",
+      "composition_evidence": {
+        "heart-frame": "heart-view dev-dependency only",
+        "heart-object-pack": "no inbound workspace consumer",
+        "heart-telemetry": "no inbound product consumer",
+        "heart-view": "no inbound product consumer",
+        "server-index-acquire": "server-index-registry only",
+        "server-index-retrieval": "interface-protocol only",
+        "server-index-routing": "no inbound workspace consumer"
+      },
+      "active_parallel_path": "local-service Add/search/worker still select backend registry, ProductSemanticPublicationRelation plus generic ViewRoot, QueryCoordinator, and ProductProjectionBuilder; restored typed semantic/index packages remain parallel in key product paths",
+      "executable_status": {
+        "binary_boundary": "cargo test -p heart-frame -p heart-object-pack -p heart-view --all-targets: 66 passed",
+        "telemetry_adapter": "cargo test -p heart-telemetry --test adapter: 7 passed after exact server.root test subscription repair",
+        "typed_index": "cargo test -p server-index-ingest -p server-index-retrieval -p server-index-routing --all-targets --quiet passed; library-only composition remains",
+        "heart_root_scale": "cargo check -p heart-root --benches: failed with 14 stale canonical-IR/build API errors"
+      },
+      "hard_gates": [
+        "PARITY-BINARY-OBJECT-BOUNDARY-001",
+        "PARITY-INDEX-COMPOSITION-001",
+        "PARITY-PACKAGE-IDENTITY-001",
+        "BUILD-HEART-ROOT-BENCH-001"
+      ]
+    },
+    "semantic_type_system_gap": {
+      "typed_library_vocabulary": [
+        "crates/semantic/src/identity.rs::EntityValue",
+        "crates/semantic/src/facets/type_facts.rs::TypeNode",
+        "crates/semantic/src/facets/docs.rs::DocumentationValue",
+        "crates/semantic/src/facets/occurrence_edge.rs::OccurrenceFact",
+        "crates/semantic/src/facets/occurrence_edge.rs::EdgeRecord",
+        "crates/semantic/src/facets/embedding.rs::EmbeddingInputRecord"
+      ],
+      "product_consumer_found": false,
+      "hard_gate": "PARITY-SEM-001"
+    },
+    "canonical_ir_vcs_restoration": {
+      "restored_crates": [
+        "crates/compiler-ir",
+        "crates/compiler-ir-vocabulary",
+        "crates/compiler-vocabulary",
+        "crates/compiler-driver",
+        "crates/compiler-publication",
+        "crates/server-index-build",
+        "crates/server-index-core",
+        "crates/server-index-graph-vector",
+        "crates/server-index-publish",
+        "crates/server-index-qdrant",
+        "crates/server-index-tantivy",
+        "crates/server-index-trustfall",
+        "crates/server-index-vocabulary"
+      ],
+      "source_comparison": "Deleted production sources are restored under crates; Cargo manifests rewrite paths. The compiler-ir semantic_attacks fixture corrects a stale five-cell header expectation to the schema-3 six-cell header plus entity-root cell. The schema-one type_facts fixture was traced to a post-migration heart-namespace hash rewrite (commit 827e7f67f after migration 628a6698c) and corrected to workspace2's historical nudox persisted-ID contract. A fresh cargo test -p compiler-ir --all-targets --quiet passes.",
+      "responsibilities_present_as_library_code": [
+        "canonical columnar entities/atoms/types/graphs and interning",
+        "docs, occurrences, language extension pools, typed rendering, and embeddings",
+        "full semantic-image encode/decode/hostile-wire validation and range/mmap views",
+        "IR-VCS owned Snapshot/Diff plus generic borrowed SemanticReader entity and canonical-link merges"
+      ],
+      "restored_internal_consumers": "compiler-driver, compiler-publication, and restored server-index packages depend on compiler-ir",
+      "active_product_consumer_found": true,
+      "active_product_consumer_scope": "Add writes whole-publication claims; local view, graph, and diff activate and reopen Complete images. Diff returns typed entity/link evidence through Session, CLI, MCP, and desktop service; generic providers and worker remain narrower.",
+      "library_only_engine_seam": "resolved for public Diff entity/link evidence; typed direct Trustfall/Tantivy/Qdrant and remote compiler authority remain absent",
+      "active_product_non_consumers": [
+        "native desktop version-selection action",
+        "remote compiler authority",
+        "same-key generation history",
+        "typed direct Trustfall/Qdrant/Tantivy image projection",
+        "apps/worker compiler authority"
+      ],
+      "publication_status": "Add publishes a locality-independent claim; locald later reopens exact Complete claims during view rebuild. No executed restart/client/provider journey proves durable lifecycle.",
+      "executable_baseline_failures": [],
+      "executable_baseline_status": "fresh cargo test -p compiler-ir --all-targets --quiet passed all targets after the historical nudox schema-one fixture correction; two dead-code warnings only",
+      "baseline_hard_gate": "keep IR suite green while closing PARITY-IR-PUB-001",
+      "hard_gate": "PARITY-IR-PUB-001 and PARITY-IR-VCS-PRODUCT-001",
+      "projection_checkpoint": {
+        "stable_identity": "PackageKey plus DeclarationIdentity",
+        "retained_generic_fields": "canonical entity/type/document content, documentation fragments, links, parent",
+        "rejected": "duplicate semantic declaration identity",
+        "bounded": "document/type and final row allocation bounds",
+        "missing": "generic search/provider occurrences, diagnostics, dependencies, extensions, image ownership, and most graph evidence",
+        "retained_typed_diff_fields": "exact declaration identities; local/stable/foreign/fragment-entity endpoints; link kind; confidence; optional source span; old/new evidence lifecycle"
+      },
+      "historical_product_seam": {
+        "git_history": "deleted compiler/ir/vcs.rs at 2c41385aad032279c6a91803d3381d3d1e88c989 exposes owned-Ir Snapshot/Diff; e3a321d34c1f26e3ef3844fe59d71ec5f32bac4c publishes/reopens complete images. Direct deleted-tree use is a heart-root capacity benchmark.",
+        "workspace": "workspace 1db1d688331972509e872da792552d48a0c3a8df has full compiler/ir/vcs repository/stream/archive/diff/sync. Its actual public diff is nudox-engine MCP do_diff_versions -> EngineHandle::diff_versions -> versions/diff over two resident IrViews, with rekey/indeterminate semantics and real-crate MCP tests.",
+        "repository_limit": "nudox-engine store/persistence.rs explicitly says IrRepository is versioning-only and not read; index ir_stream consumes protocol frames but does not make VCS repository query authority."
+      },
+      "live_missing_seam": "same exact package/profile generation history, restart selection, native desktop version picker, typed provider projection, and remote semantic authority remain absent",
+      "smallest_faithful_graft": "landed for distinct-version typed entity/link Diff over validated borrowed images; retain same-key history and prove restart/remote/provider lifecycle without introducing a second archive authority"
+    },
+    "semantic_publication_relation_checkpoint": {
+      "source": "crates/engine/src/builtin/semantic_relation.rs",
+      "product_consumer_found": true,
+      "product_consumer_scope": "Add persists Published/Unavailable records; view, graph, and diff use one activation helper that verifies the owner-selected closure and each image target before lending typed readers. Diff reaches typed clients; generic providers and worker do not.",
+      "source_repairs": "SemanticPublicationClaim stores manifest/binding only; ProductSemanticPublicationKey stores exact product/package/profile identity; PartialSemanticCoverage has checked private counts; focused engine semantic_relation suite passes 5/5 including foreign package/profile rejection",
+      "remaining_validation": "no two-journal byte equality, executed restart, exact-coordinate image commitment, same-key history, typed provider projection, or remote semantic owner proof",
+      "current_build_checkpoint": "independent final cargo check --workspace --all-targets --quiet passed after the typed identity, borrowed IR-VCS, public Diff, and local-service control-flow grafts; Go-dependent executable journeys remain prohibited on the wedged host",
+      "required_owner_boundary": "relation stores only generation+manifest+binding and validated coverage; publication owner retains receipt/head locality and must reopen exact closure before lending views",
+      "hard_gates": [
+        "PARITY-SEMANTIC-PUBLICATION-CANONICALITY-001",
+        "BUILD-LOCAL-SERVICE-001",
+        "PARITY-SEMANTIC-LOCATOR-001"
+      ],
+      "profile_and_capacity_cutover": "exact LanguageProfile fallback and coverage repair plus post-suppression capacity accounting; compiler-parity reports mixed C/C++ fallback test passes"
+    },
+    "root_locality_authority_checkpoint": {
+      "active_owner": "backend-version::WorkspaceRoot and CheckedCanonicalRoot are used by locald/store/worker",
+      "parallel_restored_owner": "heart-root::GenerationRoot and heart-hydration::ValidatedLocality are restored library authorities with no active product composition found",
+      "required_gate": "PARITY-ROOT-LOCALITY-001"
+    },
+    "authority_collision_map": [
+      {
+        "responsibility": "semantic compile/frontends",
+        "active_product_owner": "Add and local view rebuild use LocalCompilerHost and whole-publication claims, then generic ViewRoot projection; search/graph/worker consume only generic rows",
+        "parallel_restored_owner": "compiler-ir, compiler-driver, compiler-languages, compiler-publication",
+        "closure": "make compiler publication the typed semantic authority for product results and remove generic-row loss from typed paths"
+      },
+      {
+        "responsibility": "version/root/replication/store",
+        "active_product_owner": "backend-version::WorkspaceRoot, backend-store, backend-replication",
+        "parallel_restored_owner": "heart-identity/root/object/memory/schema/hydration",
+        "closure": "select one root/locality model and prove cold-local, remote, offline, restart, and conflicting-root behavior"
+      },
+      {
+        "responsibility": "workflow/runtime/journal",
+        "active_product_owner": "backend-flow, backend-execution, backend-runtime, engine view journal",
+        "parallel_restored_owner": "server-workflow, server-runtime, server-journal",
+        "closure": "route semantic publication through one durable owner and prove fault/reopen semantics"
+      },
+      {
+        "responsibility": "search/graph/vector providers",
+        "active_product_owner": "extensions/tantivy and extensions/trustfall plus product-reachable RemoteSemantic/Qdrant over a same-process cached generic QueryCoordinator",
+        "parallel_restored_owner": "server-index-build/core/graph-vector/publish/qdrant/tantivy/trustfall/vocabulary",
+        "closure": "compose one durable typed snapshot/document projection owner for lexical, vector, and graph paths"
+      },
+      {
+        "responsibility": "source/index publication",
+        "active_product_owner": "engine ProductSourceRelation, publish_builtin_view, view_journal",
+        "parallel_restored_owner": "compiler-publication and server-index-publish",
+        "closure": "one owner must immutably publish/reopen the complete compiler closure before client projection"
+      }
+    ],
+    "surface_type_system_repair": {
+      "source": "crates/library/surface.rs",
+      "typed_values_now_present": [
+        "ProductText",
+        "PackageReference",
+        "ProjectName",
+        "ProjectId",
+        "ProjectSelector",
+        "TreeNodeId",
+        "TreeOpener",
+        "TreeSubject",
+        "typed SurfaceCommand",
+        "typed SurfaceReply",
+        "SemanticDeclarationIdentity",
+        "SemanticLinkTarget",
+        "SemanticLinkKind",
+        "SemanticLinkEvidence",
+        "SemanticLinkDelta"
+      ],
+      "existing_closed_registry": [
+        "crates/library/command.rs::CommandId",
+        "crates/library/command_registry.rs::CommandDomain",
+        "crates/library/command_registry.rs::CommandMutation"
+      ],
+      "validation_status": "DTO version 5; library semantic diff admission/round-trip, CLI JSON/human, and MCP structuredContent typed-evidence tests pass",
+      "owner_route": "crates/local-service/src/builtin.rs opens ProductState; builtin/commands.rs dispatches Command::Surface to it",
+      "remaining_product_gap": "Diff reaches CLI, MCP, shared client, and desktop service endpoint; native desktop action and most other Surface operations remain absent. ProductState persistence still lacks full crash/concurrency proof.",
+      "hard_gate": "PARITY-SURFACE-WIRING-001"
+    },
+    "registry_product_trace": [
+      "crates/local-service/src/builtin/commands.rs::Command::Add",
+      "crates/local-service/src/builtin/registry.rs::RegistryGateway::acquire",
+      "crates/local-service/src/builtin/registry.rs::stage_archive",
+      "crates/local-service/src/builtin/commands.rs::index_project_intent_at",
+      "crates/local-service/src/builtin.rs::publish_builtin_view"
+    ],
+    "search_product_trace": [
+      "crates/local-service/src/builtin/commands.rs::execute_search",
+      "crates/local-service/src/query/local.rs::QueryCoordinator",
+      "extensions/tantivy/src/engine.rs::TantivySource::local_adapter",
+      "crates/local-service/src/query/remote.rs::RemoteSemantic::reconcile/search",
+      "crates/library search_from_ranked_ids"
+    ],
+    "graph_product_trace": [
+      "crates/local-service/src/builtin/commands.rs::execute_graph_query",
+      "extensions/trustfall/src/query.rs::execute_view_query",
+      "apps/mcp/src/jsonrpc.rs::backend.query"
+    ],
+    "remote_product_trace": [
+      "crates/local-service/src/builtin/replication.rs::output_for_snapshot",
+      "crates/engine/src/builtin/output.rs::ProductProjectionBuilder",
+      "apps/worker/src/builtin/profile.rs::BuiltinExecutor::execute_product"
+    ],
+    "provider_wiring": {
+      "tantivy": "wired in-memory for local lexical search",
+      "qdrant": "product-reachable from Command::Search through mutable RemoteSemantic::reconcile/search; equal selections reuse in one daemon process, a verified replacement leaves at most one retired binding retried/deleted before another admission, and physical points are binding-scoped UUIDs; changed views or restart still whole-reembed/upsert generic ViewRoot text with no durable reuse",
+      "trustfall": "wired for generic ViewRoot graph; complete semantic claims may contribute entity/type/document/link/parent rows, but typed semantic graph relations are not exposed"
+    },
+    "qdrant_product_lifecycle_checkpoint": {
+      "current_trace": "compose_owner owns mut RemoteSemantic and SearchSnapshotOwner -> command_adapter -> Command::Search -> execute_search -> select cached-or-new QueryCoordinator -> local lexical search -> RemoteSemantic::reconcile -> RemoteSemantic::search",
+      "stable_view_behavior": "SearchSnapshotOwner and ActiveQdrant reuse an equal workspace/view/coverage selection in the same daemon process; the local-service unit suite asserts snapshot pointer reuse",
+      "changed_view_behavior": "a changed view or daemon restart has no durable coordinator, active binding, or document cache: selected generic ViewRoot documents, including rendered fields from Complete compiler claims, are embedded then ensure_collection, full upsert, and count verification run. Within one process activation verifies replacement before swap, and one retired binding is retried/deleted before another admission.",
+      "identity_repair": "CandidateId remains a compact logical u64, but HTTP derives a deterministic 128-bit UUID from the complete binding and logical ID. Payload retains/validates that logical ID on fetch/delete, closing cross-binding physical point overwrite.",
+      "coverage_failure": "execute_search passes a constant authorized complete source witness even if ViewRoot advertises semantic partial coverage; the vector route therefore does not prove semantic completeness",
+      "scale_failure": "QueryCoordinator accepts up to 65536 rows while default Qdrant limits permit 4096 candidates; reconciliation failure is discarded at the command boundary and gives lexical fallback. ProducerHealth retries after five seconds, but there is no product outage-to-recovery proof or typed failure in the search reply",
+      "typed_input_failure": "semantic text is synthesized from generic row label/signature/document fragments; complete compiler claims can contribute rendered content, but no publication-owned typed image or relation input reaches Qdrant",
+      "hard_gate": "generation-namespaced typed publication projection, no-op repeat-search counters, diff-only add/edit/delete mutation, concurrent V1/V2 isolation, cross-process retirement, 4097+ row behavior, partial rejection, external activation/search, offline/restart fallback"
+    },
+    "security_and_recovery": [
+      "crates/local-service/src/builtin/ingest.rs ProjectRoot openat and NOFOLLOW",
+      "crates/local-service/src/listener.rs and apps/worker same-effective-UID peer validation",
+      "crates/engine/src/platform.rs authority secret checks",
+      "crates/local-service/src/builtin/view_journal.rs",
+      "apps/worker/src/input_cas.rs",
+      "crates/local-service/src/builtin/registry.rs bounded archive staging",
+      "crates/local-service/src/builtin/product_state.rs JSON state owner has separate unproven durability semantics"
+    ],
+    "observability_gap": {
+      "legacy": [
+        "heart/observe/flight.rs",
+        "heart/telemetry/lib.rs"
+      ],
+      "active_counter_seam": "crates/execution/src/telemetry.rs now has seven closed families and four closed outcomes; scheduler lifecycle/queue and local-service/worker transport code have recording hooks, while with_telemetry remains unused outside tests",
+      "active_composition_found": false,
+      "startup_default": "local-service run_with_owner and worker run_process bind listeners that initialize Telemetry::disabled; no locald/worker startup call to with_telemetry, concrete exporter implementation, Telemetry::export caller, or periodic export loop was found",
+      "restored_adapter_status": "crates/heart-telemetry adapter passes 7/7 after test support enabled exact server.root interest; this verifies the library bridge, not application startup/export composition",
+      "missing_product_families": [
+        "compiler",
+        "search",
+        "remote",
+        "recovery"
+      ],
+      "verified_export_contract": "bounded in-memory snapshots and exporter-failure isolation only; no actual configured export, tracing/log/span bridge, runtime-gauge loop, or exporter-health surface",
+      "hard_gate": "PARITY-TELEMETRY-001"
+    },
+    "profile_projection_cutover": {
+      "status": "source-fixed; integrator-reported focused test",
+      "exact_scope": "PackageKey plus LanguageProfile, including C versus C++",
+      "capacity": "semantic rows bounded before allocation against final post-fallback row count",
+      "reported_validation": "cargo test -p backend-local-service complete_c_publication_does_not_suppress_cxx_fallback -- --nocapture: 1 passed",
+      "remaining_gate": "healthy-host seven-language product journey"
+    },
+    "rust_deadline_cutover": {
+      "status": "source-fixed; integrator-reported all-target and focused test",
+      "responsibility": "monotonic deadline is carried through RustAnalysisControl and compiler-driver Rust lowering; DeadlineExceeded remains typed",
+      "remaining_gate": "healthy-host executable deadline journey"
+    },
+    "compiler_port_provenance": {
+      "comparison": "git archive HEAD legacy paths to active mapped paths",
+      "compiler_ir": {
+        "old_files": 99,
+        "new_files": 99,
+        "missing": 0,
+        "added": 0,
+        "byte_identical": 44,
+        "changed": 55,
+        "net_changed_lines": 4099
+      },
+      "compiler_ir_vocabulary": {
+        "old_files": 11,
+        "new_files": 11,
+        "missing": 0,
+        "added": 0
+      },
+      "compiler_publication": {
+        "old_files": 27,
+        "new_files": 27,
+        "missing": 0,
+        "added": 0
+      },
+      "compiler_frontend_rust_files": 341,
+      "compiler_frontend_rust_lines": 181309,
+      "tree_sitter_semantic_authority": false,
+      "tree_sitter_locations": [
+        "frontends/clang",
+        "frontends/csharp",
+        "frontends/go",
+        "frontends/java",
+        "frontends/python",
+        "frontends/rust",
+        "frontends/typescript"
+      ]
+    },
+    "mapped_tree_provenance": {
+      "mapped_system_count": 43,
+      "missing_files": 0,
+      "restored_during_final_audit": {
+        "legacy": "server/operation",
+        "active": "crates/server-operation",
+        "files": 22
+      },
+      "path_changes_only": [
+        "Cargo.toml workspace-relative dependencies",
+        "five include_bytes fixture paths",
+        "CSharp helper test path"
+      ],
+      "legacy_files": 737,
+      "active_files": 737
+    }
+  },
+  "current_test_inventory": {
+    "compatibility": [
+      "tests/compatibility/tests/compiler_parity.rs"
+    ],
+    "journeys": [
+      "tests/journeys/tests/cutover_e2e.rs",
+      "tests/journeys/tests/registry_process.rs"
+    ],
+    "durability": [
+      "tests/crash",
+      "crates/local-service/src/builtin/view_journal_tests.rs"
+    ],
+    "concurrency": [
+      "tests/concurrency"
+    ],
+    "laws_and_scale": [
+      "tests/laws/tests/cutover_regressions.rs",
+      "tests/performance/tests/structural.rs",
+      "tests/performance/tests/durable.rs",
+      "tests/performance/tests/dispatch.rs"
+    ],
+    "providers": [
+      "extensions/tantivy/src/tests.rs",
+      "extensions/qdrant/src/tests.rs",
+      "extensions/trustfall/src/tests.rs"
+    ],
+    "focused_audit_runs": [
+      "cargo test -p backend-local-service query --lib: earlier 5 passed; covers configuration, one-shot HTTP fixture activation, local ranking, and semantic reranking only. Later Go-dependent local-service probes are host-toolchain unavailable because Go 1.27.1 is wedged, so they receive no pass credit",
+      "cargo test -p backend-engine semantic_relation --lib --quiet: independent 4/4 passed, including owner activation and foreign manifest/binding rejection",
+      "integrator-reported extensions/qdrant 23/23 and server-index-qdrant library 11/11 after binding-scoped physical UUID and bounded retirement repairs",
+      "cargo test -p heart-frame -p heart-object-pack -p heart-view --all-targets: 66 passed; restored library-only binary boundary",
+      "cargo test -p heart-telemetry --test adapter: 7 passed after exact event-target test support repair",
+      "cargo test -p interface-core --test package --quiet: 2 passed; canonical PackageUrl re-export checkpoint",
+      "cargo test -p backend-engine registry --lib --quiet: 10 passed after shared package consolidation",
+      "cargo test -p interface-protocol --all-targets --quiet: 24 passed; canonical generic PURL versus Cpp acquisition protocol wire contract",
+      "cargo test -p server-index-ingest -p server-index-retrieval -p server-index-routing --all-targets --quiet: 0/4/1/5/1/8 passed; restored library-only typed index cluster",
+      "cargo test -p backend-engine semantic_relation --quiet: 5/5 exact key round-trip, owner activation, and foreign package/profile image rejection",
+      "cargo test -p compiler-ir --test semantic_ir vcs_diffs_the_same_ir_without_lowering_or_archiving --quiet: owned and reopened reader entity/link parity",
+      "cargo test -p backend-local-service link_only_change_retains_typed_endpoint --quiet: typed evidence-only public graph delta",
+      "cargo test -p backend-cli cli_preserves_typed_semantic_link_evidence_in_json_and_human_output --quiet: DTO v5 typed Diff reaches JSON/human and passes actual-payload preflight",
+      "cargo test -p backend-mcp diff_tool_admits_package_references_and_returns_the_typed_surface --quiet: typed Diff structuredContent and PURL admission",
+      "backend-laws semantic_plane_boundary: 3/3",
+      "backend-extension-trustfall lib: 17/17",
+      "compiler-ir reader_render: 5/5",
+      "backend-local-service all targets: check passed",
+      "cutover_e2e CLI/MCP/desktop proof-bearing reply: 1/1",
+      "cutover_e2e exact semantic version selection/restart: 1/1",
+      "extensions qdrant: 23/23",
+      "extensions tantivy: 23/23",
+      "restored 14-crate server-index cluster: 205 passed, 5 real-Qdrant ignored"
+    ],
+    "language_helpers": [
+      "frontends/go/tests/native_helper.rs",
+      "frontends/python/tests/native_helper.rs"
+    ],
+    "restored_ir_library_only": [
+      "crates/compiler-ir/tests/semantic_ir.rs",
+      "crates/compiler-ir/tests/wire_attacks.rs",
+      "crates/compiler-ir/tests/semantic_attacks.rs",
+      "crates/compiler-ir-vocabulary/tests/type_lattice.rs"
+    ],
+    "compiler_publication": [
+      "crates/compiler-application/tests/local_compiler/package_batch.rs::owned_runtime_frontier_reaches_the_package_publication_owner",
+      "crates/local-service/src/builtin/view_build.rs exact-profile mixed C/C++ fallback test (integrator-reported)"
+    ]
+  },
+  "fixed_during_audit": [
+    {
+      "id": "REG-DECODER-001",
+      "path": "crates/engine/src/registry/ecosystem_decoders.rs",
+      "change": "Maven tagged-row decoder now compares stripped tag names.",
+      "validation": [
+        "cargo test -p backend-engine registry --lib",
+        "cargo fmt --check -p backend-engine"
+      ]
+    },
+    {
+      "id": "TELEMETRY-ADAPTER-TEST-SUBSCRIPTION-001",
+      "path": "crates/heart-telemetry/tests/adapter/support.rs",
+      "change": "Test support now enables the exact server.root and related expected event targets; it had subscribed only to heart while the correlated contract emitted server.root.",
+      "validation": [
+        "cargo test -p heart-telemetry --test adapter"
+      ],
+      "scope_limit": "test-only filter repair; no product telemetry exporter was composed"
+    },
+    {
+      "id": "HISTORICAL-IR-TYPE-FACTS-IDENTITY-001",
+      "path": "crates/compiler-ir/tests/type_facts.rs",
+      "change": "The schema-one fixture was restored from a post-migration heart.* hash-label artifact to the historical workspace2 nudox.* persisted-ID contract without changing the wire layout.",
+      "validation": [
+        "cargo test -p compiler-ir --all-targets --quiet"
+      ],
+      "scope_limit": "test fixture compatibility repair; it does not establish product IR publication wiring"
+    },
+    {
+      "id": "QDRANT-DECODED-GZIP-BOUND-001",
+      "path": "crates/server-index-qdrant/transport.rs",
+      "change": "Decoded gzip responses are bounded after decompression as well as at the transport boundary.",
+      "validation": [
+        "cargo fmt --check -p server-index-qdrant",
+        "cargo test -p server-index-qdrant --all-targets --quiet"
+      ],
+      "scope_limit": "library transport boundary repair; product lifecycle parity remains gated separately"
+    },
+    {
+      "id": "COMPILER-DRIVER-FIXTURE-PATHS-001",
+      "path": "crates/compiler-driver/tests",
+      "change": "All 14 stale include_bytes! paths targeting deleted compiler/languages/{typescript,csharp} fixtures were redirected to the restored crates/compiler-language-* locations.",
+      "validation": [
+        "first cargo check --workspace --all-targets exposed the paths",
+        "the next all-target pass moved beyond those targets into journeys"
+      ],
+      "scope_limit": "final cargo check --workspace --all-targets passed; healthy-host executable journeys remain required"
+    },
+    {
+      "id": "COVERAGE-ITERATOR-SIGNATURE-001",
+      "path": "journey target using Coverage::is_complete",
+      "change": "A stale iterator signature in a journey target was repaired after the all-target graph reached it.",
+      "validation": [
+        "second cargo check --workspace --all-targets checkpoint reached journeys and exposed the mismatch"
+      ],
+      "scope_limit": "final all-target compilation passed; executable journey validation remains pending"
+    },
+    {
+      "id": "SEMANTIC-VIEW-PROFILE-SCOPE-001",
+      "path": "crates/local-service/src/builtin/view_build.rs; crates/local-service/src/builtin.rs",
+      "change": "Complete publication fallback suppression and semantic coverage are keyed by exact PackageKey plus LanguageProfile, so C and C++ cannot collapse into one Clang-family lane.",
+      "validation": [
+        "integrator-reported cargo test -p backend-local-service complete_c_publication_does_not_suppress_cxx_fallback -- --nocapture: 1 passed"
+      ],
+      "scope_limit": "focused product test and final workspace all-target check pass; seven-language journeys remain required"
+    },
+    {
+      "id": "SEMANTIC-VIEW-CAPACITY-001",
+      "path": "crates/local-service/src/builtin/view_build.rs",
+      "change": "Semantic projection capacity is computed from package rows, then exact post-suppression structural fallback plus semantic rows before final allocation.",
+      "validation": [
+        "static re-audit of live source"
+      ],
+      "scope_limit": "requires one-million-row mixed fallback/semantic workload before scale parity credit"
+    },
+    {
+      "id": "RUST-DEADLINE-CUTOVER-001",
+      "path": "crates/compiler-language-rust/authority.rs; crates/compiler-driver/lower/rust.rs; crates/compiler-driver/types/authority.rs",
+      "change": "Restored monotonic Rust authority deadline and typed DeadlineExceeded propagation through rust-analyzer lowering and driver diagnostics.",
+      "validation": [
+        "integrator-reported cargo check -p compiler-language-rust -p compiler-driver --all-targets",
+        "integrator-reported focused expired-entry test: 1 passed"
+      ],
+      "scope_limit": "workspace all-target gate passes; a healthy-host executable deadline journey remains required"
+    },
+    {
+      "id": "SEMANTIC-PUBLICATION-TYPED-TARGET-001",
+      "path": "crates/engine/src/builtin/semantic_relation.rs; crates/compiler-application/compiler.rs; crates/local-service/src/builtin.rs",
+      "change": "Publication keys retain exact product reference, compiler PackageUrl, and profile; compiler lineage borrows the URL; one activation helper rejects image target rebinding before projection.",
+      "validation": [
+        "cargo test -p backend-engine semantic_relation --quiet: 5/5",
+        "cargo check -p backend-local-service --all-targets --quiet"
+      ],
+      "scope_limit": "exact coordinate fields beyond lineage/profile are not independently committed in semantic-image provenance"
+    },
+    {
+      "id": "BORROWED-GRAPH-VCS-PUBLIC-DIFF-001",
+      "path": "crates/compiler-ir/{reader.rs,vcs.rs,semantic_image/full_wire/view.rs}; crates/local-service/src/builtin/commands.rs; crates/library/surface.rs",
+      "change": "Canonical borrowed link cursors and evidence-aware merge diff now flow from validated images into a bounded typed public Diff algebra.",
+      "validation": [
+        "compiler-ir owned/reopened VCS focused test",
+        "backend-local-service link-only typed endpoint test",
+        "backend-library semantic diff tests"
+      ],
+      "scope_limit": "same-key history, restart selection, and generic provider typed projection remain gates"
+    },
+    {
+      "id": "SURFACE-PREFLIGHT-ACTUAL-PAYLOAD-001",
+      "path": "crates/library/protocol/admission.rs; crates/library/surface.rs; apps/cli/src/tests.rs",
+      "change": "Reply preflight traverses the actual typed Surface payload instead of assigning every reply a 5 MiB theoretical maximum above the 4 MiB frame limit.",
+      "validation": [
+        "cargo test -p backend-cli cli_preserves_typed_semantic_link_evidence_in_json_and_human_output --quiet"
+      ],
+      "scope_limit": "the final serializer still enforces the canonical 4 MiB frame limit"
+    }
+  ],
+  "audit_open_gates": [
+    {
+      "id": "LANGUAGE-EXECUTION-EXTERNAL-001",
+      "severity": "P0",
+      "status": "external",
+      "evidence": "One semantic architecture is enforced; Go real execution, Java JDK execution, and C# fixture regeneration remain externally blocked.",
+      "gate": "healthy explicit Go, JDK, and dotnet-backed producer parity plus source-to-client journeys"
+    },
+    {
+      "id": "REMOTE-COMPILER-AUTHORITY-001",
+      "severity": "P1",
+      "status": "open",
+      "evidence": "Typed semantic payload transport/equivalence/reuse/fencing pass, but the worker does not execute or lend a compiler authority.",
+      "gate": "remote compiler authority image equals local under toolchain and hostile cross-claim cases"
+    },
+    {
+      "id": "PROVIDER-DURABILITY-001",
+      "severity": "P1",
+      "status": "external_and_product_composition",
+      "evidence": "Leaf Tantivy durable/reopen and Qdrant typed envelope tests pass; product durable Tantivy and real Qdrant restart/delta/generation remain unproved.",
+      "gate": "product Tantivy restart reopen and QDRANT_URL 4097-row generation/delta/outage journey"
+    },
+    {
+      "id": "STRUCTURAL-DEBT-001",
+      "severity": "P1",
+      "status": "open",
+      "evidence": "Unreachable frontend semantic helpers and compiler-driver mod native remain; they are not active authority paths.",
+      "gate": "feature-map rich facts into compiler-language-* before deleting duplicate implementations"
+    }
+  ],
+  "artifact_contract": {
+    "artifact_schema_version": 4,
+    "semantic_publication_relation": {
+      "domain": "0x97",
+      "type": 3,
+      "version": 3
+    },
+    "public_transport_dto_version": 6,
+    "mapped_tree": {
+      "systems": 43,
+      "legacy_files": 737,
+      "active_files": 737,
+      "missing_files": 0
+    },
+    "provenance_basis": "git HEAD deleted tree plus /Users/mileswirht/Downloads/backend_1/workspace and workspace2 when present; turso excluded"
+  },
+  "cutover_checkpoint": {
+    "authority_route": [
+      "crates/compiler-language-*",
+      "crates/compiler-ir",
+      "crates/compiler-publication",
+      "crates/engine ProductSemanticPublicationRelation"
+    ],
+    "structural_only": [
+      "frontends/* syntax_frontend",
+      "crates/compile/src/syntax.rs"
+    ],
+    "typed_consumers": [
+      "local replication",
+      "worker transport",
+      "selected document/graph/related/diff",
+      "Trustfall SemanticQueryCorpus",
+      "Tantivy selected corpus",
+      "Qdrant selected corpus"
+    ],
+    "new_identity_sources": [
+      "compiler-ir ExternalTargetIdentity",
+      "package+image ScopedExternalTargetIdentity",
+      "backend-library PackageKey",
+      "compiler-vocabulary PackageUrl and LanguageProfile"
+    ],
+    "tests": [
+      "backend-laws semantic_plane_boundary: 3/3",
+      "backend-extension-trustfall lib: 17/17",
+      "compiler-ir reader_render: 5/5",
+      "backend-local-service all targets: check passed",
+      "cutover_e2e CLI/MCP/desktop proof-bearing reply: 1/1",
+      "cutover_e2e exact semantic version selection/restart: 1/1",
+      "extensions qdrant: 23/23",
+      "extensions tantivy: 23/23",
+      "restored 14-crate server-index cluster: 205 passed, 5 real-Qdrant ignored"
+    ],
+    "language_results": {
+      "rust": "10/10",
+      "typescript": "33/33",
+      "python": "36/36",
+      "go": "33/33 offline/fake; real authority explicitly skipped",
+      "java": "three MissingEnvironment; no JDK",
+      "csharp": "unit 4/4, image 6/6, producer parity 1/4; stale fixtures and no dotnet",
+      "c_and_cxx": "default 9/9; native 17/17 including eight live cases"
+    },
+    "implementation_reintegration": {
+      "direct_mappings": 730,
+      "byte_identical": 522,
+      "evolved": 208,
+      "source_only": {
+        "total": 28,
+        "control_moved_to_tools_control": 26,
+        "local_secret_excluded": 1,
+        "python_cache": 2
+      },
+      "old_git_compiler": {
+        "present": 360,
+        "expected": 360,
+        "byte_identical": 234,
+        "evolved": 126,
+        "missing": 0
+      }
+    },
+    "unreachable_duplicate_plane_debt": [
+      "frontends NativeSemanticAdapter/helper implementations; only syntax_frontend is product-reachable",
+      "compiler-driver private mod native and NativeRecipe"
+    ],
+    "external_blockers": [
+      "healthy explicit Go toolchain",
+      "JDK/NUDOX_JDK",
+      "dotnet fixture regeneration",
+      "QDRANT_URL lifecycle service"
+    ]
+  }
+}

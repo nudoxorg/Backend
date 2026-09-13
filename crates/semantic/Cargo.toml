@@ -1,0 +1,15 @@
+[package]
+name = "backend-semantic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+blake3 = { workspace = true }
+backend-version = { path = "../version" }
+backend-flow = { path = "../flow" }
+
+[lints]
+workspace = true

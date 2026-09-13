@@ -1,0 +1,21 @@
+error[E0081]: discriminant value `73` assigned more than once
+  --> tests/ui/../../marker_registry.rs
+   |
+   |           pub enum EncodingCode {
+   |           ^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: tests/ui/duplicate_encoding_code.rs:32:1
+   |
+32 | / protocol_registry!(
+33 | |     domains {
+34 | |         (OneDomain, One, 41, b"1234567890123456")
+...  |
+37 | |         (ExistingEncoding, Existing, 73, b"1234567890123456"),
+   | |                                      -- `73` assigned here
+38 | |         (DuplicateEncoding, Duplicate, 73, b"6543210987654321")
+   | |                                        -- `73` assigned here
+39 | |     }
+40 | | );
+   | |_- in this macro invocation
+   |
+   = note: this error originates in the macro `protocol_registry` (in Nightly builds, run with -Z macro-backtrace for more info)

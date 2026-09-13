@@ -1,0 +1,19 @@
+# Defines the `server-index-vocabulary` package and its explicit dependency boundary.
+# The crate exists to define index snapshot, segment, partition, model, and metric identities.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "server-index-vocabulary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+compiler-ir = { path = "../compiler-ir" }
+heart-identity = { path = "../heart-identity" }
+[dev-dependencies]
+allocation-counter.workspace = true
+
+[lib]
+path = "lib.rs"

@@ -1,0 +1,30 @@
+# Defines the `server-index-build` package and its explicit dependency boundary.
+# The crate exists to project reopened compiler IR into immutable exact and lexical segments.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "server-index-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+compiler-publication = { path = "../compiler-publication" }
+heart-identity = { path = "../heart-identity" }
+server-index-core = { path = "../server-index-core" }
+compiler-ir = { path = "../compiler-ir" }
+thiserror.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+allocation-counter.workspace = true
+compiler-driver = { path = "../compiler-driver" }
+compiler-vocabulary = { path = "../compiler-vocabulary" }
+server-journal = { path = "../server-journal" }
+heart-identity = { path = "../heart-identity" }
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"

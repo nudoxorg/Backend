@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "mutations": [
+    {"id":"new-holdout-reuse","input":"frozen candidate + changed holdout","expected":"new evaluation key, same candidate tree"},
+    {"id":"tamper-event","input":"modify immutable event bytes","expected":"hash-chain/head mismatch"},
+    {"id":"immutable-event-collision","input":"reuse an event filename for different canonical bytes","expected":"immutable-event-collision"},
+    {"id":"cyclic-ledger","input":"HEAD points through a self-referential event","expected":"ledger-cycle"},
+    {"id":"orphan-ledger","input":"durable event is unreachable from HEAD","expected":"ledger-orphan"},
+    {"id":"authority-forgery","input":"reviewer claims sol receipt","expected":"authority-capability-mismatch"},
+    {"id":"crash-before-head","input":"event written, head absent","expected":"reconcile or reject orphan"},
+    {"id":"crash-after-head","input":"head moved, receipt response lost","expected":"idempotent event lookup"},
+    {"id":"concurrent-lease","input":"two owners acquire same key","expected":"one epoch owner and bounded waiter"},
+    {"id":"stale-fence","input":"late old owner receipt","expected":"stale-or-foreign-fence"},
+    {"id":"out-of-scope-edit","input":"changed path outside allowed_paths","expected":"candidate rejected"},
+    {"id":"candidate-index","input":"candidate tree is computed in an isolated temporary Git index","expected":"index does not mutate the worker index"},
+    {"id":"evaluation-receipt-binding","input":"evaluation claim names a different candidate tree","expected":"evaluation-receipt-binding"},
+    {"id":"cas-race","input":"protected ref changed after precondition","expected":"protected-ref-cas-failed"},
+    {"id":"evaluator-mutation","input":"same key with changed evaluator root","expected":"fresh evaluation"},
+    {"id":"scope-missing-path","input":"governed Git path omitted from generated ownership map","expected":"exactly one scope"},
+    {"id":"scope-duplicate-path","input":"governed Git path assigned to overlapping package/shared roots","expected":"exactly one scope"}
+  ]
+}

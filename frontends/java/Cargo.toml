@@ -1,0 +1,17 @@
+[package]
+name = "backend-frontend-java"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[lints]
+workspace = true
+[dependencies]
+backend-compile = { path = "../../crates/compile" }
+flate2.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tree-sitter-java = "=0.23.5"
+ureq.workspace = true
+[lib]
+path = "lib.rs"

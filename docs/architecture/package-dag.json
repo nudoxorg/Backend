@@ -1,0 +1,341 @@
+{
+  "target_packages": 28,
+  "core_packages": 11,
+  "layer_counts": {
+    "core": 11,
+    "frontend": 7,
+    "extension": 4,
+    "application": 6
+  },
+  "packages": [
+    {
+      "name": "backend-version",
+      "manifest_path": "crates/version/Cargo.toml",
+      "dependencies": [],
+      "layer": "core",
+      "order": 0
+    },
+    {
+      "name": "backend-runtime",
+      "manifest_path": "crates/runtime/Cargo.toml",
+      "dependencies": [],
+      "layer": "core",
+      "order": 1
+    },
+    {
+      "name": "backend-store",
+      "manifest_path": "crates/store/Cargo.toml",
+      "dependencies": [
+        "backend-version"
+      ],
+      "layer": "core",
+      "order": 2
+    },
+    {
+      "name": "backend-flow",
+      "manifest_path": "crates/flow/Cargo.toml",
+      "dependencies": [
+        "backend-store",
+        "backend-version"
+      ],
+      "layer": "core",
+      "order": 3
+    },
+    {
+      "name": "backend-replication",
+      "manifest_path": "crates/replication/Cargo.toml",
+      "dependencies": [
+        "backend-store",
+        "backend-version"
+      ],
+      "layer": "core",
+      "order": 4
+    },
+    {
+      "name": "backend-execution",
+      "manifest_path": "crates/execution/Cargo.toml",
+      "dependencies": [
+        "backend-flow",
+        "backend-replication",
+        "backend-store",
+        "backend-version"
+      ],
+      "layer": "core",
+      "order": 5
+    },
+    {
+      "name": "backend-semantic",
+      "manifest_path": "crates/semantic/Cargo.toml",
+      "dependencies": [
+        "backend-flow",
+        "backend-version"
+      ],
+      "layer": "core",
+      "order": 6
+    },
+    {
+      "name": "backend-compile",
+      "manifest_path": "crates/compile/Cargo.toml",
+      "dependencies": [
+        "backend-flow",
+        "backend-semantic",
+        "backend-version"
+      ],
+      "layer": "core",
+      "order": 7
+    },
+    {
+      "name": "backend-library",
+      "manifest_path": "crates/library/Cargo.toml",
+      "dependencies": [
+        "backend-compile",
+        "backend-flow",
+        "backend-semantic",
+        "backend-version"
+      ],
+      "layer": "core",
+      "order": 8
+    },
+    {
+      "name": "backend-client",
+      "manifest_path": "crates/client/Cargo.toml",
+      "dependencies": [
+        "backend-library",
+        "backend-replication"
+      ],
+      "layer": "core",
+      "order": 9
+    },
+    {
+      "name": "backend-frontend-clang",
+      "manifest_path": "frontends/clang/Cargo.toml",
+      "dependencies": [
+        "backend-compile"
+      ],
+      "layer": "frontend",
+      "order": 10
+    },
+    {
+      "name": "backend-frontend-csharp",
+      "manifest_path": "frontends/csharp/Cargo.toml",
+      "dependencies": [
+        "backend-compile"
+      ],
+      "layer": "frontend",
+      "order": 11
+    },
+    {
+      "name": "backend-frontend-go",
+      "manifest_path": "frontends/go/Cargo.toml",
+      "dependencies": [
+        "backend-compile"
+      ],
+      "layer": "frontend",
+      "order": 12
+    },
+    {
+      "name": "backend-frontend-java",
+      "manifest_path": "frontends/java/Cargo.toml",
+      "dependencies": [
+        "backend-compile"
+      ],
+      "layer": "frontend",
+      "order": 13
+    },
+    {
+      "name": "backend-frontend-python",
+      "manifest_path": "frontends/python/Cargo.toml",
+      "dependencies": [
+        "backend-compile"
+      ],
+      "layer": "frontend",
+      "order": 14
+    },
+    {
+      "name": "backend-frontend-rust",
+      "manifest_path": "frontends/rust/Cargo.toml",
+      "dependencies": [
+        "backend-compile"
+      ],
+      "layer": "frontend",
+      "order": 15
+    },
+    {
+      "name": "backend-frontend-typescript",
+      "manifest_path": "frontends/typescript/Cargo.toml",
+      "dependencies": [
+        "backend-compile"
+      ],
+      "layer": "frontend",
+      "order": 16
+    },
+    {
+      "name": "backend-extension-tantivy",
+      "manifest_path": "extensions/tantivy/Cargo.toml",
+      "dependencies": [
+        "backend-semantic",
+        "backend-version"
+      ],
+      "layer": "extension",
+      "order": 17
+    },
+    {
+      "name": "backend-extension-trustfall",
+      "manifest_path": "extensions/trustfall/Cargo.toml",
+      "dependencies": [
+        "backend-flow",
+        "backend-library",
+        "backend-semantic",
+        "backend-version"
+      ],
+      "layer": "extension",
+      "order": 18
+    },
+    {
+      "name": "backend-extension-qdrant",
+      "manifest_path": "extensions/qdrant/Cargo.toml",
+      "dependencies": [
+        "backend-execution",
+        "backend-replication",
+        "backend-version"
+      ],
+      "layer": "extension",
+      "order": 19
+    },
+    {
+      "name": "backend-extension-turso",
+      "manifest_path": "extensions/turso/Cargo.toml",
+      "dependencies": [
+        "backend-library"
+      ],
+      "layer": "extension",
+      "order": 20
+    },
+    {
+      "name": "backend-engine",
+      "manifest_path": "crates/engine/Cargo.toml",
+      "dependencies": [
+        "backend-compile",
+        "backend-execution",
+        "backend-flow",
+        "backend-library",
+        "backend-replication",
+        "backend-semantic",
+        "backend-store",
+        "backend-version"
+      ],
+      "layer": "core",
+      "order": 21
+    },
+    {
+      "name": "backend-local-service",
+      "manifest_path": "crates/local-service/Cargo.toml",
+      "dependencies": [
+        "backend-compile",
+        "backend-engine",
+        "backend-extension-qdrant",
+        "backend-extension-tantivy",
+        "backend-extension-turso",
+        "backend-frontend-clang",
+        "backend-frontend-csharp",
+        "backend-frontend-go",
+        "backend-frontend-java",
+        "backend-frontend-python",
+        "backend-frontend-rust",
+        "backend-frontend-typescript",
+        "backend-runtime",
+        "backend-semantic",
+        "backend-version"
+      ],
+      "layer": "application",
+      "order": 22
+    },
+    {
+      "name": "backend-desktop",
+      "manifest_path": "apps/desktop/Cargo.toml",
+      "dependencies": [
+        "backend-client",
+        "backend-library",
+        "backend-local-service",
+        "backend-replication",
+        "backend-runtime"
+      ],
+      "layer": "application",
+      "order": 23
+    },
+    {
+      "name": "backend-cli",
+      "manifest_path": "apps/cli/Cargo.toml",
+      "dependencies": [
+        "backend-client",
+        "backend-library",
+        "backend-replication",
+        "backend-runtime"
+      ],
+      "layer": "application",
+      "order": 24
+    },
+    {
+      "name": "backend-mcp",
+      "manifest_path": "apps/mcp/Cargo.toml",
+      "dependencies": [
+        "backend-client",
+        "backend-extension-trustfall",
+        "backend-library",
+        "backend-replication",
+        "backend-runtime"
+      ],
+      "layer": "application",
+      "order": 25
+    },
+    {
+      "name": "backend-worker",
+      "manifest_path": "apps/worker/Cargo.toml",
+      "dependencies": [
+        "backend-engine"
+      ],
+      "layer": "application",
+      "order": 26
+    },
+    {
+      "name": "backend-locald",
+      "manifest_path": "apps/locald/Cargo.toml",
+      "dependencies": [
+        "backend-local-service"
+      ],
+      "layer": "application",
+      "order": 27
+    }
+  ],
+  "topological_order": [
+    "backend-version",
+    "backend-runtime",
+    "backend-store",
+    "backend-flow",
+    "backend-replication",
+    "backend-execution",
+    "backend-semantic",
+    "backend-compile",
+    "backend-library",
+    "backend-client",
+    "backend-frontend-clang",
+    "backend-frontend-csharp",
+    "backend-frontend-go",
+    "backend-frontend-java",
+    "backend-frontend-python",
+    "backend-frontend-rust",
+    "backend-frontend-typescript",
+    "backend-extension-tantivy",
+    "backend-extension-trustfall",
+    "backend-extension-qdrant",
+    "backend-extension-turso",
+    "backend-engine",
+    "backend-local-service",
+    "backend-desktop",
+    "backend-cli",
+    "backend-mcp",
+    "backend-worker",
+    "backend-locald"
+  ],
+  "note": "Exact runtime product package names, owner paths, direct backend dependencies, layers, and order; test, tooling, and agent-control packages are outside this product graph."
+}

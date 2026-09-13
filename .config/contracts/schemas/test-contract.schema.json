@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "backend.control-plane.v1/TestContract",
+  "x-backend-schema-version": 1,
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "law",
+    "input_grammar",
+    "bug_ingredients",
+    "oracle",
+    "independence",
+    "reducer",
+    "coverage",
+    "fault_sites",
+    "budget",
+    "retained_regression"
+  ],
+  "properties": {
+    "law": { "type": "string", "minLength": 1 },
+    "input_grammar": { "type": "string", "minLength": 1 },
+    "bug_ingredients": { "type": "array", "items": { "type": "string" } },
+    "oracle": { "type": "string", "minLength": 1 },
+    "independence": { "type": "string", "minLength": 1 },
+    "reducer": { "type": "string", "minLength": 1 },
+    "coverage": { "type": "array", "items": { "type": "string" } },
+    "fault_sites": { "type": "array", "items": { "type": "string" } },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wall_ms", "generated_cases"],
+      "properties": {
+        "wall_ms": { "type": "integer", "minimum": 1 },
+        "generated_cases": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "retained_regression": { "type": "boolean" }
+  }
+}

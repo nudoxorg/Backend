@@ -36,7 +36,7 @@ def "main doctor" []: nothing -> record {
     )
     let missing = $tools | where available == false | get name
     if not ($missing | is-empty) {
-        tooling-fail "missing-tools" $"pinned environment lacks ($missing | str join ', ')" "enter through direnv or nix develop path:.config#development"
+        tooling-fail "missing-tools" $"pinned environment lacks ($missing | str join ', ')" "enter through direnv or nix develop path:.#development"
     }
     {
         repository: (repository-root)

@@ -1,0 +1,40 @@
+# Defines the `heart-telemetry` package and its explicit dependency boundary.
+# The crate exists to batch typed product signals into tracing and OpenTelemetry backends.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "heart-telemetry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+heart-hydration = { path = "../heart-hydration" }
+heart-observe = { path = "../heart-observe" }
+heart-root = { path = "../heart-root" }
+server-runtime = { path = "../server-runtime" }
+heart-memory = { path = "../heart-memory" }
+server-workflow = { path = "../server-workflow" }
+opentelemetry.workspace = true
+opentelemetry-appender-tracing.workspace = true
+opentelemetry_sdk.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"
+
+[lib]
+path = "lib.rs"

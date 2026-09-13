@@ -1,0 +1,45 @@
+# Defines the `server-index-retrieval` package and its explicit dependency boundary.
+# The crate exists to compose exact, lexical, graph, and vector retrieval under one snapshot authority.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "server-index-retrieval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+compiler-ir = { path = "../compiler-ir" }
+server-index-core = { path = "../server-index-core" }
+server-index-graph-vector = { path = "../server-index-graph-vector" }
+server-index-publish = { path = "../server-index-publish" }
+server-index-qdrant = { path = "../server-index-qdrant" }
+server-index-tantivy = { path = "../server-index-tantivy" }
+server-index-trustfall = { path = "../server-index-trustfall" }
+server-index-vocabulary = { path = "../server-index-vocabulary" }
+thiserror.workspace = true
+
+[dev-dependencies]
+allocation-counter.workspace = true
+compiler-vocabulary = { path = "../compiler-vocabulary" }
+server-journal = { path = "../server-journal" }
+heart-hydration = { path = "../heart-hydration" }
+heart-identity = { path = "../heart-identity" }
+heart-object = { path = "../heart-object" }
+heart-root = { path = "../heart-root" }
+heart-schema = { path = "../heart-schema" }
+heart-memory = { path = "../heart-memory" }
+futures-core.workspace = true
+interface-protocol = { path = "../interface-protocol" }
+serde_json.workspace = true
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[[bench]]
+name = "source_resolution"
+harness = false

@@ -1,0 +1,36 @@
+# Defines the `compiler-application` package and its explicit dependency boundary.
+# The crate exists to bind application requests to native compilation and durable publication.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "compiler-application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+arrayvec.workspace = true
+blake3.workspace = true
+compiler-driver = { path = "../compiler-driver" }
+compiler-registry = { path = "../compiler-registry" }
+compiler-publication = { path = "../compiler-publication" }
+compiler-vocabulary = { path = "../compiler-vocabulary" }
+server-journal = { path = "../server-journal" }
+heart-identity = { path = "../heart-identity" }
+compiler-ir = { path = "../compiler-ir" }
+compiler-languages-csharp = { path = "../compiler-language-csharp" }
+compiler-languages-go = { path = "../compiler-language-go" }
+compiler-languages-java = { path = "../compiler-language-java" }
+compiler-languages-python = { path = "../compiler-language-python" }
+compiler-languages-rust = { path = "../compiler-language-rust" }
+compiler-languages-typescript = { path = "../compiler-language-typescript" }
+thiserror.workspace = true
+interface-core = { path = "../interface-core" }
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"

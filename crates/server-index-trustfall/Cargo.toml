@@ -1,0 +1,31 @@
+# Defines the `server-index-trustfall` package and its explicit dependency boundary.
+# The crate exists to adapt borrowed graph facts to typed Trustfall queries.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "server-index-trustfall"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+compiler-ir = { path = "../compiler-ir" }
+server-index-graph-vector = { path = "../server-index-graph-vector" }
+thiserror.workspace = true
+trustfall.workspace = true
+trustfall_core.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+
+[dev-dependencies]
+allocation-counter.workspace = true
+server-index-vocabulary = { path = "../server-index-vocabulary" }
+
+[lib]
+path = "lib.rs"
+
+[[bench]]
+name = "occurrence_traversal"
+harness = false

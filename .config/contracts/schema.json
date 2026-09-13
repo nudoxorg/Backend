@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "encoding": "canonical-json-v1",
+  "hash_domain": "backend.control-plane.v1",
+  "unknown_fields": "reject",
+  "definitions": {
+    "CellDescriptor": ["milestone", "parent_head", "plan_root", "contract_roots", "source_roots", "prerequisite_evidence", "acceptance_root", "allowed_paths", "forbidden_capabilities"],
+    "AcceptanceContract": ["tests", "resource_budget", "journeys"],
+    "TestContract": ["law", "input_grammar", "bug_ingredients", "oracle", "independence", "reducer", "coverage", "fault_sites", "budget", "retained_regression"],
+    "EvaluationKey": ["cell", "candidate_tree", "evaluator_root", "holdout", "environment"],
+    "EvaluationContract": ["cell", "evaluator_root", "holdout", "environment_id", "environment", "command", "cwd", "wall_ms", "stdout_bytes", "stderr_bytes", "coverage"],
+    "CandidateReceipt": ["cell", "candidate_tree", "parent_head", "contract_roots", "toolchain_root", "role_contract", "model", "controller_checks"],
+    "EvaluationReceipt": ["evaluation_key", "candidate_receipt", "authority", "fence", "outcome", "artifact_digests", "coverage", "cell", "candidate_tree", "evaluator_root", "holdout", "environment", "result_root"],
+    "DecisionReceipt": ["candidate_receipt", "evaluation_receipts", "expected_head", "accepted_head", "decision", "authority", "fence"],
+    "AgentWorkKey": ["cell", "model_class", "effort", "toolchain_root", "input_digest"],
+    "LeaseFence": ["work_key", "owner", "epoch", "fence", "state", "expires_at", "waiter_limit"],
+    "EvidenceRecord": ["id", "kind", "claim", "authority", "fence", "roots", "artifact_digests", "supersedes"],
+    "Supersession": ["old_id", "new_id", "reason", "authority", "at"],
+    "ContextCursor": ["consumer", "context_root", "acknowledged_evidence", "at"],
+    "ContextDelta": ["cursor", "cell", "facts", "new_context_root", "omitted_artifacts"]
+  }
+}

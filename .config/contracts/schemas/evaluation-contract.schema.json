@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "backend.control-plane.v1/EvaluationContract",
+  "x-backend-schema-version": 1,
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "cell",
+    "evaluator_root",
+    "holdout",
+    "environment_id",
+    "environment",
+    "command",
+    "cwd",
+    "wall_ms",
+    "stdout_bytes",
+    "stderr_bytes",
+    "coverage"
+  ],
+  "properties": {
+    "cell": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evaluator_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "holdout": {
+      "type": "string",
+      "minLength": 1
+    },
+    "environment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "CARGO_TARGET_DIR": {
+          "type": "string"
+        },
+        "RUST_BACKTRACE": {
+          "type": "string"
+        },
+        "RUSTFLAGS": {
+          "type": "string"
+        }
+      }
+    },
+    "command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cwd": {
+      "enum": [
+        "repository",
+        "current-repo"
+      ]
+    },
+    "wall_ms": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "stdout_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "stderr_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "coverage": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    }
+  }
+}

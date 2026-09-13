@@ -1,0 +1,36 @@
+# Defines the `server-index-tantivy` package and its explicit dependency boundary.
+# The crate exists to adapt immutable lexical segments to Tantivy indexing and search.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "server-index-tantivy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+
+[dependencies]
+compiler-ir = { path = "../compiler-ir" }
+server-index-core = { path = "../server-index-core" }
+tantivy.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+heart-identity = { path = "../heart-identity" }
+
+[lib]
+path = "lib.rs"
+
+[[bench]]
+name = "shadow-resolution"
+path = "benches/shadow_resolution.rs"
+harness = false
+
+[[bench]]
+name = "durable_projection"
+path = "benches/durable_projection.rs"
+harness = false

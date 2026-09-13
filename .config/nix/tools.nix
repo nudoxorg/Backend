@@ -1,8 +1,45 @@
 # Collects every executable admitted to repository tooling and development.
 # Keeps optional platform tools explicit and prevents ambient PATH discovery.
 # Supplies one source of truth to shells, commands, and checks.
-{ pkgs, toolchains }:
+{
+  pkgs,
+  toolchains,
+  workspaceRoot,
+}:
 let
+  workspaceAvailable = builtins.pathExists (workspaceRoot + "/Cargo.toml");
+  stableRustPlatform = pkgs.makeRustPlatform {
+    cargo = toolchains.stable;
+    rustc = toolchains.stable;
+  };
+  controlSourcePrefixes = [
+    "tools/control"
+    "crates/store"
+    "crates/version"
+  ];
+  workspaceSource =
+    if workspaceAvailable then
+      pkgs.lib.cleanSourceWith {
+        src = workspaceRoot;
+        filter =
+          path: type:
+          let
+            absolute = toString path;
+            root = toString workspaceRoot;
+            relative = pkgs.lib.removePrefix "${root}/" absolute;
+          in
+          absolute == root
+          || builtins.elem relative [
+            "Cargo.toml"
+            "Cargo.lock"
+            "crates"
+          ]
+          || builtins.any (
+            prefix: relative == prefix || pkgs.lib.hasPrefix "${prefix}/" relative
+          ) controlSourcePrefixes;
+      }
+    else
+      null;
   dylintSource = pkgs.fetchFromGitHub {
     owner = "trailofbits";
     repo = "dylint";
@@ -38,10 +75,53 @@ let
       "--features"
       "cargo-cli"
     ];
-    cargoInstallFlags = cargoBuildFlags;
+    cargoInstallFlags = [
+      "--package"
+      "cargo-dylint"
+    ];
     doCheck = false;
   };
   dylintLink = mkDylintTool "dylint-link";
+  backendControl =
+    if workspaceAvailable then
+      stableRustPlatform.buildRustPackage {
+        cargoBuildFlags = [
+          "--package"
+          "backend-control"
+          "--bin"
+          "backend-control"
+        ];
+        pname = "backend-control";
+        version = "0.1.0";
+        src = workspaceSource;
+        postPatch = ''
+                substituteInPlace Cargo.toml \
+                  --replace-fail \
+                  'members = [
+              "crates/*",
+              "frontends/*",
+              "extensions/*",
+              "apps/*",
+              "tests/*",
+              "tools/*",
+          ]' \
+                  'members = [
+              "tools/control",
+              "crates/store",
+              "crates/version",
+          ]'
+        '';
+        cargoLock.lockFile = workspaceRoot + "/Cargo.lock";
+        cargoInstallFlags = [
+          "--package"
+          "backend-control"
+          "--bin"
+          "backend-control"
+        ];
+        doCheck = false;
+      }
+    else
+      null;
   nativeCompilers = [
     pkgs.clang
     pkgs.dotnet-sdk_8
@@ -53,8 +133,8 @@ let
   ];
   qualityTools = [
     pkgs.ast-grep
+    pkgs.b3sum
     pkgs.cargo-audit
-    pkgs.cargo-bundle
     pkgs.cargo-deny
     pkgs.cargo-nextest
     pkgs.coreutils
@@ -77,6 +157,7 @@ let
     pkgs.hyperfine
     pkgs.samply
   ]
+  ++ pkgs.lib.optional (backendControl != null) backendControl
   ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.valgrind ];
   serviceTools = [
     pkgs.curl
@@ -90,6 +171,7 @@ let
 in
 {
   inherit
+    backendControl
     cargoDylint
     dylintLink
     nativeCompilers

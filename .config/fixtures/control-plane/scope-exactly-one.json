@@ -1,0 +1,36 @@
+{
+  "fixture": "scope-exactly-one",
+  "inventory": {
+    "source": "cargo metadata --no-deps --format-version 1 plus git ls-files",
+    "policy_paths": [".config/contracts", ".config/fixtures", ".config/nix/policy", ".config/nu/cutover"],
+    "mechanical_scopes": {
+      "apps": "product-surface",
+      "crates": "shared-engine",
+      "extensions": "integration-adapter",
+      "frontends": "language-authority",
+      "tests": "integration-evidence",
+      "tools": "workspace-tooling"
+    },
+    "shared_roots": {
+      ".codex": "agent-configuration",
+      ".config": "tooling-contracts",
+      ".opencode": "agent-configuration",
+      "docs": "architecture-evidence"
+    },
+    "shared_paths": [".envrc", ".git", ".gitignore", "Cargo.lock", "Cargo.toml", "README.md", "flake.lock", "flake.nix"]
+  },
+  "cases": [
+    {"path":"crates/version/src/lib.rs","scopes":["backend-version"]},
+    {"path":"frontends/rust/lib.rs","scopes":["backend-frontend-rust"]},
+    {"path":"extensions/turso/src/lib.rs","scopes":["backend-extension-turso"]},
+    {"path":"crates/local-service/src/lib.rs","scopes":["backend-local-service"]},
+    {"path":"tests/journeys/Cargo.toml","scopes":["backend-journeys"]},
+    {"path":"tools/workspace/src/lib.rs","scopes":["backend-workspace"]},
+    {"path":"docs/architecture/package-dag.json","scopes":["architecture-evidence"]},
+    {"path":".config/contracts/schema.json","scopes":["tooling-contracts"]},
+    {"path":".config/fixtures/control-plane/scope-exactly-one.json","scopes":["tooling-contracts"]},
+    {"path":".config/nix/policy/contracts.nix","scopes":["tooling-contracts"]},
+    {"path":".config/nu/cutover/main.nu","scopes":["tooling-contracts"]}
+  ],
+  "invariant": "every governed path belongs to exactly one package or declared shared root"
+}

@@ -1,0 +1,5 @@
+source=fn main(){}
+toolchain=rustc-v2
+config=features:default
+negative=target/optional
+fact=rust-hir-authority

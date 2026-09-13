@@ -56,58 +56,11 @@ in
     allow_empty_scope = false;
     commit_scopes = [
       {
-        name = "compiler-ir";
-        description = "Semantic IR, archives, and publication";
-        patterns = [ "^/compiler/(ir|ir-vocabulary|publication)/" ];
-      }
-      {
-        name = "compiler-frontend";
-        description = "Language frontends and native compiler authorities";
-        patterns = [ "^/compiler/(frontends|languages|native|driver|vocabulary|registry|application)/" ];
-      }
-      {
-        name = "heart-memory";
-        description = "Ownership, borrowing, allocation, and concurrent structures";
-        patterns = [ "^/heart/(memory|concurrency|collections)/" ];
-      }
-      {
-        name = "heart-observe";
-        description = "Shared telemetry, tracing, metrics, and diagnostic vocabulary";
-        patterns = [ "^/heart/(observe|telemetry|diagnostic)/" ];
-      }
-      {
-        name = "interface-cli";
-        description = "Command-line interface projection";
-        patterns = [ "^/interface/cli/" ];
-      }
-      {
-        name = "interface-mcp";
-        description = "Model Context Protocol projection";
-        patterns = [ "^/interface/mcp/" ];
-      }
-      {
-        name = "interface-gui";
-        description = "Native graphical interface projection";
-        patterns = [
-          "^/interface/(gui|gpui)/"
-          "^/GUI2/"
-        ];
-      }
-      {
-        name = "server-index";
-        description = "Immutable lexical, graph, and vector retrieval";
-        patterns = [ "^/server/index/" ];
-      }
-      {
-        name = "server-runtime";
-        description = "Admission, workflow, storage, and transport services";
-        patterns = [ "^/server/(runtime|workflow|storage|transport)/" ];
-      }
-      {
         name = "tooling-nix";
         description = "Nix flake, environments, and generated configuration";
         patterns = [
-          "^/\\.config/(flake|nix|direnv)/"
+          "^/\\.config/(flake\\.(nix|lock)|rustfmt\\.toml|clippy\\.toml|direnv/)"
+          "^/\\.config/nix/(artifacts|ast-grep-suite|ast-grep|checks|commands|control|default|format|lib|role-tools|shells|toolchains|tools)\\.nix$"
           "^/\\.config/nu/(core|scope|create|quality)/"
           "^/\\.config/nu/(main|tests)\\.nu$"
         ];
@@ -115,12 +68,70 @@ in
       {
         name = "tooling-lint";
         description = "Structural and semantic lint policy";
-        patterns = [ "^/\\.config/(tests/ast-grep|dylint)/" ];
+        patterns = [ "^/\\.config/(tests|dylint)/" ];
       }
       {
         name = "tooling-agent";
         description = "Agent roles, rubrics, trials, and generated skills";
         patterns = [ "^/\\.config/(agents|nu/agents)/" ];
+      }
+      {
+        name = "tooling-shared";
+        description = "Repository-wide environment and ignore policy";
+        patterns = [ "^/(\\.envrc|\\.gitignore)$" ];
+      }
+      {
+        name = "tooling-contracts";
+        description = "Versioned contracts, fixtures, and cutover ledger";
+        patterns = [
+          "^/\\.config/(contracts|fixtures|nix/policy)/"
+          "^/\\.config/nu/cutover/"
+        ];
+      }
+      {
+        name = "target-engine";
+        description = "Target v2 crates and engine boundaries";
+        patterns = [ "^/crates/" ];
+      }
+      {
+        name = "target-frontend";
+        description = "Target v2 frontend authorities";
+        patterns = [ "^/frontends/" ];
+      }
+      {
+        name = "target-extension";
+        description = "Target v2 extensions and adapters";
+        patterns = [ "^/extensions/" ];
+      }
+      {
+        name = "backend-desktop";
+        description = "Target v2 desktop application";
+        patterns = [ "^/apps/desktop/" ];
+      }
+      {
+        name = "backend-cli";
+        description = "Target v2 command-line application";
+        patterns = [ "^/apps/cli/" ];
+      }
+      {
+        name = "backend-mcp";
+        description = "Target v2 Model Context Protocol application";
+        patterns = [ "^/apps/mcp/" ];
+      }
+      {
+        name = "backend-locald";
+        description = "Target v2 local durable service";
+        patterns = [ "^/apps/locald/" ];
+      }
+      {
+        name = "backend-worker";
+        description = "Target v2 remote worker application";
+        patterns = [ "^/apps/worker/" ];
+      }
+      {
+        name = "target-tools";
+        description = "Target v2 build and migration tools";
+        patterns = [ "^/tools/" ];
       }
       {
         name = "integration";
@@ -321,30 +332,30 @@ in
           kind = "cargo-benchmark";
           tool = "cargo";
           protocol = "criterion-v1";
-          package = "heart-root";
+          package = "backend-engine";
           benchmark = "capacity-planning";
           allocator = "system";
           warmth = "criterion-warmup";
           repetitions = "criterion-adaptive";
           statistical_method = "criterion-bootstrap";
         };
-        interface-cli-size = {
+        backend-cli-size = {
           kind = "cargo-binary";
           tool = "cargo-bloat";
           protocol = "cargo-bloat-json-v1";
-          package = "interface-cli";
-          binary = "interface-cli";
+          package = "backend-cli";
+          binary = "backend-cli";
           allocator = "system";
           warmth = "release-current-cache";
           repetitions = 1;
           statistical_method = "symbol-contribution-census";
         };
-        interface-cli-cpu = {
+        backend-cli-cpu = {
           kind = "cargo-profile";
           tool = "samply";
           protocol = "samply-json-v1";
-          package = "interface-cli";
-          binary = "interface-cli";
+          package = "backend-cli";
+          binary = "backend-cli";
           arguments = [ "--help" ];
           allocator = "system";
           warmth = "release-current-cache";
@@ -521,11 +532,34 @@ in
       ];
       admittedClasses = [
         "inspection"
+        "control-plane"
         "repository-write"
         "verification"
         "expanded-verification"
       ];
       tools = {
+        cell-id = "cutover-id";
+        work-key = "cutover-work-key";
+        lease-acquire = "cutover-lease-acquire";
+        lease-renew = "cutover-lease-renew";
+        lease-freeze = "cutover-lease-freeze";
+        lease-expire = "cutover-lease-expire";
+        lease-quarantine = "cutover-lease-quarantine";
+        candidate-admit = "cutover-candidate-admit";
+        evidence-admit = "cutover-receipt-admit";
+        context-delta = "cutover-context-delta";
+        control-init = "cutover-control-init";
+        control-status = "cutover-control-status";
+        control-key = "cutover-control-key";
+        control-plan = "cutover-control-plan";
+        control-apply = "cutover-control-apply";
+        control-admit = "cutover-control-admit";
+        control-renew = "cutover-control-renew";
+        control-fail = "cutover-control-fail";
+        control-cancel = "cutover-control-cancel";
+        control-recover = "cutover-control-recover";
+        control-invalidate = "cutover-control-invalidate";
+        control-candidate = "cutover-control-candidate";
         inspect = "doctor";
         scope = "scope-changed";
         new-file = "create-file";
@@ -597,12 +631,18 @@ in
       ];
       admittedClasses = [
         "inspection"
+        "control-plane"
         "verification"
         "privileged-verification"
         "expanded-verification"
         "measurement"
       ];
       tools = {
+        evaluation = "cutover-evaluate";
+        evidence-admit = "cutover-receipt-admit";
+        context-delta = "cutover-context-delta";
+        control-review = "cutover-control-review";
+        control-evaluation = "cutover-control-evaluation";
         inspect = "doctor";
         scope = "scope-changed";
         lint = "lint-changed";
@@ -668,6 +708,7 @@ in
       ];
       admittedClasses = [
         "inspection"
+        "control-plane"
         "repository-write"
         "verification"
         "privileged-verification"
@@ -675,6 +716,10 @@ in
         "closure"
       ];
       tools = {
+        decision = "cutover-decide";
+        control-decision = "cutover-control-decision";
+        evidence-admit = "cutover-receipt-admit";
+        context-delta = "cutover-context-delta";
         inspect = "doctor";
         scope = "scope-changed";
         new-file = "create-file";
@@ -1088,8 +1133,66 @@ in
   };
 
   evaluation = {
+    contracts = {
+      "workspace-gates" = {
+        cell = "workspace-gates";
+        evaluator_root = "terra-reviewer-gates-v1";
+        holdout = "workspace-holdout-v1";
+        environment_id = "workspace";
+        environment = { };
+        command = "cargo test --workspace --all-targets";
+        cwd = "repository";
+        wall_ms = 900000;
+        stdout_bytes = 1048576;
+        stderr_bytes = 1048576;
+        coverage = [
+          "workspace-tests"
+          "all-targets"
+        ];
+      };
+      "laws" = {
+        cell = "laws";
+        evaluator_root = "terra-reviewer-laws-v1";
+        holdout = "laws-holdout-v1";
+        environment_id = "workspace";
+        environment = { };
+        command = "cargo test --test laws";
+        cwd = "repository";
+        wall_ms = 600000;
+        stdout_bytes = 1048576;
+        stderr_bytes = 1048576;
+        coverage = [ "laws" ];
+      };
+      "crash-journeys" = {
+        cell = "crash-journeys";
+        evaluator_root = "terra-reviewer-crash-v1";
+        holdout = "crash-holdout-v1";
+        environment_id = "workspace";
+        environment = { };
+        command = "cargo test --test crash";
+        cwd = "repository";
+        wall_ms = 600000;
+        stdout_bytes = 1048576;
+        stderr_bytes = 1048576;
+        coverage = [ "crash-journeys" ];
+      };
+      "control-plane" = {
+        cell = "control-plane";
+        evaluator_root = "terra-reviewer-control-plane-v1";
+        holdout = "control-plane-holdout-v1";
+        environment_id = "workspace";
+        environment = { };
+        command = "nu --no-config-file .config/nu/cutover/tests.nu";
+        cwd = "repository";
+        wall_ms = 300000;
+        stdout_bytes = 1048576;
+        stderr_bytes = 1048576;
+        coverage = [ "control-plane-integration" ];
+      };
+    };
     capabilityClasses = [
       "inspection"
+      "control-plane"
       "implementation-feedback"
       "repository-write"
       "verification"

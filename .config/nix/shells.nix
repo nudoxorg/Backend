@@ -6,11 +6,16 @@
   tools,
   toolchains,
   commands,
+  control,
+  controlFile,
 }:
 let
   common = {
     BACKEND_STABLE_CARGO = toolchains.stableCargo;
     BACKEND_RUSTFMT = toolchains.rustfmt;
+    BACKEND_CONFIG_SNAPSHOT = toString ../.;
+    BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
+    BACKEND_POLICY_ROOT_DIGEST = control.policyRootDigest;
     LIBRARY_PATH = pkgs.lib.makeLibraryPath [
       pkgs.libiconv
       pkgs.zlib
@@ -18,6 +23,7 @@ let
     shellHook = ''
       export CARGO_TARGET_DIR="$PWD/.local/target"
       export CLIPPY_CONF_DIR="$PWD/.config"
+      export BACKEND_WORKSPACE_SNAPSHOT="$PWD"
     '';
   };
   development = pkgs.mkShell (

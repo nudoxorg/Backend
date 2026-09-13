@@ -1,0 +1,15 @@
+error[E0560]: struct `VerifiedGeneration<'_, ObjectDomain, Box<[u8]>>` has no field named `pinned_root`
+  --> tests/ui/forged_verified_generation.rs:10:9
+   |
+10 |         pinned_root,
+   |         ^^^^^^^^^^^ `VerifiedGeneration<'_, _, _>` does not have this field
+   |
+   = note: all struct fields are already assigned
+
+error[E0560]: struct `VerifiedGeneration<'_, ObjectDomain, Box<[u8]>>` has no field named `dep_set`
+  --> tests/ui/forged_verified_generation.rs:11:9
+   |
+11 |         dep_set,
+   |         ^^^^^^^ `VerifiedGeneration<'_, _, _>` does not have this field
+   |
+   = note: all struct fields are already assigned
