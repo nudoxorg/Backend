@@ -432,6 +432,63 @@ mod tests {
         )
     }
 
+    /// Removes JSON structural whitespace while preserving string literals,
+    /// so tests can mutate the pretty-printed canonical DAG with compact
+    /// needles without depending on formatting.
+    fn compact_json(input: &str) -> String {
+        let mut output = String::with_capacity(input.len());
+        let mut in_string = false;
+        let mut escaped = false;
+        for character in input.chars() {
+            if in_string {
+                output.push(character);
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match character {
+                '"' => {
+                    in_string = true;
+                    output.push(character);
+                }
+                character if character.is_whitespace() => {}
+                character => output.push(character),
+            }
+        }
+        output
+    }
+
+    fn dependency(name: &str, kind: Option<&str>) -> String {
+        match kind {
+            Some(kind) => format!(
+                r#"{{"name":{},"kind":{}}}"#,
+                json_string(name),
+                json_string(kind)
+            ),
+            None => format!(r#"{{"name":{}}}"#, json_string(name)),
+        }
+    }
+
+    fn package_with_dependencies(
+        id: &str,
+        name: &str,
+        path: &str,
+        dependencies: &[String],
+    ) -> String {
+        format!(
+            r#"{{"id":{},"name":{},"manifest_path":{},"dependencies":[{}]}}"#,
+            json_string(id),
+            json_string(name),
+            json_string(path),
+            dependencies.join(","),
+        )
+    }
+
     fn metadata(packages: &[String], members: &[&str]) -> String {
         format!(
             r#"{{"packages":[{}],"workspace_members":[{}]}}"#,
@@ -513,7 +570,8 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_unknown_self_and_cyclic_dag_entries() {
-        let duplicate = PACKAGE_DAG_JSON.replace(
+        let source = compact_json(PACKAGE_DAG_JSON);
+        let duplicate = source.replace(
             "{\"name\":\"backend-store\",\"manifest_path\"",
             "{\"name\":\"backend-version\",\"manifest_path\"",
         );
@@ -523,7 +581,7 @@ mod tests {
                 .is_some_and(|error| error.contains("duplicate package"))
         );
 
-        let unknown = PACKAGE_DAG_JSON.replace(
+        let unknown = source.replace(
             "\"dependencies\":[\"backend-version\"],\"layer\":\"core\",\"order\":2",
             "\"dependencies\":[\"backend-missing\"],\"layer\":\"core\",\"order\":2",
         );
@@ -533,7 +591,7 @@ mod tests {
                 .is_some_and(|error| error.contains("unknown dependency"))
         );
 
-        let self_edge = PACKAGE_DAG_JSON.replace(
+        let self_edge = source.replace(
             "\"dependencies\":[\"backend-version\"],\"layer\":\"core\",\"order\":2",
             "\"dependencies\":[\"backend-store\"],\"layer\":\"core\",\"order\":2",
         );
@@ -543,7 +601,7 @@ mod tests {
                 .is_some_and(|error| error.contains("depends on itself"))
         );
 
-        let cycle = PACKAGE_DAG_JSON.replace(
+        let cycle = source.replace(
             "\"dependencies\":[],\"layer\":\"core\",\"order\":0",
             "\"dependencies\":[\"backend-store\"],\"layer\":\"core\",\"order\":0",
         );
@@ -552,6 +610,47 @@ mod tests {
                 .err()
                 .is_some_and(|error| error.contains("cycle in package DAG"))
         );
+    }
+
+    #[test]
+    fn ignores_dev_and_build_dependency_edges() {
+        // A test-only (`dev`/`build`) edge to another product package that is
+        // not part of the declared runtime DAG must not be treated as an
+        // architectural dependency, because that would inject a false cycle.
+        let dev = metadata(
+            &[package_with_dependencies(
+                "backend-version",
+                "backend-version",
+                "/x/crates/version/Cargo.toml",
+                &[dependency("backend-flow", Some("dev"))],
+            )],
+            &["backend-version"],
+        );
+        assert_eq!(validate_json(&dev, false), Ok(()));
+
+        let build = metadata(
+            &[package_with_dependencies(
+                "backend-version",
+                "backend-version",
+                "/x/crates/version/Cargo.toml",
+                &[dependency("backend-flow", Some("build"))],
+            )],
+            &["backend-version"],
+        );
+        assert_eq!(validate_json(&build, false), Ok(()));
+
+        // The exact same edge declared as a normal dependency is a real
+        // upward layer violation and must be rejected.
+        let normal = metadata(
+            &[package_with_dependencies(
+                "backend-version",
+                "backend-version",
+                "/x/crates/version/Cargo.toml",
+                &[dependency("backend-flow", None)],
+            )],
+            &["backend-version"],
+        );
+        assert!(validate_json(&normal, false).is_err());
     }
 
     #[test]
@@ -750,7 +849,7 @@ mod tests {
     fn rejects_product_cycle_even_when_other_packages_are_incomplete() {
         let packages = [
             package(
-                "a",
+                "backend-version",
                 "backend-version",
                 "/x/crates/version/Cargo.toml",
                 &["backend-store"],
@@ -762,7 +861,7 @@ mod tests {
                 &["backend-version"],
             ),
         ];
-        let json = metadata(&packages, &["a", "b"]);
+        let json = metadata(&packages, &["backend-version", "b"]);
         assert!(matches!(
             validate_json(&json, false),
             Err(items) if items.iter().any(|item| matches!(
