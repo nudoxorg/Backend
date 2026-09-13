@@ -2,7 +2,7 @@
 //! ownership, child-count laws, and the named unknown-reason reasons the
 //! 87,101-position Python census froze. Assertions retain exact operands.
 
-use compiler_ir_vocabulary::{
+use backend_semantic::ir_vocabulary::{
     AnnotationKind, AnonRecordForm, ChannelDirection, ChildCountLaw, MappedModifier, NominalRef,
     PrimitiveShape, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
     TypeCell, TypeChildTarget, TypeReason, TypeRef, TypeWidth, Variance,
@@ -10,7 +10,7 @@ use compiler_ir_vocabulary::{
 
 fn record(tag: SemanticTypeTag) -> SemanticTypeRecord<'static> {
     let mut row = SemanticTypeRecord::leaf(tag);
-    row.children = compiler_ir_vocabulary::ListSpan::new(0, 0);
+    row.children = backend_semantic::ir_vocabulary::ListSpan::new(0, 0);
     row
 }
 
@@ -75,7 +75,7 @@ fn every_tag_round_trips_through_its_frozen_discriminant() {
     }
     assert_eq!(
         SemanticTypeTag::try_from(32),
-        Err(compiler_ir_vocabulary::SemanticTypeTagError { actual: 32 })
+        Err(backend_semantic::ir_vocabulary::SemanticTypeTagError { actual: 32 })
     );
 }
 
@@ -133,7 +133,7 @@ fn leaf_tags_reject_any_foreign_cell() {
             1
         };
         let mut row = record(tag);
-        row.children = compiler_ir_vocabulary::ListSpan::new(0, count);
+        row.children = backend_semantic::ir_vocabulary::ListSpan::new(0, count);
         row.payload0 = 1;
         assert_eq!(
             row.validate(count),
@@ -174,7 +174,7 @@ fn leaf_tags_reject_children() {
         SemanticTypeTag::Inferred,
     ] {
         let mut row = record(tag);
-        row.children = compiler_ir_vocabulary::ListSpan::new(0, 1);
+        row.children = backend_semantic::ir_vocabulary::ListSpan::new(0, 1);
         assert_eq!(
             row.validate(1),
             Err(SemanticTypeFault::ChildCount {
@@ -241,7 +241,7 @@ fn every_unknown_reason_is_named_and_distinct() {
     }
     assert_eq!(
         TypeReason::try_from(8),
-        Err(compiler_ir_vocabulary::TypeReasonError { actual: 8 })
+        Err(backend_semantic::ir_vocabulary::TypeReasonError { actual: 8 })
     );
     // Exactly three reasons retain a spelling; the rest are honestly bare.
     assert!(TypeReason::UnresolvedLocalName.carries_spelling());
@@ -268,7 +268,7 @@ fn nominal_records_demand_a_typed_target() {
             cell: TypeCell::Nominal,
         })
     );
-    row.nominal = Some(NominalRef::Local(compiler_ir_vocabulary::EntityId::new(7)));
+    row.nominal = Some(NominalRef::Local(backend_semantic::ir_vocabulary::EntityId::new(7)));
     assert_eq!(row.validate(0), Ok(()));
 }
 
@@ -345,7 +345,7 @@ fn pointer_and_reference_primitives_own_exactly_one_child() {
     row.payload0 = u32::from(PrimitiveShape::Reference);
     row.payload1 = 1;
     row.text = Some(b"'a");
-    row.children = compiler_ir_vocabulary::ListSpan::new(0, 1);
+    row.children = backend_semantic::ir_vocabulary::ListSpan::new(0, 1);
     assert_eq!(row.validate(1), Ok(()));
 }
 
@@ -374,7 +374,7 @@ fn structural_tags_enforce_their_child_count_laws() {
     // A conditional with its four arms validates once its tag-owned cells
     // are legal.
     let mut row = record(SemanticTypeTag::Conditional);
-    row.children = compiler_ir_vocabulary::ListSpan::new(0, 4);
+    row.children = backend_semantic::ir_vocabulary::ListSpan::new(0, 4);
     assert_eq!(row.validate(4), Ok(()));
 }
 
@@ -424,7 +424,7 @@ fn child_names_and_flags_are_tag_owned() {
         row.validate_child(
             0,
             &SemanticTypeChild {
-                target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(
+                target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(
                     0
                 ))),
                 name: None,
@@ -439,7 +439,7 @@ fn child_names_and_flags_are_tag_owned() {
         row.validate_child(
             0,
             &SemanticTypeChild {
-                target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(
+                target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(
                     0
                 ))),
                 name: None,
@@ -455,7 +455,7 @@ fn child_names_and_flags_are_tag_owned() {
         row.validate_child(
             0,
             &SemanticTypeChild {
-                target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(
+                target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(
                     0
                 ))),
                 name: Some(b"x"),
@@ -472,7 +472,7 @@ fn child_names_and_flags_are_tag_owned() {
                 0,
                 &SemanticTypeChild {
                     target: TypeChildTarget::Type(TypeRef::Local(
-                        compiler_ir_vocabulary::TypeId::new(0)
+                        backend_semantic::ir_vocabulary::TypeId::new(0)
                     )),
                     name: Some(b"x"),
                     flags: 0b1000,
@@ -533,7 +533,7 @@ fn child_names_and_flags_are_tag_owned() {
         row.validate_child(
             0,
             &SemanticTypeChild {
-                target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(
+                target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(
                     0
                 ))),
                 name: Some(b"not-a-placeholder"),
@@ -550,7 +550,7 @@ fn child_names_and_flags_are_tag_owned() {
         row.validate_child(
             0,
             &SemanticTypeChild {
-                target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(
+                target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(
                     0
                 ))),
                 name: None,
@@ -569,19 +569,19 @@ fn child_names_and_flags_are_tag_owned() {
 fn width_cells_reject_reserved_bits_and_zero_widths() {
     assert_eq!(
         TypeWidth::try_from_cell(0),
-        Err(compiler_ir_vocabulary::TypeWidthError::Malformed { actual: 0 })
+        Err(backend_semantic::ir_vocabulary::TypeWidthError::Malformed { actual: 0 })
     );
     // The architecture flag plus a nonzero width is malformed.
     let mixed = TypeWidth::ARCH_FLAG | 32;
     assert_eq!(
         TypeWidth::try_from_cell(mixed),
-        Err(compiler_ir_vocabulary::TypeWidthError::Malformed { actual: mixed })
+        Err(backend_semantic::ir_vocabulary::TypeWidthError::Malformed { actual: mixed })
     );
     // A reserved bit above the 17-bit budget is malformed.
     let reserved = 1 << 20;
     assert_eq!(
         TypeWidth::try_from_cell(reserved),
-        Err(compiler_ir_vocabulary::TypeWidthError::Malformed { actual: reserved })
+        Err(backend_semantic::ir_vocabulary::TypeWidthError::Malformed { actual: reserved })
     );
     assert_eq!(
         TypeWidth::try_from_cell(TypeWidth::ARCH_FLAG),
@@ -614,7 +614,7 @@ fn function_pointer_results_are_committed_by_an_exact_count() {
     let mut row = record(SemanticTypeTag::FunctionPointer);
     row.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
     row.text = Some(b"Cdecl");
-    row.children = compiler_ir_vocabulary::ListSpan::new(0, 2);
+    row.children = backend_semantic::ir_vocabulary::ListSpan::new(0, 2);
     assert_eq!(row.validate(2), Ok(()));
     // Reserved payload bits below the flag stay rejected.
     let mut row = record(SemanticTypeTag::FunctionPointer);
@@ -637,7 +637,7 @@ fn variadic_function_rows_have_one_final_rest_parameter_and_plain_results() {
     assert_eq!(row.validate(3), Ok(()));
 
     let child = |flags| SemanticTypeChild {
-        target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(0))),
+        target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(0))),
         name: None,
         flags,
     };
@@ -681,7 +681,7 @@ fn c_variadic_tail_is_distinct_from_typed_rest_and_mixed_forms_fail() {
     assert_eq!(c_tail.validate(0), Ok(()));
 
     let rest = SemanticTypeChild {
-        target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(0))),
+        target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(0))),
         name: None,
         flags: SemanticTypeChild::FLAG_REST,
     };

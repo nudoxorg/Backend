@@ -84,10 +84,10 @@ pub enum AtomFault {
 
 /// Closed declaration shape retained in the semantic entity lane.
 ///
-/// The frozen discriminant registry lives in `compiler-ir-vocabulary` (it is
-/// shared by declaration-identity keys and occurrence facts); this crate
-/// re-exports it unchanged.
-pub use compiler_ir_vocabulary::{EntityKind, EntityKindCodeError};
+/// The frozen discriminant registry lives in `backend-semantic`
+/// (`ir_vocabulary`; it is shared by declaration-identity keys and occurrence
+/// facts); this crate re-exports it unchanged.
+pub use backend_semantic::ir_vocabulary::{EntityKind, EntityKindCodeError};
 
 /// One borrowed semantic atom copied once into the fragment atom pool.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

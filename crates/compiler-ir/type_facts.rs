@@ -9,7 +9,7 @@
 //! case every recursive nominal type closes on. No other forward coordinate
 //! is expressible.
 
-use compiler_ir_vocabulary::{
+use backend_semantic::ir_vocabulary::{
     EntityId, ExternalEntityRef, ListSpan, NominalRef, SemanticTypeChild, SemanticTypeFault,
     SemanticTypeRecord, SemanticTypeTag, TypeChildTarget, TypeId,
 };
@@ -217,7 +217,7 @@ impl<'bytes> TypeFactLane<'bytes> {
                     .record
                     .validate_child_in_row(position, length, child)
                     .map_err(|fault| TypeFactFault::Record { ordinal, fault })?;
-                if let TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(target)) =
+                if let TypeChildTarget::Type(backend_semantic::ir_vocabulary::TypeRef::Local(target)) =
                     child.target
                 {
                     if target.raw >= total {
@@ -288,8 +288,8 @@ impl<'bytes> TypeFactLane<'bytes> {
         size += 4;
         for child in self.children {
             size += match child.target {
-                TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(_)) => 1 + 4,
-                TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::External(_)) => {
+                TypeChildTarget::Type(backend_semantic::ir_vocabulary::TypeRef::Local(_)) => 1 + 4,
+                TypeChildTarget::Type(backend_semantic::ir_vocabulary::TypeRef::External(_)) => {
                     1 + HASH_BYTES + 4
                 }
                 TypeChildTarget::Text => 1,
@@ -331,12 +331,12 @@ impl<'bytes> TypeFactLane<'bytes> {
         );
         for child in self.children {
             match child.target {
-                TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(target)) => {
+                TypeChildTarget::Type(backend_semantic::ir_vocabulary::TypeRef::Local(target)) => {
                     output[at] = CHILD_LOCAL;
                     at += 1;
                     put_u32(output, &mut at, target.raw);
                 }
-                TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::External(target)) => {
+                TypeChildTarget::Type(backend_semantic::ir_vocabulary::TypeRef::External(target)) => {
                     output[at] = CHILD_EXTERNAL;
                     at += 1;
                     output[at..at + HASH_BYTES].copy_from_slice(target.fragment.as_ref());
@@ -528,7 +528,7 @@ pub fn validate_payload(
             record
                 .validate_child_in_row(position, record.children.length, &child)
                 .map_err(|fault| TypeFactFault::Record { ordinal, fault })?;
-            if let TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(target)) =
+            if let TypeChildTarget::Type(backend_semantic::ir_vocabulary::TypeRef::Local(target)) =
                 child.target
             {
                 let computed = schema >= 2 && ordinal >= declared_count;
@@ -623,11 +623,11 @@ fn decode_child<'bytes>(
     _position: u32,
 ) -> Result<SemanticTypeChild<'bytes>, TypeFactFault> {
     let target = match reader.u8()? {
-        CHILD_LOCAL => TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(TypeId::new(
+        CHILD_LOCAL => TypeChildTarget::Type(backend_semantic::ir_vocabulary::TypeRef::Local(TypeId::new(
             reader.u32()?,
         ))),
-        CHILD_EXTERNAL => TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::External(
-            compiler_ir_vocabulary::ExternalTypeRef::bind(reader.identity()?, reader.u32()?),
+        CHILD_EXTERNAL => TypeChildTarget::Type(backend_semantic::ir_vocabulary::TypeRef::External(
+            backend_semantic::ir_vocabulary::ExternalTypeRef::bind(reader.identity()?, reader.u32()?),
         )),
         CHILD_TEXT => TypeChildTarget::Text,
         actual => {

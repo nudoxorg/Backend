@@ -1201,6 +1201,7 @@ dependencies = [
  "backend-flow",
  "backend-version",
  "blake3",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2075,19 +2076,11 @@ name = "compiler-ir"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-semantic",
  "backend-version",
  "blake3",
- "compiler-ir-vocabulary",
  "compiler-vocabulary",
  "memmap2",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "compiler-ir-vocabulary"
-version = "0.1.0"
-dependencies = [
- "backend-version",
  "thiserror 2.0.20",
 ]
 

@@ -2,7 +2,7 @@
 //! ordered children. Constructor payloads are validated against exact child counts, and every
 //! ordered position carries its constructor-owned semantic role.
 
-use crate::coordinates::{
+use crate::ir_vocabulary::coordinates::{
     AtomId, ExternalProductRef, ListSpan, PooledListError, ProductChildren, ProductId,
     ProductListId,
 };

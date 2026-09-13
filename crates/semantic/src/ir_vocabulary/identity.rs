@@ -21,8 +21,8 @@ use backend_version::{
     ForeignDeclarationDomain,
 };
 
-use crate::coordinates::EntityId;
-use crate::entity::EntityKind;
+use crate::ir_vocabulary::coordinates::EntityId;
+use crate::ir_vocabulary::entity::EntityKind;
 
 /// Purpose tag naming the declaration-key preimage inside its dedicated
 /// declaration-key identity domain.
@@ -390,7 +390,7 @@ pub struct ExternalDeclarationIdentity {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct StableRef {
     /// Typed identity of the fragment that declares the target.
-    pub fragment: crate::ExternalFragmentId,
+    pub fragment: crate::ir_vocabulary::ExternalFragmentId,
     /// Exact declaration endpoint inside that fragment.
     pub declaration: DeclarationIdentity,
 }
@@ -613,12 +613,12 @@ pub struct Occurrence<'bytes> {
     /// The referenced declaration.
     pub target: OccurrenceTarget<'bytes>,
     /// The category of this reference.
-    pub kind: crate::occurrence::ReferenceKind,
+    pub kind: crate::ir_vocabulary::occurrence::ReferenceKind,
     /// The fidelity of the resolution.
-    pub confidence: crate::occurrence::Confidence,
+    pub confidence: crate::ir_vocabulary::occurrence::Confidence,
     /// The byte range of the reference site, relative to the owning
     /// declaration's span start.
-    pub span: crate::occurrence::RelSpan,
+    pub span: crate::ir_vocabulary::occurrence::RelSpan,
 }
 
 /// Checked byte width of one length-prefixed string cell.

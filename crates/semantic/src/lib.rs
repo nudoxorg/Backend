@@ -19,6 +19,8 @@ mod reuse;
 mod schema;
 mod support;
 
+pub mod ir_vocabulary;
+
 pub use canonical::*;
 pub use coverage::*;
 pub use error::*;

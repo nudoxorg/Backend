@@ -2,7 +2,7 @@
 //! the frozen wire discriminants, and the owner-relative span algebra.
 //! Assertions retain exact typed causes so regressions cannot pass lossily.
 
-use compiler_ir_vocabulary::{Confidence, ReferenceKind, RelSpan, RelSpanFault};
+use backend_semantic::ir_vocabulary::{Confidence, ReferenceKind, RelSpan, RelSpanFault};
 use thiserror::Error;
 
 /// Typed propagation keeps every assertion exact without panicking seams.
@@ -44,11 +44,11 @@ fn confidence_discriminants_round_trip_and_reject_unknowns() {
     }
     assert_eq!(
         Confidence::try_from(5),
-        Err(compiler_ir_vocabulary::ConfidenceCodeError { actual: 5 })
+        Err(backend_semantic::ir_vocabulary::ConfidenceCodeError { actual: 5 })
     );
     assert_eq!(
         Confidence::try_from(255),
-        Err(compiler_ir_vocabulary::ConfidenceCodeError { actual: 255 })
+        Err(backend_semantic::ir_vocabulary::ConfidenceCodeError { actual: 255 })
     );
 }
 
@@ -69,11 +69,11 @@ fn reference_kind_discriminants_round_trip_and_reject_unknowns() {
     }
     assert_eq!(
         ReferenceKind::try_from(8),
-        Err(compiler_ir_vocabulary::ReferenceKindCodeError { actual: 8 })
+        Err(backend_semantic::ir_vocabulary::ReferenceKindCodeError { actual: 8 })
     );
     assert_eq!(
         ReferenceKind::try_from(255),
-        Err(compiler_ir_vocabulary::ReferenceKindCodeError { actual: 255 })
+        Err(backend_semantic::ir_vocabulary::ReferenceKindCodeError { actual: 255 })
     );
 }
 
