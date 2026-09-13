@@ -6,7 +6,7 @@ use compiler_driver::{
     CompileScratch, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
     compile_ir,
 };
-use compiler_ir::{
+use backend_semantic::ir::{
     EntityKind, FragmentView, LanguageExtensionWireFact, NominalRef, PrimitiveShape,
     SemanticTypeTag,
 };
@@ -211,7 +211,7 @@ where
 
 fn inspect_ir<F>(source: &[u8], check: F) -> Result<(), TestError>
 where
-    F: FnOnce(&compiler_ir::Ir) -> Result<(), TestError>,
+    F: FnOnce(&backend_semantic::ir::Ir) -> Result<(), TestError>,
 {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -259,13 +259,13 @@ where
 
 fn override_occurrences<'a>(
     view: &'a FragmentView<'a>,
-) -> Result<Vec<compiler_ir::DecodedOccurrence<'a>>, TestError> {
+) -> Result<Vec<backend_semantic::ir::DecodedOccurrence<'a>>, TestError> {
     view.occurrences()
         .ok_or(TestError::Check("occurrences"))?
         .collect::<Result<Vec<_>, _>>()
         .map(|rows| {
             rows.into_iter()
-                .filter(|row| row.occurrence.kind == compiler_ir::ReferenceKind::Overrides)
+                .filter(|row| row.occurrence.kind == backend_semantic::ir::ReferenceKind::Overrides)
                 .collect()
         })
         .map_err(|_| TestError::Check("occurrence decode"))
@@ -285,7 +285,7 @@ fn entities<'a>(view: &'a FragmentView<'a>) -> Vec<(&'a [u8], EntityKind)> {
 
 fn rows<'a>(
     view: &'a FragmentView<'a>,
-) -> Result<Vec<compiler_ir::DecodedTypeFact<'a>>, TestError> {
+) -> Result<Vec<backend_semantic::ir::DecodedTypeFact<'a>>, TestError> {
     view.type_facts()
         .ok_or(TestError::Check("missing type facts"))?
         .collect::<Result<_, _>>()
@@ -295,7 +295,7 @@ fn rows<'a>(
 fn extension(
     view: &FragmentView<'_>,
     ordinal: usize,
-) -> Result<compiler_ir::ClangFacts, TestError> {
+) -> Result<backend_semantic::ir::ClangFacts, TestError> {
     let payload = view
         .language_extension_payload()
         .ok_or(TestError::Check("missing extensions"))?;
@@ -326,7 +326,7 @@ fn extension(
     let at = offset
         + row_count * 4
         + usize::try_from(index).map_err(|_| TestError::Check("fact index overflow"))? * stride;
-    compiler_ir::ClangFacts::decode(payload, at)
+    backend_semantic::ir::ClangFacts::decode(payload, at)
         .ok_or(TestError::Check("extension row undecodable"))
 }
 
@@ -390,7 +390,7 @@ fn override_identity(
 
 fn children<'a>(
     view: &'a FragmentView<'a>,
-    row: &compiler_ir::DecodedTypeFact<'a>,
+    row: &backend_semantic::ir::DecodedTypeFact<'a>,
 ) -> Result<Vec<(u8, u32, &'a [u8])>, TestError> {
     let payload = view
         .type_fact_payload()
@@ -518,7 +518,7 @@ fn mutual_recursion_collapses_forwards_and_names_pointer_children() -> Result<()
         }
         if !facts.iter().any(|row| {
             row.owner.raw == 0
-                && row.record.nominal == Some(NominalRef::Local(compiler_ir::EntityId::new(0)))
+                && row.record.nominal == Some(NominalRef::Local(backend_semantic::ir::EntityId::new(0)))
         }) {
             return Err(TestError::Check("B self nominal"));
         }
@@ -648,7 +648,7 @@ fn enumerators_and_typedef_have_content_addressed_rows() -> Result<(), TestError
             if row.record.tag != SemanticTypeTag::Primitive
                 || row.record.payload0 != u32::from(PrimitiveShape::Integer)
                 || row.record.payload1
-                    != (32 << 1) | compiler_ir::SemanticTypeRecord::INTEGER_SIGNED_FLAG
+                    != (32 << 1) | backend_semantic::ir::SemanticTypeRecord::INTEGER_SIGNED_FLAG
             {
                 return Err(TestError::Check("RED integer payload"));
             }
@@ -682,7 +682,7 @@ fn signatures_and_local_call_are_content_addressed() -> Result<(), TestError> {
             .ok_or(TestError::Check("add fact"))?;
         if function.record.tag != SemanticTypeTag::FunctionPointer
             || function.record.payload1
-                != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
+                != backend_semantic::ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || function.record.children.length != 3
         {
             return Err(TestError::Check("add signature"));
@@ -693,7 +693,7 @@ fn signatures_and_local_call_are_content_addressed() -> Result<(), TestError> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| TestError::Check("occurrence decode"))?
             .into_iter()
-            .find(|row| row.occurrence.kind == compiler_ir::ReferenceKind::FunctionCall)
+            .find(|row| row.occurrence.kind == backend_semantic::ir::ReferenceKind::FunctionCall)
             .ok_or(TestError::Check("call"))?;
         // The call is the last `add` spelling in the fixture; the occurrence
         // span is relative to the owner's extent start.
@@ -709,14 +709,14 @@ fn signatures_and_local_call_are_content_addressed() -> Result<(), TestError> {
             .checked_sub(use_start)
             .ok_or(TestError::Check("span underflow"))?;
         if call.owner.raw != use_ordinal
-            || call.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle
+            || call.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
             || call.occurrence.span.start
                 != u32::try_from(relative).map_err(|_| TestError::Check("span overflow"))?
         {
             return Err(TestError::Check("call ownership/span"));
         }
         if call.occurrence.target
-            != compiler_ir::OccurrenceTarget::Local(compiler_ir::EntityId::new(add))
+            != backend_semantic::ir::OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(add))
         {
             return Err(TestError::Check("call target"));
         }
@@ -744,7 +744,7 @@ fn qualifiers_storage_and_incomplete_layout_are_extension_facts() -> Result<(), 
                 .ok_or(TestError::Check("Incomplete"))?;
             let limit_fact = extension(view, limit)?;
             if !limit_fact.qualifiers.is_const
-                || limit_fact.storage != compiler_ir::ClangStorageClass::Static
+                || limit_fact.storage != backend_semantic::ir::ClangStorageClass::Static
                 || limit_fact.layout.size_bits != Some(32)
                 || limit_fact.layout.align_bits != Some(32)
             {
@@ -752,7 +752,7 @@ fn qualifiers_storage_and_incomplete_layout_are_extension_facts() -> Result<(), 
             }
             let flag_fact = extension(view, flag)?;
             if !flag_fact.qualifiers.is_volatile
-                || flag_fact.storage != compiler_ir::ClangStorageClass::Extern
+                || flag_fact.storage != backend_semantic::ir::ClangStorageClass::Extern
             {
                 return Err(TestError::Check("flag extension"));
             }
@@ -929,9 +929,9 @@ fn doxygen_ref_is_a_local_link_with_text_fragments() -> Result<(), TestError> {
             .ok_or(TestError::Check("add entity"))? as u32;
         let mut link = false;
         for doc in &docs {
-            if let compiler_ir::DocFragmentInput::Link { label, target } = &doc.fragment {
+            if let backend_semantic::ir::DocFragmentInput::Link { label, target } = &doc.fragment {
                 if *label == b"add"
-                    && *target == compiler_ir::DocLinkTarget::Local(compiler_ir::EntityId::new(add))
+                    && *target == backend_semantic::ir::DocLinkTarget::Local(backend_semantic::ir::EntityId::new(add))
                 {
                     link = true;
                 }
@@ -957,9 +957,9 @@ fn macro_definition_and_invocation_are_typed_facts() -> Result<(), TestError> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| TestError::Check("occurrence decode"))?
             .into_iter()
-            .find(|row| row.occurrence.kind == compiler_ir::ReferenceKind::MacroInvocation)
+            .find(|row| row.occurrence.kind == backend_semantic::ir::ReferenceKind::MacroInvocation)
             .ok_or(TestError::Check("macro invocation"))?;
-        if invocation.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle {
+        if invocation.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle {
             return Err(TestError::Check("macro confidence"));
         }
         Ok(())
@@ -1099,7 +1099,7 @@ fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> 
         if target != 0
             || anchor.owner.raw != 0
             || anchor.record.tag != SemanticTypeTag::Nominal
-            || anchor.record.nominal != Some(NominalRef::Local(compiler_ir::EntityId::new(0)))
+            || anchor.record.nominal != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(0)))
         {
             return Err(TestError::Check("recursive row content"));
         }
@@ -1149,7 +1149,7 @@ fn local_virtual_override_is_backward_oracle_occurrence() -> Result<(), TestErro
             }
             let row = &rows[0];
             let derived = row.owner.raw;
-            let compiler_ir::OccurrenceTarget::Local(base_entity) = row.occurrence.target else {
+            let backend_semantic::ir::OccurrenceTarget::Local(base_entity) = row.occurrence.target else {
                 return Err(TestError::Check("local override target"));
             };
             let base = base_entity.raw;
@@ -1165,7 +1165,7 @@ fn local_virtual_override_is_backward_oracle_occurrence() -> Result<(), TestErro
             }
             if row.owner.raw != derived
                 || base >= derived
-                || row.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle
+                || row.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
                 || row.occurrence.span.start >= row.occurrence.span.end
             {
                 return Err(TestError::Check("local override content"));

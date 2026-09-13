@@ -7,8 +7,8 @@ mod support;
 
 use std::fs;
 
-use compiler_ir::{AtomId, TypeId};
-use compiler_ir::{
+use backend_semantic::ir::{AtomId, TypeId};
+use backend_semantic::ir::{
     AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, PrimitiveType,
     TypeNode,
 };

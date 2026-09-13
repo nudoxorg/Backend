@@ -4,7 +4,7 @@
 //! Keeps TypeScript syntax and lexical authority in-process beside the configured checker.
 //! Contains no token reconstruction, fallback collector, or declaration guessing.
 
-use compiler_ir::{
+use backend_semantic::ir::{
     AnnotationKind, AnonRecordForm, DocFragmentInput, DocLinkTarget, EntityId, EntityKind,
     ExternalEntityRef, ExternalFragmentId, ForeignKey, ForeignOrigin, LatticeMappedModifier,
     NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PackageLineage, PrimitiveShape,
@@ -79,13 +79,13 @@ fn fault(cause: FactFault) -> TypeScriptCollectError {
 }
 
 /// Retains one foreign-key grammar fault across the portable terminal.
-fn foreign_fault(cause: compiler_ir::ForeignKeyFault, span: Span) -> TypeScriptCollectError {
+fn foreign_fault(cause: backend_semantic::ir::ForeignKeyFault, span: Span) -> TypeScriptCollectError {
     TypeScriptCollectError::Projection(TypeScriptProjectionFault::ForeignKey {
         start: span.start,
         end: span.end,
         cause: match cause {
-            compiler_ir::ForeignKeyFault::EmptyPath => ProjectionForeignKeyFault::EmptyPath,
-            compiler_ir::ForeignKeyFault::BackslashInPath => {
+            backend_semantic::ir::ForeignKeyFault::EmptyPath => ProjectionForeignKeyFault::EmptyPath,
+            backend_semantic::ir::ForeignKeyFault::BackslashInPath => {
                 ProjectionForeignKeyFault::BackslashInPath
             }
         },
@@ -93,24 +93,24 @@ fn foreign_fault(cause: compiler_ir::ForeignKeyFault, span: Span) -> TypeScriptC
 }
 
 /// Retains the exact rejected component of an import-module package lineage.
-fn lineage_fault(cause: compiler_ir::PackageLineageFault, span: Span) -> TypeScriptCollectError {
+fn lineage_fault(cause: backend_semantic::ir::PackageLineageFault, span: Span) -> TypeScriptCollectError {
     TypeScriptCollectError::Projection(TypeScriptProjectionFault::PackageLineage {
         start: span.start,
         end: span.end,
         cause: match cause {
-            compiler_ir::PackageLineageFault::EmptyEcosystem => {
+            backend_semantic::ir::PackageLineageFault::EmptyEcosystem => {
                 ProjectionPackageLineageFault::EmptyEcosystem
             }
-            compiler_ir::PackageLineageFault::EmptyName => {
+            backend_semantic::ir::PackageLineageFault::EmptyName => {
                 ProjectionPackageLineageFault::EmptyPackage
             }
-            compiler_ir::PackageLineageFault::SeparatorInEcosystem => {
+            backend_semantic::ir::PackageLineageFault::SeparatorInEcosystem => {
                 ProjectionPackageLineageFault::SeparatorInEcosystem
             }
-            compiler_ir::PackageLineageFault::SeparatorInName => {
+            backend_semantic::ir::PackageLineageFault::SeparatorInName => {
                 ProjectionPackageLineageFault::SeparatorInPackage
             }
-            compiler_ir::PackageLineageFault::Backslash { segment } => {
+            backend_semantic::ir::PackageLineageFault::Backslash { segment } => {
                 ProjectionPackageLineageFault::Backslash {
                     part: match segment {
                         0 => ProjectionLineagePart::Ecosystem,
@@ -464,7 +464,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         self.pending_type_parameters = type_parameter_start;
         let declared = coordinate(self.facts.len())?;
         Ok(EmissionExtension::TypeScript(
-            compiler_ir::TypeScriptFacts {
+            backend_semantic::ir::TypeScriptFacts {
                 type_parameters: TypeParameterListId::new(type_parameter_start),
                 declared: Some(TypeId::new(declared)),
                 observed: None,
@@ -2165,7 +2165,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 .get(owner_index)
                 .copied()
                 .ok_or_else(lane_rejection)?;
-            let extension = EmissionExtension::TypeScript(compiler_ir::TypeScriptFacts {
+            let extension = EmissionExtension::TypeScript(backend_semantic::ir::TypeScriptFacts {
                 type_parameters: TypeParameterListId::new(type_parameters),
                 declared: Some(TypeId::new(owner)),
                 observed: Some(TypeId::new(row)),
@@ -3193,7 +3193,7 @@ fn intern_computed_tree<'source>(
                             owner,
                             FactFault::TypeChild {
                                 position,
-                                fault: compiler_ir::SemanticTypeFault::ChildNameRequired {
+                                fault: backend_semantic::ir::SemanticTypeFault::ChildNameRequired {
                                     tag: SemanticTypeTag::AnonymousRecord,
                                     position: position as u32,
                                 },
@@ -3488,7 +3488,7 @@ fn checker_primitive(name: &str) -> Result<SemanticTypeRecord<'static>, TypeScri
 #[cfg(test)]
 mod projection_tests {
     use super::{TypeScriptCollectError, foreign_fault, lineage_fault};
-    use compiler_ir::{ForeignKeyFault, PackageLineageFault};
+    use backend_semantic::ir::{ForeignKeyFault, PackageLineageFault};
     use compiler_languages_typescript::Span;
     use backend_semantic::vocabulary::{
         ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,

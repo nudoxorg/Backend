@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use compiler_ir::{
+use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityId,
     EntityVersion, FactAvailability, IrBuilder, ItemKind, ParentageAuthority,
     SemanticImageIdentity, SemanticImageView, SourceSpan, TreeItemInput, VariantFingerprint,

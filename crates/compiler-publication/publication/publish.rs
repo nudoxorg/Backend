@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use compiler_driver::{CompiledFragment, CompiledSemantic};
-use compiler_ir::{
+use backend_semantic::ir::{
     FragmentRangeManifest, ImageProvenance, SemanticCoreReader, SemanticImageView,
     encode_full_semantic_image, full_semantic_image_len,
 };

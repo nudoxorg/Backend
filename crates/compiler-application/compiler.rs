@@ -202,7 +202,7 @@ pub enum PackageSemanticError {
         ordinal: usize,
         /// Exact fragment grammar failure.
         #[source]
-        source: compiler_ir::FragmentError,
+        source: backend_semantic::ir::FragmentError,
     },
     /// Immutable package publication failed.
     #[error("package semantic publication failed")]
@@ -502,7 +502,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 MAX_PACKAGE_FRAGMENT_BYTES,
                 "compact fragment",
             )?;
-            let image_bytes = compiler_ir::full_semantic_image_len(&compiled.ir).map_err(|_| {
+            let image_bytes = backend_semantic::ir::full_semantic_image_len(&compiled.ir).map_err(|_| {
                 PackageSemanticError::Capacity {
                     lane: "semantic image",
                 }
@@ -541,7 +541,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             .try_reserve_exact(staged.len())
             .map_err(PackageSemanticError::Allocation)?;
         for (ordinal, (artifact, bytes)) in staged.into_iter().zip(&fragments).enumerate() {
-            let fragment = compiler_ir::FragmentView::validate(bytes)
+            let fragment = backend_semantic::ir::FragmentView::validate(bytes)
                 .map_err(|source| PackageSemanticError::Fragment { ordinal, source })?;
             compiled.push(CompiledSemantic {
                 artifact: CompiledFragment {
@@ -859,7 +859,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             compiled.artifact.fragment.as_ref(),
         );
         let semantic_length =
-            compiler_ir::full_semantic_image_len(&compiled.ir).map_err(|cause| {
+            backend_semantic::ir::full_semantic_image_len(&compiled.ir).map_err(|cause| {
                 crate::terminal::semantic_publication_terminal(
                     source,
                     recipe,
@@ -1071,9 +1071,9 @@ impl CompilerCapability for LocalCompiler<'_, '_, '_> {
 }
 
 struct StagedPackageArtifact {
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
-    ir: compiler_ir::Ir,
+    ir: backend_semantic::ir::Ir,
 }
 
 fn copy_bytes(bytes: &[u8]) -> Result<Box<[u8]>, PackageSemanticError> {
@@ -1100,19 +1100,19 @@ fn checked_package_bytes(
     Ok(total)
 }
 
-const fn lineage_cause(cause: compiler_ir::PackageLineageFault) -> PackageDeclarationScopeCause {
+const fn lineage_cause(cause: backend_semantic::ir::PackageLineageFault) -> PackageDeclarationScopeCause {
     match cause {
-        compiler_ir::PackageLineageFault::EmptyEcosystem => {
+        backend_semantic::ir::PackageLineageFault::EmptyEcosystem => {
             PackageDeclarationScopeCause::EmptyEcosystem
         }
-        compiler_ir::PackageLineageFault::EmptyName => PackageDeclarationScopeCause::EmptyPackage,
-        compiler_ir::PackageLineageFault::SeparatorInEcosystem => {
+        backend_semantic::ir::PackageLineageFault::EmptyName => PackageDeclarationScopeCause::EmptyPackage,
+        backend_semantic::ir::PackageLineageFault::SeparatorInEcosystem => {
             PackageDeclarationScopeCause::EcosystemSeparator
         }
-        compiler_ir::PackageLineageFault::SeparatorInName => {
+        backend_semantic::ir::PackageLineageFault::SeparatorInName => {
             PackageDeclarationScopeCause::PackageSeparator
         }
-        compiler_ir::PackageLineageFault::Backslash { segment } => {
+        backend_semantic::ir::PackageLineageFault::Backslash { segment } => {
             PackageDeclarationScopeCause::LineageBackslash { segment }
         }
     }
@@ -1123,13 +1123,13 @@ const fn declaration_scope_cause(
 ) -> PackageDeclarationScopeCause {
     match cause {
         PackageDeclarationScopeFault::Lineage(cause) => lineage_cause(cause),
-        PackageDeclarationScopeFault::Declaration(compiler_ir::DeclarationKeyFault::Path(
-            compiler_ir::DeclarationPathFault::Empty,
+        PackageDeclarationScopeFault::Declaration(backend_semantic::ir::DeclarationKeyFault::Path(
+            backend_semantic::ir::DeclarationPathFault::Empty,
         )) => PackageDeclarationScopeCause::EmptySourcePath,
-        PackageDeclarationScopeFault::Declaration(compiler_ir::DeclarationKeyFault::Path(
-            compiler_ir::DeclarationPathFault::Backslash,
+        PackageDeclarationScopeFault::Declaration(backend_semantic::ir::DeclarationKeyFault::Path(
+            backend_semantic::ir::DeclarationPathFault::Backslash,
         )) => PackageDeclarationScopeCause::SourceBackslash,
-        PackageDeclarationScopeFault::Declaration(compiler_ir::DeclarationKeyFault::EmptyName) => {
+        PackageDeclarationScopeFault::Declaration(backend_semantic::ir::DeclarationKeyFault::EmptyName) => {
             PackageDeclarationScopeCause::EmptyPackage
         }
     }

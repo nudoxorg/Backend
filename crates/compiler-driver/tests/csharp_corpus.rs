@@ -20,7 +20,7 @@ use compiler_driver::{
     CompiledFragment, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
     compile_ir,
 };
-use compiler_ir::{
+use backend_semantic::ir::{
     DocFragmentInput, EntityKind, FragmentView, ImageProvenance, OccurrenceTarget, ReferenceKind,
 };
 use compiler_publication::{
@@ -85,7 +85,7 @@ enum TestError {
     #[error("fragment validation failed: {source}")]
     Fragment {
         #[source]
-        source: compiler_ir::FragmentError,
+        source: backend_semantic::ir::FragmentError,
     },
     #[error("publication failed: {cause}")]
     Publish { cause: String },

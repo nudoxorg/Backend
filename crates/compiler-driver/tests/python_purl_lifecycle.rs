@@ -9,7 +9,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{FragmentView, ImageProvenance};
+use backend_semantic::ir::{FragmentView, ImageProvenance};
 use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
@@ -52,7 +52,7 @@ enum TestError {
     #[error("fragment validation failed: {source}")]
     Fragment {
         #[source]
-        source: compiler_ir::FragmentError,
+        source: backend_semantic::ir::FragmentError,
     },
     #[error("publication failed: {cause}")]
     Publish { cause: String },
@@ -346,7 +346,7 @@ fn package_class_lifecycle(journey: &Journey) -> Result<(), TestError> {
     }
     let columns = ir.ir.entity_columns();
     let names = columns.names;
-    let atom = |id: compiler_ir::AtomId| ir.ir.atom(id);
+    let atom = |id: backend_semantic::ir::AtomId| ir.ir.atom(id);
     let mut facts = Vec::new();
     for (id, name) in names.iter().enumerate() {
         let bytes = atom(*name).ok_or(TestError::Fact("entity atom missing"))?;

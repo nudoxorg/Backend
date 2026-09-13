@@ -8,7 +8,7 @@ use std::{
     time::Instant,
 };
 
-use compiler_ir::{
+use backend_semantic::ir::{
     DeclarationKey, DeclarationKeyFault, EntityKind, PackageLineage, PackageLineageFault,
 };
 use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, Stage};

@@ -14,7 +14,7 @@ workspace = true
 
 
 [dependencies]
-compiler-ir = { path = "../compiler-ir" }
+backend-semantic = { path = "../semantic" }
 server-index-core = { path = "../server-index-core" }
 tantivy.workspace = true
 thiserror.workspace = true

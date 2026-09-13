@@ -5,7 +5,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::FragmentView;
+use backend_semantic::ir::FragmentView;
 use compiler_languages_rust::{RustPackageUrl, RustPurlError, RustToolchain};
 use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{

@@ -25,13 +25,13 @@ fn collision_checker_rejects_same_physical_id_for_distinct_keys() {
         authority(1),
         segment(1),
         PartitionId::new(1),
-        compiler_ir::EntityId::new(1),
+        backend_semantic::ir::EntityId::new(1),
     );
     let second = QdrantDataKey::new(
         authority(1),
         segment(1),
         PartitionId::new(2),
-        compiler_ir::EntityId::new(3),
+        backend_semantic::ir::EntityId::new(3),
     );
     let physical_id = PhysicalPointId(42);
     assert_eq!(
@@ -50,7 +50,7 @@ fn prepared_identity_derives_each_physical_coordinate_from_its_key() {
         authority(2),
         segment(2),
         PartitionId::new(4),
-        compiler_ir::EntityId::new(8),
+        backend_semantic::ir::EntityId::new(8),
     );
     let expected = PhysicalPointId::for_key(key);
     let prepared = prepare_keys(key.authority, &[key]);

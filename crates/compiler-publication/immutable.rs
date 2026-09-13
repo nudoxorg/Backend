@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use compiler_ir::{FragmentError, FragmentRangeManifest, FragmentRangeVerifyError, FragmentView};
+use backend_semantic::ir::{FragmentError, FragmentRangeManifest, FragmentRangeVerifyError, FragmentView};
 use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use thiserror::Error;
 

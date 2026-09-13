@@ -38,7 +38,7 @@
 //! never fabricate lane-visible type cells. Never recovers C# facts by
 //! scanning source text or a native parser fallback.
 
-use compiler_ir::{
+use backend_semantic::ir::{
     AnnotationKind, AtomId, AtomListId, CSharpFacts, CSharpMemberEffects, CSharpNullability,
     CSharpPartialRole, CSharpReferenceKind, DocFragmentInput, DocLinkTarget, EntityId, EntityKind,
     ForeignKey, ForeignOrigin, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
@@ -1860,7 +1860,7 @@ fn csharp_facts<'source>(
         let generic = generic.map_err(ProjectionFault::Image).map_err(terminal)?;
         let mut bounds = Vec::with_capacity(generic.constraints.len());
         for child in generic.constraints {
-            bounds.push(compiler_ir::ExtensionTypeParameterBound::Type(
+            bounds.push(backend_semantic::ir::ExtensionTypeParameterBound::Type(
                 child_target(
                     facts,
                     image,
@@ -1877,31 +1877,31 @@ fn csharp_facts<'source>(
         // and must extend the producer before claiming nullable-reference
         // constraint fidelity.
         let primary = if generic.unmanaged {
-            compiler_ir::TypeParameterPrimaryRequirement::Unmanaged
+            backend_semantic::ir::TypeParameterPrimaryRequirement::Unmanaged
         } else if generic.reference_type {
-            compiler_ir::TypeParameterPrimaryRequirement::Reference { nullable: false }
+            backend_semantic::ir::TypeParameterPrimaryRequirement::Reference { nullable: false }
         } else if generic.value_type {
-            compiler_ir::TypeParameterPrimaryRequirement::Value
+            backend_semantic::ir::TypeParameterPrimaryRequirement::Value
         } else if generic.not_null {
-            compiler_ir::TypeParameterPrimaryRequirement::NotNull
+            backend_semantic::ir::TypeParameterPrimaryRequirement::NotNull
         } else {
-            compiler_ir::TypeParameterPrimaryRequirement::None
+            backend_semantic::ir::TypeParameterPrimaryRequirement::None
         };
         let variance = match generic.variance {
-            VarianceTag::Invariant => compiler_ir::Variance::Invariant,
-            VarianceTag::Out => compiler_ir::Variance::Covariant,
-            VarianceTag::In => compiler_ir::Variance::Contravariant,
+            VarianceTag::Invariant => backend_semantic::ir::Variance::Invariant,
+            VarianceTag::Out => backend_semantic::ir::Variance::Covariant,
+            VarianceTag::In => backend_semantic::ir::Variance::Contravariant,
         };
         facts
             .push_type_parameter_with_bounds(
                 generic.name.bytes,
                 &bounds,
                 None,
-                compiler_ir::ExtensionTypeParameterKind::Type {
-                    inference: compiler_ir::TypeParameterInference::Ordinary,
+                backend_semantic::ir::ExtensionTypeParameterKind::Type {
+                    inference: backend_semantic::ir::TypeParameterInference::Ordinary,
                 },
                 variance,
-                compiler_ir::TypeParameterRequirements {
+                backend_semantic::ir::TypeParameterRequirements {
                     primary,
                     constructor: generic.constructor,
                     allows_ref_like: generic.allows_ref_like,
@@ -2340,7 +2340,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use compiler_ir::{
+    use backend_semantic::ir::{
         AnnotationKind, CSharpFacts, DocFragmentInput, DocLinkTarget, EntityKind, ForeignOrigin,
         FragmentView, LanguageExtensionWireFact, NominalRef, OccurrenceTarget, PrimitiveShape,
         SemanticTypeTag, SourceIdentity,
@@ -2391,7 +2391,7 @@ mod tests {
         #[error("lane admission rejected the fact set: {0:?}")]
         Admission(crate::lower::AdmissionFault),
         #[error("fragment validation rejected the bytes: {0:?}")]
-        Validate(compiler_ir::FragmentError),
+        Validate(backend_semantic::ir::FragmentError),
         #[error("expected {0}")]
         Missing(&'static str),
         #[error("committed bytes changed")]
@@ -2412,8 +2412,8 @@ mod tests {
         }
     }
 
-    impl From<compiler_ir::FragmentError> for TestError {
-        fn from(error: compiler_ir::FragmentError) -> Self {
+    impl From<backend_semantic::ir::FragmentError> for TestError {
+        fn from(error: backend_semantic::ir::FragmentError) -> Self {
             Self::Validate(error)
         }
     }
@@ -3034,7 +3034,7 @@ mod tests {
     fn row<'fragment>(
         view: &FragmentView<'fragment>,
         ordinal: usize,
-    ) -> Result<compiler_ir::DecodedTypeFact<'fragment>, TestError> {
+    ) -> Result<backend_semantic::ir::DecodedTypeFact<'fragment>, TestError> {
         let mut cursor = view.type_facts().ok_or(TestError::Missing("type facts"))?;
         cursor
             .nth(ordinal)
@@ -3103,7 +3103,7 @@ mod tests {
         let only = row(&view, 0)?;
         if only.owner.raw != 0
             || only.record.tag != SemanticTypeTag::Nominal
-            || only.record.nominal != Some(NominalRef::Local(compiler_ir::EntityId::new(0)))
+            || only.record.nominal != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(0)))
         {
             return Err(TestError::Missing("recursive self nominal"));
         }
@@ -3112,7 +3112,7 @@ mod tests {
         }
         let extension = csharp_extension(&view, 0)?;
         if extension.xml_provenance.is_some()
-            || extension.partial != compiler_ir::CSharpPartialRole::None
+            || extension.partial != backend_semantic::ir::CSharpPartialRole::None
         {
             return Err(TestError::Missing("empty extension cells"));
         }
@@ -3132,7 +3132,7 @@ mod tests {
         let view = FragmentView::validate(&bytes)?;
         // Facts: 0 class Node, 1 field next.
         let field = row(&view, 1)?;
-        if field.record.nominal != Some(NominalRef::Local(compiler_ir::EntityId::new(0))) {
+        if field.record.nominal != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(0))) {
             return Err(TestError::Missing("backward field nominal"));
         }
         // Falsifier: retyping the field away from the declaration changes the
@@ -3146,7 +3146,7 @@ mod tests {
         let view = FragmentView::validate(&other)?;
         let field = row(&view, 1)?;
         if field.record.tag != SemanticTypeTag::Unknown
-            || field.record.payload0 != u32::from(compiler_ir::TypeReason::UnresolvedExternal)
+            || field.record.payload0 != u32::from(backend_semantic::ir::TypeReason::UnresolvedExternal)
             || field.record.text != Some(b"demo.Other".as_slice())
         {
             return Err(TestError::Missing("typed unknown for foreign nominal"));
@@ -3340,7 +3340,7 @@ mod tests {
             .extension_pools()
             .map_err(|_| TestError::Missing("pools"))?
             .ok_or(TestError::Missing("pools"))?;
-        let compiler_ir::ReopenedTypeParameterList::Exact(parameters) = pools
+        let backend_semantic::ir::ReopenedTypeParameterList::Exact(parameters) = pools
             .type_parameter_list(extension.constraints)
             .map_err(|_| TestError::Missing("parameter list"))?
         else {
@@ -3363,26 +3363,26 @@ mod tests {
             || bounds
                 .get(0)
                 .map_err(|_| TestError::Missing("constraint"))?
-                != compiler_ir::DecodedTypeParameterBound::Type(part)
+                != backend_semantic::ir::DecodedTypeParameterBound::Type(part)
             || bounds
                 .get(1)
                 .map_err(|_| TestError::Missing("second constraint"))?
-                != compiler_ir::DecodedTypeParameterBound::Type(other)
+                != backend_semantic::ir::DecodedTypeParameterBound::Type(other)
         {
             return Err(TestError::Missing("constraint ordinals"));
         }
         if parameter.semantics
-            != (compiler_ir::DecodedTypeParameterSemantics::Exact {
-                bounds: compiler_ir::ExtensionTypeParameterBoundRange {
+            != (backend_semantic::ir::DecodedTypeParameterSemantics::Exact {
+                bounds: backend_semantic::ir::ExtensionTypeParameterBoundRange {
                     start: 0,
                     length: 2,
                 },
-                variance: compiler_ir::Variance::Covariant,
-                kind: compiler_ir::DecodedTypeParameterKind::Type {
-                    inference: compiler_ir::TypeParameterInference::Ordinary,
+                variance: backend_semantic::ir::Variance::Covariant,
+                kind: backend_semantic::ir::DecodedTypeParameterKind::Type {
+                    inference: backend_semantic::ir::TypeParameterInference::Ordinary,
                 },
-                requirements: compiler_ir::TypeParameterRequirements {
-                    primary: compiler_ir::TypeParameterPrimaryRequirement::Reference {
+                requirements: backend_semantic::ir::TypeParameterRequirements {
+                    primary: backend_semantic::ir::TypeParameterPrimaryRequirement::Reference {
                         nullable: false,
                     },
                     constructor: true,
@@ -3399,17 +3399,17 @@ mod tests {
             .map_err(|_| TestError::Missing("unmanaged parameter"))?;
         if unmanaged.name != b"U"
             || unmanaged.semantics
-                != (compiler_ir::DecodedTypeParameterSemantics::Exact {
-                    bounds: compiler_ir::ExtensionTypeParameterBoundRange {
+                != (backend_semantic::ir::DecodedTypeParameterSemantics::Exact {
+                    bounds: backend_semantic::ir::ExtensionTypeParameterBoundRange {
                         start: 2,
                         length: 0,
                     },
-                    variance: compiler_ir::Variance::Invariant,
-                    kind: compiler_ir::DecodedTypeParameterKind::Type {
-                        inference: compiler_ir::TypeParameterInference::Ordinary,
+                    variance: backend_semantic::ir::Variance::Invariant,
+                    kind: backend_semantic::ir::DecodedTypeParameterKind::Type {
+                        inference: backend_semantic::ir::TypeParameterInference::Ordinary,
                     },
-                    requirements: compiler_ir::TypeParameterRequirements {
-                        primary: compiler_ir::TypeParameterPrimaryRequirement::Unmanaged,
+                    requirements: backend_semantic::ir::TypeParameterRequirements {
+                        primary: backend_semantic::ir::TypeParameterPrimaryRequirement::Unmanaged,
                         constructor: false,
                         allows_ref_like: false,
                     },
@@ -3444,7 +3444,7 @@ mod tests {
         let view = FragmentView::validate(&bytes)?;
         let stamp_row = row(&view, 1)?;
         if stamp_row.record.tag != SemanticTypeTag::Unknown
-            || stamp_row.record.payload0 != u32::from(compiler_ir::TypeReason::UnresolvedExternal)
+            || stamp_row.record.payload0 != u32::from(backend_semantic::ir::TypeReason::UnresolvedExternal)
             || stamp_row.record.text != Some(b"System.DateTime".as_slice())
         {
             return Err(TestError::Missing("foreign unknown row"));
@@ -3466,8 +3466,8 @@ mod tests {
             return Err(TestError::Missing("universe origin"));
         };
         if ecosystem != "nuget"
-            || occurrence.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle
-            || occurrence.occurrence.kind != compiler_ir::ReferenceKind::MethodCall
+            || occurrence.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
+            || occurrence.occurrence.kind != backend_semantic::ir::ReferenceKind::MethodCall
         {
             return Err(TestError::Missing("nuget method call"));
         }
@@ -3526,13 +3526,13 @@ mod tests {
             return Err(TestError::Missing("string parameter row"));
         }
         let parameter_extension = csharp_extension(&view, 1)?;
-        if parameter_extension.reference_kind != compiler_ir::CSharpReferenceKind::Ref {
+        if parameter_extension.reference_kind != backend_semantic::ir::CSharpReferenceKind::Ref {
             return Err(TestError::Missing("ref convention"));
         }
         let method_row = row(&view, 3)?;
         if method_row.record.tag != SemanticTypeTag::FunctionPointer
             || method_row.record.payload1
-                != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
+                != backend_semantic::ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || method_row.record.children.length != 2
         {
             return Err(TestError::Missing("function pointer over carriers"));
@@ -3589,7 +3589,7 @@ mod tests {
             return Err(TestError::Missing("one owned type fact"));
         }
         let extension = csharp_extension(&view, 0)?;
-        if extension.partial != compiler_ir::CSharpPartialRole::Definition {
+        if extension.partial != backend_semantic::ir::CSharpPartialRole::Definition {
             return Err(TestError::Missing("definition ownership"));
         }
         Ok(())
@@ -3632,7 +3632,7 @@ mod tests {
             DocFragmentInput::Text(b"Brews"),
             DocFragmentInput::Link {
                 label: b"demo.IPart",
-                target: DocLinkTarget::Local(compiler_ir::EntityId::new(part)),
+                target: DocLinkTarget::Local(backend_semantic::ir::EntityId::new(part)),
             },
             DocFragmentInput::Text(b"like"),
             DocFragmentInput::Link {
@@ -3742,7 +3742,7 @@ mod tests {
             .next()
             .ok_or(TestError::Missing("occurrence"))?
             .map_err(|_| TestError::Missing("occurrence decode"))?;
-        if occurrence.occurrence.kind != compiler_ir::ReferenceKind::Import {
+        if occurrence.occurrence.kind != backend_semantic::ir::ReferenceKind::Import {
             return Err(TestError::Missing("import reference kind"));
         }
         Ok(())
@@ -3802,8 +3802,8 @@ mod tests {
         if occurrence.owner.raw != 3 || target.raw != 2 {
             return Err(TestError::Missing("binding ordinals"));
         }
-        if occurrence.occurrence.kind != compiler_ir::ReferenceKind::MethodCall
-            || occurrence.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle
+        if occurrence.occurrence.kind != backend_semantic::ir::ReferenceKind::MethodCall
+            || occurrence.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
         {
             return Err(TestError::Missing("oracle method-call binding"));
         }
@@ -3883,7 +3883,7 @@ mod tests {
         let operator_row = row(&view, 4)?;
         if operator_row.record.tag != SemanticTypeTag::FunctionPointer
             || operator_row.record.payload1
-                != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
+                != backend_semantic::ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || operator_row.record.children.length != 3
         {
             return Err(TestError::Missing("operator function row"));
@@ -3891,7 +3891,7 @@ mod tests {
         let conversion_row = row(&view, 7)?;
         if conversion_row.record.tag != SemanticTypeTag::FunctionPointer
             || conversion_row.record.payload1
-                != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
+                != backend_semantic::ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || conversion_row.record.children.length != 2
         {
             return Err(TestError::Missing("conversion function row"));

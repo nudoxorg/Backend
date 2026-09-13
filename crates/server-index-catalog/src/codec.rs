@@ -1,6 +1,6 @@
 //! Scalar decoding for durable Turso cells.
 
-use compiler_ir::DeclarationIdentity;
+use backend_semantic::ir::DeclarationIdentity;
 use backend_version::{ContentId, GenerationId};
 use server_index_vocabulary::{
     CanonicalEntityLocator, IndexLocatorFacts, SemanticImageExtent, SemanticImageLocator,
@@ -45,8 +45,8 @@ pub(super) async fn load_entities(
             record.image,
             ordinal,
             DeclarationIdentity {
-                family: compiler_ir::DeclarationFamilyId::from_raw(family),
-                variant: compiler_ir::VariantFingerprint::from_raw(variant),
+                family: backend_semantic::ir::DeclarationFamilyId::from_raw(family),
+                variant: backend_semantic::ir::VariantFingerprint::from_raw(variant),
             },
         ));
     }

@@ -11,7 +11,7 @@ use std::{
 };
 
 use compiler_driver::CompiledFragment;
-use compiler_ir::FragmentView;
+use backend_semantic::ir::FragmentView;
 use server_journal::PublicationPaths;
 
 use crate::{BenchmarkError, model::MAX_CORPUS};

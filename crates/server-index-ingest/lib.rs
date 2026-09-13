@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use compiler_ir::DeclarationIdentity;
+use backend_semantic::ir::DeclarationIdentity;
 use server_index_vocabulary::{
     IndexLocatorFacts, PackageCoordinate, SemanticImageLocator, VerifiedCanonicalEntityLocator,
     VerifiedSemanticPublication,

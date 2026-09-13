@@ -19,8 +19,8 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use compiler_ir::{AtomId, EntityId, TypeId};
-use compiler_ir::{
+use backend_semantic::ir::{AtomId, EntityId, TypeId};
+use backend_semantic::ir::{
     AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
     SourceIdentity, TypeNode,
 };

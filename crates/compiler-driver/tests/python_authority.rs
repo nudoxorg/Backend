@@ -15,7 +15,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{
+use backend_semantic::ir::{
     Confidence, DecodedOccurrence, EntityKind, FragmentView, LanguageExtensionWireFact,
     OccurrenceConfidence, OccurrenceTarget, PythonFacts,
 };
@@ -439,7 +439,7 @@ fn supplied_inference_lifts_the_parameter_to_compiler_confidence() -> Result<(),
                 return Err(TestError::Decode("empty python plane"));
             }
             let ordinal = word(payload, offset + row * 4)?;
-            if ordinal == compiler_ir::SECTION_NONE {
+            if ordinal == backend_semantic::ir::SECTION_NONE {
                 return Ok(None);
             }
             let fact = usize::try_from(ordinal)

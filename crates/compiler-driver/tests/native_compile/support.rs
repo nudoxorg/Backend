@@ -14,8 +14,8 @@ use compiler_driver::{
     NativeWorkPhase, NativeWorkPrimary, ResolvedToolchain, ToolchainResolutionError,
     ToolchainSelection,
 };
-use compiler_ir::EntityKind;
-use compiler_ir::SemanticImageAuthority;
+use backend_semantic::ir::EntityKind;
+use backend_semantic::ir::SemanticImageAuthority;
 use backend_semantic::vocabulary::{
     CSharpVersion, CStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
     RustEdition, Stage, TypeScriptSource,
@@ -357,7 +357,7 @@ pub(super) fn source_length(source: &[u8]) -> Result<u32, TestFailure> {
     reason = "FragmentView validation proved every atom coordinate fits the test address space before this usize projection"
 )]
 pub(super) fn assert_facts(
-    fragment: &compiler_ir::FragmentView<'_>,
+    fragment: &backend_semantic::ir::FragmentView<'_>,
     expected: &[(&'static [u8], EntityKind)],
 ) -> Result<(), TestFailure> {
     let atoms: Vec<&[u8]> = fragment.atoms().map(|atom| atom.bytes).collect();
@@ -392,7 +392,7 @@ pub(super) fn assert_facts(
 /// The interim driver seam must commit at least one type fact for every
 /// successful language lowering; this catches deletion of the emission block.
 pub(super) fn assert_type_facts(
-    fragment: &compiler_ir::FragmentView<'_>,
+    fragment: &backend_semantic::ir::FragmentView<'_>,
     tool: NativeTool,
 ) -> Result<(), TestFailure> {
     let mut facts = fragment

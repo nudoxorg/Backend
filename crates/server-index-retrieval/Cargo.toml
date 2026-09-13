@@ -11,7 +11,7 @@ publish.workspace = true
 
 
 [dependencies]
-compiler-ir = { path = "../compiler-ir" }
+backend-semantic = { path = "../semantic" }
 server-index-core = { path = "../server-index-core" }
 server-index-graph-vector = { path = "../server-index-graph-vector" }
 server-index-publish = { path = "../server-index-publish" }
@@ -23,7 +23,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true
-backend-semantic = { path = "../semantic" }
 server-journal = { path = "../server-journal" }
 heart-hydration = { path = "../heart-hydration" }
 backend-version = { path = "../version" }

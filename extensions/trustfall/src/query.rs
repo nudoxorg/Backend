@@ -2,7 +2,7 @@
 
 use backend_library::PackageKey;
 use backend_version::WorkspaceRoot;
-use compiler_ir::{
+use backend_semantic::ir::{
     DeclarationIdentity, ExternalTargetIdentity, ImageProvenance, SemanticImageAuthority,
     SemanticImageFacts,
 };

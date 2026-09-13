@@ -10,7 +10,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use compiler_ir::{
+use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityId,
     EntityVersion, FactAvailability, IrBuilder, ItemKind, LinkKind, OccurrenceAuthorityFacts,
     ParentageAuthority, SemanticImageIdentity, SemanticImageView, SourceSpan, TreeEntityId,
@@ -230,7 +230,7 @@ fn occurrence_image_fixture(source_availability: FactAvailability) -> TestResult
             from: TreeEntityId::new(0),
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
-            confidence: compiler_ir::Confidence::Compiler,
+            confidence: backend_semantic::ir::Confidence::Compiler,
             authority: OccurrenceAuthorityFacts {
                 source: source_availability,
             },
@@ -244,7 +244,7 @@ fn occurrence_image_fixture(source_availability: FactAvailability) -> TestResult
             from: TreeEntityId::new(0),
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
-            confidence: compiler_ir::Confidence::Indexed,
+            confidence: backend_semantic::ir::Confidence::Indexed,
             authority: OccurrenceAuthorityFacts {
                 source: source_availability,
             },

@@ -15,7 +15,6 @@ compiler-driver = { path = "../compiler-driver" }
 server-journal = { path = "../server-journal" }
 heart-hydration = { path = "../heart-hydration" }
 backend-version = { path = "../version" }
-compiler-ir = { path = "../compiler-ir" }
 heart-root = { path = "../heart-root" }
 backend-store = { path = "../store" }
 thiserror.workspace = true

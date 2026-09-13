@@ -45,7 +45,7 @@ use compiler_driver::{
     CompiledSemantic, DeclarationScope, NativeTool, ResolvedToolchain, SemanticAuthorityInput,
     ToolchainSelection, compile_semantic,
 };
-use compiler_ir::{
+use backend_semantic::ir::{
     BuiltinType, ConcreteType, DeclarationFamilyId, DeclarationKeyFault, EntityAuthorityFacts,
     EntityId, EntityKind, FactAvailability, FragmentRangeManifest, FragmentView, ImageProvenance,
     Ir, ItemKind, PackageLineage, PackageLineageFault, ParentageAuthority, PrimitiveType,
@@ -217,7 +217,7 @@ enum CorpusAuditError {
     #[error("corpus reopened semantic artifact failed")]
     OpenedSemanticArtifact(#[from] compiler_publication::OpenedSemanticArtifactError),
     #[error("corpus fragment range manifest could not be reconstructed")]
-    Ranges(#[from] compiler_ir::FragmentRangeManifestError),
+    Ranges(#[from] backend_semantic::ir::FragmentRangeManifestError),
     #[error("corpus authority setup failed for {key:?}")]
     AuthoritySetup {
         key: CaseKey,

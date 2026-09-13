@@ -18,7 +18,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile_semantic,
 };
-use compiler_ir::{EntityKind, ImageProvenance, PrimitiveType, TypeNode};
+use backend_semantic::ir::{EntityKind, ImageProvenance, PrimitiveType, TypeNode};
 use compiler_languages_rust::{
     LoadError, RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };

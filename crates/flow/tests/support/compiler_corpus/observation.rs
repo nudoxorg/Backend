@@ -40,7 +40,7 @@ pub(super) enum ObservedTypeShape {
 pub(super) struct VersionObservation {
     pub(super) family: DeclarationFamilyId,
     pub(super) variant: VariantFingerprint,
-    pub(super) core_payload: compiler_ir::CorePayloadHash,
+    pub(super) core_payload: backend_semantic::ir::CorePayloadHash,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,9 +79,9 @@ pub(super) enum SemanticReaderStatus {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SemanticObservation {
     pub(super) status: SemanticReaderStatus,
-    pub(super) identity: Option<compiler_ir::SemanticImageIdentity>,
-    pub(super) image: Option<compiler_ir::SemanticImageFacts>,
-    pub(super) census: Option<compiler_ir::SemanticImageCensus>,
+    pub(super) identity: Option<backend_semantic::ir::SemanticImageIdentity>,
+    pub(super) image: Option<backend_semantic::ir::SemanticImageFacts>,
+    pub(super) census: Option<backend_semantic::ir::SemanticImageCensus>,
     pub(super) entities: Digest,
     pub(super) types: Digest,
     pub(super) externals: Digest,
@@ -113,7 +113,7 @@ pub(super) struct EntityObservation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CompactObservation {
     pub(super) fragment: Digest,
-    pub(super) census: compiler_ir::SemanticCensus,
+    pub(super) census: backend_semantic::ir::SemanticCensus,
     pub(super) primary_matches: u16,
     pub(super) primary_kind: Option<EntityKind>,
     pub(super) primary_name: Digest,
@@ -131,7 +131,7 @@ pub(super) struct ReopenedObservation {
     pub(super) source: SourceIdentity,
     pub(super) recipe: backend_semantic::vocabulary::CompileRecipeFact,
     pub(super) ranges: Digest,
-    pub(super) census: compiler_ir::SemanticCensus,
+    pub(super) census: backend_semantic::ir::SemanticCensus,
     pub(super) semantic_data: PlaneObservation,
     pub(super) occurrences: PlaneObservation,
     pub(super) type_facts: PlaneObservation,
@@ -258,7 +258,7 @@ pub(super) fn digest_image_provenance(value: ImageProvenance) -> Digest {
     hasher.digest()
 }
 
-pub(super) fn digest_semantic_census(value: Option<compiler_ir::SemanticImageCensus>) -> Digest {
+pub(super) fn digest_semantic_census(value: Option<backend_semantic::ir::SemanticImageCensus>) -> Digest {
     let mut hasher = StableHasher::default();
     match value {
         Some(value) => {
@@ -337,7 +337,7 @@ pub(super) fn item_kind(kind: EntityKind) -> ItemKind {
     }
 }
 
-pub(super) fn version_observation(version: compiler_ir::EntityVersion) -> VersionObservation {
+pub(super) fn version_observation(version: backend_semantic::ir::EntityVersion) -> VersionObservation {
     VersionObservation {
         family: version.family,
         variant: version.variant,
@@ -472,7 +472,7 @@ fn semantic_digest(ir: &Ir) -> Digest {
     hasher.digest()
 }
 
-fn hash_semantic_image_facts(value: compiler_ir::SemanticImageFacts, hasher: &mut StableHasher) {
+fn hash_semantic_image_facts(value: backend_semantic::ir::SemanticImageFacts, hasher: &mut StableHasher) {
     value.authority.hash(hasher);
     match value.provenance {
         ImageProvenance::Unavailable => 0_u8.hash(hasher),
@@ -516,9 +516,9 @@ fn hash_authority(value: EntityAuthorityFacts, hasher: &mut StableHasher) {
     hash_fact_availability(value.language_extension, hasher);
 }
 
-fn hash_atom<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_atom<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
-    id: compiler_ir::AtomId,
+    id: backend_semantic::ir::AtomId,
     hasher: &mut StableHasher,
 ) {
     id.hash(hasher);
@@ -548,7 +548,7 @@ where
     }
 }
 
-fn semantic_entities_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
+fn semantic_entities_digest<R: backend_semantic::ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
     let mut hasher = StableHasher::default();
     let entities = reader.canonical_entities();
     entities.len().hash(&mut hasher);
@@ -584,7 +584,7 @@ pub(super) fn digest_source_span_rows(mut spans: Vec<(Vec<u8>, u32, u32)>) -> Di
     hasher.digest()
 }
 
-fn semantic_source_spans_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
+fn semantic_source_spans_digest<R: backend_semantic::ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
     let spans = reader
         .canonical_entities()
         .filter_map(|entity| entity.source)
@@ -599,7 +599,7 @@ fn semantic_source_spans_digest<R: compiler_ir::SemanticReader + ?Sized>(reader:
     digest_source_span_rows(spans)
 }
 
-fn semantic_types_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
+fn semantic_types_digest<R: backend_semantic::ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
     let mut hasher = StableHasher::default();
     let types = reader.canonical_types();
     types.len().hash(&mut hasher);
@@ -612,9 +612,9 @@ fn semantic_types_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) ->
     hasher.digest()
 }
 
-fn hash_atom_reference<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_atom_reference<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
-    id: compiler_ir::AtomId,
+    id: backend_semantic::ir::AtomId,
     hasher: &mut StableHasher,
 ) {
     id.hash(hasher);
@@ -627,9 +627,9 @@ fn hash_atom_reference<R: compiler_ir::SemanticReader + ?Sized>(
     }
 }
 
-fn hash_type_list<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_type_list<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
-    id: compiler_ir::TypeListId,
+    id: backend_semantic::ir::TypeListId,
     hasher: &mut StableHasher,
 ) {
     id.hash(hasher);
@@ -645,9 +645,9 @@ fn hash_type_list<R: compiler_ir::SemanticReader + ?Sized>(
     }
 }
 
-fn hash_entity_list<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_entity_list<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
-    id: compiler_ir::EntityListId,
+    id: backend_semantic::ir::EntityListId,
     hasher: &mut StableHasher,
 ) {
     id.hash(hasher);
@@ -663,9 +663,9 @@ fn hash_entity_list<R: compiler_ir::SemanticReader + ?Sized>(
     }
 }
 
-fn hash_atom_list<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_atom_list<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
-    id: compiler_ir::AtomListId,
+    id: backend_semantic::ir::AtomListId,
     hasher: &mut StableHasher,
 ) {
     id.hash(hasher);
@@ -681,9 +681,9 @@ fn hash_atom_list<R: compiler_ir::SemanticReader + ?Sized>(
     }
 }
 
-fn hash_tuple_elements<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_tuple_elements<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
-    id: compiler_ir::TupleElementListId,
+    id: backend_semantic::ir::TupleElementListId,
     hasher: &mut StableHasher,
 ) {
     id.hash(hasher);
@@ -702,22 +702,22 @@ fn hash_tuple_elements<R: compiler_ir::SemanticReader + ?Sized>(
     }
 }
 
-fn hash_property_key<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_property_key<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
-    key: compiler_ir::PropertyKey,
+    key: backend_semantic::ir::PropertyKey,
     hasher: &mut StableHasher,
 ) {
     match key {
-        compiler_ir::PropertyKey::Named(id)
-        | compiler_ir::PropertyKey::Private(id)
-        | compiler_ir::PropertyKey::Numeric(id) => hash_atom_reference(reader, id, hasher),
-        compiler_ir::PropertyKey::Computed(id) => id.hash(hasher),
+        backend_semantic::ir::PropertyKey::Named(id)
+        | backend_semantic::ir::PropertyKey::Private(id)
+        | backend_semantic::ir::PropertyKey::Numeric(id) => hash_atom_reference(reader, id, hasher),
+        backend_semantic::ir::PropertyKey::Computed(id) => id.hash(hasher),
     }
 }
 
-fn hash_object_members<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_object_members<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
-    id: compiler_ir::ObjectMemberListId,
+    id: backend_semantic::ir::ObjectMemberListId,
     hasher: &mut StableHasher,
 ) {
     id.hash(hasher);
@@ -728,15 +728,15 @@ fn hash_object_members<R: compiler_ir::SemanticReader + ?Sized>(
             for row in rows {
                 row.hash(hasher);
                 match row {
-                    compiler_ir::ObjectMember::Property { key, .. }
-                    | compiler_ir::ObjectMember::Method { key, .. } => {
+                    backend_semantic::ir::ObjectMember::Property { key, .. }
+                    | backend_semantic::ir::ObjectMember::Method { key, .. } => {
                         hash_property_key(reader, key, hasher);
                     }
-                    compiler_ir::ObjectMember::Index { parameter, .. } => {
+                    backend_semantic::ir::ObjectMember::Index { parameter, .. } => {
                         hash_atom_reference(reader, parameter, hasher);
                     }
-                    compiler_ir::ObjectMember::Call(_)
-                    | compiler_ir::ObjectMember::Construct(_) => {}
+                    backend_semantic::ir::ObjectMember::Call(_)
+                    | backend_semantic::ir::ObjectMember::Construct(_) => {}
                 }
             }
         }
@@ -744,9 +744,9 @@ fn hash_object_members<R: compiler_ir::SemanticReader + ?Sized>(
     }
 }
 
-fn hash_template_parts<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_template_parts<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
-    id: compiler_ir::TemplatePartListId,
+    id: backend_semantic::ir::TemplatePartListId,
     hasher: &mut StableHasher,
 ) {
     id.hash(hasher);
@@ -756,7 +756,7 @@ fn hash_template_parts<R: compiler_ir::SemanticReader + ?Sized>(
             rows.len().hash(hasher);
             for row in rows {
                 row.hash(hasher);
-                if let compiler_ir::TemplatePart::Bytes(atom) = row {
+                if let backend_semantic::ir::TemplatePart::Bytes(atom) = row {
                     hash_atom_reference(reader, atom, hasher);
                 }
             }
@@ -765,9 +765,9 @@ fn hash_template_parts<R: compiler_ir::SemanticReader + ?Sized>(
     }
 }
 
-fn hash_parameter_bounds<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_parameter_bounds<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
-    id: compiler_ir::TypeParameterBoundListId,
+    id: backend_semantic::ir::TypeParameterBoundListId,
     hasher: &mut StableHasher,
 ) {
     id.hash(hasher);
@@ -777,7 +777,7 @@ fn hash_parameter_bounds<R: compiler_ir::SemanticReader + ?Sized>(
             rows.len().hash(hasher);
             for row in rows {
                 row.hash(hasher);
-                if let compiler_ir::TypeParameterBound::Lifetime(atom) = row {
+                if let backend_semantic::ir::TypeParameterBound::Lifetime(atom) = row {
                     hash_atom_reference(reader, atom, hasher);
                 }
             }
@@ -786,9 +786,9 @@ fn hash_parameter_bounds<R: compiler_ir::SemanticReader + ?Sized>(
     }
 }
 
-fn hash_parameters<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_parameters<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
-    id: compiler_ir::TypeParameterListId,
+    id: backend_semantic::ir::TypeParameterListId,
     hasher: &mut StableHasher,
 ) {
     id.hash(hasher);
@@ -806,7 +806,7 @@ fn hash_parameters<R: compiler_ir::SemanticReader + ?Sized>(
     }
 }
 
-fn hash_type_references<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_type_references<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
     expression: TypeExpr,
     hasher: &mut StableHasher,
@@ -830,13 +830,13 @@ fn hash_type_references<R: compiler_ir::SemanticReader + ?Sized>(
             }
             ConcreteType::Object(members) => hash_object_members(reader, members, hasher),
             ConcreteType::QualifiedPath { segments, .. } => {
-                if let compiler_ir::QualifiedSegments::Captured(segments) = segments {
+                if let backend_semantic::ir::QualifiedSegments::Captured(segments) = segments {
                     hash_atom_list(reader, segments, hasher);
                 }
             }
-            ConcreteType::Wildcard(compiler_ir::WildcardBound::Unbounded)
-            | ConcreteType::Wildcard(compiler_ir::WildcardBound::Extends(_))
-            | ConcreteType::Wildcard(compiler_ir::WildcardBound::Super(_))
+            ConcreteType::Wildcard(backend_semantic::ir::WildcardBound::Unbounded)
+            | ConcreteType::Wildcard(backend_semantic::ir::WildcardBound::Extends(_))
+            | ConcreteType::Wildcard(backend_semantic::ir::WildcardBound::Super(_))
             | ConcreteType::Builtin(_)
             | ConcreteType::Literal(_)
             | ConcreteType::Nominal(_)
@@ -859,13 +859,13 @@ fn hash_type_references<R: compiler_ir::SemanticReader + ?Sized>(
             | ConcreteType::Channel { .. } => {}
         },
         TypeExpr::Computed(computed) => match computed {
-            compiler_ir::ComputedType::TypeOf(compiler_ir::TypeQuery::Path(path)) => {
+            backend_semantic::ir::ComputedType::TypeOf(backend_semantic::ir::TypeQuery::Path(path)) => {
                 hash_atom_list(reader, path, hasher);
             }
-            compiler_ir::ComputedType::TemplateLiteral(parts) => {
+            backend_semantic::ir::ComputedType::TemplateLiteral(parts) => {
                 hash_template_parts(reader, parts, hasher);
             }
-            compiler_ir::ComputedType::Import {
+            backend_semantic::ir::ComputedType::Import {
                 qualifier,
                 arguments,
                 ..
@@ -873,20 +873,20 @@ fn hash_type_references<R: compiler_ir::SemanticReader + ?Sized>(
                 hash_atom_list(reader, qualifier, hasher);
                 hash_type_list(reader, arguments, hasher);
             }
-            compiler_ir::ComputedType::KeyOf(_)
-            | compiler_ir::ComputedType::TypeOf(_)
-            | compiler_ir::ComputedType::IndexedAccess { .. }
-            | compiler_ir::ComputedType::Conditional { .. }
-            | compiler_ir::ComputedType::Mapped { .. }
-            | compiler_ir::ComputedType::Infer { .. }
-            | compiler_ir::ComputedType::Awaited(_)
-            | compiler_ir::ComputedType::This => {}
+            backend_semantic::ir::ComputedType::KeyOf(_)
+            | backend_semantic::ir::ComputedType::TypeOf(_)
+            | backend_semantic::ir::ComputedType::IndexedAccess { .. }
+            | backend_semantic::ir::ComputedType::Conditional { .. }
+            | backend_semantic::ir::ComputedType::Mapped { .. }
+            | backend_semantic::ir::ComputedType::Infer { .. }
+            | backend_semantic::ir::ComputedType::Awaited(_)
+            | backend_semantic::ir::ComputedType::This => {}
         },
         TypeExpr::Unknown(_) => {}
     }
 }
 
-fn hash_extension_pools<R: compiler_ir::SemanticReader + ?Sized>(
+fn hash_extension_pools<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
     hasher: &mut StableHasher,
 ) {
@@ -940,7 +940,7 @@ fn hash_extension_pools<R: compiler_ir::SemanticReader + ?Sized>(
     }
 }
 
-fn semantic_externals_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
+fn semantic_externals_digest<R: backend_semantic::ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
     let mut hasher = StableHasher::default();
     let externals = reader.canonical_externals();
     externals.len().hash(&mut hasher);
@@ -951,7 +951,7 @@ fn semantic_externals_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R
     hasher.digest()
 }
 
-fn semantic_links_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
+fn semantic_links_digest<R: backend_semantic::ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
     let mut hasher = StableHasher::default();
     let entities = reader.canonical_entities();
     for entity in entities {
@@ -966,7 +966,7 @@ fn semantic_links_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) ->
     hasher.digest()
 }
 
-fn semantic_occurrences_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
+fn semantic_occurrences_digest<R: backend_semantic::ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
     let mut hasher = StableHasher::default();
     let occurrences = reader.link_occurrences();
     occurrences.len().hash(&mut hasher);
@@ -998,7 +998,7 @@ where
     hasher.digest()
 }
 
-fn canonical_type_render<R: compiler_ir::SemanticReader + ?Sized>(
+fn canonical_type_render<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
     primary: Option<EntityId>,
 ) -> RenderVerdict {
@@ -1008,10 +1008,10 @@ fn canonical_type_render<R: compiler_ir::SemanticReader + ?Sized>(
     let Some(root) = entity.semantic_type else {
         return RenderVerdict::Unavailable;
     };
-    let limits = compiler_ir::CanonicalTypeRenderLimits::new(
+    let limits = backend_semantic::ir::CanonicalTypeRenderLimits::new(
         NonZeroUsize::new(1024).expect("nonzero canonical render depth"),
     );
-    let Ok(prepared) = compiler_ir::prepare_canonical_type(reader, root, limits) else {
+    let Ok(prepared) = backend_semantic::ir::prepare_canonical_type(reader, root, limits) else {
         return RenderVerdict::Unavailable;
     };
     let mut output = vec![0_u8; prepared.encoded_len];
@@ -1021,12 +1021,12 @@ fn canonical_type_render<R: compiler_ir::SemanticReader + ?Sized>(
     }
 }
 
-fn observe_reader<R: compiler_ir::SemanticReader + ?Sized>(
+fn observe_reader<R: backend_semantic::ir::SemanticReader + ?Sized>(
     reader: &R,
-    identity: Option<compiler_ir::SemanticImageIdentity>,
+    identity: Option<backend_semantic::ir::SemanticImageIdentity>,
     primary: Option<EntityId>,
 ) -> SemanticObservation {
-    let census = compiler_ir::SemanticImageDiscovery::new(reader)
+    let census = backend_semantic::ir::SemanticImageDiscovery::new(reader)
         .census()
         .ok();
     let status = if census.is_some() {
@@ -1058,11 +1058,11 @@ fn observe_reader<R: compiler_ir::SemanticReader + ?Sized>(
     }
 }
 
-fn owned_image_identity(ir: &Ir) -> Option<compiler_ir::SemanticImageIdentity> {
-    let length = compiler_ir::full_semantic_image_len(ir).ok()?;
+fn owned_image_identity(ir: &Ir) -> Option<backend_semantic::ir::SemanticImageIdentity> {
+    let length = backend_semantic::ir::full_semantic_image_len(ir).ok()?;
     let mut bytes = vec![0_u8; length];
-    let written = compiler_ir::encode_full_semantic_image(ir, &mut bytes).ok()?;
-    (written == length).then(|| compiler_ir::SemanticImageIdentity::from_encoded_bytes(&bytes))
+    let written = backend_semantic::ir::encode_full_semantic_image(ir, &mut bytes).ok()?;
+    (written == length).then(|| backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(&bytes))
 }
 
 pub(super) fn observe_owned_semantic(ir: &Ir, primary: Option<EntityId>) -> SemanticObservation {
@@ -1070,12 +1070,12 @@ pub(super) fn observe_owned_semantic(ir: &Ir, primary: Option<EntityId>) -> Sema
 }
 
 pub(super) fn observe_reopened_semantic(
-    image: &compiler_ir::SemanticImageView<'_>,
+    image: &backend_semantic::ir::SemanticImageView<'_>,
     primary: Option<EntityId>,
 ) -> SemanticObservation {
     observe_reader(
         image,
-        Some(compiler_ir::SemanticImageIdentity::from_encoded_bytes(
+        Some(backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(
             image.as_ref(),
         )),
         primary,
@@ -1519,7 +1519,7 @@ fn hash_image_provenance(value: ImageProvenance, hasher: &mut StableHasher) {
     }
 }
 
-fn hash_census(value: compiler_ir::SemanticCensus, hasher: &mut StableHasher) {
+fn hash_census(value: backend_semantic::ir::SemanticCensus, hasher: &mut StableHasher) {
     value.entities.hash(hasher);
     value.atoms.hash(hasher);
     value.compact_type_nodes.hash(hasher);
@@ -1534,12 +1534,12 @@ fn hash_census(value: compiler_ir::SemanticCensus, hasher: &mut StableHasher) {
     value.extension_pool_section.hash(hasher);
 }
 
-fn hash_availability_census(value: compiler_ir::AvailabilityCensus, hasher: &mut StableHasher) {
+fn hash_availability_census(value: backend_semantic::ir::AvailabilityCensus, hasher: &mut StableHasher) {
     value.captured.hash(hasher);
     value.unavailable.hash(hasher);
 }
 
-fn hash_semantic_census(value: compiler_ir::SemanticImageCensus, hasher: &mut StableHasher) {
+fn hash_semantic_census(value: backend_semantic::ir::SemanticImageCensus, hasher: &mut StableHasher) {
     hash_semantic_image_facts(value.image, hasher);
     value.entities.hash(hasher);
     value.root_entities.hash(hasher);

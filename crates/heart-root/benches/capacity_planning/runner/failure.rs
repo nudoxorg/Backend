@@ -7,8 +7,8 @@ use compiler_driver::{
     CompileFailure, NativeArtifactRole, NativeTool, NativeWorkError, NativeWorkPhase,
     NativeWorkPrimary, ToolchainSelectionFact,
 };
-use compiler_ir::EntityId;
-use compiler_ir::{FragmentError, PrepareError, WriteError};
+use backend_semantic::ir::EntityId;
+use backend_semantic::ir::{FragmentError, PrepareError, WriteError};
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, Language, LanguageProfile, Stage as CompileStage,
 };
@@ -136,7 +136,7 @@ pub(crate) enum CompileFailureFact {
         fault: Box<compiler_driver::ClangProjectionFault>,
     },
     Build {
-        cause: compiler_ir::BuildError,
+        cause: backend_semantic::ir::BuildError,
     },
     Prepare {
         cause: PrepareError,
@@ -267,17 +267,17 @@ pub(crate) enum WriteFault {
         available: usize,
     },
     AtomLength {
-        ordinal: compiler_ir::AtomId,
+        ordinal: backend_semantic::ir::AtomId,
         actual: usize,
     },
     AtomExtent {
-        ordinal: compiler_ir::AtomId,
+        ordinal: backend_semantic::ir::AtomId,
     },
     ExtensionSection {
-        fault: compiler_ir::LanguageExtensionEncodeError,
+        fault: backend_semantic::ir::LanguageExtensionEncodeError,
     },
     SemanticAtomLength {
-        ordinal: compiler_ir::AtomId,
+        ordinal: backend_semantic::ir::AtomId,
         actual: usize,
     },
 }
@@ -372,19 +372,19 @@ pub(crate) enum BuildFailureFact {
     },
     AtomAddressSpace {
         entity: EntityId,
-        name: compiler_ir::AtomId,
+        name: backend_semantic::ir::AtomId,
     },
     TypeAddressSpace {
         entity: EntityId,
-        semantic_type: compiler_ir::TypeId,
+        semantic_type: backend_semantic::ir::TypeId,
     },
     MissingAtom {
         entity: EntityId,
-        name: compiler_ir::AtomId,
+        name: backend_semantic::ir::AtomId,
     },
     MissingTypeNode {
         entity: EntityId,
-        semantic_type: compiler_ir::TypeId,
+        semantic_type: backend_semantic::ir::TypeId,
     },
     Exact {
         cause: ExactSegmentFault,

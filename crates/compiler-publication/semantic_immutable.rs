@@ -3,7 +3,7 @@
 use core::num::TryFromIntError;
 use std::path::{Path, PathBuf};
 
-use compiler_ir::{SemanticImageIdentity, SemanticImageReopenError, SemanticImageView};
+use backend_semantic::ir::{SemanticImageIdentity, SemanticImageReopenError, SemanticImageView};
 use backend_version::{IrSemanticImageDomain, IrSemanticImageEncoding};
 use thiserror::Error;
 

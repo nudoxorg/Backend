@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use server_index_graph_vector::{
     Metric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority, VectorPoint,
     VectorQueryError, VectorSegmentError, exact_vector_query,

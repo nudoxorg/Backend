@@ -11,7 +11,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use compiler_ir::{
+use backend_semantic::ir::{
     DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, SemanticTypeTag,
 };
 use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
@@ -206,14 +206,14 @@ fn impl_trait_path_is_oracle_local_and_implementation_owned() -> Result<(), Stri
         .iter()
         .find(|row| {
             row.owner.raw as usize == implementation
-                && row.occurrence.kind == compiler_ir::ReferenceKind::TypeReference
+                && row.occurrence.kind == backend_semantic::ir::ReferenceKind::TypeReference
         })
         .ok_or("impl trait occurrence absent")?;
-    if occurrence.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle {
+    if occurrence.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle {
         return Err("impl trait occurrence is not oracle".to_owned());
     }
     match occurrence.occurrence.target {
-        compiler_ir::OccurrenceTarget::Local(target) if target.raw as usize == visitor => Ok(()),
+        backend_semantic::ir::OccurrenceTarget::Local(target) if target.raw as usize == visitor => Ok(()),
         _ => Err("impl trait target is not local Visitor".to_owned()),
     }
 }
@@ -226,13 +226,13 @@ fn field_access_is_oracle_local_to_named_field() -> Result<(), String> {
     let row = lane
         .occurrences
         .iter()
-        .find(|row| row.occurrence.kind == compiler_ir::ReferenceKind::FieldAccess)
+        .find(|row| row.occurrence.kind == backend_semantic::ir::ReferenceKind::FieldAccess)
         .ok_or("field occurrence absent")?;
-    if row.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle {
+    if row.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle {
         return Err("field occurrence is not oracle".to_owned());
     }
     match row.occurrence.target {
-        compiler_ir::OccurrenceTarget::Local(target) if target.raw as usize == weight => Ok(()),
+        backend_semantic::ir::OccurrenceTarget::Local(target) if target.raw as usize == weight => Ok(()),
         _ => Err("field target is not local weight".to_owned()),
     }
 }
@@ -265,14 +265,14 @@ fn intra_doc_node_link_resolves_local() -> Result<(), String> {
         .docs
         .iter()
         .find_map(|fact| match fact.fragment {
-            compiler_ir::DocFragmentInput::Link { label, target } if label == b"Node" => {
+            backend_semantic::ir::DocFragmentInput::Link { label, target } if label == b"Node" => {
                 Some(target)
             }
             _ => None,
         })
         .ok_or("Node doc link absent")?;
     match link {
-        compiler_ir::DocLinkTarget::Local(target) if target.raw as usize == node => Ok(()),
+        backend_semantic::ir::DocLinkTarget::Local(target) if target.raw as usize == node => Ok(()),
         _ => Err("Node doc link is not local".to_owned()),
     }
 }

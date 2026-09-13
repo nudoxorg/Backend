@@ -3,8 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::mem::{align_of, size_of};
 
-use compiler_ir::TypeId;
-use compiler_ir::{
+use backend_semantic::ir::TypeId;
+use backend_semantic::ir::{
     EntityKind, EntityKindCodeError, LinkKind, PrimitiveType, TypeNode, TypeNodeFault, TypeTag,
 };
 use thiserror::Error;
@@ -464,7 +464,7 @@ mod tests {
         LinkKinds, PRIMITIVE_TYPE_AUTHORITY, SEMANTIC_ABSENT_TYPE_AUTHORITY,
         SEMANTIC_TYPE_AUTHORITY, SemanticTypeFact, TYPE_AUTHORITY_SHIFT, TYPE_CLASS_SHIFT,
     };
-    use compiler_ir::{EntityKind, LinkKind, PrimitiveType, TypeId, TypeNode, TypeTag};
+    use backend_semantic::ir::{EntityKind, LinkKind, PrimitiveType, TypeId, TypeNode, TypeTag};
     use core::mem::size_of;
     use thiserror::Error;
     use zerocopy::IntoBytes;

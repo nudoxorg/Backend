@@ -6,8 +6,8 @@
 mod support;
 
 use allocation_counter::{AllocationInfo, measure};
-use compiler_ir::{AtomId, TypeId};
-use compiler_ir::{AtomInput, EntityKind, EntityRecord, PrimitiveType, TypeNode};
+use backend_semantic::ir::{AtomId, TypeId};
+use backend_semantic::ir::{AtomInput, EntityKind, EntityRecord, PrimitiveType, TypeNode};
 use backend_version::{ContentId, SourceFactDomain};
 use server_index_core::{ExactOperation, IndexSnapshot, LexicalRow};
 use support::{

@@ -849,7 +849,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "compiler-driver",
- "compiler-ir",
  "compiler-publication",
  "heart-hydration",
  "heart-root",
@@ -875,10 +874,10 @@ version = "0.1.0"
 dependencies = [
  "backend-flow",
  "backend-replication",
+ "backend-semantic",
  "backend-store",
  "backend-version",
  "blake3",
- "compiler-ir",
  "server-index-core",
  "server-index-vocabulary",
  "strum 0.28.0",
@@ -918,7 +917,6 @@ dependencies = [
  "backend-semantic",
  "backend-version",
  "blake3",
- "compiler-ir",
  "futures-core",
  "futures-executor",
  "futures-util",
@@ -945,7 +943,6 @@ dependencies = [
  "backend-version",
  "blake3",
  "compiler-driver",
- "compiler-ir",
  "compiler-languages-csharp",
  "compiler-languages-go",
  "compiler-languages-java",
@@ -1133,7 +1130,6 @@ dependencies = [
  "backend-version",
  "blake3",
  "compiler-application",
- "compiler-ir",
  "compiler-publication",
  "flate2",
  "futures-executor",
@@ -1223,9 +1219,11 @@ dependencies = [
 name = "backend-semantic"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "backend-flow",
  "backend-version",
  "blake3",
+ "memmap2",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -2057,7 +2055,6 @@ dependencies = [
  "backend-version",
  "blake3",
  "compiler-driver",
- "compiler-ir",
  "compiler-languages-csharp",
  "compiler-languages-go",
  "compiler-languages-java",
@@ -2077,7 +2074,6 @@ version = "0.1.0"
 dependencies = [
  "backend-semantic",
  "backend-version",
- "compiler-ir",
  "compiler-languages-clang",
  "compiler-languages-csharp",
  "compiler-languages-go",
@@ -2096,18 +2092,6 @@ dependencies = [
  "sha2",
  "thiserror 2.0.20",
  "ureq",
-]
-
-[[package]]
-name = "compiler-ir"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "backend-semantic",
- "backend-version",
- "blake3",
- "memmap2",
- "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2209,7 +2193,6 @@ dependencies = [
  "backend-store",
  "backend-version",
  "compiler-driver",
- "compiler-ir",
  "heart-hydration",
  "heart-root",
  "server-journal",
@@ -4151,7 +4134,6 @@ dependencies = [
  "backend-version",
  "bolero",
  "compiler-driver",
- "compiler-ir",
  "compiler-publication",
  "derive_more",
  "fearless_simd",
@@ -4635,7 +4617,6 @@ dependencies = [
  "backend-execution",
  "backend-semantic",
  "backend-version",
- "compiler-ir",
  "compiler-registry",
  "server-index-core",
 ]
@@ -8622,8 +8603,8 @@ dependencies = [
 name = "server-index-acquire"
 version = "0.1.0"
 dependencies = [
+ "backend-semantic",
  "backend-version",
- "compiler-ir",
  "futures-executor",
  "serde",
  "serde_json",
@@ -8643,7 +8624,6 @@ dependencies = [
  "backend-semantic",
  "backend-version",
  "compiler-driver",
- "compiler-ir",
  "compiler-publication",
  "server-index-core",
  "server-journal",
@@ -8655,8 +8635,8 @@ dependencies = [
 name = "server-index-catalog"
 version = "0.1.0"
 dependencies = [
+ "backend-semantic",
  "backend-version",
- "compiler-ir",
  "futures-executor",
  "server-index-ingest",
  "server-index-vocabulary",
@@ -8669,8 +8649,8 @@ name = "server-index-core"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "backend-semantic",
  "backend-version",
- "compiler-ir",
  "server-index-vocabulary",
  "thiserror 2.0.20",
 ]
@@ -8680,8 +8660,8 @@ name = "server-index-graph-vector"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-semantic",
  "backend-version",
- "compiler-ir",
  "loom",
  "server-index-vocabulary",
 ]
@@ -8690,8 +8670,8 @@ dependencies = [
 name = "server-index-ingest"
 version = "0.1.0"
 dependencies = [
+ "backend-semantic",
  "backend-version",
- "compiler-ir",
  "server-index-vocabulary",
 ]
 
@@ -8704,7 +8684,6 @@ dependencies = [
  "backend-store",
  "backend-version",
  "compiler-driver",
- "compiler-ir",
  "compiler-publication",
  "heart-hydration",
  "heart-root",
@@ -8726,7 +8705,7 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
- "compiler-ir",
+ "backend-semantic",
  "flate2",
  "serde",
  "serde_json",
@@ -8755,7 +8734,6 @@ dependencies = [
  "backend-semantic",
  "backend-store",
  "backend-version",
- "compiler-ir",
  "futures-core",
  "heart-hydration",
  "heart-root",
@@ -8776,8 +8754,8 @@ dependencies = [
 name = "server-index-tantivy"
 version = "0.1.0"
 dependencies = [
+ "backend-semantic",
  "backend-version",
- "compiler-ir",
  "server-index-core",
  "tantivy",
  "thiserror 2.0.20",
@@ -8788,7 +8766,7 @@ name = "server-index-trustfall"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "compiler-ir",
+ "backend-semantic",
  "futures-core",
  "futures-util",
  "server-index-graph-vector",
@@ -8803,8 +8781,8 @@ name = "server-index-vocabulary"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-semantic",
  "backend-version",
- "compiler-ir",
 ]
 
 [[package]]

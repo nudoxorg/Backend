@@ -7,7 +7,7 @@
 
 use core::ops::Deref;
 
-use compiler_ir::{
+use backend_semantic::ir::{
     FragmentError, FragmentRange, FragmentRangeManifest, FragmentRangeManifestError, FragmentView,
     RecipeFact, SectionKind, SemanticImageIdentity, SemanticImageReopenError, SemanticImageView,
     SourceIdentity,

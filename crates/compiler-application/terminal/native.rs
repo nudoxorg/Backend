@@ -98,7 +98,7 @@ fn lowering(cause: backend_semantic::vocabulary::LoweringUnsupported) -> Compile
 }
 
 fn authority_terminal(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     failure: &compiler_driver::AuthorityFailure<'_>,
 ) -> CompilerTerminal {
@@ -115,7 +115,7 @@ fn authority_terminal(
 }
 
 const fn unsupported_stage(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     language: backend_semantic::vocabulary::Language,
     stage: backend_semantic::vocabulary::Stage,
 ) -> CompilerTerminal {
@@ -126,7 +126,7 @@ const fn unsupported_stage(
 }
 
 const fn toolchain(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     language: backend_semantic::vocabulary::Language,
     stage: backend_semantic::vocabulary::Stage,
     selected: backend_semantic::vocabulary::NativeTool,
@@ -142,7 +142,7 @@ const fn toolchain(
 }
 
 const fn tooling_unavailable(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     language: backend_semantic::vocabulary::Language,
     stage: backend_semantic::vocabulary::Stage,
     tool: backend_semantic::vocabulary::NativeTool,
@@ -156,7 +156,7 @@ const fn tooling_unavailable(
 }
 
 fn cancelled(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     diagnostic: NativeDiagnostic<'_>,
 ) -> CompilerTerminal {
@@ -167,7 +167,7 @@ fn cancelled(
 }
 
 fn native_work_terminal(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     phase: NativeWorkPhase,
     cause: NativeWorkError,
@@ -180,7 +180,7 @@ fn native_work_terminal(
 }
 
 fn native_work_cleanup_terminal(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     primary: NativeWorkPrimary<'_>,
     cleanup: NativeWorkError,
@@ -196,7 +196,7 @@ fn native_work_cleanup_terminal(
 }
 
 const fn native_primary_terminal(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     primary: NativePrimaryCause,
 ) -> CompilerTerminal {
@@ -208,7 +208,7 @@ const fn native_primary_terminal(
 }
 
 fn native_io_terminal(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     phase: NativeIoPhase,
     cause: &std::io::Error,
@@ -224,7 +224,7 @@ fn native_io_terminal(
 }
 
 fn deadline_exceeded(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     diagnostic: NativeDiagnostic<'_>,
 ) -> CompilerTerminal {
@@ -238,7 +238,7 @@ fn deadline_exceeded(
 }
 
 fn diagnostic_limit(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     limit: usize,
     observed: usize,
@@ -256,7 +256,7 @@ fn diagnostic_limit(
 }
 
 fn native_rejected(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     status: std::process::ExitStatus,
     diagnostic: NativeDiagnostic<'_>,
@@ -272,7 +272,7 @@ fn native_rejected(
 }
 
 const fn fragment_terminal(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     cause: FragmentCause,
 ) -> CompilerTerminal {
@@ -323,8 +323,8 @@ mod tests {
         Ok(*cause)
     }
 
-    fn source_and_recipe() -> (compiler_ir::SourceIdentity, CompileRecipeFact) {
-        let source = compiler_ir::SourceIdentity {
+    fn source_and_recipe() -> (backend_semantic::ir::SourceIdentity, CompileRecipeFact) {
+        let source = backend_semantic::ir::SourceIdentity {
             identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"projection"),
             byte_len: 10,
         };
@@ -427,7 +427,7 @@ mod tests {
         let Ok(diagnostic) = AuthorityDiagnostic::new(b"syntax", 6, false) else {
             return Err(TestError::Diagnostic);
         };
-        let source = compiler_ir::SourceIdentity {
+        let source = backend_semantic::ir::SourceIdentity {
             identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source_bytes),
             byte_len: 8,
         };

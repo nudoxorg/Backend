@@ -14,7 +14,7 @@ use compiler_driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainResolutionError, ToolchainSelection,
     compile,
 };
-use compiler_ir::EntityKind;
+use backend_semantic::ir::EntityKind;
 use compiler_languages_rust::{
     RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };

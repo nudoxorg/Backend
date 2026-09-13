@@ -11,7 +11,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use compiler_ir::{EntityKind, FragmentView};
+use backend_semantic::ir::{EntityKind, FragmentView};
 use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
@@ -42,7 +42,7 @@ enum TestError {
     #[error("compile failed: {0}")]
     Compile(String),
     #[error("fragment validation failed: {0}")]
-    Validate(#[from] compiler_ir::FragmentError),
+    Validate(#[from] backend_semantic::ir::FragmentError),
 }
 
 /// Separates concurrently executing fixtures created during one process lifetime.

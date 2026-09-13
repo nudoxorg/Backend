@@ -76,7 +76,7 @@ pub struct SemanticImageAuthority {
 /// Owned encoded bytes of one exact, previously reopened semantic image.
 ///
 /// This transport owner proves only byte extent and typed artifact identity. Consumers reopen the
-/// bytes through `compiler_ir::SemanticImageView` before reading semantic rows, preserving the IR
+/// bytes through `backend_semantic::ir::SemanticImageView` before reading semantic rows, preserving the IR
 /// crate as the sole grammar authority.
 #[derive(Debug, Eq, PartialEq)]
 pub struct SemanticImageSnapshot {

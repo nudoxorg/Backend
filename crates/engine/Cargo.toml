@@ -17,7 +17,6 @@ base64.workspace = true
 blake3.workspace = true
 backend-compile = { path = "../compile" }
 backend-library = { path = "../library" }
-compiler-ir = { path = "../compiler-ir" }
 compiler-publication = { path = "../compiler-publication" }
 heart-hydration = { path = "../heart-hydration" }
 heart-root = { path = "../heart-root" }

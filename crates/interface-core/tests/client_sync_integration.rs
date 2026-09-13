@@ -6,7 +6,7 @@
 
 use core::num::NonZeroU64;
 
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use backend_version::{
     ArtifactId, ContentId, GenerationId, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
     IndexSnapshotDomain, IrFragmentDomain, IrFragmentEncoding, ObjectDomain, derive_index_snapshot,

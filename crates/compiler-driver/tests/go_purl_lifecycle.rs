@@ -7,7 +7,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{FragmentView, ImageProvenance};
+use backend_semantic::ir::{FragmentView, ImageProvenance};
 use compiler_languages_go::{GoImage, GoOracle};
 use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
@@ -66,7 +66,7 @@ enum TestError {
     #[error("fragment validation failed: {source}")]
     Fragment {
         #[source]
-        source: compiler_ir::FragmentError,
+        source: backend_semantic::ir::FragmentError,
     },
     #[error("publication failed: {cause}")]
     Publish { cause: String },
@@ -249,7 +249,7 @@ fn lifecycle(
     })?;
     let columns = ir.ir.entity_columns();
     let names = columns.names;
-    let atom = |id: compiler_ir::AtomId| ir.ir.atom(id);
+    let atom = |id: backend_semantic::ir::AtomId| ir.ir.atom(id);
     for wanted in symbols {
         if !names
             .iter()

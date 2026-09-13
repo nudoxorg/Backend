@@ -9,7 +9,7 @@ use core::{
 use std::hint::black_box;
 
 use allocation_counter::{AllocationInfo, measure};
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use server_index_graph_vector::{
     Cancellation, GraphAuthority, GraphEdge, GraphLease, GraphRow, LeaseCapacity, Metric, ModelId,
     PartitionId, ProjectionId, TraceProbe, ValidatedGraphView, ValidatedVectorSegment,

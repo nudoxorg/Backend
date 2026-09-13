@@ -9,7 +9,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{FragmentView, Ir, ItemKind};
+use backend_semantic::ir::{FragmentView, Ir, ItemKind};
 use backend_semantic::vocabulary::{CSharpVersion, LanguageProfile, Stage};
 use std::{
     fs,
@@ -49,7 +49,7 @@ enum TestError {
     #[error("fragment validation failed: {source}")]
     Fragment {
         #[source]
-        source: compiler_ir::FragmentError,
+        source: backend_semantic::ir::FragmentError,
     },
     #[error("missing {kind:?} {name}")]
     Missing { name: &'static str, kind: ItemKind },
@@ -156,7 +156,7 @@ fn compile_fragment(
 
 fn render(
     ir: &Ir,
-    id: compiler_ir::EntityId,
+    id: backend_semantic::ir::EntityId,
     name: &'static str,
     kind: ItemKind,
 ) -> Result<String, TestError> {

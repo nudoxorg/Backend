@@ -18,7 +18,7 @@ strum.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-compiler-ir = { path = "../compiler-ir" }
+backend-semantic = { path = "../semantic" }
 
 [lints]
 workspace = true

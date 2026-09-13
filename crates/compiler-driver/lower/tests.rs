@@ -2,7 +2,7 @@
 //! lowered constructor, role, and name must change the committed fragment
 //! bytes, every fact admission rejection must retain the exact offending fact
 //! and cause, and an empty fact set must retain its exact current schema form.
-use compiler_ir::{
+use backend_semantic::ir::{
     AtomListId, BuildError, ConcreteType, CorePayloadHash, EntityAuthorityFacts, EntityId,
     EntityKind, EntityVersion, FactAvailability, FragmentView, NominalRef, Occurrence,
     PackageLineage, ParentageAuthority, PrepareError, PreparedFragment, ReopenedTypeParameterList,
@@ -11,7 +11,7 @@ use compiler_ir::{
     TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId, TypeQuadPayload, TypeTriplePayload,
     VariadicForm, Visibility, encode_full_semantic_image, full_semantic_image_len,
 };
-use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
+use backend_semantic::ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
 use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
@@ -41,11 +41,11 @@ enum TestError {
     #[error("lane admission fault: {0:?}")]
     Admission(AdmissionFault),
     #[error("fragment validation failed")]
-    Validate(#[from] compiler_ir::FragmentError),
+    Validate(#[from] backend_semantic::ir::FragmentError),
     #[error("fixture prepare failed")]
     Prepare(#[from] PrepareError),
     #[error("fixture write failed")]
-    Write(#[from] compiler_ir::WriteError),
+    Write(#[from] backend_semantic::ir::WriteError),
     #[error("owned image projection failed")]
     Build(#[from] BuildError),
     #[error("fragment output tail changed")]
@@ -894,17 +894,17 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
             })?;
     }
     let occurrence = Occurrence {
-        target: compiler_ir::OccurrenceTarget::Foreign(compiler_ir::ForeignKey {
-            origin: compiler_ir::ForeignOrigin::Universe {
+        target: backend_semantic::ir::OccurrenceTarget::Foreign(backend_semantic::ir::ForeignKey {
+            origin: backend_semantic::ir::ForeignOrigin::Universe {
                 ecosystem: "example",
             },
             path: "example.com/demo",
             display: "demo",
             kind: None,
         }),
-        kind: compiler_ir::ReferenceKind::FunctionCall,
-        confidence: compiler_ir::OccurrenceConfidence::Syntactic,
-        span: compiler_ir::RelSpan { start: 0, end: 0 },
+        kind: backend_semantic::ir::ReferenceKind::FunctionCall,
+        confidence: backend_semantic::ir::OccurrenceConfidence::Syntactic,
+        span: backend_semantic::ir::RelSpan { start: 0, end: 0 },
     };
     for _ in 0..MAX_EMISSION_OCCURRENCES {
         maximal.push_occurrence(0, occurrence).map_err(|cause| {
@@ -917,7 +917,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     }
     for _ in 0..MAX_EMISSION_DOC_FRAGMENTS {
         maximal
-            .push_doc(0, compiler_ir::DocFragmentInput::SoftBreak)
+            .push_doc(0, backend_semantic::ir::DocFragmentInput::SoftBreak)
             .map_err(|cause| {
                 rejected(RejectedFact {
                     fact: 0,
@@ -1472,7 +1472,7 @@ fn source_spans_keep_scope_path_while_image_provenance_keeps_content_identity()
         || projected.end() != span.end
         || !matches!(
             ir.image_provenance(),
-            compiler_ir::ImageProvenance::Captured { source, .. } if source == expected_source
+            backend_semantic::ir::ImageProvenance::Captured { source, .. } if source == expected_source
         )
     {
         return Err(TestError::Tail);

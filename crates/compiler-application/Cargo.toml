@@ -19,7 +19,6 @@ compiler-publication = { path = "../compiler-publication" }
 backend-semantic = { path = "../semantic" }
 server-journal = { path = "../server-journal" }
 backend-version = { path = "../version" }
-compiler-ir = { path = "../compiler-ir" }
 compiler-languages-csharp = { path = "../compiler-language-csharp" }
 compiler-languages-go = { path = "../compiler-language-go" }
 compiler-languages-java = { path = "../compiler-language-java" }

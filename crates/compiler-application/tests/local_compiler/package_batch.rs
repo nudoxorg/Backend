@@ -13,7 +13,7 @@ use compiler_application::{
     PackageSource, PackageSourceSet,
 };
 use compiler_driver::{ResolvedToolchain, ToolchainSelection};
-use compiler_ir::SemanticImageView;
+use backend_semantic::ir::SemanticImageView;
 use backend_semantic::vocabulary::{CStandard, LanguageProfile, NativeTool, Stage};
 use interface_core::{
     CorrelationId, GenerateTarget, PackageCompilePhase, PackageCompileRequest, PackageUrl,

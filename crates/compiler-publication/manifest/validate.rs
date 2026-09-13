@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::{cmp::Ordering, num::TryFromIntError, ops::Deref};
 
-use compiler_ir::{FragmentRange, RecipeFact, SectionKind, SourceIdentity};
+use backend_semantic::ir::{FragmentRange, RecipeFact, SectionKind, SourceIdentity};
 use backend_semantic::vocabulary::{CompileRecipeFact, Stage};
 use backend_version::{
     ArtifactId, ArtifactIdDecodeError, ContentIdDecodeError, IrFragmentDomain, IrFragmentEncoding,

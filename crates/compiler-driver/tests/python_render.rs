@@ -11,7 +11,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{
+use backend_semantic::ir::{
     DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityId, EntityKind, FragmentView, Ir,
     ItemKind, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
 };
@@ -349,7 +349,7 @@ fn python_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         });
     }
     let embedding = ir
-        .embedding_text(plain, compiler_ir::EmbeddingProfile::DOCUMENTED)
+        .embedding_text(plain, backend_semantic::ir::EmbeddingProfile::DOCUMENTED)
         .ok_or(TestError::Falsified("embedding unavailable"))?
         .to_string();
     if embedding != "struct Plain\n\nPlain documentation." {
@@ -475,7 +475,7 @@ fn python_fragment_planes_carry_what_the_ir_tree_omits() -> Result<(), TestError
         }
     }
     if !docs.iter().any(|fact| {
-        matches!(fact.fragment, compiler_ir::DocFragmentInput::Text(text) if text == b"Plain documentation.")
+        matches!(fact.fragment, backend_semantic::ir::DocFragmentInput::Text(text) if text == b"Plain documentation.")
     }) {
         return Err(TestError::Falsified("docstring absent from fragment docs lane"));
     }
@@ -523,7 +523,7 @@ fn python_fragment_planes_carry_what_the_ir_tree_omits() -> Result<(), TestError
     // checker's Import/Oracle upgrades live on the checker-provisioned
     // paths (see the live-Ir tests and the real-package matrix).
     if !occurrences.iter().any(|fact| {
-        fact.occurrence.confidence == compiler_ir::OccurrenceConfidence::Index
+        fact.occurrence.confidence == backend_semantic::ir::OccurrenceConfidence::Index
             && matches!(fact.occurrence.target, OccurrenceTarget::Local(target) if target.raw as usize == overloaded)
     }) {
         return Err(TestError::Falsified(

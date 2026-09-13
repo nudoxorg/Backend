@@ -2,13 +2,13 @@
 //!
 //! This module owns no parallel catalogue and never makes a stringly
 //! approximation of semantic state.  A session borrows a finalized
-//! [`compiler_ir::SemanticReader`], so owned [`compiler_ir::Ir`] and a
-//! validated reopened [`compiler_ir::SemanticImageView`] expose the identical
+//! [`backend_semantic::ir::SemanticReader`], so owned [`backend_semantic::ir::Ir`] and a
+//! validated reopened [`backend_semantic::ir::SemanticImageView`] expose the identical
 //! declaration, documentation, type, and graph facts.
 
 use core::{iter::FusedIterator, ops::Deref};
 
-use compiler_ir::{
+use backend_semantic::ir::{
     AtomId, CanonicalTypeRenderError, CanonicalTypeRenderLimits, DeclarationIdentity, DocFragment,
     DocId, EntityId, EntityListId, ExternalId, ExternalTarget, Link, LinkId, LinkTarget,
     PreparedCanonicalType, SemanticEntity, SemanticImageFacts, SemanticReader, TextId, TypeExpr,
@@ -762,7 +762,7 @@ fn documentation_target<'image, Reader: SemanticReader + ?Sized>(
 mod tests {
     use core::num::NonZeroUsize;
 
-    use compiler_ir::{
+    use backend_semantic::ir::{
         BorrowedTree, BuiltinType, ConcreteType, Confidence, CorePayloadHash, DeclarationFamilyId,
         DocInput, EntityAuthorityFacts, EntityVersion, FactAvailability, Ir, IrBuilder, ItemKind,
         LinkKind, OccurrenceAuthorityFacts, ParentageAuthority, SemanticImageView, TreeEntityId,
@@ -778,7 +778,7 @@ mod tests {
         Code(String),
         Link {
             label: String,
-            target: compiler_ir::DeclarationIdentity,
+            target: backend_semantic::ir::DeclarationIdentity,
         },
         SoftBreak,
         HardBreak,
@@ -786,11 +786,11 @@ mod tests {
 
     #[derive(Debug, Eq, PartialEq)]
     struct DocumentationObservation {
-        canonical_names: Vec<(compiler_ir::DeclarationIdentity, Vec<u8>)>,
-        members: Vec<compiler_ir::DeclarationIdentity>,
+        canonical_names: Vec<(backend_semantic::ir::DeclarationIdentity, Vec<u8>)>,
+        members: Vec<backend_semantic::ir::DeclarationIdentity>,
         fragments: Vec<FragmentObservation>,
         type_output: Vec<u8>,
-        relation_target: compiler_ir::DeclarationIdentity,
+        relation_target: backend_semantic::ir::DeclarationIdentity,
     }
 
     fn version(family: u8, variant: u8, payload: u8) -> EntityVersion {
@@ -811,7 +811,7 @@ mod tests {
         }
     }
 
-    fn child_authority(parent: compiler_ir::DeclarationIdentity) -> EntityAuthorityFacts {
+    fn child_authority(parent: backend_semantic::ir::DeclarationIdentity) -> EntityAuthorityFacts {
         EntityAuthorityFacts {
             parentage: ParentageAuthority::Bound(parent),
             semantic_type: FactAvailability::Captured,
@@ -885,7 +885,7 @@ mod tests {
         builder.finish().expect("documentation image is finalized")
     }
 
-    fn observe<Reader: compiler_ir::SemanticReader + ?Sized>(
+    fn observe<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
         reader: &Reader,
     ) -> DocumentationObservation {
         let session = DocumentationSession::new(reader);
@@ -944,7 +944,7 @@ mod tests {
             .expect("member semantic type is present")
             .expect("member carries captured type");
         let prepared = semantic_type
-            .prepare_canonical(compiler_ir::CanonicalTypeRenderLimits::new(
+            .prepare_canonical(backend_semantic::ir::CanonicalTypeRenderLimits::new(
                 NonZeroUsize::new(16).expect("nonzero test bound"),
             ))
             .expect("canonical type is admitted");

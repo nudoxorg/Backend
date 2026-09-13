@@ -18,7 +18,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{
+use backend_semantic::ir::{
     ConcreteType, DecodedTypeFact, EntityKind, FragmentView, Ir, ItemKind, PrimitiveShape,
     SemanticTypeTag, TypeExpr,
 };
@@ -75,7 +75,7 @@ enum TestError {
     #[error("fragment validation failed: {source}")]
     Validate {
         #[source]
-        source: compiler_ir::FragmentError,
+        source: backend_semantic::ir::FragmentError,
     },
     #[error("emission lane rejected a fact: {0:?}")]
     Rejected(ProjectionAdmissionFault),

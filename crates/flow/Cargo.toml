@@ -27,7 +27,6 @@ compiler-languages-python = { path = "../compiler-language-python" }
 server-journal = { path = "../server-journal" }
 server-index-build = { path = "../server-index-build" }
 server-index-core = { path = "../server-index-core" }
-compiler-ir = { path = "../compiler-ir" }
 sha2 = "=0.10.9"
 
 [lints]

@@ -6,7 +6,7 @@ use core::fmt::{Display, Formatter};
 use std::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use compiler_ir::{
+use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,
     FactAvailability, IrBuilder, ItemKind, PackageLineage, ParentageAuthority,
     SemanticImageIdentity, SemanticImageView, SemanticReader, TreeItemInput, VariantFingerprint,

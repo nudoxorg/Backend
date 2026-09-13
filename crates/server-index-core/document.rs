@@ -5,7 +5,7 @@
 
 use core::{cmp::Ordering, mem::size_of};
 
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use backend_version::{
     ArtifactId, Domain, Encoding, HASH_BYTES, IrFragmentDomain, IrFragmentEncoding,
     IrSemanticImageDomain, IrSemanticImageEncoding,
@@ -155,7 +155,7 @@ mod tests {
     use super::{
         ENTITY_DOCUMENT_ID_BYTES, EntityArtifactIdentity, EntityDocumentId, EntityDocumentIdError,
     };
-    use compiler_ir::EntityId;
+    use backend_semantic::ir::EntityId;
     use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 
     #[test]

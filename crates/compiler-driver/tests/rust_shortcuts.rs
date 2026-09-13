@@ -13,7 +13,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use compiler_ir::{FragmentView, TypeFactSegment};
+use backend_semantic::ir::{FragmentView, TypeFactSegment};
 use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
@@ -198,7 +198,7 @@ fn doc_locator_prefers_exact_content_span() -> Result<(), Box<dyn std::error::Er
         .into_iter()
         .flat_map(|rows| rows.filter_map(Result::ok))
         .find_map(|fact| match fact.fragment {
-            compiler_ir::DocFragmentInput::Text(bytes) => Some(bytes),
+            backend_semantic::ir::DocFragmentInput::Text(bytes) => Some(bytes),
             _ => None,
         })
         .ok_or("doc text absent")?;

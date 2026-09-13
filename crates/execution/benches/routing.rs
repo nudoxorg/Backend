@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{EntityArtifactIdentity, EntityDocumentId, IndexSnapshot};
 use backend_execution::routing::{

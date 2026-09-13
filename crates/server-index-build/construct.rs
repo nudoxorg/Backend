@@ -8,8 +8,8 @@ use crate::{
     fact::{EntityFact, EntityProjection},
     initialized::{InitializationError, Initialized, try_initialize},
 };
-use compiler_ir::{Atom, FragmentView, TypeNode};
-use compiler_ir::{AtomId, EntityId, TypeId};
+use backend_semantic::ir::{Atom, FragmentView, TypeNode};
+use backend_semantic::ir::{AtomId, EntityId, TypeId};
 use compiler_publication::OpenedFragment;
 use compiler_publication::manifest::StoredFragmentFacts;
 use server_index_core::{

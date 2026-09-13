@@ -6,7 +6,7 @@
 
 use core::mem::MaybeUninit;
 
-use compiler_ir::{EntityKind, LinkKind, TypeTag};
+use backend_semantic::ir::{EntityKind, LinkKind, TypeTag};
 use server_index_core::{
     ExactDegradation, ExactManifest, ExactOperation, ExactResolution, ExactSegmentId,
     ExactTerminal, IndexSnapshotId, LexicalDegradation, LexicalSegmentId, LexicalSnapshotHit,
@@ -408,7 +408,7 @@ const fn lexical_parts<'manifest, 'output, 'bytes>(
 mod tests {
     use super::{FacetCell, FacetHit, FacetTable, join_facets};
     use crate::{ExactEntityValue, IndexedType, LinkKinds, SemanticTypeFact};
-    use compiler_ir::{EntityId, EntityKind, LinkKind, TypeId, TypeTag};
+    use backend_semantic::ir::{EntityId, EntityKind, LinkKind, TypeId, TypeTag};
     use core::mem::MaybeUninit;
     use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
     use server_index_core::{

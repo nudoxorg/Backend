@@ -10,10 +10,15 @@ publish = false
 blake3 = { workspace = true }
 backend-version = { path = "../version" }
 backend-flow = { path = "../flow" }
+memmap2 = { version = "0.9.9", optional = true }
 serde.workspace = true
 thiserror.workspace = true
 
+[features]
+mmap = ["dep:memmap2"]
+
 [dev-dependencies]
+allocation-counter.workspace = true
 serde_json.workspace = true
 
 [lints]

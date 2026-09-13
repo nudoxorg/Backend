@@ -631,7 +631,7 @@ fn check_real_output(
 fn check_image_provenance(
     case: inventory::RealPackageCase,
     expected: SourceExpectation,
-    image: Option<compiler_ir::SemanticImageFacts>,
+    image: Option<backend_semantic::ir::SemanticImageFacts>,
     field: RealAuditField,
     mismatches: &mut Vec<CorpusMismatch>,
 ) {

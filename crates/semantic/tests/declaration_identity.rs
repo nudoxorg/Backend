@@ -115,7 +115,7 @@ fn identity_keys_on_the_exact_four_cells() -> Result<(), TestFailure> {
 /// siblings that minted the same id were separated by declaration ordinal.
 /// The key here has no ordinal cell — sibling declarations with the same
 /// key mint the same family id. A later declaration must never change an
-/// earlier family; local variants are framed by compiler-ir.
+/// earlier family; local variants are framed by backend-semantic::ir.
 #[test]
 fn sibling_identity_never_depends_on_declaration_order() -> Result<(), TestFailure> {
     let first = key(b"serialize")?;

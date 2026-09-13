@@ -6,6 +6,8 @@
 //! is never inferred from an empty vector or an absent optional value.
 #![deny(unsafe_code)]
 
+extern crate alloc;
+
 mod canonical;
 mod coverage;
 mod error;
@@ -19,6 +21,8 @@ mod reuse;
 mod schema;
 mod support;
 
+/// Canonical compiler IR fragments: encoding, validation, mapping, and borrowing.
+pub mod ir;
 pub mod ir_vocabulary;
 pub mod vocabulary;
 

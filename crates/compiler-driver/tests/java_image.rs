@@ -12,7 +12,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainResolutionError, ToolchainSelection, compile,
 };
-use compiler_ir::EntityKind;
+use backend_semantic::ir::EntityKind;
 use backend_semantic::vocabulary::{JavaRelease, LanguageProfile, Stage};
 use sha2::{Digest, Sha256};
 use thiserror::Error;

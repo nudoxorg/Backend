@@ -20,7 +20,7 @@ pub(super) const fn compile(
 }
 
 pub(super) const fn compile_from_driver(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     cause: CompilerCause,
 ) -> CompilerTerminal {
@@ -38,7 +38,7 @@ pub(super) const fn attempt(
 }
 
 pub(crate) const fn source_authority(
-    source: compiler_ir::SourceIdentity,
+    source: backend_semantic::ir::SourceIdentity,
 ) -> interface_core::SourceAuthority {
     interface_core::SourceAuthority {
         identity: source.identity,

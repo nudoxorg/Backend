@@ -1,7 +1,7 @@
 use crate::crates_io::{PollResult, hex_digest};
 use crate::*;
-use compiler_ir::PackageLineage;
-use compiler_ir::{
+use backend_semantic::ir::PackageLineage;
+use backend_semantic::ir::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,
     FactAvailability, IrBuilder, ItemKind, ParentageAuthority, SemanticImageView, SemanticReader,
     TreeItemInput, VariantFingerprint, Visibility, encode_full_semantic_image,
@@ -146,7 +146,7 @@ impl RegistryMaterializer for TestMaterializer {
             ContentId::<CompilePublicationDomain>::from_canonical_bytes(b"publication"),
         );
         let image = SemanticImageLocator::new(
-            compiler_ir::SemanticImageIdentity::from_encoded_bytes(&bytes),
+            backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(&bytes),
             extent,
         );
         let entities = reopened

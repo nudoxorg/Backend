@@ -4,7 +4,7 @@
 //! same typed admission cause and exact bounded operands.
 
 use crate::types::{FactFault, ParentageState, SourceSpanFact, TypeChildLane};
-use compiler_ir::{
+use backend_semantic::ir::{
     ProductChildRole, ProductConstructorFault, ProductConstructorTag, SemanticTypeFault,
     SemanticTypeTag, TypeCell,
 };

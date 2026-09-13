@@ -1,6 +1,6 @@
 use crate::crates_io::PollResult;
 use crate::{ArchiveChecksum, CratesIoAdapter, RegistryError, RegistryTransport};
-use compiler_ir::PackageLineage;
+use backend_semantic::ir::PackageLineage;
 use server_index_catalog::{
     CatalogPageError, CatalogPageOperation, CatalogPublication, FeedCheckpoint,
     FeedContentChecksum, TursoCatalog,

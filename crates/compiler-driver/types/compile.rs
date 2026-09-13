@@ -1,7 +1,7 @@
 //! Defines types compile behavior for `compiler-driver`, whose purpose is to run bounded native toolchains and lower their output into canonical IR.
 //! This module owns the types compile invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use compiler_ir::{FragmentView, PrepareError};
+use backend_semantic::ir::{FragmentView, PrepareError};
 use compiler_registry::{AdapterRoute, FullRegistry};
 use backend_semantic::vocabulary::{Language, LanguageProfile, Stage};
 
@@ -48,7 +48,7 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
 
 /// Compiles the one coherent public semantic result.
 ///
-/// Authority entry and lowering run exactly once. The owned [`compiler_ir::Ir`]
+/// Authority entry and lowering run exactly once. The owned [`backend_semantic::ir::Ir`]
 /// and its IR-owned authority facts are built from that one fact lane before
 /// the compact artifact is written and validated, so a failure returns no
 /// partial result.
@@ -309,7 +309,7 @@ seal_specs!(
 
 impl LanguageSpec for ClangSpec {
     type Authority<'source> = LanguageProfile;
-    type Extension = compiler_ir::ClangFacts;
+    type Extension = backend_semantic::ir::ClangFacts;
 
     fn collect<'source, 'cancel, 'diagnostic>(
         profile: &Self::Authority<'source>,
@@ -332,7 +332,7 @@ impl LanguageSpec for TypeScriptSpec {
         backend_semantic::vocabulary::TypeScriptSource,
         Option<&'source compiler_languages_typescript::Report>,
     );
-    type Extension = compiler_ir::TypeScriptFacts;
+    type Extension = backend_semantic::ir::TypeScriptFacts;
 
     fn collect<'source, 'cancel, 'diagnostic>(
         authority: &Self::Authority<'source>,
@@ -383,7 +383,7 @@ impl LanguageSpec for PythonSpec {
         backend_semantic::vocabulary::PythonVersion,
         Option<&'source compiler_languages_python::CheckerReport>,
     );
-    type Extension = compiler_ir::PythonFacts;
+    type Extension = backend_semantic::ir::PythonFacts;
 
     fn collect<'source, 'cancel, 'diagnostic>(
         authority: &Self::Authority<'source>,
@@ -417,7 +417,7 @@ impl LanguageSpec for RustSpec {
         compiler_languages_rust::SourceByteLimit,
         compiler_languages_rust::RustFeatureControl<'source>,
     );
-    type Extension = compiler_ir::RustFacts;
+    type Extension = backend_semantic::ir::RustFacts;
 
     fn collect<'source, 'cancel, 'diagnostic>(
         authority: &Self::Authority<'source>,
@@ -439,7 +439,7 @@ impl LanguageSpec for RustSpec {
 
 impl LanguageSpec for GoSpec {
     type Authority<'source> = &'source [u8];
-    type Extension = compiler_ir::GoFacts;
+    type Extension = backend_semantic::ir::GoFacts;
 
     fn collect<'source, 'cancel, 'diagnostic>(
         image: &Self::Authority<'source>,
@@ -454,7 +454,7 @@ impl LanguageSpec for GoSpec {
 
 impl LanguageSpec for JavaSpec {
     type Authority<'source> = (backend_semantic::vocabulary::JavaRelease, &'source [u8]);
-    type Extension = compiler_ir::JavaFacts;
+    type Extension = backend_semantic::ir::JavaFacts;
 
     fn collect<'source, 'cancel, 'diagnostic>(
         authority: &Self::Authority<'source>,
@@ -469,7 +469,7 @@ impl LanguageSpec for JavaSpec {
 
 impl LanguageSpec for CSharpSpec {
     type Authority<'source> = &'source [u8];
-    type Extension = compiler_ir::CSharpFacts;
+    type Extension = backend_semantic::ir::CSharpFacts;
 
     fn collect<'source, 'cancel, 'diagnostic>(
         image: &Self::Authority<'source>,
@@ -1108,7 +1108,7 @@ mod lifecycle_tests {
         time::{Duration, Instant},
     };
 
-    use compiler_ir::{EntityKind, SemanticProductConstructor};
+    use backend_semantic::ir::{EntityKind, SemanticProductConstructor};
     use backend_semantic::vocabulary::{NativeTool, RustEdition};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 

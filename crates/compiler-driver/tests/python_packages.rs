@@ -8,7 +8,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use compiler_ir::{
+use backend_semantic::ir::{
     DecodedOccurrence, DocFragmentInput, EntityKind, ForeignOrigin, FragmentView,
     LanguageExtensionWireFact, OccurrenceTarget, PythonFacts, PythonParameterKind, SECTION_NONE,
 };

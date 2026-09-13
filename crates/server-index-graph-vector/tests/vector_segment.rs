@@ -5,7 +5,7 @@ use core::mem::{align_of, size_of};
 use std::hint::black_box;
 
 use allocation_counter::{AllocationInfo, measure};
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use server_index_graph_vector::{
     Metric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority, VectorFact, VectorPoint,
     VectorQueryTerminal, VectorSegmentError, compact_vector_facts,

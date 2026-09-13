@@ -12,7 +12,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalManifest, LexicalOperation,

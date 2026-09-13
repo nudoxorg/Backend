@@ -7,7 +7,7 @@ use core::{
     task::{Context, Poll, Waker},
 };
 
-use compiler_ir::{
+use backend_semantic::ir::{
     AtomId, BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts,
     EntityId, EntityVersion, FactAvailability, IrBuilder, ItemKind, LinkKind,
     OccurrenceAuthorityFacts, ParentageAuthority, SemanticImageView, SourceSpan, TreeEntityId,

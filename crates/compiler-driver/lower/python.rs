@@ -25,7 +25,7 @@
 //!   fresh buffer (slashed foreign paths, module-level owners, the module
 //!   docstring) are documented limitations, never synthesized data.
 
-use compiler_ir::{
+use backend_semantic::ir::{
     AnonRecordForm, Confidence, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey,
     ForeignOrigin, ListSpan, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
     PackageLineage, PrimitiveShape, ProductChildRole, PythonFacts, PythonParameterKind,
@@ -2009,13 +2009,13 @@ fn foreign_universe<'source>(
 
 /// Projects one validated foreign-key grammar rejection without replacing the
 /// written package spelling by a universe fallback.
-fn foreign_key_fault(cause: compiler_ir::ForeignKeyFault, span: Span) -> PythonCollectError {
+fn foreign_key_fault(cause: backend_semantic::ir::ForeignKeyFault, span: Span) -> PythonCollectError {
     PythonCollectError::Projection(PythonProjectionFault::ForeignKey {
         start: span.start,
         end: span.end,
         cause: match cause {
-            compiler_ir::ForeignKeyFault::EmptyPath => ProjectionForeignKeyFault::EmptyPath,
-            compiler_ir::ForeignKeyFault::BackslashInPath => {
+            backend_semantic::ir::ForeignKeyFault::EmptyPath => ProjectionForeignKeyFault::EmptyPath,
+            backend_semantic::ir::ForeignKeyFault::BackslashInPath => {
                 ProjectionForeignKeyFault::BackslashInPath
             }
         },
@@ -2023,24 +2023,24 @@ fn foreign_key_fault(cause: compiler_ir::ForeignKeyFault, span: Span) -> PythonC
 }
 
 /// Projects one exact package-lineage grammar rejection.
-fn lineage_fault(cause: compiler_ir::PackageLineageFault, span: Span) -> PythonCollectError {
+fn lineage_fault(cause: backend_semantic::ir::PackageLineageFault, span: Span) -> PythonCollectError {
     PythonCollectError::Projection(PythonProjectionFault::PackageLineage {
         start: span.start,
         end: span.end,
         cause: match cause {
-            compiler_ir::PackageLineageFault::EmptyEcosystem => {
+            backend_semantic::ir::PackageLineageFault::EmptyEcosystem => {
                 ProjectionPackageLineageFault::EmptyEcosystem
             }
-            compiler_ir::PackageLineageFault::EmptyName => {
+            backend_semantic::ir::PackageLineageFault::EmptyName => {
                 ProjectionPackageLineageFault::EmptyPackage
             }
-            compiler_ir::PackageLineageFault::SeparatorInEcosystem => {
+            backend_semantic::ir::PackageLineageFault::SeparatorInEcosystem => {
                 ProjectionPackageLineageFault::SeparatorInEcosystem
             }
-            compiler_ir::PackageLineageFault::SeparatorInName => {
+            backend_semantic::ir::PackageLineageFault::SeparatorInName => {
                 ProjectionPackageLineageFault::SeparatorInPackage
             }
-            compiler_ir::PackageLineageFault::Backslash { segment } => {
+            backend_semantic::ir::PackageLineageFault::Backslash { segment } => {
                 ProjectionPackageLineageFault::Backslash {
                     part: match segment {
                         0 => ProjectionLineagePart::Ecosystem,
@@ -2245,7 +2245,7 @@ fn span_bounds(span: Span) -> Result<(usize, usize), PythonCollectError> {
 #[cfg(test)]
 mod tests {
     use super::{PythonCollectError, foreign_key_fault, foreign_universe, lineage_fault};
-    use compiler_ir::{ForeignKeyFault, PackageLineageFault};
+    use backend_semantic::ir::{ForeignKeyFault, PackageLineageFault};
     use compiler_languages_python::Span;
     use backend_semantic::vocabulary::{
         ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,

@@ -10,7 +10,7 @@
 
 mod support;
 
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 use backend_version::GenerationId;
 use server_index_core::{IndexSnapshot, LexicalManifest};
 use server_index_graph_vector::{

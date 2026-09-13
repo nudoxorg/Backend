@@ -7,7 +7,7 @@
 //! are used only as a non-mutation control in this slice; durable provenance
 //! serialization remains deliberately out of scope.
 
-use compiler_ir::EntityId;
+use backend_semantic::ir::EntityId;
 
 use crate::types::{FactFault, ParentageState, SourceSpanFact};
 

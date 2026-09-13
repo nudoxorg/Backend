@@ -56,7 +56,7 @@
 
 use core::sync::atomic::AtomicBool;
 
-use compiler_ir::{
+use backend_semantic::ir::{
     ClangFacts as WireClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass,
     DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey, ForeignOrigin, NominalRef,
     Occurrence, OccurrenceConfidence, OccurrenceTarget, ProductChildRole,
@@ -240,8 +240,8 @@ pub(crate) fn collect<'source>(
 pub(crate) fn lower_database<'source, 'output>(
     input: ClangInput<'source>,
     source: &'source [u8],
-    source_identity: compiler_ir::SourceIdentity,
-    recipe: compiler_ir::RecipeFact,
+    source_identity: backend_semantic::ir::SourceIdentity,
+    recipe: backend_semantic::ir::RecipeFact,
     profile: LanguageProfile,
     cancelled: &AtomicBool,
     output: &'output mut [u8],
@@ -552,7 +552,7 @@ struct Projector<'authority, 'scratch, 'source> {
     /// rows at use sites.
     template_parameters: Vec<(SymbolIdentity, &'source [u8])>,
     /// The pooled atom list naming every include spelling, interned once.
-    includes: Option<compiler_ir::AtomListId>,
+    includes: Option<backend_semantic::ir::AtomListId>,
     /// Type-edge adjacency: edges grouped by source row, preserving
     /// authority order, with a prefix-sum index.
     edge_order: Vec<usize>,
@@ -1833,7 +1833,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
 
     /// Interns the translation unit's include spellings once: every include
     /// directive's delimited path borrowed from the authority's own span.
-    fn includes_list(&mut self) -> Result<compiler_ir::AtomListId, ClangCollectError> {
+    fn includes_list(&mut self) -> Result<backend_semantic::ir::AtomListId, ClangCollectError> {
         if let Some(interned) = self.includes {
             return Ok(interned);
         }
@@ -2242,7 +2242,7 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
 mod tests {
     use core::sync::atomic::AtomicBool;
 
-    use compiler_ir::{
+    use backend_semantic::ir::{
         ClangStorageClass, DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind,
         FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
         SourceIdentity,
@@ -2269,7 +2269,7 @@ mod tests {
             fault: crate::lower::AdmissionFault,
         },
         #[error("the fragment failed validation: {0:?}")]
-        Validate(compiler_ir::FragmentError),
+        Validate(backend_semantic::ir::FragmentError),
         #[error("the fragment output tail changed")]
         Tail,
         #[error("entity {ordinal} differed from the expected fact row")]
@@ -2292,8 +2292,8 @@ mod tests {
         }
     }
 
-    impl From<compiler_ir::FragmentError> for TestError {
-        fn from(error: compiler_ir::FragmentError) -> Self {
+    impl From<backend_semantic::ir::FragmentError> for TestError {
+        fn from(error: backend_semantic::ir::FragmentError) -> Self {
             Self::Validate(error)
         }
     }
@@ -2364,7 +2364,7 @@ mod tests {
         view: &FragmentView<'_>,
         name: &[u8],
         kind: EntityKind,
-    ) -> Result<compiler_ir::EntityId, TestError> {
+    ) -> Result<backend_semantic::ir::EntityId, TestError> {
         for entity in view.entities() {
             if entity.kind != kind {
                 continue;
@@ -2385,7 +2385,7 @@ mod tests {
     /// matching declared row is the entity's own row.
     fn row_for_entity<'fragment>(
         view: &'fragment FragmentView<'fragment>,
-        entity: compiler_ir::EntityId,
+        entity: backend_semantic::ir::EntityId,
     ) -> Result<DecodedTypeFact<'fragment>, TestError> {
         type_facts(view)?
             .into_iter()
@@ -2397,8 +2397,8 @@ mod tests {
     /// Borrows the local children of one validated type record.
     fn local_type_children(
         view: &FragmentView<'_>,
-        record: compiler_ir::SemanticTypeRecord<'_>,
-    ) -> Result<Vec<compiler_ir::TypeId>, TestError> {
+        record: backend_semantic::ir::SemanticTypeRecord<'_>,
+    ) -> Result<Vec<backend_semantic::ir::TypeId>, TestError> {
         let end = record
             .children
             .start
@@ -2415,7 +2415,7 @@ mod tests {
             if child.ordinal < record.children.start || child.ordinal >= end {
                 continue;
             }
-            let compiler_ir::TypeChildTarget::Type(compiler_ir::TypeRef::Local(target)) =
+            let backend_semantic::ir::TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(target)) =
                 child.child.target
             else {
                 return Err(TestError::Missing("local type child"));
@@ -2453,13 +2453,13 @@ mod tests {
     fn clang_extension(
         view: &FragmentView<'_>,
         ordinal: usize,
-    ) -> Result<compiler_ir::ClangFacts, TestError> {
+    ) -> Result<backend_semantic::ir::ClangFacts, TestError> {
         view.discover()
             .language_extensions()
             .map_err(|_| TestError::Extension { ordinal })?
             .ok_or(TestError::Extension { ordinal })?
             .clang
-            .get(compiler_ir::EntityId::new(
+            .get(backend_semantic::ir::EntityId::new(
                 u32::try_from(ordinal).map_err(|_| TestError::Tail)?,
             ))
             .map_err(|_| TestError::Extension { ordinal })?
@@ -2470,14 +2470,14 @@ mod tests {
     /// derive a row stride from a historical payload grammar.
     fn pooled_type_parameter<'a>(
         view: &'a FragmentView<'a>,
-        list: compiler_ir::TypeParameterListId,
+        list: backend_semantic::ir::TypeParameterListId,
     ) -> Result<&'a [u8], TestError> {
         let pools = view
             .discover()
             .extension_pools()
             .map_err(|_| TestError::Tail)?
             .ok_or(TestError::Missing("pools"))?;
-        let compiler_ir::ReopenedTypeParameterList::Exact(parameters) = pools
+        let backend_semantic::ir::ReopenedTypeParameterList::Exact(parameters) = pools
             .type_parameter_list(list)
             .map_err(|_| TestError::Missing("type parameter list"))?
         else {
@@ -2593,7 +2593,7 @@ mod tests {
         // The forward declaration group collapsed to the definition: B's
         // definition (row 1) carries B's self-nominal, and A's field names
         // B's ordinal while B's field names A's.
-        if rows[1].record.nominal != Some(NominalRef::Local(compiler_ir::EntityId::new(1))) {
+        if rows[1].record.nominal != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(1))) {
             return Err(TestError::Entity { ordinal: 1 });
         }
         if rows[2].record.children.length != 1 {
@@ -2654,7 +2654,7 @@ mod tests {
         let use_function = entity_of(&view, b"use", EntityKind::Function)?;
         let function_row = row_for_entity(&view, add)?.record;
         if function_row.tag != SemanticTypeTag::FunctionPointer
-            || function_row.payload1 != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
+            || function_row.payload1 != backend_semantic::ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || function_row.children.length != 3
         {
             return Err(TestError::Entity { ordinal: 2 });
@@ -2670,7 +2670,7 @@ mod tests {
         let rows = occurrences(&view)?;
         let call = rows
             .iter()
-            .find(|row| row.occurrence.kind == compiler_ir::ReferenceKind::FunctionCall);
+            .find(|row| row.occurrence.kind == backend_semantic::ir::ReferenceKind::FunctionCall);
         let Some(call) = call else {
             return Err(TestError::Absent);
         };
@@ -2679,7 +2679,7 @@ mod tests {
         };
         if target != add
             || call.owner != use_function
-            || call.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle
+            || call.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
         {
             return Err(TestError::Entity { ordinal: 4 });
         }
@@ -2843,12 +2843,12 @@ mod tests {
         let mut ordinal = 0_usize;
         let mut saw_link = false;
         for row in &rows {
-            if let compiler_ir::DocFragmentInput::Link { label, target } = &row.fragment {
+            if let backend_semantic::ir::DocFragmentInput::Link { label, target } = &row.fragment {
                 saw_link = true;
                 if label != &&b"add"[..] {
                     return Err(TestError::Absent);
                 }
-                let compiler_ir::DocLinkTarget::Foreign { ecosystem, path } = target else {
+                let backend_semantic::ir::DocLinkTarget::Foreign { ecosystem, path } = target else {
                     return Err(TestError::Absent);
                 };
                 if ecosystem != &&b"c"[..] || path != &&b"add"[..] {
