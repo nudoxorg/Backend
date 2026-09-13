@@ -21,8 +21,9 @@ pub mod transition;
 pub use catalog::{DerivedOutputEntry, DerivedOutputPublication};
 pub use head::{HeadExpectation, WorkspaceHead, WorkspaceSnapshot};
 pub use lazy::{
-    WorkspaceRelationChild, WorkspaceRelationError, WorkspaceRelationHandle,
-    WorkspaceRelationNodeHandle, WorkspaceRelationNodePage,
+    RelationIdentity, RelationKeyPrefix, WorkspaceRelationChild, WorkspaceRelationError,
+    WorkspaceRelationFault, WorkspaceRelationHandle, WorkspaceRelationNodeHandle,
+    WorkspaceRelationNodePage, WorkspaceRelationRejection,
 };
 pub use model::WorkspaceModel;
 pub use owner::{OwnerLease, WorkspaceError, WorkspaceGcPin, WorkspaceOwner};

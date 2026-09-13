@@ -3093,12 +3093,25 @@ mod unix_journeys {
         assert!(
             readiness.coverage().iter().any(|coverage| matches!(
                 coverage,
+                backend_library::Coverage::Unavailable {
+                    lane: backend_library::Lane::Semantic,
+                    reason: backend_library::Reason::Unconfigured,
+                }
+            )),
+            "incomplete native authorities were promoted to complete semantic coverage"
+        );
+        // The terminal must not also be described as work in progress. A
+        // fraction over rows that are written once and never rewritten tells
+        // every surface to wait for a completion that cannot arrive.
+        assert!(
+            !readiness.coverage().iter().any(|coverage| matches!(
+                coverage,
                 backend_library::Coverage::Partial {
                     lane: backend_library::Lane::Semantic,
                     ..
                 }
             )),
-            "incomplete native authorities were promoted to complete semantic coverage"
+            "a terminal semantic lane was still reported as an advancing fraction"
         );
         let native_semantic_slots = readiness
             .capabilities()

@@ -17,6 +17,7 @@ backend-engine = { path = "../../crates/engine" }
 backend-execution = { path = "../../crates/execution" }
 backend-replication = { path = "../../crates/replication" }
 backend-locald = { package = "backend-local-service", path = "../../crates/local-service" }
+backend-runtime = { path = "../../crates/runtime" }
 backend-worker = { path = "../../apps/worker" }
 backend-desktop = { path = "../../apps/desktop" }
 backend-extension-turso = { path = "../../extensions/turso" }

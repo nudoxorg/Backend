@@ -2,7 +2,8 @@
 
 use backend_compile::{InputContentSchema, SourceLanguage, SyntaxFrontend, typed_of};
 use backend_engine::{
-    ProductSourceRecord, ProductSourceRelation, Relation, product_source_file_key,
+    ProductSourceRecord, ProductSourceRelation, Relation, SourceUnavailableReason,
+    product_source_file_key,
 };
 use compiler_vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion,
@@ -16,7 +17,10 @@ use std::sync::{OnceLock, mpsc};
 use std::thread;
 
 const MAX_SOURCE_BYTES: usize = 512 * 1024;
-const MAX_ENCODED_RECORD_BYTES: usize = 1024 * 1024;
+// One relation row can never exceed the canonical node capacity, so the
+// per-record ceiling is that bound rather than an independent number that
+// would admit records the tree must later reject.
+const MAX_ENCODED_RECORD_BYTES: usize = ProductSourceRecord::ROW_VALUE_CAPACITY;
 const MAX_TOTAL_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TOTAL_ENCODED_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 100_000;
@@ -81,84 +85,134 @@ impl ProjectRoot {
         }
     }
 
-    fn read(&self, relative: &Path) -> Result<Vec<u8>, String> {
+    /// Opens one project-relative path, following no symlink at any step.
+    ///
+    /// Each component is resolved against the previously opened directory
+    /// descriptor, so a checkout mutated during ingestion cannot redirect the
+    /// read outside the admitted project.
+    #[cfg(unix)]
+    fn open_confined(&self, relative: &Path) -> Result<fs::File, SourceFault> {
+        use rustix::fs::{Mode, OFlags, openat};
+        let escaped =
+            || SourceFault::Fatal("source path escaped its project root".to_owned());
+        let components = relative.components().collect::<Vec<_>>();
+        let (last, parents) = components.split_last().ok_or_else(escaped)?;
+        let mut directory = self
+            .directory
+            .try_clone()
+            .map_err(|error| SourceFault::Fatal(error.to_string()))?;
+        for component in parents {
+            let std::path::Component::Normal(name) = component else {
+                return Err(escaped());
+            };
+            directory = openat(
+                &directory,
+                *name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map(fs::File::from)
+            .map_err(|error| SourceFault::from_open(error.kind()))?;
+        }
+        let std::path::Component::Normal(name) = last else {
+            return Err(escaped());
+        };
+        openat(
+            &directory,
+            *name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map(fs::File::from)
+        .map_err(|error| SourceFault::from_open(error.kind()))
+    }
+
+    fn read(&self, relative: &Path) -> Result<Vec<u8>, SourceFault> {
         if relative.as_os_str().is_empty()
             || relative
                 .components()
                 .any(|component| !matches!(component, std::path::Component::Normal(_)))
         {
-            return Err("source path is not a confined relative path".to_owned());
+            return Err(SourceFault::Fatal(
+                "source path is not a confined relative path".to_owned(),
+            ));
         }
         #[cfg(unix)]
         {
-            use rustix::fs::{Mode, OFlags, openat};
-            let components = relative.components().collect::<Vec<_>>();
-            let mut directory = self
-                .directory
-                .try_clone()
-                .map_err(|error| error.to_string())?;
-            for component in &components[..components.len() - 1] {
-                let std::path::Component::Normal(name) = component else {
-                    return Err("source path escaped its project root".to_owned());
-                };
-                directory = openat(
-                    &directory,
-                    *name,
-                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )
-                .map(fs::File::from)
-                .map_err(|_| "source directory changed during ingestion".to_owned())?;
-            }
-            let std::path::Component::Normal(name) = components[components.len() - 1] else {
-                return Err("source path escaped its project root".to_owned());
-            };
-            let mut file = openat(
-                &directory,
-                name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .map(fs::File::from)
-            .map_err(|_| "source file changed during ingestion".to_owned())?;
-            let metadata = file.metadata().map_err(|error| error.to_string())?;
-            if !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES as u64 {
-                return Err("source is not a bounded regular file".to_owned());
-            }
-            let capacity = usize::try_from(metadata.len())
-                .map_err(|_| "source length exceeds this target's address space".to_owned())?;
-            let mut bytes = Vec::new();
-            bytes
-                .try_reserve_exact(capacity)
-                .map_err(|_| "source allocation exceeds available memory".to_owned())?;
-            file.by_ref()
-                .take((MAX_SOURCE_BYTES as u64).saturating_add(1))
-                .read_to_end(&mut bytes)
-                .map_err(|error| error.to_string())?;
-            if bytes.len() > MAX_SOURCE_BYTES {
-                return Err("source grew beyond the bounded file limit".to_owned());
-            }
-            Ok(bytes)
+            read_bounded(self.open_confined(relative)?)
         }
         #[cfg(not(unix))]
         {
             let path = self.canonical.join(relative);
             let canonical = path
                 .canonicalize()
-                .map_err(|error| format!("resolve source {}: {error}", path.display()))?;
+                .map_err(|error| SourceFault::from_open(error.kind()))?;
             if !canonical.starts_with(&self.canonical) {
-                return Err("source path escaped its project root".to_owned());
+                return Err(SourceFault::Fatal(
+                    "source path escaped its project root".to_owned(),
+                ));
             }
-            let mut file = std::fs::File::open(canonical).map_err(|error| error.to_string())?;
-            let mut bytes = Vec::new();
-            file.by_ref()
-                .take((MAX_SOURCE_BYTES as u64).saturating_add(1))
-                .read_to_end(&mut bytes)
-                .map_err(|error| error.to_string())?;
-            if bytes.len() > MAX_SOURCE_BYTES {
-                return Err("source grew beyond the bounded file limit".to_owned());
-            }
-            Ok(bytes)
+            let file = std::fs::File::open(canonical)
+                .map_err(|error| SourceFault::from_open(error.kind()))?;
+            read_bounded(file)
+        }
+    }
+}
+
+/// Reads one already-opened regular file within the per-file byte bound.
+///
+/// Every failure here is a fact about the file rather than the project, so it
+/// is classified rather than propagated as a scan error.
+fn read_bounded(mut file: fs::File) -> Result<Vec<u8>, SourceFault> {
+    let metadata = file
+        .metadata()
+        .map_err(|_| SourceFault::Unavailable(SourceUnavailableReason::Unreadable))?;
+    if !metadata.is_file() {
+        return Err(SourceFault::Vanished);
+    }
+    let capacity = usize::try_from(metadata.len())
+        .ok()
+        .filter(|length| *length <= MAX_SOURCE_BYTES)
+        .ok_or(SourceFault::Unavailable(SourceUnavailableReason::TooLarge))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| SourceFault::Fatal("source allocation exceeds memory".to_owned()))?;
+    let bound = u64::try_from(MAX_SOURCE_BYTES)
+        .map_err(|_| SourceFault::Fatal("source bound exceeds this target".to_owned()))?;
+    file.by_ref()
+        .take(bound.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| SourceFault::Unavailable(SourceUnavailableReason::Unreadable))?;
+    if bytes.len() > MAX_SOURCE_BYTES {
+        return Err(SourceFault::Unavailable(SourceUnavailableReason::TooLarge));
+    }
+    Ok(bytes)
+}
+
+/// What one file's failure means for the project scan.
+///
+/// Only a failure that invalidates the whole scan may stop it.  A file that
+/// cannot be read, decoded, or parsed is a fact about that file: it keeps its
+/// place in the project frontier with a typed reason, and every other file
+/// still indexes.  Before this split, one unreadable byte anywhere made a
+/// large checkout permanently unindexable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SourceFault {
+    /// The file disappeared between discovery and read; drop it silently
+    /// because the project no longer contains it.
+    Vanished,
+    /// The file is present but nothing could be extracted from it.
+    Unavailable(SourceUnavailableReason),
+    /// The scan itself cannot continue.
+    Fatal(String),
+}
+
+impl SourceFault {
+    fn from_open(kind: std::io::ErrorKind) -> Self {
+        match kind {
+            std::io::ErrorKind::NotFound => Self::Vanished,
+            _ => Self::Unavailable(SourceUnavailableReason::Unreadable),
         }
     }
 }
@@ -462,7 +516,7 @@ pub(super) fn scan_project(
         let mut failure = None;
         for result in receiver {
             match result {
-                Ok(file) if failure.is_none() => {
+                Ok(Some(file)) if failure.is_none() => {
                     if let Err(error) = budget.charge(&file) {
                         failure = Some(error);
                     } else {
@@ -549,19 +603,23 @@ fn supported_paths(root: &Path, frontends: &FrontendSet) -> Result<Vec<PathBuf>,
     Ok(output)
 }
 
+/// Charges the aggregate source budget before any file is read.
+///
+/// A file that is oversized or unreadable is not a reason to refuse the
+/// project: it is charged as zero bytes here and reported per file by
+/// [`scan_file`].  Only the aggregate budget, which protects the process
+/// rather than describing a file, can still stop the scan.
 fn preflight_source_bytes(paths: &[PathBuf]) -> Result<(), String> {
     let mut total = 0_usize;
     for path in paths {
-        let metadata = fs::metadata(path)
-            .map_err(|error| format!("inspect source {}: {error}", path.display()))?;
-        let length = usize::try_from(metadata.len())
-            .map_err(|_| format!("source {} is too large", path.display()))?;
+        let Ok(metadata) = fs::metadata(path) else {
+            continue;
+        };
+        let Ok(length) = usize::try_from(metadata.len()) else {
+            continue;
+        };
         if length > MAX_SOURCE_BYTES {
-            return Err(format!(
-                "source {} exceeds the {} byte file limit",
-                path.display(),
-                MAX_SOURCE_BYTES
-            ));
+            continue;
         }
         total = total
             .checked_add(length)
@@ -589,6 +647,10 @@ fn ignored_directory(name: &str) -> bool {
     )
 }
 
+/// Scans one discovered file into a row, or into a typed per-file fault.
+///
+/// `Ok(None)` means the file vanished between discovery and read, so the
+/// project no longer contains it and the frontier simply omits it.
 fn scan_file(
     root: &Path,
     root_capability: &ProjectRoot,
@@ -596,22 +658,84 @@ fn scan_file(
     project: [u8; 32],
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
+) -> Result<Option<ScannedFile>, String> {
+    match scan_one(root, root_capability, path, project, reusable, frontends) {
+        Ok(file) => Ok(Some(file)),
+        Err(SourceFault::Vanished) => Ok(None),
+        Err(SourceFault::Fatal(message)) => {
+            Err(format!("read source {}: {message}", path.display()))
+        }
+        Err(SourceFault::Unavailable(reason)) => {
+            unavailable_file(root, path, project, frontends, reason).map(Some)
+        }
+    }
+}
+
+/// Builds the row for a file whose contents could not be extracted.
+fn unavailable_file(
+    root: &Path,
+    path: &Path,
+    project: [u8; 32],
+    frontends: &FrontendSet,
+    reason: SourceUnavailableReason,
 ) -> Result<ScannedFile, String> {
-    let relative_path = path
+    let relative = relative_coordinate(root, path)?;
+    let frontend = frontends
+        .for_path(path)
+        .ok_or_else(|| "unsupported source language".to_owned())?;
+    let key = product_source_file_key(project, &relative);
+    let record = ProductSourceRecord::file_unavailable(
+        project,
+        relative.clone(),
+        frontend.language(),
+        frontend.analysis_version(),
+        reason,
+    )?;
+    let mut encoded = Vec::new();
+    ProductSourceRelation::encode_value(&record, &mut encoded);
+    Ok(ScannedFile {
+        compiler_source: CompilerSource {
+            profile: source_profile(path)?,
+            relative_path: relative.clone(),
+            source: String::new(),
+        },
+        relative,
+        key,
+        record,
+        source_bytes: 0,
+        encoded_record_bytes: encoded.len(),
+    })
+}
+
+fn relative_coordinate(root: &Path, path: &Path) -> Result<String, String> {
+    Ok(path
         .strip_prefix(root)
-        .map_err(|_| "source path escaped its project root".to_owned())?;
-    let bytes = root_capability
-        .read(relative_path)
-        .map_err(|error| format!("read source {}: {error}", path.display()))?;
+        .map_err(|_| "source path escaped its project root".to_owned())?
+        .to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/"))
+}
+
+fn scan_one(
+    root: &Path,
+    root_capability: &ProjectRoot,
+    path: &Path,
+    project: [u8; 32],
+    reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
+    frontends: &FrontendSet,
+) -> Result<ScannedFile, SourceFault> {
+    let relative_path = path.strip_prefix(root).map_err(|_| {
+        SourceFault::Fatal("source path escaped its project root".to_owned())
+    })?;
+    let bytes = root_capability.read(relative_path)?;
     let relative = relative_path
         .to_string_lossy()
         .replace(std::path::MAIN_SEPARATOR, "/");
     let source = std::str::from_utf8(&bytes)
-        .map_err(|_| format!("source {} is not UTF-8", path.display()))?
+        .map_err(|_| SourceFault::Unavailable(SourceUnavailableReason::NotText))?
         .to_owned();
     let frontend = frontends
         .for_path(path)
-        .ok_or_else(|| "unsupported source language".to_owned())?;
+        .ok_or_else(|| SourceFault::Fatal("unsupported source language".to_owned()))?;
     let key = product_source_file_key(project, &relative);
     let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
     let analysis = frontend.analysis_version();
@@ -625,7 +749,8 @@ fn scan_file(
                 && fields.analysis_version == analysis
         })
     {
-        return scanned_file(relative, key, record.clone(), source, bytes.len(), path);
+        return scanned_file(relative, key, record.clone(), source, bytes.len(), path)
+            .map_err(SourceFault::Fatal);
     }
 
     // Structural parsing is an explicit baseline projection for local browsing.
@@ -633,18 +758,25 @@ fn scan_file(
     let analyzed = frontend
         .baseline
         .analyze(Path::new(&relative), &bytes)
-        .map_err(|error| format!("analyze source {}: {error}", path.display()))?;
+        .map_err(|_| SourceFault::Unavailable(SourceUnavailableReason::Unparsed))?;
     debug_assert_eq!(analyzed.language(), frontend.language());
     debug_assert_eq!(analyzed.content().to_bytes(), content);
-    let record = ProductSourceRecord::file(
+    // A real source file routinely extracts more detail than one canonical
+    // relation row can carry: `memchr 2.8.3` alone produces a 65 686 byte row
+    // for `src/arch/x86_64/avx2/memchr.rs` against a 65 464 byte capacity.
+    // Constructing through the capacity-aware path sheds derived detail in a
+    // fixed order and records how far it had to go, instead of failing the
+    // whole project when the relation delta is later prepared.
+    let record = ProductSourceRecord::file_within_row_capacity(
         project,
         relative.clone(),
         analyzed.language(),
         analyzed.content().to_bytes(),
         analysis,
         analyzed.declarations().clone(),
-    )?;
-    scanned_file(relative, key, record, source, bytes.len(), path)
+    )
+    .map_err(SourceFault::Fatal)?;
+    scanned_file(relative, key, record, source, bytes.len(), path).map_err(SourceFault::Fatal)
 }
 
 fn scanned_file(
@@ -778,7 +910,13 @@ mod tests {
         fs::create_dir(project.join("real")).map_err(|error| error.to_string())?;
         fs::write(project.join("real/lib.rs"), b"pub fn safe() {}")
             .map_err(|error| error.to_string())?;
-        assert_eq!(root.read(Path::new("real/lib.rs"))?, b"pub fn safe() {}");
+        // A confined read still succeeds; a substituted symlink is refused
+        // rather than admitted, and the refusal is now a typed per-file fault.
+        assert_eq!(
+            root.read(Path::new("real/lib.rs"))
+                .map_err(|error| format!("{error:?}"))?,
+            b"pub fn safe() {}"
+        );
         fs::remove_dir_all(project.join("real")).map_err(|error| error.to_string())?;
         symlink(&scratch.0, project.join("real")).map_err(|error| error.to_string())?;
         assert!(root.read(Path::new("real/outside.rs")).is_err());
@@ -865,6 +1003,478 @@ mod tests {
             .declarations;
         assert_eq!(first.source_version, second.source_version);
         assert!(Arc::ptr_eq(first_declarations, second_declarations));
+        Ok(())
+    }
+}
+
+
+/// Regression laws for the canonical single-row capacity of source records.
+///
+/// A real source file routinely extracts more declaration detail than one
+/// canonical relation row can hold. Before `file_within_row_capacity` existed,
+/// ingest admitted such a record and the whole project failed later, when the
+/// relation delta was prepared, with an opaque
+/// `workspace relation node was rejected`. `memchr 2.8.3` reproduces it with a
+/// single file: `src/arch/x86_64/avx2/memchr.rs` extracts 125 declarations
+/// carrying 49 452 bytes of excerpt, for a 65 686 byte row against a 65 464
+/// byte capacity.
+///
+/// These tests assert the rendered content of the resulting record, not row
+/// counts: a scan that silently dropped every declaration would keep the same
+/// file count while erasing everything a surface can show.
+#[cfg(test)]
+mod row_capacity_tests {
+    use super::*;
+    use backend_engine::{DeclarationRetention, ProductSourceRecord};
+    use std::fmt::Write as _;
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(label: &str) -> Result<Scratch, String> {
+        let unique = format!(
+            "backend-row-capacity-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos()
+        );
+        let directory = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        Ok(Scratch(directory))
+    }
+
+    /// Writes a Rust file whose extracted declarations exceed one row.
+    ///
+    /// Each function carries a documentation block and a body wide enough to
+    /// produce a substantial excerpt, so the full record passes the canonical
+    /// capacity while every individual declaration stays small.
+    fn dense_source(functions: usize) -> String {
+        let mut source = String::new();
+        for index in 0..functions {
+            let _ = writeln!(
+                source,
+                "/// Declaration {index} exists to widen the extracted record \
+                 beyond one canonical relation row.\n\
+                 pub fn declaration_{index}(argument: u64) -> u64 {{"
+            );
+            for step in 0..24 {
+                let _ = writeln!(
+                    source,
+                    "    let intermediate_value_{step} = \
+                     argument.wrapping_mul({step}).wrapping_add({index});"
+                );
+            }
+            source.push_str("    argument\n}\n\n");
+        }
+        source
+    }
+
+    fn encoded_bytes(record: &ProductSourceRecord) -> usize {
+        let mut bytes = Vec::new();
+        ProductSourceRelation::encode_value(record, &mut bytes);
+        bytes.len()
+    }
+
+    #[test]
+    fn a_file_denser_than_one_row_is_indexed_rather_than_rejected() -> Result<(), String> {
+        let scratch = scratch("dense")?;
+        let source = dense_source(140);
+        fs::write(scratch.0.join("dense.rs"), source.as_bytes())
+            .map_err(|error| error.to_string())?;
+        let root = scratch.0.to_str().ok_or("non-UTF-8 scratch path")?;
+
+        let scan = scan_project(root, [3; 32], &BTreeMap::new())?;
+
+        let (_, record) = scan.files.first().ok_or("dense file was not scanned")?;
+        let fields = record.file_fields().ok_or("expected a file record")?;
+
+        let encoded = encoded_bytes(record);
+        assert!(
+            encoded <= ProductSourceRecord::ROW_VALUE_CAPACITY,
+            "a scanned record must fit one canonical row: {encoded} bytes against a \
+             {} byte capacity",
+            ProductSourceRecord::ROW_VALUE_CAPACITY
+        );
+        assert_ne!(
+            fields.retention,
+            DeclarationRetention::Complete,
+            "a record that had to shed detail must not claim complete retention"
+        );
+        assert_eq!(
+            fields.retention,
+            DeclarationRetention::ExcerptsElided,
+            "shedding excerpts alone must be enough for a dense but ordinary file"
+        );
+
+        // Content, not counts: every extracted name must still be renderable.
+        let names = fields
+            .declarations
+            .iter()
+            .map(|declaration| declaration.name().to_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            names.iter().any(|name| name == "declaration_0"),
+            "the first declaration name must survive shedding, got {names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name == "declaration_139"),
+            "the last declaration name must survive shedding, got {names:?}"
+        );
+        assert!(
+            fields
+                .declarations
+                .iter()
+                .all(|declaration| !declaration.signature().is_empty()),
+            "shedding excerpts must not also erase signatures"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_file_within_one_row_keeps_complete_retention_and_its_excerpts()
+    -> Result<(), String> {
+        let scratch = scratch("small")?;
+        fs::write(
+            scratch.0.join("small.rs"),
+            b"/// One small declaration.\npub fn ferris(value: u64) -> u64 { value }\n",
+        )
+        .map_err(|error| error.to_string())?;
+        let root = scratch.0.to_str().ok_or("non-UTF-8 scratch path")?;
+
+        let scan = scan_project(root, [4; 32], &BTreeMap::new())?;
+        let (_, record) = scan.files.first().ok_or("small file was not scanned")?;
+        let fields = record.file_fields().ok_or("expected a file record")?;
+
+        assert_eq!(
+            fields.retention,
+            DeclarationRetention::Complete,
+            "a file that fits must not be reported as reduced"
+        );
+        let declaration = fields
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name() == "ferris")
+            .ok_or_else(|| {
+                format!(
+                    "expected a `ferris` declaration, got {:?}",
+                    fields
+                        .declarations
+                        .iter()
+                        .map(backend_compile::SourceDeclaration::name)
+                        .collect::<Vec<_>>()
+                )
+            })?;
+        assert!(
+            matches!(
+                declaration.source_excerpt(),
+                backend_compile::SourceExcerpt::Captured { .. }
+            ),
+            "a file that fits must keep its captured excerpt"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shedding_is_a_pure_function_of_the_source() -> Result<(), String> {
+        let scratch = scratch("stable")?;
+        fs::write(
+            scratch.0.join("dense.rs"),
+            dense_source(140).as_bytes(),
+        )
+        .map_err(|error| error.to_string())?;
+        let root = scratch.0.to_str().ok_or("non-UTF-8 scratch path")?;
+
+        let first = scan_project(root, [5; 32], &BTreeMap::new())?;
+        let second = scan_project(root, [5; 32], &BTreeMap::new())?;
+
+        assert_eq!(
+            first.source_version, second.source_version,
+            "an unchanged project must produce an unchanged source version"
+        );
+        assert_eq!(
+            first.files, second.files,
+            "an unchanged project must produce byte-identical rows, \
+             otherwise re-indexing churns the content-addressed relation"
+        );
+        Ok(())
+    }
+}
+
+/// Robustness laws: every failure a real project can cause is typed and
+/// survivable.
+///
+/// A checkout in the wild contains files that cannot be read, files that are
+/// not text, files that are too large, symlink cycles, and paths outside
+/// ASCII. Before these laws, each of those aborted the entire scan with a
+/// single string, so one bad file made a whole project permanently
+/// unindexable. Each case now yields a typed per-file reason while every
+/// other file still indexes.
+///
+/// The assertions are on rendered content - the surviving file's declaration
+/// names and the failing file's typed reason - because a scan that dropped
+/// every declaration would keep the same file count.
+#[cfg(test)]
+mod robustness_tests {
+    use super::*;
+    use backend_engine::{DeclarationRetention, SourceUnavailableReason};
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(
+                self.0.join("broken.rs"),
+                <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o644),
+            );
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(label: &str) -> Result<Scratch, String> {
+        let unique = format!(
+            "backend-robust-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos()
+        );
+        let directory = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        Ok(Scratch(directory))
+    }
+
+    fn good_source() -> &'static [u8] {
+        b"/// A readable declaration.\npub fn ferris(value: u64) -> u64 { value }\n"
+    }
+
+    /// Returns the retention claimed for one project-relative path.
+    fn retention_of(scan: &IndexSnapshot, path: &str) -> Option<DeclarationRetention> {
+        scan.files.iter().find_map(|(_, record)| {
+            let fields = record.file_fields()?;
+            (fields.path == path).then_some(fields.retention)
+        })
+    }
+
+    fn names_of(scan: &IndexSnapshot, path: &str) -> Vec<String> {
+        scan.files
+            .iter()
+            .find_map(|(_, record)| {
+                let fields = record.file_fields()?;
+                (fields.path == path).then(|| {
+                    fields
+                        .declarations
+                        .iter()
+                        .map(|declaration| declaration.name().to_owned())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    fn scan(scratch: &Scratch) -> Result<IndexSnapshot, String> {
+        let root = scratch.0.to_str().ok_or("non-UTF-8 scratch path")?;
+        scan_project(root, [8; 32], &BTreeMap::new())
+    }
+
+    #[test]
+    fn an_unreadable_file_is_reported_without_failing_the_project() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let scratch = scratch("unreadable")?;
+        fs::write(scratch.0.join("good.rs"), good_source()).map_err(|e| e.to_string())?;
+        let broken = scratch.0.join("broken.rs");
+        fs::write(&broken, good_source()).map_err(|e| e.to_string())?;
+        fs::set_permissions(&broken, fs::Permissions::from_mode(0o000))
+            .map_err(|e| e.to_string())?;
+        if fs::read(&broken).is_ok() {
+            // Running as a user that bypasses the mode bits; the law is not
+            // observable here and a pass would be fabricated.
+            return Ok(());
+        }
+
+        let scan = scan(&scratch)?;
+
+        assert_eq!(
+            retention_of(&scan, "broken.rs"),
+            Some(DeclarationRetention::Unavailable(
+                SourceUnavailableReason::Unreadable
+            )),
+            "an unreadable file must keep its place with a typed reason"
+        );
+        assert_eq!(
+            retention_of(&scan, "good.rs"),
+            Some(DeclarationRetention::Complete),
+            "an unreadable neighbour must not degrade a readable file"
+        );
+        assert!(
+            names_of(&scan, "good.rs").iter().any(|n| n == "ferris"),
+            "the readable file must still contribute its declarations"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_binary_file_is_reported_as_not_text_without_failing_the_project()
+    -> Result<(), String> {
+        let scratch = scratch("binary")?;
+        fs::write(scratch.0.join("good.rs"), good_source()).map_err(|e| e.to_string())?;
+        fs::write(scratch.0.join("blob.rs"), [0xffu8, 0xfe, 0x00, 0x80, 0x81])
+            .map_err(|e| e.to_string())?;
+
+        let scan = scan(&scratch)?;
+
+        assert_eq!(
+            retention_of(&scan, "blob.rs"),
+            Some(DeclarationRetention::Unavailable(
+                SourceUnavailableReason::NotText
+            )),
+            "non-UTF-8 bytes are a fact about one file, not about the project"
+        );
+        assert!(names_of(&scan, "good.rs").iter().any(|n| n == "ferris"));
+        Ok(())
+    }
+
+    #[test]
+    fn an_oversized_file_is_reported_as_too_large_without_failing_the_project()
+    -> Result<(), String> {
+        let scratch = scratch("oversized")?;
+        fs::write(scratch.0.join("good.rs"), good_source()).map_err(|e| e.to_string())?;
+        let huge = vec![b'\n'; MAX_SOURCE_BYTES.saturating_add(1)];
+        fs::write(scratch.0.join("huge.rs"), &huge).map_err(|e| e.to_string())?;
+
+        let scan = scan(&scratch)?;
+
+        assert_eq!(
+            retention_of(&scan, "huge.rs"),
+            Some(DeclarationRetention::Unavailable(
+                SourceUnavailableReason::TooLarge
+            )),
+            "a file past the per-file limit must be named, not silently dropped"
+        );
+        assert!(names_of(&scan, "good.rs").iter().any(|n| n == "ferris"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_symlink_cycle_is_skipped_and_the_project_still_indexes() -> Result<(), String> {
+        let scratch = scratch("symlink")?;
+        fs::write(scratch.0.join("good.rs"), good_source()).map_err(|e| e.to_string())?;
+        let loop_directory = scratch.0.join("loop");
+        std::os::unix::fs::symlink(&scratch.0, &loop_directory).map_err(|e| e.to_string())?;
+        std::os::unix::fs::symlink(scratch.0.join("good.rs"), scratch.0.join("alias.rs"))
+            .map_err(|e| e.to_string())?;
+
+        let scan = scan(&scratch)?;
+
+        assert!(
+            scan.files.iter().all(|(_, record)| record
+                .file_fields()
+                .is_none_or(|fields| !fields.path.contains("loop"))),
+            "a symlinked directory must never be descended into"
+        );
+        assert_eq!(
+            retention_of(&scan, "alias.rs"),
+            None,
+            "a symlinked file must not be admitted as a second copy of its target"
+        );
+        assert!(names_of(&scan, "good.rs").iter().any(|n| n == "ferris"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_unicode_path_is_indexed_under_its_exact_coordinate() -> Result<(), String> {
+        let scratch = scratch("unicode")?;
+        let directory = scratch.0.join("café-日本語");
+        fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        fs::write(directory.join("ünïcode.rs"), good_source()).map_err(|e| e.to_string())?;
+
+        let scan = scan(&scratch)?;
+
+        assert_eq!(
+            retention_of(&scan, "café-日本語/ünïcode.rs"),
+            Some(DeclarationRetention::Complete),
+            "a non-ASCII path must round-trip exactly, not be lossily replaced"
+        );
+        assert!(
+            names_of(&scan, "café-日本語/ünïcode.rs")
+                .iter()
+                .any(|n| n == "ferris")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_file_removed_during_the_scan_leaves_the_project_indexable() -> Result<(), String> {
+        let scratch = scratch("vanish")?;
+        fs::write(scratch.0.join("good.rs"), good_source()).map_err(|e| e.to_string())?;
+        let vanishing = scratch.0.join("gone.rs");
+        fs::write(&vanishing, good_source()).map_err(|e| e.to_string())?;
+
+        // Discovery lists the file; the read must then see it removed.
+        let root = scratch.0.to_str().ok_or("non-UTF-8 scratch path")?;
+        let frontends = frontends()?;
+        let paths = supported_paths(Path::new(root), frontends)?;
+        assert!(
+            paths.iter().any(|path| path.ends_with("gone.rs")),
+            "the fixture must be discovered before it is removed"
+        );
+        fs::remove_file(&vanishing).map_err(|e| e.to_string())?;
+
+        let capability = ProjectRoot::open(Path::new(root))?;
+        let scanned = scan_file(
+            Path::new(root),
+            &capability,
+            &vanishing,
+            [8; 32],
+            &BTreeMap::new(),
+            frontends,
+        )?;
+        assert!(
+            scanned.is_none(),
+            "a file removed between discovery and read is no longer part of the project"
+        );
+
+        let scan = scan(&scratch)?;
+        assert!(names_of(&scan, "good.rs").iter().any(|n| n == "ferris"));
+        Ok(())
+    }
+
+    #[test]
+    fn an_unavailable_file_becomes_available_again_when_it_can_be_read()
+    -> Result<(), String> {
+        // The unavailable row carries a zero content version, so a later
+        // successful scan must produce a different row rather than reusing the
+        // reported failure forever.
+        let scratch = scratch("recover")?;
+        fs::write(scratch.0.join("blob.rs"), [0xffu8, 0xfe]).map_err(|e| e.to_string())?;
+        let broken = scan(&scratch)?;
+        assert_eq!(
+            retention_of(&broken, "blob.rs"),
+            Some(DeclarationRetention::Unavailable(
+                SourceUnavailableReason::NotText
+            ))
+        );
+
+        fs::write(scratch.0.join("blob.rs"), good_source()).map_err(|e| e.to_string())?;
+        let repaired = scan(&scratch)?;
+        assert_eq!(
+            retention_of(&repaired, "blob.rs"),
+            Some(DeclarationRetention::Complete),
+            "a repaired file must stop being reported as unavailable"
+        );
+        assert_ne!(
+            broken.source_version, repaired.source_version,
+            "repairing a file must change the project source version"
+        );
+        assert!(names_of(&repaired, "blob.rs").iter().any(|n| n == "ferris"));
         Ok(())
     }
 }

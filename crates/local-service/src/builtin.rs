@@ -83,6 +83,9 @@ use registry::RegistryGateway;
 #[path = "builtin/product_state.rs"]
 mod product_state;
 use product_state::ProductState;
+#[path = "builtin/coverage.rs"]
+mod coverage;
+use coverage::{SemanticDeployment, reconcile_semantic_lane, view_coverage};
 
 #[path = "query/mod.rs"]
 pub mod query;
@@ -463,65 +466,6 @@ fn initial_view_for_workspace(
     Ok((view, cursor))
 }
 
-fn view_coverage(
-    snapshot: &WorkspaceSnapshot,
-    activated: &std::collections::BTreeSet<(
-        backend_engine::PackageKey,
-        compiler_vocabulary::LanguageProfile,
-    )>,
-) -> Result<Vec<backend_engine::ViewCoverage>, BuiltinModelError> {
-    let relation = snapshot
-        .relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(error.to_string()))?;
-    let mut total = 0_u16;
-    let mut completed = 0_u16;
-    let mut after = None;
-    loop {
-        let page = relation
-            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-            .map_err(|error| BuiltinModelError(error.to_string()))?;
-        for (key, record) in page.entries() {
-            if !key.is_selected() {
-                continue;
-            }
-            total = total.checked_add(1).ok_or_else(|| {
-                BuiltinModelError("semantic publication count exceeds wire width".to_owned())
-            })?;
-            let is_complete = matches!(
-                record,
-                backend_engine::builtin::ProductSemanticPublicationRecord::Published {
-                    coverage: backend_engine::builtin::SemanticPublicationCoverage::Complete,
-                    ..
-                }
-            ) && activated.contains(&(key.package_key(), key.profile()));
-            if is_complete {
-                completed = completed.checked_add(1).ok_or_else(|| {
-                    BuiltinModelError("semantic publication count exceeds wire width".to_owned())
-                })?;
-            }
-        }
-        let Some(next) = page.next().cloned() else {
-            break;
-        };
-        after = Some(next);
-    }
-    if total == 0 {
-        return Ok(vec![backend_engine::ViewCoverage::Complete]);
-    }
-    if completed == total {
-        Ok(vec![backend_engine::ViewCoverage::Complete])
-    } else {
-        Ok(vec![
-            backend_engine::ViewCoverage::Complete,
-            backend_engine::ViewCoverage::Partial {
-                lane: backend_engine::Lane::Semantic,
-                completed,
-                total,
-            },
-        ])
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn initial_view() -> Result<(ViewRoot, backend_engine::Cursor), BuiltinModelError> {
     let head = genesis()?;
@@ -629,12 +573,13 @@ fn admitted_view_bytes(rows: &[Row]) -> Result<usize, BuiltinModelError> {
 fn view_for_workspace(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &compiler_application::LocalCompilerClient,
+    deployment: SemanticDeployment,
 ) -> Result<ViewRoot, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_indexed_sources(&snapshot)?;
     let (initial, _) = initial_view_for_workspace(&snapshot)?;
     let projected = rows_for_indexed_sources(&initial, sources, &snapshot, compiler)?;
-    let coverage = view_coverage(&snapshot, &projected.activated)?;
+    let coverage = view_coverage(&snapshot, &projected.activated, deployment)?;
     let _admitted_bytes = admitted_view_bytes(&projected.rows)?;
     ViewRoot::new_checked(
         initial.recipe(),
@@ -650,9 +595,10 @@ fn view_for_workspace(
 fn publish_builtin_view(
     daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &compiler_application::LocalCompilerClient,
+    deployment: SemanticDeployment,
 ) -> Result<Vec<backend_engine::CommittedViewDelta>, BuiltinModelError> {
     let mut current = daemon.engine().daemon().library().view().clone();
-    let target = view_for_workspace(daemon, compiler)?;
+    let target = view_for_workspace(daemon, compiler, deployment)?;
     if current.basis() == target.basis()
         && current.coverage() == target.coverage()
         && current.rows() == target.rows()
@@ -816,6 +762,13 @@ pub(crate) fn compose_owner(
         compiler_application::LocalCompilerHost::production_at(config.workspace.join("compiler"))
             .open()
             .map_err(|error| ProcessError::Profile(format!("open compiler owner: {error}")))?;
+    // Admit optional semantic configuration without network I/O. Missing or
+    // malformed remote settings remain a retained unavailable state and can
+    // never delay the local owner or its lexical query path. The classification
+    // is read before the first view publication because the published view
+    // root, not the reply, is where an unconfigured lane must be recorded.
+    let remote_semantic = query::RemoteSemantic::from_environment();
+    let semantic_deployment = SemanticDeployment::from_remote(&remote_semantic);
     let view_path = config.workspace.join("view.journal");
     let view_journal = ViewJournal::open(&view_path).map_err(ProcessError::Profile)?;
     let workspace_root = daemon.engine().daemon().owner().head().root();
@@ -846,7 +799,7 @@ pub(crate) fn compose_owner(
             )
             .map_err(|error| ProcessError::Profile(error.to_string()))?;
     } else {
-        let view = view_for_workspace(&daemon, &compiler)
+        let view = view_for_workspace(&daemon, &compiler, semantic_deployment)
             .map_err(|error| ProcessError::Profile(error.to_string()))?;
         let cursor = backend_engine::Cursor::for_view_root(&view);
         let admission = BuiltinViewAdmission {
@@ -862,7 +815,7 @@ pub(crate) fn compose_owner(
     // The workspace journal is authoritative. A crash can occur after a
     // workspace commit and between several bounded view-row publications;
     // repair that derived suffix before the listener becomes visible.
-    let _recovered_view_deltas = publish_builtin_view(&mut daemon, &compiler)
+    let _recovered_view_deltas = publish_builtin_view(&mut daemon, &compiler, semantic_deployment)
         .map_err(|error| ProcessError::Profile(format!("repair product view: {error}")))?;
     let projection_path = config.workspace.join(backend_extension_turso::FILE_NAME);
     let mut sql_projection = futures_executor::block_on(
@@ -878,10 +831,6 @@ pub(crate) fn compose_owner(
         sql_projection.synchronize(daemon.engine().daemon().library().view()),
     )
     .map_err(|error| ProcessError::Profile(format!("align Turso projection: {error}")))?;
-    // Admit optional semantic configuration without network I/O. Missing or
-    // malformed remote settings remain a retained unavailable state and can
-    // never delay the local owner or its lexical query path.
-    let remote_semantic = query::RemoteSemantic::from_environment();
     let search_snapshots = query::SearchSnapshotOwner::default();
     let worker_secret = match profile.kind {
         BuiltinProfile::Product => product_secret.ok_or_else(|| {

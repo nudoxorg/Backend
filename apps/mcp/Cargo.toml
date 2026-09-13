@@ -18,6 +18,7 @@ axum.workspace = true
 backend-client = { path = "../../crates/client" }
 backend-extension-trustfall = { path = "../../extensions/trustfall" }
 backend-library = { path = "../../crates/library" }
+backend-present = { path = "../../crates/present" }
 backend-replication = { path = "../../crates/replication" }
 backend-runtime = { path = "../../crates/runtime" }
 blake3.workspace = true

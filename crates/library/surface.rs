@@ -247,6 +247,46 @@ impl SemanticLanguageProfile {
     pub const fn to_bytes(self) -> [u8; 2] {
         self.0
     }
+
+    /// Admits one closed profile by the spelling every surface uses.
+    ///
+    /// The nine product profiles are the closed set the built-in semantic
+    /// plane advertises; a surface that accepts free text here would let a
+    /// caller ask for a language the engine cannot answer for.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        compiler_vocabulary::LanguageProfile::PRODUCT_PROFILES
+            .into_iter()
+            .map(Self::new)
+            .find(|profile| profile.name() == Some(name))
+    }
+
+    /// Returns the closed profile spelling shared by every surface.
+    #[must_use]
+    pub fn name(self) -> Option<&'static str> {
+        use compiler_vocabulary::{LanguageProfile, TypeScriptSource};
+        match self.profile().ok()? {
+            LanguageProfile::Rust(_) => Some("rust"),
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript) => Some("typescript"),
+            LanguageProfile::TypeScript(TypeScriptSource::Tsx) => Some("tsx"),
+            LanguageProfile::Python(_) => Some("python"),
+            LanguageProfile::Go(_) => Some("go"),
+            LanguageProfile::Java(_) => Some("java"),
+            LanguageProfile::CSharp(_) => Some("csharp"),
+            LanguageProfile::C(_) => Some("c"),
+            LanguageProfile::Cxx(_) => Some("cpp"),
+        }
+    }
+
+    /// Returns every closed profile spelling, in product order.
+    #[must_use]
+    pub fn names() -> Vec<&'static str> {
+        compiler_vocabulary::LanguageProfile::PRODUCT_PROFILES
+            .into_iter()
+            .map(Self::new)
+            .filter_map(Self::name)
+            .collect()
+    }
 }
 
 /// Exact immutable compiler generation binding exposed to product clients.

@@ -138,7 +138,8 @@ pub use backend_semantic::{
     Recipe as SemanticRecipe, RecipeSpec as SemanticRecipeSpec, ScopedRead,
 };
 pub use builtin::{
-    BuiltinInputSchema, DeclarationKind, ECHO_AUTHORITY_BYTES, ECHO_EQUIVALENCE_BYTES,
+    BuiltinInputSchema, DeclarationKind, DeclarationRetention, ECHO_AUTHORITY_BYTES,
+    ECHO_EQUIVALENCE_BYTES,
     ECHO_OUTPUT_BYTES, ECHO_READ_BYTES, ECHO_RECIPE_BYTES, ECHO_WITNESS_BYTES,
     PRODUCT_AUTHORITY_BYTES, PRODUCT_EQUIVALENCE_BYTES, PRODUCT_EXECUTION_MEMORY_BYTES,
     PRODUCT_EXECUTION_NODE_BUDGET, PRODUCT_OUTPUT_BODY_BYTES, PRODUCT_OUTPUT_BYTES,
@@ -147,10 +148,12 @@ pub use builtin::{
     ProductSemanticPublicationRecord, ProductSemanticPublicationRelation,
     ProductSemanticPublicationSnapshot, ProductSourceDeltaFacts, ProductSourceRecord,
     ProductSourceRelation, ProductSourceRetentionFacts, ProductSourceSnapshot,
-    ProductSourceTransition, Profile, ProfileDescriptor, ProfileIds, SEMANTIC_OUTPUT_BODY_BYTES,
+    ProductSourceTransition, Profile, ProfileDescriptor, ProfileIds, RetainedDeclarations,
+    SEMANTIC_OUTPUT_BODY_BYTES,
     SemanticPublicationInput, SemanticPublicationProjection, SemanticPublicationProjectionBuilder,
     SemanticPublicationRetentionFacts, SemanticPublicationSelection,
     SemanticPublicationSelectionError, SourceDeclaration, SourceLanguage, SourceLocation,
+    SourceUnavailableReason,
     WorkspaceViewProducerAdmission, admit_product_closure_manifest, canonical_relation_row,
     coverage_from_admitted_authority, echo_row_bytes, execution_input_basis,
     execution_input_basis_from_source, execution_input_manifest,
@@ -333,11 +336,12 @@ pub use worker::{
 pub use workspace::{
     DerivedOutputEntry, DerivedOutputPublication, Durable, DurablePublication, HeadExpectation,
     OwnerLease, PersistedTransition, Prepared, PreparedPublication, PreparedTransition,
-    PublicationStatus, Published, PublishedPublication, TransactionId, TransactionSchema,
-    TransactionVersion, TransitionWork, WorkspaceError, WorkspaceGcPin, WorkspaceHead,
-    WorkspaceModel, WorkspaceOwner, WorkspaceRecord, WorkspaceRelationChild,
-    WorkspaceRelationError, WorkspaceRelationHandle, WorkspaceRelationNodeHandle,
-    WorkspaceRelationNodePage, WorkspaceSnapshot,
+    PublicationStatus, Published, PublishedPublication, RelationIdentity, RelationKeyPrefix,
+    TransactionId, TransactionSchema, TransactionVersion, TransitionWork, WorkspaceError,
+    WorkspaceGcPin, WorkspaceHead, WorkspaceModel, WorkspaceOwner, WorkspaceRecord,
+    WorkspaceRelationChild, WorkspaceRelationError, WorkspaceRelationFault,
+    WorkspaceRelationHandle, WorkspaceRelationNodeHandle, WorkspaceRelationNodePage,
+    WorkspaceRelationRejection, WorkspaceSnapshot,
 };
 
 /// Generic engine composition around one daemon owner.

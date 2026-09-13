@@ -24,10 +24,10 @@ use backend_engine::{
 use std::fmt;
 use std::path::Path;
 
-pub use embedded::EmbeddedLocalService;
+pub use embedded::{EmbeddedLocalService, ServiceStart, start_or_attach};
 pub use listener::{
-    FilesystemPeerPolicy, ListenerConfig, ListenerError, ListenerShutdown, PeerPolicy,
-    PeerPolicyError, RunReport, UnixListenerService,
+    DEFAULT_IDLE_TIMEOUT, FilesystemPeerPolicy, ListenerConfig, ListenerError, ListenerShutdown,
+    PeerPolicy, PeerPolicyError, RunReport, UnixListenerService,
 };
 pub use process::{
     AUTHORITY_SECRET_ENV, ENDPOINT_ENV, PROFILE_ENV, ProcessConfig, ProcessError,
@@ -36,9 +36,10 @@ pub use process::{
     main_entry, run_process, run_with_owner,
 };
 pub use protocol::{
-    CompletionClaim, EngineRequest, EngineStatus, FrameLimits, Operation, ProtocolError,
-    RequestFrame, ResponseFrame, decode_engine_request, decode_request, decode_response,
-    encode_engine_request, encode_response, frame, read_frame, unframe, write_frame,
+    CompletionClaim, EngineRequest, EngineStatus, FrameLimits, LIFECYCLE_BYTES, LIFECYCLE_MAGIC,
+    LIFECYCLE_VERSION, Operation, ProtocolError, RequestFrame, ResponseFrame,
+    decode_engine_request, decode_request, decode_response, encode_engine_request, encode_response,
+    frame, is_lifecycle, read_frame, unframe, write_frame,
 };
 pub use service::{
     CompletionAdmission, LocaldOwner, LocaldService, NoCompletionAdmission, NoReplicationAdmission,

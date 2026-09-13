@@ -1,4 +1,32 @@
 //! Process argument parsing and explicit startup hooks for locald.
+//!
+//! # Daemon lifecycle
+//!
+//! **Who spawns.** A surface spawns `backend-locald` through
+//! `backend_runtime::ensure_locald`, detached, with its standard streams
+//! closed. The spawning CLI process usually exits within the second.
+//!
+//! **Who reaps.** Nobody. There is no supervisor and no parent waiting on the
+//! child, so the daemon must retire itself or leak for the life of the
+//! machine. It retires through [`ListenerConfig::idle_timeout`]: when no
+//! client has been connected and no owner work has progressed for that window,
+//! the run loop stops, closes the workspace, and unlinks its endpoint.
+//!
+//! **The default window** is ten minutes with no clients
+//! ([`crate::DEFAULT_IDLE_TIMEOUT`]). `--idle-timeout-ms MS` overrides it, and
+//! `--idle-timeout-ms 0` disables it for a host that supervises the daemon
+//! itself.
+//!
+//! **How a surface keeps a daemon alive.** By staying connected. The idle
+//! window only advances while the connected-client count is zero, so a desktop
+//! holding a subscription, or a CLI mid-command, can never be retired out from
+//! under itself. A surface that wants a warm daemon between commands either
+//! reconnects inside the window or raises it.
+//!
+//! **How a surface ends one early.** By sending
+//! [`crate::EngineRequest::Shutdown`] on the wire. The listener answers it
+//! with its own stop capability. The CLI verb that would expose this to a user
+//! belongs to the CLI surface and is not defined here.
 
 use crate::listener::{ListenerConfig, ListenerError, RunReport, UnixListenerService};
 use crate::protocol::ProtocolError;
@@ -200,6 +228,7 @@ impl ProcessConfig {
             max_frame,
             max_clients,
             timeout_ms,
+            idle_timeout_ms,
             profile,
             worker_endpoint,
             authority_secret,
@@ -264,7 +293,14 @@ impl ProcessConfig {
             listener.max_clients = max_clients;
         }
         if let Some(timeout_ms) = timeout_ms {
-            listener.io_timeout = Duration::from_millis(timeout_ms as u64);
+            listener.io_timeout = Duration::from_millis(u64::try_from(timeout_ms).unwrap_or(u64::MAX));
+        }
+        if let Some(idle_timeout_ms) = idle_timeout_ms {
+            // `0` is the explicit "supervise me yourself" spelling; it is not
+            // a zero-length window, which `validate` rejects.
+            listener.idle_timeout = (idle_timeout_ms != 0).then(|| {
+                Duration::from_millis(u64::try_from(idle_timeout_ms).unwrap_or(u64::MAX))
+            });
         }
         listener.validate().map_err(ProcessError::Listener)?;
         let registry = RegistryConfig::from_options(
@@ -294,6 +330,7 @@ struct ParsedOptions {
     max_frame: Option<usize>,
     max_clients: Option<usize>,
     timeout_ms: Option<usize>,
+    idle_timeout_ms: Option<usize>,
     profile: Option<String>,
     worker_endpoint: Option<String>,
     authority_secret: Option<String>,
@@ -313,6 +350,7 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<ParsedOptions
         max_frame: None,
         max_clients: None,
         timeout_ms: None,
+        idle_timeout_ms: None,
         profile: None,
         worker_endpoint: None,
         authority_secret: None,
@@ -348,6 +386,12 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<ParsedOptions
                     "--timeout-ms",
                 )?);
             }
+            "--idle-timeout-ms" => {
+                parsed.idle_timeout_ms = Some(parse_count(
+                    &next_value(&mut args, "--idle-timeout-ms")?,
+                    "--idle-timeout-ms",
+                )?);
+            }
             "--profile" => parsed.profile = Some(next_value(&mut args, "--profile")?),
             "--worker-endpoint" => {
                 parsed.worker_endpoint = Some(next_value(&mut args, "--worker-endpoint")?);
@@ -381,6 +425,13 @@ fn next_value(
 ) -> Result<String, ProcessError> {
     args.next()
         .ok_or_else(|| ProcessError::Usage(format!("{option} requires a value")))
+}
+
+/// Parses an option whose zero value is meaningful.
+fn parse_count(value: &str, option: &str) -> Result<usize, ProcessError> {
+    value
+        .parse::<usize>()
+        .map_err(|_| ProcessError::Usage(format!("{option} requires a non-negative integer")))
 }
 
 fn parse_positive(value: &str, option: &str) -> Result<usize, ProcessError> {
@@ -477,10 +528,13 @@ pub fn main_entry() -> ExitCode {
 
 fn print_help() {
     println!(
-        "usage: backend-locald [--endpoint PATH] [--workspace PATH] [--profile builtin|builtin-echo] [--worker-endpoint PATH] [--authority-secret-file PATH] [--registry-endpoint URL] [--registry-ecosystem NAME] [--registry-auth VALUE|--registry-auth-file PATH] [--registry-native] [--registry-offline] [--max-frame BYTES] [--max-clients COUNT] [--timeout-ms MS]"
+        "usage: backend-locald [--endpoint PATH] [--workspace PATH] [--profile builtin|builtin-echo] [--worker-endpoint PATH] [--authority-secret-file PATH] [--registry-endpoint URL] [--registry-ecosystem NAME] [--registry-auth VALUE|--registry-auth-file PATH] [--registry-native] [--registry-offline] [--max-frame BYTES] [--max-clients COUNT] [--timeout-ms MS] [--idle-timeout-ms MS]"
     );
     println!(
         "without paths, locald opens .backend/v2 for the current project and derives a short local endpoint"
+    );
+    println!(
+        "locald retires itself after --idle-timeout-ms with no connected client (default 600000); 0 never times out"
     );
 }
 
@@ -596,6 +650,57 @@ mod tests {
                 .as_ref()
                 .map(UnixEndpointPath::as_path),
             Some(std::path::Path::new("/tmp/backend-worker-test.sock"))
+        );
+    }
+
+    #[test]
+    fn the_idle_window_defaults_to_ten_minutes_and_zero_disables_it() {
+        let base = [
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-idle.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-idle".to_owned(),
+        ];
+        let parsed = ProcessConfig::parse(base.clone());
+        assert!(parsed.is_ok(), "default idle window: {parsed:?}");
+        let Ok(parsed) = parsed else { return };
+        assert_eq!(
+            parsed.listener.idle_timeout,
+            Some(crate::DEFAULT_IDLE_TIMEOUT),
+            "a spawned daemon must retire itself by default"
+        );
+
+        let explicit = ProcessConfig::parse(
+            base.iter()
+                .cloned()
+                .chain(["--idle-timeout-ms".to_owned(), "300".to_owned()]),
+        );
+        assert!(explicit.is_ok(), "explicit idle window: {explicit:?}");
+        let Ok(explicit) = explicit else { return };
+        assert_eq!(
+            explicit.listener.idle_timeout,
+            Some(Duration::from_millis(300))
+        );
+
+        let never = ProcessConfig::parse(
+            base.iter()
+                .cloned()
+                .chain(["--idle-timeout-ms".to_owned(), "0".to_owned()]),
+        );
+        assert!(never.is_ok(), "disabled idle window: {never:?}");
+        let Ok(never) = never else { return };
+        assert_eq!(
+            never.listener.idle_timeout, None,
+            "0 must mean never time out, not a zero-length window"
+        );
+
+        let malformed = ProcessConfig::parse(
+            base.into_iter()
+                .chain(["--idle-timeout-ms".to_owned(), "soon".to_owned()]),
+        );
+        assert!(
+            matches!(malformed, Err(ProcessError::Usage(_))),
+            "a malformed idle window must be a usage failure: {malformed:?}"
         );
     }
 

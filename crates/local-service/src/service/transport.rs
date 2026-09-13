@@ -44,6 +44,7 @@ pub struct LocaldService<O> {
     owner: O,
     limits: FrameLimits,
     closed: bool,
+    lifecycle: Option<crate::listener::ListenerShutdown>,
 }
 
 impl<O: fmt::Debug> fmt::Debug for LocaldService<O> {
@@ -53,6 +54,7 @@ impl<O: fmt::Debug> fmt::Debug for LocaldService<O> {
             .field("owner", &self.owner)
             .field("limits", &self.limits)
             .field("closed", &self.closed)
+            .field("lifecycle", &self.lifecycle)
             .finish()
     }
 }
@@ -69,7 +71,33 @@ impl<O: OwnerService> LocaldService<O> {
             owner,
             limits,
             closed: false,
+            lifecycle: None,
         })
+    }
+
+    /// Installs the lifecycle capability answering a wire shutdown request.
+    ///
+    /// A listener calls this at bind time. Until it does, a shutdown frame is
+    /// rejected with a bounded diagnostic rather than silently accepted: a
+    /// service with no listener has nothing to stop, and a client must be able
+    /// to tell "stopped" from "ignored".
+    pub fn attach_lifecycle(&mut self, lifecycle: crate::listener::ListenerShutdown) {
+        self.lifecycle = Some(lifecycle);
+    }
+
+    /// Answers a wire shutdown request through the listener capability.
+    fn request_shutdown(&self) -> EngineStatus {
+        self.lifecycle.as_ref().map_or_else(
+            || {
+                EngineStatus::Rejected(
+                    "locald lifecycle control is unavailable on this service".to_owned(),
+                )
+            },
+            |lifecycle| {
+                lifecycle.request();
+                EngineStatus::Accepted
+            },
+        )
     }
 
     /// Returns the configured frame and replication limits.
@@ -121,6 +149,15 @@ impl<O: OwnerService> LocaldService<O> {
                 let reply = self.owner.command(&body)?;
                 ResponseFrame::Command(reply.into_boxed_slice())
             }
+            // Shutdown is a listener lifecycle operation, not workspace state,
+            // so it never reaches the owner adapter.
+            RequestFrame::Engine {
+                request_id,
+                request,
+            } if matches!(*request, EngineRequest::Shutdown) => ResponseFrame::Engine {
+                request_id,
+                status: self.request_shutdown(),
+            },
             RequestFrame::Engine {
                 request_id,
                 request,

@@ -9,5 +9,11 @@ publish.workspace = true
 [dependencies]
 blake3.workspace = true
 
+# The derived endpoint folds in the effective user so a shared `/tmp` cannot
+# put two users on one 0600 socket. `rustix` is the workspace's existing safe
+# wrapper for that call; this crate forbids unsafe code outright.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["std", "process"] }
+
 [lints]
 workspace = true

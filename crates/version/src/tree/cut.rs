@@ -14,6 +14,10 @@ use crate::{CANONICAL_CUT_POLICY_VERSION, CANONICAL_TREE_ABI, Relation};
 // length prefix used by both leaf and branch nodes.
 const NODE_OVERHEAD_BYTES: usize = 24;
 
+// Every key and value field inside a node body is written behind one
+// big-endian `u64` length prefix.
+const FIELD_FRAME_BYTES: usize = 8;
+
 // Count anchors alone cannot stabilize relations with large values: those
 // nodes reach the hard byte cap before `min_entries`.  These derived byte
 // targets give the same key anchor a proportional chance to close a page once
@@ -72,6 +76,25 @@ impl CutPolicy {
     #[must_use]
     pub const fn max_encoded_bytes(self) -> usize {
         Self::MAX_ENCODED_BYTES
+    }
+
+    /// Returns the largest encoded value one row may carry beside a key of
+    /// `encoded_key_bytes`, or `None` when the key alone already fills a node.
+    ///
+    /// A canonical leaf is the node header and outer body frame
+    /// ([`NODE_OVERHEAD_BYTES`]) followed by one length-delimited key field
+    /// and one length-delimited value field per entry.  A relation whose
+    /// value can exceed this bound has no representable row at all, so the
+    /// producer of the value - not the tree - must enforce the limit.  Both
+    /// [`anchored_cut_points_sized`] and [`super::build::canonical_leaf`]
+    /// derive their checks from the same arithmetic.
+    #[must_use]
+    pub const fn max_row_value_bytes(self, encoded_key_bytes: usize) -> Option<usize> {
+        let frames = NODE_OVERHEAD_BYTES + FIELD_FRAME_BYTES + FIELD_FRAME_BYTES;
+        let Some(fixed) = encoded_key_bytes.checked_add(frames) else {
+            return None;
+        };
+        Self::MAX_ENCODED_BYTES.checked_sub(fixed)
     }
 
     /// Returns whether minimum, target, and maximum counts form a valid policy.

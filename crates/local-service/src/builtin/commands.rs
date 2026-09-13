@@ -1787,7 +1787,8 @@ impl CommandAdapter {
     fn publish_view(&mut self, daemon: &mut ProductDaemon) -> Result<(), BuiltinModelError> {
         // Reconcile even after a no-op source intent so a retry heals a crash
         // between the durable source commit and its derived view publication.
-        let deltas = publish_builtin_view(daemon, &self.compiler)
+        let deployment = super::SemanticDeployment::from_remote(&self.remote_semantic);
+        let deltas = publish_builtin_view(daemon, &self.compiler, deployment)
             .map_err(|error| BuiltinModelError(format!("publish product source view: {error}")))?;
         project_view_deltas(&mut self.sql_projection, daemon, &deltas)
     }
@@ -2019,11 +2020,21 @@ fn semantic_readiness(
     let capabilities = remote
         .inventory(&local)
         .map_err(|error| BuiltinModelError(format!("project semantic readiness: {error}")))?;
+    // A deployment that configured no embedding provider has a terminally
+    // unavailable semantic lane, and a health reply must say so instead of
+    // dropping the fact on the floor. The published view root already folds the
+    // same classification in, so this reconciliation is a fixed point for every
+    // reply the owner certifies: `readiness_certificate` rejects a report whose
+    // coverage differs from that root, and the lane is described exactly once.
+    let coverage = super::reconcile_semantic_lane(
+        report.coverage(),
+        super::SemanticDeployment::from_remote(remote),
+    );
     Ok(CommandReply::Readiness(
         backend_engine::HealthReport::from_admitted_parts(
             report.revision(),
             report.basis(),
-            report.coverage().to_vec().into_boxed_slice(),
+            coverage.into_boxed_slice(),
             report.row_count(),
             capabilities,
         ),

@@ -7,8 +7,10 @@ use backend_compile::{SourceExcerpt, SourceExcerptExtent};
 use backend_execution::AuthorityVersion;
 use backend_replication::ImmutableObjectSchema;
 use backend_version::{
-    CanonicalRelation, CoverageWitness, Relation, RelationState, StateRoot, WorkspaceRoot,
+    CanonicalRelation, CoverageWitness, DEFAULT_CUT_POLICY, Relation, RelationState, StateRoot,
+    WorkspaceRoot,
 };
+use std::fmt;
 use std::sync::Arc;
 
 /// Authoritative package/source coordinates retained by the product
@@ -47,7 +49,130 @@ pub enum ProductSourceRecord {
         analysis_version: [u8; 32],
         /// Ordered declarations extracted from this file.
         declarations: Arc<[SourceDeclaration]>,
+        /// How much extracted detail this row was able to retain.
+        retention: DeclarationRetention,
     },
+}
+
+/// Number of extracted declarations a truncated file row still retains.
+///
+/// Both counts are authoritative evidence rather than display hints: a
+/// surface that renders `retained` without `extracted` would present a
+/// partial outline as a complete one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetainedDeclarations {
+    retained: u32,
+    extracted: u32,
+}
+
+impl RetainedDeclarations {
+    /// Constructs a checked retention count.
+    ///
+    /// # Errors
+    /// Returns an error when more declarations are retained than extracted.
+    pub fn new(retained: u32, extracted: u32) -> Result<Self, String> {
+        if retained > extracted {
+            return Err("retained declaration count exceeds the extracted count".to_owned());
+        }
+        Ok(Self {
+            retained,
+            extracted,
+        })
+    }
+
+    /// Returns how many declarations the row retains.
+    #[must_use]
+    pub const fn retained(self) -> u32 {
+        self.retained
+    }
+
+    /// Returns how many declarations the frontend extracted.
+    #[must_use]
+    pub const fn extracted(self) -> u32 {
+        self.extracted
+    }
+}
+
+impl fmt::Display for RetainedDeclarations {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}/{}", self.retained, self.extracted)
+    }
+}
+
+/// Why a source file in the project frontier has no extracted detail.
+///
+/// A project must survive the files it contains.  One unreadable, binary, or
+/// oversized file used to abort the whole scan, so a single bad byte in a
+/// large checkout made the project unindexable.  The file instead keeps its
+/// place in the frontier and states, in typed form, what could not be known
+/// about it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceUnavailableReason {
+    /// The file could not be opened or read.
+    Unreadable,
+    /// The bytes are not valid UTF-8 text.
+    NotText,
+    /// The file is larger than the bounded per-file ingest limit.
+    TooLarge,
+    /// The language frontend rejected the file's contents.
+    Unparsed,
+}
+
+impl fmt::Display for SourceUnavailableReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unreadable => formatter.write_str("unreadable"),
+            Self::NotText => formatter.write_str("not text"),
+            Self::TooLarge => formatter.write_str("too large"),
+            Self::Unparsed => formatter.write_str("unparsed"),
+        }
+    }
+}
+
+/// How much of a source file's extracted detail one relation row retains.
+///
+/// One canonical relation row can never exceed
+/// [`ProductSourceRecord::ROW_VALUE_CAPACITY`] encoded bytes, while a single
+/// real source file can extract far more than that.  Rather than rejecting
+/// the file - which used to fail the whole project with an opaque
+/// `workspace relation node was rejected` - the producer sheds derived detail
+/// in a fixed order and records exactly how far it had to go.  Every surface
+/// can therefore state what is missing instead of presenting a reduced row as
+/// a complete one.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DeclarationRetention {
+    /// Every extracted declaration is retained with its full text.
+    #[default]
+    Complete,
+    /// Source excerpts were replaced by [`SourceExcerpt::NotHydrated`].
+    ExcerptsElided,
+    /// Excerpts, documentation, and signatures were dropped; names, kinds,
+    /// and locations remain authoritative.
+    NamesOnly,
+    /// Only a leading run of the extracted declarations is retained.
+    Truncated(RetainedDeclarations),
+    /// Nothing could be extracted from this file, for the stated reason.
+    Unavailable(SourceUnavailableReason),
+}
+
+impl DeclarationRetention {
+    /// Returns whether this row carries every extracted declaration field.
+    #[must_use]
+    pub const fn is_complete(self) -> bool {
+        matches!(self, Self::Complete)
+    }
+}
+
+impl fmt::Display for DeclarationRetention {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Complete => formatter.write_str("complete"),
+            Self::ExcerptsElided => formatter.write_str("excerpts elided"),
+            Self::NamesOnly => formatter.write_str("names only"),
+            Self::Truncated(counts) => write!(formatter, "truncated {counts}"),
+            Self::Unavailable(reason) => write!(formatter, "unavailable ({reason})"),
+        }
+    }
 }
 
 /// Borrowed project frontier exposed without tuple-position coupling.
@@ -76,6 +201,8 @@ pub struct ProductFileRef<'a> {
     pub analysis_version: [u8; 32],
     /// Shared declaration storage.
     pub declarations: &'a Arc<[SourceDeclaration]>,
+    /// How much extracted detail this row was able to retain.
+    pub retention: DeclarationRetention,
 }
 
 impl ProductSourceRecord {
@@ -85,6 +212,38 @@ impl ProductSourceRecord {
     pub const MAX_PROJECT_FILES: usize = 100_000;
     /// Maximum declarations retained in one source file.
     pub const MAX_FILE_DECLARATIONS: usize = 16_384;
+    /// Largest encoded value one row of this relation may carry.
+    ///
+    /// The canonical tree admits no node above
+    /// [`backend_version::CutPolicy::MAX_ENCODED_BYTES`], and a leaf holding
+    /// one entry spends the node header plus a length-delimited key and value
+    /// field.  Every constructor below is checked against this bound, because
+    /// a record that exceeds it has no representable row: the failure would
+    /// otherwise surface only when the relation delta was prepared, as an
+    /// opaque rejection naming neither the file nor the reason.
+    pub const ROW_VALUE_CAPACITY: usize =
+        match DEFAULT_CUT_POLICY.max_row_value_bytes(size_of::<<ProductSourceRelation as Relation>::Key>()) {
+            Some(capacity) => capacity,
+            None => 0,
+        };
+    /// File frontier every project row can name, whatever its label.
+    ///
+    /// A project row is its label plus 32 bytes for every selected file, so
+    /// the canonical row capacity bounds the frontier far below any logical
+    /// declaration limit.  This constant is the bound that holds even for a
+    /// maximum-length label; a short label admits somewhat more, and the
+    /// constructor reports that exact per-label ceiling.  Projects above it
+    /// need a paged frontier, which does not exist yet: until it does, the
+    /// constructor states the ceiling instead of deferring an opaque tree
+    /// rejection.
+    pub const MAX_FRONTIER_FILES: usize =
+        (Self::ROW_VALUE_CAPACITY - Self::MAX_LABEL_BYTES - 64) / 32;
+
+    fn encoded_value_bytes(&self) -> usize {
+        let mut bytes = Vec::new();
+        ProductSourceRelation::encode_value(self, &mut bytes);
+        bytes.len()
+    }
 
     /// Constructs a checked empty project record for compatibility package
     /// coordinates.
@@ -110,22 +269,42 @@ impl ProductSourceRecord {
         if label.is_empty() || label.len() > Self::MAX_LABEL_BYTES {
             return Err("project source coordinate is empty or oversized".to_owned());
         }
-        if files.len() > Self::MAX_PROJECT_FILES
-            || files.windows(2).any(|window| window[0] >= window[1])
-        {
-            return Err("project file frontier is unordered or oversized".to_owned());
+        if files.windows(2).any(|window| window[0] >= window[1]) {
+            return Err("project file frontier is unordered or holds a duplicate".to_owned());
         }
-        Ok(Self::Project {
+        if files.len() > Self::MAX_PROJECT_FILES {
+            return Err(format!(
+                "project file frontier of {} files exceeds the {} file logical limit",
+                files.len(),
+                Self::MAX_PROJECT_FILES
+            ));
+        }
+        let record = Self::Project {
             label,
             source_version,
             files: Arc::from(files.into_boxed_slice()),
-        })
+        };
+        let encoded = record.encoded_value_bytes();
+        if encoded > Self::ROW_VALUE_CAPACITY {
+            let named = record.project_fields().map_or(0, |fields| fields.files.len());
+            let overhead = encoded.saturating_sub(named.saturating_mul(32));
+            let admitted = Self::ROW_VALUE_CAPACITY.saturating_sub(overhead) / 32;
+            return Err(format!(
+                "project row of {encoded} bytes exceeds the {} byte canonical row capacity; \
+                 this coordinate admits at most {admitted} files",
+                Self::ROW_VALUE_CAPACITY
+            ));
+        }
+        Ok(record)
     }
 
-    /// Constructs a checked file record.
+    /// Constructs a checked file record that retains every declaration.
     ///
     /// # Errors
-    /// Returns an error for an invalid path or oversized declaration set.
+    /// Returns an error for an invalid path, an oversized declaration set, or
+    /// a row that cannot fit [`Self::ROW_VALUE_CAPACITY`].  Producers that
+    /// scan real source should call [`Self::file_within_row_capacity`], which
+    /// sheds derived detail instead of failing.
     pub fn file(
         project: [u8; 32],
         path: impl Into<String>,
@@ -133,6 +312,31 @@ impl ProductSourceRecord {
         content_version: [u8; 32],
         analysis_version: [u8; 32],
         declarations: impl Into<Arc<[SourceDeclaration]>>,
+    ) -> Result<Self, String> {
+        Self::file_with_retention(
+            project,
+            path,
+            language,
+            content_version,
+            analysis_version,
+            declarations,
+            DeclarationRetention::Complete,
+        )
+    }
+
+    /// Constructs a checked file record carrying an explicit retention claim.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid path, an oversized declaration set, or
+    /// a row above [`Self::ROW_VALUE_CAPACITY`].
+    pub fn file_with_retention(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+        retention: DeclarationRetention,
     ) -> Result<Self, String> {
         let path = path.into();
         let declarations = declarations.into();
@@ -142,14 +346,116 @@ impl ProductSourceRecord {
         if declarations.len() > Self::MAX_FILE_DECLARATIONS {
             return Err("source file declaration set is oversized".to_owned());
         }
-        Ok(Self::File {
+        let record = Self::File {
             project,
             path,
             language,
             content_version,
             analysis_version,
             declarations,
-        })
+            retention,
+        };
+        let encoded = record.encoded_value_bytes();
+        if encoded > Self::ROW_VALUE_CAPACITY {
+            return Err(format!(
+                "source file row for {} is {encoded} bytes, above the {} byte canonical row capacity",
+                record.label(),
+                Self::ROW_VALUE_CAPACITY
+            ));
+        }
+        Ok(record)
+    }
+
+    /// Constructs a file record for a source the producer could not extract.
+    ///
+    /// The row still names the file so the project frontier stays complete and
+    /// a surface can list it, but it retains no declarations and states why.
+    /// The content version is zero because nothing about the bytes is known:
+    /// a later scan that succeeds therefore changes the row.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid path.
+    pub fn file_unavailable(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        analysis_version: [u8; 32],
+        reason: SourceUnavailableReason,
+    ) -> Result<Self, String> {
+        Self::file_with_retention(
+            project,
+            path,
+            language,
+            [0; 32],
+            analysis_version,
+            Vec::new(),
+            DeclarationRetention::Unavailable(reason),
+        )
+    }
+
+    /// Constructs a file record that always fits one canonical relation row.
+    ///
+    /// A single real source file routinely extracts more detail than one row
+    /// can carry; `memchr 2.8.3` alone produces a 65 686 byte row for
+    /// `src/arch/x86_64/avx2/memchr.rs`.  Detail is therefore shed in a fixed,
+    /// content-addressed order - excerpts, then prose and signatures, then a
+    /// trailing run of declarations - and the resulting
+    /// [`DeclarationRetention`] states exactly which step was needed.  The
+    /// result is a pure function of the inputs, so an unchanged file yields an
+    /// unchanged row.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid path, an oversized declaration set, or
+    /// a file whose bare identity cannot fit a row at all.
+    pub fn file_within_row_capacity(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+    ) -> Result<Self, String> {
+        let path = path.into();
+        let extracted = declarations.into();
+        let build = |declarations: Arc<[SourceDeclaration]>, retention| {
+            Self::file_with_retention(
+                project,
+                path.clone(),
+                language,
+                content_version,
+                analysis_version,
+                declarations,
+                retention,
+            )
+        };
+        if let Ok(record) = build(Arc::clone(&extracted), DeclarationRetention::Complete) {
+            return Ok(record);
+        }
+        let without_excerpts = shed_excerpts(&extracted);
+        if let Ok(record) = build(
+            Arc::clone(&without_excerpts),
+            DeclarationRetention::ExcerptsElided,
+        ) {
+            return Ok(record);
+        }
+        let names_only = shed_prose(&extracted)?;
+        if let Ok(record) = build(Arc::clone(&names_only), DeclarationRetention::NamesOnly) {
+            return Ok(record);
+        }
+        let retained = largest_fitting_prefix(&names_only, |prefix| {
+            build(prefix, DeclarationRetention::NamesOnly).is_ok()
+        });
+        let counts = RetainedDeclarations::new(
+            u32::try_from(retained).map_err(|_| "retained declaration count overflow")?,
+            u32::try_from(extracted.len()).map_err(|_| "extracted declaration count overflow")?,
+        )?;
+        build(
+            names_only
+                .get(..retained)
+                .ok_or("retained declaration prefix is out of range")?
+                .into(),
+            DeclarationRetention::Truncated(counts),
+        )
     }
 
     /// Returns the display coordinate for this project or file.
@@ -189,6 +495,7 @@ impl ProductSourceRecord {
                 content_version,
                 analysis_version,
                 declarations,
+                retention,
             } => Some(ProductFileRef {
                 project: *project,
                 path,
@@ -196,10 +503,71 @@ impl ProductSourceRecord {
                 content_version: *content_version,
                 analysis_version: *analysis_version,
                 declarations,
+                retention: *retention,
             }),
             Self::Project { .. } => None,
         }
     }
+}
+
+/// Replaces every captured excerpt with the typed not-hydrated marker.
+fn shed_excerpts(declarations: &[SourceDeclaration]) -> Arc<[SourceDeclaration]> {
+    declarations
+        .iter()
+        .map(|declaration| {
+            declaration
+                .clone()
+                .with_source_excerpt(SourceExcerpt::NotHydrated)
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+/// Keeps only each declaration's name, kind, and location.
+fn shed_prose(declarations: &[SourceDeclaration]) -> Result<Arc<[SourceDeclaration]>, String> {
+    declarations
+        .iter()
+        .map(|declaration| {
+            SourceDeclaration::with_location(
+                declaration.location().clone(),
+                declaration.name(),
+                declaration.kind().name(),
+                "",
+                "",
+            )
+            .map(|reduced| reduced.with_source_excerpt(SourceExcerpt::NotHydrated))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Into::into)
+}
+
+/// Returns the longest prefix length for which `fits` holds.
+///
+/// `fits` is monotone in the prefix length because every additional
+/// declaration only adds encoded bytes, so a binary search returns the exact
+/// boundary while encoding `log2(n)` candidates rather than `n`.
+fn largest_fitting_prefix<F>(declarations: &[SourceDeclaration], fits: F) -> usize
+where
+    F: Fn(Arc<[SourceDeclaration]>) -> bool,
+{
+    let mut low = 0usize;
+    let mut high = declarations.len();
+    while low < high {
+        let middle = high
+            .saturating_sub(low)
+            .div_ceil(2)
+            .saturating_add(low)
+            .min(high);
+        let Some(prefix) = declarations.get(..middle) else {
+            return low;
+        };
+        if fits(prefix.into()) {
+            low = middle;
+        } else {
+            high = middle.saturating_sub(1);
+        }
+    }
+    low
 }
 
 impl Relation for ProductSourceRelation {
@@ -213,7 +581,7 @@ impl Relation for ProductSourceRelation {
     }
 
     fn encode_value(value: &Self::Value, output: &mut Vec<u8>) {
-        output.extend_from_slice(b"PSR7");
+        output.extend_from_slice(b"PSR8");
         match value {
             ProductSourceRecord::Project {
                 label,
@@ -228,58 +596,67 @@ impl Relation for ProductSourceRelation {
                     output.extend_from_slice(file);
                 }
             }
-            ProductSourceRecord::File {
-                project,
-                path,
-                language,
-                content_version,
-                analysis_version,
-                declarations,
-            } => {
-                output.push(2);
-                output.extend_from_slice(project);
-                push_text(output, path);
-                output.push(language.wire_tag());
-                output.extend_from_slice(content_version);
-                output.extend_from_slice(analysis_version);
-                push_count(output, declarations.len());
-                for declaration in declarations.iter() {
-                    output.extend_from_slice(&declaration.line().to_be_bytes());
-                    if declaration.location().path() == path {
-                        push_text(output, declaration.location().path());
-                    } else {
-                        // The file relation remains the authority for the
-                        // selected path.  Retaining a declaration's typed
-                        // location is useful for callers, but an inconsistent
-                        // path must not silently alter the file identity.
-                        push_text(output, path);
-                    }
-                    push_text(output, declaration.name());
-                    output.push(declaration.kind().wire_tag());
-                    push_text(output, declaration.signature());
-                    push_text(output, declaration.documentation());
-                    match declaration.source_excerpt() {
-                        SourceExcerpt::NotCaptured => output.push(0),
-                        SourceExcerpt::Captured {
-                            text,
-                            extent: SourceExcerptExtent::Complete,
-                        } => {
-                            output.push(1);
-                            push_text(output, text);
-                        }
-                        SourceExcerpt::Captured {
-                            text,
-                            extent: SourceExcerptExtent::Truncated,
-                        } => {
-                            output.push(2);
-                            push_text(output, text);
-                        }
-                        SourceExcerpt::NotHydrated => output.push(3),
-                        SourceExcerpt::Unconfigured => output.push(4),
-                    }
-                }
-            }
+            ProductSourceRecord::File { .. } => encode_file_record(value, output),
         }
+    }
+}
+
+/// Encodes one file record body after the `PSR8` format tag.
+fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
+    let ProductSourceRecord::File {
+        project,
+        path,
+        language,
+        content_version,
+        analysis_version,
+        declarations,
+        retention,
+    } = value
+    else {
+        return;
+    };
+    output.push(2);
+    output.extend_from_slice(project);
+    push_text(output, path);
+    output.push(language.wire_tag());
+    output.extend_from_slice(content_version);
+    output.extend_from_slice(analysis_version);
+    push_retention(output, *retention);
+    push_count(output, declarations.len());
+    for declaration in declarations.iter() {
+        output.extend_from_slice(&declaration.line().to_be_bytes());
+        // The file relation remains the authority for the selected path.
+        // Retaining a declaration's typed location is useful for callers, but
+        // an inconsistent path must not silently alter the file identity.
+        push_text(output, path);
+        push_text(output, declaration.name());
+        output.push(declaration.kind().wire_tag());
+        push_text(output, declaration.signature());
+        push_text(output, declaration.documentation());
+        push_excerpt(output, declaration.source_excerpt());
+    }
+}
+
+/// Encodes one declaration excerpt, including its typed absence markers.
+fn push_excerpt(output: &mut Vec<u8>, excerpt: &SourceExcerpt) {
+    match excerpt {
+        SourceExcerpt::NotCaptured => output.push(0),
+        SourceExcerpt::Captured {
+            text,
+            extent: SourceExcerptExtent::Complete,
+        } => {
+            output.push(1);
+            push_text(output, text);
+        }
+        SourceExcerpt::Captured {
+            text,
+            extent: SourceExcerptExtent::Truncated,
+        } => {
+            output.push(2);
+            push_text(output, text);
+        }
+        SourceExcerpt::NotHydrated => output.push(3),
+        SourceExcerpt::Unconfigured => output.push(4),
     }
 }
 
@@ -310,6 +687,28 @@ fn push_count(output: &mut Vec<u8>, count: usize) {
     output.extend_from_slice(&u32::try_from(count).unwrap_or(u32::MAX).to_be_bytes());
 }
 
+fn push_retention(output: &mut Vec<u8>, retention: DeclarationRetention) {
+    match retention {
+        DeclarationRetention::Complete => output.push(0),
+        DeclarationRetention::ExcerptsElided => output.push(1),
+        DeclarationRetention::NamesOnly => output.push(2),
+        DeclarationRetention::Truncated(counts) => {
+            output.push(3);
+            output.extend_from_slice(&counts.retained().to_be_bytes());
+            output.extend_from_slice(&counts.extracted().to_be_bytes());
+        }
+        DeclarationRetention::Unavailable(reason) => {
+            output.push(4);
+            output.push(match reason {
+                SourceUnavailableReason::Unreadable => 0,
+                SourceUnavailableReason::NotText => 1,
+                SourceUnavailableReason::TooLarge => 2,
+                SourceUnavailableReason::Unparsed => 3,
+            });
+        }
+    }
+}
+
 fn push_text(output: &mut Vec<u8>, value: &str) {
     push_count(output, value.len());
     output.extend_from_slice(value.as_bytes());
@@ -320,7 +719,7 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
     let format = reader.take(4)?;
     if !matches!(
         format,
-        b"PSR2" | b"PSR3" | b"PSR4" | b"PSR5" | b"PSR6" | b"PSR7"
+        b"PSR2" | b"PSR3" | b"PSR4" | b"PSR5" | b"PSR6" | b"PSR7" | b"PSR8"
     ) {
         return Err(());
     }
@@ -335,71 +734,92 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
             }
             ProductSourceRecord::project(label, source_version, files).map_err(|_| ())?
         }
-        2 => {
-            let project = reader.array()?;
-            let path = reader.text(ProductSourceRecord::MAX_LABEL_BYTES)?;
-            let language = SourceLanguage::from_wire_tag(reader.byte()?).ok_or(())?;
-            let content_version = reader.array()?;
-            let analysis_version =
-                if matches!(format, b"PSR3" | b"PSR4" | b"PSR5" | b"PSR6" | b"PSR7") {
-                    reader.array()?
-                } else {
-                    [0; 32]
-                };
-            let count = reader.count(ProductSourceRecord::MAX_FILE_DECLARATIONS)?;
-            let mut declarations = Vec::with_capacity(count);
-            for _ in 0..count {
-                let line = reader.u32()?;
-                let declaration_path = if matches!(format, b"PSR4" | b"PSR5" | b"PSR6" | b"PSR7") {
-                    reader.text(SourceLocation::MAX_PATH_BYTES)?
-                } else {
-                    path.clone()
-                };
-                if declaration_path != path {
-                    return Err(());
-                }
-                let name = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
-                let kind = if matches!(format, b"PSR4" | b"PSR5" | b"PSR6" | b"PSR7") {
-                    DeclarationKind::from_wire_tag(reader.byte()?).ok_or(())?
-                } else {
-                    DeclarationKind::from_name(&reader.text(SourceDeclaration::MAX_TEXT_BYTES)?)
-                };
-                let signature = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
-                let documentation = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
-                let source_excerpt = if matches!(format, b"PSR5" | b"PSR6" | b"PSR7") {
-                    decode_source_excerpt(&mut reader)?
-                } else {
-                    SourceExcerpt::NotCaptured
-                };
-                declarations.push(
-                    SourceDeclaration::with_location(
-                        SourceLocation::new(declaration_path, line).map_err(|_| ())?,
-                        name,
-                        kind.name(),
-                        signature,
-                        documentation,
-                    )
-                    .map_err(|_| ())?
-                    .with_source_excerpt(source_excerpt),
-                );
-            }
-            if format == b"PSR6" {
-                skip_legacy_semantics(&mut reader)?;
-            }
-            ProductSourceRecord::file(
-                project,
-                path,
-                language,
-                content_version,
-                analysis_version,
-                declarations,
-            )
-            .map_err(|_| ())?
-        }
+        2 => decode_file_record(&mut reader, format)?,
         _ => return Err(()),
     };
     reader.finish()?;
     Ok(record)
+}
+
+/// Decodes one file record body for any admitted `PSR*` format.
+fn decode_file_record(
+    reader: &mut SourceReader<'_>,
+    format: &[u8],
+) -> Result<ProductSourceRecord, ()> {
+    let project = reader.array()?;
+    let path = reader.text(ProductSourceRecord::MAX_LABEL_BYTES)?;
+    let language = SourceLanguage::from_wire_tag(reader.byte()?).ok_or(())?;
+    let content_version = reader.array()?;
+    let analysis_version = if matches!(
+        format,
+        b"PSR3" | b"PSR4" | b"PSR5" | b"PSR6" | b"PSR7" | b"PSR8"
+    ) {
+        reader.array()?
+    } else {
+        [0; 32]
+    };
+    let retention = if format == b"PSR8" {
+        decode_retention(reader)?
+    } else {
+        DeclarationRetention::Complete
+    };
+    let count = reader.count(ProductSourceRecord::MAX_FILE_DECLARATIONS)?;
+    let mut declarations = Vec::with_capacity(count);
+    for _ in 0..count {
+        declarations.push(decode_declaration(reader, format, &path)?);
+    }
+    if format == b"PSR6" {
+        skip_legacy_semantics(reader)?;
+    }
+    ProductSourceRecord::file_with_retention(
+        project,
+        path,
+        language,
+        content_version,
+        analysis_version,
+        declarations,
+        retention,
+    )
+    .map_err(|_| ())
+}
+
+/// Decodes one declaration, tolerating the older pre-`PSR4` field shapes.
+fn decode_declaration(
+    reader: &mut SourceReader<'_>,
+    format: &[u8],
+    path: &str,
+) -> Result<SourceDeclaration, ()> {
+    let line = reader.u32()?;
+    let declaration_path = if matches!(format, b"PSR4" | b"PSR5" | b"PSR6" | b"PSR7" | b"PSR8") {
+        reader.text(SourceLocation::MAX_PATH_BYTES)?
+    } else {
+        path.to_owned()
+    };
+    if declaration_path != path {
+        return Err(());
+    }
+    let name = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
+    let kind = if matches!(format, b"PSR4" | b"PSR5" | b"PSR6" | b"PSR7" | b"PSR8") {
+        DeclarationKind::from_wire_tag(reader.byte()?).ok_or(())?
+    } else {
+        DeclarationKind::from_name(&reader.text(SourceDeclaration::MAX_TEXT_BYTES)?)
+    };
+    let signature = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
+    let documentation = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
+    let source_excerpt = if matches!(format, b"PSR5" | b"PSR6" | b"PSR7" | b"PSR8") {
+        decode_source_excerpt(reader)?
+    } else {
+        SourceExcerpt::NotCaptured
+    };
+    Ok(SourceDeclaration::with_location(
+        SourceLocation::new(declaration_path, line).map_err(|_| ())?,
+        name,
+        kind.name(),
+        signature,
+        documentation,
+    )
+    .map_err(|_| ())?
+    .with_source_excerpt(source_excerpt))
 }
 
 fn skip_legacy_semantics(reader: &mut SourceReader<'_>) -> Result<(), ()> {
@@ -422,6 +842,37 @@ fn skip_legacy_semantics(reader: &mut SourceReader<'_>) -> Result<(), ()> {
         let _ = reader.bytes(backend_compile::MAX_NATIVE_VALUE_BYTES)?;
     }
     Ok(())
+}
+
+fn decode_retention(reader: &mut SourceReader<'_>) -> Result<DeclarationRetention, ()> {
+    match reader.byte()? {
+        0 => Ok(DeclarationRetention::Complete),
+        1 => Ok(DeclarationRetention::ExcerptsElided),
+        2 => Ok(DeclarationRetention::NamesOnly),
+        3 => {
+            let retained = reader.u32()?;
+            let extracted = reader.u32()?;
+            RetainedDeclarations::new(retained, extracted)
+                .map(DeclarationRetention::Truncated)
+                .map_err(|_| ())
+        }
+        4 => match reader.byte()? {
+            0 => Ok(DeclarationRetention::Unavailable(
+                SourceUnavailableReason::Unreadable,
+            )),
+            1 => Ok(DeclarationRetention::Unavailable(
+                SourceUnavailableReason::NotText,
+            )),
+            2 => Ok(DeclarationRetention::Unavailable(
+                SourceUnavailableReason::TooLarge,
+            )),
+            3 => Ok(DeclarationRetention::Unavailable(
+                SourceUnavailableReason::Unparsed,
+            )),
+            _ => Err(()),
+        },
+        _ => Err(()),
+    }
 }
 
 fn decode_source_excerpt(reader: &mut SourceReader<'_>) -> Result<SourceExcerpt, ()> {
@@ -744,8 +1195,9 @@ fn source_entries(expanded: bool) -> Vec<([u8; 32], ProductSourceRecord)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeclarationKind, ProductSourceRecord, ProductSourceRelation, Relation, SourceDeclaration,
-        SourceExcerpt, SourceExcerptExtent, SourceLocation,
+        DeclarationKind, DeclarationRetention, ProductSourceRecord, ProductSourceRelation,
+        Relation, RetainedDeclarations, SourceDeclaration, SourceExcerpt, SourceExcerptExtent,
+        SourceLocation, SourceUnavailableReason,
     };
     use backend_version::CanonicalRelation;
     use std::sync::Arc;
@@ -776,7 +1228,7 @@ mod tests {
         .expect("file");
         let mut encoded = Vec::new();
         ProductSourceRelation::encode_value(&record, &mut encoded);
-        assert_eq!(&encoded[..4], b"PSR7");
+        assert_eq!(&encoded[..4], b"PSR8");
         let decoded = ProductSourceRelation::decode_value(&encoded).expect("decode");
         let fields = decoded.file_fields().expect("file fields");
         let declaration = &fields.declarations[0];
@@ -794,6 +1246,239 @@ mod tests {
         assert_eq!(
             declaration.source_excerpt().extent(),
             Some(SourceExcerptExtent::Complete)
+        );
+    }
+
+    fn wide_declaration(index: usize) -> SourceDeclaration {
+        SourceDeclaration::at_path(
+            "src/lib.rs",
+            format!("declaration_{index}"),
+            "function",
+            u32::try_from(index).unwrap_or(0).saturating_add(1),
+            format!("fn declaration_{index}(argument: u64) -> u64"),
+            "x".repeat(512),
+        )
+        .expect("declaration")
+        .with_source_excerpt(
+            SourceExcerpt::captured(&"y".repeat(1024), SourceExcerptExtent::Complete)
+                .expect("excerpt"),
+        )
+    }
+
+    fn encoded(record: &ProductSourceRecord) -> usize {
+        let mut bytes = Vec::new();
+        ProductSourceRelation::encode_value(record, &mut bytes);
+        bytes.len()
+    }
+
+    #[test]
+    fn an_oversized_file_record_is_refused_by_the_unchecked_constructor() {
+        // A producer must not be able to build a row the relation cannot
+        // store. Before this check the record was accepted here and rejected
+        // much later, when the workspace delta was prepared, as an opaque
+        // `workspace relation node was rejected`.
+        let declarations = (0..64).map(wide_declaration).collect::<Vec<_>>();
+        let error = ProductSourceRecord::file(
+            [3; 32],
+            "src/lib.rs",
+            super::SourceLanguage::Rust,
+            [4; 32],
+            [5; 32],
+            Arc::from(declarations),
+        )
+        .expect_err("an oversized row must be refused");
+        assert!(
+            error.contains("canonical row capacity"),
+            "the refusal must name the capacity it violated, got {error}"
+        );
+        assert!(
+            error.contains("src/lib.rs"),
+            "the refusal must name the file, got {error}"
+        );
+    }
+
+    #[test]
+    fn shedding_fits_the_row_and_states_exactly_what_it_dropped() {
+        let declarations = (0..64).map(wide_declaration).collect::<Vec<_>>();
+        let record = ProductSourceRecord::file_within_row_capacity(
+            [3; 32],
+            "src/lib.rs",
+            super::SourceLanguage::Rust,
+            [4; 32],
+            [5; 32],
+            Arc::from(declarations.clone()),
+        )
+        .expect("a capacity-aware record");
+        let fields = record.file_fields().expect("file fields");
+
+        assert!(encoded(&record) <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+        assert_eq!(fields.retention, DeclarationRetention::ExcerptsElided);
+        assert_eq!(
+            fields.declarations.len(),
+            declarations.len(),
+            "shedding excerpts must not drop declarations"
+        );
+        assert_eq!(fields.declarations[0].name(), "declaration_0");
+        assert_eq!(
+            fields.declarations[0].signature(),
+            "fn declaration_0(argument: u64) -> u64",
+            "an excerpt-elided row must keep its signatures"
+        );
+        assert!(
+            matches!(
+                fields.declarations[0].source_excerpt(),
+                SourceExcerpt::NotHydrated
+            ),
+            "a dropped excerpt must be the typed not-hydrated marker, not empty text"
+        );
+    }
+
+    #[test]
+    fn shedding_reaches_names_only_and_then_truncates_deterministically() {
+        let declarations = (0..2048).map(wide_declaration).collect::<Vec<_>>();
+        let record = ProductSourceRecord::file_within_row_capacity(
+            [3; 32],
+            "src/lib.rs",
+            super::SourceLanguage::Rust,
+            [4; 32],
+            [5; 32],
+            Arc::from(declarations.clone()),
+        )
+        .expect("a capacity-aware record");
+        let fields = record.file_fields().expect("file fields");
+
+        assert!(encoded(&record) <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+        let DeclarationRetention::Truncated(counts) = fields.retention else {
+            panic!("expected a truncated row, got {}", fields.retention);
+        };
+        assert_eq!(
+            usize::try_from(counts.extracted()).unwrap_or(0),
+            declarations.len(),
+            "a truncated row must still report how many declarations existed"
+        );
+        assert!(
+            counts.retained() < counts.extracted(),
+            "a truncated row must retain fewer than it extracted"
+        );
+        assert_eq!(
+            usize::try_from(counts.retained()).unwrap_or(0),
+            fields.declarations.len(),
+            "the reported count must match the rows actually carried"
+        );
+
+        let again = ProductSourceRecord::file_within_row_capacity(
+            [3; 32],
+            "src/lib.rs",
+            super::SourceLanguage::Rust,
+            [4; 32],
+            [5; 32],
+            Arc::from(declarations),
+        )
+        .expect("a capacity-aware record");
+        assert_eq!(record, again, "shedding must be a pure function");
+    }
+
+    #[test]
+    fn every_retention_claim_round_trips_through_the_wire() {
+        let claims = [
+            DeclarationRetention::Complete,
+            DeclarationRetention::ExcerptsElided,
+            DeclarationRetention::NamesOnly,
+            DeclarationRetention::Truncated(
+                RetainedDeclarations::new(3, 9).expect("retention counts"),
+            ),
+            DeclarationRetention::Unavailable(SourceUnavailableReason::Unreadable),
+            DeclarationRetention::Unavailable(SourceUnavailableReason::NotText),
+            DeclarationRetention::Unavailable(SourceUnavailableReason::TooLarge),
+            DeclarationRetention::Unavailable(SourceUnavailableReason::Unparsed),
+        ];
+        for claim in claims {
+            let record = ProductSourceRecord::file_with_retention(
+                [3; 32],
+                "src/lib.rs",
+                super::SourceLanguage::Rust,
+                [4; 32],
+                [5; 32],
+                Arc::from([wide_declaration(0)]),
+                claim,
+            )
+            .expect("record");
+            let mut bytes = Vec::new();
+            ProductSourceRelation::encode_value(&record, &mut bytes);
+            let decoded = ProductSourceRelation::decode_value(&bytes).expect("decode");
+            assert_eq!(
+                decoded.file_fields().expect("file fields").retention,
+                claim,
+                "retention {claim} must survive the wire"
+            );
+            assert_eq!(decoded, record);
+        }
+    }
+
+    #[test]
+    fn an_unavailable_file_still_names_itself_and_its_reason() {
+        let record = ProductSourceRecord::file_unavailable(
+            [3; 32],
+            "src/binary.rs",
+            super::SourceLanguage::Rust,
+            [5; 32],
+            SourceUnavailableReason::NotText,
+        )
+        .expect("unavailable record");
+        let fields = record.file_fields().expect("file fields");
+        assert_eq!(fields.path, "src/binary.rs");
+        assert_eq!(
+            fields.retention,
+            DeclarationRetention::Unavailable(SourceUnavailableReason::NotText)
+        );
+        assert!(fields.declarations.is_empty());
+        assert_eq!(
+            fields.content_version, [0; 32],
+            "nothing is known about the bytes, so the content version must be zero \
+             and a later successful scan must change the row"
+        );
+    }
+
+    #[test]
+    fn a_project_frontier_above_the_row_capacity_names_its_ceiling() {
+        let count = u32::try_from(ProductSourceRecord::ROW_VALUE_CAPACITY / 32)
+            .unwrap_or(0)
+            .saturating_add(2);
+        let files = (0..count)
+            .map(|index| {
+                let mut key = [0; 32];
+                key[..4].copy_from_slice(&index.to_be_bytes());
+                key
+            })
+            .collect::<Vec<_>>();
+        let Err(error) = ProductSourceRecord::project("project", [1; 32], files) else {
+            panic!("a frontier of {count} files must be refused");
+        };
+        assert!(
+            error.contains("canonical row capacity"),
+            "the refusal must name the capacity, got {error}"
+        );
+        assert!(
+            error.contains("admits at most"),
+            "the refusal must name the per-coordinate file ceiling, got {error}"
+        );
+        // The guaranteed bound must itself be admissible under the longest
+        // label, otherwise the published constant is a lie.
+        let files = (0..u32::try_from(ProductSourceRecord::MAX_FRONTIER_FILES).unwrap_or(0))
+            .map(|index| {
+                let mut key = [0; 32];
+                key[..4].copy_from_slice(&index.to_be_bytes());
+                key
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            ProductSourceRecord::project(
+                "l".repeat(ProductSourceRecord::MAX_LABEL_BYTES),
+                [1; 32],
+                files
+            )
+            .is_ok(),
+            "the published frontier bound must hold for a maximum-length label"
         );
     }
 }

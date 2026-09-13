@@ -802,7 +802,8 @@ where
             EngineRequest::Subscribe { cursor, .. } => Some(cursor.clone()),
             EngineRequest::Replicate(_)
             | EngineRequest::Complete(_)
-            | EngineRequest::Subscription(_) => None,
+            | EngineRequest::Subscription(_)
+            | EngineRequest::Shutdown => None,
         };
         let request = match request {
             EngineRequest::Replicate(message) => {
@@ -818,6 +819,13 @@ where
             }
             EngineRequest::Subscription(subscription) => {
                 return self.durable_subscription(request_id, subscription);
+            }
+            // The listener answers a lifecycle request before it reaches any
+            // owner. Reaching here means a host wired a service without one.
+            EngineRequest::Shutdown => {
+                return Err(ProtocolError::InvalidControl(
+                    "shutdown is a listener lifecycle request",
+                ));
             }
         };
         let receiver = self

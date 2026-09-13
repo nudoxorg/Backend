@@ -1,8 +1,8 @@
 {
-  "target_packages": 28,
-  "core_packages": 11,
+  "target_packages": 29,
+  "core_packages": 12,
   "layer_counts": {
-    "core": 11,
+    "core": 12,
     "frontend": 7,
     "extension": 4,
     "application": 6
@@ -107,13 +107,23 @@
       "order": 9
     },
     {
+      "name": "backend-present",
+      "manifest_path": "crates/present/Cargo.toml",
+      "dependencies": [
+        "backend-client",
+        "backend-library"
+      ],
+      "layer": "core",
+      "order": 10
+    },
+    {
       "name": "backend-frontend-clang",
       "manifest_path": "frontends/clang/Cargo.toml",
       "dependencies": [
         "backend-compile"
       ],
       "layer": "frontend",
-      "order": 10
+      "order": 11
     },
     {
       "name": "backend-frontend-csharp",
@@ -122,7 +132,7 @@
         "backend-compile"
       ],
       "layer": "frontend",
-      "order": 11
+      "order": 12
     },
     {
       "name": "backend-frontend-go",
@@ -131,7 +141,7 @@
         "backend-compile"
       ],
       "layer": "frontend",
-      "order": 12
+      "order": 13
     },
     {
       "name": "backend-frontend-java",
@@ -140,7 +150,7 @@
         "backend-compile"
       ],
       "layer": "frontend",
-      "order": 13
+      "order": 14
     },
     {
       "name": "backend-frontend-python",
@@ -149,7 +159,7 @@
         "backend-compile"
       ],
       "layer": "frontend",
-      "order": 14
+      "order": 15
     },
     {
       "name": "backend-frontend-rust",
@@ -158,7 +168,7 @@
         "backend-compile"
       ],
       "layer": "frontend",
-      "order": 15
+      "order": 16
     },
     {
       "name": "backend-frontend-typescript",
@@ -167,7 +177,7 @@
         "backend-compile"
       ],
       "layer": "frontend",
-      "order": 16
+      "order": 17
     },
     {
       "name": "backend-extension-tantivy",
@@ -177,7 +187,7 @@
         "backend-version"
       ],
       "layer": "extension",
-      "order": 17
+      "order": 18
     },
     {
       "name": "backend-extension-trustfall",
@@ -189,7 +199,7 @@
         "backend-version"
       ],
       "layer": "extension",
-      "order": 18
+      "order": 19
     },
     {
       "name": "backend-extension-qdrant",
@@ -200,7 +210,7 @@
         "backend-version"
       ],
       "layer": "extension",
-      "order": 19
+      "order": 20
     },
     {
       "name": "backend-extension-turso",
@@ -209,7 +219,7 @@
         "backend-library"
       ],
       "layer": "extension",
-      "order": 20
+      "order": 21
     },
     {
       "name": "backend-engine",
@@ -225,7 +235,7 @@
         "backend-version"
       ],
       "layer": "core",
-      "order": 21
+      "order": 22
     },
     {
       "name": "backend-local-service",
@@ -248,7 +258,7 @@
         "backend-version"
       ],
       "layer": "application",
-      "order": 22
+      "order": 23
     },
     {
       "name": "backend-desktop",
@@ -261,7 +271,7 @@
         "backend-runtime"
       ],
       "layer": "application",
-      "order": 23
+      "order": 24
     },
     {
       "name": "backend-cli",
@@ -269,11 +279,12 @@
       "dependencies": [
         "backend-client",
         "backend-library",
+        "backend-present",
         "backend-replication",
         "backend-runtime"
       ],
       "layer": "application",
-      "order": 24
+      "order": 25
     },
     {
       "name": "backend-mcp",
@@ -282,11 +293,12 @@
         "backend-client",
         "backend-extension-trustfall",
         "backend-library",
+        "backend-present",
         "backend-replication",
         "backend-runtime"
       ],
       "layer": "application",
-      "order": 25
+      "order": 26
     },
     {
       "name": "backend-worker",
@@ -295,7 +307,7 @@
         "backend-engine"
       ],
       "layer": "application",
-      "order": 26
+      "order": 27
     },
     {
       "name": "backend-locald",
@@ -304,7 +316,7 @@
         "backend-local-service"
       ],
       "layer": "application",
-      "order": 27
+      "order": 28
     }
   ],
   "topological_order": [
@@ -318,6 +330,7 @@
     "backend-compile",
     "backend-library",
     "backend-client",
+    "backend-present",
     "backend-frontend-clang",
     "backend-frontend-csharp",
     "backend-frontend-go",

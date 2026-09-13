@@ -5,6 +5,26 @@
 //! listener thread, which is the sole caller of [`LocaldService::handle_payload`].
 //! This keeps client I/O concurrent while workspace selection and publication
 //! remain single-owner operations.
+//!
+//! # Who ends a daemon
+//!
+//! A locald spawned by a surface is detached: the spawning process is gone
+//! long before the daemon is, and nothing waits on it. The daemon therefore
+//! retires itself. [`ListenerConfig::idle_timeout`] is the only mechanism that
+//! does so without a client: once the connected-client count reaches zero and
+//! stays there for the configured window, the run loop sets its own stop flag,
+//! drains its workers, closes the owner, and unlinks the socket on drop
+//! (see `Drop for UnixListenerService`).
+//!
+//! The default window is ten minutes. A surface keeps its daemon alive simply
+//! by staying connected — the window only advances while nothing is connected
+//! and no owner work is in flight — and a host that wants a daemon to outlive
+//! every client passes `--idle-timeout-ms 0`.
+//!
+//! A surface can also end a daemon explicitly. [`ListenerShutdown`] is handed
+//! to the service at bind time, so a `backend_locald::EngineRequest::Shutdown`
+//! frame arriving on the wire is answered by this listener's own stop flag
+//! rather than by the workspace owner.
 
 use crate::protocol::{FrameLimits, ProtocolError};
 use crate::service::{LocaldService, OwnerService};
@@ -15,7 +35,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Default window a listener may spend with no connected client before it
+/// retires itself. Long enough that a surface which closes one session and
+/// opens another keeps its warm owner; short enough that an abandoned daemon
+/// is gone before the user notices it.
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_mins(10);
 
 #[cfg(unix)]
 #[path = "listener/transport.rs"]
@@ -40,6 +66,10 @@ pub struct ListenerConfig {
     pub max_clients: usize,
     /// Poll interval used while waiting for a client or owner request.
     pub poll_interval: Duration,
+    /// How long the listener may run with no connected client and no owner
+    /// progress before it stops itself. `None` keeps the daemon resident for
+    /// the life of the process.
+    pub idle_timeout: Option<Duration>,
 }
 
 impl ListenerConfig {
@@ -52,6 +82,7 @@ impl ListenerConfig {
             io_timeout: Duration::from_secs(30),
             max_clients: 64,
             poll_interval: Duration::from_millis(5),
+            idle_timeout: Some(DEFAULT_IDLE_TIMEOUT),
         }
     }
 
@@ -66,6 +97,9 @@ impl ListenerConfig {
             || self.io_timeout.is_zero()
             || self.max_clients == 0
             || self.poll_interval.is_zero()
+            // A zero idle window would retire the daemon before its first
+            // client could connect. "Never time out" is spelled `None`.
+            || self.idle_timeout.is_some_and(|idle| idle.is_zero())
         {
             return Err(ListenerError::InvalidConfig);
         }
@@ -246,6 +280,9 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
     ) -> Result<Self, ListenerError> {
         config.validate()?;
         let path = config.path.clone();
+        // Sweeping runs on every start, before bind: a killed owner always
+        // leaves its socket behind, and a live one must be reported as
+        // `AlreadyRunning` rather than have its endpoint stolen.
         prepare_socket_path(&path)?;
         let listener = std::os::unix::net::UnixListener::bind(&path)
             .map_err(|error| ListenerError::Io(error.kind()))?;
@@ -254,11 +291,20 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
             .set_nonblocking(true)
             .map_err(|error| ListenerError::Io(error.kind()))?;
         let (inbound_sender, inbound) = mpsc::sync_channel(config.max_clients);
+        let stop = Arc::new(AtomicBool::new(false));
+        // The wire shutdown request is a listener lifecycle operation, never a
+        // workspace mutation. Handing the capability to the service here —
+        // rather than from one process entry point — keeps it reachable for
+        // the embedded host as well as the headless daemon.
+        let mut service = service;
+        service.attach_lifecycle(ListenerShutdown {
+            stop: Arc::clone(&stop),
+        });
         Ok(Self {
             listener,
             service,
             path,
-            stop: Arc::new(AtomicBool::new(false)),
+            stop,
             active: Arc::new(AtomicUsize::new(0)),
             config,
             workers: Vec::new(),
@@ -328,16 +374,31 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
     /// # Errors
     ///
     /// Returns an error when accepting or servicing a connection fails.
+    /// A detached daemon has no parent to reap it, so this loop also enforces
+    /// [`ListenerConfig::idle_timeout`]: it stops itself once nothing has been
+    /// connected and no owner work has progressed for that window.
     pub fn run(&mut self) -> Result<RunReport, ListenerError> {
+        let mut last_progress = Instant::now();
         while !self.is_shutdown() {
             self.accept_available()?;
-            if !self.drain_owner_once() {
-                thread::sleep(self.config.poll_interval);
+            if self.drain_owner_once() || self.active.load(Ordering::Acquire) != 0 {
+                last_progress = Instant::now();
+                continue;
             }
+            let _ = self.idle_window_elapsed(last_progress);
+            thread::sleep(self.config.poll_interval);
         }
         self.finish_workers();
         self.service.close();
         Ok(self.report)
+    }
+
+    /// Reports whether the configured idle window has passed with no client
+    /// connected and no owner progress.
+    fn idle_window_elapsed(&self, last_progress: Instant) -> bool {
+        self.config
+            .idle_timeout
+            .is_some_and(|idle| last_progress.elapsed() >= idle)
     }
 
     /// Runs one nonblocking listener/owner iteration. This is useful for a
@@ -424,7 +485,7 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
         let owner_progress = self.service.owner_mut().serve_one();
         match self.inbound.try_recv() {
             Ok(inbound) => {
-                let started = std::time::Instant::now();
+                let started = Instant::now();
                 let result = self.service.handle_payload(&inbound.payload);
                 let failed = result.is_err();
                 self.telemetry.record_with(|| backend_engine::Observation {
@@ -460,6 +521,18 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
             let _ = worker.join();
         }
     }
+}
+
+/// Classifies an endpoint before any workspace lock is taken.
+///
+/// Returns `Ok(())` when the path is free — including after removing a socket
+/// whose owner is provably gone — [`ListenerError::AlreadyRunning`] when a
+/// live owner answered, and [`ListenerError::EndpointOccupied`] when a
+/// non-socket sits on the path. This is the same admission `bind` performs;
+/// it is exposed so a host can ask the question before it composes an owner.
+#[cfg(unix)]
+pub(crate) fn sweep_endpoint(path: &Path) -> Result<(), ListenerError> {
+    prepare_socket_path(path)
 }
 
 #[cfg(unix)]
@@ -606,7 +679,15 @@ mod tests {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
-        std::env::temp_dir().join(format!("backend-locald-{label}-{nonce}.sock"))
+        let leaf = format!("backend-locald-{label}-{nonce}.sock");
+        let preferred = std::env::temp_dir().join(&leaf);
+        // The per-session macOS temporary directory does not leave room for a
+        // bindable `sun_path`, so fall back to `/tmp` when it does not fit.
+        if backend_engine::UnixEndpointRef::new(&preferred).is_ok() {
+            preferred
+        } else {
+            Path::new("/tmp").join(leaf)
+        }
     }
 
     fn limits() -> FrameLimits {
@@ -631,6 +712,7 @@ mod tests {
             io_timeout: Duration::from_millis(250),
             max_clients: 2,
             poll_interval: Duration::from_millis(1),
+            idle_timeout: None,
         };
         let service = LocaldService::new(FakeOwner, config.limits)
             .unwrap_or_else(|error| panic!("service: {error}"));
@@ -677,6 +759,147 @@ mod tests {
     }
 
     #[test]
+    fn an_idle_listener_retires_itself_and_removes_its_socket() {
+        let path = socket_path("idle-retire");
+        let config = ListenerConfig {
+            path: path.clone(),
+            limits: limits(),
+            io_timeout: Duration::from_millis(250),
+            max_clients: 2,
+            poll_interval: Duration::from_millis(1),
+            idle_timeout: Some(Duration::from_millis(150)),
+        };
+        let service = LocaldService::new(FakeOwner, config.limits)
+            .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener = UnixListenerService::bind(service, config)
+            .unwrap_or_else(|error| panic!("bind: {error}"));
+        let started = Instant::now();
+        let report = listener
+            .run()
+            .unwrap_or_else(|error| panic!("run: {error}"));
+        assert_eq!(report.connections, 0);
+        assert!(
+            started.elapsed() >= Duration::from_millis(150),
+            "the listener retired before its idle window elapsed"
+        );
+        assert!(
+            listener.is_shutdown(),
+            "an idle retirement must set the listener's own stop flag"
+        );
+        drop(listener);
+        assert!(!path.exists(), "a retiring listener must unlink its socket");
+    }
+
+    #[test]
+    fn a_connected_client_holds_the_idle_window_open() {
+        let path = socket_path("idle-held-open");
+        let config = ListenerConfig {
+            path: path.clone(),
+            limits: limits(),
+            // The per-connection read deadline must outlast the idle window,
+            // otherwise the worker would retire the connection itself and the
+            // assertion below would prove nothing.
+            io_timeout: Duration::from_secs(10),
+            max_clients: 2,
+            poll_interval: Duration::from_millis(1),
+            idle_timeout: Some(Duration::from_millis(100)),
+        };
+        let service = LocaldService::new(FakeOwner, config.limits)
+            .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener = UnixListenerService::bind(service, config)
+            .unwrap_or_else(|error| panic!("bind: {error}"));
+        let held = std::os::unix::net::UnixStream::connect(&path)
+            .unwrap_or_else(|error| panic!("connect: {error}"));
+        let runner = thread::spawn(move || listener.run().map(|report| report.connections));
+
+        // Six idle windows with the client connected. Nothing may retire.
+        thread::sleep(Duration::from_millis(600));
+        assert!(
+            !runner.is_finished(),
+            "a listener retired while a client was connected"
+        );
+        assert!(path.exists());
+
+        drop(held);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !runner.is_finished() {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            runner.is_finished(),
+            "a listener stayed resident after its last client left"
+        );
+        assert_eq!(
+            runner
+                .join()
+                .unwrap_or_else(|_| panic!("listener thread panicked"))
+                .unwrap_or_else(|error| panic!("run: {error}")),
+            1
+        );
+    }
+
+    #[test]
+    fn a_zero_idle_window_is_rejected_and_none_is_admitted() {
+        let mut config = ListenerConfig::new(socket_path("idle-validate"));
+        assert_eq!(config.idle_timeout, Some(DEFAULT_IDLE_TIMEOUT));
+        config.validate().unwrap_or_else(|error| panic!("{error}"));
+        config.idle_timeout = None;
+        config.validate().unwrap_or_else(|error| panic!("{error}"));
+        config.idle_timeout = Some(Duration::ZERO);
+        assert_eq!(config.validate(), Err(ListenerError::InvalidConfig));
+    }
+
+    #[test]
+    fn a_wire_shutdown_request_stops_the_listener_that_bound_the_service() {
+        let path = socket_path("wire-shutdown");
+        let config = ListenerConfig {
+            path: path.clone(),
+            limits: limits(),
+            io_timeout: Duration::from_secs(10),
+            max_clients: 2,
+            poll_interval: Duration::from_millis(1),
+            idle_timeout: None,
+        };
+        let service = LocaldService::new(FakeOwner, config.limits)
+            .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener = UnixListenerService::bind(service, config)
+            .unwrap_or_else(|error| panic!("bind: {error}"));
+        let client_path = path.clone();
+        let client = thread::spawn(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+                .unwrap_or_else(|error| panic!("connect: {error}"));
+            let body =
+                crate::protocol::encode_engine_request(11, &EngineRequest::Shutdown, limits())
+                    .unwrap_or_else(|error| panic!("encode shutdown: {error}"));
+            let request = crate::protocol::frame(&body, limits())
+                .unwrap_or_else(|error| panic!("frame: {error}"));
+            stream
+                .write_all(&request)
+                .unwrap_or_else(|error| panic!("write: {error}"));
+            read_frame(&mut stream, limits())
+                .unwrap_or_else(|error| panic!("read response: {error}"))
+        });
+        let report = listener
+            .run()
+            .unwrap_or_else(|error| panic!("run: {error}"));
+        assert_eq!(report.frames, 1);
+        assert_eq!(report.failures, 0);
+        let response = client
+            .join()
+            .unwrap_or_else(|_| panic!("client thread panicked"));
+        assert_eq!(
+            crate::protocol::decode_response(&response, limits())
+                .unwrap_or_else(|error| panic!("decode response: {error}")),
+            crate::protocol::ResponseFrame::Engine {
+                request_id: 11,
+                status: EngineStatus::Accepted,
+            }
+        );
+        drop(listener);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn injected_peer_policy_rejects_before_owner_admission() {
         let path = socket_path("peer-reject");
         let config = ListenerConfig {
@@ -685,6 +908,7 @@ mod tests {
             io_timeout: Duration::from_millis(100),
             max_clients: 1,
             poll_interval: Duration::from_millis(1),
+            idle_timeout: None,
         };
         let service = LocaldService::new(FakeOwner, config.limits)
             .unwrap_or_else(|error| panic!("service: {error}"));

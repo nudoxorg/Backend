@@ -741,8 +741,10 @@ version = "0.1.0"
 dependencies = [
  "backend-client",
  "backend-library",
+ "backend-present",
  "backend-replication",
  "backend-runtime",
+ "serde",
  "serde_json",
 ]
 
@@ -1049,6 +1051,7 @@ dependencies = [
  "backend-local-service",
  "backend-mcp",
  "backend-replication",
+ "backend-runtime",
  "backend-semantic",
  "backend-store",
  "backend-version",
@@ -1136,6 +1139,7 @@ dependencies = [
  "backend-client",
  "backend-extension-trustfall",
  "backend-library",
+ "backend-present",
  "backend-replication",
  "backend-runtime",
  "blake3",
@@ -1160,6 +1164,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-present"
+version = "0.1.0"
+dependencies = [
+ "backend-client",
+ "backend-library",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "backend-replication"
 version = "0.1.0"
 dependencies = [
@@ -1175,6 +1189,7 @@ name = "backend-runtime"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "rustix 1.1.4",
 ]
 
 [[package]]
@@ -2240,6 +2255,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "convert_case"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "affbf0190ed2caf063e3def54ff444b449371d55c58e513a95ab98eca50adb49"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "cookie"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2655,7 +2679,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case",
+ "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -3607,6 +3631,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "async-task",
+ "backtrace",
  "bindgen 0.71.1",
  "bitflags 2.13.1",
  "block",
@@ -3653,6 +3678,7 @@ dependencies = [
  "pollster 0.4.0",
  "postage",
  "profiling",
+ "proptest",
  "rand 0.9.5",
  "raw-window-handle",
  "regex",
@@ -6975,6 +7001,7 @@ dependencies = [
  "bit-vec 0.8.0",
  "bitflags 2.13.1",
  "num-traits",
+ "proptest-macro",
  "rand 0.9.5",
  "rand_chacha 0.9.0",
  "rand_xorshift",
@@ -6982,6 +7009,18 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "proptest-macro"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efaa288b896cb2b345da7b7f2110ab19e51565b83495b56fcec98a62f8b1f33e"
+dependencies = [
+ "convert_case 0.11.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

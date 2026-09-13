@@ -1,15 +1,25 @@
 //! CLI adapter tests.
+//!
+//! Two halves, deliberately separate. The transport half checks that an
+//! admitted request and its proof survive the wire unchanged — that contract
+//! did not move and neither did its cases. The surface half checks the things
+//! this rewrite is responsible for: that every registry row is reachable by
+//! the words a person types, that an operand the engine cannot admit fails
+//! with the operand named, and that `--format markdown` is the same bytes the
+//! MCP text block carries.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use super::transport::{read_frame, write_frame};
 use super::*;
 use backend_library::{
-    Basis, CommandReply, DTO_VERSION, Document, Fragment, Freshness, Frontier, Query, QueryLimit,
-    Row, RowId, SourceExcerpt, SourceExcerptExtent, SourceLocation, SurfaceCommand, ViewRoot,
-    ViewSnapshot, WireCertificate, WireClaim, WireSchema, branch_key, encode_id, log_key,
-    object_version, package_key, symbol_key, view_key,
+    Basis, COMMANDS, CommandReply, DTO_VERSION, Freshness, Frontier, Query, QueryLimit,
+    SurfaceCommand, ViewRoot, ViewSnapshot, WireCertificate, WireClaim, WireSchema, branch_key,
+    encode_id, log_key, object_version, package_key, view_key,
 };
+use backend_present::{FaultSlug, grammar_for};
+use std::process::ExitCode;
 use backend_replication::{LocalControlLimits, frame as canonical_frame};
+
 
 struct Fake;
 impl LocalEngine for Fake {
@@ -45,242 +55,6 @@ fn root() -> ViewRoot {
     )
     .expect("incomplete root")
 }
-
-#[test]
-fn parser_requires_an_admitted_basis_and_rejects_unknown_options() {
-    let basis = encode_id(backend_library::view_state_root(&[]).as_bytes());
-    assert!(parse(&["search".to_owned(), "Thing".to_owned()]).is_err());
-    assert!(
-        parse(&[
-            "search".to_owned(),
-            "Thing".to_owned(),
-            "--basis".to_owned(),
-            basis,
-            "--limit".to_owned(),
-            "10".to_owned(),
-        ])
-        .is_err()
-    );
-    assert!(parse(&["health".to_owned(), "extra".to_owned()]).is_err());
-    assert!(matches!(
-        parse(&["show".to_owned(), "pkg::Thing".to_owned()]),
-        Ok(Command::Show { .. })
-    ));
-    assert!(matches!(
-        parse(&["resolve".to_owned(), "Thing".to_owned()]),
-        Ok(Command::Resolve { text }) if text == "Thing"
-    ));
-    assert!(parse(&["search".to_owned(), "x".to_owned(), "--unknown".to_owned()]).is_err());
-    assert!(
-        parse(&[
-            "outline".to_owned(),
-            "pkg".to_owned(),
-            "--limit".to_owned(),
-            "10".to_owned(),
-        ])
-        .is_err()
-    );
-}
-
-#[test]
-fn parser_constructs_a_typed_package_diff_without_a_view_basis() {
-    let command = parse(&[
-        "diff".to_owned(),
-        "pkg:cargo/example@1.0.0".to_owned(),
-        "pkg:cargo/example@2.0.0".to_owned(),
-    ])
-    .expect("typed diff");
-    assert!(matches!(
-        command,
-        Command::Surface(SurfaceCommand::Diff { from, to })
-            if from.as_str() == "pkg:cargo/example@1.0.0"
-                && to.as_str() == "pkg:cargo/example@2.0.0"
-    ));
-    assert!(parse(&["diff".to_owned(), "only-one".to_owned()]).is_err());
-    assert!(
-        parse(&[
-            "diff".to_owned(),
-            "pkg:cargo/example".to_owned(),
-            "pkg:cargo/example@2.0.0".to_owned(),
-        ])
-        .is_err()
-    );
-}
-
-#[test]
-fn complete_surface_enum_is_reachable_through_one_typed_cli_bridge() {
-    use backend_library::{
-        PackageCoordinate, PackageReference, ProductText, ProjectName, ProjectSelector,
-        SemanticGenerationId, SemanticLanguageProfile, TreeNodeId, TreeOpener, TreeSubject,
-    };
-    use std::num::NonZeroU64;
-
-    let package = PackageReference::parse("pkg:cargo/example@1.0.0").expect("package");
-    let coordinate = PackageCoordinate::parse("pkg:cargo/example@1.0.0").expect("coordinate");
-    let text = || ProductText::new("example").expect("text");
-    let project = || ProjectSelector::parse("project").expect("project");
-    let node = TreeNodeId::new(NonZeroU64::MIN);
-    let profile = serde_json::from_value::<SemanticLanguageProfile>(serde_json::json!([0, 3]))
-        .expect("Rust 2024 profile");
-    let commands = vec![
-        SurfaceCommand::Read {
-            locators: vec![text()].into_boxed_slice(),
-        },
-        SurfaceCommand::Diff {
-            from: package.clone(),
-            to: package.clone(),
-        },
-        SurfaceCommand::Explore {
-            query: Some(text()),
-            limit: 1,
-        },
-        SurfaceCommand::Package {
-            package: package.clone(),
-        },
-        SurfaceCommand::Dependents {
-            package: package.clone(),
-        },
-        SurfaceCommand::Owner { owner: text() },
-        SurfaceCommand::IndexSearch {
-            query: text(),
-            limit: 1,
-        },
-        SurfaceCommand::PackageVersions {
-            package: package.clone(),
-        },
-        SurfaceCommand::SemanticVersions {
-            package: package.clone(),
-        },
-        SurfaceCommand::SelectSemanticVersion {
-            package: package.clone(),
-            coordinate,
-            profile,
-            generation: SemanticGenerationId::new([7; 32]),
-        },
-        SurfaceCommand::PackageProfile {
-            package: package.clone(),
-        },
-        SurfaceCommand::Subscribe {
-            package: package.clone(),
-            project: Some(project()),
-        },
-        SurfaceCommand::Unsubscribe {
-            package: package.clone(),
-        },
-        SurfaceCommand::Subscriptions,
-        SurfaceCommand::Releases { mark_seen: true },
-        SurfaceCommand::Projects,
-        SurfaceCommand::ProjectCreate {
-            name: ProjectName::new("project").expect("name"),
-            lockfile: None,
-        },
-        SurfaceCommand::ProjectDelete { project: project() },
-        SurfaceCommand::ProjectAdd {
-            project: project(),
-            package: package.clone(),
-        },
-        SurfaceCommand::ProjectRemove {
-            project: project(),
-            package: package.clone(),
-        },
-        SurfaceCommand::ProjectSync { project: project() },
-        SurfaceCommand::Tree,
-        SurfaceCommand::TreeOpen {
-            subject: TreeSubject::Package(package),
-            parent: Some(node),
-            title: Some(text()),
-            opener: TreeOpener::Cli,
-        },
-        SurfaceCommand::TreeClose { node, branch: true },
-    ];
-    assert_eq!(commands.len(), 24);
-    for expected in commands {
-        let encoded = serde_json::to_string(&expected).expect("surface JSON");
-        let parsed = parse(&["surface".to_owned(), encoded]).expect("typed surface command");
-        assert_eq!(parsed, Command::Surface(expected));
-    }
-}
-
-#[test]
-fn cli_preserves_typed_semantic_link_evidence_in_json_and_human_output() {
-    let identity = backend_library::SemanticDeclarationIdentity {
-        family: [1; 16],
-        variant: [2; 16],
-    };
-    let reply = ReplyDto::new(
-        7,
-        CommandReply::Surface(backend_library::SurfaceReply::Diff(
-            vec![backend_library::DiffRecord {
-                label: backend_library::ProductText::new("example::call").expect("label"),
-                change: backend_library::DeclarationChange::Changed,
-                before: Some(identity),
-                after: Some(identity),
-                links: vec![backend_library::SemanticLinkDelta::EvidenceChanged {
-                    from: identity,
-                    target: backend_library::SemanticLinkTarget::Foreign {
-                        declaration: [3; 16],
-                        variant: None,
-                    },
-                    relation: backend_library::SemanticLinkKind::Calls,
-                    before: backend_library::SemanticLinkEvidence {
-                        confidence: backend_library::SemanticConfidence::Syntactic,
-                        source: None,
-                    },
-                    after: backend_library::SemanticLinkEvidence {
-                        confidence: backend_library::SemanticConfidence::Compiler,
-                        source: None,
-                    },
-                }]
-                .into_boxed_slice(),
-            }]
-            .into_boxed_slice(),
-        )),
-    );
-
-    let json: serde_json::Value = serde_json::from_str(&run_json(&reply)).expect("CLI JSON");
-    let link = &json["reply"]["data"]["data"][0]["links"][0];
-    assert_eq!(link["change"], "evidence-changed", "{json}");
-    assert_eq!(link["relation"], "calls");
-    assert_eq!(link["before"]["confidence"], "syntactic");
-    assert_eq!(link["after"]["confidence"], "compiler");
-
-    let human = format_human(&reply);
-    assert!(human.contains("\"evidence-changed\""));
-    assert!(human.contains("\"compiler\""));
-}
-
-#[test]
-fn parser_admits_a_basis_only_against_the_daemon_root() {
-    let basis = backend_library::view_state_root(&[]);
-    let encoded = encode_id(basis.as_bytes());
-    let command = parse_with_basis(
-        &[
-            "search".to_owned(),
-            "Thing".to_owned(),
-            "--basis".to_owned(),
-            encoded.clone(),
-        ],
-        Some(basis),
-    )
-    .expect("admitted basis");
-    assert!(matches!(command, Command::Search(query) if query.basis() == basis));
-    assert!(
-        parse_with_basis(
-            &[
-                "search".to_owned(),
-                "Thing".to_owned(),
-                "--basis".to_owned(),
-                encoded
-            ],
-            Some(backend_library::view_state_root(&[(
-                "different".to_owned(),
-                "root".to_owned()
-            )])),
-        )
-        .is_err()
-    );
-}
-
 #[test]
 fn injected_transport_preserves_identity_and_freshness() {
     let request = CommandDto::new(
@@ -430,160 +204,6 @@ fn cli_admission_bounds_requests_and_replies() {
     );
     assert!(run_json(&ReplyDto::error(3, "x".repeat(MAX_FRAME))).len() <= MAX_FRAME);
 }
-
-#[test]
-fn human_output_is_bounded_at_the_presentation_boundary() {
-    let reply = ReplyDto::error(3, "x".repeat(MAX_FRAME));
-    assert!(format_human(&reply).len() <= MAX_FRAME);
-}
-
-#[test]
-fn human_add_output_reports_acceptance_without_claiming_completion() {
-    let intent = backend_library::Intent::request_package(package_key("pkg")).id();
-    let output = format_human(&ReplyDto::new(1, CommandReply::Added(intent)));
-    assert!(output.contains("Index request accepted"));
-    assert!(output.contains("Check `backend health`"));
-    assert!(!output.contains("Indexed"));
-}
-
-#[test]
-fn human_failure_keeps_the_typed_command_category() {
-    let output = format_human(&ReplyDto::new(
-        1,
-        CommandReply::Failed(backend_library::CommandFailure::NotFound),
-    ));
-    assert_eq!(output, "Error [not_found]: library record not found\n");
-}
-
-#[test]
-fn human_health_reports_unavailable_coverage_truthfully() {
-    let library = backend_library::Library::new();
-    let health = library.execute(Command::Health).expect("health");
-    let output = format_human(&ReplyDto::new(1, health));
-    assert!(output.starts_with("Unavailable ·"));
-    assert!(output.contains("exact unavailable (no_index)"));
-    assert!(output.contains("capability ·"));
-    assert!(output.contains("unavailable/no_manifest"));
-}
-
-#[test]
-fn empty_unavailable_snapshot_is_not_reported_as_an_empty_result() {
-    let library = backend_library::Library::new();
-    let CommandReply::Packages(snapshot) = library.execute(Command::Packages).expect("packages")
-    else {
-        panic!("packages reply");
-    };
-    let output = format_human(&ReplyDto::new(
-        1,
-        CommandReply::Search(ViewSnapshot {
-            root: snapshot.root,
-            freshness: Freshness::Current,
-            next: None,
-        }),
-    ));
-    assert!(output.starts_with("Results unavailable."));
-    assert!(!output.contains("No matches"));
-}
-
-#[test]
-fn human_rows_include_lifecycle_and_source_availability() {
-    let basis_root = backend_library::view_state_root(&[]);
-    let basis = Basis::new(basis_root, object_version(b"source"));
-    let located = Row::new(RowId::Symbol(symbol_key("pkg::ready")), basis, "pkg::ready")
-        .with_source(SourceLocation::new("src/lib.rs", 7).expect("source"));
-    let missing = Row::new(
-        RowId::Symbol(symbol_key("pkg::missing")),
-        basis,
-        "pkg::missing",
-    );
-    let view = ViewRoot::new_incomplete(
-        view_key(b"rows"),
-        basis,
-        Frontier::new(basis.branch, basis.log, basis.schema, basis_root, 0),
-        vec![located, missing],
-        Vec::new(),
-    )
-    .expect("view");
-    let output = format_human(&ReplyDto::new(
-        1,
-        CommandReply::Search(ViewSnapshot {
-            root: view,
-            freshness: Freshness::Current,
-            next: None,
-        }),
-    ));
-    assert!(output.contains("pkg::ready · ready"));
-    assert!(output.contains("source · src/lib.rs:7"));
-    assert!(output.contains("pkg::missing · ready"));
-    assert!(output.contains("source · not captured"));
-}
-
-#[test]
-fn human_document_exposes_source_location_and_bounded_excerpt() {
-    let document = Document::new(
-        symbol_key("pkg::thing"),
-        backend_library::view_state_root(&[]),
-        [Fragment::Text("documentation".to_owned())],
-    )
-    .with_location(backend_library::SourceAvailability::Captured(
-        SourceLocation::new("src/lib.rs", 4).expect("source"),
-    ))
-    .with_excerpt(
-        SourceExcerpt::captured("fn thing() {}", SourceExcerptExtent::Truncated).expect("excerpt"),
-    );
-    let output = format_human(&ReplyDto::new(1, CommandReply::Document(document)));
-    assert!(output.contains("Source · src/lib.rs:4"));
-    assert!(output.contains("Source excerpt · truncated"));
-    assert!(output.contains("fn thing() {}"));
-}
-
-#[test]
-fn human_projection_page_reports_its_terminal_state() {
-    let page = backend_library::ProjectionPage {
-        snapshot: ViewSnapshot {
-            root: root(),
-            freshness: Freshness::Current,
-            next: None,
-        },
-        terminal: backend_library::PageTerminal::Complete,
-    };
-    let output = format_human(&ReplyDto::new(1, CommandReply::ProjectionPage(page)));
-    assert!(output.ends_with("Page · complete\n"));
-}
-
-#[test]
-fn revision_formatter_returns_its_output() {
-    let library = backend_library::Library::new();
-    let revision = library.execute(Command::Revision).expect("revision");
-    let output = format_human(&ReplyDto::new(1, revision));
-    assert!(output.starts_with("revision "));
-    assert!(output.contains(" · sequence "));
-}
-
-#[test]
-fn human_outline_emits_every_root_and_its_extent() {
-    let basis = backend_library::view_state_root(&[]);
-    let first = symbol_key("pkg::First");
-    let second = symbol_key("pkg::Second");
-    let outline = backend_library::Outline::new(
-        package_key("pkg"),
-        basis,
-        backend_library::OutlineNode {
-            symbol: first,
-            children: Box::new([]),
-        },
-    )
-    .with_additional_roots([backend_library::OutlineNode {
-        symbol: second,
-        children: Box::new([]),
-    }])
-    .with_extent(backend_library::OutlineExtent::Truncated);
-    let output = format_human(&ReplyDto::new(1, CommandReply::Outline(outline)));
-    assert!(output.contains(&encode_id(first.as_bytes())[..12]));
-    assert!(output.contains(&encode_id(second.as_bytes())[..12]));
-    assert!(output.ends_with("Outline · truncated\n"));
-}
-
 #[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn unix_transport_executes_one_correlated_request() {
@@ -625,6 +245,10 @@ fn unix_transport_executes_one_correlated_request() {
 
 #[cfg(unix)]
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one case per forged-identity variant keeps the proof readable"
+)]
 fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
     use std::os::unix::net::UnixStream;
 
@@ -738,4 +362,241 @@ fn unix_endpoint_path_is_bounded() {
         UnixCommandTransport::connect("x".repeat(MAX_ENDPOINT_PATH + 1)),
         Err(ClientError::Transport(_))
     ));
+}
+
+// ---------------------------------------------------------------------------
+// surface: the argument grammar, the lowering, and the renderings
+// ---------------------------------------------------------------------------
+
+fn words(line: &str) -> Vec<String> {
+    line.split_whitespace().map(ToOwned::to_owned).collect()
+}
+
+fn plain() -> Options {
+    Options::fallback()
+}
+
+#[test]
+fn every_registry_row_is_reachable_by_the_words_a_person_types() {
+    for spec in COMMANDS {
+        let grammar = grammar_for(spec.name)
+            .unwrap_or_else(|| panic!("`{}` has no CLI grammar", spec.name));
+        assert_eq!(grammar.name(), spec.name);
+        let help = invoke::help();
+        assert!(
+            help.contains(spec.name),
+            "`{}` is missing from the generated help",
+            spec.name
+        );
+    }
+    assert!(invoke::registry_is_covered());
+}
+
+#[test]
+fn help_is_grouped_by_domain_and_names_every_domain() {
+    let help = invoke::help();
+    for domain in invoke::help_domains() {
+        assert!(
+            help.contains(backend_present::domain_name(domain)),
+            "help omits the {domain:?} domain"
+        );
+    }
+    assert!(help.contains("surface <JSON>"), "the escape hatch stays");
+    assert!(help.contains("--format human|markdown|json"));
+}
+
+#[test]
+fn an_unknown_command_names_the_nearest_one_it_knows() {
+    let fault = invoke::parse(&words("serch ferris"), None).expect_err("unknown verb");
+    assert_eq!(fault.slug(), FaultSlug::Usage);
+    assert_eq!(fault.operand().render(), "serch");
+    assert!(
+        fault.cause().sentence().contains("did you mean `search`"),
+        "{}",
+        fault.cause().sentence()
+    );
+}
+
+#[test]
+fn an_unknown_option_names_the_options_the_command_takes() {
+    let fault = invoke::parse(&words("search ferris --deep"), None).expect_err("unknown option");
+    assert_eq!(fault.operand().render(), "--deep");
+    assert!(fault.cause().sentence().contains("--limit"));
+}
+
+#[test]
+fn a_missing_operand_prints_the_exact_usage_line() {
+    let fault = invoke::parse(&words("show"), None).expect_err("missing coordinate");
+    assert_eq!(fault.slug(), FaultSlug::Usage);
+    assert!(
+        fault.cause().sentence().contains("backend show <COORDINATE>"),
+        "{}",
+        fault.cause().sentence()
+    );
+}
+
+#[test]
+fn a_page_bound_outside_its_range_is_refused_with_the_value() {
+    let invocation = invoke::parse(&words("search ferris --limit 900"), None).expect("parse");
+    let fault = lower(&invocation, "/abs/project").expect_err("out of range");
+    assert_eq!(fault.operand().render(), "limit");
+    assert!(fault.cause().sentence().contains("`900`"));
+}
+
+#[test]
+fn the_global_limit_reaches_the_commands_that_page() {
+    let invocation = invoke::parse(&words("search ferris"), Some("3")).expect("parse");
+    let Request::Search { limit, .. } = lower(&invocation, "/abs/project").expect("lower") else {
+        panic!("search lowers to a search request");
+    };
+    assert_eq!(limit, 3);
+}
+
+#[test]
+fn typed_rows_lower_without_the_json_escape_hatch() {
+    type Shape = fn(&Request) -> bool;
+    let cases: [(&str, Shape); 6] = [
+        ("packages", |request| matches!(request, Request::Shelf)),
+        ("health", |request| matches!(request, Request::Status)),
+        ("show /p::src/lib.rs:1::f", |request| {
+            matches!(request, Request::Page(_))
+        }),
+        ("outline /p", |request| matches!(request, Request::Outline(_))),
+        ("related /p::src/lib.rs:1::f", |request| {
+            matches!(request, Request::Neighbourhood { incoming: true, .. })
+        }),
+        ("resolve ferris", |request| {
+            matches!(request, Request::Resolve { .. })
+        }),
+    ];
+    for (line, matches) in cases {
+        let invocation = invoke::parse(&words(line), None).expect("parse");
+        let request = lower(&invocation, "/abs/project").expect("lower");
+        assert!(matches(&request), "`{line}` lowered to {request:?}");
+    }
+}
+
+#[test]
+fn every_durable_row_lowers_into_the_one_surface_contract() {
+    let cases = [
+        "read one two",
+        "diff pkg:cargo/a@1.0.0 pkg:cargo/a@2.0.0",
+        "explore serde",
+        "package pkg:cargo/a@1.0.0",
+        "dependents pkg:cargo/a@1.0.0",
+        "owner dtolnay",
+        "index-search serde",
+        "package-versions pkg:cargo/a@1.0.0",
+        "semantic-versions pkg:cargo/a@1.0.0",
+        "package-profile pkg:cargo/a@1.0.0",
+        "subscribe pkg:cargo/a@1.0.0",
+        "unsubscribe pkg:cargo/a@1.0.0",
+        "subscriptions",
+        "releases",
+        "projects",
+        "project-create work",
+        "project-delete work",
+        "project-add work pkg:cargo/a@1.0.0",
+        "project-remove work pkg:cargo/a@1.0.0",
+        "project-sync work",
+        "tree",
+        "tree-open search ferris",
+        "tree-close 1",
+    ];
+    for line in cases {
+        let invocation = invoke::parse(&words(line), None).expect("parse");
+        let request = lower(&invocation, "/abs/project")
+            .unwrap_or_else(|fault| panic!("`{line}`: {}", fault.cause().sentence()));
+        assert!(
+            matches!(request, Request::Surface(_)),
+            "`{line}` did not lower into the surface contract"
+        );
+    }
+}
+
+#[test]
+fn a_malformed_package_reference_names_the_operand_it_refused() {
+    let invocation = invoke::parse(&words("package pkg:not-a-purl"), None).expect("parse");
+    let fault = lower(&invocation, "/abs/project").expect_err("bad purl");
+    assert_eq!(fault.operand().render(), "pkg:not-a-purl");
+    assert_eq!(fault.slug(), FaultSlug::Usage);
+}
+
+#[test]
+fn an_unknown_semantic_profile_lists_the_closed_set() {
+    let line = "select-semantic-version pkg:cargo/a@1.0.0 pkg:cargo/a@1.0.0 kotlin \
+                0000000000000000000000000000000000000000000000000000000000000000";
+    let invocation = invoke::parse(&words(line), None).expect("parse");
+    let fault = lower(&invocation, "/abs/project").expect_err("unknown profile");
+    assert_eq!(fault.operand().render(), "profile");
+    for expected in ["rust", "typescript", "python", "go", "java", "csharp", "c", "cpp"] {
+        assert!(
+            fault.cause().sentence().contains(expected),
+            "the closed profile set omits {expected}"
+        );
+    }
+}
+
+#[test]
+fn the_json_escape_hatch_still_reaches_the_whole_surface() {
+    let encoded = serde_json::to_string(&SurfaceCommand::Subscriptions).expect("encode");
+    let request = lower_surface_json(&encoded).expect("escape hatch");
+    assert!(matches!(request, Request::Surface(_)));
+    let fault = lower_surface_json("{\"operation\":\"nope\"}").expect_err("unknown operation");
+    assert_eq!(fault.slug(), FaultSlug::Usage);
+}
+
+#[test]
+fn a_fault_chooses_the_exit_code_a_script_can_branch_on() {
+    let usage = invoke::parse(&words("show"), None).expect_err("usage");
+    assert_eq!(render::exit_code(&usage), ExitCode::from(64));
+    let refused = Fault::from_command_failure(
+        &backend_library::CommandFailure::NotFound,
+        backend_present::Operand::Whole,
+    );
+    assert_eq!(render::exit_code(&refused), ExitCode::from(2));
+    let endpoint = Fault::from_client_error(
+        &ClientError::Io("no such file".to_owned()),
+        backend_present::Operand::Path("/tmp/x".to_owned()),
+    );
+    assert_eq!(render::exit_code(&endpoint), ExitCode::from(1));
+}
+
+#[test]
+fn a_rendered_fault_carries_the_operand_and_the_next_command() {
+    let fault = Fault::from_command_failure(
+        &backend_library::CommandFailure::NotFound,
+        backend_present::Operand::Coordinate(backend_present::Coordinate::new(
+            "/abs/p::src/lib.rs:999::nothing",
+        )),
+    )
+    .with_affordance(backend_present::Affordance::search("nothing"));
+    let rendered = render::fault(&fault, &plain());
+    assert!(rendered.starts_with("✗ not-found /abs/p::src/lib.rs:999::nothing"));
+    assert!(rendered.ends_with("→ backend search nothing"));
+}
+
+#[test]
+fn markdown_output_is_the_shared_renderer_and_json_is_the_typed_dto() {
+    let snapshot = ViewSnapshot {
+        root: root(),
+        freshness: Freshness::Current,
+        next: None,
+    };
+    let list = backend_present::record_list("ferris", &snapshot);
+    let answer = Answer::Records(Box::new(list.clone()));
+    assert_eq!(
+        render::markdown_text(&answer),
+        backend_present::markdown::records(&list, None),
+        "the CLI markdown rendering must be the shared one"
+    );
+    let json = render::json(&answer);
+    let value: serde_json::Value = serde_json::from_str(&json).expect("typed DTO");
+    assert_eq!(value["kind"], "records");
+    assert_eq!(value["query"], "ferris");
+    assert!(value["coverage"].is_array());
+    assert!(
+        value.get("certificate").is_none(),
+        "the product JSON must not leak wire proof"
+    );
 }

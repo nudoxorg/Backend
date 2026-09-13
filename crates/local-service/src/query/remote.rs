@@ -116,6 +116,19 @@ impl RemoteSemantic {
         }
     }
 
+    /// Whether this deployment named no embedding endpoint at all.
+    ///
+    /// An absent endpoint is terminal for the lifetime of the process: the
+    /// environment is read once at startup and no retry can supply one. Lane
+    /// coverage therefore reports it as an unavailable lane rather than as a
+    /// fraction that would tell a surface to keep waiting. A malformed
+    /// configuration is deliberately excluded here; the capability inventory
+    /// reports that separately as a dependency fault.
+    #[must_use]
+    pub const fn is_unconfigured(&self) -> bool {
+        matches!(self, Self::Unconfigured)
+    }
+
     /// Configured provider, when every required input was admitted.
     #[must_use]
     pub fn configured(&self) -> Option<&ConfiguredQdrant> {
