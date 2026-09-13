@@ -932,6 +932,23 @@ dependencies = [
  "backend-store",
  "backend-version",
  "blake3",
+ "compiler-driver",
+ "compiler-ir",
+ "compiler-languages-csharp",
+ "compiler-languages-go",
+ "compiler-languages-java",
+ "compiler-languages-python",
+ "compiler-languages-rust",
+ "compiler-languages-typescript",
+ "compiler-publication",
+ "compiler-vocabulary",
+ "heart-hydration",
+ "heart-root",
+ "server-index-build",
+ "server-index-core",
+ "server-journal",
+ "sha2",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -8843,32 +8860,6 @@ dependencies = [
  "server-workflow",
  "thiserror 2.0.20",
  "zerocopy",
-]
-
-[[package]]
-name = "server-operation"
-version = "0.1.0"
-dependencies = [
- "backend-store",
- "backend-version",
- "blake3",
- "compiler-driver",
- "compiler-ir",
- "compiler-languages-csharp",
- "compiler-languages-go",
- "compiler-languages-java",
- "compiler-languages-python",
- "compiler-languages-rust",
- "compiler-languages-typescript",
- "compiler-publication",
- "compiler-vocabulary",
- "heart-hydration",
- "heart-root",
- "server-index-build",
- "server-index-core",
- "server-journal",
- "sha2",
- "thiserror 2.0.20",
 ]
 
 [[package]]

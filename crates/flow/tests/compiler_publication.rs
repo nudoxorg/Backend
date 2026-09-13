@@ -1,4 +1,4 @@
-//! Exercises the `server-operation` tests compiler-publication contract through its observable boundary.
+//! Exercises the `backend-flow` operation tests compiler-publication contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 //! Chief-owned public compiler and publication falsifiers.
@@ -291,7 +291,7 @@ impl RustAuthorityFixture {
     fn create(name: &str, source: &[u8], toolchain: &RustToolchain) -> Result<Self, TestFailure> {
         let sequence = JOURNEY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "server-operation-rust-authority-{}-{sequence}",
+            "backend-flow-operation-rust-authority-{}-{sequence}",
             std::process::id()
         ));
         let source_directory = root.join("src");
@@ -340,7 +340,7 @@ impl JourneyDirectory {
     fn create() -> Result<Self, TestFailure> {
         let sequence = JOURNEY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "server-operation-publication-{}-{sequence}",
+            "backend-flow-operation-publication-{}-{sequence}",
             std::process::id()
         ));
         fs::create_dir(&path).map_err(TestFailure::CreateJourney)?;

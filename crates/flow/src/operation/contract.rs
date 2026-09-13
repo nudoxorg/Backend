@@ -1,4 +1,4 @@
-//! Defines contract behavior for `server-operation`, whose purpose is to compose hydration, compilation, publication, and storage into public operations.
+//! Defines contract behavior for the `operation` module, whose purpose is to compose hydration, compilation, publication, and storage into public operations.
 //! This module owns the contract invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Static synchronous operation/cursor algebra.

@@ -1,4 +1,4 @@
-//! Defines pinned-object behavior for `server-operation`, whose purpose is to compose hydration, compilation, publication, and storage into public operations.
+//! Defines pinned-object behavior for the `operation` module, whose purpose is to compose hydration, compilation, publication, and storage into public operations.
 //! This module owns the pinned-object invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Concrete root-and-locality-witnessed object operation.
@@ -16,7 +16,7 @@ use heart_root::{BorrowedGenerationView, EntryKey, GenerationEntry, GenerationVi
 use backend_version::schema::OperationId;
 use thiserror::Error;
 
-use crate::{BatchSource, Operation, Provider, SourcePoll, TerminalSummary};
+use crate::operation::{BatchSource, Operation, Provider, SourcePoll, TerminalSummary};
 
 /// Provenance uniform to the entire one-object local batch.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -48,7 +48,7 @@ mod tests {
     use thiserror::Error;
 
     use super::{LocalObjectError, LocalObjectProvider, ObjectProvenance, PinnedObjectRequest};
-    use crate::{BatchSource, Provider, SourcePoll, TerminalSummary};
+    use crate::operation::{BatchSource, Provider, SourcePoll, TerminalSummary};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum TestStep {

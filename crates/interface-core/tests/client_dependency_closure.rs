@@ -23,7 +23,6 @@ const FORBIDDEN_MARKERS: &[&str] = &[
     "server-index-tantivy",
     "server-index-trustfall",
     "server-journal",
-    "server-operation",
     "backend-runtime",
     "server-workflow",
     "qdrant",

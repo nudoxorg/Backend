@@ -1,4 +1,4 @@
-//! Exercises the `server-operation` tests system-corpus contract through its observable boundary.
+//! Exercises the `backend-flow` operation tests system-corpus contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 //! Deterministic corpus oracle for the eventual full product journey.

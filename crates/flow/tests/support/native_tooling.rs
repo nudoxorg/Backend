@@ -1,4 +1,4 @@
-//! Exercises the `server-operation` tests support native-tooling contract through its observable boundary.
+//! Exercises the `backend-flow` operation tests support native-tooling contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::{
@@ -182,7 +182,7 @@ impl NativeWork {
     pub(crate) fn create() -> Result<Self, NativeToolingError> {
         let sequence = WORK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = env::temp_dir().join(format!(
-            "server-operation-compiler-{}-{sequence}",
+            "backend-flow-operation-compiler-{}-{sequence}",
             std::process::id()
         ));
         fs::create_dir(&path).map_err(NativeToolingError::CreateWork)?;

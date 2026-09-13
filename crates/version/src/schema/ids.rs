@@ -94,7 +94,7 @@ pub struct UnknownSchemaId(pub u32);
     TryFromBytes,
 )]
 pub enum OperationId {
-    /// Static pinned-object operation defined by `server-operation`.
+    /// Static pinned-object operation defined by `backend-flow`.
     PinnedObject = 1_u32.to_be(),
 }
 
