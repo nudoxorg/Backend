@@ -340,7 +340,7 @@ impl FixtureDir {
         for _attempt in 0..64 {
             let serial = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "server-operation-corpus-{label}-{}-{serial}",
+                "backend-flow-operation-corpus-{label}-{}-{serial}",
                 std::process::id()
             ));
             match fs::create_dir(&path) {

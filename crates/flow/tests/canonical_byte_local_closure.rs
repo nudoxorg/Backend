@@ -1,4 +1,4 @@
-//! Exercises the `server-operation` tests canonical-byte-local-closure contract through its observable boundary.
+//! Exercises the `backend-flow` operation tests canonical-byte-local-closure contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 //! Store-backed canonical-root operation journey.
@@ -16,7 +16,7 @@ use heart_root::{
     RootEntry, RootReadError, RootWriteError, ValidatedRoot,
 };
 use backend_version::schema::SchemaId;
-use server_operation::{
+use backend_flow::operation::{
     BatchSource, LocalObjectProvider, ObjectProvenance, SourcePoll, TerminalSummary,
     VerifiedObjectBindError,
 };
@@ -200,7 +200,7 @@ fn insert(
 }
 
 fn assert_run<PayloadOwner: AsRef<[u8]>>(
-    provider: &server_operation::BoundLocalObjectProvider<'_, '_, ObjectDomain, PayloadOwner>,
+    provider: &backend_flow::operation::BoundLocalObjectProvider<'_, '_, ObjectDomain, PayloadOwner>,
     generation: GenerationId,
     expected: ObjectRef<ObjectDomain>,
     provenance: ObjectProvenance,

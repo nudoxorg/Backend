@@ -194,7 +194,7 @@ pub enum RetrievalResult<'output, 'bytes> {
     Qdrant(QueryCandidateCount),
 }
 
-/// The sole server-operation terminal vocabulary for retrieval adapters.
+/// The sole backend-flow operation terminal vocabulary for retrieval adapters.
 ///
 /// Cancellation is reported only when it was observed before any adapter or manifest work began;
 /// it never represents an attempted interruption of an already-running synchronous operation.
