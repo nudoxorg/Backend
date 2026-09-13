@@ -10,7 +10,7 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use compiler_ir::{FragmentView, Ir, ItemKind};
-use compiler_vocabulary::{CSharpVersion, LanguageProfile, Stage};
+use backend_semantic::vocabulary::{CSharpVersion, LanguageProfile, Stage};
 use std::{
     fs,
     sync::atomic::AtomicBool,

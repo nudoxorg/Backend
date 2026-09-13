@@ -7,7 +7,7 @@ use compiler_ir::{
     RecipeFactFault, SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault, WriteError,
 };
 use compiler_ir::{AtomId, EntityId, TypeId};
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     CompileRecipeFact, Language, LanguageProfile, NativeTool, RustEdition, Stage,
 };
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};

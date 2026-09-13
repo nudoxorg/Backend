@@ -6,7 +6,7 @@ use compiler_ir::{
     DeclarationIdentity, ExternalTargetIdentity, ImageProvenance, SemanticImageAuthority,
     SemanticImageFacts,
 };
-use compiler_vocabulary::{LanguageProfile, PackageUrl};
+use backend_semantic::vocabulary::{LanguageProfile, PackageUrl};
 use futures_core::Stream;
 use futures_util::stream;
 use std::collections::BTreeMap;

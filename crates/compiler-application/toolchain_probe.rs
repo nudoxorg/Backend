@@ -18,7 +18,7 @@ use std::{
 };
 
 use compiler_driver::ToolchainResolutionError;
-use compiler_vocabulary::{NativeTool, NativeWorker, NativeWorkerPanic};
+use backend_semantic::vocabulary::{NativeTool, NativeWorker, NativeWorkerPanic};
 use thiserror::Error;
 
 const READ_CHUNK_BYTES: usize = 4096;

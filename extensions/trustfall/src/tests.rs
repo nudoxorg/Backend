@@ -16,7 +16,7 @@ use compiler_ir::{
     ExternalTargetIdentity, IrBuilder, SemanticCoreReader as _, SourceIdentity, StableRef,
     VariantFingerprint,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
 };
 use futures_util::StreamExt as _;

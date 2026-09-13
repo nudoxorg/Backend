@@ -4,7 +4,7 @@
 
 use core::ffi::CStr;
 
-use compiler_vocabulary::{CStandard, CxxStandard, LanguageProfile};
+use backend_semantic::vocabulary::{CStandard, CxxStandard, LanguageProfile};
 use thiserror::Error;
 
 /// A closed failure preserving the non-Clang canonical profile supplied by a caller.

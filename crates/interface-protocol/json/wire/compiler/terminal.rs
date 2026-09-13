@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::time::Duration;
 
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CSharpImageFault, CSharpImageHeaderFault,
     CSharpImageSection, CSharpImageTypeKind, CSharpProjectionFault, ClangProjectionDeclaration,
     ClangProjectionFault, ClangProjectionQualifiers, ClangProjectionTypeKind, FrontendError,
@@ -138,7 +138,7 @@ pub(crate) enum CompilerTerminalWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::FrontendError",
+    remote = "backend_semantic::vocabulary::FrontendError",
     tag = "kind",
     rename_all = "snake_case"
 )]
@@ -164,7 +164,7 @@ fn serialize_optional_target<Output: Serializer>(
 /// Closed lowering vocabulary projected as the value of a named `cause` field.
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::LoweringUnsupported",
+    remote = "backend_semantic::vocabulary::LoweringUnsupported",
     rename_all = "snake_case"
 )]
 pub(crate) enum LoweringUnsupportedWire {
@@ -227,7 +227,7 @@ pub(crate) enum LoweringUnsupportedWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::JavaProjectionFault",
+    remote = "backend_semantic::vocabulary::JavaProjectionFault",
     rename_all = "snake_case"
 )]
 enum JavaProjectionFaultWire {
@@ -278,7 +278,7 @@ enum JavaProjectionFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::JavaImageFault",
+    remote = "backend_semantic::vocabulary::JavaImageFault",
     rename_all = "snake_case"
 )]
 enum JavaImageFaultWire {
@@ -333,7 +333,7 @@ enum JavaImageFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::JavaImageHeaderFault",
+    remote = "backend_semantic::vocabulary::JavaImageHeaderFault",
     rename_all = "snake_case"
 )]
 enum JavaImageHeaderFaultWire {
@@ -348,7 +348,7 @@ enum JavaImageHeaderFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::JavaImageSectionFault",
+    remote = "backend_semantic::vocabulary::JavaImageSectionFault",
     rename_all = "snake_case"
 )]
 enum JavaImageSectionFaultWire {
@@ -378,7 +378,7 @@ enum JavaImageSectionFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::JavaImageAtomFault",
+    remote = "backend_semantic::vocabulary::JavaImageAtomFault",
     rename_all = "snake_case"
 )]
 enum JavaImageAtomFaultWire {
@@ -398,7 +398,7 @@ macro_rules! remote_unit_enum {
 
 remote_unit_enum!(
     JavaProjectionTypeKindWire,
-    "compiler_vocabulary::JavaProjectionTypeKind",
+    "backend_semantic::vocabulary::JavaProjectionTypeKind",
     [
         Primitive,
         Void,
@@ -415,17 +415,17 @@ remote_unit_enum!(
 );
 remote_unit_enum!(
     JavaSymbolAtomWire,
-    "compiler_vocabulary::JavaSymbolAtom",
+    "backend_semantic::vocabulary::JavaSymbolAtom",
     [Owner, Name]
 );
 remote_unit_enum!(
     JavaForeignKeyFaultWire,
-    "compiler_vocabulary::JavaForeignKeyFault",
+    "backend_semantic::vocabulary::JavaForeignKeyFault",
     [EmptyPath, BackslashInPath]
 );
 remote_unit_enum!(
     JavaProjectionIndexPhaseWire,
-    "compiler_vocabulary::JavaProjectionIndexPhase",
+    "backend_semantic::vocabulary::JavaProjectionIndexPhase",
     [
         FactOrdinal,
         TypeRow,
@@ -440,7 +440,7 @@ remote_unit_enum!(
 );
 remote_unit_enum!(
     JavaImagePlaneWire,
-    "compiler_vocabulary::JavaImagePlane",
+    "backend_semantic::vocabulary::JavaImagePlane",
     [
         Atoms,
         AtomBytes,
@@ -456,7 +456,7 @@ remote_unit_enum!(
 );
 remote_unit_enum!(
     CSharpImageSectionWire,
-    "compiler_vocabulary::CSharpImageSection",
+    "backend_semantic::vocabulary::CSharpImageSection",
     [
         Atoms,
         AtomBytes,
@@ -473,7 +473,7 @@ remote_unit_enum!(
 );
 remote_unit_enum!(
     CSharpImageTypeKindWire,
-    "compiler_vocabulary::CSharpImageTypeKind",
+    "backend_semantic::vocabulary::CSharpImageTypeKind",
     [
         Named,
         Array,
@@ -489,7 +489,7 @@ remote_unit_enum!(
 
 remote_unit_enum!(
     GoImagePlaneWire,
-    "compiler_vocabulary::GoImagePlane",
+    "backend_semantic::vocabulary::GoImagePlane",
     [
         Declaration,
         Type,
@@ -511,17 +511,17 @@ remote_unit_enum!(
 );
 remote_unit_enum!(
     GoImageFlagCellWire,
-    "compiler_vocabulary::GoImageFlagCell",
+    "backend_semantic::vocabulary::GoImageFlagCell",
     [Exported, PointerReceiver, Promoted, Embedded]
 );
 remote_unit_enum!(
     GoImageDeclarationKindWire,
-    "compiler_vocabulary::GoImageDeclarationKind",
+    "backend_semantic::vocabulary::GoImageDeclarationKind",
     [Type, Alias, Function, Constant, Static]
 );
 remote_unit_enum!(
     GoImageTypeKindWire,
-    "compiler_vocabulary::GoImageTypeKind",
+    "backend_semantic::vocabulary::GoImageTypeKind",
     [
         Basic,
         Named,
@@ -542,7 +542,7 @@ remote_unit_enum!(
 );
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::GoImageHeaderFault",
+    remote = "backend_semantic::vocabulary::GoImageHeaderFault",
     rename_all = "snake_case"
 )]
 enum GoImageHeaderFaultWire {
@@ -557,7 +557,7 @@ enum GoImageHeaderFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::GoImageFault",
+    remote = "backend_semantic::vocabulary::GoImageFault",
     rename_all = "snake_case"
 )]
 enum GoImageFaultWire {
@@ -907,7 +907,7 @@ enum GoImageFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::GoProjectionFault",
+    remote = "backend_semantic::vocabulary::GoProjectionFault",
     rename_all = "snake_case"
 )]
 enum GoProjectionFaultWire {
@@ -970,7 +970,7 @@ enum GoProjectionFaultWire {
 
 remote_unit_enum!(
     GoProjectionIndexPhaseWire,
-    "compiler_vocabulary::GoProjectionIndexPhase",
+    "backend_semantic::vocabulary::GoProjectionIndexPhase",
     [
         ImageHeader,
         ImageRow,
@@ -994,13 +994,13 @@ remote_unit_enum!(
 );
 remote_unit_enum!(
     GoProjectionListPhaseWire,
-    "compiler_vocabulary::GoProjectionListPhase",
+    "backend_semantic::vocabulary::GoProjectionListPhase",
     [Entity, Type, Atom, TypeParameter]
 );
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::TypeScriptProjectionFault",
+    remote = "backend_semantic::vocabulary::TypeScriptProjectionFault",
     rename_all = "snake_case"
 )]
 enum TypeScriptProjectionFaultWire {
@@ -1026,7 +1026,7 @@ enum TypeScriptProjectionFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::PythonProjectionFault",
+    remote = "backend_semantic::vocabulary::PythonProjectionFault",
     rename_all = "snake_case"
 )]
 enum PythonProjectionFaultWire {
@@ -1050,7 +1050,7 @@ enum PythonProjectionFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::CSharpProjectionFault",
+    remote = "backend_semantic::vocabulary::CSharpProjectionFault",
     rename_all = "snake_case"
 )]
 enum CSharpProjectionFaultWire {
@@ -1080,7 +1080,7 @@ enum CSharpProjectionFaultWire {
     },
     IndexCapacity {
         #[serde(with = "CSharpProjectionIndexPhaseWire")]
-        phase: compiler_vocabulary::CSharpProjectionIndexPhase,
+        phase: backend_semantic::vocabulary::CSharpProjectionIndexPhase,
         observed: u64,
     },
     HeterogeneousArrayRank {
@@ -1100,7 +1100,7 @@ enum CSharpProjectionFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::CSharpImageFault",
+    remote = "backend_semantic::vocabulary::CSharpImageFault",
     rename_all = "snake_case"
 )]
 enum CSharpImageFaultWire {
@@ -1146,7 +1146,7 @@ enum CSharpImageFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::CSharpImageHeaderFault",
+    remote = "backend_semantic::vocabulary::CSharpImageHeaderFault",
     rename_all = "snake_case"
 )]
 enum CSharpImageHeaderFaultWire {
@@ -1196,7 +1196,7 @@ enum CSharpImageHeaderFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::ClangProjectionFault",
+    remote = "backend_semantic::vocabulary::ClangProjectionFault",
     rename_all = "snake_case"
 )]
 enum ClangProjectionFaultWire {
@@ -1234,7 +1234,7 @@ enum ClangProjectionFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::ProjectionPackageLineageFault",
+    remote = "backend_semantic::vocabulary::ProjectionPackageLineageFault",
     rename_all = "snake_case"
 )]
 enum ProjectionPackageLineageFaultWire {
@@ -1249,7 +1249,7 @@ enum ProjectionPackageLineageFaultWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "compiler_vocabulary::ClangProjectionQualifiers")]
+#[serde(remote = "backend_semantic::vocabulary::ClangProjectionQualifiers")]
 struct ClangProjectionQualifiersWire {
     is_const: bool,
     is_volatile: bool,
@@ -1258,7 +1258,7 @@ struct ClangProjectionQualifiersWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::ClangProjectionDeclaration",
+    remote = "backend_semantic::vocabulary::ClangProjectionDeclaration",
     rename_all = "snake_case"
 )]
 enum ClangProjectionDeclarationWire {
@@ -1268,13 +1268,13 @@ enum ClangProjectionDeclarationWire {
 
 remote_unit_enum!(
     ProjectionForeignKeyFaultWire,
-    "compiler_vocabulary::ProjectionForeignKeyFault",
+    "backend_semantic::vocabulary::ProjectionForeignKeyFault",
     [EmptyPath, BackslashInPath]
 );
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::ProjectionLineagePart",
+    remote = "backend_semantic::vocabulary::ProjectionLineagePart",
     rename_all = "snake_case"
 )]
 enum ProjectionLineagePartWire {
@@ -1285,7 +1285,7 @@ enum ProjectionLineagePartWire {
 
 remote_unit_enum!(
     CSharpProjectionIndexPhaseWire,
-    "compiler_vocabulary::CSharpProjectionIndexPhase",
+    "backend_semantic::vocabulary::CSharpProjectionIndexPhase",
     [
         ImageHeader,
         FactOrdinal,
@@ -1303,7 +1303,7 @@ remote_unit_enum!(
 
 remote_unit_enum!(
     ProjectionConstructorTagWire,
-    "compiler_vocabulary::ProjectionConstructorTag",
+    "backend_semantic::vocabulary::ProjectionConstructorTag",
     [
         Function,
         Generic,
@@ -1316,7 +1316,7 @@ remote_unit_enum!(
 );
 remote_unit_enum!(
     ProjectionChildRoleWire,
-    "compiler_vocabulary::ProjectionChildRole",
+    "backend_semantic::vocabulary::ProjectionChildRole",
     [
         FunctionParameter,
         FunctionResult,
@@ -1330,7 +1330,7 @@ remote_unit_enum!(
 );
 remote_unit_enum!(
     ProjectionSemanticTypeTagWire,
-    "compiler_vocabulary::ProjectionSemanticTypeTag",
+    "backend_semantic::vocabulary::ProjectionSemanticTypeTag",
     [
         SelfType,
         Primitive,
@@ -1368,17 +1368,17 @@ remote_unit_enum!(
 );
 remote_unit_enum!(
     ProjectionTypeCellWire,
-    "compiler_vocabulary::ProjectionTypeCell",
+    "backend_semantic::vocabulary::ProjectionTypeCell",
     [Payload0, Payload1, Text, Text2, Nominal]
 );
 remote_unit_enum!(
     ProjectionTypeChildLaneWire,
-    "compiler_vocabulary::ProjectionTypeChildLane",
+    "backend_semantic::vocabulary::ProjectionTypeChildLane",
     [Declared, Anonymous, Computed]
 );
 remote_unit_enum!(
     ProjectionFactLaneWire,
-    "compiler_vocabulary::ProjectionFactLane",
+    "backend_semantic::vocabulary::ProjectionFactLane",
     [
         TypeRows,
         ReservedTypeRows,
@@ -1400,7 +1400,7 @@ remote_unit_enum!(
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::ProjectionConstructorFault",
+    remote = "backend_semantic::vocabulary::ProjectionConstructorFault",
     rename_all = "snake_case"
 )]
 enum ProjectionConstructorFaultWire {
@@ -1429,7 +1429,7 @@ enum ProjectionConstructorFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::ProjectionSemanticTypeFault",
+    remote = "backend_semantic::vocabulary::ProjectionSemanticTypeFault",
     rename_all = "snake_case"
 )]
 enum ProjectionSemanticTypeFaultWire {
@@ -1497,7 +1497,7 @@ enum ProjectionSemanticTypeFaultWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::ProjectionParentageState",
+    remote = "backend_semantic::vocabulary::ProjectionParentageState",
     rename_all = "snake_case"
 )]
 enum ProjectionParentageStateWire {
@@ -1509,7 +1509,7 @@ enum ProjectionParentageStateWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::ProjectionSpan",
+    remote = "backend_semantic::vocabulary::ProjectionSpan",
     rename_all = "snake_case"
 )]
 struct ProjectionSpanWire {
@@ -1519,7 +1519,7 @@ struct ProjectionSpanWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::ProjectionAdmissionFault",
+    remote = "backend_semantic::vocabulary::ProjectionAdmissionFault",
     rename_all = "snake_case"
 )]
 enum ProjectionAdmissionFaultWire {
@@ -1618,7 +1618,7 @@ enum ProjectionAdmissionFaultWire {
 }
 remote_unit_enum!(
     ClangProjectionTypeKindWire,
-    "compiler_vocabulary::ClangProjectionTypeKind",
+    "backend_semantic::vocabulary::ClangProjectionTypeKind",
     [
         Unknown,
         Builtin,

@@ -14,7 +14,7 @@ use compiler_driver::{
 };
 use compiler_ir::{EntityId, Ir, ItemKind};
 use compiler_languages_go::GoOracle;
-use compiler_vocabulary::{GoVersion, LanguageProfile, Stage};
+use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
 use thiserror::Error;
 
 const SOURCE: &[u8] = br#"// Package demo documents the semantic lane.

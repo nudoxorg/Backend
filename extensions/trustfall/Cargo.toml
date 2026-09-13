@@ -12,7 +12,6 @@ backend-flow = { path = "../../crates/flow" }
 backend-semantic = { path = "../../crates/semantic" }
 backend-library = { path = "../../crates/library" }
 compiler-ir = { path = "../../crates/compiler-ir" }
-compiler-vocabulary = { path = "../../crates/compiler-vocabulary" }
 blake3.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true

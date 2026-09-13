@@ -28,7 +28,7 @@ use std::collections::BTreeSet;
 
 /// Package/profile pairs whose semantic publication was activated in process.
 pub(super) type ActivatedProfiles =
-    BTreeSet<(backend_engine::PackageKey, compiler_vocabulary::LanguageProfile)>;
+    BTreeSet<(backend_engine::PackageKey, backend_semantic::vocabulary::LanguageProfile)>;
 
 /// Whether this deployment configured the embedding half of the semantic lane.
 ///

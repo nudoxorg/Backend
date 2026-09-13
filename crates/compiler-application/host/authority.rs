@@ -12,7 +12,7 @@ use compiler_languages_java::harness::JdkToolchain;
 use compiler_languages_python::Pyrefly;
 use compiler_languages_rust::{RustToolchain, SourceByteLimit};
 use compiler_languages_typescript::Checker as TypeScriptChecker;
-use compiler_vocabulary::NativeTool;
+use backend_semantic::vocabulary::NativeTool;
 use interface_core::PackageEcosystem;
 
 use super::paths::canonicalize_existing;

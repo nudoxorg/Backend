@@ -14,7 +14,7 @@ use compiler_driver::{
     compile, compile_semantic,
 };
 use compiler_ir::EntityKind;
-use compiler_vocabulary::{GoVersion, LanguageProfile, Stage};
+use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 

@@ -12,7 +12,7 @@ use backend_engine::builtin::{
 use backend_engine::{Lane, Reason, ViewCoverage};
 use compiler_publication::binding::{COMPILATION_BINDING_BYTES, CompilationBindingView};
 use compiler_publication::manifest::{CompilationManifestFacts, CompilationManifestFormat};
-use compiler_vocabulary::{LanguageProfile, RustEdition};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
 use heart_hydration::VerifiedGenerationFacts;
 use backend_version::{
     ContentId, DependencySetDomain, GenerationId, IrManifestDomain, IrManifestEncoding,
@@ -22,7 +22,7 @@ use backend_version::{
 fn selected_key(name: &str) -> ProductSemanticPublicationKey {
     let label = format!("pkg:cargo/{name}@1.0.0");
     let package = backend_engine::PackageReference::parse(label.clone()).expect("package");
-    let coordinate = compiler_vocabulary::PackageUrl::parse(label).expect("coordinate");
+    let coordinate = backend_semantic::vocabulary::PackageUrl::parse(label).expect("coordinate");
     ProductSemanticPublicationKey::new(
         package,
         coordinate,

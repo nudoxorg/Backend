@@ -22,7 +22,7 @@ bolero.workspace = true
 fearless_simd = { workspace = true, features = ["force_support_fallback", "std"] }
 compiler-driver = { path = "../compiler-driver" }
 compiler-publication = { path = "../compiler-publication" }
-compiler-vocabulary = { path = "../compiler-vocabulary" }
+backend-semantic = { path = "../semantic" }
 server-journal = { path = "../server-journal" }
 server-index-build = { path = "../server-index-build" }
 server-index-core = { path = "../server-index-core" }

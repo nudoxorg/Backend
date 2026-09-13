@@ -118,7 +118,7 @@ pub(crate) enum RustCollectError {
     /// rust-analyzer could not open, resolve, or query the selected Cargo graph.
     Authority(RustAuthorityError),
     /// Canonical admission rejected one borrowed HIR declaration.
-    Lowering(compiler_vocabulary::LoweringUnsupported),
+    Lowering(backend_semantic::vocabulary::LoweringUnsupported),
 }
 
 /// Runs a non-escaping rust-analyzer transaction and emits the complete
@@ -166,7 +166,7 @@ fn push<'source>(
     fact: SemanticFact<'source>,
 ) -> Result<usize, RustAuthorityError> {
     push_fact(facts, fact).map_err(|cause| RustAuthorityError::Admission {
-        cause: compiler_vocabulary::LoweringUnsupported::FactRejected {
+        cause: backend_semantic::vocabulary::LoweringUnsupported::FactRejected {
             fact: portable_count(cause.fact),
             name_len: portable_count(cause.name_len),
             cause: portable_admission(cause.cause),
@@ -2491,7 +2491,7 @@ mod tests {
         TypeFactFault,
     };
     use compiler_languages_rust::{RustAuthorityError, RustProject, RustToolchain};
-    use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+    use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use std::{
         fs,
@@ -3149,7 +3149,7 @@ mod tests {
         let outcome = lower_bytes(&source);
         match outcome {
             Err(TestError::Collection(RustCollectError::Lowering(
-                compiler_vocabulary::LoweringUnsupported::FactRejected { fact, .. },
+                backend_semantic::vocabulary::LoweringUnsupported::FactRejected { fact, .. },
             ))) if fact == crate::lower::portable_count(crate::lower::MAX_EMISSION_FACTS) => Ok(()),
             Err(_) => Err(TestError::Missing("capacity terminal")),
             Ok(_) => Err(TestError::Missing("capacity rejection")),

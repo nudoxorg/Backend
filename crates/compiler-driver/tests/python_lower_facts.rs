@@ -22,7 +22,7 @@ use compiler_ir::{
     ConcreteType, DecodedTypeFact, EntityKind, FragmentView, Ir, ItemKind, PrimitiveShape,
     SemanticTypeTag, TypeExpr,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, PythonVersion, Stage,
 };
 use thiserror::Error;

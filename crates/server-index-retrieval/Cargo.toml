@@ -23,7 +23,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true
-compiler-vocabulary = { path = "../compiler-vocabulary" }
+backend-semantic = { path = "../semantic" }
 server-journal = { path = "../server-journal" }
 heart-hydration = { path = "../heart-hydration" }
 backend-version = { path = "../version" }

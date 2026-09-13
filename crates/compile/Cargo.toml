@@ -13,7 +13,6 @@ path = "src/lib.rs"
 backend-version = { path = "../version" }
 backend-flow = { path = "../flow" }
 backend-semantic = { path = "../semantic" }
-compiler-vocabulary = { path = "../compiler-vocabulary" }
 tree-sitter.workspace = true
 blake3.workspace = true
 

@@ -4,7 +4,7 @@ use std::{
     fmt, marker::PhantomData, net::IpAddr, num::NonZeroU8, str::FromStr, sync::Arc, time::Duration,
 };
 
-pub use compiler_vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
+pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
 
 use super::AcquisitionError;
 use crate::capability::CapabilityArtifactId;

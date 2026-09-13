@@ -9,7 +9,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     ToolchainSelection, compile,
 };
-use compiler_vocabulary::{LanguageProfile, RustEdition, Stage as CompileStage};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage as CompileStage};
 
 use crate::{
     BenchmarkError,

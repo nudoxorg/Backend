@@ -15,7 +15,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     NativeWorkError, NativeWorkPrimary, ResolvedToolchain, ToolchainSelection, compile,
 };
-use compiler_vocabulary::{FrontendError, Language, LanguageProfile, RustEdition, Stage};
+use backend_semantic::vocabulary::{FrontendError, Language, LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 
 use super::support::{CompileTerminal, TemporaryWork, TestFailure, compile_terminal};

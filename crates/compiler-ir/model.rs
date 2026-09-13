@@ -2,7 +2,7 @@
 //! This module owns the model invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use crate::{AtomId, EntityId, TypeId};
-use compiler_vocabulary::CompileRecipeFact;
+use backend_semantic::vocabulary::CompileRecipeFact;
 use backend_version::{ContentId, SourceFactDomain};
 use thiserror::Error;
 

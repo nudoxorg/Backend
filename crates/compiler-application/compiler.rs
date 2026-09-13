@@ -1072,7 +1072,7 @@ impl CompilerCapability for LocalCompiler<'_, '_, '_> {
 
 struct StagedPackageArtifact {
     source: compiler_ir::SourceIdentity,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     ir: compiler_ir::Ir,
 }
 
@@ -1137,7 +1137,7 @@ const fn declaration_scope_cause(
 
 fn generated(
     source: SourceAuthority,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     fragment: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
     semantic_image: SemanticImageArtifactFacts,
     publication: &PublishedCompilation,
@@ -1244,7 +1244,7 @@ fn compiler_attempt_terminal(
             configured: None,
         };
     };
-    let recipe = compiler_vocabulary::CompileRecipeFact::derive(
+    let recipe = backend_semantic::vocabulary::CompileRecipeFact::derive(
         request.profile,
         request.stage,
         resolved.tool,
@@ -1263,10 +1263,10 @@ fn compiler_attempt_terminal(
 const fn package_authority_projection(
     cause: &PackageAuthorityError,
 ) -> (
-    compiler_vocabulary::AuthorityPhase,
-    compiler_vocabulary::AuthorityDiagnosticClass,
+    backend_semantic::vocabulary::AuthorityPhase,
+    backend_semantic::vocabulary::AuthorityDiagnosticClass,
 ) {
-    use compiler_vocabulary::{AuthorityDiagnosticClass as Class, AuthorityPhase as Phase};
+    use backend_semantic::vocabulary::{AuthorityDiagnosticClass as Class, AuthorityPhase as Phase};
 
     match cause {
         PackageAuthorityError::SourceOutsidePackage { .. }
@@ -1303,12 +1303,12 @@ const fn source_terminal(cause: SourceError) -> CompilerTerminal {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ToolchainRouteError {
-    UnsupportedStage(compiler_vocabulary::FrontendError),
+    UnsupportedStage(backend_semantic::vocabulary::FrontendError),
     Missing {
-        selected: compiler_vocabulary::NativeTool,
+        selected: backend_semantic::vocabulary::NativeTool,
     },
     ToolingUnavailable {
-        tool: compiler_vocabulary::NativeTool,
+        tool: backend_semantic::vocabulary::NativeTool,
     },
 }
 
@@ -1343,7 +1343,7 @@ mod tests {
 
     use compiler_driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
     use compiler_registry::AdapterRoute;
-    use compiler_vocabulary::NativeTool;
+    use backend_semantic::vocabulary::NativeTool;
     use thiserror::Error;
 
     use crate::{LocalToolchainSet, LocalToolchainSetError};

@@ -54,8 +54,8 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
                 source_identity,
                 recipe,
                 CompilerCause::Authority {
-                    phase: compiler_vocabulary::AuthorityPhase::Open,
-                    class: compiler_vocabulary::AuthorityDiagnosticClass::Authority,
+                    phase: backend_semantic::vocabulary::AuthorityPhase::Open,
+                    class: backend_semantic::vocabulary::AuthorityDiagnosticClass::Authority,
                     diagnostic: None,
                 },
             )
@@ -66,7 +66,7 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
         CompileFailure::ExtensionAtomUnbound { source_identity, recipe, row, provisional, atom_count } => compile_from_driver(
             source_identity,
             recipe,
-            lowering(compiler_vocabulary::LoweringUnsupported::ExtensionAtomUnbound {
+            lowering(backend_semantic::vocabulary::LoweringUnsupported::ExtensionAtomUnbound {
                 row: u32::try_from(row).unwrap_or(u32::MAX),
                 provisional,
                 atom_count: u32::try_from(atom_count).unwrap_or(u32::MAX),
@@ -75,7 +75,7 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
         CompileFailure::ExtensionTypeParametersUnbound { source_identity, recipe, row, start, length, element_count } => compile_from_driver(
             source_identity,
             recipe,
-            lowering(compiler_vocabulary::LoweringUnsupported::ExtensionTypeParametersUnbound {
+            lowering(backend_semantic::vocabulary::LoweringUnsupported::ExtensionTypeParametersUnbound {
                 row: u32::try_from(row).unwrap_or(u32::MAX),
                 start,
                 length,
@@ -85,7 +85,7 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
         CompileFailure::ClangProjection { source_identity, recipe, .. } => compile_from_driver(
             source_identity,
             recipe,
-            lowering(compiler_vocabulary::LoweringUnsupported::ClangDeclarationForm),
+            lowering(backend_semantic::vocabulary::LoweringUnsupported::ClangDeclarationForm),
         ),
         CompileFailure::Build { source_identity, recipe, .. } | CompileFailure::Prepare { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Prepare),
         CompileFailure::Write { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Write),
@@ -93,13 +93,13 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
     }
 }
 
-fn lowering(cause: compiler_vocabulary::LoweringUnsupported) -> CompilerCause {
+fn lowering(cause: backend_semantic::vocabulary::LoweringUnsupported) -> CompilerCause {
     CompilerCause::Lowering(interface_core::LoweringCause::new(cause))
 }
 
 fn authority_terminal(
     source: compiler_ir::SourceIdentity,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     failure: &compiler_driver::AuthorityFailure<'_>,
 ) -> CompilerTerminal {
     let projection = failure.projection();
@@ -116,21 +116,21 @@ fn authority_terminal(
 
 const fn unsupported_stage(
     source: compiler_ir::SourceIdentity,
-    language: compiler_vocabulary::Language,
-    stage: compiler_vocabulary::Stage,
+    language: backend_semantic::vocabulary::Language,
+    stage: backend_semantic::vocabulary::Stage,
 ) -> CompilerTerminal {
     CompilerTerminal::UnsupportedStage {
         source: source_authority(source),
-        cause: compiler_vocabulary::FrontendError::UnsupportedStage { language, stage },
+        cause: backend_semantic::vocabulary::FrontendError::UnsupportedStage { language, stage },
     }
 }
 
 const fn toolchain(
     source: compiler_ir::SourceIdentity,
-    language: compiler_vocabulary::Language,
-    stage: compiler_vocabulary::Stage,
-    selected: compiler_vocabulary::NativeTool,
-    configured: Option<compiler_vocabulary::NativeTool>,
+    language: backend_semantic::vocabulary::Language,
+    stage: backend_semantic::vocabulary::Stage,
+    selected: backend_semantic::vocabulary::NativeTool,
+    configured: Option<backend_semantic::vocabulary::NativeTool>,
 ) -> CompilerTerminal {
     CompilerTerminal::Toolchain {
         source: source_authority(source),
@@ -143,9 +143,9 @@ const fn toolchain(
 
 const fn tooling_unavailable(
     source: compiler_ir::SourceIdentity,
-    language: compiler_vocabulary::Language,
-    stage: compiler_vocabulary::Stage,
-    tool: compiler_vocabulary::NativeTool,
+    language: backend_semantic::vocabulary::Language,
+    stage: backend_semantic::vocabulary::Stage,
+    tool: backend_semantic::vocabulary::NativeTool,
 ) -> CompilerTerminal {
     CompilerTerminal::ToolingUnavailable {
         source: source_authority(source),
@@ -157,7 +157,7 @@ const fn tooling_unavailable(
 
 fn cancelled(
     source: compiler_ir::SourceIdentity,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     diagnostic: NativeDiagnostic<'_>,
 ) -> CompilerTerminal {
     CompilerTerminal::Cancelled {
@@ -168,7 +168,7 @@ fn cancelled(
 
 fn native_work_terminal(
     source: compiler_ir::SourceIdentity,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     phase: NativeWorkPhase,
     cause: NativeWorkError,
 ) -> CompilerTerminal {
@@ -181,7 +181,7 @@ fn native_work_terminal(
 
 fn native_work_cleanup_terminal(
     source: compiler_ir::SourceIdentity,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     primary: NativeWorkPrimary<'_>,
     cleanup: NativeWorkError,
 ) -> CompilerTerminal {
@@ -197,7 +197,7 @@ fn native_work_cleanup_terminal(
 
 const fn native_primary_terminal(
     source: compiler_ir::SourceIdentity,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     primary: NativePrimaryCause,
 ) -> CompilerTerminal {
     compile_from_driver(
@@ -209,7 +209,7 @@ const fn native_primary_terminal(
 
 fn native_io_terminal(
     source: compiler_ir::SourceIdentity,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     phase: NativeIoPhase,
     cause: &std::io::Error,
 ) -> CompilerTerminal {
@@ -225,7 +225,7 @@ fn native_io_terminal(
 
 fn deadline_exceeded(
     source: compiler_ir::SourceIdentity,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     diagnostic: NativeDiagnostic<'_>,
 ) -> CompilerTerminal {
     compile_from_driver(
@@ -239,7 +239,7 @@ fn deadline_exceeded(
 
 fn diagnostic_limit(
     source: compiler_ir::SourceIdentity,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     limit: usize,
     observed: usize,
     diagnostic: NativeDiagnostic<'_>,
@@ -257,7 +257,7 @@ fn diagnostic_limit(
 
 fn native_rejected(
     source: compiler_ir::SourceIdentity,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     status: std::process::ExitStatus,
     diagnostic: NativeDiagnostic<'_>,
 ) -> CompilerTerminal {
@@ -273,13 +273,13 @@ fn native_rejected(
 
 const fn fragment_terminal(
     source: compiler_ir::SourceIdentity,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     cause: FragmentCause,
 ) -> CompilerTerminal {
     compile_from_driver(source, recipe, CompilerCause::Fragment(cause))
 }
 
-const fn configured_tool(fact: ToolchainSelectionFact) -> Option<compiler_vocabulary::NativeTool> {
+const fn configured_tool(fact: ToolchainSelectionFact) -> Option<backend_semantic::vocabulary::NativeTool> {
     match fact {
         ToolchainSelectionFact::ResolvedNative { tool } => Some(tool),
         ToolchainSelectionFact::ExplicitlyUnavailable { .. } => None,
@@ -290,7 +290,7 @@ const fn configured_tool(fact: ToolchainSelectionFact) -> Option<compiler_vocabu
 mod tests {
     use compiler_driver::{AuthorityDiagnostic, AuthorityFailure};
     use compiler_languages_typescript::{AuthorityError, with_analysis};
-    use compiler_vocabulary::{
+    use backend_semantic::vocabulary::{
         AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, LanguageProfile, NativeTool,
         PythonVersion, Stage, TypeScriptSource,
     };
@@ -313,7 +313,7 @@ mod tests {
 
     fn lowering_cause(
         terminal: CompilerTerminal,
-    ) -> Result<compiler_vocabulary::LoweringUnsupported, ProjectionError> {
+    ) -> Result<backend_semantic::vocabulary::LoweringUnsupported, ProjectionError> {
         let CompilerTerminal::Compile { cause, .. } = terminal else {
             return Err(ProjectionError::Terminal);
         };
@@ -349,7 +349,7 @@ mod tests {
             atom_count: 11,
         };
         let cause = lowering_cause(super::compile_terminal(failure))?;
-        let compiler_vocabulary::LoweringUnsupported::ExtensionAtomUnbound {
+        let backend_semantic::vocabulary::LoweringUnsupported::ExtensionAtomUnbound {
             row,
             provisional,
             atom_count,
@@ -369,17 +369,17 @@ mod tests {
         let failure = compiler_driver::CompileFailure::LoweringUnsupported {
             source_identity: source,
             recipe,
-            cause: compiler_vocabulary::LoweringUnsupported::FactRejected {
+            cause: backend_semantic::vocabulary::LoweringUnsupported::FactRejected {
                 fact: 17,
                 name_len: 6,
-                cause: compiler_vocabulary::ProjectionAdmissionFault::Capacity,
+                cause: backend_semantic::vocabulary::ProjectionAdmissionFault::Capacity,
             },
         };
         let cause = lowering_cause(super::compile_terminal(failure))?;
-        let compiler_vocabulary::LoweringUnsupported::FactRejected {
+        let backend_semantic::vocabulary::LoweringUnsupported::FactRejected {
             fact,
             name_len,
-            cause: compiler_vocabulary::ProjectionAdmissionFault::Capacity,
+            cause: backend_semantic::vocabulary::ProjectionAdmissionFault::Capacity,
         } = cause
         else {
             return Err(ProjectionError::FactOrdinal);

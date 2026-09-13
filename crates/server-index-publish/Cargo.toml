@@ -22,7 +22,7 @@ zerocopy.workspace = true
 [dev-dependencies]
 allocation-counter.workspace = true
 compiler-driver = { path = "../compiler-driver" }
-compiler-vocabulary = { path = "../compiler-vocabulary" }
+backend-semantic = { path = "../semantic" }
 heart-hydration = { path = "../heart-hydration" }
 server-index-graph-vector = { path = "../server-index-graph-vector" }
 server-index-qdrant = { path = "../server-index-qdrant" }

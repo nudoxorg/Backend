@@ -11,7 +11,7 @@ use compiler_languages_clang::{
     DeclarationId as ClangDeclarationId, SourceSpan as ClangSourceSpan, SymbolIdentity,
     TypeId as ClangTypeId, TypeKind as ClangTypeKind, TypeQualifiers as ClangTypeQualifiers,
 };
-use compiler_vocabulary::ProjectionFactLane;
+use backend_semantic::vocabulary::ProjectionFactLane;
 
 /// One closed authority-backed containment state for an emitted entity.
 ///

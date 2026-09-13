@@ -1,7 +1,7 @@
 //! Defines json wire application behavior for `interface-protocol`, whose purpose is to decode and project the shared application vocabulary for external transports.
 //! This module owns the json wire application invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use compiler_vocabulary::{Language, Stage};
+use backend_semantic::vocabulary::{Language, Stage};
 use backend_execution::adaptive::CapabilityDomain;
 use interface_core::{
     CapabilityHealth, CapabilityTransition, Diagnostic, DiagnosticCode, DiagnosticDetail,
@@ -351,7 +351,7 @@ impl From<DiagnosticDetail> for DiagnosticDetailWire {
                 rejected: Text(rejected),
             },
             DiagnosticDetail::Frontend(source) => match source {
-                compiler_vocabulary::FrontendError::UnsupportedStage { language, stage } => {
+                backend_semantic::vocabulary::FrontendError::UnsupportedStage { language, stage } => {
                     Self::UnsupportedStage { language, stage }
                 }
             },

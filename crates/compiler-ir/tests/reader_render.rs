@@ -9,7 +9,7 @@ use compiler_ir::{
     TypeScriptFacts, VariantAvailability, VariantFingerprint, Visibility, prepare_neutral,
     prepare_profile,
 };
-use compiler_vocabulary::{CStandard, TypeScriptSource};
+use backend_semantic::vocabulary::{CStandard, TypeScriptSource};
 
 fn version(family: u8) -> EntityVersion {
     EntityVersion {

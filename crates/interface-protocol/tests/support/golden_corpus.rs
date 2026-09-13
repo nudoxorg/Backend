@@ -8,7 +8,7 @@
 //! service reply, a CLI line, and an MCP `structuredContent` value all have to agree on the same
 //! closed vocabulary.
 
-use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use interface_core::{
     ApplicationDisposition, ApplicationInput, ApplicationOutcome, ApplicationReply,
     ApplicationService, BatteryState, ByteCount, Capability, CapabilityDomain, CapabilityHealth,

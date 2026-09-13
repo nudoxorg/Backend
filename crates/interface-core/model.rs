@@ -7,7 +7,7 @@ use crate::{
     InputText, PackageCompileRequest, RetrievalCause, RetrievalRows, SnapshotFacts, SourceText,
     UnloadReceipt,
 };
-use compiler_vocabulary::{FrontendError, LanguageProfile, Stage};
+use backend_semantic::vocabulary::{FrontendError, LanguageProfile, Stage};
 use backend_execution::adaptive::{
     CapabilityDomain, CapabilityKind, ContentId, ExecutionPhase, Overload, Pin, PolicyError,
     RecoveryCause, ResourceBudget, RetryBudget,

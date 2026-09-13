@@ -13,7 +13,7 @@ use compiler_languages_rust::{
     RustAnalysisControl, RustAuthorityError, RustDefinition, RustProject, RustToolchain,
     SemanticKind, SourceByteLimit, SourceOrigin,
 };
-use compiler_vocabulary::RustEdition;
+use backend_semantic::vocabulary::RustEdition;
 use ra_ap_syntax::AstNode;
 
 /// Separates concurrently executing fixtures created during one process lifetime.

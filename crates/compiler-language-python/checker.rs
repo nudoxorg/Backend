@@ -35,7 +35,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use compiler_vocabulary::{NativeWorker, NativeWorkerPanic, PythonVersion};
+use backend_semantic::vocabulary::{NativeWorker, NativeWorkerPanic, PythonVersion};
 use thiserror::Error;
 
 use crate::{Annotation, AnnotationPosition, DeclarationKind, ModuleFacts, Span, TypeReason};
@@ -1762,7 +1762,7 @@ impl Drop for Workspace {
 
 #[cfg(test)]
 mod tests {
-    use compiler_vocabulary::PythonVersion;
+    use backend_semantic::vocabulary::PythonVersion;
 
     use crate::{DeclarationKind, Span, extract};
 

@@ -10,9 +10,11 @@ publish = false
 blake3 = { workspace = true }
 backend-version = { path = "../version" }
 backend-flow = { path = "../flow" }
+serde.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-thiserror.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

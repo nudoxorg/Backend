@@ -11,7 +11,7 @@ use compiler_driver::{
     CompileOutput, CompileScratch, NativeTool, ToolchainSelection, compile, compile_ir,
 };
 use compiler_ir::{EntityKind, SemanticImageAuthority};
-use compiler_vocabulary::{Language, LanguageProfile, PythonVersion};
+use backend_semantic::vocabulary::{Language, LanguageProfile, PythonVersion};
 
 use super::support::*;
 

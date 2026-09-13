@@ -11,7 +11,7 @@ use compiler_ir::{
     DeclarationParentage, EntityId, EntityVersion, NominalRef, ScopedDeclarationKey,
     SemanticTypeRecord, VariantFingerprint,
 };
-use compiler_vocabulary::LanguageProfile;
+use backend_semantic::vocabulary::LanguageProfile;
 
 use super::{ANONYMOUS_ROW_BASE, COMPUTED_ROW_BASE, FactSet, STAGED_TEXT_CHILD, SemanticFact};
 use crate::types::{DeclarationScope, ParentageState};

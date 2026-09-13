@@ -2,7 +2,7 @@
 //! Keeps each frontend's closed error type intact through canonical admission.
 //! Projects bounded diagnostics only after deriving their typed cause class.
 
-use compiler_vocabulary::{AuthorityDiagnosticClass, AuthorityPhase, LanguageProfile};
+use backend_semantic::vocabulary::{AuthorityDiagnosticClass, AuthorityPhase, LanguageProfile};
 
 /// Bounded primary diagnostic retained beside one exact frontend error.
 ///
@@ -256,7 +256,7 @@ pub enum AuthorityFailure<'diagnostic> {
         /// Bounded source diagnostic retained by the javac authority.
         diagnostic: AuthorityDiagnostic<'diagnostic>,
         /// Java release selected by the compiler request.
-        requested: compiler_vocabulary::JavaRelease,
+        requested: backend_semantic::vocabulary::JavaRelease,
         /// Java release retained by the attributed javac image.
         observed: compiler_languages_java::JavaRelease,
     },

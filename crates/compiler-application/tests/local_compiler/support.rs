@@ -16,7 +16,7 @@ use compiler_application::{
     LocalToolchainSetError,
 };
 use compiler_driver::{NativeTool, ResolvedToolchain, ToolchainSelection};
-use compiler_vocabulary::{LanguageProfile, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, Stage};
 use interface_core::{
     CorrelationId, GenerateRequest, GenerateTarget, RejectedSourceText, SourceText,
 };

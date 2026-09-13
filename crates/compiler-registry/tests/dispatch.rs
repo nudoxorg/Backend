@@ -2,7 +2,7 @@
 //! Every language must resolve to one concrete lowering tool without a dynamic fallback.
 //! Unsupported parse requests retain both language and stage in their typed terminal.
 use compiler_registry::{AdapterRoute, FullRegistry};
-use compiler_vocabulary::{FrontendError, Language, NativeTool, Stage};
+use backend_semantic::vocabulary::{FrontendError, Language, NativeTool, Stage};
 
 #[test]
 /// Proves the lowering registry covers the canonical language schedule exactly once.

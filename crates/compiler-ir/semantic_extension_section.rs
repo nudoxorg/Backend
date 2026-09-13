@@ -178,7 +178,7 @@ pub enum LanguageExtensionReopenError {
         observed: u8,
     },
     Profile {
-        source: compiler_vocabulary::UnknownLanguageProfile,
+        source: backend_semantic::vocabulary::UnknownLanguageProfile,
     },
     PlaneCount {
         expected: u8,
@@ -1457,7 +1457,7 @@ fn read_authority(
             expected: SemanticImageAuthority::Shared,
             observed,
         }),
-        1 => compiler_vocabulary::LanguageProfile::try_from([first, second])
+        1 => backend_semantic::vocabulary::LanguageProfile::try_from([first, second])
             .map(SemanticImageAuthority::Language)
             .map_err(|source| LanguageExtensionReopenError::Profile { source }),
         observed => Err(LanguageExtensionReopenError::AuthorityTag { observed }),
@@ -1470,27 +1470,27 @@ fn authority_admits(
     match authority {
         SemanticImageAuthority::Shared => false,
         SemanticImageAuthority::Language(profile) => matches!(
-            (compiler_vocabulary::Language::from(profile), kind),
+            (backend_semantic::vocabulary::Language::from(profile), kind),
             (
-                compiler_vocabulary::Language::TypeScript,
+                backend_semantic::vocabulary::Language::TypeScript,
                 LanguageExtensionDirectoryKind::TypeScript
             ) | (
-                compiler_vocabulary::Language::CSharp,
+                backend_semantic::vocabulary::Language::CSharp,
                 LanguageExtensionDirectoryKind::CSharp
             ) | (
-                compiler_vocabulary::Language::Go,
+                backend_semantic::vocabulary::Language::Go,
                 LanguageExtensionDirectoryKind::Go
             ) | (
-                compiler_vocabulary::Language::Rust,
+                backend_semantic::vocabulary::Language::Rust,
                 LanguageExtensionDirectoryKind::Rust
             ) | (
-                compiler_vocabulary::Language::Python,
+                backend_semantic::vocabulary::Language::Python,
                 LanguageExtensionDirectoryKind::Python
             ) | (
-                compiler_vocabulary::Language::Java,
+                backend_semantic::vocabulary::Language::Java,
                 LanguageExtensionDirectoryKind::Java
             ) | (
-                compiler_vocabulary::Language::Clang,
+                backend_semantic::vocabulary::Language::Clang,
                 LanguageExtensionDirectoryKind::Clang
             )
         ),

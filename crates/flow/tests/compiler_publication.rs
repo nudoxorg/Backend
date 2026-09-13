@@ -27,7 +27,7 @@ use compiler_publication::{
     PublishControl, PublishedCompilation, binding::COMPILATION_BINDING_BYTES, open_published,
     publish_compiled,
 };
-use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use server_journal::{
     DurablePublisher, PublicationLimitError, PublicationLimits, PublicationOpenError,
     PublicationPaths, ShutdownError,

@@ -20,7 +20,7 @@ zerocopy.workspace = true
 [dev-dependencies]
 allocation-counter.workspace = true
 compiler-driver = { path = "../compiler-driver" }
-compiler-vocabulary = { path = "../compiler-vocabulary" }
+backend-semantic = { path = "../semantic" }
 server-journal = { path = "../server-journal" }
 [lints]
 workspace = true

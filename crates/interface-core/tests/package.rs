@@ -1,6 +1,6 @@
 //! Proves typed package URL admission and profile binding.
 
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     CSharpVersion, CStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion, RustEdition,
     Stage, TypeScriptSource,
 };

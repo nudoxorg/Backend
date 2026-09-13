@@ -29,7 +29,7 @@ pub use compiler::{
     PublicationPhase, SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot,
     SourceAuthority, UnavailableCompiler,
 };
-pub use compiler_vocabulary::{
+pub use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,
 };
 pub use backend_execution::adaptive::{

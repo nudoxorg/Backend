@@ -4,13 +4,13 @@
 //! ranges into that allocation. Downstream code borrows typed components; it
 //! never reparses or allocates normalized copies.
 
-use alloc::{boxed::Box, string::String};
+use std::{boxed::Box, string::String};
 use core::{fmt, ops::Deref, ops::Index};
 
 use backend_version::{CompilationTargetDomain, ContentId};
 use serde::{Deserialize, Serialize};
 
-use crate::{Language, RegistryEcosystem};
+use super::{Language, RegistryEcosystem};
 
 /// Maximum canonical package URL bytes accepted at a public boundary.
 pub const MAX_PACKAGE_URL_BYTES: usize = 2_048;

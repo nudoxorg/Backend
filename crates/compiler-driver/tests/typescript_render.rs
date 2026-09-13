@@ -11,7 +11,7 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
 use compiler_ir::{EntityId, Ir, ItemKind};
-use compiler_vocabulary::{LanguageProfile, Stage, TypeScriptSource};
+use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
 
 const CASES: &[(&str, &[u8])] = &[
     ("recursive", b"interface Node { next: Node | null }"),

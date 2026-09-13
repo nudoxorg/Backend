@@ -3,7 +3,7 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::{path::PathBuf, time::Duration};
 
-use compiler_vocabulary::FrontendError;
+use backend_semantic::vocabulary::FrontendError;
 use interface_core::{
     CompilerCause, CompilerDiagnostic, CompilerRuntimeCause, CompilerTerminal, FragmentCause,
     PackageCompilePhase, PackageDeclarationScopeCause, PackageEcosystem, PackagePathComponentError,
@@ -570,28 +570,28 @@ impl From<CompilerCause> for GoldenCompilerCause {
                 diagnostic,
             } => Self::Authority {
                 phase: match phase {
-                    compiler_vocabulary::AuthorityPhase::Open => GoldenAuthorityPhase::Open,
-                    compiler_vocabulary::AuthorityPhase::Parse => GoldenAuthorityPhase::Parse,
-                    compiler_vocabulary::AuthorityPhase::Resolve => GoldenAuthorityPhase::Resolve,
-                    compiler_vocabulary::AuthorityPhase::TypeCheck => {
+                    backend_semantic::vocabulary::AuthorityPhase::Open => GoldenAuthorityPhase::Open,
+                    backend_semantic::vocabulary::AuthorityPhase::Parse => GoldenAuthorityPhase::Parse,
+                    backend_semantic::vocabulary::AuthorityPhase::Resolve => GoldenAuthorityPhase::Resolve,
+                    backend_semantic::vocabulary::AuthorityPhase::TypeCheck => {
                         GoldenAuthorityPhase::TypeCheck
                     }
-                    compiler_vocabulary::AuthorityPhase::Project => GoldenAuthorityPhase::Project,
+                    backend_semantic::vocabulary::AuthorityPhase::Project => GoldenAuthorityPhase::Project,
                 },
                 class: match class {
-                    compiler_vocabulary::AuthorityDiagnosticClass::Syntax => {
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::Syntax => {
                         GoldenAuthorityDiagnosticClass::Syntax
                     }
-                    compiler_vocabulary::AuthorityDiagnosticClass::Binding => {
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::Binding => {
                         GoldenAuthorityDiagnosticClass::Binding
                     }
-                    compiler_vocabulary::AuthorityDiagnosticClass::Type => {
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::Type => {
                         GoldenAuthorityDiagnosticClass::Type
                     }
-                    compiler_vocabulary::AuthorityDiagnosticClass::Authority => {
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::Authority => {
                         GoldenAuthorityDiagnosticClass::Authority
                     }
-                    compiler_vocabulary::AuthorityDiagnosticClass::Projection => {
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::Projection => {
                         GoldenAuthorityDiagnosticClass::Projection
                     }
                 },

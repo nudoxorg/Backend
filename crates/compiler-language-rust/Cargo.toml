@@ -22,7 +22,7 @@ path = "lib.rs"
 # in-process frontend (`compiler/languages` rust section).
 [dependencies]
 anyhow = "1"
-compiler-vocabulary = { path = "../compiler-vocabulary" }
+backend-semantic = { path = "../semantic" }
 ra_ap_base_db = "=0.0.341"
 ra_ap_hir = "=0.0.341"
 ra_ap_ide_db = "=0.0.341"

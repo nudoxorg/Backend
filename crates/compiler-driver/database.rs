@@ -15,7 +15,7 @@ use compiler_ir::{
 use compiler_languages_clang::{
     ClangInput, CompilationDatabase, DatabaseArgumentError, DatabaseError, MAX_DATABASE_ARGUMENTS,
 };
-use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
 use backend_version::SourceFactDomain;
 use thiserror::Error;
 
@@ -76,7 +76,7 @@ pub enum DatabaseCompileFailure<'source> {
     },
     /// A supported authority fact has no closed lowering recipe.
     #[error("database translation unit could not be lowered")]
-    Lowering(#[source] compiler_vocabulary::LoweringUnsupported),
+    Lowering(#[source] backend_semantic::vocabulary::LoweringUnsupported),
     /// Canonical ordering or identity preparation rejected the fact image.
     #[error("database translation unit could not canonicalize its facts")]
     Canonical {

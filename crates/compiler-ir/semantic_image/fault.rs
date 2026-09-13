@@ -111,7 +111,7 @@ pub enum CoreSemanticImageFault {
     Profile {
         observed: [u8; 2],
         #[source]
-        source: compiler_vocabulary::UnknownLanguageProfile,
+        source: backend_semantic::vocabulary::UnknownLanguageProfile,
     },
     #[error("semantic image provenance is invalid: {cause:?}")]
     Provenance { cause: CoreProvenanceFault },

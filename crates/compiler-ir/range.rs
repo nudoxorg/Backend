@@ -386,7 +386,7 @@ fn range_identity(
 #[cfg(test)]
 mod tests {
     use crate::{AtomId, TypeId};
-    use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+    use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use thiserror::Error;
 

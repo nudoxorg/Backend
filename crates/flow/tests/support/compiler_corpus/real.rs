@@ -60,7 +60,7 @@ struct SourceExpectation {
     source: SourceIdentity,
     profile: LanguageProfile,
     tool: NativeTool,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     spans: SourceAuthorityFacts,
 }
 
@@ -210,7 +210,7 @@ fn audit_source_case(
         source: source.identity,
         profile,
         tool: native_tool(case.language),
-        recipe: compiler_vocabulary::CompileRecipeFact::derive(
+        recipe: backend_semantic::vocabulary::CompileRecipeFact::derive(
             profile,
             Stage::LowerIr,
             native_tool(case.language),

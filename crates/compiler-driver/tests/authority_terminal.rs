@@ -7,7 +7,7 @@ use compiler_driver::{
 };
 use compiler_languages_clang::CollectError;
 use compiler_languages_typescript::{AuthorityError, with_analysis};
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, LanguageProfile, PythonVersion, TypeScriptSource,
 };
 

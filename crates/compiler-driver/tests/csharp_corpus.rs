@@ -27,7 +27,7 @@ use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
 use compiler_publication::{PublishedCompilation, immutable::ImmutableArtifactStore};
-use compiler_vocabulary::{CSharpVersion, LanguageProfile, NativeTool, Stage};
+use backend_semantic::vocabulary::{CSharpVersion, LanguageProfile, NativeTool, Stage};
 use csharp_support::Error as SupportError;
 use backend_version::{ContentId, SourceFactDomain};
 use server_index_build::{IndexBuildScratch, build};
@@ -956,7 +956,7 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
         );
         match failed {
             Err(CompileFailure::LoweringUnsupported {
-                cause: compiler_vocabulary::LoweringUnsupported::CSharpProjection { .. },
+                cause: backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. },
                 ..
             }) => {
                 eprintln!(

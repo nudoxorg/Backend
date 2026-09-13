@@ -2,7 +2,7 @@ use std::num::{NonZeroU16, NonZeroU32};
 
 use backend_compile::ToolchainId;
 use backend_version::ObjectVersion;
-use compiler_vocabulary::{LanguageProfile, NativeTool};
+use backend_semantic::vocabulary::{LanguageProfile, NativeTool};
 
 use super::{EmbeddingRecipeId, LanguageOracleTask, TokenizerId, TreatmentId};
 

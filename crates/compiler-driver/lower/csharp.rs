@@ -50,7 +50,7 @@ use compiler_languages_csharp::{
     PartialRole, RefKind, ReferenceTag, ResolvedReference, Section, TypeNode, TypeNodeKind,
     TypeRef, VarianceTag,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     CSharpImageFault, CSharpImageHeaderFault, CSharpImageSection, CSharpImageTypeKind,
     CSharpProjectionFault as PortableCSharpProjectionFault, CSharpProjectionIndexPhase,
     LoweringUnsupported,
@@ -2346,7 +2346,7 @@ mod tests {
         SemanticTypeTag, SourceIdentity,
     };
     use compiler_languages_csharp::{ImageError, VarianceTag};
-    use compiler_vocabulary::{
+    use backend_semantic::vocabulary::{
         CSharpImageFault, CSharpProjectionFault as PortableCSharpProjectionFault, CSharpVersion,
         CompileRecipeFact, LanguageProfile, LoweringUnsupported, NativeTool, Stage,
     };
@@ -2461,7 +2461,7 @@ mod tests {
                     fact,
                     name_len,
                     cause:
-                        compiler_vocabulary::ProjectionAdmissionFault::ProductChildPoolCapacity {
+                        backend_semantic::vocabulary::ProjectionAdmissionFault::ProductChildPoolCapacity {
                             used,
                             requested,
                             capacity,

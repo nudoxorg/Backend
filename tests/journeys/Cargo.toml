@@ -22,7 +22,6 @@ backend-worker = { path = "../../apps/worker" }
 backend-desktop = { path = "../../apps/desktop" }
 backend-extension-turso = { path = "../../extensions/turso" }
 backend-compile = { path = "../../crates/compile" }
-compiler-vocabulary = { path = "../../crates/compiler-vocabulary" }
 backend-frontend-clang = { path = "../../frontends/clang" }
 backend-frontend-csharp = { path = "../../frontends/csharp" }
 backend-frontend-go = { path = "../../frontends/go" }

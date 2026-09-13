@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use compiler_driver::CompiledFragment;
 use compiler_ir::{FragmentRange, FragmentRangeManifest, RecipeFact, SectionKind, SourceIdentity};
-use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
 use backend_version::{
     ArtifactId, CompileRecipeDomain, ContentId, IrFragmentDomain, IrFragmentEncoding,
     IrFragmentRangeEncoding, IrSemanticImageDomain, IrSemanticImageEncoding, SourceFactDomain,

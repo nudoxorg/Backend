@@ -1,7 +1,7 @@
 //! Defines json wire compiler authority behavior for `interface-protocol`, whose purpose is to decode and project the shared application vocabulary for external transports.
 //! This module owns the json wire compiler authority invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use compiler_vocabulary::CompileRecipeFact;
+use backend_semantic::vocabulary::CompileRecipeFact;
 use backend_version::{
     ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, CompileRecipeDomain,
     DependencySetDomain, IrFragmentDomain, IrFragmentEncoding, IrManifestDomain,
@@ -29,16 +29,16 @@ pub(crate) struct SourceAuthorityWire {
 
 /// Remote serde definition for the canonical compile recipe.
 #[derive(Serialize)]
-#[serde(remote = "compiler_vocabulary::CompileRecipeFact")]
+#[serde(remote = "backend_semantic::vocabulary::CompileRecipeFact")]
 pub(crate) struct CompileRecipeWire {
     #[serde(serialize_with = "serialize_content")]
     identity: backend_version::ContentId<CompileRecipeDomain>,
     #[serde(with = "LanguageProfileWire")]
-    profile: compiler_vocabulary::LanguageProfile,
+    profile: backend_semantic::vocabulary::LanguageProfile,
     #[serde(with = "StageWire")]
-    stage: compiler_vocabulary::Stage,
+    stage: backend_semantic::vocabulary::Stage,
     #[serde(with = "NativeToolWire")]
-    tool: compiler_vocabulary::NativeTool,
+    tool: backend_semantic::vocabulary::NativeTool,
     #[serde(serialize_with = "serialize_content")]
     toolchain: backend_version::ContentId<ToolchainDomain>,
 }

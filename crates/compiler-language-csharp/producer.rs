@@ -26,7 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use compiler_vocabulary::{CSharpVersion, NativeTool, NativeWorker, NativeWorkerPanic};
+use backend_semantic::vocabulary::{CSharpVersion, NativeTool, NativeWorker, NativeWorkerPanic};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -739,7 +739,7 @@ fn stderr_tail(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compiler_vocabulary::{MAX_NATIVE_WORKER_PANIC_BYTES, NativeWorkerPanicClass};
+    use backend_semantic::vocabulary::{MAX_NATIVE_WORKER_PANIC_BYTES, NativeWorkerPanicClass};
     use std::sync::atomic::AtomicBool;
 
     #[test]

@@ -23,7 +23,7 @@ use compiler_publication::{
     manifest::SemanticImageRegion,
     publication::{open_published, open_published_semantic, publish_compiled, publish_semantic},
 };
-use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;

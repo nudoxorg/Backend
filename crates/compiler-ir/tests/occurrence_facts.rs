@@ -12,7 +12,7 @@ use backend_semantic::ir_vocabulary::{
     ForeignOrigin, Occurrence, OccurrenceTarget, PackageLineage, ReferenceKind, RelSpan, StableRef,
     TypeId, VariantFingerprint,
 };
-use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 

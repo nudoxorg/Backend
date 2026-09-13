@@ -3,7 +3,7 @@
 //! Exhaustive matches make adding a language an explicit compile-time change at this boundary.
 #![no_std]
 
-use compiler_vocabulary::{FrontendError, Language, NativeTool, Stage};
+use backend_semantic::vocabulary::{FrontendError, Language, NativeTool, Stage};
 
 /// Closed native-adapter disposition for one language and semantic stage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

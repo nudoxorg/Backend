@@ -43,7 +43,7 @@ fn declaration_symbol(
 
 fn projected_source_capacity(
     sources: &IndexedSources,
-    complete: &BTreeSet<([u8; 32], compiler_vocabulary::LanguageProfile)>,
+    complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
 ) -> Result<usize, BuiltinModelError> {
     let count = sources
         .files
@@ -81,7 +81,7 @@ pub(super) struct ProjectedRows {
     pub(super) rows: Vec<Row>,
     pub(super) activated: BTreeSet<(
         backend_engine::PackageKey,
-        compiler_vocabulary::LanguageProfile,
+        backend_semantic::vocabulary::LanguageProfile,
     )>,
 }
 
@@ -166,7 +166,7 @@ impl<'a> SourceRowProjection<'a> {
         &mut self,
         file_key: [u8; 32],
         record: &super::ProductSourceRecord,
-        complete: &BTreeSet<([u8; 32], compiler_vocabulary::LanguageProfile)>,
+        complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
     ) -> Result<(), BuiltinModelError> {
         let file = record
             .file_fields()
@@ -258,7 +258,7 @@ impl<'a> SourceRowProjection<'a> {
 }
 
 fn semantic_profile_is_complete(
-    complete: &BTreeSet<([u8; 32], compiler_vocabulary::LanguageProfile)>,
+    complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
     package: Option<backend_engine::PackageKey>,
     path: &str,
 ) -> Result<bool, BuiltinModelError> {
@@ -272,10 +272,10 @@ fn semantic_profile_is_complete(
 
 struct SemanticRows {
     rows: Vec<Row>,
-    complete: BTreeSet<([u8; 32], compiler_vocabulary::LanguageProfile)>,
+    complete: BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
     activated: BTreeSet<(
         backend_engine::PackageKey,
-        compiler_vocabulary::LanguageProfile,
+        backend_semantic::vocabulary::LanguageProfile,
     )>,
 }
 
@@ -365,7 +365,7 @@ struct SemanticRowContent {
 fn append_image_rows(
     image: &SemanticImageView<'_>,
     project: &super::IndexedProject,
-    profile: compiler_vocabulary::LanguageProfile,
+    profile: backend_semantic::vocabulary::LanguageProfile,
     sink: &mut SemanticRowSink<'_>,
 ) -> Result<(), BuiltinModelError> {
     let session = DocumentationSession::new(image);
@@ -458,7 +458,7 @@ fn append_image_rows(
 }
 
 fn semantic_row_content<Reader: compiler_ir::SemanticReader + ?Sized>(
-    profile: compiler_vocabulary::LanguageProfile,
+    profile: backend_semantic::vocabulary::LanguageProfile,
     reader: &Reader,
     entity: &compiler_application::DocumentationEntity<'_, Reader>,
     package: backend_engine::PackageKey,
@@ -707,7 +707,7 @@ fn append_compiler_query_facts(
     compiler: &LocalCompilerClient,
     sources: &IndexedSources,
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
-) -> Result<BTreeSet<([u8; 32], compiler_vocabulary::LanguageProfile)>, BuiltinModelError> {
+) -> Result<BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>, BuiltinModelError> {
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic query relation: {error}")))?;
@@ -897,7 +897,7 @@ fn append_compiler_query_facts(
 
 fn append_structural_query_facts(
     sources: &IndexedSources,
-    complete: &BTreeSet<([u8; 32], compiler_vocabulary::LanguageProfile)>,
+    complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
 ) -> Result<(), BuiltinModelError> {
     let mut occurrences = BTreeMap::new();
@@ -1011,7 +1011,7 @@ fn fragment_text(fragments: &[Fragment]) -> String {
 #[cfg(test)]
 mod tests {
     use super::semantic_profile_is_complete;
-    use compiler_vocabulary::{CStandard, LanguageProfile};
+    use backend_semantic::vocabulary::{CStandard, LanguageProfile};
     use std::collections::BTreeSet;
 
     #[test]

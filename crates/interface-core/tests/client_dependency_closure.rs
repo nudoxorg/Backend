@@ -81,6 +81,6 @@ fn normal_interface_core_closure_is_portable() -> Result<(), Box<dyn std::error:
     );
     assert!(tree.contains("interface-core"));
     assert!(tree.contains("backend-version"));
-    assert!(tree.contains("compiler-vocabulary"));
+    assert!(tree.contains("backend-semantic"));
     Ok(())
 }

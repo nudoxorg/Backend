@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::{ffi::OsString, path::Path, process::Command};
 
-use compiler_vocabulary::{CStandard, CxxStandard, PythonVersion, RustEdition};
+use backend_semantic::vocabulary::{CStandard, CxxStandard, PythonVersion, RustEdition};
 
 use crate::types::{
     CompileControl, CompileFailure, CompileRecipeFact, CompileScratch, NativeArtifactRole,

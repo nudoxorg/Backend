@@ -10,7 +10,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-compiler-vocabulary = { path = "../compiler-vocabulary" }
+backend-semantic = { path = "../semantic" }
 compiler-registry = { path = "../compiler-registry" }
 compiler-ir = { path = "../compiler-ir" }
 compiler-languages-clang = { path = "../compiler-language-clang" }

@@ -1,7 +1,7 @@
 //! Defines json wire compiler native work behavior for `interface-protocol`, whose purpose is to decode and project the shared application vocabulary for external transports.
 //! This module owns the json wire compiler native work invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use compiler_vocabulary::{InvalidUtf8Fact, NativeArtifactRole, NativeWorkPhase};
+use backend_semantic::vocabulary::{InvalidUtf8Fact, NativeArtifactRole, NativeWorkPhase};
 use interface_core::{
     NativeArtifactAction, NativeArtifactCause, NativeDirectoryCause, NativeWorkCause,
     NativeWorkCleanupCause,
@@ -13,7 +13,7 @@ use super::{io::NativeIoFactRef, terminal::NativePrimaryCauseWire, worker::Inval
 /// Remote serde definitions for shared closed native-work vocabularies.
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::NativeWorkPhase",
+    remote = "backend_semantic::vocabulary::NativeWorkPhase",
     rename_all = "snake_case"
 )]
 pub(crate) enum NativeWorkPhaseWire {
@@ -35,7 +35,7 @@ pub(crate) enum NativeArtifactActionWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::NativeArtifactRole",
+    remote = "backend_semantic::vocabulary::NativeArtifactRole",
     rename_all = "snake_case"
 )]
 pub(crate) enum NativeArtifactRoleWire {

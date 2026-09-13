@@ -22,7 +22,7 @@ use compiler_ir::{
 use compiler_languages_python::{
     CheckerReport, Inference, InferenceSite, InferredType, Span, SymbolOutcome, SymbolResolution,
 };
-use compiler_vocabulary::{LanguageProfile, PythonVersion, Stage, TypeScriptSource};
+use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage, TypeScriptSource};
 use thiserror::Error;
 
 /// The card fixture. The import law fires on a call whose target is the
@@ -84,8 +84,8 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { cause, .. } => match cause {
-            compiler_vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
-            compiler_vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
+            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
+            backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
                 "csharp-projection"
             }
             _ => "lowering-unsupported",

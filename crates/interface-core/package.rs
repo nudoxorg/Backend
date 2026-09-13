@@ -7,8 +7,8 @@
 use core::ops::Deref;
 use std::{io::ErrorKind, path::Path};
 
-use compiler_vocabulary::LanguageProfile;
-pub use compiler_vocabulary::{
+use backend_semantic::vocabulary::LanguageProfile;
+pub use backend_semantic::vocabulary::{
     MAX_PACKAGE_URL_BYTES, PackageTextRange, PackageType as PackageEcosystem, PackageUrl,
     PackageUrlError, PackageUrlFacts, RejectedPackageUrl,
 };

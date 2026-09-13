@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use compiler_ir::{FragmentView, PrepareError};
 use compiler_registry::{AdapterRoute, FullRegistry};
-use compiler_vocabulary::{Language, LanguageProfile, Stage};
+use backend_semantic::vocabulary::{Language, LanguageProfile, Stage};
 
 use crate::lower::{self, AdmissionFault, typescript::TypeScriptCollectError};
 
@@ -17,8 +17,8 @@ use super::{
 /// Projects the driver's complete admission snapshot into the one portable
 /// lowering terminal.  The collector arena never escapes this boundary, but
 /// every source operand does.
-fn rejected_lowering(rejected: FactRejection) -> compiler_vocabulary::LoweringUnsupported {
-    compiler_vocabulary::LoweringUnsupported::FactRejected {
+fn rejected_lowering(rejected: FactRejection) -> backend_semantic::vocabulary::LoweringUnsupported {
+    backend_semantic::vocabulary::LoweringUnsupported::FactRejected {
         fact: lower::portable_count(rejected.fact),
         name_len: lower::portable_count(rejected.name_len),
         cause: lower::portable_admission(rejected.cause),
@@ -236,29 +236,29 @@ enum EnteredAuthority<'source> {
         profile: LanguageProfile,
     },
     TypeScript {
-        profile: compiler_vocabulary::TypeScriptSource,
+        profile: backend_semantic::vocabulary::TypeScriptSource,
         report: Option<&'source compiler_languages_typescript::Report>,
     },
     Python {
-        profile: compiler_vocabulary::PythonVersion,
+        profile: backend_semantic::vocabulary::PythonVersion,
         report: Option<&'source compiler_languages_python::CheckerReport>,
     },
     Rust {
-        profile: compiler_vocabulary::RustEdition,
+        profile: backend_semantic::vocabulary::RustEdition,
         project: &'source compiler_languages_rust::RustProject,
         maximum_source_bytes: compiler_languages_rust::SourceByteLimit,
         features: compiler_languages_rust::RustFeatureControl<'source>,
     },
     Go {
-        profile: compiler_vocabulary::GoVersion,
+        profile: backend_semantic::vocabulary::GoVersion,
         image: &'source [u8],
     },
     Java {
-        profile: compiler_vocabulary::JavaRelease,
+        profile: backend_semantic::vocabulary::JavaRelease,
         image: &'source [u8],
     },
     CSharp {
-        profile: compiler_vocabulary::CSharpVersion,
+        profile: backend_semantic::vocabulary::CSharpVersion,
         image: &'source [u8],
     },
 }
@@ -329,7 +329,7 @@ impl LanguageSpec for ClangSpec {
 
 impl LanguageSpec for TypeScriptSpec {
     type Authority<'source> = (
-        compiler_vocabulary::TypeScriptSource,
+        backend_semantic::vocabulary::TypeScriptSource,
         Option<&'source compiler_languages_typescript::Report>,
     );
     type Extension = compiler_ir::TypeScriptFacts;
@@ -380,7 +380,7 @@ impl LanguageSpec for TypeScriptSpec {
 
 impl LanguageSpec for PythonSpec {
     type Authority<'source> = (
-        compiler_vocabulary::PythonVersion,
+        backend_semantic::vocabulary::PythonVersion,
         Option<&'source compiler_languages_python::CheckerReport>,
     );
     type Extension = compiler_ir::PythonFacts;
@@ -453,7 +453,7 @@ impl LanguageSpec for GoSpec {
 }
 
 impl LanguageSpec for JavaSpec {
-    type Authority<'source> = (compiler_vocabulary::JavaRelease, &'source [u8]);
+    type Authority<'source> = (backend_semantic::vocabulary::JavaRelease, &'source [u8]);
     type Extension = compiler_ir::JavaFacts;
 
     fn collect<'source, 'cancel, 'diagnostic>(
@@ -724,7 +724,7 @@ fn require_facts<'source, 'diagnostic>(
         return Err(CompileFailure::LoweringUnsupported {
             source_identity: source,
             recipe,
-            cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+            cause: backend_semantic::vocabulary::LoweringUnsupported::NoSupportedDeclaration,
         });
     }
     Ok(())
@@ -763,7 +763,7 @@ fn python_terminal<'diagnostic>(
             CompileFailure::LoweringUnsupported {
                 source_identity,
                 recipe,
-                cause: compiler_vocabulary::LoweringUnsupported::PythonProjection { fault },
+                cause: backend_semantic::vocabulary::LoweringUnsupported::PythonProjection { fault },
             }
         }
         lower::python::PythonCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
@@ -1049,7 +1049,7 @@ fn typescript_terminal<'diagnostic>(
         TypeScriptCollectError::Projection(fault) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
-            cause: compiler_vocabulary::LoweringUnsupported::TypeScriptProjection { fault },
+            cause: backend_semantic::vocabulary::LoweringUnsupported::TypeScriptProjection { fault },
         },
         TypeScriptCollectError::Span { start, end } => CompileFailure::Authority {
             source_identity,
@@ -1109,7 +1109,7 @@ mod lifecycle_tests {
     };
 
     use compiler_ir::{EntityKind, SemanticProductConstructor};
-    use compiler_vocabulary::{NativeTool, RustEdition};
+    use backend_semantic::vocabulary::{NativeTool, RustEdition};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 
     use super::*;

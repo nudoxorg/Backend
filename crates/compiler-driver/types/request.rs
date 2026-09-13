@@ -11,7 +11,7 @@ use std::{
 use compiler_ir::{
     DeclarationKey, DeclarationKeyFault, EntityKind, PackageLineage, PackageLineageFault,
 };
-use compiler_vocabulary::{LanguageProfile, PackageUrl, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, Stage};
 use backend_version::{ContentId, SourceFactDomain};
 
 use super::{ResolvedToolchain, SourceIdentity, ToolchainSelection};
@@ -88,10 +88,10 @@ impl<'source> DeclarationScope<'source> {
     pub fn standalone(profile: LanguageProfile) -> DeclarationScope<'static> {
         let (ecosystem, path) = match profile {
             LanguageProfile::Rust(_) => ("standalone-rust", "input.rs"),
-            LanguageProfile::TypeScript(compiler_vocabulary::TypeScriptSource::TypeScript) => {
+            LanguageProfile::TypeScript(backend_semantic::vocabulary::TypeScriptSource::TypeScript) => {
                 ("standalone-typescript", "input.ts")
             }
-            LanguageProfile::TypeScript(compiler_vocabulary::TypeScriptSource::Tsx) => {
+            LanguageProfile::TypeScript(backend_semantic::vocabulary::TypeScriptSource::Tsx) => {
                 ("standalone-typescript", "input.tsx")
             }
             LanguageProfile::Python(_) => ("standalone-python", "input.py"),

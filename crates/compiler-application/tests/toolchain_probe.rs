@@ -12,7 +12,7 @@ use std::{
 use compiler_application::{
     LocalRuntimeToolchain, ToolchainProbeError, ToolchainProbeLimits, ToolchainProbePrimary,
 };
-use compiler_vocabulary::{NativeTool, NativeWorker};
+use backend_semantic::vocabulary::{NativeTool, NativeWorker};
 
 #[cfg(unix)]
 static NEXT_PROGRAM: AtomicU64 = AtomicU64::new(0);

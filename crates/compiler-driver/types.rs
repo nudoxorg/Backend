@@ -33,7 +33,7 @@ pub use toolchain::{
 };
 
 pub use compiler_ir::SourceIdentity;
-pub use compiler_vocabulary::{
+pub use backend_semantic::vocabulary::{
     CompileRecipeFact, InvalidUtf8Fact, LoweringUnsupported, MAX_NATIVE_WORKER_PANIC_BYTES,
     NativeArtifactRole, NativeTool, NativeWorkPhase, NativeWorker, NativeWorkerPanic,
     NativeWorkerPanicClass, NativeWorkerPanicMessage,

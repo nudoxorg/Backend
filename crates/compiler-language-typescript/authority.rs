@@ -2,7 +2,7 @@
 //! Holds the resulting program facts in the caller's arena for a single lowering transaction.
 //! Selects grammar solely from the closed compiler TypeScript profile.
 
-use compiler_vocabulary::TypeScriptSource;
+use backend_semantic::vocabulary::TypeScriptSource;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::TSMappedTypeModifierOperator;
 use oxc_parser::Parser;

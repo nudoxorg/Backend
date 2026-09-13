@@ -12,7 +12,7 @@ use compiler_languages_go::{GoImage, GoOracle};
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     GoVersion, LanguageProfile, LoweringUnsupported, NativeTool, ProjectionAdmissionFault, Stage,
 };
 use backend_version::{ContentId, SourceFactDomain};

@@ -11,7 +11,7 @@ use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use server_index_build::{IndexBuildScratch, build};
 use server_index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,

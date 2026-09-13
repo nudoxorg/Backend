@@ -10,7 +10,7 @@ use compiler_ir::{
     FragmentRangeManifest, FragmentRangeManifestError, FragmentView, RecipeFact, SectionKind,
     SourceIdentity,
 };
-use compiler_vocabulary::{CompileRecipeFact, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, Stage};
 use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use thiserror::Error;
 

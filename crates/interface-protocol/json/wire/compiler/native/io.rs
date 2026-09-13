@@ -1,7 +1,7 @@
 //! Defines json wire compiler native io behavior for `interface-protocol`, whose purpose is to decode and project the shared application vocabulary for external transports.
 //! This module owns the json wire compiler native io invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use compiler_vocabulary::NativeWorkPhase;
+use backend_semantic::vocabulary::NativeWorkPhase;
 use interface_core::{NativeIoFact, NativeIoPhase};
 use serde::{Serialize, Serializer};
 

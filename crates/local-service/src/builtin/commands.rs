@@ -18,7 +18,7 @@ use compiler_application::{
 use compiler_ir::{
     LinkTarget, SemanticReader as _, SemanticSnapshot, SemanticStableLinks, StableLinkKey,
 };
-use compiler_vocabulary::{Language, LanguageProfile};
+use backend_semantic::vocabulary::{Language, LanguageProfile};
 use futures_util::StreamExt as _;
 use interface_core::{CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1334,7 +1334,7 @@ fn compile_semantic_publications(
             GenerateTarget {
                 correlation: context.correlation,
                 profile,
-                stage: compiler_vocabulary::Stage::LowerIr,
+                stage: backend_semantic::vocabulary::Stage::LowerIr,
             },
             coordinate.clone(),
         )

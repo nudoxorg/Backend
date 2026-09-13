@@ -7,7 +7,7 @@ use compiler_languages_python::{
     DeclarationKind, ExtractionError, LiteralValue, ModuleFacts, ParameterKind, Span, TypeReason,
     extract,
 };
-use compiler_vocabulary::PythonVersion;
+use backend_semantic::vocabulary::PythonVersion;
 use ruff_python_parser::UnsupportedSyntaxErrorKind;
 
 const PROFILE: PythonVersion = PythonVersion::Python314;

@@ -16,7 +16,7 @@ use super::{
     CanonicalCompilation, CompilationManifestError, CompilationManifestView,
     CompilationPrepareError, CompilationWriteError,
 };
-use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 
 #[derive(Debug, Error)]
 enum TestError {

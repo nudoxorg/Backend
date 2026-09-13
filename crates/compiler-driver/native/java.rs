@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::{path::Path, process::Command};
 
-use compiler_vocabulary::JavaRelease;
+use backend_semantic::vocabulary::JavaRelease;
 
 use crate::{
     native::{

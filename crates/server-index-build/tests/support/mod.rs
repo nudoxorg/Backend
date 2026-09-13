@@ -23,7 +23,7 @@ use compiler_publication::{
     OpenPublicationScratch, OpenedCompilation, OpenedFragment, OpenedFragmentCursor,
     PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use server_index_build::{
     BuildAdmissionError, BuildDerivationError, BuildError, EntityFact, EntityProjection,

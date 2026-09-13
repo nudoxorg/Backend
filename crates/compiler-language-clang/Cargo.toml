@@ -12,7 +12,7 @@ publish.workspace = true
 [dependencies]
 blake3.workspace = true
 clang-sys = { version = "1.9.1", default-features = false, features = ["clang_3_6", "runtime"] }
-compiler-vocabulary = { path = "../compiler-vocabulary" }
+backend-semantic = { path = "../semantic" }
 thiserror.workspace = true
 
 [features]

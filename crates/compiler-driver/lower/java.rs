@@ -29,7 +29,7 @@ use compiler_languages_java::{
     ImagePlane, JavaAuthorityImage, JavaImage, JavaRelease, Reference, SectionError, SymbolRef,
     TypeFact, TypeKind, TypeRef,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     JavaForeignKeyFault, JavaImageAtomFault, JavaImageFault, JavaImageHeaderFault, JavaImagePlane,
     JavaImageSectionFault, JavaProjectionFault, JavaProjectionIndexPhase, JavaProjectionTypeKind,
     JavaRelease as ProfileRelease, JavaSymbolAtom, LoweringUnsupported,
@@ -1761,7 +1761,7 @@ mod tests {
     use super::*;
     use compiler_ir::{DocFactFault, OccurrenceFault};
     use compiler_ir::{FragmentView, SourceIdentity, TypeFactFault};
-    use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
+    use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use sha2::Sha256;
 
@@ -2059,7 +2059,7 @@ mod tests {
             byte_len: u32::try_from(source.len())?,
         };
         let recipe = CompileRecipeFact::derive(
-            LanguageProfile::Java(compiler_vocabulary::JavaRelease::Java21),
+            LanguageProfile::Java(backend_semantic::vocabulary::JavaRelease::Java21),
             Stage::LowerIr,
             NativeTool::JavaCompiler,
             ContentId::<SourceFactDomain>::from_canonical_bytes(source),
@@ -2765,7 +2765,7 @@ mod tests {
             return Err(TestError::Missing("Java projection terminal"));
         };
         if fault
-            != (compiler_vocabulary::JavaProjectionFault::Utf16Offset {
+            != (backend_semantic::vocabulary::JavaProjectionFault::Utf16Offset {
                 units: 7,
                 source_utf16_len: 12,
             })
@@ -2782,7 +2782,7 @@ mod tests {
         else {
             return Err(TestError::Missing("primitive projection terminal"));
         };
-        if fault != (compiler_vocabulary::JavaProjectionFault::Primitive { type_row: 17 }) {
+        if fault != (backend_semantic::vocabulary::JavaProjectionFault::Primitive { type_row: 17 }) {
             return Err(TestError::Missing("primitive type row"));
         }
 
@@ -2791,7 +2791,7 @@ mod tests {
         else {
             return Err(TestError::Missing("depth projection terminal"));
         };
-        if fault != (compiler_vocabulary::JavaProjectionFault::Depth { type_row: 23 }) {
+        if fault != (backend_semantic::vocabulary::JavaProjectionFault::Depth { type_row: 23 }) {
             return Err(TestError::Missing("depth type row"));
         }
 
@@ -2804,9 +2804,9 @@ mod tests {
             return Err(TestError::Missing("malformed-type projection terminal"));
         };
         if fault
-            != (compiler_vocabulary::JavaProjectionFault::MalformedType {
+            != (backend_semantic::vocabulary::JavaProjectionFault::MalformedType {
                 type_row: 24,
-                kind: compiler_vocabulary::JavaProjectionTypeKind::Array,
+                kind: backend_semantic::vocabulary::JavaProjectionTypeKind::Array,
             })
         {
             return Err(TestError::Missing("malformed type coordinates"));
@@ -2843,22 +2843,22 @@ mod tests {
         else {
             return Err(TestError::Missing("orphan-owner projection terminal"));
         };
-        if fault != (compiler_vocabulary::JavaProjectionFault::OrphanOwner { owner: 0 }) {
+        if fault != (backend_semantic::vocabulary::JavaProjectionFault::OrphanOwner { owner: 0 }) {
             return Err(TestError::Missing("orphan owner coordinate"));
         }
 
         let JavaCollectError::Lowering(LoweringUnsupported::JavaProjection { fault }) =
             terminal(ProjectionFault::Utf8 {
                 symbol: 31,
-                atom: compiler_vocabulary::JavaSymbolAtom::Name,
+                atom: backend_semantic::vocabulary::JavaSymbolAtom::Name,
             })
         else {
             return Err(TestError::Missing("atom UTF-8 projection terminal"));
         };
         if fault
-            != (compiler_vocabulary::JavaProjectionFault::AtomUtf8 {
+            != (backend_semantic::vocabulary::JavaProjectionFault::AtomUtf8 {
                 symbol: 31,
-                atom: compiler_vocabulary::JavaSymbolAtom::Name,
+                atom: backend_semantic::vocabulary::JavaSymbolAtom::Name,
             })
         {
             return Err(TestError::Missing("atom UTF-8 coordinates"));
@@ -2879,9 +2879,9 @@ mod tests {
             return Err(TestError::Missing("image projection terminal"));
         };
         if fault
-            != (compiler_vocabulary::JavaProjectionFault::Image {
-                cause: compiler_vocabulary::JavaImageFault::ChildRange {
-                    plane: compiler_vocabulary::JavaImagePlane::TypeChildren,
+            != (backend_semantic::vocabulary::JavaProjectionFault::Image {
+                cause: backend_semantic::vocabulary::JavaImageFault::ChildRange {
+                    plane: backend_semantic::vocabulary::JavaImagePlane::TypeChildren,
                     start: 4,
                     count: 3,
                     upper_bound: 9,
@@ -2900,9 +2900,9 @@ mod tests {
             return Err(TestError::Missing("header projection terminal"));
         };
         if fault
-            != (compiler_vocabulary::JavaProjectionFault::Image {
-                cause: compiler_vocabulary::JavaImageFault::Header {
-                    cause: compiler_vocabulary::JavaImageHeaderFault::BodyLength {
+            != (backend_semantic::vocabulary::JavaProjectionFault::Image {
+                cause: backend_semantic::vocabulary::JavaImageFault::Header {
+                    cause: backend_semantic::vocabulary::JavaImageHeaderFault::BodyLength {
                         declared: 11,
                         actual: 7,
                     },
@@ -2924,8 +2924,8 @@ mod tests {
             return Err(TestError::Missing("image overflow terminal"));
         };
         if fault
-            != (compiler_vocabulary::JavaProjectionFault::IndexCapacity {
-                phase: compiler_vocabulary::JavaProjectionIndexPhase::FactOrdinal,
+            != (backend_semantic::vocabulary::JavaProjectionFault::IndexCapacity {
+                phase: backend_semantic::vocabulary::JavaProjectionIndexPhase::FactOrdinal,
             })
         {
             return Err(TestError::Missing("checked image coordinate overflow"));
@@ -2942,8 +2942,8 @@ mod tests {
             return Err(TestError::Missing("foreign-key projection terminal"));
         };
         if fault
-            != (compiler_vocabulary::JavaProjectionFault::ForeignKey {
-                cause: compiler_vocabulary::JavaForeignKeyFault::BackslashInPath,
+            != (backend_semantic::vocabulary::JavaProjectionFault::ForeignKey {
+                cause: backend_semantic::vocabulary::JavaForeignKeyFault::BackslashInPath,
             })
         {
             return Err(TestError::Missing("foreign-key projection operands"));

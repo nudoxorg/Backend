@@ -129,7 +129,7 @@ pub(super) struct CompactObservation {
 pub(super) struct ReopenedObservation {
     pub(super) fragment: Digest,
     pub(super) source: SourceIdentity,
-    pub(super) recipe: compiler_vocabulary::CompileRecipeFact,
+    pub(super) recipe: backend_semantic::vocabulary::CompileRecipeFact,
     pub(super) ranges: Digest,
     pub(super) census: compiler_ir::SemanticCensus,
     pub(super) semantic_data: PlaneObservation,
@@ -173,7 +173,7 @@ pub(super) enum RenderVerdict {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CaseOutputObservation {
     pub(super) source: SourceIdentity,
-    pub(super) recipe: compiler_vocabulary::CompileRecipeFact,
+    pub(super) recipe: backend_semantic::vocabulary::CompileRecipeFact,
     pub(super) owned: OwnedObservation,
     pub(super) compact: CompactObservation,
     pub(super) reopened: ReopenedObservation,
@@ -1615,7 +1615,7 @@ pub(super) fn digest_semantic(value: SemanticObservation) -> Digest {
     hasher.digest()
 }
 
-pub(super) fn digest_recipe(recipe: compiler_vocabulary::CompileRecipeFact) -> Digest {
+pub(super) fn digest_recipe(recipe: backend_semantic::vocabulary::CompileRecipeFact) -> Digest {
     let mut hasher = StableHasher::default();
     recipe.identity.hash(&mut hasher);
     recipe.profile.hash(&mut hasher);

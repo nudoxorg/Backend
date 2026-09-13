@@ -14,7 +14,7 @@ use compiler_application::{
 };
 use compiler_driver::{ResolvedToolchain, ToolchainSelection};
 use compiler_ir::SemanticImageView;
-use compiler_vocabulary::{CStandard, LanguageProfile, NativeTool, Stage};
+use backend_semantic::vocabulary::{CStandard, LanguageProfile, NativeTool, Stage};
 use interface_core::{
     CorrelationId, GenerateTarget, PackageCompilePhase, PackageCompileRequest, PackageUrl,
 };

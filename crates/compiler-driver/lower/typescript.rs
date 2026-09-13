@@ -17,7 +17,7 @@ use compiler_languages_typescript::{
     SymbolFlags, SymbolId, SyntaxMappedModifier, TemplatePart, TypeTree, Utf8Span,
     syntax_mapped_modifier, with_analysis,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
     TypeScriptProjectionFault, TypeScriptSource,
 };
@@ -3490,7 +3490,7 @@ mod projection_tests {
     use super::{TypeScriptCollectError, foreign_fault, lineage_fault};
     use compiler_ir::{ForeignKeyFault, PackageLineageFault};
     use compiler_languages_typescript::Span;
-    use compiler_vocabulary::{
+    use backend_semantic::vocabulary::{
         ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
         TypeScriptProjectionFault,
     };

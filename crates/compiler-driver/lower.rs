@@ -29,7 +29,7 @@ use compiler_ir::{
     PreparedFragment, RecipeFact, SourceIdentity, TypeFactInput, TypeFactLane, TypeNode,
     WriteError, canonicalize_data_with_budget,
 };
-use compiler_vocabulary::ProjectionFactLane;
+use backend_semantic::vocabulary::ProjectionFactLane;
 use core::mem::size_of;
 use core::num::NonZeroU16;
 
@@ -169,18 +169,18 @@ impl ResourcePlan {
     /// selected language. Excess authority output is an exact capacity fault,
     /// never an eager max-of-seven-languages allocation.
     pub(crate) fn for_source(
-        profile: compiler_vocabulary::LanguageProfile,
+        profile: backend_semantic::vocabulary::LanguageProfile,
         source_bytes: usize,
     ) -> Self {
         let multiplier = match profile {
-            compiler_vocabulary::LanguageProfile::TypeScript(_)
-            | compiler_vocabulary::LanguageProfile::Python(_) => 4,
-            compiler_vocabulary::LanguageProfile::C(_)
-            | compiler_vocabulary::LanguageProfile::Cxx(_) => 3,
-            compiler_vocabulary::LanguageProfile::Rust(_)
-            | compiler_vocabulary::LanguageProfile::Go(_)
-            | compiler_vocabulary::LanguageProfile::Java(_)
-            | compiler_vocabulary::LanguageProfile::CSharp(_) => 2,
+            backend_semantic::vocabulary::LanguageProfile::TypeScript(_)
+            | backend_semantic::vocabulary::LanguageProfile::Python(_) => 4,
+            backend_semantic::vocabulary::LanguageProfile::C(_)
+            | backend_semantic::vocabulary::LanguageProfile::Cxx(_) => 3,
+            backend_semantic::vocabulary::LanguageProfile::Rust(_)
+            | backend_semantic::vocabulary::LanguageProfile::Go(_)
+            | backend_semantic::vocabulary::LanguageProfile::Java(_)
+            | backend_semantic::vocabulary::LanguageProfile::CSharp(_) => 2,
         };
         let units = source_bytes.saturating_add(1);
         let bounded = |value: usize, maximum: usize| value.clamp(8, maximum);
@@ -1015,7 +1015,7 @@ impl<'source> FactSet<'source> {
             return self.reject_pending_type_run(
                 PendingTypeLane::Anonymous,
                 FactFault::RefTarget {
-                    lane: compiler_vocabulary::ProjectionFactLane::TypeRows,
+                    lane: backend_semantic::vocabulary::ProjectionFactLane::TypeRows,
                     raw: owner,
                     fact_count: self.len,
                 },
@@ -1059,7 +1059,7 @@ impl<'source> FactSet<'source> {
             return self.reject_pending_type_run(
                 PendingTypeLane::Anonymous,
                 FactFault::RefTarget {
-                    lane: compiler_vocabulary::ProjectionFactLane::ReservedTypeRows,
+                    lane: backend_semantic::vocabulary::ProjectionFactLane::ReservedTypeRows,
                     raw: reserved_owner,
                     fact_count: self.len,
                 },
@@ -1169,7 +1169,7 @@ impl<'source> FactSet<'source> {
             return self.reject_pending_type_run(
                 PendingTypeLane::Computed,
                 FactFault::RefTarget {
-                    lane: compiler_vocabulary::ProjectionFactLane::ComputedOwners,
+                    lane: backend_semantic::vocabulary::ProjectionFactLane::ComputedOwners,
                     raw: owner,
                     fact_count: self.len,
                 },
@@ -1284,7 +1284,7 @@ impl<'source> FactSet<'source> {
     ) -> Result<(), FactFault> {
         if ordinal >= self.len {
             return Err(FactFault::RefTarget {
-                lane: compiler_vocabulary::ProjectionFactLane::Extensions,
+                lane: backend_semantic::vocabulary::ProjectionFactLane::Extensions,
                 raw: ordinal as u32,
                 fact_count: self.len,
             });
@@ -1297,7 +1297,7 @@ impl<'source> FactSet<'source> {
             && extension_type_parameter_start(&extension).is_some()
         {
             return Err(FactFault::RefTarget {
-                lane: compiler_vocabulary::ProjectionFactLane::ReplacementTypeParameterRange,
+                lane: backend_semantic::vocabulary::ProjectionFactLane::ReplacementTypeParameterRange,
                 raw: ordinal as u32,
                 fact_count: self.type_parameter_len,
             });
@@ -1319,7 +1319,7 @@ impl<'source> FactSet<'source> {
         let start = start as usize;
         if start > self.type_parameter_len {
             return Err(FactFault::RefTarget {
-                lane: compiler_vocabulary::ProjectionFactLane::TypeParameterRanges,
+                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
                 raw: start as u32,
                 fact_count: self.type_parameter_len,
             });
@@ -1342,7 +1342,7 @@ impl<'source> FactSet<'source> {
             .copied()
             .flatten()
             .ok_or(FactFault::RefTarget {
-                lane: compiler_vocabulary::ProjectionFactLane::CapturedTypeParameterRange,
+                lane: backend_semantic::vocabulary::ProjectionFactLane::CapturedTypeParameterRange,
                 raw: ordinal as u32,
                 fact_count: self.len,
             })
@@ -1358,7 +1358,7 @@ impl<'source> FactSet<'source> {
     ) -> Result<(), FactFault> {
         if ordinal >= self.len {
             return Err(FactFault::RefTarget {
-                lane: compiler_vocabulary::ProjectionFactLane::Extensions,
+                lane: backend_semantic::vocabulary::ProjectionFactLane::Extensions,
                 raw: ordinal as u32,
                 fact_count: self.len,
             });
@@ -1369,7 +1369,7 @@ impl<'source> FactSet<'source> {
             || matches!(self.type_parameter_ranges[ordinal], Some(existing) if existing != range)
         {
             return Err(FactFault::RefTarget {
-                lane: compiler_vocabulary::ProjectionFactLane::TypeParameterRanges,
+                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
                 raw: range.start,
                 fact_count: self.type_parameter_len,
             });
@@ -1389,7 +1389,7 @@ impl<'source> FactSet<'source> {
         let start = start.raw as usize;
         if start > self.type_parameter_len {
             return Err(FactFault::RefTarget {
-                lane: compiler_vocabulary::ProjectionFactLane::TypeParameterRanges,
+                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
                 raw: start as u32,
                 fact_count: self.type_parameter_len,
             });
@@ -1721,7 +1721,7 @@ impl<'source> FactSet<'source> {
                 && !self.is_computed_type_row(raw)
             {
                 return Err(FactFault::RefTarget {
-                    lane: compiler_vocabulary::ProjectionFactLane::TypeParameters,
+                    lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameters,
                     raw,
                     fact_count: self.len,
                 });
@@ -1830,9 +1830,9 @@ impl<'source> FactSet<'source> {
     /// documentation, source spans, or language extensions.
     pub(super) fn build_ir(
         &self,
-        profile: compiler_vocabulary::LanguageProfile,
+        profile: backend_semantic::vocabulary::LanguageProfile,
         source: compiler_ir::SourceIdentity,
-        recipe: compiler_vocabulary::CompileRecipeFact,
+        recipe: backend_semantic::vocabulary::CompileRecipeFact,
         declaration_scope: crate::types::DeclarationScope<'source>,
     ) -> Result<Ir, compiler_ir::BuildError> {
         let fact_count = self.len;
@@ -4092,7 +4092,7 @@ pub(super) fn admit<'source, 'output>(
     facts: &FactSet<'source>,
     source: SourceIdentity,
     recipe: RecipeFact,
-    profile: compiler_vocabulary::LanguageProfile,
+    profile: backend_semantic::vocabulary::LanguageProfile,
     output: &'output mut [u8],
 ) -> Result<&'output [u8], AdmissionFault> {
     if facts.len == 0 {

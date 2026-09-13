@@ -6,7 +6,7 @@
 //! in an entity, type, document, or link owns a box or string.
 
 use alloc::{vec, vec::Vec};
-use compiler_vocabulary::{CompileRecipeFact, Language, LanguageProfile, PackageUrl};
+use backend_semantic::vocabulary::{CompileRecipeFact, Language, LanguageProfile, PackageUrl};
 use core::{fmt, hash::Hash, marker::PhantomData, num::NonZeroU16};
 use backend_version::{ContentId, SemanticScopeDomain};
 

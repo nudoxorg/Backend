@@ -10,7 +10,7 @@ use compiler_ir::{
     EntityKind, FragmentView, LanguageExtensionWireFact, NominalRef, PrimitiveShape,
     SemanticTypeTag,
 };
-use compiler_vocabulary::{CStandard, CxxStandard, LanguageProfile, NativeTool, Stage};
+use backend_semantic::vocabulary::{CStandard, CxxStandard, LanguageProfile, NativeTool, Stage};
 use backend_version::{ContentId, ToolchainDomain};
 use std::{
     mem::size_of,
@@ -40,7 +40,7 @@ enum TestError {
     #[error("clang compile failed")]
     Compile,
     #[error("clang lowering terminal: {0:?}")]
-    Lowering(compiler_vocabulary::LoweringUnsupported),
+    Lowering(backend_semantic::vocabulary::LoweringUnsupported),
     #[error("{0}")]
     Check(&'static str),
 }
@@ -490,7 +490,7 @@ fn empty_source_is_a_typed_no_declaration_terminal() -> Result<(), TestError> {
     removed.map_err(|_| TestError::Check("remove native work"))?;
     match outcome {
         Err(TestError::Lowering(
-            compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+            backend_semantic::vocabulary::LoweringUnsupported::NoSupportedDeclaration,
         )) => Ok(()),
         Err(other) => Err(other),
         Ok(_) => Err(TestError::Check("empty source was admitted as a fragment")),

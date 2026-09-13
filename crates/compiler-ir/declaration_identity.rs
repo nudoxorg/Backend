@@ -3,7 +3,7 @@
 //! This module owns only the profile and closed-parentage family preimage.
 //! Structural variants are framed outside this key and never enter it.
 
-use compiler_vocabulary::LanguageProfile;
+use backend_semantic::vocabulary::LanguageProfile;
 use backend_version::{ContentId, DeclarationFamilyDomain};
 
 use crate::DeclarationIdentity;

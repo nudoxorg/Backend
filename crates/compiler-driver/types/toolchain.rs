@@ -4,7 +4,7 @@
 use core::ops::Deref;
 use std::path::Path;
 
-use compiler_vocabulary::NativeTool;
+use backend_semantic::vocabulary::NativeTool;
 use backend_version::{ContentId, ToolchainDomain};
 use thiserror::Error;
 

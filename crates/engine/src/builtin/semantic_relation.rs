@@ -23,7 +23,7 @@ use compiler_publication::{
     },
     manifest::{CompilationManifestFacts, CompilationManifestFormat, CompilationManifestIdentity},
 };
-use compiler_vocabulary::{LanguageProfile, PackageUrl, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, Stage};
 use heart_hydration::VerifiedGenerationFacts;
 use backend_version::{ContentId, DependencySetDomain, GenerationId};
 
@@ -761,7 +761,7 @@ pub(super) fn semantic_publication_fixture_with_authority(
             let key = ProductSemanticPublicationKey::new(
                 package,
                 coordinate,
-                LanguageProfile::Rust(compiler_vocabulary::RustEdition::Rust2024),
+                LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2024),
             )
             .map_err(str::to_owned)?;
             Ok((
@@ -923,7 +923,7 @@ mod tests {
         OpenSemanticPublicationScratch, PublishControl, SemanticPublicationScratch,
         manifest::SemanticImageRegion, open_published_semantic, publish_semantic,
     };
-    use compiler_vocabulary::{
+    use backend_semantic::vocabulary::{
         CStandard, CompileRecipeFact, CxxStandard, LanguageProfile, NativeTool, RustEdition, Stage,
     };
     use backend_version::{IrManifestDomain, IrManifestEncoding, SourceFactDomain, ToolchainDomain};
@@ -1020,7 +1020,7 @@ mod tests {
             ProductSemanticPublicationKey::new(
                 product,
                 coordinate,
-                LanguageProfile::TypeScript(compiler_vocabulary::TypeScriptSource::TypeScript),
+                LanguageProfile::TypeScript(backend_semantic::vocabulary::TypeScriptSource::TypeScript),
             )
             .is_err()
         );

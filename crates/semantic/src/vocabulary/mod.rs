@@ -1,10 +1,8 @@
 //! Closed compiler facts shared by registries, native drivers, publication, and interfaces.
 //! This crate describes requests and failures but deliberately performs no compilation or I/O.
 //! Stable numeric conversions belong here because those values participate in canonical identities.
-#![no_std]
-extern crate alloc;
 
-use alloc::string::String;
+use std::string::String;
 use core::{fmt, str::FromStr};
 use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain, ToolchainDomain};
 use serde::{Deserialize, Serialize};
@@ -13,11 +11,11 @@ use thiserror::Error;
 mod package;
 mod profile;
 
-pub use package::{
+pub use self::package::{
     MAX_PACKAGE_URL_BYTES, PackageTextRange, PackageType, PackageUrl, PackageUrlError,
     PackageUrlFacts, RejectedPackageUrl,
 };
-pub use profile::{
+pub use self::profile::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion,
     RustEdition, TypeScriptSource, UnknownLanguageProfile,
 };

@@ -25,7 +25,7 @@ use compiler_publication::{
     PublicationScratch, PublishCompiledError, PublishControl, PublishedCompilation,
     binding::COMPILATION_BINDING_BYTES, open_published, publish_compiled,
 };
-use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use server_index_build::{EntityFact, EntityProjection, IndexBuildScratch, PreparedIndex, build};
 use server_index_core::{ExactRow, LexicalRow};

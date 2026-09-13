@@ -8,7 +8,7 @@ use compiler_ir::{
     ProductChildRole, ProductConstructorFault, ProductConstructorTag, SemanticTypeFault,
     SemanticTypeTag, TypeCell,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     ProjectionAdmissionFault, ProjectionChildRole, ProjectionConstructorFault,
     ProjectionConstructorTag, ProjectionParentageState, ProjectionSemanticTypeFault,
     ProjectionSemanticTypeTag, ProjectionSpan, ProjectionTypeCell, ProjectionTypeChildLane,

@@ -20,6 +20,7 @@ mod schema;
 mod support;
 
 pub mod ir_vocabulary;
+pub mod vocabulary;
 
 pub use canonical::*;
 pub use coverage::*;

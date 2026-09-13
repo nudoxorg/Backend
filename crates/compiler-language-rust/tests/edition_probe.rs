@@ -11,7 +11,7 @@ use std::{
 use compiler_languages_rust::{
     RustAnalysisControl, RustProject, RustToolchain, SourceByteLimit, ra_ap_hir,
 };
-use compiler_vocabulary::RustEdition;
+use backend_semantic::vocabulary::RustEdition;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

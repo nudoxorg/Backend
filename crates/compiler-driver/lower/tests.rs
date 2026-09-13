@@ -12,7 +12,7 @@ use compiler_ir::{
     VariadicForm, Visibility, encode_full_semantic_image, full_semantic_image_len,
 };
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
-use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
@@ -1172,7 +1172,7 @@ fn rejected_generic_fact_is_byte_for_byte_transactional_before_a_valid_push()
             name: b"rejected",
             cause:
                 FactFault::RefTarget {
-                    lane: compiler_vocabulary::ProjectionFactLane::TypeParameterRanges,
+                    lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
                     raw: 1,
                     fact_count: 0,
                 },
@@ -1370,7 +1370,7 @@ fn provenance_is_exactly_transactional_and_members_require_complete_capture()
     // leaves all active provenance prefixes equal to the control lane.
     match candidate.attach_source_span(3, first_span) {
         Err(FactFault::RefTarget {
-            lane: compiler_vocabulary::ProjectionFactLane::EntitySourceSpans,
+            lane: backend_semantic::vocabulary::ProjectionFactLane::EntitySourceSpans,
             raw: 3,
             fact_count: 3,
         }) => {}
@@ -1379,7 +1379,7 @@ fn provenance_is_exactly_transactional_and_members_require_complete_capture()
     }
     match candidate.attach_parent(1, 3) {
         Err(FactFault::RefTarget {
-            lane: compiler_vocabulary::ProjectionFactLane::EntityParents,
+            lane: backend_semantic::vocabulary::ProjectionFactLane::EntityParents,
             raw: 3,
             fact_count: 3,
         }) => {}
@@ -1388,7 +1388,7 @@ fn provenance_is_exactly_transactional_and_members_require_complete_capture()
     }
     match candidate.mark_members_captured(3) {
         Err(FactFault::RefTarget {
-            lane: compiler_vocabulary::ProjectionFactLane::EntityMembers,
+            lane: backend_semantic::vocabulary::ProjectionFactLane::EntityMembers,
             raw: 3,
             fact_count: 3,
         }) => {}
@@ -1668,7 +1668,7 @@ fn anonymous_pending_rows_abort_each_failure_before_the_next_valid_row() -> Resu
         .map_err(lane_fault)?;
     match candidate.intern_anonymous_type_row(1, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)) {
         Err(FactFault::RefTarget {
-            lane: compiler_vocabulary::ProjectionFactLane::TypeRows,
+            lane: backend_semantic::vocabulary::ProjectionFactLane::TypeRows,
             raw: 1,
             fact_count: 1,
         }) => {}
@@ -1702,7 +1702,7 @@ fn anonymous_pending_rows_abort_each_failure_before_the_next_valid_row() -> Resu
         .intern_reserved_anchor_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
     {
         Err(FactFault::RefTarget {
-            lane: compiler_vocabulary::ProjectionFactLane::ReservedTypeRows,
+            lane: backend_semantic::vocabulary::ProjectionFactLane::ReservedTypeRows,
             raw: 0,
             fact_count: 1,
         }) => {}
@@ -1887,7 +1887,7 @@ fn computed_pending_rows_abort_each_failure_before_the_next_valid_row() -> Resul
         SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
     ) {
         Err(FactFault::RefTarget {
-            lane: compiler_vocabulary::ProjectionFactLane::ComputedOwners,
+            lane: backend_semantic::vocabulary::ProjectionFactLane::ComputedOwners,
             raw: 1,
             fact_count: 1,
         }) => {}

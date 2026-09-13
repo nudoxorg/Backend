@@ -9,7 +9,7 @@ use std::{
 
 use compiler_driver::ToolchainSelection;
 use compiler_publication::manifest::StoredFragmentFacts;
-use compiler_vocabulary::{MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool};
+use backend_semantic::vocabulary::{MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool};
 use interface_core::PackageEcosystem;
 use thiserror::Error;
 
