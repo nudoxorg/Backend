@@ -69,6 +69,12 @@ struct Dependency {
     /// versions have emitted each form.
     #[serde(default)]
     rename: Option<String>,
+    /// Dependency kind emitted by cargo metadata: absent/null is a normal
+    /// runtime dependency, while `dev` and `build` are not part of the
+    /// runtime product graph.  The product DAG must ignore them so test-only
+    /// edges cannot masquerade as architectural dependencies.
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 /// A precise package-graph violation.
