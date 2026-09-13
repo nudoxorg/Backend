@@ -28,6 +28,7 @@ pub mod queue;
 pub mod registry;
 pub mod schema;
 pub mod tcp;
+pub mod telemetry;
 pub mod worker;
 pub mod workspace;
 

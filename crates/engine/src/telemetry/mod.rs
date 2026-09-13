@@ -1,7 +1,6 @@
 //! The `heart-telemetry` crate exists to batch typed product signals into tracing and OpenTelemetry backends.
 //! Its public types are the complete boundary; implementation details remain private.
 //! Callers compose capabilities through explicit authority, ownership, and failure values.
-#![forbid(unsafe_code)]
 //! Server-only `tracing` to OpenTelemetry adapter for portable product probe events.
 
 mod batch;
