@@ -11,11 +11,22 @@ backend-version = { path = "../version" }
 backend-store = { path = "../store" }
 backend-flow = { path = "../flow" }
 backend-replication = { path = "../replication" }
+server-index-core = { path = "../server-index-core" }
+server-index-vocabulary = { path = "../server-index-vocabulary" }
 blake3.workspace = true
 strum.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+compiler-ir = { path = "../compiler-ir" }
 
 [lints]
 workspace = true
 
 [lib]
 path = "src/lib.rs"
+
+[[bench]]
+name = "routing"
+path = "benches/routing.rs"
+harness = false

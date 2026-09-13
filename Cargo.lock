@@ -880,7 +880,11 @@ dependencies = [
  "backend-store",
  "backend-version",
  "blake3",
+ "compiler-ir",
+ "server-index-core",
+ "server-index-vocabulary",
  "strum 0.28.0",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -8763,18 +8767,6 @@ dependencies = [
  "server-index-trustfall",
  "server-index-vocabulary",
  "server-journal",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "server-index-routing"
-version = "0.1.0"
-dependencies = [
- "backend-version",
- "blake3",
- "compiler-ir",
- "server-index-core",
- "server-index-vocabulary",
  "thiserror 2.0.20",
 ]
 
