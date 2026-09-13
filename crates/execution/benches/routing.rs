@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use compiler_ir::EntityId;
 use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{EntityArtifactIdentity, EntityDocumentId, IndexSnapshot};
-use server_index_routing::{
+use backend_execution::routing::{
     Coordinator, MAX_SEGMENTS, MissingAssignment, ObservedHit, OrderingRecipe, Query, RetryPolicy,
     RouteAttempt, RoutedHitSlot, SegmentOrdinal, SegmentRange, TopK, WorkerId, WorkerReply,
     merge_replies,
@@ -87,7 +87,7 @@ fn fixture(segment_count: usize) -> Option<(Duration, Duration)> {
                 segment: assignment.segment,
                 range: SegmentRange::whole(),
                 worker,
-                ordinal: server_index_routing::AttemptOrdinal::new(0),
+                ordinal: backend_execution::routing::AttemptOrdinal::new(0),
             },
             rows.get(ordinal)?.as_slice(),
         ));

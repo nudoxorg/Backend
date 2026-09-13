@@ -18,7 +18,6 @@ const FORBIDDEN_MARKERS: &[&str] = &[
     "server-index-publish",
     "server-index-qdrant",
     "server-index-retrieval",
-    "server-index-routing",
     "tantivy",
     "server-index-tantivy",
     "server-index-trustfall",

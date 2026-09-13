@@ -12,6 +12,8 @@ mod attempt;
 mod cancel;
 mod placement;
 mod planner;
+/// Snapshot-pinned horizontal routing, planning, and deterministic merge.
+pub mod routing;
 mod scheduler;
 mod supervisor;
 mod telemetry;
