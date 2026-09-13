@@ -4,11 +4,11 @@
 //! Static server-side span tree and portable probe event mapping.
 
 use heart_hydration::HydrationProbeEvent;
-use heart_memory::StoreProbeEvent;
-use heart_observe::Probe;
+use backend_store::memory::StoreProbeEvent;
+use backend_version::observe::Probe;
 use heart_root::RootProbeEvent;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
-use server_runtime::RuntimeProbeEvent;
+use backend_runtime::server::RuntimeProbeEvent;
 use server_workflow::WorkflowProbeEvent;
 use tracing::{Level, Span};
 
@@ -68,7 +68,7 @@ impl TracingProbe {
     /// Returns the exact integer conversion failure when a metric cannot fit its instrument.
     pub fn record_runtime_metrics(
         &self,
-        snapshot: server_runtime::RuntimeMetrics,
+        snapshot: backend_runtime::server::RuntimeMetrics,
     ) -> Result<(), MetricReportError> {
         if let Some(metrics) = &self.metrics {
             metrics.record(snapshot)?;

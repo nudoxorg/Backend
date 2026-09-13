@@ -4,17 +4,17 @@
 use alloc::{boxed::Box, collections::TryReserveError, vec::Vec};
 use core::{mem::size_of, num::TryFromIntError};
 
-use heart_identity::{ContentId, GenerationId, ObjectDomain};
-use heart_memory::{InsertOutcome, MemoryStore, RejectedInsert, StoreCapacity, StoreInitError};
-use heart_object::{ObjectRef, ProviderId, ProviderIdError, ProviderSet, RemoteBase};
-use heart_observe::{DropNewest, FlightRecorder};
+use backend_version::{ContentId, GenerationId, ObjectDomain};
+use backend_store::memory::{InsertOutcome, MemoryStore, RejectedInsert, StoreCapacity, StoreInitError};
+use backend_version::object::{ObjectRef, ProviderId, ProviderIdError, ProviderSet, RemoteBase};
+use backend_version::observe::{DropNewest, FlightRecorder};
 use heart_root::{
     BorrowedGenerationView, ClosureError, ClosureScratch, EntryKey, EntryRangeError,
     GenerationRoot, GenerationView, LocalityError, LocalityException, LocalityWriteError,
     MetadataBytes, NonResident, PreparedLocality, RootBuildError, RootEntry, RootReadError,
     RootWriteError, ValidatedLocality, ValidatedRoot,
 };
-use heart_schema::SchemaId;
+use backend_version::schema::SchemaId;
 use rstest::rstest;
 use thiserror::Error;
 

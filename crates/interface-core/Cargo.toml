@@ -11,11 +11,10 @@ publish.workspace = true
 
 [dependencies]
 arrayvec.workspace = true
-heart-adaptive = { path = "../heart-adaptive" }
+backend-execution = { path = "../execution" }
 compiler-registry = { path = "../compiler-registry" }
 compiler-vocabulary = { path = "../compiler-vocabulary" }
-heart-identity = { path = "../heart-identity" }
-heart-observe = { path = "../heart-observe" }
+backend-version = { path = "../version" }
 server-index-core = { path = "../server-index-core" }
 [dev-dependencies]
 allocation-counter.workspace = true

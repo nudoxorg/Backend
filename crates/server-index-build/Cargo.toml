@@ -11,7 +11,7 @@ publish.workspace = true
 
 [dependencies]
 compiler-publication = { path = "../compiler-publication" }
-heart-identity = { path = "../heart-identity" }
+backend-version = { path = "../version" }
 server-index-core = { path = "../server-index-core" }
 compiler-ir = { path = "../compiler-ir" }
 thiserror.workspace = true
@@ -22,7 +22,6 @@ allocation-counter.workspace = true
 compiler-driver = { path = "../compiler-driver" }
 compiler-vocabulary = { path = "../compiler-vocabulary" }
 server-journal = { path = "../server-journal" }
-heart-identity = { path = "../heart-identity" }
 [lints]
 workspace = true
 

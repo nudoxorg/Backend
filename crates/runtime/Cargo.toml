@@ -7,13 +7,21 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+atomic-waker.workspace = true
+backend-version = { path = "../version" }
 blake3.workspace = true
+loom = { workspace = true, optional = true }
+thiserror.workspace = true
 
 # The derived endpoint folds in the effective user so a shared `/tmp` cannot
 # put two users on one 0600 socket. `rustix` is the workspace's existing safe
-# wrapper for that call; this crate forbids unsafe code outright.
+# wrapper for that call; this crate denies unsafe code by default and permits
+# only the audited payload-cell modules under `server`.
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", default-features = false, features = ["std", "process"] }
+
+[features]
+loom-model = ["dep:loom"]
 
 [lints]
 workspace = true

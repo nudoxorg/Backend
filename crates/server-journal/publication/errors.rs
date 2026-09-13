@@ -10,7 +10,7 @@ use std::{
 };
 
 use heart_hydration::VerifiedGeneration;
-use heart_identity::{ContentIdDecodeError, Domain};
+use backend_version::{ContentIdDecodeError, Domain};
 use server_workflow::{ReductionError, StageKey, WorkflowRecord};
 use thiserror::Error;
 

@@ -4,8 +4,8 @@
 //! Static low-cardinality names for portable semantic events.
 
 use heart_hydration::{HydrationOutcome, PlanRejection};
-use heart_memory::StoreAdmission;
-use server_runtime::{
+use backend_store::memory::StoreAdmission;
+use backend_runtime::server::{
     RejectionReason, RuntimeAdmission, RuntimeContainment, RuntimeExecution, RuntimeProbeEvent,
     RuntimeTerminal, TerminalClass,
 };

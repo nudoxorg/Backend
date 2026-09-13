@@ -26,11 +26,9 @@ allocation-counter.workspace = true
 compiler-vocabulary = { path = "../compiler-vocabulary" }
 server-journal = { path = "../server-journal" }
 heart-hydration = { path = "../heart-hydration" }
-heart-identity = { path = "../heart-identity" }
-heart-object = { path = "../heart-object" }
+backend-version = { path = "../version" }
 heart-root = { path = "../heart-root" }
-heart-schema = { path = "../heart-schema" }
-heart-memory = { path = "../heart-memory" }
+backend-store = { path = "../store" }
 futures-core.workspace = true
 interface-protocol = { path = "../interface-protocol" }
 serde_json.workspace = true

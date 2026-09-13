@@ -5,11 +5,11 @@
 
 use core::mem::size_of;
 
-use heart_identity::{
+use backend_version::{
     CONTENT_PAYLOAD_BYTES, ContentAuthorityError, DependencySetDomain, Domain, GenerationId,
     ObjectDomain,
 };
-use heart_object::{
+use backend_version::object::{
     ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet,
     ProviderSetError, RemoteBase,
 };
@@ -18,7 +18,7 @@ use heart_root::{
     LocalityException, LocalityScanWork, LocalityValidator, NonResident, PreparedLocality,
     RootBuildError, RootEntry, ValidatedLocality,
 };
-use heart_schema::{SchemaId, UnknownSchemaId};
+use backend_version::schema::{SchemaId, UnknownSchemaId};
 use thiserror::Error;
 
 const LONG_LANE_ROWS: u8 = 64;
@@ -82,7 +82,7 @@ struct ScanEvidence {
 
 fn domain_object<DomainTag: Domain>(row: u8) -> ObjectRef<DomainTag> {
     ObjectRef {
-        content: heart_identity::ContentId::from_digest([row; 32]),
+        content: backend_version::ContentId::from_digest([row; 32]),
         length: ObjectLength::from(u64::from(row) + 1),
         schema: SchemaId::Object,
         kind: ObjectKind::from(1),

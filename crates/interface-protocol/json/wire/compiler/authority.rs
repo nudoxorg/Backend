@@ -2,7 +2,7 @@
 //! This module owns the json wire compiler authority invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use compiler_vocabulary::CompileRecipeFact;
-use heart_identity::{
+use backend_version::{
     ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, CompileRecipeDomain,
     DependencySetDomain, IrFragmentDomain, IrFragmentEncoding, IrManifestDomain,
     IrManifestEncoding, IrSemanticImageDomain, IrSemanticImageEncoding, SourceFactDomain,
@@ -23,7 +23,7 @@ use super::super::scalar::{
 #[serde(remote = "interface_core::SourceAuthority")]
 pub(crate) struct SourceAuthorityWire {
     #[serde(serialize_with = "serialize_content")]
-    identity: heart_identity::ContentId<SourceFactDomain>,
+    identity: backend_version::ContentId<SourceFactDomain>,
     byte_len: u32,
 }
 
@@ -32,7 +32,7 @@ pub(crate) struct SourceAuthorityWire {
 #[serde(remote = "compiler_vocabulary::CompileRecipeFact")]
 pub(crate) struct CompileRecipeWire {
     #[serde(serialize_with = "serialize_content")]
-    identity: heart_identity::ContentId<CompileRecipeDomain>,
+    identity: backend_version::ContentId<CompileRecipeDomain>,
     #[serde(with = "LanguageProfileWire")]
     profile: compiler_vocabulary::LanguageProfile,
     #[serde(with = "StageWire")]
@@ -40,7 +40,7 @@ pub(crate) struct CompileRecipeWire {
     #[serde(with = "NativeToolWire")]
     tool: compiler_vocabulary::NativeTool,
     #[serde(serialize_with = "serialize_content")]
-    toolchain: heart_identity::ContentId<ToolchainDomain>,
+    toolchain: backend_version::ContentId<ToolchainDomain>,
 }
 
 /// Remote serde definition for the complete verified publication authority.
@@ -72,9 +72,9 @@ struct DurableReceiptAuthorityWire {
 #[serde(remote = "interface_core::GenerationAuthority")]
 pub(crate) struct GenerationAuthorityWire {
     #[serde(serialize_with = "serialize_content")]
-    pinned_root: heart_identity::GenerationId,
+    pinned_root: backend_version::GenerationId,
     #[serde(serialize_with = "serialize_content")]
-    dep_set: heart_identity::ContentId<DependencySetDomain>,
+    dep_set: backend_version::ContentId<DependencySetDomain>,
 }
 
 /// Remote serde definition for the compact attempt authority retained by compiler failures.
@@ -84,7 +84,7 @@ pub(crate) struct CompilerAttemptWire {
     #[serde(with = "SourceAuthorityWire")]
     source: SourceAuthority,
     #[serde(serialize_with = "serialize_content")]
-    recipe: heart_identity::ContentId<CompileRecipeDomain>,
+    recipe: backend_version::ContentId<CompileRecipeDomain>,
 }
 
 /// Remote serde definition for one complete reopened semantic image.

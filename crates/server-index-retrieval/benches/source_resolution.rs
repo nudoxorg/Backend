@@ -16,7 +16,7 @@ use compiler_ir::{
     SemanticImageIdentity, SemanticImageView, SourceSpan, TreeItemInput, VariantFingerprint,
     Visibility, encode_full_semantic_image, full_semantic_image_len,
 };
-use heart_identity::{CompilePublicationDomain, ContentId, GenerationId};
+use backend_version::{CompilePublicationDomain, ContentId, GenerationId};
 use server_index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalOperation, LexicalRow,
     LexicalScore, LexicalSegment,

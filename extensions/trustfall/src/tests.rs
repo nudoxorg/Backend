@@ -20,7 +20,7 @@ use compiler_vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
 };
 use futures_util::StreamExt as _;
-use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use std::collections::BTreeMap;
 
 struct FixtureCoverageVerifier {

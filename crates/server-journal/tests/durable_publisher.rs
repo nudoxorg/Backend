@@ -12,13 +12,13 @@ use std::{
 use allocation_counter::{AllocationInfo, measure};
 use heart_hydration::PlanScratch;
 use heart_hydration::{Projection, VerifiedGeneration, VerifiedGenerationFacts, demand, plan};
-use heart_identity::{ContentId, ObjectDomain};
-use heart_memory::{InsertOutcome, MemoryStore, StoreCapacity};
-use heart_object::ObjectRef;
+use backend_version::{ContentId, ObjectDomain};
+use backend_store::memory::{InsertOutcome, MemoryStore, StoreCapacity};
+use backend_version::object::ObjectRef;
 use heart_root::{
     ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry, ValidatedLocality,
 };
-use heart_schema::SchemaId;
+use backend_version::schema::SchemaId;
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);

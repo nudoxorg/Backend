@@ -3,8 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::mem::size_of;
 
-use heart_identity::GenerationId;
-use heart_object::RemoteBase;
+use backend_version::GenerationId;
+use backend_version::object::RemoteBase;
 use zerocopy::{
     IntoBytes,
     byteorder::{BigEndian, U32},
@@ -38,7 +38,7 @@ pub struct PreparedLocality<'facts, DomainTag> {
     basis: Option<GenerationId>,
 }
 
-impl<'facts, DomainTag: heart_identity::Domain> PreparedLocality<'facts, DomainTag> {
+impl<'facts, DomainTag: backend_version::Domain> PreparedLocality<'facts, DomainTag> {
     /// Checks root-issued exception rows in strict canonical order and
     /// measures every direct-write lane.
     ///
@@ -111,7 +111,7 @@ pub(crate) struct LocalityEncoder<'output, DomainTag> {
     domain: core::marker::PhantomData<fn() -> DomainTag>,
 }
 
-impl<'output, DomainTag: heart_identity::Domain> LocalityEncoder<'output, DomainTag> {
+impl<'output, DomainTag: backend_version::Domain> LocalityEncoder<'output, DomainTag> {
     pub(crate) fn new(
         output: &'output mut [u8],
         generation: GenerationId,
@@ -312,7 +312,7 @@ fn normalize_basis(
     clippy::indexing_slicing,
     reason = "the measured layout preflight proves every writer output contains the fixed header prefix"
 )]
-fn write_header<DomainTag: heart_identity::Domain>(
+fn write_header<DomainTag: backend_version::Domain>(
     output: &mut [u8],
     generation: GenerationId,
     root_count: RootEntryCount,
@@ -457,7 +457,7 @@ fn write_descriptor<DomainTag>(
     output: &mut [u8],
     start: usize,
     ordinal: u32,
-    object: heart_object::ObjectRef<DomainTag>,
+    object: backend_version::object::ObjectRef<DomainTag>,
 ) {
     let record = LocalityDescriptorWireRecord::from(&object);
     let start = start + native(ordinal) * LOCALITY_DESCRIPTOR_BYTES;

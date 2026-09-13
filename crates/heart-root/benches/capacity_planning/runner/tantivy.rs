@@ -4,7 +4,7 @@
 //! Lexical row derivation and Tantivy adapter build/query phases.
 
 use compiler_ir::EntityId;
-use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
     EntityArtifactIdentity, EntityDocumentId, GenerationId, IndexSnapshot, LexicalManifest,
     LexicalRow, LexicalScore, LexicalSegment,

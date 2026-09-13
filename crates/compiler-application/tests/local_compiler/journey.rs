@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use compiler_vocabulary::{
     Language, LanguageProfile, PythonVersion, RustEdition, Stage, TypeScriptSource,
 };
-use heart_identity::{ContentId, SourceFactDomain};
+use backend_version::{ContentId, SourceFactDomain};
 use interface_core::{
     ApplicationDisposition, ApplicationOutcome, ApplicationReply, ApplicationService,
     CompilerTerminal, Diagnostic, DiagnosticCode, DiagnosticDetail, ReplyBody,

@@ -7,16 +7,16 @@ use core::num::TryFromIntError;
 use std::collections::TryReserveError;
 
 use heart_hydration::{PlanError, PlanScratch, Projection, VerificationError, demand, plan};
-use heart_identity::{ContentId, ObjectDomain};
-use heart_memory::{
+use backend_version::{ContentId, ObjectDomain};
+use backend_store::memory::{
     InsertOutcome, MemoryStore, RejectedInsert, StoreCapacity, StoreError, StoreInitError,
 };
-use heart_object::{ObjectKind, ObjectLength, ObjectRef};
+use backend_version::object::{ObjectKind, ObjectLength, ObjectRef};
 use heart_root::{
     ClosureScratch, GenerationRoot, GenerationRootBuilder, GenerationView, PreparedLocality,
     RootBuildError, RootEntry, RootPushError,
 };
-use heart_schema::SchemaId;
+use backend_version::schema::SchemaId;
 use thiserror::Error;
 
 use crate::manifest::{CompilationManifestView, StoredFragmentFacts};

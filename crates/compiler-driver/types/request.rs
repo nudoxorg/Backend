@@ -12,7 +12,7 @@ use compiler_ir::{
     DeclarationKey, DeclarationKeyFault, EntityKind, PackageLineage, PackageLineageFault,
 };
 use compiler_vocabulary::{LanguageProfile, PackageUrl, Stage};
-use heart_identity::{ContentId, SourceFactDomain};
+use backend_version::{ContentId, SourceFactDomain};
 
 use super::{ResolvedToolchain, SourceIdentity, ToolchainSelection};
 

@@ -5,7 +5,7 @@ use super::*;
 use crate::publication::credit::{CreditPool, PendingLease};
 use crate::{ArtifactName, DurablePublisher, PublicationLimits};
 use allocation_counter::{AllocationInfo, measure};
-use heart_identity::{ContentId, DependencySetDomain, GenerationId};
+use backend_version::{ContentId, DependencySetDomain, GenerationId};
 use std::{
     error::Error,
     fmt, fs, io,

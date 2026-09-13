@@ -12,7 +12,7 @@ publish.workspace = true
 [dependencies]
 compiler-publication = { path = "../compiler-publication" }
 server-journal = { path = "../server-journal" }
-heart-identity = { path = "../heart-identity" }
+backend-version = { path = "../version" }
 server-index-build = { path = "../server-index-build" }
 server-index-core = { path = "../server-index-core" }
 server-index-vocabulary = { path = "../server-index-vocabulary" }
@@ -29,10 +29,8 @@ server-index-qdrant = { path = "../server-index-qdrant" }
 server-index-tantivy = { path = "../server-index-tantivy" }
 server-index-trustfall = { path = "../server-index-trustfall" }
 compiler-ir = { path = "../compiler-ir" }
-heart-object = { path = "../heart-object" }
 heart-root = { path = "../heart-root" }
-heart-schema = { path = "../heart-schema" }
-heart-memory = { path = "../heart-memory" }
+backend-store = { path = "../store" }
 [lints]
 workspace = true
 

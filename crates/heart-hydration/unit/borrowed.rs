@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use alloc::{vec, vec::Vec};
 
-use heart_identity::{GenerationId, ObjectDomain};
+use backend_version::{GenerationId, ObjectDomain};
 
 use super::*;
 
@@ -181,7 +181,7 @@ fn assert_complete_borrowed_plan(
     root: &GenerationRoot<ObjectDomain>,
     view: &BorrowedGenerationView<'_, '_, ObjectDomain>,
     scratch: &mut PlanScratch,
-) -> Result<(heart_object::DepSetId, PlanCoverage), ScenarioError> {
+) -> Result<(backend_version::object::DepSetId, PlanCoverage), ScenarioError> {
     let mut closure = closure_scratch(root)?;
     let borrowed = plan_borrowed(
         Need::new(view.id, Projection::CompleteGeneration).bind_borrowed(view)?,

@@ -4,9 +4,9 @@
 use alloc::boxed::Box;
 use core::ops::Deref;
 
-use heart_identity::{Domain, GenerationId};
-use heart_memory::MemoryStore;
-use heart_object::{DepSetId, ObjectRef};
+use backend_version::{Domain, GenerationId};
+use backend_store::memory::MemoryStore;
+use backend_version::object::{DepSetId, ObjectRef};
 use thiserror::Error;
 
 use crate::{BorrowedHydrationPlanView, HydrationPlanView};

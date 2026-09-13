@@ -1,7 +1,7 @@
 //! Scalar decoding for durable Turso cells.
 
 use compiler_ir::DeclarationIdentity;
-use heart_identity::{ContentId, GenerationId};
+use backend_version::{ContentId, GenerationId};
 use server_index_vocabulary::{
     CanonicalEntityLocator, IndexLocatorFacts, SemanticImageExtent, SemanticImageLocator,
 };
@@ -65,7 +65,7 @@ pub(super) fn record(row: turso::Row) -> Result<CatalogRecord, CatalogError> {
     let publication = ContentId::try_from(blob(row.get_value(6)?, 32)?.as_slice())
         .map_err(|_| CatalogError::CorruptLocator)?;
     let image_identity =
-        heart_identity::ArtifactId::try_from(blob(row.get_value(7)?, 32)?.as_slice())
+        backend_version::ArtifactId::try_from(blob(row.get_value(7)?, 32)?.as_slice())
             .map_err(|_| CatalogError::CorruptLocator)?;
     let offset =
         u64::try_from(integer(row.get_value(8)?)?).map_err(|_| CatalogError::CorruptLocator)?;

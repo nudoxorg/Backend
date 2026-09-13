@@ -11,7 +11,7 @@ publish.workspace = true
 
 [dependencies]
 compiler-ir = { path = "../compiler-ir" }
-heart-identity = { path = "../heart-identity" }
+backend-version = { path = "../version" }
 [dev-dependencies]
 allocation-counter.workspace = true
 

@@ -6,7 +6,7 @@
 
 use core::fmt;
 
-use heart_identity::{HASH_BYTES, IndexSnapshotDomain, IndexSnapshotId};
+use backend_version::{HASH_BYTES, IndexSnapshotDomain, IndexSnapshotId};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{Error as _, SeqAccess, Visitor},

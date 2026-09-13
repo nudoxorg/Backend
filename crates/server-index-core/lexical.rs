@@ -5,7 +5,7 @@
 
 use core::{cmp::Ordering, ops::Deref};
 
-use heart_identity::{ContentHasher, FixedCanonicalRecord, IndexLexicalSegmentDomain};
+use backend_version::{ContentHasher, FixedCanonicalRecord, IndexLexicalSegmentDomain};
 use server_index_vocabulary::LexicalSegmentId;
 
 use crate::document::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId};

@@ -5,8 +5,8 @@
 
 use core::{ops::Deref, slice};
 
-use heart_identity::{ContentAuthority, Domain};
-use heart_object::{ObjectKind, ObjectLength, ObjectRef};
+use backend_version::{ContentAuthority, Domain};
+use backend_version::object::{ObjectKind, ObjectLength, ObjectRef};
 
 use super::{BorrowedRootFacts, BorrowedRootRows, ValidatedRoot};
 use crate::{

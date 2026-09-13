@@ -3,12 +3,12 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 //! Canonical root-view integration coverage.
 
-use heart_identity::{ContentId, ObjectDomain};
-use heart_object::{ObjectKind, ObjectRef};
+use backend_version::{ContentId, ObjectDomain};
+use backend_version::object::{ObjectKind, ObjectRef};
 use heart_root::{
     GenerationRoot, RootBuildError, RootEntry, RootReadError, RootWriteError, ValidatedRoot,
 };
-use heart_schema::SchemaId;
+use backend_version::schema::SchemaId;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

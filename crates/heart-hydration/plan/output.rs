@@ -3,8 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::{mem::size_of_val, ops::Deref};
 
-use heart_identity::{Domain, GenerationId};
-use heart_object::{DepSetId, ObjectRef, ProviderSet};
+use backend_version::{Domain, GenerationId};
+use backend_version::object::{DepSetId, ObjectRef, ProviderSet};
 use heart_root::{
     BorrowedSelectedGeneration, GenerationEntry, Locality, MetadataBytes, SelectedGeneration,
 };

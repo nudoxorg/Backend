@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 compiler-ir = { path = "../compiler-ir" }
-heart-identity = { path = "../heart-identity" }
+backend-version = { path = "../version" }
 server-index-vocabulary = { path = "../server-index-vocabulary" }
 server-index-ingest = { path = "../server-index-ingest" }
 thiserror.workspace = true

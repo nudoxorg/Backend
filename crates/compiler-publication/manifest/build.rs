@@ -11,7 +11,7 @@ use compiler_ir::{
     SourceIdentity,
 };
 use compiler_vocabulary::{CompileRecipeFact, Stage};
-use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use thiserror::Error;
 
 use super::{

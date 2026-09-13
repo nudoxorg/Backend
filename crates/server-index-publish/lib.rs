@@ -7,7 +7,7 @@
 
 use core::ops::Deref;
 
-use heart_identity::ObjectDomain;
+use backend_version::ObjectDomain;
 use server_index_core::IndexSnapshot;
 use server_journal::{PublicationFacts, PublishedGeneration};
 
@@ -103,9 +103,9 @@ pub enum PublishedIndexSnapshotError {
     #[error("index snapshot generation differs from the durable publication")]
     GenerationMismatch {
         /// Generation retained by the durable published witness.
-        published: heart_identity::GenerationId,
+        published: backend_version::GenerationId,
         /// Generation encoded into the rejected snapshot identity.
-        snapshot: heart_identity::GenerationId,
+        snapshot: backend_version::GenerationId,
     },
 }
 

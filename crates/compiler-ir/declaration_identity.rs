@@ -4,7 +4,7 @@
 //! Structural variants are framed outside this key and never enter it.
 
 use compiler_vocabulary::LanguageProfile;
-use heart_identity::{ContentId, DeclarationFamilyDomain};
+use backend_version::{ContentId, DeclarationFamilyDomain};
 
 use crate::DeclarationIdentity;
 

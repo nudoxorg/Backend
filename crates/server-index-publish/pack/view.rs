@@ -5,7 +5,7 @@
 
 use core::{cmp::Ordering, ops::Deref};
 
-use heart_identity::{ArtifactId, HASH_BYTES};
+use backend_version::{ArtifactId, HASH_BYTES};
 use server_index_core::{
     EntityDocumentId, ExactRow, ExactSegmentError, ExactSegmentVerifier, IndexSnapshot, LexicalRow,
     LexicalScore, LexicalSegmentError, LexicalSegmentVerifier,
@@ -27,7 +27,7 @@ pub struct IndexPackFacts {
     /// Physical artifact identity derived from every complete pack byte.
     pub id: IndexPackId,
     /// Compiler-derived generation bound by the canonical snapshot.
-    pub generation: heart_identity::GenerationId,
+    pub generation: backend_version::GenerationId,
     /// Immutable exact-and-lexical snapshot identity.
     pub snapshot: IndexSnapshotId,
     /// Selected exact segment count.
@@ -1342,8 +1342,8 @@ mod tests {
             .map_err(PackTestError::Snapshot)
     }
 
-    fn generation() -> heart_identity::GenerationId {
-        heart_identity::GenerationId::from_canonical_bytes(b"index-pack-grammar-test-generation")
+    fn generation() -> backend_version::GenerationId {
+        backend_version::GenerationId::from_canonical_bytes(b"index-pack-grammar-test-generation")
     }
 
     fn rejected(bytes: Vec<u8>) -> Result<IndexPackOpenError, PackTestError> {

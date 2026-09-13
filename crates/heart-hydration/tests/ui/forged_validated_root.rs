@@ -1,7 +1,7 @@
 //! Exercises the `heart-hydration` tests ui forged-validated-root contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use heart_identity::ObjectDomain;
+use backend_version::ObjectDomain;
 use heart_root::{RootEntryCount, ValidatedLocality, ValidatedRoot};
 
 fn main() {

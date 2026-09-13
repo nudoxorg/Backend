@@ -7,8 +7,17 @@ license.workspace = true
 publish = false
 
 [dependencies]
+arrayvec.workspace = true
 backend-version = { path = "../version" }
 blake3.workspace = true
+derive_more.workspace = true
+thiserror.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+allocation-counter.workspace = true
+bolero.workspace = true
+rstest.workspace = true
 
 [lints]
 workspace = true

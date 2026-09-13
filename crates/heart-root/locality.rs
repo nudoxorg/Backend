@@ -7,8 +7,8 @@ use alloc::collections::TryReserveError;
 use alloc::vec::Vec;
 use core::{borrow::Borrow, marker::PhantomData, mem::size_of, ops::Deref};
 
-use heart_identity::GenerationId;
-use heart_object::{ObjectRef, ProviderSet, RemoteBase};
+use backend_version::GenerationId;
+use backend_version::object::{ObjectRef, ProviderSet, RemoteBase};
 
 use crate::entry::EntryKey;
 use crate::packed::{GenerationRoot, RootEntryCount, RowIndex};

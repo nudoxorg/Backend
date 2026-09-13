@@ -853,7 +853,6 @@ dependencies = [
  "compiler-publication",
  "compiler-vocabulary",
  "heart-hydration",
- "heart-identity",
  "nix",
  "rustix 1.1.4",
  "serde_json",
@@ -871,6 +870,7 @@ dependencies = [
  "backend-store",
  "backend-version",
  "blake3",
+ "strum 0.28.0",
 ]
 
 [[package]]
@@ -911,7 +911,6 @@ dependencies = [
  "futures-core",
  "futures-executor",
  "futures-util",
- "heart-identity",
  "thiserror 2.0.20",
  "trustfall",
 ]
@@ -1115,7 +1114,6 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "heart-hydration",
- "heart-identity",
  "interface-core",
  "rustix 1.1.4",
  "serde",
@@ -1188,8 +1186,12 @@ dependencies = [
 name = "backend-runtime"
 version = "0.1.0"
 dependencies = [
+ "atomic-waker",
+ "backend-version",
  "blake3",
+ "loom",
  "rustix 1.1.4",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1205,16 +1207,30 @@ dependencies = [
 name = "backend-store"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
+ "arrayvec",
  "backend-version",
  "blake3",
+ "bolero",
+ "derive_more",
+ "rstest",
+ "thiserror 2.0.20",
+ "zerocopy",
 ]
 
 [[package]]
 name = "backend-version"
 version = "0.1.0"
 dependencies = [
+ "arrayvec",
  "blake3",
+ "derive_more",
+ "rstest",
  "smallvec",
+ "strum 0.28.0",
+ "thiserror 2.0.20",
+ "trybuild",
+ "zerocopy",
 ]
 
 [[package]]
@@ -2009,6 +2025,7 @@ name = "compiler-application"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "backend-version",
  "blake3",
  "compiler-driver",
  "compiler-ir",
@@ -2021,7 +2038,6 @@ dependencies = [
  "compiler-publication",
  "compiler-registry",
  "compiler-vocabulary",
- "heart-identity",
  "interface-core",
  "server-journal",
  "thiserror 2.0.20",
@@ -2031,6 +2047,7 @@ dependencies = [
 name = "compiler-driver"
 version = "0.1.0"
 dependencies = [
+ "backend-version",
  "compiler-ir",
  "compiler-languages-clang",
  "compiler-languages-csharp",
@@ -2043,7 +2060,6 @@ dependencies = [
  "compiler-registry",
  "compiler-vocabulary",
  "flate2",
- "heart-identity",
  "serde_json",
  "server-index-build",
  "server-index-core",
@@ -2059,10 +2075,10 @@ name = "compiler-ir"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-version",
  "blake3",
  "compiler-ir-vocabulary",
  "compiler-vocabulary",
- "heart-identity",
  "memmap2",
  "thiserror 2.0.20",
 ]
@@ -2071,7 +2087,7 @@ dependencies = [
 name = "compiler-ir-vocabulary"
 version = "0.1.0"
 dependencies = [
- "heart-identity",
+ "backend-version",
  "thiserror 2.0.20",
 ]
 
@@ -2170,15 +2186,13 @@ dependencies = [
 name = "compiler-publication"
 version = "0.1.0"
 dependencies = [
+ "backend-store",
+ "backend-version",
  "compiler-driver",
  "compiler-ir",
  "compiler-vocabulary",
  "heart-hydration",
- "heart-identity",
- "heart-memory",
- "heart-object",
  "heart-root",
- "heart-schema",
  "server-journal",
  "thiserror 2.0.20",
 ]
@@ -2194,7 +2208,7 @@ dependencies = [
 name = "compiler-vocabulary"
 version = "0.1.0"
 dependencies = [
- "heart-identity",
+ "backend-version",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -4107,93 +4121,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "heart-adaptive"
-version = "0.1.0"
-dependencies = [
- "heart-identity",
- "strum 0.28.0",
-]
-
-[[package]]
-name = "heart-frame"
-version = "0.1.0"
-dependencies = [
- "heart-identity",
- "heart-schema",
- "rstest",
- "strum 0.28.0",
- "thiserror 2.0.20",
- "zerocopy",
-]
-
-[[package]]
 name = "heart-hydration"
 version = "0.1.0"
 dependencies = [
- "heart-identity",
- "heart-memory",
- "heart-object",
- "heart-observe",
+ "backend-store",
+ "backend-version",
  "heart-root",
- "heart-schema",
  "rstest",
  "thiserror 2.0.20",
  "trybuild",
  "zerocopy",
-]
-
-[[package]]
-name = "heart-identity"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "thiserror 2.0.20",
- "trybuild",
-]
-
-[[package]]
-name = "heart-memory"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "arrayvec",
- "derive_more",
- "heart-identity",
- "heart-object",
- "heart-observe",
- "heart-schema",
- "rstest",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "heart-object"
-version = "0.1.0"
-dependencies = [
- "derive_more",
- "heart-identity",
- "heart-schema",
- "thiserror 2.0.20",
- "zerocopy",
-]
-
-[[package]]
-name = "heart-object-pack"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "heart-identity",
- "heart-object",
- "heart-schema",
- "thiserror 2.0.20",
- "zerocopy",
-]
-
-[[package]]
-name = "heart-observe"
-version = "0.1.0"
-dependencies = [
- "arrayvec",
 ]
 
 [[package]]
@@ -4201,6 +4138,7 @@ name = "heart-root"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-version",
  "bolero",
  "compiler-driver",
  "compiler-ir",
@@ -4208,10 +4146,6 @@ dependencies = [
  "compiler-vocabulary",
  "derive_more",
  "fearless_simd",
- "heart-identity",
- "heart-object",
- "heart-observe",
- "heart-schema",
  "serde",
  "serde_json",
  "server-index-build",
@@ -4225,44 +4159,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "heart-schema"
-version = "0.1.0"
-dependencies = [
- "strum 0.28.0",
- "thiserror 2.0.20",
- "zerocopy",
-]
-
-[[package]]
 name = "heart-telemetry"
 version = "0.1.0"
 dependencies = [
+ "backend-runtime",
+ "backend-store",
+ "backend-version",
  "heart-hydration",
- "heart-memory",
- "heart-observe",
  "heart-root",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry_sdk",
- "server-runtime",
  "server-workflow",
  "thiserror 2.0.20",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "heart-view"
-version = "0.1.0"
-dependencies = [
- "bolero",
- "heart-frame",
- "heart-schema",
- "rstest",
- "strum 0.28.0",
- "thiserror 2.0.20",
- "zerocopy",
 ]
 
 [[package]]
@@ -4730,12 +4642,11 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
+ "backend-execution",
+ "backend-version",
  "compiler-ir",
  "compiler-registry",
  "compiler-vocabulary",
- "heart-adaptive",
- "heart-identity",
- "heart-observe",
  "server-index-core",
 ]
 
@@ -4743,9 +4654,9 @@ dependencies = [
 name = "interface-protocol"
 version = "0.1.0"
 dependencies = [
+ "backend-execution",
+ "backend-version",
  "compiler-vocabulary",
- "heart-adaptive",
- "heart-identity",
  "interface-core",
  "serde",
  "serde_json",
@@ -8721,9 +8632,9 @@ dependencies = [
 name = "server-index-acquire"
 version = "0.1.0"
 dependencies = [
+ "backend-version",
  "compiler-ir",
  "futures-executor",
- "heart-identity",
  "serde",
  "serde_json",
  "server-index-catalog",
@@ -8739,11 +8650,11 @@ name = "server-index-build"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-version",
  "compiler-driver",
  "compiler-ir",
  "compiler-publication",
  "compiler-vocabulary",
- "heart-identity",
  "server-index-core",
  "server-journal",
  "thiserror 2.0.20",
@@ -8754,9 +8665,9 @@ dependencies = [
 name = "server-index-catalog"
 version = "0.1.0"
 dependencies = [
+ "backend-version",
  "compiler-ir",
  "futures-executor",
- "heart-identity",
  "server-index-ingest",
  "server-index-vocabulary",
  "thiserror 2.0.20",
@@ -8768,8 +8679,8 @@ name = "server-index-core"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "backend-version",
  "compiler-ir",
- "heart-identity",
  "server-index-vocabulary",
  "thiserror 2.0.20",
 ]
@@ -8779,8 +8690,8 @@ name = "server-index-graph-vector"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-version",
  "compiler-ir",
- "heart-identity",
  "loom",
  "server-index-vocabulary",
 ]
@@ -8789,8 +8700,8 @@ dependencies = [
 name = "server-index-ingest"
 version = "0.1.0"
 dependencies = [
+ "backend-version",
  "compiler-ir",
- "heart-identity",
  "server-index-vocabulary",
 ]
 
@@ -8799,16 +8710,14 @@ name = "server-index-publish"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-store",
+ "backend-version",
  "compiler-driver",
  "compiler-ir",
  "compiler-publication",
  "compiler-vocabulary",
  "heart-hydration",
- "heart-identity",
- "heart-memory",
- "heart-object",
  "heart-root",
- "heart-schema",
  "server-index-build",
  "server-index-core",
  "server-index-graph-vector",
@@ -8853,15 +8762,13 @@ name = "server-index-retrieval"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-store",
+ "backend-version",
  "compiler-ir",
  "compiler-vocabulary",
  "futures-core",
  "heart-hydration",
- "heart-identity",
- "heart-memory",
- "heart-object",
  "heart-root",
- "heart-schema",
  "interface-protocol",
  "serde_json",
  "server-index-core",
@@ -8879,9 +8786,9 @@ dependencies = [
 name = "server-index-routing"
 version = "0.1.0"
 dependencies = [
+ "backend-version",
  "blake3",
  "compiler-ir",
- "heart-identity",
  "server-index-core",
  "server-index-vocabulary",
  "thiserror 2.0.20",
@@ -8891,8 +8798,8 @@ dependencies = [
 name = "server-index-tantivy"
 version = "0.1.0"
 dependencies = [
+ "backend-version",
  "compiler-ir",
- "heart-identity",
  "server-index-core",
  "tantivy",
  "thiserror 2.0.20",
@@ -8918,8 +8825,8 @@ name = "server-index-vocabulary"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-version",
  "compiler-ir",
- "heart-identity",
 ]
 
 [[package]]
@@ -8927,13 +8834,11 @@ name = "server-journal"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-store",
+ "backend-version",
  "blake3",
  "heart-hydration",
- "heart-identity",
- "heart-memory",
- "heart-object",
  "heart-root",
- "heart-schema",
  "loom",
  "server-workflow",
  "thiserror 2.0.20",
@@ -8944,6 +8849,8 @@ dependencies = [
 name = "server-operation"
 version = "0.1.0"
 dependencies = [
+ "backend-store",
+ "backend-version",
  "blake3",
  "compiler-driver",
  "compiler-ir",
@@ -8956,11 +8863,7 @@ dependencies = [
  "compiler-publication",
  "compiler-vocabulary",
  "heart-hydration",
- "heart-identity",
- "heart-memory",
- "heart-object",
  "heart-root",
- "heart-schema",
  "server-index-build",
  "server-index-core",
  "server-journal",
@@ -8969,24 +8872,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "server-runtime"
-version = "0.1.0"
-dependencies = [
- "atomic-waker",
- "heart-observe",
- "loom",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "server-workflow"
 version = "0.1.0"
 dependencies = [
- "heart-identity",
- "heart-object",
- "heart-observe",
- "heart-schema",
- "server-runtime",
+ "backend-runtime",
+ "backend-version",
  "strum 0.28.0",
  "thiserror 2.0.20",
  "zerocopy",

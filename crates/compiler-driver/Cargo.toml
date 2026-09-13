@@ -20,7 +20,7 @@ compiler-languages-java = { path = "../compiler-language-java" }
 compiler-languages-python = { path = "../compiler-language-python" }
 compiler-languages-rust = { path = "../compiler-language-rust" }
 compiler-languages-typescript = { path = "../compiler-language-typescript" }
-heart-identity = { path = "../heart-identity" }
+backend-version = { path = "../version" }
 sha2 = "=0.10.9"
 thiserror.workspace = true
 

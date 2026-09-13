@@ -18,7 +18,7 @@ compiler-registry = { path = "../compiler-registry" }
 compiler-publication = { path = "../compiler-publication" }
 compiler-vocabulary = { path = "../compiler-vocabulary" }
 server-journal = { path = "../server-journal" }
-heart-identity = { path = "../heart-identity" }
+backend-version = { path = "../version" }
 compiler-ir = { path = "../compiler-ir" }
 compiler-languages-csharp = { path = "../compiler-language-csharp" }
 compiler-languages-go = { path = "../compiler-language-go" }

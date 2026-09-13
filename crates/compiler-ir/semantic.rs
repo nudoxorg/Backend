@@ -8,7 +8,7 @@
 use alloc::{vec, vec::Vec};
 use compiler_vocabulary::{CompileRecipeFact, Language, LanguageProfile, PackageUrl};
 use core::{fmt, hash::Hash, marker::PhantomData, num::NonZeroU16};
-use heart_identity::{ContentId, SemanticScopeDomain};
+use backend_version::{ContentId, SemanticScopeDomain};
 
 use crate::{
     AnnotationKind, AtomId, AtomInterner, AtomTable, AtomTableView, AuthorityFactFault,

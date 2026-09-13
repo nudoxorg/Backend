@@ -1,7 +1,7 @@
 //! Defines json wire adaptive behavior for `interface-protocol`, whose purpose is to decode and project the shared application vocabulary for external transports.
 //! This module owns the json wire adaptive invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use heart_adaptive::{
+use backend_execution::adaptive::{
     BudgetAmount, CapabilityDomain, DuplicateInput, FactKey, ObjectDomain, Overload,
     OverloadSubject, Pin, PolicyError, RecoveryCause,
 };
@@ -29,8 +29,8 @@ pub(super) enum AdaptiveDisposition {
 
 #[derive(Serialize)]
 pub(super) struct PinWire {
-    generation: ContentText<heart_identity::RootDomain>,
-    snapshot: ContentText<heart_identity::IndexSnapshotDomain>,
+    generation: ContentText<backend_version::RootDomain>,
+    snapshot: ContentText<backend_version::IndexSnapshotDomain>,
 }
 
 #[derive(Serialize)]

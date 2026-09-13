@@ -17,7 +17,7 @@ use compiler_ir::{
     PrimitiveType, SourceIdentity, TypeNode, open_fragment_mmap,
 };
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 static FIXTURE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);

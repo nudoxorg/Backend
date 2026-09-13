@@ -10,10 +10,10 @@
 use core::{convert::Infallible, marker::PhantomData, ops::Deref};
 
 use heart_hydration::VerifiedGeneration;
-use heart_identity::{Domain, GenerationId};
-use heart_object::{ObjectRef, ProviderSet};
+use backend_version::{Domain, GenerationId};
+use backend_version::object::{ObjectRef, ProviderSet};
 use heart_root::{BorrowedGenerationView, EntryKey, GenerationEntry, GenerationView, Locality};
-use heart_schema::OperationId;
+use backend_version::schema::OperationId;
 use thiserror::Error;
 
 use crate::{BatchSource, Operation, Provider, SourcePoll, TerminalSummary};
@@ -36,15 +36,15 @@ mod tests {
     extern crate alloc;
 
     use alloc::{vec, vec::Vec};
-    use heart_identity::{ContentId, GenerationId, ObjectDomain};
-    use heart_object::{
+    use backend_version::{ContentId, GenerationId, ObjectDomain};
+    use backend_version::object::{
         ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet, RemoteBase,
     };
     use heart_root::{
         EntryKey, GenerationRoot, GenerationView, LocalityError, LocalityException,
         LocalityWriteError, NonResident, PreparedLocality, RootBuildError, RootEntry,
     };
-    use heart_schema::SchemaId;
+    use backend_version::schema::SchemaId;
     use thiserror::Error;
 
     use super::{LocalObjectError, LocalObjectProvider, ObjectProvenance, PinnedObjectRequest};

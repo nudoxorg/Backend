@@ -8,7 +8,7 @@ use compiler_ir::{
     full_semantic_image_len,
 };
 use futures_executor::block_on;
-use heart_identity::{CompilePublicationDomain, ContentId, GenerationId};
+use backend_version::{CompilePublicationDomain, ContentId, GenerationId};
 use server_index_catalog::{
     CatalogError, FeedCheckpoint, FeedContentChecksum, FeedCursor, FeedValidator, TursoCatalog,
 };

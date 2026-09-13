@@ -13,7 +13,7 @@ use compiler_application::{
     LocalRuntimeToolchain,
 };
 use compiler_vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
-use heart_identity::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
+use backend_version::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
 use interface_core::{
     CompilerCapability, CompilerRequest, CompilerTerminal, SemanticImageAccessError,
     SemanticImageAuthority,

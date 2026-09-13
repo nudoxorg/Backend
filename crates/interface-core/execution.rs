@@ -9,7 +9,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use heart_adaptive::{ExecutionRequest, ExecutionTerminal};
+use backend_execution::adaptive::{ExecutionRequest, ExecutionTerminal};
 
 use crate::CapabilityTransition;
 

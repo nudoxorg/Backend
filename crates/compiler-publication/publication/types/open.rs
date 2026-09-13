@@ -646,9 +646,9 @@ pub enum OpenPublishedError {
     FragmentOutputTooSmall { required: usize, available: usize },
     #[error("compiler manifest fragment {fragment:?} length cannot fit this address space")]
     FragmentOutputLengthAddressSpace {
-        fragment: heart_identity::ArtifactId<
-            heart_identity::IrFragmentEncoding,
-            heart_identity::IrFragmentDomain,
+        fragment: backend_version::ArtifactId<
+            backend_version::IrFragmentEncoding,
+            backend_version::IrFragmentDomain,
         >,
         #[source]
         source: core::num::TryFromIntError,

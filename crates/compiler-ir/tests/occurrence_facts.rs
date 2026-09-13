@@ -13,7 +13,7 @@ use compiler_ir_vocabulary::{
     TypeId, VariantFingerprint,
 };
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 #[derive(Debug, Error)]

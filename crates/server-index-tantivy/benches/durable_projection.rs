@@ -9,7 +9,7 @@
 )]
 
 use compiler_ir::EntityId;
-use heart_identity::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
+use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalOperation, LexicalRow,
     LexicalScore, LexicalSegment,

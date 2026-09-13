@@ -11,10 +11,8 @@ publish.workspace = true
 
 [dependencies]
 heart-hydration = { path = "../heart-hydration" }
-heart-identity = { path = "../heart-identity" }
-heart-object = { path = "../heart-object" }
+backend-version = { path = "../version" }
 heart-root = { path = "../heart-root" }
-heart-schema = { path = "../heart-schema" }
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -31,7 +29,7 @@ server-journal = { path = "../server-journal" }
 server-index-build = { path = "../server-index-build" }
 server-index-core = { path = "../server-index-core" }
 compiler-ir = { path = "../compiler-ir" }
-heart-memory = { path = "../heart-memory" }
+backend-store = { path = "../store" }
 blake3.workspace = true
 sha2 = "=0.10.9"
 [lints]

@@ -3,9 +3,9 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::mem::{align_of, offset_of, size_of};
 
-use heart_identity::CONTENT_PAYLOAD_BYTES;
-use heart_object::ObjectRef;
-use heart_schema::SchemaId;
+use backend_version::CONTENT_PAYLOAD_BYTES;
+use backend_version::object::ObjectRef;
+use backend_version::schema::SchemaId;
 use zerocopy::{
     Immutable, IntoBytes, KnownLayout, TryFromBytes, Unalign, Unaligned,
     byteorder::{BigEndian, U16, U64},

@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 
 use compiler_vocabulary::{CompileRecipeFact, PackageUrl};
-use heart_identity::{ContentId, SemanticScopeDomain};
+use backend_version::{ContentId, SemanticScopeDomain};
 
 use crate::{AtomId, DeclarationIdentity, SourceIdentity};
 

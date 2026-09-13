@@ -96,7 +96,7 @@ pub enum FullSemanticImageFault {
         row: u32,
         identity: FullSemanticImageIdentityField,
         #[source]
-        cause: heart_identity::ContentIdDecodeError,
+        cause: backend_version::ContentIdDecodeError,
     },
     #[error("full semantic image entity {row} has kind code {observed}")]
     EntityKind { row: u32, observed: u16 },

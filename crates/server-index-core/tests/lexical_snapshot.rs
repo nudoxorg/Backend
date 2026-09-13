@@ -2,7 +2,7 @@
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use compiler_ir::EntityId;
-use heart_identity::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
+use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalManifest, LexicalOperation,
     LexicalOutputError, LexicalQueryError, LexicalRow, LexicalScore, LexicalSegment,

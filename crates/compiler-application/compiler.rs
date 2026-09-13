@@ -14,7 +14,7 @@ use compiler_publication::{
     open_semantic_generation, publish_semantic, semantic_generation_requirements,
 };
 use compiler_registry::{AdapterRoute, FullRegistry};
-use heart_identity::{
+use backend_version::{
     ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain,
 };
 use interface_core::{
@@ -1182,7 +1182,7 @@ fn request_source(request: ApplicationCompilerRequest<'_>) -> Result<SourceAutho
     reason = "the public compiler terminal retains one bounded cold authority diagnostic"
 )]
 fn package_authority_terminal(
-    target: ContentId<heart_identity::CompilationTargetDomain>,
+    target: ContentId<backend_version::CompilationTargetDomain>,
     request: ApplicationCompilerRequest<'_>,
     source: SourceAuthority,
     toolchain: ToolchainSelection<'_>,

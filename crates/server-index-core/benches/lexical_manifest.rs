@@ -4,7 +4,7 @@
 use std::{error::Error, fmt, hint::black_box, time::Instant};
 
 use compiler_ir::EntityId;
-use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
     EntityArtifactIdentity, EntityDocumentId, GenerationId, IndexSnapshot, LexicalManifest,
     LexicalOperation, LexicalRow, LexicalScore, LexicalSegment, LexicalSnapshotHit,

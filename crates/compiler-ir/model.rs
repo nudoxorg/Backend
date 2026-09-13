@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use crate::{AtomId, EntityId, TypeId};
 use compiler_vocabulary::CompileRecipeFact;
-use heart_identity::{ContentId, SourceFactDomain};
+use backend_version::{ContentId, SourceFactDomain};
 use thiserror::Error;
 
 /// Immutable source identity carried by every production semantic fragment.
@@ -18,7 +18,7 @@ pub struct SourceIdentity {
 #[derive(Debug, Eq, Error, PartialEq)]
 pub enum SourceIdentityFault {
     #[error("source identity authority is invalid")]
-    Authority(#[source] heart_identity::ContentIdDecodeError),
+    Authority(#[source] backend_version::ContentIdDecodeError),
 }
 
 #[derive(Debug, Eq, Error, PartialEq)]
@@ -30,13 +30,13 @@ pub enum RecipeFactFault {
     #[error("recipe tool tag {actual} is unknown")]
     Tool { actual: u8 },
     #[error("recipe identity authority is invalid")]
-    Identity(#[source] heart_identity::ContentIdDecodeError),
+    Identity(#[source] backend_version::ContentIdDecodeError),
     #[error("recipe toolchain authority is invalid")]
-    Toolchain(#[source] heart_identity::ContentIdDecodeError),
+    Toolchain(#[source] backend_version::ContentIdDecodeError),
     #[error("recipe identity does not bind decoded source and recipe facts")]
     IdentityRelation {
-        expected: ContentId<heart_identity::CompileRecipeDomain>,
-        observed: ContentId<heart_identity::CompileRecipeDomain>,
+        expected: ContentId<backend_version::CompileRecipeDomain>,
+        observed: ContentId<backend_version::CompileRecipeDomain>,
     },
 }
 

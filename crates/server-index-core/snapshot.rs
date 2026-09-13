@@ -6,7 +6,7 @@
 use core::ops::Deref;
 
 use arrayvec::ArrayVec;
-use heart_identity::{GenerationId, IndexSnapshotIdentityError, derive_index_snapshot};
+use backend_version::{GenerationId, IndexSnapshotIdentityError, derive_index_snapshot};
 use server_index_vocabulary::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 
 use crate::MAX_SELECTED_SEGMENTS;

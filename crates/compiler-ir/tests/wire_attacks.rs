@@ -10,7 +10,7 @@ use compiler_ir::{AtomId, EntityId, TypeId};
 use compiler_vocabulary::{
     CompileRecipeFact, Language, LanguageProfile, NativeTool, RustEdition, Stage,
 };
-use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 const HEADER_BYTES: usize = 12;

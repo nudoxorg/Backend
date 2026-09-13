@@ -19,7 +19,7 @@ use compiler_vocabulary::{
 };
 use core::mem::{size_of, size_of_val};
 use core::{fmt, hint::black_box};
-use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 
 fn version(identity: u8, payload: u8) -> EntityVersion {
     EntityVersion {

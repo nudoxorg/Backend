@@ -7,7 +7,7 @@ use compiler_ir::{
     AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
     SourceIdentity, TypeNode,
 };
-use heart_identity::{
+use backend_version::{
     ArtifactId, ContentId, IrManifestDomain, IrManifestEncoding, SourceFactDomain, ToolchainDomain,
 };
 use thiserror::Error;

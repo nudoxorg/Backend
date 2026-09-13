@@ -19,7 +19,7 @@ ureq.workspace = true
 
 [dev-dependencies]
 futures-executor = "0.3.31"
-heart-identity = { path = "../heart-identity" }
+backend-version = { path = "../version" }
 
 [lib]
 path = "lib.rs"

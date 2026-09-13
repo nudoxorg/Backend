@@ -5,10 +5,10 @@ use alloc::{collections::TryReserveError, vec, vec::Vec};
 use core::num::TryFromIntError;
 
 use bolero::check;
-use heart_identity::{ContentId, GenerationId, ObjectDomain};
-use heart_object::{ObjectRef, ProviderIdError, RemoteBase};
-use heart_observe::{DropNewest, FlightRecorder};
-use heart_schema::SchemaId;
+use backend_version::{ContentId, GenerationId, ObjectDomain};
+use backend_version::object::{ObjectRef, ProviderIdError, RemoteBase};
+use backend_version::observe::{DropNewest, FlightRecorder};
+use backend_version::schema::SchemaId;
 use thiserror::Error;
 
 use crate::{

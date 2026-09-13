@@ -12,7 +12,7 @@ publish.workspace = true
 [dependencies]
 arrayvec.workspace = true
 compiler-ir = { path = "../compiler-ir" }
-heart-identity = { path = "../heart-identity" }
+backend-version = { path = "../version" }
 server-index-vocabulary = { path = "../server-index-vocabulary" }
 thiserror.workspace = true
 

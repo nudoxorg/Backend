@@ -354,7 +354,7 @@ const fn decode_cxx(value: u8) -> Option<CxxStandard> {
 mod tests {
     use super::*;
     use crate::{CompileRecipeFact, NativeTool, Stage};
-    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+    use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 
     const PROFILES: [LanguageProfile; 32] = [
         LanguageProfile::Rust(RustEdition::Rust2015),

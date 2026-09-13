@@ -2,7 +2,7 @@
 //! This module owns the json wire application invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use compiler_vocabulary::{Language, Stage};
-use heart_adaptive::CapabilityDomain;
+use backend_execution::adaptive::CapabilityDomain;
 use interface_core::{
     CapabilityHealth, CapabilityTransition, Diagnostic, DiagnosticCode, DiagnosticDetail,
     DocSection, ExecutionReply, ExecutionState, GeneratedArtifact, ReplyBody, RetrievalCause,

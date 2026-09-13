@@ -29,7 +29,7 @@ use compiler_publication::{
 use compiler_publication::{PublishedCompilation, immutable::ImmutableArtifactStore};
 use compiler_vocabulary::{CSharpVersion, LanguageProfile, NativeTool, Stage};
 use csharp_support::Error as SupportError;
-use heart_identity::{ContentId, SourceFactDomain};
+use backend_version::{ContentId, SourceFactDomain};
 use server_index_build::{IndexBuildScratch, build};
 use server_index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,

@@ -3,10 +3,10 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 //! Public caller-buffer laws for canonical generation roots.
 
-use heart_identity::{GenerationId, ObjectDomain};
-use heart_object::{ObjectKind, ObjectLength, ObjectRef};
+use backend_version::{GenerationId, ObjectDomain};
+use backend_version::object::{ObjectKind, ObjectLength, ObjectRef};
 use heart_root::{EntryKey, GenerationRoot, RootBuildError, RootEntry, RootWriteError};
-use heart_schema::SchemaId;
+use backend_version::schema::SchemaId;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -22,7 +22,7 @@ fn entry(key: u64, parent: Option<u64>, content: u8) -> RootEntry<ObjectDomain> 
         key: EntryKey::from(key),
         parent: parent.map(EntryKey::from),
         object: ObjectRef {
-            content: heart_identity::ContentId::from_digest([content; 32]),
+            content: backend_version::ContentId::from_digest([content; 32]),
             length: ObjectLength::from(3),
             schema: SchemaId::Object,
             kind: ObjectKind::from(9),

@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use compiler_ir::{FragmentError, FragmentRangeManifest, FragmentRangeVerifyError, FragmentView};
-use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use thiserror::Error;
 
 use crate::storage::{ImmutableFileError, ImmutableFileStore, StorageNamespace, StoredFile};

@@ -8,7 +8,7 @@
     reason = "adversarial test fixtures fail fast when their construction is invalid"
 )]
 use compiler_ir::EntityId;
-use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
     EntityArtifactIdentity, EntityDocumentId, GenerationId, IndexSnapshot, IndexSnapshotId,
     LexicalHit, LexicalManifest, LexicalManifestError, LexicalOperation, LexicalRow, LexicalScore,

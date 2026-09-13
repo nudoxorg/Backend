@@ -4,7 +4,7 @@
 use alloc::vec::Vec;
 use core::ops::Deref;
 
-use heart_observe::Probe;
+use backend_version::observe::Probe;
 
 use crate::entry::{EntryRange, RootEntry};
 use crate::packed::{GenerationRoot, RowIndex};

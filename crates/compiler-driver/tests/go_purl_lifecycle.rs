@@ -14,7 +14,7 @@ use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
 use compiler_vocabulary::{GoVersion, LanguageProfile, NativeTool, Stage};
-use heart_identity::{ContentId, SourceFactDomain};
+use backend_version::{ContentId, SourceFactDomain};
 use server_index_build::{IndexBuildScratch, build};
 use server_index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,

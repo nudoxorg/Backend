@@ -7,7 +7,7 @@
 use alloc::{boxed::Box, string::String};
 use core::{fmt, ops::Deref, ops::Index};
 
-use heart_identity::{CompilationTargetDomain, ContentId};
+use backend_version::{CompilationTargetDomain, ContentId};
 use serde::{Deserialize, Serialize};
 
 use crate::{Language, RegistryEcosystem};

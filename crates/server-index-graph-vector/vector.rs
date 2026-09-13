@@ -4,7 +4,7 @@
 use core::ops::Deref;
 
 use compiler_ir::EntityId;
-use heart_identity::{ContentHasher, FixedCanonicalRecord, IndexVectorSegmentDomain};
+use backend_version::{ContentHasher, FixedCanonicalRecord, IndexVectorSegmentDomain};
 use server_index_vocabulary::VectorSegmentId;
 
 use crate::{MAX_PARTITIONS, Metric, MissingPartitions, PartitionId, VectorAuthority};

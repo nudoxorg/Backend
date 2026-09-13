@@ -2,8 +2,8 @@
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use heart_hydration::VerifiedGeneration;
-use heart_identity::ObjectDomain;
-use heart_memory::MemoryStore;
+use backend_version::ObjectDomain;
+use backend_store::memory::MemoryStore;
 
 fn hypothetical_witness(
     store: &MemoryStore<ObjectDomain>,

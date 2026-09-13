@@ -1,6 +1,6 @@
 //! Proves that the interface-owned semantic byte owner cannot misstate public authority.
 
-use heart_identity::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
+use backend_version::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
 use interface_core::{SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot};
 
 fn authority(bytes: &[u8]) -> SemanticImageAuthority {

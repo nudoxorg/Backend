@@ -13,7 +13,7 @@ use compiler_ir_vocabulary::{
     EntityId, ExternalEntityRef, ListSpan, NominalRef, SemanticTypeChild, SemanticTypeFault,
     SemanticTypeRecord, SemanticTypeTag, TypeChildTarget, TypeId,
 };
-use heart_identity::{ContentId, ContentIdDecodeError, HASH_BYTES, IrFragmentDomain};
+use backend_version::{ContentId, ContentIdDecodeError, HASH_BYTES, IrFragmentDomain};
 use thiserror::Error;
 
 const PRESENCE_NONE: u8 = 0;

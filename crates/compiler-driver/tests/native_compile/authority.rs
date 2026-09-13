@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use compiler_driver::{NativeTool, ResolvedToolchain, ToolchainResolutionError};
-use heart_identity::{ContentId, ToolchainDomain};
+use backend_version::{ContentId, ToolchainDomain};
 
 use super::support::*;
 

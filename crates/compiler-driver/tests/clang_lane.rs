@@ -11,7 +11,7 @@ use compiler_ir::{
     SemanticTypeTag,
 };
 use compiler_vocabulary::{CStandard, CxxStandard, LanguageProfile, NativeTool, Stage};
-use heart_identity::{ContentId, ToolchainDomain};
+use backend_version::{ContentId, ToolchainDomain};
 use std::{
     mem::size_of,
     path::Path,

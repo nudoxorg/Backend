@@ -14,7 +14,7 @@ blake3.workspace = true
 memmap2 = { version = "0.9.9", optional = true }
 compiler-vocabulary = { path = "../compiler-vocabulary" }
 compiler-ir-vocabulary = { path = "../compiler-ir-vocabulary" }
-heart-identity = { path = "../heart-identity" }
+backend-version = { path = "../version" }
 thiserror.workspace = true
 
 [lib]

@@ -10,7 +10,7 @@ use std::{
 
 use blake3::Hasher;
 use heart_hydration::VerifiedGenerationFacts;
-use heart_identity::{ContentId, DependencySetDomain, GenerationId};
+use backend_version::{ContentId, DependencySetDomain, GenerationId};
 use server_workflow::StageKey;
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout,

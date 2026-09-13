@@ -24,7 +24,7 @@ const FORBIDDEN_MARKERS: &[&str] = &[
     "server-index-trustfall",
     "server-journal",
     "server-operation",
-    "server-runtime",
+    "backend-runtime",
     "server-workflow",
     "qdrant",
     "object-store",
@@ -82,7 +82,7 @@ fn normal_interface_core_closure_is_portable() -> Result<(), Box<dyn std::error:
         "portable interface-core normal dependency closure contains forbidden crates: {forbidden:?}\n{tree}"
     );
     assert!(tree.contains("interface-core"));
-    assert!(tree.contains("heart-identity"));
+    assert!(tree.contains("backend-version"));
     assert!(tree.contains("compiler-vocabulary"));
     Ok(())
 }

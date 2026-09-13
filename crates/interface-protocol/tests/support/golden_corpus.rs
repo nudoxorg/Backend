@@ -596,12 +596,12 @@ fn execution_state(state: ExecutionState) -> GoldenExecutionState {
     }
 }
 
-impl From<heart_adaptive::ExecutionPhase> for GoldenExecutionPhase {
-    fn from(phase: heart_adaptive::ExecutionPhase) -> Self {
+impl From<backend_execution::adaptive::ExecutionPhase> for GoldenExecutionPhase {
+    fn from(phase: backend_execution::adaptive::ExecutionPhase) -> Self {
         match phase {
-            heart_adaptive::ExecutionPhase::LocalResidence => Self::LocalResidence,
-            heart_adaptive::ExecutionPhase::CapabilityBundle => Self::CapabilityBundle,
-            heart_adaptive::ExecutionPhase::Remote => Self::Remote,
+            backend_execution::adaptive::ExecutionPhase::LocalResidence => Self::LocalResidence,
+            backend_execution::adaptive::ExecutionPhase::CapabilityBundle => Self::CapabilityBundle,
+            backend_execution::adaptive::ExecutionPhase::Remote => Self::Remote,
         }
     }
 }

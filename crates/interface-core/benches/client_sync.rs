@@ -17,7 +17,7 @@
 use core::num::NonZeroU64;
 use std::time::Instant;
 
-use heart_identity::{
+use backend_version::{
     ContentId, GenerationId, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
     derive_index_snapshot,
 };

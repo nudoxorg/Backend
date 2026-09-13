@@ -12,10 +12,10 @@ publish.workspace = true
 
 [dependencies]
 heart-hydration = { path = "../heart-hydration" }
-heart-observe = { path = "../heart-observe" }
+backend-version = { path = "../version" }
 heart-root = { path = "../heart-root" }
-server-runtime = { path = "../server-runtime" }
-heart-memory = { path = "../heart-memory" }
+backend-runtime = { path = "../runtime" }
+backend-store = { path = "../store" }
 server-workflow = { path = "../server-workflow" }
 opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true

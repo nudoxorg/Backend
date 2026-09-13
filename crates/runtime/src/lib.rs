@@ -25,7 +25,12 @@
 //! window only advances while the connection count is zero — and a surface
 //! that wants a longer or shorter window passes `--idle-timeout-ms` when it
 //! spawns the daemon itself (`0` disables the timeout entirely).
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+
+extern crate alloc;
+
+/// Bounded physical-credit admission and one-owner execution.
+pub mod server;
 
 use std::ffi::OsString;
 use std::fmt;

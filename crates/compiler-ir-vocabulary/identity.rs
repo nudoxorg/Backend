@@ -16,7 +16,7 @@
 
 use core::ops::Deref;
 
-use heart_identity::{
+use backend_version::{
     ContentId, DeclarationFamilyDomain, DeclarationKeyDomain, DeclarationVariantDomain,
     ForeignDeclarationDomain,
 };
@@ -651,7 +651,7 @@ const ORIGIN_CELL: usize = 4;
 /// Byte zero is the domain authority, not digest entropy, so compact
 /// identities retain bytes `1..=16` rather than spending one of their fixed
 /// sixteen bytes on a constant tag.
-fn compact_identity_payload(bytes: &[u8; heart_identity::HASH_BYTES]) -> [u8; 16] {
+fn compact_identity_payload(bytes: &[u8; backend_version::HASH_BYTES]) -> [u8; 16] {
     [
         bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9],
         bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15], bytes[16],

@@ -2,8 +2,8 @@
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use heart_hydration::VerifiedGeneration;
-use heart_identity::{GenerationId, ObjectDomain};
-use heart_object::DepSetId;
+use backend_version::{GenerationId, ObjectDomain};
+use backend_version::object::DepSetId;
 
 fn forge(pinned_root: GenerationId, dep_set: DepSetId) {
     let _forged: VerifiedGeneration<'static, ObjectDomain, Box<[u8]>> = VerifiedGeneration {

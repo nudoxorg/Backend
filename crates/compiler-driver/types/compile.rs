@@ -1110,7 +1110,7 @@ mod lifecycle_tests {
 
     use compiler_ir::{EntityKind, SemanticProductConstructor};
     use compiler_vocabulary::{NativeTool, RustEdition};
-    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+    use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 
     use super::*;
 

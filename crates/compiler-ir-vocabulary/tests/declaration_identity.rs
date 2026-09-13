@@ -9,7 +9,7 @@ use compiler_ir_vocabulary::{
     OccurrenceTarget, PackageLineage, PackageLineageFault, PreimageOverflow, ReferenceKind,
     RelSpan, RelSpanFault, StableRef, VariantFingerprint,
 };
-use heart_identity::{ContentId, DeclarationKeyDomain};
+use backend_version::{ContentId, DeclarationKeyDomain};
 use thiserror::Error;
 
 /// Typed propagation keeps every assertion exact without panicking seams.

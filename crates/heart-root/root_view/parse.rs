@@ -6,8 +6,8 @@
 use alloc::{collections::TryReserveError, vec::Vec};
 use core::mem::size_of;
 
-use heart_identity::{ContentAuthority, ContentAuthorityError, Domain, GenerationId};
-use heart_object::ObjectDescriptorDecodeError;
+use backend_version::{ContentAuthority, ContentAuthorityError, Domain, GenerationId};
+use backend_version::object::ObjectDescriptorDecodeError;
 use thiserror::Error;
 use zerocopy::{FromBytes, TryFromBytes};
 
@@ -229,7 +229,7 @@ fn diagnose_typed_rows(bytes: &[u8]) -> RootReadError {
     const PARENT_OFFSET: usize = core::mem::offset_of!(RootWireRecord, parent_present);
     const DESCRIPTOR_OFFSET: usize = core::mem::offset_of!(RootWireRecord, descriptor);
     const SCHEMA_OFFSET: usize =
-        DESCRIPTOR_OFFSET + core::mem::offset_of!(heart_object::ObjectDescriptorWireRecord, schema);
+        DESCRIPTOR_OFFSET + core::mem::offset_of!(backend_version::object::ObjectDescriptorWireRecord, schema);
     for (ordinal, row) in (0_u32..).zip(bytes.chunks_exact(ROOT_ROW_RECORD_BYTES)) {
         if let Some(&observed) = row.get(PARENT_OFFSET)
             && observed > u8::from(ParentWire::Present)
@@ -240,7 +240,7 @@ fn diagnose_typed_rows(bytes: &[u8]) -> RootReadError {
             .get(SCHEMA_OFFSET..SCHEMA_OFFSET + size_of::<u32>())
             .and_then(|bytes| <&[u8; 4]>::try_from(bytes).ok())
             .map(|bytes| u32::from_be_bytes(*bytes));
-        if let Some(Err(source)) = schema.map(heart_schema::SchemaId::try_from) {
+        if let Some(Err(source)) = schema.map(backend_version::schema::SchemaId::try_from) {
             return RootReadError::Descriptor {
                 ordinal,
                 source: ObjectDescriptorDecodeError::Schema(source),

@@ -14,7 +14,7 @@ use compiler_publication::binding::{COMPILATION_BINDING_BYTES, CompilationBindin
 use compiler_publication::manifest::{CompilationManifestFacts, CompilationManifestFormat};
 use compiler_vocabulary::{LanguageProfile, RustEdition};
 use heart_hydration::VerifiedGenerationFacts;
-use heart_identity::{
+use backend_version::{
     ContentId, DependencySetDomain, GenerationId, IrManifestDomain, IrManifestEncoding,
 };
 
@@ -38,7 +38,7 @@ fn claim(seed: &[u8]) -> SemanticPublicationClaim {
         dep_set: ContentId::<DependencySetDomain>::from_canonical_bytes(b"coverage-dependencies"),
     };
     let manifest =
-        heart_identity::ArtifactId::<IrManifestEncoding, IrManifestDomain>::from_encoded_bytes(
+        backend_version::ArtifactId::<IrManifestEncoding, IrManifestDomain>::from_encoded_bytes(
             b"coverage-manifest",
         );
     let mut binding_bytes = [0_u8; COMPILATION_BINDING_BYTES];

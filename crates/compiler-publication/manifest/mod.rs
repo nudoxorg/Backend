@@ -23,7 +23,7 @@ pub use validate::{
 pub(crate) use build::{CanonicalCompilation, CanonicalSemanticCompilation};
 
 /// Typed identity of one complete canonical compiler package manifest.
-pub type CompilationManifestIdentity = heart_identity::ArtifactId<
-    heart_identity::IrManifestEncoding,
-    heart_identity::IrManifestDomain,
+pub type CompilationManifestIdentity = backend_version::ArtifactId<
+    backend_version::IrManifestEncoding,
+    backend_version::IrManifestDomain,
 >;

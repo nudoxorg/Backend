@@ -5,7 +5,7 @@
 
 use std::{io, path::PathBuf};
 
-use heart_identity::GenerationId;
+use backend_version::GenerationId;
 use server_index_vocabulary::{IndexPackId, IndexSnapshotId};
 
 use super::{IndexPackEncodeError, IndexPackOpenError};

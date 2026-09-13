@@ -2492,7 +2492,7 @@ mod tests {
     };
     use compiler_languages_rust::{RustAuthorityError, RustProject, RustToolchain};
     use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+    use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use std::{
         fs,
         path::PathBuf,

@@ -4,11 +4,11 @@
 //! Typed input fixture for the adapter's complete signal vocabulary.
 
 use heart_hydration::{AbsentCount, HydrationOutcome, HydrationProbeEvent, PlanCoverage};
-use heart_memory::{StoreAdmission, StoreProbeEvent};
-use heart_observe::Probe;
+use backend_store::memory::{StoreAdmission, StoreProbeEvent};
+use backend_version::observe::Probe;
 use heart_root::{RootProbeEvent, SelectedCount, SelectionWork};
 use heart_telemetry::TracingProbe;
-use server_runtime::{
+use backend_runtime::server::{
     RejectionReason, RuntimeAdmission, RuntimeExecution, RuntimeMetrics, RuntimeProbeEvent,
     RuntimeTerminal, TerminalClass,
 };

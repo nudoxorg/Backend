@@ -5,7 +5,7 @@
 
 use core::ops::Deref;
 
-use heart_identity::{ContentHasher, FixedCanonicalRecord, IndexExactSegmentDomain};
+use backend_version::{ContentHasher, FixedCanonicalRecord, IndexExactSegmentDomain};
 use server_index_vocabulary::ExactSegmentId;
 
 /// Maximum number of rows admitted by one exact segment view.

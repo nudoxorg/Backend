@@ -1,7 +1,7 @@
 //! Exercises the `server-index-core` tests manifest-bounds contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use heart_identity::GenerationId;
+use backend_version::GenerationId;
 use server_index_core::{
     ExactManifest, ExactManifestError, ExactSegment, ExactSegmentError, IndexSnapshot,
     MAX_SELECTED_SEGMENTS,

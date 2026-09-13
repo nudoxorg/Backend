@@ -5,11 +5,11 @@
 
 use core::{borrow::Borrow, mem::size_of, ops::Deref};
 
-use heart_identity::{
+use backend_version::{
     ContentHasher, ContentId, Domain, FixedCanonicalRecord, GenerationId, ObjectDomain,
     StageKeyDomain, TAG_BYTES,
 };
-use heart_schema::OperationId;
+use backend_version::schema::OperationId;
 use zerocopy::{
     Immutable, IntoBytes,
     byteorder::{LittleEndian, U32},
@@ -18,12 +18,12 @@ use zerocopy::{
 use crate::StageId;
 
 /// Protocol-owned content domain for plane-independent capability facts.
-pub use heart_identity::CapabilityDomain;
+pub use backend_version::CapabilityDomain;
 /// Capability identity is ordinary typed canonical content, not duplicate raw-byte machinery.
 pub type CapabilityId = ContentId<CapabilityDomain>;
 
 /// Protocol-owned content domain for normalized configuration facts.
-pub use heart_identity::ConfigurationDomain;
+pub use backend_version::ConfigurationDomain;
 /// Configuration identity is ordinary typed canonical content.
 pub type ConfigurationId = ContentId<ConfigurationDomain>;
 

@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use heart_identity::{IrManifestDomain, IrManifestEncoding};
+use backend_version::{IrManifestDomain, IrManifestEncoding};
 use thiserror::Error;
 
 use crate::{

@@ -15,7 +15,7 @@ use compiler_ir::{
 };
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use core::mem::size_of;
-use heart_identity::{ContentId, Domain, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
+use backend_version::{ContentId, Domain, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 const HEADER_BYTES: usize = 12;
@@ -32,8 +32,8 @@ const SEMANTIC_RECORD: usize = HEADER_BYTES
     + 8
     + 8
     + 4
-    + (size_of::<u32>() + heart_identity::HASH_BYTES)
-    + (size_of::<u8>() * 4 + heart_identity::HASH_BYTES * 2);
+    + (size_of::<u32>() + backend_version::HASH_BYTES)
+    + (size_of::<u8>() * 4 + backend_version::HASH_BYTES * 2);
 
 /// Payload-relative lane offsets: header(24) + atom stream(4+7).
 const ATOM_LENGTH: usize = 24;
@@ -373,12 +373,12 @@ fn expected_fault(mutation: Mutation, bytes: &[u8]) -> SemanticDataFault {
             product_count: 1,
         },
         Mutation::LocalReservedNonzero => {
-            let mut actual = [0; heart_identity::HASH_BYTES];
+            let mut actual = [0; backend_version::HASH_BYTES];
             actual[0] = 1;
             SemanticDataFault::LocalReserved { child: 0, actual }
         }
         Mutation::ExternalAuthorityWrongDomain => {
-            let mut raw = [0; heart_identity::HASH_BYTES];
+            let mut raw = [0; backend_version::HASH_BYTES];
             raw[0] = bytes[SEMANTIC_RECORD + CHILD_RESERVED];
             SemanticDataFault::ExternalAuthority {
                 child: 0,

@@ -42,7 +42,6 @@ rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"]
 [dev-dependencies]
 compiler-publication = { path = "../compiler-publication" }
 heart-hydration = { path = "../heart-hydration" }
-heart-identity = { path = "../heart-identity" }
 
 [lints]
 workspace = true

@@ -13,7 +13,7 @@ use std::{
 };
 
 use heart_hydration::{VerifiedGeneration, VerifiedGenerationFacts};
-use heart_identity::Domain;
+use backend_version::Domain;
 
 use super::{
     credit::{CreditPool, PendingLease},

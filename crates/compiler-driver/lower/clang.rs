@@ -2251,7 +2251,7 @@ mod tests {
         CollectError, IncludeFact, MAX_CLANG_DECLARATIONS, SourceSpan, SymbolIdentity,
     };
     use compiler_vocabulary::{CStandard, CompileRecipeFact, LanguageProfile, NativeTool, Stage};
-    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+    use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use thiserror::Error;
 
     use super::{

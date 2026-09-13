@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Owner-generic structural and semantic validation failures.
 
-use heart_identity::{ContentIdDecodeError, HASH_BYTES};
+use backend_version::{ContentIdDecodeError, HASH_BYTES};
 use server_index_vocabulary::{ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId};
 
 use super::{IndexPackLane, IndexPackRegion, IndexPackRowInvariant};

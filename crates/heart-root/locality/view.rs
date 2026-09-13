@@ -5,8 +5,8 @@
 
 use core::{mem::size_of_val, ops::Deref};
 
-use heart_identity::Domain;
-use heart_observe::Probe;
+use backend_version::Domain;
+use backend_version::observe::Probe;
 
 use crate::closure::{ClosureError, ClosureScratch, RootProbeEvent, SelectedClosure};
 use crate::entry::{EntryKey, EntryRange};

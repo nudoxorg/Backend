@@ -5,7 +5,7 @@
 
 use core::ops::Deref;
 
-use heart_identity::{ArtifactHasher, GenerationId, HASH_BYTES};
+use backend_version::{ArtifactHasher, GenerationId, HASH_BYTES};
 use server_index_build::PreparedIndex;
 use server_index_core::{
     ENTITY_DOCUMENT_ID_BYTES, ExactRow, ExactSegment, LexicalRow, LexicalRowValue, LexicalSegment,

@@ -8,7 +8,7 @@ use crate::{
     UnloadReceipt,
 };
 use compiler_vocabulary::{FrontendError, LanguageProfile, Stage};
-use heart_adaptive::{
+use backend_execution::adaptive::{
     CapabilityDomain, CapabilityKind, ContentId, ExecutionPhase, Overload, Pin, PolicyError,
     RecoveryCause, ResourceBudget, RetryBudget,
 };

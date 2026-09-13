@@ -4,7 +4,7 @@
 
 use core::{fmt, marker::PhantomData, num::TryFromIntError};
 
-use heart_identity::{ContentId, IrFragmentDomain};
+use backend_version::{ContentId, IrFragmentDomain};
 
 /// Marker for the entity coordinate space.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

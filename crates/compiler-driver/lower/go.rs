@@ -2746,7 +2746,7 @@ mod tests {
         CompileRecipeFact, GoImageFault, GoProjectionFault as PortableGoProjectionFault,
         LanguageProfile, LoweringUnsupported, NativeTool, Stage,
     };
-    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+    use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 
     const HEADER_BYTES: usize = 136;
     const NONE: u32 = u32::MAX;

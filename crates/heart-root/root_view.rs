@@ -9,7 +9,7 @@ mod selection;
 #[cfg(test)]
 mod tests;
 
-use heart_identity::{ContentAuthority, GenerationId};
+use backend_version::{ContentAuthority, GenerationId};
 
 use crate::{RootEntryCount, encode::RootWireRecord};
 

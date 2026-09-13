@@ -32,7 +32,7 @@ pub use compiler::{
 pub use compiler_vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,
 };
-pub use heart_adaptive::{
+pub use backend_execution::adaptive::{
     BatteryState, ByteCount, CapabilityDomain, CapabilityKind, ContentId, GenerationId,
     IndexSnapshotId, OperationBudget, Pin, Pressure, RecoveryCause, ResourceBudget, ResourceClass,
     RetryBudget,

@@ -2,7 +2,7 @@
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use heart_hydration::{BorrowedHydrationPlanView, HydrationPlanView, Projection};
-use heart_identity::ObjectDomain;
+use backend_version::ObjectDomain;
 
 fn relabel_owned(plan: &mut HydrationPlanView<'_, '_, ObjectDomain>) {
     plan.projection = Projection::CompleteGeneration;

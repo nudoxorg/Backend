@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::{num::TryFromIntError, ops::Deref};
 
-use heart_identity::{
+use backend_version::{
     ArtifactHasher, ArtifactId, IrFragmentDomain, IrFragmentEncoding, IrFragmentRangeEncoding,
 };
 use thiserror::Error;
@@ -387,7 +387,7 @@ fn range_identity(
 mod tests {
     use crate::{AtomId, TypeId};
     use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+    use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use thiserror::Error;
 
     use super::{ArtifactId, FragmentRangeManifest, IrFragmentDomain, IrFragmentEncoding};

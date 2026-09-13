@@ -25,7 +25,7 @@ pub use exact::{
     ExactOperation, ExactRow, ExactSegment, ExactSegmentError, ExactSegmentVerifier,
     ExactSegmentView, MAX_EXACT_PAYLOAD_BYTES, MAX_EXACT_ROWS,
 };
-pub use heart_identity::GenerationId;
+pub use backend_version::GenerationId;
 pub use lexical::{
     LexicalHit, LexicalMatch, LexicalOperation, LexicalOrderKey, LexicalOutputError, LexicalRow,
     LexicalRowValue, LexicalScore, LexicalSegment, LexicalSegmentError, LexicalSegmentVerifier,

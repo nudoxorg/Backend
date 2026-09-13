@@ -5,6 +5,8 @@
 //! fences, local/remote route selection, and affine resource guards.
 #![forbid(unsafe_code)]
 
+/// Bounded, deterministic local-first placement policy.
+pub mod adaptive;
 mod admission;
 mod attempt;
 mod cancel;

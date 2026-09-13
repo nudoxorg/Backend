@@ -10,7 +10,7 @@ use compiler_ir_vocabulary::{
     Confidence, DeclarationFamilyId, DeclarationIdentity, EntityId, ForeignKey, ForeignOrigin,
     Occurrence, OccurrenceTarget, ReferenceKind, StableRef, VariantFingerprint,
 };
-use heart_identity::{ContentId, ContentIdDecodeError, IrFragmentDomain};
+use backend_version::{ContentId, ContentIdDecodeError, IrFragmentDomain};
 use thiserror::Error;
 
 /// Wire tag of a stable occurrence target.

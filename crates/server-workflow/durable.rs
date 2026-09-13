@@ -10,7 +10,7 @@
 
 use core::{future::Future, mem::size_of};
 
-use heart_identity::{ContentId, ContentIdDecodeError, FixedCanonicalRecord, ObjectDomain};
+use backend_version::{ContentId, ContentIdDecodeError, FixedCanonicalRecord, ObjectDomain};
 use thiserror::Error;
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout,
@@ -302,7 +302,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::{EventKind, WorkflowEvent, WorkflowVersion, tests::key};
-    use heart_identity::{ContentId, FixedCanonicalRecord, ObjectDomain};
+    use backend_version::{ContentId, FixedCanonicalRecord, ObjectDomain};
 
     use super::{WORKFLOW_RECORD_BYTES, WorkflowRecord, WorkflowRecordError};
 

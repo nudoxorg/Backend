@@ -15,7 +15,7 @@ use compiler_publication::{
 use compiler_vocabulary::{
     GoVersion, LanguageProfile, LoweringUnsupported, NativeTool, ProjectionAdmissionFault, Stage,
 };
-use heart_identity::{ContentId, SourceFactDomain};
+use backend_version::{ContentId, SourceFactDomain};
 use server_index_build::{IndexBuildScratch, build};
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use std::{

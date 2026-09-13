@@ -2,7 +2,7 @@
 //! This module owns the view validate invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use crate::{AtomId, EntityId, ProductChildRole, SemanticProductConstructor, TypeId};
-use heart_identity::{ContentId, HASH_BYTES, IrFragmentDomain};
+use backend_version::{ContentId, HASH_BYTES, IrFragmentDomain};
 
 use crate::{
     view::{
@@ -876,10 +876,10 @@ fn validate_child_target(
         SEMANTIC_EXTERNAL_TAG => {
             if let Err(error) = ContentId::<IrFragmentDomain>::try_from(authority) {
                 let (expected, observed) = match error {
-                    heart_identity::ContentIdDecodeError::Domain {
+                    backend_version::ContentIdDecodeError::Domain {
                         expected, observed, ..
                     } => (u8::from(expected), observed),
-                    heart_identity::ContentIdDecodeError::Width { .. } => (0, 0),
+                    backend_version::ContentIdDecodeError::Width { .. } => (0, 0),
                 };
                 return Err(FragmentError::SemanticData {
                     fault: SemanticDataFault::ExternalAuthority {

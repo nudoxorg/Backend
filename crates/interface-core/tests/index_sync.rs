@@ -3,7 +3,7 @@
 use core::num::NonZeroU64;
 
 use compiler_ir::EntityId;
-use heart_identity::{
+use backend_version::{
     ArtifactId, ContentId, GenerationId, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
     IrFragmentDomain, IrFragmentEncoding, ObjectDomain, derive_index_snapshot,
 };
@@ -117,7 +117,7 @@ fn manifest_admission_uses_the_shared_server_snapshot_grammar() -> Result<(), Te
 
     let wrong = RemoteGeneration::new(
         accepted.generation().generation(),
-        heart_identity::IndexSnapshotId::from_canonical_bytes(b"wrong-snapshot"),
+        backend_version::IndexSnapshotId::from_canonical_bytes(b"wrong-snapshot"),
     );
     let rejected = ClientManifest::from_lanes(
         wrong,

@@ -6,7 +6,7 @@
 use core::ops::Deref;
 
 use heart_hydration::VerifiedGenerationFacts;
-use heart_identity::{
+use backend_version::{
     ArtifactId, ArtifactIdDecodeError, CompilePublicationDomain, CompilePublicationEncoding,
     ContentId, ContentIdDecodeError, DependencySetDomain, GenerationId,
 };
@@ -183,7 +183,7 @@ fn fixed<const WIDTH: usize>(input: &[u8], offset: usize) -> [u8; WIDTH] {
 #[cfg(test)]
 mod tests {
     use heart_hydration::VerifiedGenerationFacts;
-    use heart_identity::{
+    use backend_version::{
         ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, ContentId,
         DependencySetDomain, GenerationId, IrManifestDomain, IrManifestEncoding,
     };

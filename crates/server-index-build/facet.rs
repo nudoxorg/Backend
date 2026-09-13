@@ -410,7 +410,7 @@ mod tests {
     use crate::{ExactEntityValue, IndexedType, LinkKinds, SemanticTypeFact};
     use compiler_ir::{EntityId, EntityKind, LinkKind, TypeId, TypeTag};
     use core::mem::MaybeUninit;
-    use heart_identity::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
+    use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
     use server_index_core::{
         EntityArtifactIdentity, EntityDocumentId, ExactManifest, ExactRow, ExactSegment,
         IndexSnapshot, LexicalManifest, LexicalOperation, LexicalRow, LexicalScore, LexicalSegment,

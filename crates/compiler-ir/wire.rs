@@ -5,7 +5,7 @@ use core::{num::TryFromIntError, ops::Range};
 
 use crate::{AtomId, TypeId};
 use compiler_vocabulary::{LanguageProfile, NativeTool, Stage};
-use heart_identity::{
+use backend_version::{
     CompileRecipeDomain, ContentId, HASH_BYTES, SourceFactDomain, ToolchainDomain,
 };
 

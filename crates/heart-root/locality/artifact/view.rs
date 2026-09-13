@@ -6,10 +6,10 @@ use core::{num::NonZeroU64, ops::Deref};
 use crate::packed::RowIndex;
 use crate::{Locality, MetadataBytes, RootEntryCount};
 use fearless_simd::Level;
-use heart_identity::{
+use backend_version::{
     ContentAuthority, Domain, Encoding, EncodingTag, GenerationId, LocalitySortedEncoding,
 };
-use heart_object::{ObjectKind, ObjectLength, ObjectRef, ProviderSet, RemoteBase};
+use backend_version::object::{ObjectKind, ObjectLength, ObjectRef, ProviderSet, RemoteBase};
 use zerocopy::{
     Immutable, KnownLayout, TryFromBytes, Unalign, Unaligned,
     byteorder::{BigEndian, U32},

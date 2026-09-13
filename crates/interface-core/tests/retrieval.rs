@@ -4,7 +4,7 @@
 //! owns only the capability contract, not a fixture catalogue or a server-index dependency.
 
 use compiler_ir::EntityId;
-use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use interface_core::{
     ApplicationInput, ApplicationOutcome, ApplicationService, Capability, CorrelationId,
     DiagnosticCode, DiagnosticDetail, DocSection, InputText, RetrievalCapability, RetrievalCause,

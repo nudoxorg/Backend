@@ -8,7 +8,7 @@ mod support;
 use allocation_counter::{AllocationInfo, measure};
 use compiler_ir::{AtomId, TypeId};
 use compiler_ir::{AtomInput, EntityKind, EntityRecord, PrimitiveType, TypeNode};
-use heart_identity::{ContentId, SourceFactDomain};
+use backend_version::{ContentId, SourceFactDomain};
 use server_index_core::{ExactOperation, IndexSnapshot, LexicalRow};
 use support::{
     BuildBuffers, BuildProofError, Fixture, OpenBuffers, TestError, compiled, next_fragment,

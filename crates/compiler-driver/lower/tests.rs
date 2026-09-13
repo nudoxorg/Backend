@@ -13,7 +13,7 @@ use compiler_ir::{
 };
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 use super::{

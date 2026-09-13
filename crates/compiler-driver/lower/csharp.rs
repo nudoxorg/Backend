@@ -2350,7 +2350,7 @@ mod tests {
         CSharpImageFault, CSharpProjectionFault as PortableCSharpProjectionFault, CSharpVersion,
         CompileRecipeFact, LanguageProfile, LoweringUnsupported, NativeTool, Stage,
     };
-    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+    use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use sha2::{Digest, Sha256};
 
     use super::{CSharpCollectError, ProjectionFault, collect, terminal};

@@ -2,7 +2,7 @@
 
 use std::error::Error;
 
-use heart_identity::IndexSnapshotId;
+use backend_version::IndexSnapshotId;
 use interface_protocol::{
     MAX_UNTRUSTED_SOURCE_PATH_BYTES, UNTRUSTED_DOCUMENT_ID_BYTES, UntrustedDocumentId,
     UntrustedSourceSpan, UntrustedSourceSpanAuthorityError, UntrustedSourceSpanError,

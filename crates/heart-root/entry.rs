@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::ops::Deref;
 
-use heart_object::ObjectRef;
+use backend_version::object::ObjectRef;
 use thiserror::Error;
 
 /// Stable semantic key within one generation root.

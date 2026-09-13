@@ -8,7 +8,7 @@
     reason = "GAT batch borrowing exposes the exact static operation result without erasure"
 )]
 
-use heart_schema::OperationId;
+use backend_version::schema::OperationId;
 
 /// A statically known operation contract.
 pub trait Operation {

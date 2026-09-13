@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::mem::size_of;
 
-use heart_identity::{FixedCanonicalRecord, GenerationHasher, GenerationId};
+use backend_version::{FixedCanonicalRecord, GenerationHasher, GenerationId};
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned,
     byteorder::{BigEndian, U64},
@@ -45,7 +45,7 @@ pub(crate) struct RootWireRecord {
     pub(crate) key: U64<BigEndian>,
     pub(crate) parent_present: ParentWire,
     pub(crate) parent_key: U64<BigEndian>,
-    pub(crate) descriptor: heart_object::ObjectDescriptorWireRecord,
+    pub(crate) descriptor: backend_version::object::ObjectDescriptorWireRecord,
 }
 
 const ROOT_HEADER_RECORD_BYTES: usize = size_of::<RootHeaderRecord>();
@@ -75,7 +75,7 @@ impl RootWireRecord {
             key: U64::new(*row.key),
             parent_present,
             parent_key,
-            descriptor: heart_object::ObjectDescriptorWireRecord::from(&row.object()),
+            descriptor: backend_version::object::ObjectDescriptorWireRecord::from(&row.object()),
         }
     }
 }

@@ -9,7 +9,7 @@ use compiler_vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, Language, LanguageProfile,
     NativeTool, RustEdition, Stage,
 };
-use heart_identity::{
+use backend_version::{
     ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, ContentId,
     DependencySetDomain, IrFragmentDomain, IrFragmentEncoding, IrManifestDomain,
     IrManifestEncoding, IrSemanticImageDomain, IrSemanticImageEncoding, SourceFactDomain,

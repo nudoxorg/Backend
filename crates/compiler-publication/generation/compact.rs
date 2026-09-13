@@ -5,8 +5,8 @@
 //! its two-entry-per-artifact topology cannot accidentally enter this grammar.
 
 use heart_hydration::{PlanScratch, Projection, VerifiedGeneration, demand, plan};
-use heart_identity::ObjectDomain;
-use heart_memory::MemoryStore;
+use backend_version::ObjectDomain;
+use backend_store::memory::MemoryStore;
 use heart_root::{
     ClosureScratch, GenerationRoot, GenerationRootBuilder, GenerationView, PreparedLocality,
     RootEntry,

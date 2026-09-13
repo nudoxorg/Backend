@@ -4,7 +4,7 @@
 use core::num::TryFromIntError;
 
 use crate::{EntityId, ProductChildRole, ProductConstructorFault, TypeId};
-use heart_identity::{DomainCode, HASH_BYTES};
+use backend_version::{DomainCode, HASH_BYTES};
 use thiserror::Error;
 
 use crate::{
@@ -290,7 +290,7 @@ pub enum OccurrenceFault {
         ordinal: u32,
         expected: DomainCode,
         observed: u8,
-        raw: [u8; heart_identity::HASH_BYTES],
+        raw: [u8; backend_version::HASH_BYTES],
     },
     #[error("occurrence {ordinal} identity cell carries {actual} bytes instead of 32")]
     AuthorityWidth { ordinal: u32, actual: usize },

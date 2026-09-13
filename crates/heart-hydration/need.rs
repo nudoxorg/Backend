@@ -1,7 +1,7 @@
 //! Defines need behavior for `heart-hydration`, whose purpose is to plan and verify borrowed object hydration without weakening generation authority.
 //! This module owns the need invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use heart_identity::{Domain, GenerationId};
+use backend_version::{Domain, GenerationId};
 use heart_root::{BorrowedGenerationView, EntryRange, GenerationView};
 use thiserror::Error;
 

@@ -5,8 +5,8 @@
 
 use std::{error::Error, fmt, num::ParseIntError};
 
-use heart_adaptive::CapabilityDomain;
-use heart_identity::{ContentIdDecodeError, Domain, HASH_BYTES, IndexSnapshotDomain, RootDomain};
+use backend_execution::adaptive::CapabilityDomain;
+use backend_version::{ContentIdDecodeError, Domain, HASH_BYTES, IndexSnapshotDomain, RootDomain};
 use interface_core::{
     ApplicationInput, BatteryState, ByteCount, ContentId, CorrelationId, GenerateRequest,
     GenerateTarget, InconsistentRecovery, InputText, InputTextError, OperationBudget, OperationKey,

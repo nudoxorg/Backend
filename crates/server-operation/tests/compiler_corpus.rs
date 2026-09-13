@@ -62,7 +62,7 @@ use compiler_vocabulary::{
     CSharpVersion, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
     RustEdition, Stage, TypeScriptSource,
 };
-use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use multilingual_corpus::{
     CaseAvailability, CaseId, CorpusLanguage, CorpusPackage, CountExpectation, ExpectedFacts,
     ExpectedType, PACKAGE_COUNT, PackageShape, PlaneAvailability, RelationExpectation,

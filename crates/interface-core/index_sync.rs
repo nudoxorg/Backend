@@ -6,7 +6,7 @@
 use core::num::NonZeroU64;
 
 use arrayvec::ArrayVec;
-use heart_identity::{
+use backend_version::{
     ContentId, GenerationId, IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexSnapshotId,
     IndexSnapshotIdentityError, ObjectDomain, derive_index_snapshot,
 };

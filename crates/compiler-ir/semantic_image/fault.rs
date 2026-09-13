@@ -119,7 +119,7 @@ pub enum CoreSemanticImageFault {
     ProvenanceIdentity {
         field: CoreProvenanceIdentityField,
         #[source]
-        source: heart_identity::ContentIdDecodeError,
+        source: backend_version::ContentIdDecodeError,
     },
     #[error("semantic image scope {component:?} is not UTF-8")]
     ScopeUtf8 {

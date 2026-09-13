@@ -294,7 +294,7 @@ mod tests {
         AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, LanguageProfile, NativeTool,
         PythonVersion, Stage, TypeScriptSource,
     };
-    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+    use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use interface_core::{CompilerCause, CompilerTerminal};
 
     use super::authority_terminal;

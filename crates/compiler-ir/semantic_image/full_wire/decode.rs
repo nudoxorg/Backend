@@ -8,7 +8,7 @@ use crate::{
     VariantAvailability, VariantFingerprint, Visibility,
 };
 use compiler_ir_vocabulary::{ExternalCoordinate, ExternalDeclarationIdentity, StableRef};
-use heart_identity::{ContentId, IrFragmentDomain};
+use backend_version::{ContentId, IrFragmentDomain};
 
 use super::{
     fault::{FullSemanticImageFault, FullSemanticImageField, FullSemanticImageIdentityField},

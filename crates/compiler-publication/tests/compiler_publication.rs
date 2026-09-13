@@ -24,7 +24,7 @@ use compiler_publication::{
     publication::{open_published, open_published_semantic, publish_compiled, publish_semantic},
 };
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;
 
@@ -702,9 +702,9 @@ fn open_published_rejects_manifest_source_fact_that_disagrees_with_fragment()
     let mut manifest = fs::read(manifest_path)?;
     let source_length = 16 + 32;
     manifest[source_length..source_length + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-    let identity = heart_identity::ArtifactId::<
-        heart_identity::IrManifestEncoding,
-        heart_identity::IrManifestDomain,
+    let identity = backend_version::ArtifactId::<
+        backend_version::IrManifestEncoding,
+        backend_version::IrManifestDomain,
     >::from_encoded_bytes(&manifest);
     fs::write(
         fixture

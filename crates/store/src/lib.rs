@@ -6,6 +6,9 @@
 //! structural edits rebuild only the canonical materialization needed for the
 //! new key sequence and reuse equal immutable nodes from the map's CAS.
 #![forbid(unsafe_code)]
+
+extern crate alloc;
+
 pub(crate) use backend_version::{
     CommittedChild, DEFAULT_CUT_POLICY, DeltaId, Relation, StateRoot,
     canonical_branch_from_commitments, canonical_empty, canonical_leaf,
@@ -35,6 +38,13 @@ mod pack;
 mod proof;
 mod residency;
 mod tree;
+
+/// Bounded first-write-wins immutable object storage in caller-selected memory.
+pub mod memory;
+/// Indexed immutable object-pack writing and allocation-free borrowing.
+pub mod object_pack;
+/// Structural validation witnesses and allocation-free borrowed frame views.
+pub mod view;
 
 pub use backend_version::CoverageWitness;
 pub use canonical::{RawRelation, RawValue, StoredValue};

@@ -14,4 +14,4 @@ server-index-vocabulary = { path = "../server-index-vocabulary" }
 path = "lib.rs"
 
 [dev-dependencies]
-heart-identity = { path = "../heart-identity" }
+backend-version = { path = "../version" }

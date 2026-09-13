@@ -16,7 +16,7 @@ use compiler_languages_clang::{
     ClangInput, CompilationDatabase, DatabaseArgumentError, DatabaseError, MAX_DATABASE_ARGUMENTS,
 };
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
-use heart_identity::SourceFactDomain;
+use backend_version::SourceFactDomain;
 use thiserror::Error;
 
 use crate::{CompiledFragment, ResolvedToolchain, lower};
@@ -230,7 +230,7 @@ fn compile_database_input<'input, 'source, 'toolchain, 'cancel, 'output>(
             cause,
         })?;
     let source_identity = SourceIdentity {
-        identity: heart_identity::ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+        identity: backend_version::ContentId::<SourceFactDomain>::from_canonical_bytes(source),
         byte_len,
     };
     let recipe = CompileRecipeFact::derive(

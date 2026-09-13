@@ -10,16 +10,13 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-heart-identity = { path = "../heart-identity" }
-heart-object = { path = "../heart-object" }
+backend-version = { path = "../version" }
 heart-root = { path = "../heart-root" }
-heart-observe = { path = "../heart-observe" }
-heart-memory = { path = "../heart-memory" }
+backend-store = { path = "../store" }
 thiserror.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
-heart-schema = { path = "../heart-schema" }
 rstest.workspace = true
 trybuild.workspace = true
 

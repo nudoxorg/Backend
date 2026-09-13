@@ -20,13 +20,13 @@ use super::{
     view::{BorrowedLanes, OverlayLanes, PlacementLanes, ProviderWire, ValidatedLocality},
 };
 
-pub(super) fn parse<DomainTag: heart_identity::Domain>(
+pub(super) fn parse<DomainTag: backend_version::Domain>(
     bytes: &[u8],
 ) -> Result<ValidatedLocality<'_, DomainTag>, LocalityError> {
     parse_with_level(bytes, None)
 }
 
-pub(super) fn parse_accelerated<DomainTag: heart_identity::Domain>(
+pub(super) fn parse_accelerated<DomainTag: backend_version::Domain>(
     bytes: &[u8],
     level: Level,
 ) -> Result<ValidatedLocality<'_, DomainTag>, LocalityError> {
@@ -37,7 +37,7 @@ pub(super) fn parse_accelerated<DomainTag: heart_identity::Domain>(
 /// grammar as untrusted input. This is intentionally not a weaker shortcut:
 /// a writer implementation drift must return the exact public invariant
 /// failure before it can mint a borrowed witness.
-pub(super) fn from_writer<DomainTag: heart_identity::Domain>(
+pub(super) fn from_writer<DomainTag: backend_version::Domain>(
     bytes: &[u8],
 ) -> Result<ValidatedLocality<'_, DomainTag>, LocalityError> {
     parse(bytes)
@@ -49,7 +49,7 @@ fn descriptor_validity_error(bytes: &[u8]) -> LocalityError {
             .get(SCHEMA_OFFSET..SCHEMA_OFFSET + size_of::<u32>())
             .and_then(|bytes| <&[u8; 4]>::try_from(bytes).ok())
             .map(|bytes| u32::from_be_bytes(*bytes));
-        if let Some(Err(source)) = schema.map(heart_schema::SchemaId::try_from) {
+        if let Some(Err(source)) = schema.map(backend_version::schema::SchemaId::try_from) {
             return LocalityError::PresentOverlaySchema { ordinal, source };
         }
     }
@@ -58,7 +58,7 @@ fn descriptor_validity_error(bytes: &[u8]) -> LocalityError {
     }
 }
 
-fn parse_with_level<DomainTag: heart_identity::Domain>(
+fn parse_with_level<DomainTag: backend_version::Domain>(
     bytes: &[u8],
     level: Option<Level>,
 ) -> Result<ValidatedLocality<'_, DomainTag>, LocalityError> {
@@ -75,7 +75,7 @@ fn parse_with_level<DomainTag: heart_identity::Domain>(
         }
     })?;
     let content_authority =
-        heart_identity::ContentAuthority::<DomainTag>::try_from(header.content_domain)?;
+        backend_version::ContentAuthority::<DomainTag>::try_from(header.content_domain)?;
     validate_declared_cardinality(header)?;
     let layout = LocalityLayout::new(
         header.exception_count.get().into(),
@@ -109,7 +109,7 @@ fn parse_with_level<DomainTag: heart_identity::Domain>(
     let placement = placement_lanes(bytes, lanes, descriptors)?;
     Ok(ValidatedLocality::from_validated(
         bytes,
-        heart_identity::GenerationId::try_from(header.generation)?,
+        backend_version::GenerationId::try_from(header.generation)?,
         content_authority,
         header.root_count.get().into(),
         header.exception_count.get(),
@@ -147,7 +147,7 @@ fn placement_lanes<'bytes>(
     if u32::from(lanes.overlay_count) == 0 {
         return Ok(PlacementLanes::PromisesOnly);
     }
-    let basis = heart_identity::GenerationId::try_from(lane(bytes, lanes.basis, lanes.complete))?;
+    let basis = backend_version::GenerationId::try_from(lane(bytes, lanes.basis, lanes.complete))?;
     Ok(PlacementLanes::Overlays(OverlayLanes {
         basis,
         presence_bits: lane(bytes, lanes.overlay_bits, lanes.overlay_ranks),
@@ -307,7 +307,7 @@ fn provider_validity_error(bytes: &[u8], count: u32) -> LocalityError {
             return LocalityError::EmptyProvider {
                 ordinal,
                 observed: 0,
-                source: heart_object::ProviderSetError::Empty,
+                source: backend_version::object::ProviderSetError::Empty,
             };
         }
     }

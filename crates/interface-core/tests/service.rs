@@ -13,7 +13,7 @@ use std::{
 };
 
 use compiler_vocabulary::{Language, LanguageProfile, RustEdition, Stage};
-use heart_observe::{DropNewest, FlightRecorder, Probe};
+use backend_version::observe::{DropNewest, FlightRecorder, Probe};
 use interface_core::{
     AdaptiveDisposition, ApplicationDisposition, ApplicationEvent, ApplicationInput,
     ApplicationObservation, ApplicationOutcome, ApplicationService, BatteryState, ByteCount,
@@ -142,7 +142,7 @@ fn acquire_and_complete(
         ApplicationDisposition::from(&ReplyBody::ExecutionStarted {
             operation,
             transition: CapabilityTransition::Acquire {
-                capability: heart_adaptive::CapabilityKind::Analyzer,
+                capability: backend_execution::adaptive::CapabilityKind::Analyzer,
                 bundle: selected,
             },
         }),

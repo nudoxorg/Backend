@@ -25,7 +25,7 @@ use compiler_publication::{
 };
 use compiler_vocabulary::{LanguageProfile, PackageUrl, Stage};
 use heart_hydration::VerifiedGenerationFacts;
-use heart_identity::{ContentId, DependencySetDomain, GenerationId};
+use backend_version::{ContentId, DependencySetDomain, GenerationId};
 
 const MAGIC: &[u8; 4] = b"PSP1";
 const IDENTITY_BYTES: usize = size_of::<[u8; 32]>();
@@ -926,7 +926,7 @@ mod tests {
     use compiler_vocabulary::{
         CStandard, CompileRecipeFact, CxxStandard, LanguageProfile, NativeTool, RustEdition, Stage,
     };
-    use heart_identity::{IrManifestDomain, IrManifestEncoding, SourceFactDomain, ToolchainDomain};
+    use backend_version::{IrManifestDomain, IrManifestEncoding, SourceFactDomain, ToolchainDomain};
     use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
     use std::{fs, num::NonZeroUsize};
 
@@ -950,7 +950,7 @@ mod tests {
             dep_set: ContentId::from_canonical_bytes(b"dependency set"),
         };
         let manifest =
-            heart_identity::ArtifactId::<IrManifestEncoding, IrManifestDomain>::from_encoded_bytes(
+            backend_version::ArtifactId::<IrManifestEncoding, IrManifestDomain>::from_encoded_bytes(
                 b"manifest",
             );
         let mut binding_bytes = [0_u8; COMPILATION_BINDING_BYTES];
@@ -1207,7 +1207,7 @@ mod tests {
         assert_eq!(activated.artifacts().count(), 1);
 
         let foreign_manifest =
-            heart_identity::ArtifactId::<IrManifestEncoding, IrManifestDomain>::from_encoded_bytes(
+            backend_version::ArtifactId::<IrManifestEncoding, IrManifestDomain>::from_encoded_bytes(
                 b"foreign manifest",
             );
         let mut foreign_binding_bytes = [0_u8; COMPILATION_BINDING_BYTES];

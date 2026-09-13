@@ -18,7 +18,9 @@
     {
       "name": "backend-runtime",
       "manifest_path": "crates/runtime/Cargo.toml",
-      "dependencies": [],
+      "dependencies": [
+        "backend-version"
+      ],
       "layer": "core",
       "order": 1
     },

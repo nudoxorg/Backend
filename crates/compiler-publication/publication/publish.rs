@@ -9,7 +9,7 @@ use compiler_ir::{
     encode_full_semantic_image, full_semantic_image_len,
 };
 use heart_hydration::VerifiedGeneration;
-use heart_identity::ObjectDomain;
+use backend_version::ObjectDomain;
 use server_journal::{CancelError, DurablePublisher, PublicationError, SubmitError};
 
 use super::types::{

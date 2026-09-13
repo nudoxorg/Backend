@@ -11,7 +11,7 @@
 mod support;
 
 use compiler_ir::EntityId;
-use heart_identity::GenerationId;
+use backend_version::GenerationId;
 use server_index_core::{IndexSnapshot, LexicalManifest};
 use server_index_graph_vector::{
     Cancellation, GraphAuthority, GraphEdge, GraphRow, GraphTerminal, Metric, ModelId, PartitionId,

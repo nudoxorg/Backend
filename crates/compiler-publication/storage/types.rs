@@ -5,7 +5,7 @@
 
 use std::{io, num::TryFromIntError, path::PathBuf, str::Utf8Error};
 
-use heart_identity::{ArtifactId, Domain, Encoding};
+use backend_version::{ArtifactId, Domain, Encoding};
 use thiserror::Error;
 
 /// Exact filesystem transition whose source is retained by [`ImmutableFileError::Io`].

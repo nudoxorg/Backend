@@ -3,8 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::mem::size_of;
 
-use heart_identity::{ContentId, GenerationId, ObjectDomain};
-use heart_schema::OperationId;
+use backend_version::{ContentId, GenerationId, ObjectDomain};
+use backend_version::schema::OperationId;
 use thiserror::Error;
 
 use crate::{

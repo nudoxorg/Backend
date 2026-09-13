@@ -20,7 +20,7 @@ tantivy.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-heart-identity = { path = "../heart-identity" }
+backend-version = { path = "../version" }
 
 [lib]
 path = "lib.rs"

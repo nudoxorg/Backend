@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use heart_identity::{ArtifactId, Domain, Encoding};
+use backend_version::{ArtifactId, Domain, Encoding};
 
 use super::{
     ImmutableFileError, ImmutableIoPhase, StorageNamespace, StoredFile,

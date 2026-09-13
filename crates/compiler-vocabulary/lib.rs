@@ -6,7 +6,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use core::{fmt, str::FromStr};
-use heart_identity::{CompileRecipeDomain, ContentId, SourceFactDomain, ToolchainDomain};
+use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain, ToolchainDomain};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

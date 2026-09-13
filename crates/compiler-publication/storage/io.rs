@@ -9,7 +9,7 @@ use std::{
     path::Path,
 };
 
-use heart_identity::{ArtifactHasher, ArtifactId, Domain, Encoding};
+use backend_version::{ArtifactHasher, ArtifactId, Domain, Encoding};
 
 use super::{ImmutableFileError, ImmutableIoPhase};
 

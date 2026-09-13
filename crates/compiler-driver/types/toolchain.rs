@@ -5,7 +5,7 @@ use core::ops::Deref;
 use std::path::Path;
 
 use compiler_vocabulary::NativeTool;
-use heart_identity::{ContentId, ToolchainDomain};
+use backend_version::{ContentId, ToolchainDomain};
 use thiserror::Error;
 
 /// Immutable, caller-resolved native executable facts.

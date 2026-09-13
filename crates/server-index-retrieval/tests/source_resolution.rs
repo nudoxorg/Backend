@@ -22,7 +22,7 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use futures_core::Stream;
-use heart_identity::{
+use backend_version::{
     ArtifactId, CompilePublicationDomain, ContentId, GenerationId, IrFragmentDomain,
     IrFragmentEncoding,
 };

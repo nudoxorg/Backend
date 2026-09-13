@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use compiler_ir::EntityId;
-use heart_identity::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
+use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{EntityArtifactIdentity, EntityDocumentId, IndexSnapshot};
 use server_index_routing::{
     Coordinator, MAX_SEGMENTS, MissingAssignment, ObservedHit, OrderingRecipe, Query, RetryPolicy,

@@ -21,7 +21,6 @@ trustfall.workspace = true
 
 [dev-dependencies]
 futures-executor.workspace = true
-heart-identity = { path = "../../crates/heart-identity" }
 
 [lints]
 workspace = true

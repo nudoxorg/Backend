@@ -13,7 +13,7 @@ use compiler_ir_vocabulary::{
 };
 use compiler_vocabulary::{LanguageProfile, NativeTool, RustEdition, Stage};
 use core::num::ParseIntError;
-use heart_identity::{ContentId, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
+use backend_version::{ContentId, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 #[derive(Debug, Error)]

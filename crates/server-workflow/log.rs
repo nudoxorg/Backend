@@ -13,7 +13,7 @@
 
 use alloc::vec::Vec;
 use core::ops::Deref;
-use heart_observe::Probe;
+use backend_version::observe::Probe;
 use thiserror::Error;
 
 use crate::{

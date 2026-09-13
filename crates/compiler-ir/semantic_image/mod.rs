@@ -30,7 +30,7 @@ pub type SemanticImageEncodeError = FullPlanError;
 /// Exact reopening failures from [`SemanticImageView::reopen`].
 pub type SemanticImageReopenError = FullSemanticImageError;
 /// Identity of the canonical complete portable semantic-image bytes.
-pub type SemanticImageIdentity = heart_identity::ArtifactId<
-    heart_identity::IrSemanticImageEncoding,
-    heart_identity::IrSemanticImageDomain,
+pub type SemanticImageIdentity = backend_version::ArtifactId<
+    backend_version::IrSemanticImageEncoding,
+    backend_version::IrSemanticImageDomain,
 >;

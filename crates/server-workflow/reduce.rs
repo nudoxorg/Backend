@@ -11,7 +11,7 @@
     reason = "each typed error names its exact reduction failure"
 )]
 
-use heart_observe::Probe;
+use backend_version::observe::Probe;
 use thiserror::Error;
 
 use crate::{

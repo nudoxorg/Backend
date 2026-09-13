@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Closed sibling artifact namespaces and their fixed identity-path grammar.
 
-use heart_identity::{ArtifactId, Domain, Encoding, HASH_BYTES};
+use backend_version::{ArtifactId, Domain, Encoding, HASH_BYTES};
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 const HEX_NAME_BYTES: usize = HASH_BYTES * 2;

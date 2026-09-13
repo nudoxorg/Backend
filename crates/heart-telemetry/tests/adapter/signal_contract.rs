@@ -379,7 +379,7 @@ fn assert_exact_metrics(exports: &[ResourceMetrics]) -> Result<(), AdapterTestEr
 #[test]
 fn filtered_dispatch_does_not_build_root_probe_events() -> Result<(), AdapterTestError> {
     use core::cell::Cell;
-    use heart_observe::Probe;
+    use backend_version::observe::Probe;
     use heart_root::{RootProbeEvent, SelectionWork};
     use tracing::level_filters::LevelFilter;
 

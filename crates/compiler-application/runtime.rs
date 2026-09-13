@@ -27,7 +27,7 @@ use compiler_languages_rust::{RustFeatureControl, RustToolchain, SourceByteLimit
 use compiler_languages_typescript::ExplicitTypeScriptChecker;
 use compiler_publication::{binding::CompilationBindingFacts, manifest::CompilationManifestFacts};
 use compiler_vocabulary::{Language, LanguageProfile, NativeTool, Stage};
-use heart_identity::{CompilationTargetDomain, ContentId, ToolchainDomain};
+use backend_version::{CompilationTargetDomain, ContentId, ToolchainDomain};
 use interface_core::{
     CompilerCapability, CompilerReadiness, CompilerRequest, CompilerRuntimeCause, CompilerTerminal,
     GeneratedArtifact, PackageCompilePhase, PackageCompileRequest, SemanticImageAccessError,

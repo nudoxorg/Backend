@@ -6,7 +6,7 @@
 use alloc::{borrow::ToOwned, vec};
 
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
-use heart_identity::{
+use backend_version::{
     CompileRecipeDomain, ContentId, SemanticScopeDomain, SourceFactDomain, ToolchainDomain,
 };
 

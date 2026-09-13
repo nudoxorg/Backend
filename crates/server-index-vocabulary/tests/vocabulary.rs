@@ -9,7 +9,7 @@ use core::{
     mem::{align_of, size_of},
     ops::Deref,
 };
-use heart_identity::{
+use backend_version::{
     CompilePublicationDomain, ContentId, ContentIdDecodeError, DomainCode, GenerationId,
 };
 use server_index_vocabulary::{

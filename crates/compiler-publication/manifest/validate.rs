@@ -5,7 +5,7 @@ use core::{cmp::Ordering, num::TryFromIntError, ops::Deref};
 
 use compiler_ir::{FragmentRange, RecipeFact, SectionKind, SourceIdentity};
 use compiler_vocabulary::{CompileRecipeFact, Stage};
-use heart_identity::{
+use backend_version::{
     ArtifactId, ArtifactIdDecodeError, ContentIdDecodeError, IrFragmentDomain, IrFragmentEncoding,
 };
 use thiserror::Error;

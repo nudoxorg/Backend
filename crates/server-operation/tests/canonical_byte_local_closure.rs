@@ -7,15 +7,15 @@ use std::collections::TryReserveError;
 use std::num::TryFromIntError;
 
 use heart_hydration::{Need, PlanError, PlanScratch, Projection, VerificationError, plan_borrowed};
-use heart_identity::{ContentId, GenerationId, ObjectDomain};
-use heart_memory::{InsertOutcome, MemoryStore, RejectedInsert, StoreCapacity, StoreInitError};
-use heart_object::{ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet};
+use backend_version::{ContentId, GenerationId, ObjectDomain};
+use backend_store::memory::{InsertOutcome, MemoryStore, RejectedInsert, StoreCapacity, StoreInitError};
+use backend_version::object::{ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet};
 use heart_root::{
     BorrowedGenerationView, ClosureScratch, EntryKey, GenerationRoot, LocalityError,
     LocalityException, LocalityWriteError, NonResident, PreparedLocality, RootBuildError,
     RootEntry, RootReadError, RootWriteError, ValidatedRoot,
 };
-use heart_schema::SchemaId;
+use backend_version::schema::SchemaId;
 use server_operation::{
     BatchSource, LocalObjectProvider, ObjectProvenance, SourcePoll, TerminalSummary,
     VerifiedObjectBindError,

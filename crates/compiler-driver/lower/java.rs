@@ -1762,7 +1762,7 @@ mod tests {
     use compiler_ir::{DocFactFault, OccurrenceFault};
     use compiler_ir::{FragmentView, SourceIdentity, TypeFactFault};
     use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
-    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+    use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use sha2::Sha256;
 
     const HEADER_BYTES: usize = 176;

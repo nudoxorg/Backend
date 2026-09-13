@@ -6,7 +6,7 @@
 //! carries the entity-root map needed to navigate from a declaration to its
 //! canonical product after deduplication.
 
-use heart_identity::{ContentId, IrFragmentDomain};
+use backend_version::{ContentId, IrFragmentDomain};
 
 use crate::{
     AtomId, EntityId, ExternalProductRef, ProductChildRole, ProductId, ProductListId, ProductRef,
@@ -192,7 +192,7 @@ impl<'fragment> SemanticDataView<'fragment> {
             SEMANTIC_LOCAL_TAG => ProductRef::Local(ProductId::new(read_u32(record, 2))),
             SEMANTIC_EXTERNAL_TAG => {
                 let target = read_u32(record, 2);
-                let raw: [u8; heart_identity::HASH_BYTES] = record[6..].try_into().ok()?;
+                let raw: [u8; backend_version::HASH_BYTES] = record[6..].try_into().ok()?;
                 let fragment = ContentId::<IrFragmentDomain>::try_from(raw).ok()?;
                 ProductRef::External(ExternalProductRef::bind(fragment, target))
             }

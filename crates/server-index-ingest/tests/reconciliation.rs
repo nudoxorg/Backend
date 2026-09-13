@@ -4,7 +4,7 @@ use compiler_ir::{
     SemanticImageIdentity, SemanticImageView, SemanticReader, SourceSpan, TreeItemInput,
     VariantFingerprint, Visibility, encode_full_semantic_image, full_semantic_image_len,
 };
-use heart_identity::{CompilePublicationDomain, ContentId, GenerationId};
+use backend_version::{CompilePublicationDomain, ContentId, GenerationId};
 use server_index_ingest::{
     Checkpoint, IngestedVersion, IngestedVersionFault, IngestionOrigin, ReconciliationFault,
     ReconciliationOperation, reconcile_into,

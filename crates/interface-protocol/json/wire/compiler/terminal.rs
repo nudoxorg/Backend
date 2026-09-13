@@ -32,7 +32,7 @@ use super::authority::{CompilerAttemptWire, SourceAuthorityWire};
 use super::native::{NativeIoFactRef, NativeIoPhaseRef, NativeWorkCauseWire};
 use super::package::{CompilerRuntimeCauseWire, PackageCompilePhaseWire, PackageSourceCauseWire};
 use super::publication::serialize_publication_cause;
-use heart_identity::{CompilationTargetDomain, ContentId};
+use backend_version::{CompilationTargetDomain, ContentId};
 
 /// Remote serde definition for the closed compiler terminal.
 ///

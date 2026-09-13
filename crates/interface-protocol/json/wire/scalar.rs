@@ -4,8 +4,8 @@
 use core::{fmt, str};
 use std::io::ErrorKind;
 
-use heart_adaptive::ContentId;
-use heart_identity::{ArtifactId, Domain, Encoding};
+use backend_execution::adaptive::ContentId;
+use backend_version::{ArtifactId, Domain, Encoding};
 use interface_core::{Capability, InputText};
 use serde::{Serialize, Serializer, ser::Error as _};
 
@@ -331,54 +331,54 @@ impl From<Capability> for CapabilityName {
     }
 }
 
-impl From<heart_adaptive::CapabilityKind> for CapabilityKind {
-    fn from(capability: heart_adaptive::CapabilityKind) -> Self {
+impl From<backend_execution::adaptive::CapabilityKind> for CapabilityKind {
+    fn from(capability: backend_execution::adaptive::CapabilityKind) -> Self {
         match capability {
-            heart_adaptive::CapabilityKind::Analyzer => Self::Analyzer,
-            heart_adaptive::CapabilityKind::Compiler => Self::Compiler,
-            heart_adaptive::CapabilityKind::Codec => Self::Codec,
-            heart_adaptive::CapabilityKind::Model => Self::Model,
+            backend_execution::adaptive::CapabilityKind::Analyzer => Self::Analyzer,
+            backend_execution::adaptive::CapabilityKind::Compiler => Self::Compiler,
+            backend_execution::adaptive::CapabilityKind::Codec => Self::Codec,
+            backend_execution::adaptive::CapabilityKind::Model => Self::Model,
         }
     }
 }
 
-impl From<heart_adaptive::ExecutionPhase> for ExecutionPhase {
-    fn from(phase: heart_adaptive::ExecutionPhase) -> Self {
+impl From<backend_execution::adaptive::ExecutionPhase> for ExecutionPhase {
+    fn from(phase: backend_execution::adaptive::ExecutionPhase) -> Self {
         match phase {
-            heart_adaptive::ExecutionPhase::LocalResidence => Self::LocalResidence,
-            heart_adaptive::ExecutionPhase::CapabilityBundle => Self::CapabilityBundle,
-            heart_adaptive::ExecutionPhase::Remote => Self::Remote,
+            backend_execution::adaptive::ExecutionPhase::LocalResidence => Self::LocalResidence,
+            backend_execution::adaptive::ExecutionPhase::CapabilityBundle => Self::CapabilityBundle,
+            backend_execution::adaptive::ExecutionPhase::Remote => Self::Remote,
         }
     }
 }
 
-impl From<heart_adaptive::ResourceClass> for ResourceClass {
-    fn from(resource: heart_adaptive::ResourceClass) -> Self {
+impl From<backend_execution::adaptive::ResourceClass> for ResourceClass {
+    fn from(resource: backend_execution::adaptive::ResourceClass) -> Self {
         match resource {
-            heart_adaptive::ResourceClass::Ram => Self::Ram,
-            heart_adaptive::ResourceClass::Nvme => Self::Nvme,
-            heart_adaptive::ResourceClass::Operations => Self::Operations,
-            heart_adaptive::ResourceClass::Retries => Self::Retries,
+            backend_execution::adaptive::ResourceClass::Ram => Self::Ram,
+            backend_execution::adaptive::ResourceClass::Nvme => Self::Nvme,
+            backend_execution::adaptive::ResourceClass::Operations => Self::Operations,
+            backend_execution::adaptive::ResourceClass::Retries => Self::Retries,
         }
     }
 }
 
-impl From<heart_adaptive::InputClass> for InputClass {
-    fn from(class: heart_adaptive::InputClass) -> Self {
+impl From<backend_execution::adaptive::InputClass> for InputClass {
+    fn from(class: backend_execution::adaptive::InputClass) -> Self {
         match class {
-            heart_adaptive::InputClass::Local => Self::Local,
-            heart_adaptive::InputClass::Remote => Self::Remote,
-            heart_adaptive::InputClass::Demand => Self::Demand,
-            heart_adaptive::InputClass::Bundle => Self::Bundle,
+            backend_execution::adaptive::InputClass::Local => Self::Local,
+            backend_execution::adaptive::InputClass::Remote => Self::Remote,
+            backend_execution::adaptive::InputClass::Demand => Self::Demand,
+            backend_execution::adaptive::InputClass::Bundle => Self::Bundle,
         }
     }
 }
 
-impl From<heart_adaptive::StorageTier> for StorageTier {
-    fn from(tier: heart_adaptive::StorageTier) -> Self {
+impl From<backend_execution::adaptive::StorageTier> for StorageTier {
+    fn from(tier: backend_execution::adaptive::StorageTier) -> Self {
         match tier {
-            heart_adaptive::StorageTier::Ram => Self::Ram,
-            heart_adaptive::StorageTier::Nvme => Self::Nvme,
+            backend_execution::adaptive::StorageTier::Ram => Self::Ram,
+            backend_execution::adaptive::StorageTier::Nvme => Self::Nvme,
         }
     }
 }

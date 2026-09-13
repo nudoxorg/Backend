@@ -17,14 +17,14 @@ use compiler_ir::{
 };
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_hydration::{PlanScratch, Projection, demand, plan};
-use heart_identity::{
+use backend_version::{
     ArtifactId, ContentId, GenerationId, IrFragmentDomain, IrFragmentEncoding, ObjectDomain,
     SourceFactDomain, ToolchainDomain,
 };
-use heart_memory::{InsertOutcome, MemoryStore, StoreCapacity};
-use heart_object::ObjectRef;
+use backend_store::memory::{InsertOutcome, MemoryStore, StoreCapacity};
+use backend_version::object::ObjectRef;
 use heart_root::{ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry};
-use heart_schema::SchemaId;
+use backend_version::schema::SchemaId;
 use server_index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactManifest, ExactOperation, ExactResolution,
     ExactRow, ExactSegment, ExactTerminal, IndexSnapshot, IndexSnapshotId, LexicalManifest,

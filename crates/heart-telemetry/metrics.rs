@@ -66,7 +66,7 @@ impl RuntimeMetricReporter {
 
     pub(crate) fn record(
         &self,
-        metrics: server_runtime::RuntimeMetrics,
+        metrics: backend_runtime::server::RuntimeMetrics,
     ) -> Result<(), MetricReportError> {
         record_gauge(&self.capacity, "heart.runtime.capacity", metrics.capacity)?;
         record_gauge(

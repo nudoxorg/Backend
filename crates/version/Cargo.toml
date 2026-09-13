@@ -7,8 +7,17 @@ license.workspace = true
 publish = false
 
 [dependencies]
+arrayvec.workspace = true
 blake3.workspace = true
+derive_more.workspace = true
 smallvec.workspace = true
+strum.workspace = true
+thiserror.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+trybuild.workspace = true
 
 [lints]
 workspace = true

@@ -13,7 +13,7 @@ pub use compiler_vocabulary::{
     InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactRole, NativeWorkPhase,
     NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage,
 };
-use heart_identity::{
+use backend_version::{
     ArtifactId, CompilationTargetDomain, CompilePublicationDomain, CompilePublicationEncoding,
     CompileRecipeDomain, ContentId, DependencySetDomain, GenerationId, IrFragmentDomain,
     IrFragmentEncoding, IrManifestDomain, IrManifestEncoding, IrSemanticImageDomain,

@@ -14,7 +14,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 compiler-ir = { path = "../compiler-ir" }
-heart-identity = { path = "../heart-identity" }
+backend-version = { path = "../version" }
 
 [lints]
 workspace = true

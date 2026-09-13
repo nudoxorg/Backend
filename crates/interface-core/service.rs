@@ -10,12 +10,12 @@ use std::{
 };
 
 use compiler_registry::FullRegistry;
-use heart_adaptive::{
+use backend_execution::adaptive::{
     BundleFact, BundleState, CapabilityDomain, CapabilityKind, ContentId, ExecutionRequest,
     ExecutionTerminal, LatencyMicros, Pin, PlacementAction, PolicyDecision, PolicyInput,
     RemoteHealth, ResourceBudget, next_action,
 };
-use heart_observe::Probe;
+use backend_version::observe::Probe;
 
 use crate::{
     AdaptiveDisposition, ApplicationEvent, ApplicationInput, ApplicationOutcome, ApplicationReply,

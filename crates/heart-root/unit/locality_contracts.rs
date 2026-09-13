@@ -105,7 +105,7 @@ fn locality_scan_uses_one_ordered_sparse_route_cursor() -> Result<(), ScenarioEr
         resident(2, Some(1), object(2)),
         resident(3, Some(1), object(3)),
     ]))?;
-    let provider = heart_object::ProviderId::try_from(3_u8)?;
+    let provider = backend_version::object::ProviderId::try_from(3_u8)?;
     let locality_bytes = routed_locality(&root, provider)?;
     let locality = ValidatedLocality::try_from(locality_bytes.as_slice())?;
     let view = GenerationView::new(&root, &locality)?;
@@ -125,7 +125,7 @@ fn locality_lookup_and_selected_cursor_have_exact_sparse_bounds() -> Result<(), 
         resident(2, Some(1), object(2)),
         resident(3, Some(1), object(3)),
     ]))?;
-    let provider = heart_object::ProviderId::try_from(3_u8)?;
+    let provider = backend_version::object::ProviderId::try_from(3_u8)?;
     let locality_bytes = routed_locality(&root, provider)?;
     let locality = ValidatedLocality::try_from(locality_bytes.as_slice())?;
     let view = GenerationView::new(&root, &locality)?;
@@ -137,7 +137,7 @@ fn locality_lookup_and_selected_cursor_have_exact_sparse_bounds() -> Result<(), 
     })?;
     assert_eq!(
         found.locality,
-        Locality::Promised(heart_object::ProviderSet::only(provider))
+        Locality::Promised(backend_version::object::ProviderSet::only(provider))
     );
     assert_eq!(lookup.route_binary_searches, 1);
     assert_eq!(lookup.route_comparisons, 2);
@@ -159,7 +159,7 @@ fn locality_lookup_and_selected_cursor_have_exact_sparse_bounds() -> Result<(), 
 
 fn routed_locality(
     root: &GenerationRoot<ObjectDomain>,
-    provider: heart_object::ProviderId,
+    provider: backend_version::object::ProviderId,
 ) -> Result<Vec<u8>, ScenarioError> {
     locality_bytes(
         root,
@@ -167,7 +167,7 @@ fn routed_locality(
             locality_exception(
                 root,
                 key(2),
-                NonResident::Promised(heart_object::ProviderSet::only(provider)),
+                NonResident::Promised(backend_version::object::ProviderSet::only(provider)),
             )?,
             locality_exception(
                 root,
@@ -182,7 +182,7 @@ fn routed_locality(
 
 fn routed_entries(
     root: &GenerationRoot<ObjectDomain>,
-    provider: heart_object::ProviderId,
+    provider: backend_version::object::ProviderId,
 ) -> Vec<crate::GenerationEntry<ObjectDomain>> {
     Vec::from([
         crate::GenerationEntry {
@@ -195,7 +195,7 @@ fn routed_entries(
             key: key(2),
             parent: Some(key(1)),
             object: object(2),
-            locality: Locality::Promised(heart_object::ProviderSet::only(provider)),
+            locality: Locality::Promised(backend_version::object::ProviderSet::only(provider)),
         },
         crate::GenerationEntry {
             key: key(3),
@@ -216,13 +216,13 @@ fn locality_changes_preserve_identity_and_narrow_large_ranges_touch_only_demand(
         entries.push(resident(raw, None, object(1)));
     }
     let large_root = root(entries)?;
-    let provider = heart_object::ProviderId::try_from(2_u8)?;
+    let provider = backend_version::object::ProviderId::try_from(2_u8)?;
     let promised_bytes = locality_bytes(
         &large_root,
         &[locality_exception(
             &large_root,
             key(50_000),
-            NonResident::Promised(heart_object::ProviderSet::only(provider)),
+            NonResident::Promised(backend_version::object::ProviderSet::only(provider)),
         )?],
     )?;
     let promised = ValidatedLocality::<ObjectDomain>::try_from(promised_bytes.as_slice())?;

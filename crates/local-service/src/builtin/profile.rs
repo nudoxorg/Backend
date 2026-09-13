@@ -1404,7 +1404,7 @@ mod persisted_intent_tests {
         manifest::{CompilationManifestFacts, CompilationManifestFormat},
     };
     use heart_hydration::VerifiedGenerationFacts;
-    use heart_identity::{
+    use backend_version::{
         ContentId, DependencySetDomain, GenerationId, IrManifestDomain, IrManifestEncoding,
     };
 
@@ -1435,7 +1435,7 @@ mod persisted_intent_tests {
             ),
         };
         let manifest =
-            heart_identity::ArtifactId::<IrManifestEncoding, IrManifestDomain>::from_encoded_bytes(
+            backend_version::ArtifactId::<IrManifestEncoding, IrManifestDomain>::from_encoded_bytes(
                 b"persisted-selection-manifest",
             );
         let mut binding_bytes = [0_u8; COMPILATION_BINDING_BYTES];

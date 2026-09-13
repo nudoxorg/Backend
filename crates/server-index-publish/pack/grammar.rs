@@ -5,7 +5,7 @@
 
 use core::mem::size_of;
 
-use heart_identity::{GenerationId, HASH_BYTES};
+use backend_version::{GenerationId, HASH_BYTES};
 use server_index_core::{
     ENTITY_DOCUMENT_ID_BYTES, MAX_EXACT_PAYLOAD_BYTES, MAX_EXACT_ROWS, MAX_LEXICAL_PAYLOAD_BYTES,
     MAX_LEXICAL_ROWS,

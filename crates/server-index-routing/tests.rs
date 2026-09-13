@@ -4,7 +4,7 @@ use server_index_core::{EntityDocumentId, IndexSnapshot, IndexSnapshotId};
 use server_index_vocabulary::LexicalSegmentId;
 
 use compiler_ir::EntityId;
-use heart_identity::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
+use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 
 fn snapshot_id(value: u8) -> IndexSnapshotId {
     IndexSnapshotId::from_canonical_bytes(&[value])

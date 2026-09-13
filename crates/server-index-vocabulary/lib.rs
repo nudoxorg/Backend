@@ -28,13 +28,13 @@
 use compiler_ir::{
     DeclarationIdentity, PackageLineage, SemanticImageIdentity, SemanticImageView, SemanticReader,
 };
-use heart_identity::{
+use backend_version::{
     ArtifactId, CompilePublicationDomain, ContentId, GenerationId, IndexExactSegmentDomain,
     IndexLexicalSegmentDomain, IndexPackDomain, IndexPackEncoding, IndexVectorSegmentDomain,
 };
 
 /// Identity of one immutable index snapshot.
-pub use heart_identity::IndexSnapshotId;
+pub use backend_version::IndexSnapshotId;
 
 /// Identity of one immutable exact-key segment.
 pub type ExactSegmentId = ContentId<IndexExactSegmentDomain>;

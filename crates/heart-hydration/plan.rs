@@ -6,11 +6,11 @@ mod output;
 
 use core::mem::size_of;
 
-use heart_identity::{
+use backend_version::{
     ContentHasher, DependencySetDomain, Domain, FixedCanonicalRecord, GenerationId, HASH_BYTES,
 };
-use heart_object::{ObjectDescriptorWireRecord, ObjectRef};
-use heart_observe::Probe;
+use backend_version::object::{ObjectDescriptorWireRecord, ObjectRef};
+use backend_version::observe::Probe;
 use heart_root::{ClosureError, ClosureScratch, Locality};
 use zerocopy::{
     Immutable, IntoBytes,
@@ -309,7 +309,7 @@ impl DependencySetWriter {
             .write_record(&ObjectDescriptorWireRecord::from(&object));
     }
 
-    fn finish(self) -> heart_object::DepSetId {
+    fn finish(self) -> backend_version::object::DepSetId {
         self.hasher.finalize()
     }
 }

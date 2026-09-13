@@ -6,7 +6,7 @@
 use core::{cmp::Ordering, mem::size_of};
 
 use compiler_ir::EntityId;
-use heart_identity::{
+use backend_version::{
     ArtifactId, Domain, Encoding, HASH_BYTES, IrFragmentDomain, IrFragmentEncoding,
     IrSemanticImageDomain, IrSemanticImageEncoding,
 };
@@ -94,7 +94,7 @@ pub enum EntityDocumentIdError {
     Artifact {
         /// Complete typed artifact decoding cause.
         #[source]
-        source: heart_identity::ArtifactIdDecodeError,
+        source: backend_version::ArtifactIdDecodeError,
     },
     /// The verified fixed-width document could not recover its entity component.
     #[error("entity document entity component was structurally malformed")]
@@ -156,7 +156,7 @@ mod tests {
         ENTITY_DOCUMENT_ID_BYTES, EntityArtifactIdentity, EntityDocumentId, EntityDocumentIdError,
     };
     use compiler_ir::EntityId;
-    use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+    use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 
     #[test]
     fn global_document_wire_roundtrips_and_rejects_foreign_authority() {
