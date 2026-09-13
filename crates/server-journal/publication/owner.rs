@@ -8,7 +8,7 @@ use std::sync::{
 };
 use std::{collections::TryReserveError, num::NonZeroUsize};
 
-use server_workflow::{EventKind, StageKey, WorkflowEvent, WorkflowVersion};
+use backend_store::workflow::{EventKind, StageKey, WorkflowEvent, WorkflowVersion};
 
 use super::{
     credit::CreditLease,

@@ -1,4 +1,4 @@
-//! Defines event behavior for `server-workflow`, whose purpose is to reduce durable workflow events into deterministic recovery state.
+//! Defines event behavior for the `workflow` module, whose purpose is to reduce durable workflow events into deterministic recovery state.
 //! This module owns the event invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Closed workflow event vocabulary.
@@ -7,7 +7,7 @@
     reason = "the compact closed event vocabulary is documented at enum level"
 )]
 
-use crate::{StageKey, key::StageOutput};
+use crate::workflow::{StageKey, key::StageOutput};
 use strum::FromRepr;
 
 /// Opaque event-format version; unknown versions must be preserved and rejected.

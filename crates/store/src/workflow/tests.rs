@@ -1,4 +1,4 @@
-//! Defines tests behavior for `server-workflow`, whose purpose is to reduce durable workflow events into deterministic recovery state.
+//! Defines tests behavior for the `workflow` module, whose purpose is to reduce durable workflow events into deterministic recovery state.
 //! This module owns the tests invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::mem::size_of;
@@ -7,7 +7,7 @@ use backend_version::{ContentId, GenerationId, ObjectDomain};
 use backend_version::schema::OperationId;
 use thiserror::Error;
 
-use crate::{
+use crate::workflow::{
     CapabilityDomain, CommitError, ConfigurationDomain, Effect, EffectAction, EventKind, EventName,
     FailureCode, LogConfigError, MemoryWorkflowLog, Phase, PhaseName, PriorFacts, Reduction,
     ReductionError, ReplayError, StageId, StageInput, StageKey, WorkflowEvent, WorkflowRecord,

@@ -1,11 +1,7 @@
-//! The `server-workflow` crate exists to reduce durable workflow events into deterministic recovery state.
+//! The `workflow` module reduces durable workflow events into deterministic recovery state.
 //! Its public types are the complete boundary; implementation details remain private.
 //! Callers compose capabilities through explicit authority, ownership, and failure values.
-#![no_std]
-#![forbid(unsafe_code)]
 //! Bounded durable stage events, pure reduction, and at-least-once recovery.
-
-extern crate alloc;
 
 mod durable;
 mod event;

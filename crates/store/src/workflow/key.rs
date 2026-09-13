@@ -1,4 +1,4 @@
-//! Defines key behavior for `server-workflow`, whose purpose is to reduce durable workflow events into deterministic recovery state.
+//! Defines key behavior for the `workflow` module, whose purpose is to reduce durable workflow events into deterministic recovery state.
 //! This module owns the key invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Compact canonical stage-key construction.
@@ -15,7 +15,7 @@ use zerocopy::{
     byteorder::{LittleEndian, U32},
 };
 
-use crate::StageId;
+use crate::workflow::StageId;
 
 /// Protocol-owned content domain for plane-independent capability facts.
 pub use backend_version::CapabilityDomain;

@@ -12,7 +12,7 @@ use server_journal::{
     CommitError, FileJournal, FrameSequence, HeaderError, JOURNAL_FRAME_BYTES,
     JOURNAL_HEADER_BYTES, JournalError, JournalOffset,
 };
-use server_workflow::{
+use backend_store::workflow::{
     Effect, EffectAction, EventKind, FailureCode, Phase, Recovery, StageKey, StageOutput,
     WORKFLOW_RECORD_BYTES, WorkflowEvent, WorkflowState, WorkflowVersion,
 };
@@ -130,7 +130,7 @@ fn duplicate_is_durable_but_conflicting_key_writes_nothing() -> Result<(), Scena
         |observed| {
             matches!(
                 observed,
-                CommitError::Reduction(server_workflow::ReductionError::StageKeyMismatch {
+                CommitError::Reduction(backend_store::workflow::ReductionError::StageKeyMismatch {
                     expected,
                     observed,
                 }) if *expected == key && *observed == conflicting.key

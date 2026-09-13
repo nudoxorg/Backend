@@ -12,7 +12,7 @@ use backend_runtime::server::{
     RejectionReason, RuntimeAdmission, RuntimeExecution, RuntimeMetrics, RuntimeProbeEvent,
     RuntimeTerminal, TerminalClass,
 };
-use server_workflow::{EventName, PhaseName, WorkflowDisposition, WorkflowProbeEvent};
+use backend_store::workflow::{EventName, PhaseName, WorkflowDisposition, WorkflowProbeEvent};
 
 /// Emits one instance of every portable event mapped by the adapter.
 pub(super) fn emit_signal_fixture(probe: &mut TracingProbe) -> RuntimeMetrics {

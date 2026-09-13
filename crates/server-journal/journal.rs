@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use server_workflow::{
+use backend_store::workflow::{
     Recovery, ReductionError, ReplayError, WorkflowEvent, WorkflowRecord, WorkflowState, reduce,
     reduce_chained, replay_stream,
 };
@@ -258,7 +258,7 @@ impl FileJournal {
         Ok(recovery)
     }
 
-    pub(crate) fn current_key(&self) -> Option<server_workflow::StageKey> {
+    pub(crate) fn current_key(&self) -> Option<backend_store::workflow::StageKey> {
         match self.state {
             WorkflowState::New => None,
             WorkflowState::Keyed { key, .. } => Some(key),

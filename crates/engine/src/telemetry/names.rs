@@ -9,7 +9,7 @@ use backend_runtime::server::{
     RejectionReason, RuntimeAdmission, RuntimeContainment, RuntimeExecution, RuntimeProbeEvent,
     RuntimeTerminal, TerminalClass,
 };
-use server_workflow::{EventName, PhaseName, WorkflowDisposition, WorkflowRejection};
+use backend_store::workflow::{EventName, PhaseName, WorkflowDisposition, WorkflowRejection};
 
 pub(crate) fn hydration_fields(outcome: HydrationOutcome) -> (&'static str, u64, u64, u64, u64) {
     match outcome {

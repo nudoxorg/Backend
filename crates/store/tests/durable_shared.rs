@@ -1,4 +1,4 @@
-//! Exercises the `server-workflow` tests durable-shared contract through its observable boundary.
+//! Exercises the `workflow` module tests durable-shared contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 //! Shared-receiver integration laws for durable append capabilities.
@@ -11,7 +11,7 @@ use core::{
     task::{Context, Poll, Waker},
 };
 
-use server_workflow::{
+use backend_store::workflow::{
     DurableAppend, DurableCommitError, EventKind, StageKey, WORKFLOW_RECORD_BYTES, WorkflowEvent,
     WorkflowRecord, WorkflowState, WorkflowVersion, append_committed,
 };

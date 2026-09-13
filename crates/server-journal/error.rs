@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::{fs::TryLockError, io};
 
-use server_workflow::{ReductionError, WorkflowRecord, WorkflowRecordError};
+use backend_store::workflow::{ReductionError, WorkflowRecord, WorkflowRecordError};
 use thiserror::Error;
 
 use crate::{FrameSequence, JournalOffset};

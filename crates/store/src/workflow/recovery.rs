@@ -1,4 +1,4 @@
-//! Defines recovery behavior for `server-workflow`, whose purpose is to reduce durable workflow events into deterministic recovery state.
+//! Defines recovery behavior for the `workflow` module, whose purpose is to reduce durable workflow events into deterministic recovery state.
 //! This module owns the recovery invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Recovery command derivation after durable replay.
@@ -7,7 +7,7 @@
     reason = "state and pending effect are documented by the recovery contract"
 )]
 
-use crate::{Effect, WorkflowState, reduce::pending_effect};
+use crate::workflow::{Effect, WorkflowState, reduce::pending_effect};
 
 /// Replayed state plus exactly the idempotent command still pending, if any.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

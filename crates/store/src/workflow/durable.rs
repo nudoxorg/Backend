@@ -1,4 +1,4 @@
-//! Defines durable behavior for `server-workflow`, whose purpose is to reduce durable workflow events into deterministic recovery state.
+//! Defines durable behavior for the `workflow` module, whose purpose is to reduce durable workflow events into deterministic recovery state.
 //! This module owns the durable invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Durable append capability, canonical records, and allocation-free replay.
@@ -17,7 +17,7 @@ use zerocopy::{
     byteorder::{LittleEndian, U16},
 };
 
-use crate::{
+use crate::workflow::{
     EventKind, EventName, FailureCode, Recovery, Reduction, ReductionError, StageKey,
     WorkflowEvent, WorkflowState, WorkflowVersion, reduce,
 };
@@ -292,7 +292,7 @@ where
         // admitted strictly. Strict success implies chained success, and a stream rejected by
         // the chained reducer could never have been committed. Boundaries are absent on wire
         // frames, so this unconditional rule is the faithful inverse for committed history.
-        state = crate::reduce_chained(state, event)
+        state = crate::workflow::reduce_chained(state, event)
             .map_err(ReplayError::Reduction)?
             .state;
     }
@@ -301,7 +301,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{EventKind, WorkflowEvent, WorkflowVersion, tests::key};
+    use crate::workflow::{EventKind, WorkflowEvent, WorkflowVersion, tests::key};
     use backend_version::{ContentId, FixedCanonicalRecord, ObjectDomain};
 
     use super::{WORKFLOW_RECORD_BYTES, WorkflowRecord, WorkflowRecordError};

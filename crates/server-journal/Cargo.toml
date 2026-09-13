@@ -14,7 +14,7 @@ loom-model = ["dep:loom"]
 
 
 [dependencies]
-server-workflow = { path = "../server-workflow" }
+backend-store = { path = "../store" }
 heart-hydration = { path = "../heart-hydration" }
 backend-version = { path = "../version" }
 blake3.workspace = true
@@ -25,7 +25,6 @@ loom = { workspace = true, optional = true }
 [dev-dependencies]
 allocation-counter.workspace = true
 heart-root = { path = "../heart-root" }
-backend-store = { path = "../store" }
 
 [lib]
 path = "lib.rs"
