@@ -232,6 +232,7 @@
         "backend-flow",
         "backend-library",
         "backend-replication",
+        "backend-runtime",
         "backend-semantic",
         "backend-store",
         "backend-version"
@@ -247,6 +248,7 @@
         "backend-engine",
         "backend-extension-qdrant",
         "backend-extension-tantivy",
+        "backend-extension-trustfall",
         "backend-extension-turso",
         "backend-frontend-clang",
         "backend-frontend-csharp",
