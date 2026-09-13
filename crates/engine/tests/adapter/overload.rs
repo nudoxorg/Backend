@@ -14,7 +14,7 @@ use opentelemetry_sdk::{
     trace::{SpanData, SpanExporter},
 };
 
-use heart_telemetry::{
+use backend_engine::telemetry::{
     BatchLimits, BatchLimitsError, batch_logger_provider, batch_provider, dispatch,
 };
 
@@ -157,7 +157,7 @@ impl SpanExporter for BlockingSpanExporter {
     fn export(
         &self,
         batch: Vec<SpanData>,
-    ) -> impl std::future::Future<Output = Result<(), OTelSdkError>> + Send {
+    ) -> impl Future<Output = Result<(), OTelSdkError>> + Send {
         let result = self.0.block_export(batch.len());
         async move { result.map_err(AdapterTestError::into_sdk_error) }
     }
@@ -170,7 +170,7 @@ impl LogExporter for BlockingLogExporter {
     fn export(
         &self,
         batch: LogBatch<'_>,
-    ) -> impl std::future::Future<Output = Result<(), OTelSdkError>> + Send {
+    ) -> impl Future<Output = Result<(), OTelSdkError>> + Send {
         let result = self.0.block_export(batch.iter().count());
         async move { result.map_err(AdapterTestError::into_sdk_error) }
     }

@@ -12,7 +12,7 @@ use backend_runtime::server::RuntimeProbeEvent;
 use server_workflow::WorkflowProbeEvent;
 use tracing::{Level, Span};
 
-use crate::{
+use super::{
     MetricReportError,
     metrics::RuntimeMetricReporter,
     names::{

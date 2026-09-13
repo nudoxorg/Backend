@@ -5,7 +5,7 @@ use thiserror::Error;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
 
-use heart_telemetry::{BatchLimitsError, MetricReportError};
+use backend_engine::telemetry::{BatchLimitsError, MetricReportError};
 
 #[derive(Debug, Error)]
 pub(super) enum AdapterTestError {

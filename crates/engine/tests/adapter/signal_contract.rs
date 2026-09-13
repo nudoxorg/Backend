@@ -11,7 +11,7 @@ use opentelemetry_sdk::{
     trace::{InMemorySpanExporterBuilder, SpanData},
 };
 
-use heart_telemetry::{
+use backend_engine::telemetry::{
     BatchLimits, TracingProbe, batch_logger_provider, batch_provider, dispatch,
     periodic_meter_provider,
 };

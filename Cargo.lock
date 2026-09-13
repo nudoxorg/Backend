@@ -843,6 +843,7 @@ dependencies = [
  "backend-flow",
  "backend-library",
  "backend-replication",
+ "backend-runtime",
  "backend-semantic",
  "backend-store",
  "backend-version",
@@ -853,11 +854,20 @@ dependencies = [
  "compiler-publication",
  "compiler-vocabulary",
  "heart-hydration",
+ "heart-root",
  "nix",
+ "opentelemetry",
+ "opentelemetry-appender-tracing",
+ "opentelemetry_sdk",
  "rustix 1.1.4",
  "serde_json",
  "server-journal",
+ "server-workflow",
  "sha2",
+ "thiserror 2.0.20",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "ureq",
 ]
 
@@ -4156,25 +4166,6 @@ dependencies = [
  "server-journal",
  "thiserror 2.0.20",
  "zerocopy",
-]
-
-[[package]]
-name = "heart-telemetry"
-version = "0.1.0"
-dependencies = [
- "backend-runtime",
- "backend-store",
- "backend-version",
- "heart-hydration",
- "heart-root",
- "opentelemetry",
- "opentelemetry-appender-tracing",
- "opentelemetry_sdk",
- "server-workflow",
- "thiserror 2.0.20",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
 ]
 
 [[package]]
