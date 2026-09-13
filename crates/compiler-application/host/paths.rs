@@ -7,7 +7,7 @@ use std::{
 };
 
 use arrayvec::ArrayVec;
-use compiler_vocabulary::NativeTool;
+use backend_semantic::vocabulary::NativeTool;
 use interface_core::PackageEcosystem;
 
 use super::{

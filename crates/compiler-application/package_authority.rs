@@ -28,7 +28,7 @@ use compiler_languages_rust::{
 use compiler_languages_typescript::{
     CheckerError as TypeScriptCheckerError, ExplicitTypeScriptChecker, Report as TypeScriptReport,
 };
-use compiler_vocabulary::{LanguageProfile, NativeTool, TypeScriptSource};
+use backend_semantic::vocabulary::{LanguageProfile, NativeTool, TypeScriptSource};
 use thiserror::Error;
 
 /// Bounded, explicit package-authority adapters selected by the application
@@ -461,14 +461,14 @@ pub fn enter_package_authority<'request, 'config>(
 }
 
 const fn java_authority_release(
-    release: compiler_vocabulary::JavaRelease,
+    release: backend_semantic::vocabulary::JavaRelease,
 ) -> compiler_languages_java::JavaRelease {
     match release {
-        compiler_vocabulary::JavaRelease::Java8 => compiler_languages_java::JavaRelease::Java8,
-        compiler_vocabulary::JavaRelease::Java11 => compiler_languages_java::JavaRelease::Java11,
-        compiler_vocabulary::JavaRelease::Java17 => compiler_languages_java::JavaRelease::Java17,
-        compiler_vocabulary::JavaRelease::Java21 => compiler_languages_java::JavaRelease::Java21,
-        compiler_vocabulary::JavaRelease::Java25 => compiler_languages_java::JavaRelease::Java25,
+        backend_semantic::vocabulary::JavaRelease::Java8 => compiler_languages_java::JavaRelease::Java8,
+        backend_semantic::vocabulary::JavaRelease::Java11 => compiler_languages_java::JavaRelease::Java11,
+        backend_semantic::vocabulary::JavaRelease::Java17 => compiler_languages_java::JavaRelease::Java17,
+        backend_semantic::vocabulary::JavaRelease::Java21 => compiler_languages_java::JavaRelease::Java21,
+        backend_semantic::vocabulary::JavaRelease::Java25 => compiler_languages_java::JavaRelease::Java25,
     }
 }
 
@@ -676,7 +676,7 @@ mod tests {
 
     use compiler_languages_go::{GoOracle, GoOracleConfiguration};
     use compiler_languages_typescript::Checker as TypeScriptChecker;
-    use compiler_vocabulary::{CSharpVersion, CStandard};
+    use backend_semantic::vocabulary::{CSharpVersion, CStandard};
 
     use super::*;
 

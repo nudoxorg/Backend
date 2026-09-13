@@ -39,7 +39,7 @@ mod unix_journeys {
         admit_producer_observation,
     };
     use backend_worker::{WorkerLimits, read_message, write_message};
-    use compiler_vocabulary::LanguageProfile;
+    use backend_semantic::vocabulary::LanguageProfile;
     use std::ffi::OsString;
     use std::io::{Read, Write};
     use std::net::Shutdown;
@@ -656,7 +656,7 @@ mod unix_journeys {
         let mut semantic_entries = entries
             .iter()
             .map(|(expected_package, record)| {
-                let coordinate = compiler_vocabulary::PackageUrl::parse(record.label().to_owned())
+                let coordinate = backend_semantic::vocabulary::PackageUrl::parse(record.label().to_owned())
                     .unwrap_or_else(|error| panic!("semantic fixture coordinate: {error}"));
                 let package = backend_engine::PackageReference::parse(record.label().to_owned())
                     .unwrap_or_else(|error| {
@@ -668,25 +668,25 @@ mod unix_journeys {
                     "source and semantic fixture package identities diverged"
                 );
                 let profile = match coordinate.package_type() {
-                    compiler_vocabulary::PackageType::Cargo => {
-                        LanguageProfile::Rust(compiler_vocabulary::RustEdition::Rust2024)
+                    backend_semantic::vocabulary::PackageType::Cargo => {
+                        LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2024)
                     }
-                    compiler_vocabulary::PackageType::Npm => LanguageProfile::TypeScript(
-                        compiler_vocabulary::TypeScriptSource::TypeScript,
+                    backend_semantic::vocabulary::PackageType::Npm => LanguageProfile::TypeScript(
+                        backend_semantic::vocabulary::TypeScriptSource::TypeScript,
                     ),
-                    compiler_vocabulary::PackageType::Pypi => {
-                        LanguageProfile::Python(compiler_vocabulary::PythonVersion::Python314)
+                    backend_semantic::vocabulary::PackageType::Pypi => {
+                        LanguageProfile::Python(backend_semantic::vocabulary::PythonVersion::Python314)
                     }
-                    compiler_vocabulary::PackageType::Golang => {
-                        LanguageProfile::Go(compiler_vocabulary::GoVersion::Go125)
+                    backend_semantic::vocabulary::PackageType::Golang => {
+                        LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125)
                     }
-                    compiler_vocabulary::PackageType::Maven => {
-                        LanguageProfile::Java(compiler_vocabulary::JavaRelease::Java25)
+                    backend_semantic::vocabulary::PackageType::Maven => {
+                        LanguageProfile::Java(backend_semantic::vocabulary::JavaRelease::Java25)
                     }
-                    compiler_vocabulary::PackageType::Nuget => {
-                        LanguageProfile::CSharp(compiler_vocabulary::CSharpVersion::CSharp14)
+                    backend_semantic::vocabulary::PackageType::Nuget => {
+                        LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp14)
                     }
-                    compiler_vocabulary::PackageType::Generic => {
+                    backend_semantic::vocabulary::PackageType::Generic => {
                         panic!("generic semantic fixture needs an explicit language profile")
                     }
                 };

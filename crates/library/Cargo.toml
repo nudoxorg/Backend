@@ -12,7 +12,6 @@ backend-version = { path = "../version" }
 backend-flow = { path = "../flow" }
 backend-semantic = { path = "../semantic" }
 backend-compile = { path = "../compile" }
-compiler-vocabulary = { path = "../compiler-vocabulary" }
 serde.workspace = true
 serde_json.workspace = true
 

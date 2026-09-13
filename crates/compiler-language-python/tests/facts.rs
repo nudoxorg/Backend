@@ -3,7 +3,7 @@
 //! Integration tests consume only the public extraction entry point.
 
 use compiler_languages_python::{extract as extract_with_profile, *};
-use compiler_vocabulary::PythonVersion;
+use backend_semantic::vocabulary::PythonVersion;
 
 const PROFILE: PythonVersion = PythonVersion::Python314;
 

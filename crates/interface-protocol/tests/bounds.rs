@@ -3,7 +3,7 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::io::{self, Cursor};
 
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion,
     RustEdition, Stage, TypeScriptSource,
 };

@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{RustAuthorityError, RustProject, RustToolchain};
-use compiler_vocabulary::RustEdition;
+use backend_semantic::vocabulary::RustEdition;
 
 const MAX_METADATA_BYTES: usize = 4 * 1024 * 1024;
 

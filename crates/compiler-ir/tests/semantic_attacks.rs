@@ -13,7 +13,7 @@ use compiler_ir::{
     PrepareError, PreparedFragment, PrimitiveType, ReopenedTypeParameterList, SemanticDataFault,
     SourceIdentity, TypeNode, TypeParameterListId, WriteError, canonicalize_data_with_budget,
 };
-use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use core::mem::size_of;
 use backend_version::{ContentId, Domain, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;

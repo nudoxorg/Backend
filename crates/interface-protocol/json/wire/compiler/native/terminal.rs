@@ -118,7 +118,7 @@ impl Serialize for NativeArtifactActionRef<'_> {
     }
 }
 
-struct NativeArtifactRoleRef<'value>(&'value compiler_vocabulary::NativeArtifactRole);
+struct NativeArtifactRoleRef<'value>(&'value backend_semantic::vocabulary::NativeArtifactRole);
 
 impl Serialize for NativeArtifactRoleRef<'_> {
     fn serialize<Output: Serializer>(

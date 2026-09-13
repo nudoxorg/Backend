@@ -11,7 +11,7 @@ use backend_semantic::ir_vocabulary::{
     AtomId, EntityId, ExternalEntityRef, ListSpan, NominalRef, SemanticTypeRecord, SemanticTypeTag,
     TypeChildTarget, TypeRef,
 };
-use compiler_vocabulary::{LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, NativeTool, RustEdition, Stage};
 use core::num::ParseIntError;
 use backend_version::{ContentId, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
@@ -40,7 +40,7 @@ fn source() -> SourceIdentity {
 fn recipe() -> RecipeFact {
     let profile = LanguageProfile::Rust(RustEdition::Rust2024);
     RecipeFact {
-        identity: compiler_vocabulary::CompileRecipeFact::derive(
+        identity: backend_semantic::vocabulary::CompileRecipeFact::derive(
             profile,
             Stage::LowerIr,
             NativeTool::Rustc,

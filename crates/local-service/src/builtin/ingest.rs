@@ -5,7 +5,7 @@ use backend_engine::{
     ProductSourceRecord, ProductSourceRelation, Relation, SourceUnavailableReason,
     product_source_file_key,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion,
     RustEdition, TypeScriptSource,
 };

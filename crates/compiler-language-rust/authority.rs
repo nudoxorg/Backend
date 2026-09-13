@@ -11,7 +11,7 @@ use std::{
     time::Instant,
 };
 
-use compiler_vocabulary::RustEdition;
+use backend_semantic::vocabulary::RustEdition;
 use ra_ap_base_db::{EditionedFileId, all_crates};
 use ra_ap_hir::{
     Adt, AssocItem, Const, EnumVariant, Field, FieldSource, Function, HasSource, Impl, Macro,
@@ -1175,7 +1175,7 @@ pub enum RustAuthorityError {
     Admission {
         /// Exact canonical admission terminal.
         #[source]
-        cause: compiler_vocabulary::LoweringUnsupported,
+        cause: backend_semantic::vocabulary::LoweringUnsupported,
     },
     /// Inference returned an error type where a resolved semantic type was required.
     #[error("rust-analyzer produced an unresolved inferred type")]

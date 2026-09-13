@@ -15,7 +15,7 @@ use compiler_ir::{EntityId, ItemKind};
 use compiler_languages_rust::{
     RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
-use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 
 const FIXTURE_BODY: &str = r#"//! Fixture crate docs.
@@ -132,8 +132,8 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { cause, .. } => match cause {
-            compiler_vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
-            compiler_vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
+            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
+            backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
                 "csharp-projection"
             }
             _ => "lowering-unsupported",

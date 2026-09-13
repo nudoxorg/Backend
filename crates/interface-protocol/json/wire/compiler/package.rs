@@ -2,7 +2,7 @@
 
 use std::{io::ErrorKind, path::Path};
 
-use compiler_vocabulary::{NativeWorkerPanicClass, NativeWorkerPanicMessage};
+use backend_semantic::vocabulary::{NativeWorkerPanicClass, NativeWorkerPanicMessage};
 use interface_core::{
     CompilerRuntimeCause, CompilerRuntimePanic, PackageCompilePhase, PackageDeclarationScopeCause,
     PackageEcosystem, PackagePathComponentError, PackageSourceCause, PackageSourceIoFact,
@@ -161,7 +161,7 @@ pub(crate) enum PackageSourceCauseWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::NativeWorkerPanicClass",
+    remote = "backend_semantic::vocabulary::NativeWorkerPanicClass",
     rename_all = "snake_case"
 )]
 enum RuntimePanicClassWire {

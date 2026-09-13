@@ -5,7 +5,7 @@
 
 use alloc::{borrow::ToOwned, vec};
 
-use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
 use backend_version::{
     CompileRecipeDomain, ContentId, SemanticScopeDomain, SourceFactDomain, ToolchainDomain,
 };
@@ -325,7 +325,7 @@ fn validate_scope_claim(
                 }
             })?;
         let coordinate =
-            compiler_vocabulary::PackageUrl::parse(coordinate.to_owned()).map_err(|_| {
+            backend_semantic::vocabulary::PackageUrl::parse(coordinate.to_owned()).map_err(|_| {
                 CoreSemanticImageFault::Provenance {
                     cause: CoreProvenanceFault::Coordinate,
                 }

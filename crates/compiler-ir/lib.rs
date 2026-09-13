@@ -72,7 +72,7 @@ pub use backend_semantic::ir_vocabulary::{
 pub use backend_semantic::ir_vocabulary::{
     MappedModifier as LatticeMappedModifier, Variance as LatticeVariance,
 };
-pub use compiler_vocabulary::{
+pub use backend_semantic::vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile,
     PythonVersion, RustEdition, TypeScriptSource, UnknownLanguageProfile,
 };

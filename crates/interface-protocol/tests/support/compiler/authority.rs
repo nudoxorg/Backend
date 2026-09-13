@@ -206,8 +206,8 @@ impl From<SourceAuthority> for GoldenSourceAuthority {
     }
 }
 
-impl From<compiler_vocabulary::CompileRecipeFact> for GoldenCompileRecipe {
-    fn from(recipe: compiler_vocabulary::CompileRecipeFact) -> Self {
+impl From<backend_semantic::vocabulary::CompileRecipeFact> for GoldenCompileRecipe {
+    fn from(recipe: backend_semantic::vocabulary::CompileRecipeFact) -> Self {
         Self {
             identity: recipe.identity.to_string(),
             profile: recipe.profile.into(),
@@ -218,59 +218,59 @@ impl From<compiler_vocabulary::CompileRecipeFact> for GoldenCompileRecipe {
     }
 }
 
-impl From<compiler_vocabulary::LanguageProfile> for GoldenLanguageProfile {
-    fn from(profile: compiler_vocabulary::LanguageProfile) -> Self {
-        use compiler_vocabulary::LanguageProfile;
+impl From<backend_semantic::vocabulary::LanguageProfile> for GoldenLanguageProfile {
+    fn from(profile: backend_semantic::vocabulary::LanguageProfile) -> Self {
+        use backend_semantic::vocabulary::LanguageProfile;
         match profile {
             LanguageProfile::Rust(value) => Self::Rust(match value {
-                compiler_vocabulary::RustEdition::Rust2015 => GoldenRustEdition::Rust2015,
-                compiler_vocabulary::RustEdition::Rust2018 => GoldenRustEdition::Rust2018,
-                compiler_vocabulary::RustEdition::Rust2021 => GoldenRustEdition::Rust2021,
-                compiler_vocabulary::RustEdition::Rust2024 => GoldenRustEdition::Rust2024,
+                backend_semantic::vocabulary::RustEdition::Rust2015 => GoldenRustEdition::Rust2015,
+                backend_semantic::vocabulary::RustEdition::Rust2018 => GoldenRustEdition::Rust2018,
+                backend_semantic::vocabulary::RustEdition::Rust2021 => GoldenRustEdition::Rust2021,
+                backend_semantic::vocabulary::RustEdition::Rust2024 => GoldenRustEdition::Rust2024,
             }),
             LanguageProfile::TypeScript(value) => Self::TypeScript(match value {
-                compiler_vocabulary::TypeScriptSource::TypeScript => {
+                backend_semantic::vocabulary::TypeScriptSource::TypeScript => {
                     GoldenTypeScriptSource::TypeScript
                 }
-                compiler_vocabulary::TypeScriptSource::Tsx => GoldenTypeScriptSource::Tsx,
+                backend_semantic::vocabulary::TypeScriptSource::Tsx => GoldenTypeScriptSource::Tsx,
             }),
             LanguageProfile::Python(value) => Self::Python(match value {
-                compiler_vocabulary::PythonVersion::Python310 => GoldenPythonVersion::Python310,
-                compiler_vocabulary::PythonVersion::Python311 => GoldenPythonVersion::Python311,
-                compiler_vocabulary::PythonVersion::Python312 => GoldenPythonVersion::Python312,
-                compiler_vocabulary::PythonVersion::Python313 => GoldenPythonVersion::Python313,
-                compiler_vocabulary::PythonVersion::Python314 => GoldenPythonVersion::Python314,
+                backend_semantic::vocabulary::PythonVersion::Python310 => GoldenPythonVersion::Python310,
+                backend_semantic::vocabulary::PythonVersion::Python311 => GoldenPythonVersion::Python311,
+                backend_semantic::vocabulary::PythonVersion::Python312 => GoldenPythonVersion::Python312,
+                backend_semantic::vocabulary::PythonVersion::Python313 => GoldenPythonVersion::Python313,
+                backend_semantic::vocabulary::PythonVersion::Python314 => GoldenPythonVersion::Python314,
             }),
             LanguageProfile::Go(value) => Self::Go(match value {
-                compiler_vocabulary::GoVersion::Go122 => GoldenGoVersion::Go122,
-                compiler_vocabulary::GoVersion::Go123 => GoldenGoVersion::Go123,
-                compiler_vocabulary::GoVersion::Go124 => GoldenGoVersion::Go124,
-                compiler_vocabulary::GoVersion::Go125 => GoldenGoVersion::Go125,
+                backend_semantic::vocabulary::GoVersion::Go122 => GoldenGoVersion::Go122,
+                backend_semantic::vocabulary::GoVersion::Go123 => GoldenGoVersion::Go123,
+                backend_semantic::vocabulary::GoVersion::Go124 => GoldenGoVersion::Go124,
+                backend_semantic::vocabulary::GoVersion::Go125 => GoldenGoVersion::Go125,
             }),
             LanguageProfile::Java(value) => Self::Java(match value {
-                compiler_vocabulary::JavaRelease::Java8 => GoldenJavaRelease::Java8,
-                compiler_vocabulary::JavaRelease::Java11 => GoldenJavaRelease::Java11,
-                compiler_vocabulary::JavaRelease::Java17 => GoldenJavaRelease::Java17,
-                compiler_vocabulary::JavaRelease::Java21 => GoldenJavaRelease::Java21,
-                compiler_vocabulary::JavaRelease::Java25 => GoldenJavaRelease::Java25,
+                backend_semantic::vocabulary::JavaRelease::Java8 => GoldenJavaRelease::Java8,
+                backend_semantic::vocabulary::JavaRelease::Java11 => GoldenJavaRelease::Java11,
+                backend_semantic::vocabulary::JavaRelease::Java17 => GoldenJavaRelease::Java17,
+                backend_semantic::vocabulary::JavaRelease::Java21 => GoldenJavaRelease::Java21,
+                backend_semantic::vocabulary::JavaRelease::Java25 => GoldenJavaRelease::Java25,
             }),
             LanguageProfile::CSharp(value) => Self::CSharp(match value {
-                compiler_vocabulary::CSharpVersion::CSharp10 => GoldenCSharpVersion::CSharp10,
-                compiler_vocabulary::CSharpVersion::CSharp11 => GoldenCSharpVersion::CSharp11,
-                compiler_vocabulary::CSharpVersion::CSharp12 => GoldenCSharpVersion::CSharp12,
-                compiler_vocabulary::CSharpVersion::CSharp13 => GoldenCSharpVersion::CSharp13,
-                compiler_vocabulary::CSharpVersion::CSharp14 => GoldenCSharpVersion::CSharp14,
+                backend_semantic::vocabulary::CSharpVersion::CSharp10 => GoldenCSharpVersion::CSharp10,
+                backend_semantic::vocabulary::CSharpVersion::CSharp11 => GoldenCSharpVersion::CSharp11,
+                backend_semantic::vocabulary::CSharpVersion::CSharp12 => GoldenCSharpVersion::CSharp12,
+                backend_semantic::vocabulary::CSharpVersion::CSharp13 => GoldenCSharpVersion::CSharp13,
+                backend_semantic::vocabulary::CSharpVersion::CSharp14 => GoldenCSharpVersion::CSharp14,
             }),
             LanguageProfile::C(value) => Self::C(match value {
-                compiler_vocabulary::CStandard::C11 => GoldenCStandard::C11,
-                compiler_vocabulary::CStandard::C17 => GoldenCStandard::C17,
-                compiler_vocabulary::CStandard::C23 => GoldenCStandard::C23,
+                backend_semantic::vocabulary::CStandard::C11 => GoldenCStandard::C11,
+                backend_semantic::vocabulary::CStandard::C17 => GoldenCStandard::C17,
+                backend_semantic::vocabulary::CStandard::C23 => GoldenCStandard::C23,
             }),
             LanguageProfile::Cxx(value) => Self::Cxx(match value {
-                compiler_vocabulary::CxxStandard::Cxx17 => GoldenCxxStandard::Cxx17,
-                compiler_vocabulary::CxxStandard::Cxx20 => GoldenCxxStandard::Cxx20,
-                compiler_vocabulary::CxxStandard::Cxx23 => GoldenCxxStandard::Cxx23,
-                compiler_vocabulary::CxxStandard::Cxx26 => GoldenCxxStandard::Cxx26,
+                backend_semantic::vocabulary::CxxStandard::Cxx17 => GoldenCxxStandard::Cxx17,
+                backend_semantic::vocabulary::CxxStandard::Cxx20 => GoldenCxxStandard::Cxx20,
+                backend_semantic::vocabulary::CxxStandard::Cxx23 => GoldenCxxStandard::Cxx23,
+                backend_semantic::vocabulary::CxxStandard::Cxx26 => GoldenCxxStandard::Cxx26,
             }),
         }
     }
@@ -301,39 +301,39 @@ impl From<GenerationAuthority> for GoldenGenerationAuthority {
     }
 }
 
-impl From<compiler_vocabulary::Language> for GoldenLanguage {
-    fn from(language: compiler_vocabulary::Language) -> Self {
+impl From<backend_semantic::vocabulary::Language> for GoldenLanguage {
+    fn from(language: backend_semantic::vocabulary::Language) -> Self {
         match language {
-            compiler_vocabulary::Language::Rust => Self::Rust,
-            compiler_vocabulary::Language::TypeScript => Self::TypeScript,
-            compiler_vocabulary::Language::Python => Self::Python,
-            compiler_vocabulary::Language::Go => Self::Go,
-            compiler_vocabulary::Language::Java => Self::Java,
-            compiler_vocabulary::Language::CSharp => Self::CSharp,
-            compiler_vocabulary::Language::Clang => Self::Clang,
+            backend_semantic::vocabulary::Language::Rust => Self::Rust,
+            backend_semantic::vocabulary::Language::TypeScript => Self::TypeScript,
+            backend_semantic::vocabulary::Language::Python => Self::Python,
+            backend_semantic::vocabulary::Language::Go => Self::Go,
+            backend_semantic::vocabulary::Language::Java => Self::Java,
+            backend_semantic::vocabulary::Language::CSharp => Self::CSharp,
+            backend_semantic::vocabulary::Language::Clang => Self::Clang,
         }
     }
 }
 
-impl From<compiler_vocabulary::Stage> for GoldenStage {
-    fn from(stage: compiler_vocabulary::Stage) -> Self {
+impl From<backend_semantic::vocabulary::Stage> for GoldenStage {
+    fn from(stage: backend_semantic::vocabulary::Stage) -> Self {
         match stage {
-            compiler_vocabulary::Stage::Parse => Self::Parse,
-            compiler_vocabulary::Stage::LowerIr => Self::LowerIr,
+            backend_semantic::vocabulary::Stage::Parse => Self::Parse,
+            backend_semantic::vocabulary::Stage::LowerIr => Self::LowerIr,
         }
     }
 }
 
-impl From<compiler_vocabulary::NativeTool> for GoldenNativeTool {
-    fn from(tool: compiler_vocabulary::NativeTool) -> Self {
+impl From<backend_semantic::vocabulary::NativeTool> for GoldenNativeTool {
+    fn from(tool: backend_semantic::vocabulary::NativeTool) -> Self {
         match tool {
-            compiler_vocabulary::NativeTool::Rustc => Self::Rustc,
-            compiler_vocabulary::NativeTool::Clang => Self::Clang,
-            compiler_vocabulary::NativeTool::Python => Self::Python,
-            compiler_vocabulary::NativeTool::TypeScriptCompiler => Self::TypeScriptCompiler,
-            compiler_vocabulary::NativeTool::GoCompiler => Self::GoCompiler,
-            compiler_vocabulary::NativeTool::JavaCompiler => Self::JavaCompiler,
-            compiler_vocabulary::NativeTool::CSharpCompiler => Self::CSharpCompiler,
+            backend_semantic::vocabulary::NativeTool::Rustc => Self::Rustc,
+            backend_semantic::vocabulary::NativeTool::Clang => Self::Clang,
+            backend_semantic::vocabulary::NativeTool::Python => Self::Python,
+            backend_semantic::vocabulary::NativeTool::TypeScriptCompiler => Self::TypeScriptCompiler,
+            backend_semantic::vocabulary::NativeTool::GoCompiler => Self::GoCompiler,
+            backend_semantic::vocabulary::NativeTool::JavaCompiler => Self::JavaCompiler,
+            backend_semantic::vocabulary::NativeTool::CSharpCompiler => Self::CSharpCompiler,
         }
     }
 }

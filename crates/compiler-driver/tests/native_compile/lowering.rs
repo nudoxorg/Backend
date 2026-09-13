@@ -15,7 +15,7 @@ use compiler_ir::EntityKind;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use compiler_vocabulary::Language;
+use backend_semantic::vocabulary::Language;
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;
 

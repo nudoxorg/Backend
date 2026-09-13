@@ -2,7 +2,7 @@
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use compiler_languages_typescript::{Checker, CheckerError, Origin};
-use compiler_vocabulary::TypeScriptSource;
+use backend_semantic::vocabulary::TypeScriptSource;
 use sha2::{Digest, Sha256};
 use std::{
     fs,

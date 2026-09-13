@@ -16,7 +16,7 @@ use compiler_driver::{
 };
 use compiler_ir::EntityKind;
 use compiler_ir::SemanticImageAuthority;
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     CSharpVersion, CStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
     RustEdition, Stage, TypeScriptSource,
 };
@@ -444,10 +444,10 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
             CompileTerminal::AuthorityInputProfileMismatch
         }
         CompileFailure::LoweringUnsupported { cause, .. } => match cause {
-            compiler_vocabulary::LoweringUnsupported::FactRejected { .. } => {
+            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => {
                 CompileTerminal::FactRejected
             }
-            compiler_vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
+            backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
                 CompileTerminal::CSharpProjection
             }
             cause => CompileTerminal::LoweringUnsupported(*cause),

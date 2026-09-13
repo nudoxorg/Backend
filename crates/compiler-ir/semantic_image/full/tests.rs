@@ -9,7 +9,7 @@ use crate::{
     ParentageAuthority, RustFacts, RustOwnership, SourceSpan, TreeEntityId, TreeItemInput,
     TreeLinkInput, TreeLinkTarget, VariantFingerprint, Visibility,
 };
-use compiler_vocabulary::{LanguageProfile, RustEdition};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
 
 use super::*;
 

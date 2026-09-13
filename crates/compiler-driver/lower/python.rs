@@ -38,7 +38,7 @@ use compiler_languages_python::{
     OccurrenceFact, ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome,
     TypeReason as ExtractedReason, extract,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
     PythonProjectionFault, PythonVersion,
 };
@@ -2247,7 +2247,7 @@ mod tests {
     use super::{PythonCollectError, foreign_key_fault, foreign_universe, lineage_fault};
     use compiler_ir::{ForeignKeyFault, PackageLineageFault};
     use compiler_languages_python::Span;
-    use compiler_vocabulary::{
+    use backend_semantic::vocabulary::{
         ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
         PythonProjectionFault,
     };

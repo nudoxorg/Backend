@@ -39,7 +39,7 @@ use compiler_publication::manifest_store::ImmutableManifestStore;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use compiler_vocabulary::{JavaRelease, LanguageProfile, NativeTool, Stage};
+use backend_semantic::vocabulary::{JavaRelease, LanguageProfile, NativeTool, Stage};
 use server_index_build::{IndexBuildScratch, build};
 use server_index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,

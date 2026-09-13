@@ -1,7 +1,7 @@
 //! Contract tests for the closed language, tool, and diagnostic-capacity vocabulary.
 //! Literal arrays pin canonical order because recipe reports depend on that order remaining stable.
 //! Capacity assertions prevent transport adapters from silently selecting divergent limits.
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile,
     MAX_NATIVE_DIAGNOSTIC_BYTES, MAX_NATIVE_WORKER_PANIC_BYTES, NativeTool, NativeWorker,
     NativeWorkerPanic, NativeWorkerPanicClass, PythonVersion, RegistryEcosystem, RustEdition,

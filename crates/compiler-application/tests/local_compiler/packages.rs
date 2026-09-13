@@ -12,7 +12,7 @@ use compiler_application::{
     LocalCompiler, LocalCompilerConfig, LocalCompilerControl, LocalCompilerScratch,
     LocalCompilerTimeout, LocalPackageRoot, LocalPackageRootSet, LocalToolchainSet,
 };
-use compiler_vocabulary::{CStandard, Language, LanguageProfile, NativeTool, Stage};
+use backend_semantic::vocabulary::{CStandard, Language, LanguageProfile, NativeTool, Stage};
 use interface_core::{
     CompilerCapability, CompilerTerminal, CorrelationId, GenerateTarget, PackageCompilePhase,
     PackageCompileRequest, PackageEcosystem, PackageSourceCause, PackageUrl, PackageUrlError,

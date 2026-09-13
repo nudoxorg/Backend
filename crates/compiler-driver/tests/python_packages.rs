@@ -12,7 +12,7 @@ use compiler_ir::{
     DecodedOccurrence, DocFragmentInput, EntityKind, ForeignOrigin, FragmentView,
     LanguageExtensionWireFact, OccurrenceTarget, PythonFacts, PythonParameterKind, SECTION_NONE,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     LanguageProfile, LoweringUnsupported, NativeTool, ProjectionAdmissionFault, PythonVersion,
     Stage,
 };

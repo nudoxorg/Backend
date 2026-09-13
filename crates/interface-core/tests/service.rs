@@ -12,7 +12,7 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use compiler_vocabulary::{Language, LanguageProfile, RustEdition, Stage};
+use backend_semantic::vocabulary::{Language, LanguageProfile, RustEdition, Stage};
 use backend_version::observe::{DropNewest, FlightRecorder, Probe};
 use interface_core::{
     AdaptiveDisposition, ApplicationDisposition, ApplicationEvent, ApplicationInput,
@@ -205,7 +205,7 @@ fn unavailable_compiler_specialization_never_claims_generated_output_and_keeps_r
             diagnostic: interface_core::Diagnostic {
                 code: DiagnosticCode::UnsupportedCompilerStage,
                 detail: interface_core::DiagnosticDetail::Frontend(
-                    compiler_vocabulary::FrontendError::UnsupportedStage {
+                    backend_semantic::vocabulary::FrontendError::UnsupportedStage {
                         language: Language::Rust,
                         stage: Stage::Parse,
                     }

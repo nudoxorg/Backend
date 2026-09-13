@@ -1,7 +1,7 @@
 //! Defines json wire compiler native worker behavior for `interface-protocol`, whose purpose is to decode and project the shared application vocabulary for external transports.
 //! This module owns the json wire compiler native worker invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     InvalidUtf8Fact, NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass,
     NativeWorkerPanicMessage,
 };
@@ -10,7 +10,7 @@ use serde::{Serialize, Serializer, ser::SerializeStruct};
 /// Remote serde definitions for closed native worker vocabulary.
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::NativeWorker",
+    remote = "backend_semantic::vocabulary::NativeWorker",
     rename_all = "snake_case"
 )]
 enum NativeWorkerWire {
@@ -21,7 +21,7 @@ enum NativeWorkerWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::NativeWorkerPanicClass",
+    remote = "backend_semantic::vocabulary::NativeWorkerPanicClass",
     rename_all = "snake_case"
 )]
 enum NativeWorkerPanicClassWire {
@@ -31,14 +31,14 @@ enum NativeWorkerPanicClassWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "compiler_vocabulary::InvalidUtf8Fact")]
+#[serde(remote = "backend_semantic::vocabulary::InvalidUtf8Fact")]
 struct InvalidUtf8FactWire {
     valid_up_to: usize,
     error_len: Option<usize>,
 }
 
 #[derive(Serialize)]
-#[serde(remote = "compiler_vocabulary::NativeWorkerPanic")]
+#[serde(remote = "backend_semantic::vocabulary::NativeWorkerPanic")]
 struct NativeWorkerPanicWire {
     #[serde(with = "NativeWorkerWire")]
     worker: NativeWorker,

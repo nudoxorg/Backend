@@ -14,7 +14,7 @@ use compiler_ir::{
     UnknownType, UnrepresentedAuthorityOwner, Variance, VariantFingerprint, Visibility,
     encode_full_semantic_image, full_semantic_image_len,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
 };
 use core::mem::{size_of, size_of_val};
@@ -496,8 +496,8 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
     assert_eq!(raw, builder.intern_atom(&[0xff, b'N'])?);
 
     let versions = [version(2, 1), version(1, 1)];
-    builder.set_language_profile(compiler_vocabulary::LanguageProfile::TypeScript(
-        compiler_vocabulary::TypeScriptSource::TypeScript,
+    builder.set_language_profile(backend_semantic::vocabulary::LanguageProfile::TypeScript(
+        backend_semantic::vocabulary::TypeScriptSource::TypeScript,
     ))?;
     let mut tree = builder.reserve_tree(&versions)?;
     let entities = tree.entities();

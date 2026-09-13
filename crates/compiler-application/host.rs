@@ -19,7 +19,7 @@ use std::{
 };
 
 use authority::NativeExecutables;
-use compiler_vocabulary::NativeTool;
+use backend_semantic::vocabulary::NativeTool;
 use paths::create_directory;
 use server_journal::PublicationLimits;
 

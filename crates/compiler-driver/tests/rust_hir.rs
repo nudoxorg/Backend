@@ -18,7 +18,7 @@ use compiler_ir::EntityKind;
 use compiler_languages_rust::{
     RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
-use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 
 /// Typed direct-HIR fixture failure without assertion panics or string terminals.

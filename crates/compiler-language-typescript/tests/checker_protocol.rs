@@ -121,7 +121,7 @@ fn undefined_conditional_branch_is_an_honest_closed_record() -> Result<(), Check
             transcript: String::new(),
         })?;
     let report = match Checker::default().run(
-        compiler_vocabulary::TypeScriptSource::TypeScript,
+        backend_semantic::vocabulary::TypeScriptSource::TypeScript,
         UNDEFINED_TYPE_SOURCE,
     ) {
         Ok(report) => report,
@@ -424,7 +424,7 @@ mod bounded_child {
         checker
             .run_with_program(
                 &path,
-                compiler_vocabulary::TypeScriptSource::TypeScript,
+                backend_semantic::vocabulary::TypeScriptSource::TypeScript,
                 b"export const n = 1;",
             )
             .expect_err("script must fail")
@@ -476,7 +476,7 @@ mod bounded_child {
         let error = Checker::default()
             .run_with_program(
                 &missing,
-                compiler_vocabulary::TypeScriptSource::TypeScript,
+                backend_semantic::vocabulary::TypeScriptSource::TypeScript,
                 b"export const n = 1;",
             )
             .expect_err("missing checker must not fall back");
@@ -525,7 +525,7 @@ mod bounded_child {
         let report = Checker::default()
             .with_node(node, module_root.clone())
             .expect("absolute Node authority is admissible")
-            .run(compiler_vocabulary::TypeScriptSource::TypeScript, source)
+            .run(backend_semantic::vocabulary::TypeScriptSource::TypeScript, source)
             .expect("selected module root reaches the explicit child");
         assert_eq!(report.source_digest, digest);
         std::fs::remove_dir(&module_root).expect("remove test module root");
@@ -555,7 +555,7 @@ fn end_to_end_fixture_preserves_overload_and_computed_facts() -> Result<(), Chec
     // The vendored driver exits 3 when the `typescript` module is not
     // resolvable; that is honest tool absence, not a protocol fault.
     match checker.run(
-        compiler_vocabulary::TypeScriptSource::TypeScript,
+        backend_semantic::vocabulary::TypeScriptSource::TypeScript,
         GOLDEN_SOURCE,
     ) {
         Ok(report) => {

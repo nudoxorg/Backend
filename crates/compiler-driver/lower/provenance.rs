@@ -91,7 +91,7 @@ impl Provenance {
     ) -> Result<(), FactFault> {
         if child as usize >= fact_count || parent as usize >= fact_count || child == parent {
             return Err(FactFault::RefTarget {
-                lane: compiler_vocabulary::ProjectionFactLane::EntityParents,
+                lane: backend_semantic::vocabulary::ProjectionFactLane::EntityParents,
                 raw: if child as usize >= fact_count {
                     child
                 } else {
@@ -116,7 +116,7 @@ impl Provenance {
     ) -> Result<(), FactFault> {
         if entity as usize >= fact_count {
             return Err(FactFault::RefTarget {
-                lane: compiler_vocabulary::ProjectionFactLane::EntityParentage,
+                lane: backend_semantic::vocabulary::ProjectionFactLane::EntityParentage,
                 raw: entity,
                 fact_count,
             });
@@ -133,7 +133,7 @@ impl Provenance {
     ) -> Result<(), FactFault> {
         if entity as usize >= fact_count {
             return Err(FactFault::RefTarget {
-                lane: compiler_vocabulary::ProjectionFactLane::EntityParentage,
+                lane: backend_semantic::vocabulary::ProjectionFactLane::EntityParentage,
                 raw: entity,
                 fact_count,
             });
@@ -157,7 +157,7 @@ impl Provenance {
     ) -> Result<(), FactFault> {
         if entity as usize >= fact_count {
             return Err(FactFault::RefTarget {
-                lane: compiler_vocabulary::ProjectionFactLane::EntitySourceSpans,
+                lane: backend_semantic::vocabulary::ProjectionFactLane::EntitySourceSpans,
                 raw: entity,
                 fact_count,
             });
@@ -196,7 +196,7 @@ impl Provenance {
     ) -> Result<(), FactFault> {
         if entity as usize >= fact_count {
             return Err(FactFault::RefTarget {
-                lane: compiler_vocabulary::ProjectionFactLane::EntityMembers,
+                lane: backend_semantic::vocabulary::ProjectionFactLane::EntityMembers,
                 raw: entity,
                 fact_count,
             });

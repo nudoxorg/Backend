@@ -9,7 +9,7 @@ use compiler_driver::{
 };
 use compiler_ir::EntityId;
 use compiler_ir::{FragmentError, PrepareError, WriteError};
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, Language, LanguageProfile, Stage as CompileStage,
 };
 use server_index_build::BuildError;
@@ -90,7 +90,7 @@ pub(crate) enum CompileFailureFact {
         cleanup: std::io::ErrorKind,
     },
     NativeWorkerPanic {
-        cause: compiler_vocabulary::NativeWorkerPanic,
+        cause: backend_semantic::vocabulary::NativeWorkerPanic,
     },
     Cancelled {
         diagnostic: DiagnosticFact,
@@ -182,7 +182,7 @@ pub(crate) enum NativeWorkFault {
     },
     ArtifactText {
         artifact: NativeArtifactRole,
-        fact: compiler_vocabulary::InvalidUtf8Fact,
+        fact: backend_semantic::vocabulary::InvalidUtf8Fact,
     },
     RemoveArtifact {
         artifact: NativeArtifactRole,
@@ -236,7 +236,7 @@ pub(crate) enum NativeWorkPrimaryFault {
         cleanup: std::io::ErrorKind,
     },
     WorkerPanic {
-        cause: compiler_vocabulary::NativeWorkerPanic,
+        cause: backend_semantic::vocabulary::NativeWorkerPanic,
     },
     Cancelled {
         diagnostic: DiagnosticFact,

@@ -12,7 +12,7 @@ pub use checker::{
     PyreflyExecutableError, SymbolOutcome, SymbolResolution,
 };
 
-use compiler_vocabulary::PythonVersion;
+use backend_semantic::vocabulary::PythonVersion;
 use ruff_python_ast::{
     self as ast,
     visitor::{self, Visitor},
@@ -1424,7 +1424,7 @@ impl Projection<'_> {
 mod tests {
     use ruff_text_size::{TextRange, TextSize};
 
-    use compiler_vocabulary::PythonVersion;
+    use backend_semantic::vocabulary::PythonVersion;
 
     use super::{ExtractionError, ModuleFacts, Projection, RuffDeclarationKind, Span, with_module};
 

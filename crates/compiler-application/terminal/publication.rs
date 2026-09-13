@@ -13,7 +13,7 @@ use super::common::attempt;
 
 fn publication_terminal(
     source: interface_core::SourceAuthority,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     error: PublishCompiledError,
 ) -> CompilerTerminal {
     let cause = match error {
@@ -50,7 +50,7 @@ fn publication_terminal(
 
 pub(crate) fn semantic_publication_terminal(
     source: interface_core::SourceAuthority,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     error: PublishSemanticError,
 ) -> CompilerTerminal {
     match error {
@@ -91,7 +91,7 @@ pub(crate) fn semantic_publication_terminal(
 
 pub(crate) fn semantic_reopen_terminal(
     source: interface_core::SourceAuthority,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     _error: OpenPublishedError,
 ) -> CompilerTerminal {
     rejected(source, recipe, PublicationPhase::Reopen)
@@ -99,7 +99,7 @@ pub(crate) fn semantic_reopen_terminal(
 
 pub(crate) fn semantic_artifact_terminal(
     source: interface_core::SourceAuthority,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     _error: OpenedSemanticArtifactError,
 ) -> CompilerTerminal {
     rejected(source, recipe, PublicationPhase::Reopen)
@@ -107,21 +107,21 @@ pub(crate) fn semantic_artifact_terminal(
 
 pub(crate) const fn semantic_reopen_absent(
     source: interface_core::SourceAuthority,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
 ) -> CompilerTerminal {
     rejected(source, recipe, PublicationPhase::Reopen)
 }
 
 pub(crate) const fn semantic_reopen_cardinality(
     source: interface_core::SourceAuthority,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
 ) -> CompilerTerminal {
     rejected(source, recipe, PublicationPhase::Reopen)
 }
 
 const fn rejected(
     source: interface_core::SourceAuthority,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     phase: PublicationPhase,
 ) -> CompilerTerminal {
     CompilerTerminal::Publication {

@@ -12,7 +12,7 @@ use compiler_driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use compiler_languages_rust::{RustFeatureControl, RustPackageUrl, RustToolchain, SourceByteLimit};
-use compiler_vocabulary::{LanguageProfile, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, Stage};
 
 fn rustc_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let path = std::env::var_os("RUSTC")

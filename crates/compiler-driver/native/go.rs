@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::{path::Path, process::Command};
 
-use compiler_vocabulary::GoVersion;
+use backend_semantic::vocabulary::GoVersion;
 
 use crate::{
     native::{

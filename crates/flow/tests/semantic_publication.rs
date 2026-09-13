@@ -24,7 +24,7 @@ use compiler_publication::{
     manifest::{COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES, SemanticImageRegion},
     open_published_semantic, publish_semantic,
 };
-use compiler_vocabulary::{GoVersion, LanguageProfile, Stage};
+use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
 use server_index_build::{
     IndexedType, SemanticIndexBuildScratch, SemanticTypeFact, build_semantic,
 };

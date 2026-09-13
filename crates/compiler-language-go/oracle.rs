@@ -20,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use compiler_vocabulary::{NativeWorker, NativeWorkerPanic};
+use backend_semantic::vocabulary::{NativeWorker, NativeWorkerPanic};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 

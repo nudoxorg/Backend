@@ -11,7 +11,7 @@ use compiler_languages_clang::{
     SymbolIdentity, TypeEdge, TypeFact, TypeId, collect,
     facts::{TypeKind, TypeQualifiers},
 };
-use compiler_vocabulary::{CStandard, CxxStandard};
+use backend_semantic::vocabulary::{CStandard, CxxStandard};
 use std::{
     fs,
     time::{SystemTime, UNIX_EPOCH},

@@ -10,7 +10,7 @@ use interface_core::{Capability, InputText};
 use serde::{Serialize, Serializer, ser::Error as _};
 
 #[derive(Serialize)]
-#[serde(remote = "compiler_vocabulary::Language", rename_all = "snake_case")]
+#[serde(remote = "backend_semantic::vocabulary::Language", rename_all = "snake_case")]
 pub(super) enum LanguageWire {
     Rust,
     TypeScript,
@@ -23,7 +23,7 @@ pub(super) enum LanguageWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::AuthorityPhase",
+    remote = "backend_semantic::vocabulary::AuthorityPhase",
     rename_all = "snake_case"
 )]
 pub(super) enum AuthorityPhaseWire {
@@ -36,7 +36,7 @@ pub(super) enum AuthorityPhaseWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::AuthorityDiagnosticClass",
+    remote = "backend_semantic::vocabulary::AuthorityDiagnosticClass",
     rename_all = "snake_case"
 )]
 pub(super) enum AuthorityDiagnosticClassWire {
@@ -49,22 +49,22 @@ pub(super) enum AuthorityDiagnosticClassWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::LanguageProfile",
+    remote = "backend_semantic::vocabulary::LanguageProfile",
     rename_all = "snake_case"
 )]
 pub(super) enum LanguageProfileWire {
-    Rust(#[serde(with = "RustEditionWire")] compiler_vocabulary::RustEdition),
-    TypeScript(#[serde(with = "TypeScriptSourceWire")] compiler_vocabulary::TypeScriptSource),
-    Python(#[serde(with = "PythonVersionWire")] compiler_vocabulary::PythonVersion),
-    Go(#[serde(with = "GoVersionWire")] compiler_vocabulary::GoVersion),
-    Java(#[serde(with = "JavaReleaseWire")] compiler_vocabulary::JavaRelease),
-    CSharp(#[serde(with = "CSharpVersionWire")] compiler_vocabulary::CSharpVersion),
-    C(#[serde(with = "CStandardWire")] compiler_vocabulary::CStandard),
-    Cxx(#[serde(with = "CxxStandardWire")] compiler_vocabulary::CxxStandard),
+    Rust(#[serde(with = "RustEditionWire")] backend_semantic::vocabulary::RustEdition),
+    TypeScript(#[serde(with = "TypeScriptSourceWire")] backend_semantic::vocabulary::TypeScriptSource),
+    Python(#[serde(with = "PythonVersionWire")] backend_semantic::vocabulary::PythonVersion),
+    Go(#[serde(with = "GoVersionWire")] backend_semantic::vocabulary::GoVersion),
+    Java(#[serde(with = "JavaReleaseWire")] backend_semantic::vocabulary::JavaRelease),
+    CSharp(#[serde(with = "CSharpVersionWire")] backend_semantic::vocabulary::CSharpVersion),
+    C(#[serde(with = "CStandardWire")] backend_semantic::vocabulary::CStandard),
+    Cxx(#[serde(with = "CxxStandardWire")] backend_semantic::vocabulary::CxxStandard),
 }
 
 #[derive(Serialize)]
-#[serde(remote = "compiler_vocabulary::RustEdition", rename_all = "snake_case")]
+#[serde(remote = "backend_semantic::vocabulary::RustEdition", rename_all = "snake_case")]
 pub(super) enum RustEditionWire {
     Rust2015,
     Rust2018,
@@ -74,7 +74,7 @@ pub(super) enum RustEditionWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::TypeScriptSource",
+    remote = "backend_semantic::vocabulary::TypeScriptSource",
     rename_all = "snake_case"
 )]
 pub(super) enum TypeScriptSourceWire {
@@ -84,7 +84,7 @@ pub(super) enum TypeScriptSourceWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::PythonVersion",
+    remote = "backend_semantic::vocabulary::PythonVersion",
     rename_all = "snake_case"
 )]
 pub(super) enum PythonVersionWire {
@@ -96,7 +96,7 @@ pub(super) enum PythonVersionWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "compiler_vocabulary::GoVersion", rename_all = "snake_case")]
+#[serde(remote = "backend_semantic::vocabulary::GoVersion", rename_all = "snake_case")]
 pub(super) enum GoVersionWire {
     Go122,
     Go123,
@@ -105,7 +105,7 @@ pub(super) enum GoVersionWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "compiler_vocabulary::JavaRelease", rename_all = "snake_case")]
+#[serde(remote = "backend_semantic::vocabulary::JavaRelease", rename_all = "snake_case")]
 pub(super) enum JavaReleaseWire {
     Java8,
     Java11,
@@ -116,7 +116,7 @@ pub(super) enum JavaReleaseWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "compiler_vocabulary::CSharpVersion",
+    remote = "backend_semantic::vocabulary::CSharpVersion",
     rename_all = "snake_case"
 )]
 pub(super) enum CSharpVersionWire {
@@ -128,7 +128,7 @@ pub(super) enum CSharpVersionWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "compiler_vocabulary::CStandard", rename_all = "snake_case")]
+#[serde(remote = "backend_semantic::vocabulary::CStandard", rename_all = "snake_case")]
 pub(super) enum CStandardWire {
     C11,
     C17,
@@ -136,7 +136,7 @@ pub(super) enum CStandardWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "compiler_vocabulary::CxxStandard", rename_all = "snake_case")]
+#[serde(remote = "backend_semantic::vocabulary::CxxStandard", rename_all = "snake_case")]
 pub(super) enum CxxStandardWire {
     Cxx17,
     Cxx20,
@@ -145,7 +145,7 @@ pub(super) enum CxxStandardWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "compiler_vocabulary::Stage")]
+#[serde(remote = "backend_semantic::vocabulary::Stage")]
 pub(super) enum StageWire {
     #[serde(rename = "parse")]
     Parse,
@@ -154,7 +154,7 @@ pub(super) enum StageWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "compiler_vocabulary::NativeTool", rename_all = "snake_case")]
+#[serde(remote = "backend_semantic::vocabulary::NativeTool", rename_all = "snake_case")]
 pub(super) enum NativeToolWire {
     Rustc,
     Clang,
@@ -386,7 +386,7 @@ impl From<backend_execution::adaptive::StorageTier> for StorageTier {
 #[cfg(test)]
 mod tests {
     use super::LanguageWire;
-    use compiler_vocabulary::Language;
+    use backend_semantic::vocabulary::Language;
     use serde::Serialize;
 
     #[derive(Serialize)]

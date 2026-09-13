@@ -5,7 +5,7 @@
 use compiler_languages_typescript::{
     AuthorityError, OxcDeclarationKind, Utf8Span, Utf16Span, analyze,
 };
-use compiler_vocabulary::TypeScriptSource;
+use backend_semantic::vocabulary::TypeScriptSource;
 use oxc_allocator::Allocator;
 
 #[derive(Debug, thiserror::Error)]

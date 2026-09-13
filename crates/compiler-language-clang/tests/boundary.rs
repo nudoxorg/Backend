@@ -5,7 +5,7 @@
 use compiler_languages_clang::{
     ClangInput, ClangScratch, CollectError, DatabaseError, MAX_DATABASE_ARGUMENTS, collect,
 };
-use compiler_vocabulary::{CStandard, LanguageProfile, RustEdition};
+use backend_semantic::vocabulary::{CStandard, LanguageProfile, RustEdition};
 use core::sync::atomic::AtomicBool;
 
 /// Holds the exact public error fact required by one collector boundary test.

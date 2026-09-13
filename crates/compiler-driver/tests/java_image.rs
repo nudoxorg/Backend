@@ -13,7 +13,7 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainResolutionError, ToolchainSelection, compile,
 };
 use compiler_ir::EntityKind;
-use compiler_vocabulary::{JavaRelease, LanguageProfile, Stage};
+use backend_semantic::vocabulary::{JavaRelease, LanguageProfile, Stage};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 

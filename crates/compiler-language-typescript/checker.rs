@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use compiler_vocabulary::{NativeWorker, NativeWorkerPanic, TypeScriptSource};
+use backend_semantic::vocabulary::{NativeWorker, NativeWorkerPanic, TypeScriptSource};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 

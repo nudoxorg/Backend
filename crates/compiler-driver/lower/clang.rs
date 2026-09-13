@@ -71,7 +71,7 @@ use compiler_languages_clang::{
     SYMBOL_IDENTITY_BYTES, SourceSpan, StorageClass, SymbolIdentity, TypeEdge, TypeFact,
     TypeId as AuthorityTypeId, TypeKind, TypeRelation, collect_cancellable,
 };
-use compiler_vocabulary::{LanguageProfile, LoweringUnsupported};
+use backend_semantic::vocabulary::{LanguageProfile, LoweringUnsupported};
 
 use crate::lower::{
     AdmissionFault, EmissionExtension, FactSet, LEAF_PRODUCT, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN,
@@ -2250,7 +2250,7 @@ mod tests {
     use compiler_languages_clang::{
         CollectError, IncludeFact, MAX_CLANG_DECLARATIONS, SourceSpan, SymbolIdentity,
     };
-    use compiler_vocabulary::{CStandard, CompileRecipeFact, LanguageProfile, NativeTool, Stage};
+    use backend_semantic::vocabulary::{CStandard, CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use thiserror::Error;
 
@@ -2570,7 +2570,7 @@ mod tests {
     fn mutual_recursion_targets_strictly_backward_ordinals() -> Result<(), TestError> {
         let source = b"struct B; struct A { struct B *b; }; struct B { struct A *a; };";
         let bytes = lower_with_profile(
-            LanguageProfile::Cxx(compiler_vocabulary::CxxStandard::Cxx23),
+            LanguageProfile::Cxx(backend_semantic::vocabulary::CxxStandard::Cxx23),
             source,
         )?;
         let view = FragmentView::validate(&bytes)?;
@@ -2737,7 +2737,7 @@ mod tests {
     fn template_parameters_intern_as_pooled_rows_and_typevar_uses() -> Result<(), TestError> {
         let source = b"template<typename T> struct Box { T value; };\nstruct User { struct Box<int> box; };\n";
         let bytes = lower_with_profile(
-            LanguageProfile::Cxx(compiler_vocabulary::CxxStandard::Cxx23),
+            LanguageProfile::Cxx(backend_semantic::vocabulary::CxxStandard::Cxx23),
             source,
         )?;
         let view = FragmentView::validate(&bytes)?;

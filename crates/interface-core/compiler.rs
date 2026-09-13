@@ -5,11 +5,11 @@
 
 use std::{collections::TryReserveError, io::ErrorKind, ops::Deref, time::Duration};
 
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, Language, LanguageProfile,
     LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool, Stage,
 };
-pub use compiler_vocabulary::{
+pub use backend_semantic::vocabulary::{
     InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactRole, NativeWorkPhase,
     NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage,
 };
@@ -393,7 +393,7 @@ pub enum CompilerTerminal {
         /// Identity and byte length of the exact source under evaluation.
         source: SourceAuthority,
         /// Exact registry rejection, retained instead of reconstructed from copied fields.
-        cause: compiler_vocabulary::FrontendError,
+        cause: backend_semantic::vocabulary::FrontendError,
     },
     /// A fresh bounded timeout could not be represented by this platform's monotonic clock.
     DeadlineConstruction {

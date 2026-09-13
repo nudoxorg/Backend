@@ -1,6 +1,6 @@
 //! Proves the CLI package command enters one typed package admission path.
 
-use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use interface_core::{ApplicationInput, CorrelationId, PackageEcosystem};
 use interface_protocol::{AdapterErrorCause, AdapterErrorCode, decode_cli};
 
@@ -47,7 +47,7 @@ fn transport_retains_package_parse_and_profile_mismatch_causes() {
         mismatch.cause,
         Some(AdapterErrorCause::PackageProfile(cause))
             if cause.profile == LanguageProfile::TypeScript(
-                compiler_vocabulary::TypeScriptSource::TypeScript
+                backend_semantic::vocabulary::TypeScriptSource::TypeScript
             ) && cause.ecosystem == PackageEcosystem::Cargo
     ));
 }

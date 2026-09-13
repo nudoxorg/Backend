@@ -1,7 +1,7 @@
 //! Exercises the `interface-core` tests unified-terminal contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use compiler_vocabulary::{FrontendError, Language, LanguageProfile, RustEdition, Stage};
+use backend_semantic::vocabulary::{FrontendError, Language, LanguageProfile, RustEdition, Stage};
 use interface_core::{
     ApplicationDisposition, ApplicationEvent, ApplicationInput, ApplicationObservation,
     ApplicationOutcome, ApplicationReply, ApplicationService, Capability, CapabilityHealth,

@@ -10,7 +10,7 @@ use compiler_driver::{
     AuthorityFailure, CompileFailure, CompileOutput, CompileScratch, NativeTool,
     ToolchainSelection, compile,
 };
-use compiler_vocabulary::{Language, Stage};
+use backend_semantic::vocabulary::{Language, Stage};
 
 use super::support::*;
 

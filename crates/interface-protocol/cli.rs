@@ -780,7 +780,7 @@ fn cli_generate_target(arguments: &[String]) -> Result<GenerateTarget, AdapterEr
 
 fn generate_target(
     correlation: u64,
-    profile: compiler_vocabulary::LanguageProfile,
+    profile: backend_semantic::vocabulary::LanguageProfile,
     stage: RawStage,
 ) -> GenerateTarget {
     GenerateTarget {
@@ -793,10 +793,10 @@ fn generate_target(
 fn raw_profile(
     arguments: &[String],
     index: usize,
-) -> Result<compiler_vocabulary::LanguageProfile, AdapterError> {
+) -> Result<backend_semantic::vocabulary::LanguageProfile, AdapterError> {
     let value = InputText::try_from_str(field(arguments, index, AdapterField::Language)?)
         .map_err(|source| AdapterError::field_too_long(AdapterField::Language, source))?;
-    compiler_vocabulary::LanguageProfile::try_from(&*value)
+    backend_semantic::vocabulary::LanguageProfile::try_from(&*value)
         .map_err(|_| AdapterError::unknown_language(value))
 }
 

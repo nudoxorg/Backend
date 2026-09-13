@@ -13,7 +13,7 @@ use compiler_driver::{
 };
 use compiler_ir::{EntityKind, FragmentView, SemanticTypeTag, TypeFactSegment};
 use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
-use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

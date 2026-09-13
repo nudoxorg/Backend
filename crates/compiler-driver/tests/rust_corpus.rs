@@ -11,7 +11,7 @@ use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use compiler_vocabulary::{LanguageProfile, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, Stage};
 use server_index_build::{IndexBuildScratch, build};
 use server_index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
@@ -203,13 +203,13 @@ fn rustc() -> Result<(PathBuf, RustToolchain), TestError> {
 fn failure_label(failure: &CompileFailure<'_>) -> String {
     match failure {
         CompileFailure::LoweringUnsupported { cause, .. } => match cause {
-            compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration => {
+            backend_semantic::vocabulary::LoweringUnsupported::NoSupportedDeclaration => {
                 "lowering-unsupported:no-supported-declaration".to_owned()
             }
-            compiler_vocabulary::LoweringUnsupported::FactRejected { .. } => {
+            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => {
                 "fact-rejected".to_owned()
             }
-            compiler_vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
+            backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
                 "csharp-projection".to_owned()
             }
             other => format!("lowering-unsupported:{other}"),
@@ -434,10 +434,10 @@ fn twenty_real_crates_compile_with_decoded_lanes() -> Result<(), TestError> {
                 saw_2021 = true;
             }
             let expected = match edition.as_str() {
-                "2015" => compiler_vocabulary::RustEdition::Rust2015,
-                "2018" => compiler_vocabulary::RustEdition::Rust2018,
-                "2021" => compiler_vocabulary::RustEdition::Rust2021,
-                "2024" => compiler_vocabulary::RustEdition::Rust2024,
+                "2015" => backend_semantic::vocabulary::RustEdition::Rust2015,
+                "2018" => backend_semantic::vocabulary::RustEdition::Rust2018,
+                "2021" => backend_semantic::vocabulary::RustEdition::Rust2021,
+                "2024" => backend_semantic::vocabulary::RustEdition::Rust2024,
                 _ => {
                     return Err(TestError::Falsified(
                         "manifest edition was not one of the closed Rust editions",
@@ -792,7 +792,7 @@ fn located_edition_carries_through_compile() -> Result<(), TestError> {
         .map_err(|cause| crate_error(row.purl, CrateCause::Locate(cause)))?;
     assert_eq!(
         located.project().edition,
-        compiler_vocabulary::RustEdition::Rust2021,
+        backend_semantic::vocabulary::RustEdition::Rust2021,
         "located edition must come from the package manifest"
     );
     // The row's own terminal is the frozen occurrence-lane bound (recorded

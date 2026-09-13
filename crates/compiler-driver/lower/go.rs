@@ -54,7 +54,7 @@ use compiler_languages_go::{
     ChanDir, Declaration, DeclarationKind, DocOwner, GoImage, HeaderError, ImageError, MemberKind,
     TypeRowKind, parse_constraint_blob,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     GoImageDeclarationKind, GoImageDocOwnerKind, GoImageFault, GoImageFlagCell, GoImageHeaderFault,
     GoImageMemberKind, GoImagePlane, GoImageTypeKind,
     GoProjectionFault as PortableGoProjectionFault, GoProjectionIndexPhase, GoProjectionListPhase,
@@ -2742,7 +2742,7 @@ mod tests {
     use crate::lower::{FactSet, MAX_REF_LISTS};
     use crate::types::FactFault;
     use compiler_ir::{ChannelDirection, FragmentView, SourceIdentity};
-    use compiler_vocabulary::{
+    use backend_semantic::vocabulary::{
         CompileRecipeFact, GoImageFault, GoProjectionFault as PortableGoProjectionFault,
         LanguageProfile, LoweringUnsupported, NativeTool, Stage,
     };
@@ -2879,7 +2879,7 @@ mod tests {
                     fact,
                     name_len,
                     cause:
-                        compiler_vocabulary::ProjectionAdmissionFault::ProductChildPoolCapacity {
+                        backend_semantic::vocabulary::ProjectionAdmissionFault::ProductChildPoolCapacity {
                             used,
                             requested,
                             capacity,
@@ -2911,7 +2911,7 @@ mod tests {
                     fact: 23,
                     name_len: 0,
                     cause:
-                        compiler_vocabulary::ProjectionAdmissionFault::OccurrenceOwner {
+                        backend_semantic::vocabulary::ProjectionAdmissionFault::OccurrenceOwner {
                             owner,
                             fact_count,
                         },
@@ -3677,7 +3677,7 @@ mod tests {
             byte_len: u32::try_from(source.len()).map_err(TestError::from)?,
         };
         let recipe = CompileRecipeFact::derive(
-            LanguageProfile::Go(compiler_vocabulary::GoVersion::Go125),
+            LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125),
             Stage::LowerIr,
             NativeTool::GoCompiler,
             ContentId::<SourceFactDomain>::from_canonical_bytes(source),

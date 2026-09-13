@@ -1316,19 +1316,19 @@ pub(crate) enum GoldenClangTypeKind {
 
 macro_rules! impl_unit_conversion {
     ($source:ident => $target:ident [$($variant:ident),+ $(,)?]) => {
-        impl From<compiler_vocabulary::$source> for $target {
-            fn from(source: compiler_vocabulary::$source) -> Self {
+        impl From<backend_semantic::vocabulary::$source> for $target {
+            fn from(source: backend_semantic::vocabulary::$source) -> Self {
                 match source {
-                    $(compiler_vocabulary::$source::$variant => Self::$variant),+
+                    $(backend_semantic::vocabulary::$source::$variant => Self::$variant),+
                 }
             }
         }
     };
 }
 
-impl From<compiler_vocabulary::LoweringUnsupported> for GoldenLoweringCause {
-    fn from(cause: compiler_vocabulary::LoweringUnsupported) -> Self {
-        use compiler_vocabulary::LoweringUnsupported;
+impl From<backend_semantic::vocabulary::LoweringUnsupported> for GoldenLoweringCause {
+    fn from(cause: backend_semantic::vocabulary::LoweringUnsupported) -> Self {
+        use backend_semantic::vocabulary::LoweringUnsupported;
         match cause {
             LoweringUnsupported::NoSupportedDeclaration => Self::NoSupportedDeclaration,
             LoweringUnsupported::ExtensionAtomUnbound {
@@ -1395,9 +1395,9 @@ impl From<compiler_vocabulary::LoweringUnsupported> for GoldenLoweringCause {
     }
 }
 
-impl From<compiler_vocabulary::JavaProjectionFault> for GoldenJavaProjectionFault {
-    fn from(fault: compiler_vocabulary::JavaProjectionFault) -> Self {
-        use compiler_vocabulary::JavaProjectionFault;
+impl From<backend_semantic::vocabulary::JavaProjectionFault> for GoldenJavaProjectionFault {
+    fn from(fault: backend_semantic::vocabulary::JavaProjectionFault) -> Self {
+        use backend_semantic::vocabulary::JavaProjectionFault;
         match fault {
             JavaProjectionFault::Image { cause } => Self::Image {
                 cause: cause.into(),
@@ -1433,9 +1433,9 @@ impl From<compiler_vocabulary::JavaProjectionFault> for GoldenJavaProjectionFaul
     }
 }
 
-impl From<compiler_vocabulary::JavaImageFault> for GoldenJavaImageFault {
-    fn from(fault: compiler_vocabulary::JavaImageFault) -> Self {
-        use compiler_vocabulary::JavaImageFault;
+impl From<backend_semantic::vocabulary::JavaImageFault> for GoldenJavaImageFault {
+    fn from(fault: backend_semantic::vocabulary::JavaImageFault) -> Self {
+        use backend_semantic::vocabulary::JavaImageFault;
         match fault {
             JavaImageFault::Header { cause } => Self::Header {
                 cause: cause.into(),
@@ -1483,9 +1483,9 @@ impl From<compiler_vocabulary::JavaImageFault> for GoldenJavaImageFault {
     }
 }
 
-impl From<compiler_vocabulary::JavaImageHeaderFault> for GoldenJavaHeaderFault {
-    fn from(fault: compiler_vocabulary::JavaImageHeaderFault) -> Self {
-        use compiler_vocabulary::JavaImageHeaderFault;
+impl From<backend_semantic::vocabulary::JavaImageHeaderFault> for GoldenJavaHeaderFault {
+    fn from(fault: backend_semantic::vocabulary::JavaImageHeaderFault) -> Self {
+        use backend_semantic::vocabulary::JavaImageHeaderFault;
         match fault {
             JavaImageHeaderFault::Truncated { actual } => Self::Truncated { actual },
             JavaImageHeaderFault::Magic { found } => Self::Magic { found },
@@ -1500,9 +1500,9 @@ impl From<compiler_vocabulary::JavaImageHeaderFault> for GoldenJavaHeaderFault {
     }
 }
 
-impl From<compiler_vocabulary::JavaImageSectionFault> for GoldenJavaSectionFault {
-    fn from(fault: compiler_vocabulary::JavaImageSectionFault) -> Self {
-        use compiler_vocabulary::JavaImageSectionFault;
+impl From<backend_semantic::vocabulary::JavaImageSectionFault> for GoldenJavaSectionFault {
+    fn from(fault: backend_semantic::vocabulary::JavaImageSectionFault) -> Self {
+        use backend_semantic::vocabulary::JavaImageSectionFault;
         match fault {
             JavaImageSectionFault::Tag { expected, found } => Self::Tag { expected, found },
             JavaImageSectionFault::RowBytes { expected, found } => {
@@ -1531,9 +1531,9 @@ impl From<compiler_vocabulary::JavaImageSectionFault> for GoldenJavaSectionFault
     }
 }
 
-impl From<compiler_vocabulary::JavaImageAtomFault> for GoldenJavaAtomFault {
-    fn from(fault: compiler_vocabulary::JavaImageAtomFault) -> Self {
-        use compiler_vocabulary::JavaImageAtomFault;
+impl From<backend_semantic::vocabulary::JavaImageAtomFault> for GoldenJavaAtomFault {
+    fn from(fault: backend_semantic::vocabulary::JavaImageAtomFault) -> Self {
+        use backend_semantic::vocabulary::JavaImageAtomFault;
         match fault {
             JavaImageAtomFault::NonCanonicalOffset { found } => Self::NonCanonicalOffset { found },
             JavaImageAtomFault::Range => Self::Range,
@@ -1549,21 +1549,21 @@ impl_unit_conversion!(JavaForeignKeyFault => GoldenForeignKeyFault [EmptyPath, B
 impl_unit_conversion!(JavaProjectionIndexPhase => GoldenJavaIndexPhase [FactOrdinal, TypeRow, TypeChild, NameIndex, SymbolIndex, ExecutableIndex, Signature, Documentation, Utf16]);
 impl_unit_conversion!(JavaImagePlane => GoldenJavaImagePlane [Atoms, AtomBytes, Types, TypeChildren, Symbols, SymbolParameters, Declarations, References, DeclarationExtensions, ExtensionEntries]);
 impl_unit_conversion!(ProjectionForeignKeyFault => GoldenForeignKeyFault [EmptyPath, BackslashInPath]);
-impl From<compiler_vocabulary::ProjectionLineagePart> for GoldenLineagePart {
-    fn from(part: compiler_vocabulary::ProjectionLineagePart) -> Self {
+impl From<backend_semantic::vocabulary::ProjectionLineagePart> for GoldenLineagePart {
+    fn from(part: backend_semantic::vocabulary::ProjectionLineagePart) -> Self {
         match part {
-            compiler_vocabulary::ProjectionLineagePart::Ecosystem => Self::Ecosystem,
-            compiler_vocabulary::ProjectionLineagePart::Package => Self::Package,
-            compiler_vocabulary::ProjectionLineagePart::Invalid { segment } => {
+            backend_semantic::vocabulary::ProjectionLineagePart::Ecosystem => Self::Ecosystem,
+            backend_semantic::vocabulary::ProjectionLineagePart::Package => Self::Package,
+            backend_semantic::vocabulary::ProjectionLineagePart::Invalid { segment } => {
                 Self::Invalid { segment }
             }
         }
     }
 }
 
-impl From<compiler_vocabulary::ProjectionPackageLineageFault> for GoldenPackageLineageFault {
-    fn from(fault: compiler_vocabulary::ProjectionPackageLineageFault) -> Self {
-        use compiler_vocabulary::ProjectionPackageLineageFault;
+impl From<backend_semantic::vocabulary::ProjectionPackageLineageFault> for GoldenPackageLineageFault {
+    fn from(fault: backend_semantic::vocabulary::ProjectionPackageLineageFault) -> Self {
+        use backend_semantic::vocabulary::ProjectionPackageLineageFault;
         match fault {
             ProjectionPackageLineageFault::EmptyEcosystem => Self::EmptyEcosystem,
             ProjectionPackageLineageFault::EmptyPackage => Self::EmptyPackage,
@@ -1583,9 +1583,9 @@ impl_unit_conversion!(ProjectionTypeCell => GoldenProjectionTypeCell [Payload0, 
 impl_unit_conversion!(ProjectionTypeChildLane => GoldenProjectionTypeChildLane [Declared, Anonymous, Computed]);
 impl_unit_conversion!(ProjectionFactLane => GoldenProjectionFactLane [TypeRows, ReservedTypeRows, ComputedOwners, Extensions, ReplacementTypeParameterRange, TypeParameterRanges, CapturedTypeParameterRange, EntityMembers, EntityParentage, EntityParents, EntitySourceSpans, TypeParameters, TypeLists, EntityLists, AtomLists]);
 
-impl From<compiler_vocabulary::ProjectionConstructorFault> for GoldenProjectionConstructorFault {
-    fn from(fault: compiler_vocabulary::ProjectionConstructorFault) -> Self {
-        use compiler_vocabulary::ProjectionConstructorFault;
+impl From<backend_semantic::vocabulary::ProjectionConstructorFault> for GoldenProjectionConstructorFault {
+    fn from(fault: backend_semantic::vocabulary::ProjectionConstructorFault) -> Self {
+        use backend_semantic::vocabulary::ProjectionConstructorFault;
         match fault {
             ProjectionConstructorFault::Tag { actual } => Self::Tag { actual },
             ProjectionConstructorFault::ReservedPayload {
@@ -1619,9 +1619,9 @@ impl From<compiler_vocabulary::ProjectionConstructorFault> for GoldenProjectionC
     }
 }
 
-impl From<compiler_vocabulary::ProjectionSemanticTypeFault> for GoldenProjectionSemanticTypeFault {
-    fn from(fault: compiler_vocabulary::ProjectionSemanticTypeFault) -> Self {
-        use compiler_vocabulary::ProjectionSemanticTypeFault;
+impl From<backend_semantic::vocabulary::ProjectionSemanticTypeFault> for GoldenProjectionSemanticTypeFault {
+    fn from(fault: backend_semantic::vocabulary::ProjectionSemanticTypeFault) -> Self {
+        use backend_semantic::vocabulary::ProjectionSemanticTypeFault;
         match fault {
             ProjectionSemanticTypeFault::Tag { actual } => Self::Tag { actual },
             ProjectionSemanticTypeFault::ReservedCell { tag, cell, actual } => Self::ReservedCell {
@@ -1684,23 +1684,23 @@ impl From<compiler_vocabulary::ProjectionSemanticTypeFault> for GoldenProjection
     }
 }
 
-impl From<compiler_vocabulary::ProjectionParentageState> for GoldenProjectionParentageState {
-    fn from(state: compiler_vocabulary::ProjectionParentageState) -> Self {
+impl From<backend_semantic::vocabulary::ProjectionParentageState> for GoldenProjectionParentageState {
+    fn from(state: backend_semantic::vocabulary::ProjectionParentageState) -> Self {
         match state {
-            compiler_vocabulary::ProjectionParentageState::Unavailable => Self::Unavailable,
-            compiler_vocabulary::ProjectionParentageState::Root => Self::Root,
-            compiler_vocabulary::ProjectionParentageState::Bound { parent } => {
+            backend_semantic::vocabulary::ProjectionParentageState::Unavailable => Self::Unavailable,
+            backend_semantic::vocabulary::ProjectionParentageState::Root => Self::Root,
+            backend_semantic::vocabulary::ProjectionParentageState::Bound { parent } => {
                 Self::Bound { parent }
             }
-            compiler_vocabulary::ProjectionParentageState::UnrepresentedAuthorityOwner {
+            backend_semantic::vocabulary::ProjectionParentageState::UnrepresentedAuthorityOwner {
                 identity,
             } => Self::UnrepresentedAuthorityOwner { identity },
         }
     }
 }
 
-impl From<compiler_vocabulary::ProjectionSpan> for GoldenProjectionSpan {
-    fn from(span: compiler_vocabulary::ProjectionSpan) -> Self {
+impl From<backend_semantic::vocabulary::ProjectionSpan> for GoldenProjectionSpan {
+    fn from(span: backend_semantic::vocabulary::ProjectionSpan) -> Self {
         Self {
             start: span.start,
             end: span.end,
@@ -1708,9 +1708,9 @@ impl From<compiler_vocabulary::ProjectionSpan> for GoldenProjectionSpan {
     }
 }
 
-impl From<compiler_vocabulary::ProjectionAdmissionFault> for GoldenProjectionAdmissionFault {
-    fn from(fault: compiler_vocabulary::ProjectionAdmissionFault) -> Self {
-        use compiler_vocabulary::ProjectionAdmissionFault;
+impl From<backend_semantic::vocabulary::ProjectionAdmissionFault> for GoldenProjectionAdmissionFault {
+    fn from(fault: backend_semantic::vocabulary::ProjectionAdmissionFault) -> Self {
+        use backend_semantic::vocabulary::ProjectionAdmissionFault;
         match fault {
             ProjectionAdmissionFault::EmptyName => Self::EmptyName,
             ProjectionAdmissionFault::Capacity => Self::Capacity,
@@ -1836,9 +1836,9 @@ impl From<compiler_vocabulary::ProjectionAdmissionFault> for GoldenProjectionAdm
     }
 }
 
-impl From<compiler_vocabulary::GoProjectionFault> for GoldenGoProjectionFault {
-    fn from(fault: compiler_vocabulary::GoProjectionFault) -> Self {
-        use compiler_vocabulary::GoProjectionFault;
+impl From<backend_semantic::vocabulary::GoProjectionFault> for GoldenGoProjectionFault {
+    fn from(fault: backend_semantic::vocabulary::GoProjectionFault) -> Self {
+        use backend_semantic::vocabulary::GoProjectionFault;
         match fault {
             GoProjectionFault::Image { cause } => Self::Image {
                 cause: cause.into(),
@@ -1886,9 +1886,9 @@ impl From<compiler_vocabulary::GoProjectionFault> for GoldenGoProjectionFault {
     }
 }
 
-impl From<compiler_vocabulary::GoImageFault> for GoldenGoImageFault {
-    fn from(fault: compiler_vocabulary::GoImageFault) -> Self {
-        use compiler_vocabulary::GoImageFault;
+impl From<backend_semantic::vocabulary::GoImageFault> for GoldenGoImageFault {
+    fn from(fault: backend_semantic::vocabulary::GoImageFault) -> Self {
+        use backend_semantic::vocabulary::GoImageFault;
         match fault {
             GoImageFault::Header { cause } => Self::Header {
                 cause: cause.into(),
@@ -2306,9 +2306,9 @@ impl From<compiler_vocabulary::GoImageFault> for GoldenGoImageFault {
     }
 }
 
-impl From<compiler_vocabulary::GoImageHeaderFault> for GoldenGoImageHeaderFault {
-    fn from(fault: compiler_vocabulary::GoImageHeaderFault) -> Self {
-        use compiler_vocabulary::GoImageHeaderFault;
+impl From<backend_semantic::vocabulary::GoImageHeaderFault> for GoldenGoImageHeaderFault {
+    fn from(fault: backend_semantic::vocabulary::GoImageHeaderFault) -> Self {
+        use backend_semantic::vocabulary::GoImageHeaderFault;
         match fault {
             GoImageHeaderFault::Truncated { actual } => Self::Truncated { actual },
             GoImageHeaderFault::Magic { found } => Self::Magic { found },
@@ -2330,9 +2330,9 @@ impl_unit_conversion!(GoImageTypeKind => GoldenGoImageTypeKind [Basic, Named, Al
 impl_unit_conversion!(GoProjectionIndexPhase => GoldenGoProjectionIndexPhase [ImageHeader, ImageRow, FactOrdinal, TypeRow, TypeChild, Declaration, Method, TypeParameter, Member, Documentation, Reference, Constraint, Satisfaction, Package, SignatureParameter, MethodSet, Atom, EntityList]);
 impl_unit_conversion!(GoProjectionListPhase => GoldenGoProjectionListPhase [Entity, Type, Atom, TypeParameter]);
 
-impl From<compiler_vocabulary::TypeScriptProjectionFault> for GoldenTypeScriptProjectionFault {
-    fn from(fault: compiler_vocabulary::TypeScriptProjectionFault) -> Self {
-        use compiler_vocabulary::TypeScriptProjectionFault;
+impl From<backend_semantic::vocabulary::TypeScriptProjectionFault> for GoldenTypeScriptProjectionFault {
+    fn from(fault: backend_semantic::vocabulary::TypeScriptProjectionFault) -> Self {
+        use backend_semantic::vocabulary::TypeScriptProjectionFault;
         match fault {
             TypeScriptProjectionFault::ForeignKey { start, end, cause } => Self::ForeignKey {
                 start,
@@ -2356,9 +2356,9 @@ impl From<compiler_vocabulary::TypeScriptProjectionFault> for GoldenTypeScriptPr
     }
 }
 
-impl From<compiler_vocabulary::PythonProjectionFault> for GoldenPythonProjectionFault {
-    fn from(fault: compiler_vocabulary::PythonProjectionFault) -> Self {
-        use compiler_vocabulary::PythonProjectionFault;
+impl From<backend_semantic::vocabulary::PythonProjectionFault> for GoldenPythonProjectionFault {
+    fn from(fault: backend_semantic::vocabulary::PythonProjectionFault) -> Self {
+        use backend_semantic::vocabulary::PythonProjectionFault;
         match fault {
             PythonProjectionFault::ForeignSpellingUtf8 { start, end } => {
                 Self::ForeignSpellingUtf8 { start, end }
@@ -2377,9 +2377,9 @@ impl From<compiler_vocabulary::PythonProjectionFault> for GoldenPythonProjection
     }
 }
 
-impl From<compiler_vocabulary::CSharpProjectionFault> for GoldenCSharpProjectionFault {
-    fn from(fault: compiler_vocabulary::CSharpProjectionFault) -> Self {
-        use compiler_vocabulary::CSharpProjectionFault;
+impl From<backend_semantic::vocabulary::CSharpProjectionFault> for GoldenCSharpProjectionFault {
+    fn from(fault: backend_semantic::vocabulary::CSharpProjectionFault) -> Self {
+        use backend_semantic::vocabulary::CSharpProjectionFault;
         match fault {
             CSharpProjectionFault::Image { cause } => Self::Image {
                 cause: cause.into(),
@@ -2419,9 +2419,9 @@ impl From<compiler_vocabulary::CSharpProjectionFault> for GoldenCSharpProjection
     }
 }
 
-impl From<compiler_vocabulary::CSharpImageFault> for GoldenCSharpImageFault {
-    fn from(fault: compiler_vocabulary::CSharpImageFault) -> Self {
-        use compiler_vocabulary::CSharpImageFault;
+impl From<backend_semantic::vocabulary::CSharpImageFault> for GoldenCSharpImageFault {
+    fn from(fault: backend_semantic::vocabulary::CSharpImageFault) -> Self {
+        use backend_semantic::vocabulary::CSharpImageFault;
         match fault {
             CSharpImageFault::Header { cause } => Self::Header {
                 cause: cause.into(),
@@ -2470,9 +2470,9 @@ impl From<compiler_vocabulary::CSharpImageFault> for GoldenCSharpImageFault {
     }
 }
 
-impl From<compiler_vocabulary::CSharpImageHeaderFault> for GoldenCSharpImageHeaderFault {
-    fn from(fault: compiler_vocabulary::CSharpImageHeaderFault) -> Self {
-        use compiler_vocabulary::CSharpImageHeaderFault;
+impl From<backend_semantic::vocabulary::CSharpImageHeaderFault> for GoldenCSharpImageHeaderFault {
+    fn from(fault: backend_semantic::vocabulary::CSharpImageHeaderFault) -> Self {
+        use backend_semantic::vocabulary::CSharpImageHeaderFault;
         match fault {
             CSharpImageHeaderFault::Truncated { actual } => Self::Truncated { actual },
             CSharpImageHeaderFault::Magic { found } => Self::Magic { found },
@@ -2519,9 +2519,9 @@ impl_unit_conversion!(CSharpImageTypeKind => GoldenCSharpImageTypeKind [Named, A
 impl_unit_conversion!(CSharpProjectionIndexPhase => GoldenCSharpProjectionIndexPhase [ImageHeader, FactOrdinal, Signature, Declaration, TypeRow, TypeChild, Attribute, Documentation, Reference, Name, SourceSpan]);
 impl_unit_conversion!(ClangProjectionTypeKind => GoldenClangTypeKind [Unknown, Builtin, Named, Pointer, BlockPointer, MemberPointer, LvalueReference, RvalueReference, Array, Function]);
 
-impl From<compiler_vocabulary::ClangProjectionFault> for GoldenClangProjectionFault {
-    fn from(fault: compiler_vocabulary::ClangProjectionFault) -> Self {
-        use compiler_vocabulary::ClangProjectionFault;
+impl From<backend_semantic::vocabulary::ClangProjectionFault> for GoldenClangProjectionFault {
+    fn from(fault: backend_semantic::vocabulary::ClangProjectionFault) -> Self {
+        use backend_semantic::vocabulary::ClangProjectionFault;
         match fault {
             ClangProjectionFault::Span { start, end } => Self::Span { start, end },
             ClangProjectionFault::Nameless { declaration } => Self::Nameless { declaration },
@@ -2557,8 +2557,8 @@ impl From<compiler_vocabulary::ClangProjectionFault> for GoldenClangProjectionFa
     }
 }
 
-impl From<compiler_vocabulary::ClangProjectionQualifiers> for GoldenClangQualifiers {
-    fn from(qualifiers: compiler_vocabulary::ClangProjectionQualifiers) -> Self {
+impl From<backend_semantic::vocabulary::ClangProjectionQualifiers> for GoldenClangQualifiers {
+    fn from(qualifiers: backend_semantic::vocabulary::ClangProjectionQualifiers) -> Self {
         Self {
             is_const: qualifiers.is_const,
             is_volatile: qualifiers.is_volatile,
@@ -2567,13 +2567,13 @@ impl From<compiler_vocabulary::ClangProjectionQualifiers> for GoldenClangQualifi
     }
 }
 
-impl From<compiler_vocabulary::ClangProjectionDeclaration> for GoldenClangDeclaration {
-    fn from(declaration: compiler_vocabulary::ClangProjectionDeclaration) -> Self {
+impl From<backend_semantic::vocabulary::ClangProjectionDeclaration> for GoldenClangDeclaration {
+    fn from(declaration: backend_semantic::vocabulary::ClangProjectionDeclaration) -> Self {
         match declaration {
-            compiler_vocabulary::ClangProjectionDeclaration::Known { identity } => {
+            backend_semantic::vocabulary::ClangProjectionDeclaration::Known { identity } => {
                 Self::Known { identity }
             }
-            compiler_vocabulary::ClangProjectionDeclaration::Unavailable => Self::Unavailable,
+            backend_semantic::vocabulary::ClangProjectionDeclaration::Unavailable => Self::Unavailable,
         }
     }
 }

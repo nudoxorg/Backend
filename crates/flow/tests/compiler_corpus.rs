@@ -58,7 +58,7 @@ use compiler_publication::{
     PublicationScratch, PublishControl, SemanticPublicationScratch, open_published,
     open_published_semantic, publish_compiled, publish_semantic,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     CSharpVersion, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
     RustEdition, Stage, TypeScriptSource,
 };
@@ -387,8 +387,8 @@ fn expected_recipe(
     tool: NativeTool,
     source: SourceIdentity,
     toolchain: ResolvedToolchain<'_>,
-) -> compiler_vocabulary::CompileRecipeFact {
-    compiler_vocabulary::CompileRecipeFact::derive(
+) -> backend_semantic::vocabulary::CompileRecipeFact {
+    backend_semantic::vocabulary::CompileRecipeFact::derive(
         profile,
         Stage::LowerIr,
         tool,

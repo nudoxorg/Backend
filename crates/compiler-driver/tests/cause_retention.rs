@@ -15,7 +15,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, PythonVersion, Stage,
 };
 use thiserror::Error;

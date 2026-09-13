@@ -15,7 +15,7 @@ use compiler_ir::{
     DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityId, EntityKind, FragmentView, Ir,
     ItemKind, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
 };
-use compiler_vocabulary::{LanguageProfile, PythonVersion, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage};
 use thiserror::Error;
 
 const SOURCE: &[u8] = br#""""A documented Python module."""
@@ -99,8 +99,8 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { cause, .. } => match cause {
-            compiler_vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
-            compiler_vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
+            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
+            backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
                 "csharp-projection"
             }
             _ => "lowering-unsupported",

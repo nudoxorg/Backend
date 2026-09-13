@@ -13,7 +13,7 @@ use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use compiler_vocabulary::{LanguageProfile, Stage, TypeScriptSource};
+use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
 use serde_json::json;
 use server_index_build::{IndexBuildScratch, build};
 use server_index_publish::{

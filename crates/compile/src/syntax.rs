@@ -3,7 +3,7 @@
 use crate::{
     InputContentSchema, InputContentVersion, SyntaxProducerId, SyntaxProducerSchema, typed_of,
 };
-pub use compiler_vocabulary::Language as SourceLanguage;
+pub use backend_semantic::vocabulary::Language as SourceLanguage;
 use std::{collections::BTreeSet, fmt, num::NonZeroU32, path::Path, sync::Arc};
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator};
 

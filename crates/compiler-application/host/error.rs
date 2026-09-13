@@ -7,7 +7,7 @@ use compiler_languages_java::harness::HarnessError;
 use compiler_languages_python::PyreflyExecutableError;
 use compiler_languages_rust::LoadError as RustLoadError;
 use compiler_languages_typescript::TypeScriptCheckerProgramError;
-use compiler_vocabulary::NativeTool;
+use backend_semantic::vocabulary::NativeTool;
 use server_journal::PublicationLimitError;
 use thiserror::Error;
 

@@ -18,7 +18,7 @@ use compiler_driver::{
 use compiler_languages_typescript::{
     AuthorityError, Checker, CheckerError, Origin, Report, TypeTree, source_digest,
 };
-use compiler_vocabulary::{LanguageProfile, PythonVersion, Stage, TypeScriptSource};
+use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage, TypeScriptSource};
 
 const SIMPLE_SOURCE: &[u8] = b"export const n: number = 1;";
 const GOLDEN_SOURCE: &[u8] =

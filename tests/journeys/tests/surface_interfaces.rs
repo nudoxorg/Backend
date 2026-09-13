@@ -14,7 +14,7 @@ use backend_library::{
     SemanticGenerationId, SemanticLanguageProfile, SurfaceCommand, SurfaceReply, TreeNodeId,
     TreeOpener, TreeSubject, ViewStateRoot, WireCertificate,
 };
-use compiler_vocabulary::{LanguageProfile, RustEdition};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;

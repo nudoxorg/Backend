@@ -10,7 +10,7 @@ use interface_core::{
 
 pub(super) const fn compile(
     source: interface_core::SourceAuthority,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     cause: CompilerCause,
 ) -> CompilerTerminal {
     CompilerTerminal::Compile {
@@ -21,7 +21,7 @@ pub(super) const fn compile(
 
 pub(super) const fn compile_from_driver(
     source: compiler_ir::SourceIdentity,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
     cause: CompilerCause,
 ) -> CompilerTerminal {
     compile(source_authority(source), recipe, cause)
@@ -29,7 +29,7 @@ pub(super) const fn compile_from_driver(
 
 pub(super) const fn attempt(
     source: interface_core::SourceAuthority,
-    recipe: compiler_vocabulary::CompileRecipeFact,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
 ) -> CompilerAttempt {
     CompilerAttempt {
         source,

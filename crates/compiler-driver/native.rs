@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Caller-authorized native parsing, owned work artifacts, and bounded child terminals.
 
-use compiler_vocabulary::LanguageProfile;
+use backend_semantic::vocabulary::LanguageProfile;
 
 use crate::types::{
     CompileControl, CompileFailure, CompileRecipeFact, CompileScratch, NativeRecipe, SourceIdentity,

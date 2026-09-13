@@ -10,7 +10,7 @@ use std::{fmt, num::NonZeroU64, sync::Arc};
 
 use backend_store::TypedObject;
 use backend_version::{ObjectKey, ObjectVersion, Schema};
-pub use compiler_vocabulary::LanguageOracleTask;
+pub use backend_semantic::vocabulary::LanguageOracleTask;
 
 /// Raw bytes of a downloadable capability artifact.
 pub struct CapabilityArtifactSchema;

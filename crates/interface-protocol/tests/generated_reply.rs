@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, Language, LanguageProfile,
     NativeTool, RustEdition, Stage,
 };

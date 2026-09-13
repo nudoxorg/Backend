@@ -24,7 +24,7 @@ use compiler_languages_typescript::{
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, ProjectionSemanticTypeFault,
     ProjectionSemanticTypeTag, Stage, TypeScriptSource,
 };

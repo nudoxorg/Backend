@@ -2,7 +2,7 @@
 //! The closed two-byte encoding belongs to canonical compilation recipes.
 //! Profile variants prevent incompatible language and dialect combinations.
 
-use crate::Language;
+use super::Language;
 use thiserror::Error;
 
 /// Rust edition selected for parsing, name resolution, and macro semantics.
@@ -353,7 +353,7 @@ const fn decode_cxx(value: u8) -> Option<CxxStandard> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CompileRecipeFact, NativeTool, Stage};
+    use crate::vocabulary::{CompileRecipeFact, NativeTool, Stage};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 
     const PROFILES: [LanguageProfile; 32] = [

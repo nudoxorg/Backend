@@ -16,7 +16,7 @@ use compiler_ir::{
     Variance, VariantAvailability, VariantFingerprint, Visibility, encode_full_semantic_image,
     full_semantic_image_len, prepare_semantic_document, prepare_source_syntax,
 };
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     CSharpVersion, CStandard, GoVersion, JavaRelease, PythonVersion, RustEdition, TypeScriptSource,
 };
 

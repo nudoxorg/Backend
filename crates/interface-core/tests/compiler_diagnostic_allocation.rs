@@ -6,7 +6,7 @@
 use std::mem::size_of;
 
 use allocation_counter::{AllocationInfo, measure};
-use compiler_vocabulary::{Language, LanguageProfile, RustEdition, Stage};
+use backend_semantic::vocabulary::{Language, LanguageProfile, RustEdition, Stage};
 use interface_core::{
     ApplicationInput, ApplicationOutcome, ApplicationService, Capability, CompilerCapability,
     CompilerDiagnostic, CompilerRequest, CompilerTerminal, CorrelationId, InputText,

@@ -19,7 +19,6 @@ backend-compile = { path = "../compile" }
 backend-library = { path = "../library" }
 compiler-ir = { path = "../compiler-ir" }
 compiler-publication = { path = "../compiler-publication" }
-compiler-vocabulary = { path = "../compiler-vocabulary" }
 heart-hydration = { path = "../heart-hydration" }
 heart-root = { path = "../heart-root" }
 opentelemetry.workspace = true

@@ -24,7 +24,7 @@ use compiler_ir::{
     AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
     SourceIdentity, TypeNode,
 };
-use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_hydration::{PlanScratch, Projection, demand, plan};
 use backend_version::{
     ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, ObjectDomain, SourceFactDomain,

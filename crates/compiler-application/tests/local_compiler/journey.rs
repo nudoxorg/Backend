@@ -3,7 +3,7 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use compiler_vocabulary::{
+use backend_semantic::vocabulary::{
     Language, LanguageProfile, PythonVersion, RustEdition, Stage, TypeScriptSource,
 };
 use backend_version::{ContentId, SourceFactDomain};
@@ -133,7 +133,7 @@ fn assert_missing_native_toolchain(reply: ApplicationReply) -> Result<(), LocalC
                         DiagnosticDetail::Compiler(CompilerTerminal::Toolchain {
                             language: Language::Rust,
                             stage: Stage::LowerIr,
-                            selected: compiler_vocabulary::NativeTool::Rustc,
+                            selected: backend_semantic::vocabulary::NativeTool::Rustc,
                             configured: None,
                             ..
                         }),
@@ -157,7 +157,7 @@ fn assert_explicitly_unavailable_tool(
                         DiagnosticDetail::Compiler(CompilerTerminal::Toolchain {
                             language: Language::TypeScript,
                             stage: Stage::LowerIr,
-                            selected: compiler_vocabulary::NativeTool::TypeScriptCompiler,
+                            selected: backend_semantic::vocabulary::NativeTool::TypeScriptCompiler,
                             configured: None,
                             ..
                         }),

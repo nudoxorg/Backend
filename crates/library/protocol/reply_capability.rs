@@ -1,7 +1,7 @@
 //! Wire projection for bounded executable-capability health.
 
 use super::{BasisWire, CoverageWire, CursorWire};
-use compiler_vocabulary::{LanguageProfile, NativeTool};
+use backend_semantic::vocabulary::{LanguageProfile, NativeTool};
 use serde::{Deserialize, Serialize};
 
 use crate::{

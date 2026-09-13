@@ -8,7 +8,7 @@
 
 use alloc::vec::Vec;
 
-use compiler_vocabulary::{CompileRecipeFact, PackageUrl};
+use backend_semantic::vocabulary::{CompileRecipeFact, PackageUrl};
 use backend_version::{ContentId, SemanticScopeDomain};
 
 use crate::{AtomId, DeclarationIdentity, SourceIdentity};

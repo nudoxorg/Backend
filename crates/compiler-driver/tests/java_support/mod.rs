@@ -9,7 +9,7 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
 use compiler_ir::Ir;
-use compiler_vocabulary::{JavaRelease, LanguageProfile, Stage};
+use backend_semantic::vocabulary::{JavaRelease, LanguageProfile, Stage};
 use sha2::{Digest, Sha256};
 
 const NONE: u32 = u32::MAX;

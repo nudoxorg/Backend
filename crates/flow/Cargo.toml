@@ -17,7 +17,7 @@ thiserror.workspace = true
 [dev-dependencies]
 compiler-driver = { path = "../compiler-driver" }
 compiler-publication = { path = "../compiler-publication" }
-compiler-vocabulary = { path = "../compiler-vocabulary" }
+backend-semantic = { path = "../semantic" }
 compiler-languages-csharp = { path = "../compiler-language-csharp" }
 compiler-languages-go = { path = "../compiler-language-go" }
 compiler-languages-java = { path = "../compiler-language-java" }

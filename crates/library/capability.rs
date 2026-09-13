@@ -1,7 +1,7 @@
 //! Bounded client projection of executable capability state.
 
-pub use compiler_vocabulary::LanguageOracleTask;
-use compiler_vocabulary::{LanguageProfile, NativeTool};
+pub use backend_semantic::vocabulary::LanguageOracleTask;
+use backend_semantic::vocabulary::{LanguageProfile, NativeTool};
 
 /// Maximum capability rows admitted in one health response.
 pub const MAX_CAPABILITY_INVENTORY: usize = 64;
@@ -688,7 +688,7 @@ impl std::error::Error for CapabilityInventoryError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compiler_vocabulary::{LanguageProfile, RustEdition, TypeScriptSource};
+    use backend_semantic::vocabulary::{LanguageProfile, RustEdition, TypeScriptSource};
 
     fn compiler_status(
         id: [u8; 32],

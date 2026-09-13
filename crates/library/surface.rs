@@ -1,7 +1,7 @@
 //! Typed commands and results owned by the durable product service.
 
 use crate::CommandId;
-pub use compiler_vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
+pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 
@@ -229,7 +229,7 @@ pub struct SemanticLanguageProfile([u8; 2]);
 impl SemanticLanguageProfile {
     /// Encodes one closed compiler language profile.
     #[must_use]
-    pub fn new(profile: compiler_vocabulary::LanguageProfile) -> Self {
+    pub fn new(profile: backend_semantic::vocabulary::LanguageProfile) -> Self {
         Self(profile.into())
     }
 
@@ -237,8 +237,8 @@ impl SemanticLanguageProfile {
     ///
     /// # Errors
     /// Returns a product admission error for an unknown language/profile pair.
-    pub fn profile(self) -> Result<compiler_vocabulary::LanguageProfile, ProductAdmissionError> {
-        compiler_vocabulary::LanguageProfile::try_from(self.0)
+    pub fn profile(self) -> Result<backend_semantic::vocabulary::LanguageProfile, ProductAdmissionError> {
+        backend_semantic::vocabulary::LanguageProfile::try_from(self.0)
             .map_err(|_| ProductAdmissionError::SemanticVersionShape)
     }
 
@@ -255,7 +255,7 @@ impl SemanticLanguageProfile {
     /// caller ask for a language the engine cannot answer for.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        compiler_vocabulary::LanguageProfile::PRODUCT_PROFILES
+        backend_semantic::vocabulary::LanguageProfile::PRODUCT_PROFILES
             .into_iter()
             .map(Self::new)
             .find(|profile| profile.name() == Some(name))
@@ -264,7 +264,7 @@ impl SemanticLanguageProfile {
     /// Returns the closed profile spelling shared by every surface.
     #[must_use]
     pub fn name(self) -> Option<&'static str> {
-        use compiler_vocabulary::{LanguageProfile, TypeScriptSource};
+        use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
         match self.profile().ok()? {
             LanguageProfile::Rust(_) => Some("rust"),
             LanguageProfile::TypeScript(TypeScriptSource::TypeScript) => Some("typescript"),
@@ -281,7 +281,7 @@ impl SemanticLanguageProfile {
     /// Returns every closed profile spelling, in product order.
     #[must_use]
     pub fn names() -> Vec<&'static str> {
-        compiler_vocabulary::LanguageProfile::PRODUCT_PROFILES
+        backend_semantic::vocabulary::LanguageProfile::PRODUCT_PROFILES
             .into_iter()
             .map(Self::new)
             .filter_map(Self::name)

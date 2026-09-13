@@ -7,7 +7,7 @@ use compiler_ir::{
     FragmentError, FragmentView, PrepareError, PreparedFragment, PrimitiveType, SourceIdentity,
     TypeNode, TypeNodeFault, WriteError,
 };
-use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 

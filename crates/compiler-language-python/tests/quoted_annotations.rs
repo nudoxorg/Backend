@@ -6,7 +6,7 @@
 use compiler_languages_python::{
     Annotation, AnnotationSyntaxKind, DeclarationKind, TypeReason, extract,
 };
-use compiler_vocabulary::PythonVersion;
+use backend_semantic::vocabulary::PythonVersion;
 
 const PROFILE: PythonVersion = PythonVersion::Python314;
 

@@ -12,7 +12,7 @@ use compiler_application::{
     LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority,
     LocalRuntimeToolchain,
 };
-use compiler_vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
 use backend_version::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
 use interface_core::{
     CompilerCapability, CompilerRequest, CompilerTerminal, SemanticImageAccessError,
@@ -64,7 +64,7 @@ fn worker_retains_exact_unavailable_toolchain_terminal_and_joins_on_last_client(
     assert!(matches!(
         terminal,
         CompilerTerminal::Toolchain {
-            language: compiler_vocabulary::Language::Python,
+            language: backend_semantic::vocabulary::Language::Python,
             stage: Stage::LowerIr,
             selected: NativeTool::Python,
             configured: None,

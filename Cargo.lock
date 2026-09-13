@@ -779,7 +779,6 @@ dependencies = [
  "backend-semantic",
  "backend-version",
  "blake3",
- "compiler-vocabulary",
  "tree-sitter",
 ]
 
@@ -852,7 +851,6 @@ dependencies = [
  "compiler-driver",
  "compiler-ir",
  "compiler-publication",
- "compiler-vocabulary",
  "heart-hydration",
  "heart-root",
  "nix",
@@ -921,7 +919,6 @@ dependencies = [
  "backend-version",
  "blake3",
  "compiler-ir",
- "compiler-vocabulary",
  "futures-core",
  "futures-executor",
  "futures-util",
@@ -943,6 +940,7 @@ dependencies = [
 name = "backend-flow"
 version = "0.1.0"
 dependencies = [
+ "backend-semantic",
  "backend-store",
  "backend-version",
  "blake3",
@@ -955,7 +953,6 @@ dependencies = [
  "compiler-languages-rust",
  "compiler-languages-typescript",
  "compiler-publication",
- "compiler-vocabulary",
  "heart-hydration",
  "heart-root",
  "server-index-build",
@@ -1087,7 +1084,6 @@ dependencies = [
  "backend-version",
  "backend-worker",
  "blake3",
- "compiler-vocabulary",
  "serde_json",
 ]
 
@@ -1111,7 +1107,6 @@ dependencies = [
  "backend-semantic",
  "backend-version",
  "blake3",
- "compiler-vocabulary",
  "serde",
  "serde_json",
 ]
@@ -1140,7 +1135,6 @@ dependencies = [
  "compiler-application",
  "compiler-ir",
  "compiler-publication",
- "compiler-vocabulary",
  "flate2",
  "futures-executor",
  "futures-util",
@@ -1232,6 +1226,8 @@ dependencies = [
  "backend-flow",
  "backend-version",
  "blake3",
+ "serde",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 
@@ -2057,6 +2053,7 @@ name = "compiler-application"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "backend-semantic",
  "backend-version",
  "blake3",
  "compiler-driver",
@@ -2069,7 +2066,6 @@ dependencies = [
  "compiler-languages-typescript",
  "compiler-publication",
  "compiler-registry",
- "compiler-vocabulary",
  "interface-core",
  "server-journal",
  "thiserror 2.0.20",
@@ -2079,6 +2075,7 @@ dependencies = [
 name = "compiler-driver"
 version = "0.1.0"
 dependencies = [
+ "backend-semantic",
  "backend-version",
  "compiler-ir",
  "compiler-languages-clang",
@@ -2090,7 +2087,6 @@ dependencies = [
  "compiler-languages-typescript",
  "compiler-publication",
  "compiler-registry",
- "compiler-vocabulary",
  "flate2",
  "serde_json",
  "server-index-build",
@@ -2110,7 +2106,6 @@ dependencies = [
  "backend-semantic",
  "backend-version",
  "blake3",
- "compiler-vocabulary",
  "memmap2",
  "thiserror 2.0.20",
 ]
@@ -2119,9 +2114,9 @@ dependencies = [
 name = "compiler-languages-clang"
 version = "0.1.0"
 dependencies = [
+ "backend-semantic",
  "blake3",
  "clang-sys",
- "compiler-vocabulary",
  "thiserror 2.0.20",
 ]
 
@@ -2129,7 +2124,7 @@ dependencies = [
 name = "compiler-languages-csharp"
 version = "0.1.0"
 dependencies = [
- "compiler-vocabulary",
+ "backend-semantic",
  "serde",
  "serde_json",
  "sha2",
@@ -2140,7 +2135,7 @@ dependencies = [
 name = "compiler-languages-go"
 version = "0.1.0"
 dependencies = [
- "compiler-vocabulary",
+ "backend-semantic",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -2162,8 +2157,8 @@ dependencies = [
 name = "compiler-languages-python"
 version = "0.1.0"
 dependencies = [
+ "backend-semantic",
  "blake3",
- "compiler-vocabulary",
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",
@@ -2175,7 +2170,7 @@ name = "compiler-languages-rust"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "compiler-vocabulary",
+ "backend-semantic",
  "ra_ap_base_db",
  "ra_ap_hir",
  "ra_ap_hir_ty",
@@ -2192,7 +2187,7 @@ dependencies = [
 name = "compiler-languages-typescript"
 version = "0.1.0"
 dependencies = [
- "compiler-vocabulary",
+ "backend-semantic",
  "oxc_allocator",
  "oxc_ast",
  "oxc_diagnostics",
@@ -2210,11 +2205,11 @@ dependencies = [
 name = "compiler-publication"
 version = "0.1.0"
 dependencies = [
+ "backend-semantic",
  "backend-store",
  "backend-version",
  "compiler-driver",
  "compiler-ir",
- "compiler-vocabulary",
  "heart-hydration",
  "heart-root",
  "server-journal",
@@ -2225,17 +2220,7 @@ dependencies = [
 name = "compiler-registry"
 version = "0.1.0"
 dependencies = [
- "compiler-vocabulary",
-]
-
-[[package]]
-name = "compiler-vocabulary"
-version = "0.1.0"
-dependencies = [
- "backend-version",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
+ "backend-semantic",
 ]
 
 [[package]]
@@ -4162,12 +4147,12 @@ name = "heart-root"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-semantic",
  "backend-version",
  "bolero",
  "compiler-driver",
  "compiler-ir",
  "compiler-publication",
- "compiler-vocabulary",
  "derive_more",
  "fearless_simd",
  "serde",
@@ -4648,10 +4633,10 @@ dependencies = [
  "allocation-counter",
  "arrayvec",
  "backend-execution",
+ "backend-semantic",
  "backend-version",
  "compiler-ir",
  "compiler-registry",
- "compiler-vocabulary",
  "server-index-core",
 ]
 
@@ -4660,8 +4645,8 @@ name = "interface-protocol"
 version = "0.1.0"
 dependencies = [
  "backend-execution",
+ "backend-semantic",
  "backend-version",
- "compiler-vocabulary",
  "interface-core",
  "serde",
  "serde_json",
@@ -8655,11 +8640,11 @@ name = "server-index-build"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-semantic",
  "backend-version",
  "compiler-driver",
  "compiler-ir",
  "compiler-publication",
- "compiler-vocabulary",
  "server-index-core",
  "server-journal",
  "thiserror 2.0.20",
@@ -8715,12 +8700,12 @@ name = "server-index-publish"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-semantic",
  "backend-store",
  "backend-version",
  "compiler-driver",
  "compiler-ir",
  "compiler-publication",
- "compiler-vocabulary",
  "heart-hydration",
  "heart-root",
  "server-index-build",
@@ -8767,10 +8752,10 @@ name = "server-index-retrieval"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-semantic",
  "backend-store",
  "backend-version",
  "compiler-ir",
- "compiler-vocabulary",
  "futures-core",
  "heart-hydration",
  "heart-root",

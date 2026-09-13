@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Closed raw application commands shared by positional and JSON-RPC adapters.
 
-use compiler_vocabulary::{LanguageProfile, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, Stage};
 use interface_core::InputText;
 use serde::{Deserialize, Deserializer, de::Error as _};
 

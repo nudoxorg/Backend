@@ -477,7 +477,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
         .map_err(|fault| FragmentError::SourceIdentity { fault })?;
     let recipe = decode_recipe_fact(&envelope[recipe_fact.range()])
         .map_err(|fault| FragmentError::RecipeFact { fault })?;
-    let expected_recipe = compiler_vocabulary::CompileRecipeFact::derive(
+    let expected_recipe = backend_semantic::vocabulary::CompileRecipeFact::derive(
         recipe.profile,
         recipe.stage,
         recipe.tool,

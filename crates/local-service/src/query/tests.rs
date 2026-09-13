@@ -64,7 +64,7 @@ pub(super) fn semantic_evidence(
     let package = backend_engine::package_key("pkg");
     let project = RowId::Package(package).stable_key();
     let profile =
-        compiler_vocabulary::LanguageProfile::Rust(compiler_vocabulary::RustEdition::Rust2021);
+        backend_semantic::vocabulary::LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2021);
     let facts = view
         .rows()
         .iter()
