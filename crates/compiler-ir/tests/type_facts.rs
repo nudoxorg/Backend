@@ -7,7 +7,7 @@ use compiler_ir::{
     PrepareError, PreparedFragment, PrimitiveType, RecipeFact, SourceIdentity, TypeFactFault,
     TypeFactInput, TypeFactLane, TypeNode, WriteError,
 };
-use compiler_ir_vocabulary::{
+use backend_semantic::ir_vocabulary::{
     AtomId, EntityId, ExternalEntityRef, ListSpan, NominalRef, SemanticTypeRecord, SemanticTypeTag,
     TypeChildTarget, TypeRef,
 };
@@ -90,7 +90,7 @@ fn records() -> [TypeFactInput<'static>; 3] {
 
 fn write_current<'bytes>(lane: &TypeFactLane<'bytes>) -> Result<Vec<u8>, TestFailure> {
     let entities = [EntityRecord {
-        semantic_type: compiler_ir_vocabulary::TypeId::new(0),
+        semantic_type: backend_semantic::ir_vocabulary::TypeId::new(0),
         name: AtomId::new(0),
         kind: EntityKind::Function,
     }];
@@ -196,8 +196,8 @@ fn schema_three_rejects_invalid_computed_rows_before_publication() {
             children: ListSpan::new(0, 1),
         },
     }];
-    let child = [compiler_ir_vocabulary::SemanticTypeChild {
-        target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(2))),
+    let child = [backend_semantic::ir_vocabulary::SemanticTypeChild {
+        target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(2))),
         name: None,
         flags: 0,
     }];
@@ -262,8 +262,8 @@ fn schema_three_reopen_reports_the_full_type_lane_for_computed_children() -> Res
             children: ListSpan::new(0, 1),
         },
     }];
-    let children = [compiler_ir_vocabulary::SemanticTypeChild {
-        target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(0))),
+    let children = [backend_semantic::ir_vocabulary::SemanticTypeChild {
+        target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(0))),
         name: None,
         flags: 0,
     }];
@@ -412,9 +412,9 @@ fn forward_child_is_rejected_at_admission() {
             children: ListSpan::new(0, 1),
         },
     }];
-    let children = [compiler_ir_vocabulary::SemanticTypeChild {
-        target: compiler_ir_vocabulary::TypeChildTarget::Type(TypeRef::Local(
-            compiler_ir_vocabulary::TypeId::new(0),
+    let children = [backend_semantic::ir_vocabulary::SemanticTypeChild {
+        target: backend_semantic::ir_vocabulary::TypeChildTarget::Type(TypeRef::Local(
+            backend_semantic::ir_vocabulary::TypeId::new(0),
         )),
         name: None,
         flags: 0,
@@ -604,9 +604,9 @@ fn out_of_range_child_reopen_retains_the_true_record_ordinal() -> Result<(), Tes
             },
         },
     ];
-    let children = [compiler_ir_vocabulary::SemanticTypeChild {
-        target: compiler_ir_vocabulary::TypeChildTarget::Type(TypeRef::Local(
-            compiler_ir_vocabulary::TypeId::new(0),
+    let children = [backend_semantic::ir_vocabulary::SemanticTypeChild {
+        target: backend_semantic::ir_vocabulary::TypeChildTarget::Type(TypeRef::Local(
+            backend_semantic::ir_vocabulary::TypeId::new(0),
         )),
         name: None,
         flags: 0,
@@ -660,8 +660,8 @@ fn forward_child_reopen_retains_the_true_record_ordinal() -> Result<(), TestFail
             },
         },
     ];
-    let children = [compiler_ir_vocabulary::SemanticTypeChild {
-        target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(0))),
+    let children = [backend_semantic::ir_vocabulary::SemanticTypeChild {
+        target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(0))),
         name: None,
         flags: 0,
     }];
@@ -707,8 +707,8 @@ fn admission_out_of_range_child_returns_the_typed_prepare_fault() {
             children: ListSpan::new(0, 1),
         },
     }];
-    let children = [compiler_ir_vocabulary::SemanticTypeChild {
-        target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(8))),
+    let children = [backend_semantic::ir_vocabulary::SemanticTypeChild {
+        target: TypeChildTarget::Type(TypeRef::Local(backend_semantic::ir_vocabulary::TypeId::new(8))),
         name: None,
         flags: 0,
     }];
@@ -718,7 +718,7 @@ fn admission_out_of_range_child_returns_the_typed_prepare_fault() {
         children: &children,
     };
     let entities = [EntityRecord {
-        semantic_type: compiler_ir_vocabulary::TypeId::new(0),
+        semantic_type: backend_semantic::ir_vocabulary::TypeId::new(0),
         name: AtomId::new(0),
         kind: EntityKind::Function,
     }];

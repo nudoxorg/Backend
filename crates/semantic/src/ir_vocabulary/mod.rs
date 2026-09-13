@@ -4,7 +4,6 @@
 //! owner-relative spans), the frozen type-expression lattice, and cross-fragment reference and
 //! declaration-identity records share the crate. This crate contains no format policy, allowing
 //! producers and index consumers to share it cheaply.
-#![no_std]
 
 mod coordinates;
 mod entity;
@@ -13,27 +12,27 @@ mod occurrence;
 mod products;
 mod type_lattice;
 
-pub use coordinates::{
+pub use self::coordinates::{
     Atom, AtomId, DenseId, Entity, EntityId, ExternalCoordinate, ExternalEntityRef,
     ExternalFragmentId, ExternalProductRef, ExternalTypeRef, ListId, ListSpan, PooledListError,
     Product, ProductChildren, ProductId, ProductListId, SemanticAtom, Type, TypeId,
 };
-pub use entity::{EntityKind, EntityKindCodeError};
-pub use identity::{
+pub use self::entity::{EntityKind, EntityKindCodeError};
+pub use self::identity::{
     DeclarationFamilyId, DeclarationIdentity, DeclarationKey, DeclarationKeyFault,
     DeclarationPathFault, ExternalDeclarationIdentity, ForeignDeclarationId, ForeignKey,
     ForeignKeyFault, ForeignOrigin, Occurrence, OccurrenceTarget, PackageLineage,
     PackageLineageFault, PackageLineageView, PreimageOverflow, Resolution, StableRef,
     VariantAvailability, VariantFingerprint,
 };
-pub use occurrence::{
+pub use self::occurrence::{
     Confidence, ConfidenceCodeError, ReferenceKind, ReferenceKindCodeError, RelSpan, RelSpanFault,
 };
-pub use products::{
+pub use self::products::{
     ProductChildRole, ProductChildRoleCodeError, ProductConstructorFault, ProductConstructorTag,
     ProductList, ProductRef, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
 };
-pub use type_lattice::{
+pub use self::type_lattice::{
     AnnotationKind, AnonRecordForm, AnonRecordFormError, ChannelDirection, ChildCountLaw,
     CvQualifiers, CvQualifiersError, FunctionVariadicForm, MappedModifier, MappedModifierError,
     NominalRef, PrimitiveShape, PrimitiveShapeError, SemanticTypeChild, SemanticTypeFault,

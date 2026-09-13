@@ -3,7 +3,7 @@
 //! domain — never from any ordinal — and foreign keys hash their key cells, never a
 //! resolved target or display spelling.
 
-use compiler_ir_vocabulary::{
+use backend_semantic::ir_vocabulary::{
     DeclarationFamilyId, DeclarationIdentity, DeclarationKey, DeclarationKeyFault,
     DeclarationPathFault, EntityKind, ForeignKey, ForeignKeyFault, ForeignOrigin, Occurrence,
     OccurrenceTarget, PackageLineage, PackageLineageFault, PreimageOverflow, ReferenceKind,
@@ -243,7 +243,7 @@ fn foreign_key_digest_excludes_display_and_resolved_targets() -> Result<(), Test
 
 #[test]
 fn occurrences_carry_target_kind_confidence_and_owner_relative_span() -> Result<(), TestFailure> {
-    let fragment = compiler_ir_vocabulary::ExternalFragmentId::from_canonical_bytes(b"fragment-a");
+    let fragment = backend_semantic::ir_vocabulary::ExternalFragmentId::from_canonical_bytes(b"fragment-a");
     let declaration = endpoint(b"serialize");
     let target = OccurrenceTarget::Stable(StableRef {
         fragment,
@@ -252,7 +252,7 @@ fn occurrences_carry_target_kind_confidence_and_owner_relative_span() -> Result<
     let occurrence = Occurrence {
         target,
         kind: ReferenceKind::FunctionCall,
-        confidence: compiler_ir_vocabulary::Confidence::Oracle,
+        confidence: backend_semantic::ir_vocabulary::Confidence::Oracle,
         span: RelSpan::new(12, 21).map_err(TestFailure::Span)?,
     };
     assert_eq!(occurrence.kind, ReferenceKind::FunctionCall);
@@ -267,7 +267,7 @@ fn occurrences_carry_target_kind_confidence_and_owner_relative_span() -> Result<
     let occurrence = Occurrence {
         target: OccurrenceTarget::Foreign(foreign),
         kind: ReferenceKind::TypeReference,
-        confidence: compiler_ir_vocabulary::Confidence::Syntactic,
+        confidence: backend_semantic::ir_vocabulary::Confidence::Syntactic,
         span: RelSpan::new(0, 5).map_err(TestFailure::Span)?,
     };
     assert!(matches!(occurrence.target, OccurrenceTarget::Foreign(_)));

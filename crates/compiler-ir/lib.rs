@@ -52,8 +52,8 @@ pub use canonical_data::{
     DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
     canonicalize_data_with_budget,
 };
-pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;
-pub use compiler_ir_vocabulary::{
+pub use backend_semantic::ir_vocabulary::Confidence as OccurrenceConfidence;
+pub use backend_semantic::ir_vocabulary::{
     AnnotationKind, AnonRecordForm, AnonRecordFormError, ChannelDirection, ChildCountLaw,
     CvQualifiers, CvQualifiersError, DeclarationFamilyId, DeclarationIdentity, DeclarationKey,
     DeclarationKeyFault, DeclarationPathFault, ExternalCoordinate, ExternalDeclarationIdentity,
@@ -69,7 +69,7 @@ pub use compiler_ir_vocabulary::{
     TypeChildTarget, TypeChildren, TypeFactId, TypeReason, TypeReasonError, TypeRef, TypeWidth,
     TypeWidthError, VariantAvailability, VariantFingerprint,
 };
-pub use compiler_ir_vocabulary::{
+pub use backend_semantic::ir_vocabulary::{
     MappedModifier as LatticeMappedModifier, Variance as LatticeVariance,
 };
 pub use compiler_vocabulary::{

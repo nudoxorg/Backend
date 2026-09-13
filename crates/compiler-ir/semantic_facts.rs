@@ -6,7 +6,7 @@
 //! and revalidated identically on reopen. Lane order is wire order, so one
 //! admitted fact set always writes identical section bytes.
 
-use compiler_ir_vocabulary::{
+use backend_semantic::ir_vocabulary::{
     Confidence, DeclarationFamilyId, DeclarationIdentity, EntityId, ForeignKey, ForeignOrigin,
     Occurrence, OccurrenceTarget, ReferenceKind, StableRef, VariantFingerprint,
 };
@@ -425,7 +425,7 @@ pub(crate) fn validate_occurrence_payload(
             FOREIGN_TARGET_TAG => {
                 let origin_tag = reader.read_u8()?;
                 let kind_cell = reader.read_u16()?;
-                if kind_cell > u16::from(compiler_ir_vocabulary::EntityKind::Namespace) + 1 {
+                if kind_cell > u16::from(backend_semantic::ir_vocabulary::EntityKind::Namespace) + 1 {
                     return Err(OccurrenceFault::KindCell {
                         ordinal,
                         actual: kind_cell,
@@ -570,7 +570,7 @@ fn decode_one<'payload>(
                 None
             } else {
                 Some(
-                    compiler_ir_vocabulary::EntityKind::try_from(kind_cell - 1).map_err(|_| {
+                    backend_semantic::ir_vocabulary::EntityKind::try_from(kind_cell - 1).map_err(|_| {
                         OccurrenceFault::KindCell {
                             ordinal: reader.ordinal,
                             actual: kind_cell,
@@ -596,7 +596,7 @@ fn decode_one<'payload>(
                             actual: origin_tag,
                         })?;
                     ForeignOrigin::Package(
-                        compiler_ir_vocabulary::PackageLineage::new(ecosystem, name).map_err(
+                        backend_semantic::ir_vocabulary::PackageLineage::new(ecosystem, name).map_err(
                             |_| OccurrenceFault::OriginTag {
                                 ordinal: reader.ordinal,
                                 actual: origin_tag,
@@ -701,4 +701,4 @@ fn raw_variant_fingerprint(
     Ok(VariantFingerprint::from_raw(bytes))
 }
 
-use compiler_ir_vocabulary::RelSpan;
+use backend_semantic::ir_vocabulary::RelSpan;

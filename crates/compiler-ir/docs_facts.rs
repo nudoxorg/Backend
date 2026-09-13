@@ -6,7 +6,7 @@
 //! order, and revalidated identically on reopen. Lane order is wire order,
 //! so one admitted fact set always writes identical section bytes.
 
-use compiler_ir_vocabulary::EntityId;
+use backend_semantic::ir_vocabulary::EntityId;
 use thiserror::Error;
 
 /// Wire tag of a text doc fragment.

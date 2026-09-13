@@ -28,7 +28,7 @@ pub enum ProductChildren {}
 
 /// Dense fragment-local coordinate whose marker prevents cross-space substitution.
 /// ```compile_fail
-/// use compiler_ir_vocabulary::{EntityId, TypeId};
+/// use backend_semantic::ir_vocabulary::{EntityId, TypeId};
 /// fn entity_only(_: EntityId) {}
 /// entity_only(TypeId::new(1));
 /// ```
@@ -106,11 +106,11 @@ pub type ExternalFragmentId = ContentId<IrFragmentDomain>;
 
 /// A kind-owned coordinate inside one external fragment authority.
 /// ```compile_fail
-/// use compiler_ir_vocabulary::{EntityId, ExternalEntityRef, ExternalFragmentId};
+/// use backend_semantic::ir_vocabulary::{EntityId, ExternalEntityRef, ExternalFragmentId};
 /// fn local_only(_: EntityId) {}
 /// fn external_target() -> ExternalEntityRef {
 ///     let authority = ExternalFragmentId::from_canonical_bytes(b"remote-fragment");
-///     compiler_ir_vocabulary::ExternalCoordinate::bind(authority, 3)
+///     backend_semantic::ir_vocabulary::ExternalCoordinate::bind(authority, 3)
 /// }
 /// local_only(external_target());
 /// ```

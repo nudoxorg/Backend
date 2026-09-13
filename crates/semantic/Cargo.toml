@@ -11,5 +11,8 @@ blake3 = { workspace = true }
 backend-version = { path = "../version" }
 backend-flow = { path = "../flow" }
 
+[dev-dependencies]
+thiserror.workspace = true
+
 [lints]
 workspace = true

@@ -2,7 +2,7 @@
 
 use core::marker::PhantomData;
 
-pub use compiler_ir_vocabulary::{
+pub use backend_semantic::ir_vocabulary::{
     Atom as AtomSpace, AtomId, DenseId, Entity, EntityId, Type, TypeId,
 };
 

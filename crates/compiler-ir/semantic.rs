@@ -75,9 +75,9 @@ pub type TypeParameterBoundListId = ListId<TypeParameterBound>;
 /// Compatibility spelling for the one frozen declaration-kind vocabulary.
 ///
 /// The underlying type and every discriminant come from
-/// `compiler-ir-vocabulary::EntityKind`; `TypeAlias` remains only as that
+/// `backend_semantic::ir_vocabulary::EntityKind`; `TypeAlias` remains only as that
 /// type's narrow associated compatibility constant.
-pub type ItemKind = compiler_ir_vocabulary::EntityKind;
+pub type ItemKind = backend_semantic::ir_vocabulary::EntityKind;
 
 /// Visibility independent of any one language's spelling.
 #[repr(u8)]

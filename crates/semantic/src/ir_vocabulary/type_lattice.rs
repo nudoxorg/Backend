@@ -13,7 +13,7 @@
 //! caller-owned pooled lane, spans validated per tag, and no owned
 //! intermediate tree.
 
-use crate::{EntityId, ExternalEntityRef, ExternalTypeRef, ListSpan, TypeId};
+use crate::ir_vocabulary::{EntityId, ExternalEntityRef, ExternalTypeRef, ListSpan, TypeId};
 
 /// Marker for the pooled type-child lane.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

@@ -7,7 +7,7 @@ use crate::{
     ParentageAuthority, SemanticEntity, SourceSpan, UnrepresentedAuthorityOwner,
     VariantAvailability, VariantFingerprint, Visibility,
 };
-use compiler_ir_vocabulary::{ExternalCoordinate, ExternalDeclarationIdentity, StableRef};
+use backend_semantic::ir_vocabulary::{ExternalCoordinate, ExternalDeclarationIdentity, StableRef};
 use backend_version::{ContentId, IrFragmentDomain};
 
 use super::{

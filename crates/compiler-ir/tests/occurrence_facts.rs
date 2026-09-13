@@ -7,7 +7,7 @@ use compiler_ir::{
     OccurrenceFault, OccurrenceInput, OccurrenceLane, PrepareError, PreparedFragment,
     PrimitiveType, SourceIdentity, TypeNode, WriteError,
 };
-use compiler_ir_vocabulary::{
+use backend_semantic::ir_vocabulary::{
     AtomId, Confidence, DeclarationFamilyId, DeclarationIdentity, EntityId, ForeignKey,
     ForeignOrigin, Occurrence, OccurrenceTarget, PackageLineage, ReferenceKind, RelSpan, StableRef,
     TypeId, VariantFingerprint,
