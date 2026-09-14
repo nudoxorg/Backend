@@ -42,6 +42,10 @@ impl RealLaneSummary {
 pub(super) struct RealAuditSummary {
     pub(super) lanes: [RealLaneSummary; CorpusLanguage::ALL.len()],
     pub(super) capacity: inventory::CorpusCapacityVerdict,
+    /// Source/authority absence terminals. These are counted, typed outcomes:
+    /// a package that is not provisioned on this host is never a silent skip
+    /// and never a parity mismatch.
+    pub(super) unavailable: Box<[CorpusMismatch]>,
     pub(super) mismatches: Box<[CorpusMismatch]>,
 }
 
@@ -82,6 +86,7 @@ pub(super) fn audit_real_inventory(
 ) -> Result<RealAuditSummary, CorpusAuditError> {
     inventory::validate_real_inventory().map_err(|cause| CorpusAuditError::Inventory { cause })?;
     let mut lanes = [RealLaneSummary::ZERO; CorpusLanguage::ALL.len()];
+    let mut unavailable = Vec::new();
     let mut mismatches = Vec::new();
     let mut publisher = PassPublisher::new(Pass::Original)?;
 
@@ -95,7 +100,7 @@ pub(super) fn audit_real_inventory(
         match input {
             inventory::RealPackageInput::Unavailable { cause, .. } => {
                 lane.unavailable = lane.unavailable.saturating_add(1);
-                mismatches.push(CorpusMismatch::RealUnavailable {
+                unavailable.push(CorpusMismatch::RealUnavailable {
                     case,
                     field: RealAuditField::Source,
                     cause: AuthorityUnavailableCause::Source(cause),
@@ -122,7 +127,7 @@ pub(super) fn audit_real_inventory(
                     }
                     Ok(RealCaseDisposition::Unavailable(cause)) => {
                         lane.unavailable = lane.unavailable.saturating_add(1);
-                        mismatches.push(CorpusMismatch::RealUnavailable {
+                        unavailable.push(CorpusMismatch::RealUnavailable {
                             case,
                             field: RealAuditField::Toolchain,
                             cause,
@@ -158,6 +163,7 @@ pub(super) fn audit_real_inventory(
                 required: inventory::MIN_REAL_PACKAGE_COUNT,
             }
         },
+        unavailable: unavailable.into_boxed_slice(),
         mismatches: mismatches.into_boxed_slice(),
     })
 }
