@@ -13,10 +13,22 @@ default = []
 backend-version = { path = "../../crates/version" }
 backend-semantic = { path = "../../crates/semantic" }
 blake3.workspace = true
+server-index-core = { path = "../../crates/server-index-core" }
 tantivy = "0.26.1"
+thiserror.workspace = true
 
 [lints]
 workspace = true
 
 [lib]
 path = "src/lib.rs"
+
+[[bench]]
+name = "shadow-resolution"
+path = "benches/shadow_resolution.rs"
+harness = false
+
+[[bench]]
+name = "durable_projection"
+path = "benches/durable_projection.rs"
+harness = false

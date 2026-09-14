@@ -16,7 +16,7 @@ use server_index_graph_vector::{
     Metric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority, VectorPoint,
     exact_vector_query,
 };
-use server_index_trustfall::IrTrustfallGraph;
+use backend_extension_trustfall::server::IrTrustfallGraph;
 
 use crate::{BenchmarkError, measure::StageWork, model::MAX_CORPUS, runner::fixture::Corpus};
 
@@ -190,7 +190,7 @@ pub(crate) fn trustfall(ir: &Ir) -> Result<StageWork, BenchmarkError> {
         bytes_written: u64::try_from(written)
             .map_err(BenchmarkError::ByteCount)?
             .checked_mul(
-                u64::try_from(size_of::<server_index_trustfall::IrTrustfallHit>())
+                u64::try_from(size_of::<backend_extension_trustfall::server::IrTrustfallHit>())
                     .map_err(BenchmarkError::ByteCount)?,
             )
             .ok_or(BenchmarkError::ByteCountOverflow)?,

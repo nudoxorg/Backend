@@ -35,9 +35,9 @@ use server_index_graph_vector::{
     ValidatedGraphView, ValidatedVectorSegment, VectorAuthority, VectorPoint, VectorSegmentError,
 };
 use server_index_publish::{PublishedIndexSnapshot, PublishedIndexSnapshotError};
-use server_index_qdrant::{QdrantBlockingAdapter, QdrantDataKey, QdrantError};
-use server_index_tantivy::{TantivyHit, TantivyLexical};
-use server_index_trustfall::TrustfallGraph;
+use backend_extension_qdrant::server::{QdrantBlockingAdapter, QdrantDataKey, QdrantError};
+use backend_extension_tantivy::server::{TantivyHit, TantivyLexical};
+use backend_extension_trustfall::server::TrustfallGraph;
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);

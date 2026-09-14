@@ -26,7 +26,6 @@ backend-version = { path = "../version" }
 compiler-application = { path = "../compiler-application" }
 interface-core = { path = "../interface-core" }
 server-index-graph-vector = { path = "../server-index-graph-vector" }
-server-index-trustfall = { path = "../server-index-trustfall" }
 blake3.workspace = true
 futures-executor.workspace = true
 futures-util.workspace = true

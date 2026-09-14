@@ -18,6 +18,7 @@ mod delta;
 mod identity;
 mod provider;
 mod query;
+pub mod server;
 
 pub use admission::{AdapterError, Error, Projection, QueryInput, execute, incomplete_coverage};
 pub use arrangement::{

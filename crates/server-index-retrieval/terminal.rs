@@ -11,9 +11,9 @@ use server_index_graph_vector::{
     GraphAuthority, GraphDegradation, MissingPartitions, MissingPartitionsError,
     StreamCapacityError, VectorAuthority, VectorSegmentDescriptor,
 };
-use server_index_qdrant::{QdrantError, QueryCandidateCount};
-use server_index_tantivy::{TantivyAdapterError, TantivyTerminal};
-use server_index_trustfall::{TrustfallGraphError, TrustfallTerminal};
+use backend_extension_qdrant::server::{QdrantError, QueryCandidateCount};
+use backend_extension_tantivy::server::{TantivyAdapterError, TantivyTerminal};
+use backend_extension_trustfall::server::{TrustfallGraphError, TrustfallTerminal};
 use server_index_vocabulary::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 
 /// Exact immutable coverage absent from an otherwise authoritative operation.

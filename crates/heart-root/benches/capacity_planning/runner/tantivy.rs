@@ -9,7 +9,7 @@ use server_index_core::{
     EntityArtifactIdentity, EntityDocumentId, GenerationId, IndexSnapshot, LexicalManifest,
     LexicalRow, LexicalScore, LexicalSegment,
 };
-use server_index_tantivy::{TantivyLexical, TantivyTerminal};
+use backend_extension_tantivy::server::{TantivyLexical, TantivyTerminal};
 
 use crate::{
     BenchmarkError,

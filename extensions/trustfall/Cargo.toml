@@ -11,17 +11,25 @@ backend-version = { path = "../../crates/version" }
 backend-flow = { path = "../../crates/flow" }
 backend-semantic = { path = "../../crates/semantic" }
 backend-library = { path = "../../crates/library" }
+server-index-graph-vector = { path = "../../crates/server-index-graph-vector" }
 blake3.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true
 thiserror.workspace = true
 trustfall.workspace = true
+trustfall_core.workspace = true
 
 [dev-dependencies]
+allocation-counter.workspace = true
 futures-executor.workspace = true
+server-index-vocabulary = { path = "../../crates/server-index-vocabulary" }
 
 [lints]
 workspace = true
 
 [lib]
 path = "src/lib.rs"
+
+[[bench]]
+name = "occurrence_traversal"
+harness = false

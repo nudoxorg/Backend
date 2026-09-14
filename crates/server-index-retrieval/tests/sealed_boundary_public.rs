@@ -20,14 +20,14 @@ use server_index_graph_vector::{
     Cancellation, GraphDegradation, GraphEdge, GraphRow, GraphTerminal, PartitionId,
     StreamCapacityError, ValidatedGraphView,
 };
-use server_index_qdrant::{PhysicalPointId, QdrantBlockingAdapter, QdrantCandidate};
+use backend_extension_qdrant::server::{PhysicalPointId, QdrantBlockingAdapter, QdrantCandidate};
 use server_index_retrieval::{
     CancellationCause, ExactRoute, LexicalRoute, RetrievalAbsence, RetrievalBoundary,
     RetrievalCoverage, RetrievalDegradation, RetrievalFailure, RetrievalOperationTerminal,
     RetrievalResult, VectorDegradation, VectorRoute,
 };
-use server_index_tantivy::{TantivyHit, TantivyLexical};
-use server_index_trustfall::TrustfallHit;
+use backend_extension_tantivy::server::{TantivyHit, TantivyLexical};
+use backend_extension_trustfall::server::TrustfallHit;
 
 use support::{
     GraphAcquisitionKind, SealedFixture, acquired_terminal, lexical_document,

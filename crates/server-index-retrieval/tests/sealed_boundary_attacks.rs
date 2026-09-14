@@ -17,13 +17,13 @@ use server_index_graph_vector::{
     Cancellation, GraphAuthority, GraphEdge, GraphRow, GraphTerminal, Metric, ModelId, PartitionId,
     ProjectionId, ValidatedGraphView, ValidatedVectorSegment, VectorAuthority, VectorPoint,
 };
-use server_index_qdrant::{PhysicalPointId, QdrantBlockingAdapter, QdrantCandidate};
+use backend_extension_qdrant::server::{PhysicalPointId, QdrantBlockingAdapter, QdrantCandidate};
 use server_index_retrieval::{
     RetrievalBoundary, RetrievalFailure, RetrievalOperationTerminal, VectorAuthoritySurface,
     VectorRoute,
 };
-use server_index_tantivy::{TantivyAdapterError, TantivyHit, TantivyLexical};
-use server_index_trustfall::TrustfallHit;
+use backend_extension_tantivy::server::{TantivyAdapterError, TantivyHit, TantivyLexical};
+use backend_extension_trustfall::server::TrustfallHit;
 
 use support::{SealedFixture, lexical_document, with_sealed_fixture};
 

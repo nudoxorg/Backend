@@ -7,7 +7,7 @@ use server_index_graph_vector::{
     MAX_PARTITIONS, MissingPartitions, MissingPartitionsError, PartitionId, VectorAuthority,
     VectorSegmentDescriptor,
 };
-use server_index_qdrant::{QdrantBlockingAdapter, QdrantCandidate, QueryCandidateCount};
+use backend_extension_qdrant::server::{QdrantBlockingAdapter, QdrantCandidate, QueryCandidateCount};
 
 use crate::{
     CancellationCause, RetrievalAbsence, RetrievalBoundary, RetrievalCoverage,

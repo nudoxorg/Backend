@@ -44,7 +44,7 @@ use server_index_graph_vector::{
     StreamCapacityError, TraceProbe, ValidatedVectorSegment, VectorAuthority, VectorPoint,
 };
 use server_index_publish::PublishedIndexSnapshot;
-use server_index_qdrant::{QdrantBlockingAdapter, QdrantDataKey, QdrantError};
+use backend_extension_qdrant::server::{QdrantBlockingAdapter, QdrantDataKey, QdrantError};
 use server_index_retrieval::{
     RetrievalBoundary, RetrievalFailure, RetrievalOperationTerminal, RetrievalResult, VectorRoute,
 };
