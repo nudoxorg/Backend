@@ -12,10 +12,13 @@ let
     cargo = toolchains.stable;
     rustc = toolchains.stable;
   };
-  controlSourcePrefixes = [
-    "tools/control"
-    "crates/store"
-    "crates/version"
+  controlSourceRoots = [
+    "crates"
+    "frontends"
+    "extensions"
+    "apps"
+    "tests"
+    "tools"
   ];
   workspaceSource =
     if workspaceAvailable then
@@ -29,14 +32,8 @@ let
             relative = pkgs.lib.removePrefix "${root}/" absolute;
           in
           absolute == root
-          || builtins.elem relative [
-            "Cargo.toml"
-            "Cargo.lock"
-            "crates"
-          ]
-          || builtins.any (
-            prefix: relative == prefix || pkgs.lib.hasPrefix "${prefix}/" relative
-          ) controlSourcePrefixes;
+          || builtins.elem relative (["Cargo.toml" "Cargo.lock"] ++ controlSourceRoots)
+          || builtins.any (root: pkgs.lib.hasPrefix "${root}/" relative) controlSourceRoots;
       }
     else
       null;
