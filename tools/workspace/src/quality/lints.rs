@@ -1,10 +1,16 @@
 //! Workspace manifest lint policy gates.
+//!
+//! `unsafe_code` is required to be `deny`, not `forbid`: the workspace permits
+//! audited, narrowly scoped `#![allow(unsafe_code, reason = ...)]` carve-outs
+//! (for example libclang FFI and low-level storage), and `forbid` cannot be
+//! overridden by a descendant `allow`. `deny` still rejects any un-audited
+//! `unsafe` while allowing the reviewed exceptions.
 
 use super::Violation;
 use std::collections::BTreeMap;
 
 const REQUIRED_RUST_LINTS: &[(&str, &str)] = &[
-    ("unsafe_code", "forbid"),
+    ("unsafe_code", "deny"),
     ("missing_docs", "warn"),
     ("unreachable_pub", "warn"),
     ("unused_lifetimes", "warn"),
