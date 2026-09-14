@@ -541,7 +541,7 @@ mod tests {
         assert!(result.is_ok());
         let Some(dag) = result.ok() else { return };
         assert_eq!(dag.packages.len(), 29);
-        assert_eq!(dag.core_names.len(), 12);
+        assert_eq!(dag.core_names.len(), 11);
         let names = dag
             .packages
             .iter()
@@ -563,7 +563,7 @@ mod tests {
     #[test]
     fn rejects_malformed_and_metadata_drifted_dag_documents() {
         assert!(parse_dag("{").is_err());
-        let drifted = PACKAGE_DAG_JSON.replace("\"core\": 12", "\"core\": 11");
+        let drifted = PACKAGE_DAG_JSON.replace("\"core\": 11", "\"core\": 10");
         let error = parse_dag(&drifted).err().unwrap_or_default();
         assert!(error.contains("layer_counts metadata drift"));
     }

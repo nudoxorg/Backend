@@ -1,11 +1,11 @@
 {
   "target_packages": 29,
-  "core_packages": 12,
+  "core_packages": 11,
   "layer_counts": {
-    "core": 12,
+    "core": 11,
     "frontend": 7,
     "extension": 4,
-    "application": 6
+    "application": 7
   },
   "packages": [
     {
@@ -238,7 +238,17 @@
       "dependencies": [
         "backend-compile",
         "backend-execution",
+        "backend-extension-qdrant",
+        "backend-extension-tantivy",
+        "backend-extension-trustfall",
         "backend-flow",
+        "backend-frontend-clang",
+        "backend-frontend-csharp",
+        "backend-frontend-go",
+        "backend-frontend-java",
+        "backend-frontend-python",
+        "backend-frontend-rust",
+        "backend-frontend-typescript",
         "backend-library",
         "backend-replication",
         "backend-runtime",
@@ -246,7 +256,7 @@
         "backend-store",
         "backend-version"
       ],
-      "layer": "core",
+      "layer": "application",
       "order": 22
     },
     {
