@@ -688,6 +688,368 @@ fn native_metadata_admits_more_than_two_hundred_versions() {
     assert_eq!(page.packages.len(), 250);
 }
 
+#[test]
+fn sparse_cargo_chunks_resume_and_changed_snapshot_restarts() {
+    let origin = "https://registry.example.test";
+    let checksum = "0".repeat(64);
+    let rows = (0..5)
+        .map(|index| {
+            format!("{{\"name\":\"demo\",\"vers\":\"1.0.{index}\",\"cksum\":\"{checksum}\"}}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, origin).expect("endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint.clone(),
+        PackageName::new("demo").expect("package"),
+        None,
+    )
+    .expect("adapter");
+    let first = adapter
+        .admit_page(
+            rows.as_bytes(),
+            FeedRequest {
+                cursor: FeedCursor::genesis(endpoint.id()),
+                max_items: 2,
+            },
+        )
+        .expect("first chunk");
+    assert_eq!(first.packages.len(), 2);
+    assert_eq!(first.base.sequence(), 0);
+    let resumed_cursor = first.base.advance(first.next_token).expect("advance");
+    let second = adapter
+        .admit_page(
+            rows.as_bytes(),
+            FeedRequest {
+                cursor: resumed_cursor,
+                max_items: 2,
+            },
+        )
+        .expect("resume chunk");
+    assert_eq!(second.packages.len(), 2);
+    assert_eq!(second.base, resumed_cursor);
+    assert!(second.packages[0].coordinate.as_str().contains("1.0.2"));
+    let third_cursor = second.base.advance(second.next_token).expect("advance");
+    let third = adapter
+        .admit_page(
+            rows.as_bytes(),
+            FeedRequest {
+                cursor: third_cursor,
+                max_items: 2,
+            },
+        )
+        .expect("final chunk");
+    assert_eq!(third.packages.len(), 1);
+    // A changed metadata body carries a new snapshot prefix, so the same
+    // cursor restarts at zero instead of resuming mid-listing.
+    let changed = rows.replacen("1.0.0", "2.0.0", 1);
+    let restarted = adapter
+        .admit_page(
+            changed.as_bytes(),
+            FeedRequest {
+                cursor: resumed_cursor,
+                max_items: 2,
+            },
+        )
+        .expect("changed snapshot");
+    assert!(restarted.packages[0].coordinate.as_str().contains("1.0.1"));
+    // An offset past the listing is a typed protocol rejection.
+    let mut forged = [0_u8; 32];
+    forged[..24].copy_from_slice(&first.next_token[..24]);
+    forged[24..].copy_from_slice(&u64::from(99u8).to_be_bytes());
+    let forged_cursor =
+        FeedCursor::from_parts(endpoint.id(), resumed_cursor.sequence(), forged);
+    assert!(matches!(
+        adapter.admit_page(
+            rows.as_bytes(),
+            FeedRequest {
+                cursor: forged_cursor,
+                max_items: 2,
+            },
+        ),
+        Err(TransportFailure::Protocol)
+    ));
+}
+
+#[test]
+fn sparse_cargo_duplicate_and_checksum_grammar_are_typed() {
+    let origin = "https://registry.example.test";
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, origin).expect("endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint,
+        PackageName::new("demo").expect("package"),
+        None,
+    )
+    .expect("adapter");
+    let digest = "00".repeat(32);
+    let duplicate = format!(
+        "{{\"name\":\"demo\",\"vers\":\"1.0.0\",\"cksum\":\"{digest}\"}}\n{{\"name\":\"demo\",\"vers\":\"1.0.0\",\"cksum\":\"{digest}\"}}\n"
+    );
+    assert!(matches!(
+        adapter.decode(duplicate.as_bytes()),
+        Err(TransportFailure::Protocol)
+    ));
+    // Shuffled rows admit the same canonical chunk.
+    let ordered = ["1.0.0", "1.0.1", "2.0.0"]
+        .iter()
+        .map(|version| format!("{{\"name\":\"demo\",\"vers\":\"{version}\",\"cksum\":\"{digest}\"}}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let shuffled = ["2.0.0", "1.0.0", "1.0.1"]
+        .iter()
+        .map(|version| format!("{{\"name\":\"demo\",\"vers\":\"{version}\",\"cksum\":\"{digest}\"}}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let left = adapter.decode(ordered.as_bytes()).expect("ordered");
+    let right = adapter.decode(shuffled.as_bytes()).expect("shuffled");
+    assert_eq!(left, right);
+    // Checksum grammar rejects whitespace exactly like the removed sparse parser.
+    assert!(matches!(
+        adapter.decode(
+            format!("{{\"name\":\"demo\",\"vers\":\"1.0.0\",\"cksum\":\" {digest}\"}}")
+                .as_bytes()
+        ),
+        Err(TransportFailure::Protocol)
+    ));
+    assert!(matches!(
+        adapter.decode(
+            format!("{{\"name\":\"demo\",\"vers\":\"1.0.0\",\"cksum\":\"{digest} \"}}")
+                .as_bytes()
+        ),
+        Err(TransportFailure::Protocol)
+    ));
+    assert!(matches!(
+        adapter.decode(b"{truncated"),
+        Err(TransportFailure::Protocol)
+    ));
+    // Uppercase hex remains accepted and verifies the same bytes.
+    let archive = b"case-insensitive checksum archive";
+    let lower = digest_hex(Sha256::digest(archive).as_slice());
+    let upper = lower.to_ascii_uppercase();
+    let row = format!("{{\"name\":\"demo\",\"vers\":\"1.0.0\",\"cksum\":\"{upper}\"}}");
+    let releases = adapter.decode(row.as_bytes()).expect("uppercase");
+    assert_eq!(releases.len(), 1);
+    assert!(releases[0].checksum.verifies(archive));
+}
+
+#[test]
+fn sparse_cargo_yanked_rows_never_publish() {
+    let origin = "https://registry.example.test";
+    let digest = "00".repeat(32);
+    let body = format!(
+        "{{\"name\":\"demo\",\"vers\":\"1.0.0\",\"cksum\":\"{digest}\",\"yanked\":false}}\n{{\"name\":\"demo\",\"vers\":\"1.0.1\",\"cksum\":\"{digest}\",\"yanked\":true}}\n"
+    );
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, origin).expect("endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint.clone(),
+        PackageName::new("demo").expect("package"),
+        None,
+    )
+    .expect("adapter");
+    let releases = adapter.decode(body.as_bytes()).expect("decode");
+    assert_eq!(releases.len(), 1);
+    assert!(releases[0].coordinate.as_str().contains("1.0.0"));
+    let page = adapter
+        .admit_page(
+            body.as_bytes(),
+            FeedRequest {
+                cursor: FeedCursor::genesis(endpoint.id()),
+                max_items: 4,
+            },
+        )
+        .expect("page");
+    assert_eq!(page.packages.len(), 1);
+}
+
+#[test]
+fn native_checksum_mismatch_never_advances_the_cursor() {
+    // Hermetic mismatch through the shared owner:
+    // advertise the wrong digest and prove the cursor never advances.
+    let wrong_archive = b"wrong native bytes";
+    let claimed = *CapabilityArtifactId::from_value(b"other bytes").as_bytes();
+    let (endpoint_text, server) = live_fixture(wrong_archive, claimed);
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("endpoint");
+    let root = temporary("native-integrity");
+    let (mut owner, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("owner");
+    let mut transport = HttpRegistryTransport::new(endpoint, None, limits()).expect("transport");
+    assert!(matches!(
+        owner.poll(&mut transport),
+        Err(AcquisitionError::Transport(TransportFailure::Integrity))
+    ));
+    assert_eq!(owner.cursor().sequence(), 0);
+    server.join().expect("server");
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn receipt_catalog_overrun_is_measured_and_durable() {
+    let archive_a = b"catalog overrun archive a";
+    let archive_b = b"catalog overrun archive b";
+    let digest_a = *CapabilityArtifactId::from_value(archive_a.as_slice()).as_bytes();
+    let digest_b = *CapabilityArtifactId::from_value(archive_b.as_slice()).as_bytes();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("address");
+    let endpoint_text = format!("http://{address}");
+    let next = transport::hex(&[7; 32]);
+    let provenance = transport::hex(&[9; 32]);
+    let item_a = format!(
+        "{{\"name\":\"demo\",\"version\":\"1.0.0\",\"archive\":\"{endpoint_text}/a\",\"blake3\":\"{}\",\"provenance\":\"{provenance}\"}}",
+        transport::hex(&digest_a)
+    );
+    let item_b = format!(
+        "{{\"name\":\"demo\",\"version\":\"2.0.0\",\"archive\":\"{endpoint_text}/b\",\"blake3\":\"{}\",\"provenance\":\"{provenance}\"}}",
+        transport::hex(&digest_b)
+    );
+    let page = format!("{{\"schema\":1,\"next\":\"{next}\",\"items\":[{item_a},{item_b}]}}")
+        .into_bytes();
+    let server = thread::spawn(move || {
+        for body in [page, archive_a.to_vec(), archive_b.to_vec()] {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 8192];
+            let _ = stream.read(&mut request).expect("read");
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("headers");
+            stream.write_all(&body).expect("body");
+        }
+    });
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("endpoint");
+    let root = temporary("catalog-overrun");
+    let mut constrained = limits();
+    constrained.max_catalog_items = 1;
+    let (mut owner, _) = RegistryOwner::open(
+        &root,
+        endpoint.clone(),
+        AcquisitionPolicy::Online,
+        constrained,
+    )
+    .expect("owner");
+    let mut transport =
+        HttpRegistryTransport::new(endpoint.clone(), None, constrained).expect("transport");
+    match owner.poll(&mut transport) {
+        Err(AcquisitionError::Overrun { measured, limit }) => {
+            assert_eq!((measured, limit), (2, 1));
+        }
+        other => panic!("expected measured catalog overrun, got {other:?}"),
+    }
+    assert_eq!(owner.cursor().sequence(), 0);
+    server.join().expect("server");
+    drop(owner);
+    drop(transport);
+    let (_, recovery) =
+        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, constrained)
+            .expect("recovery");
+    assert_eq!(recovery.cursor.sequence(), 0);
+    assert!(recovery.pending.is_some());
+    assert!(recovery.last_receipt.is_none());
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn conditional_304_is_a_typed_rejection_not_a_silent_noop() {
+    // The single-stack transport never sends If-None-Match validators, so a
+    // 304 has no conditional context and is a typed rejection. ETag resume is
+    // intentionally unsupported rather than silently treated as no-change.
+    let (endpoint_text, server) = one_response(304, "", Vec::new());
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("endpoint");
+    let cursor = FeedCursor::genesis(endpoint.id());
+    let mut transport = HttpRegistryTransport::new(endpoint, None, limits()).expect("transport");
+    assert!(matches!(
+        transport.fetch_page(FeedRequest {
+            cursor,
+            max_items: 1
+        }),
+        Err(TransportFailure::Rejected(304))
+    ));
+    server.join().expect("server");
+}
+
+#[test]
+fn cross_authority_archive_is_a_configuration_rejection() {
+    // Split-origin index/download authorities are intentionally unsupported:
+    // one endpoint owns both metadata and archives, enforced by typed error.
+    let origin = "https://registry.example.test";
+    let sha512 = STANDARD.encode(Sha512::digest(b"archive"));
+    let body = format!(
+        "{{\"versions\":{{\"1.2.3\":{{\"dist\":{{\"integrity\":\"sha512-{sha512}\",\"tarball\":\"https://other.example.test/demo.tgz\"}}}}}}}}"
+    );
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Npm, origin).expect("endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint,
+        PackageName::new("demo").expect("package"),
+        None,
+    )
+    .expect("adapter");
+    assert!(matches!(
+        adapter.decode(body.as_bytes()),
+        Err(TransportFailure::Configuration)
+    ));
+}
+
+#[test]
+fn read_artifact_unknown_is_none_and_tamper_is_corruption() {
+    let archive = b"bridged archive bytes";
+    let digest = *CapabilityArtifactId::from_value(archive.as_slice()).as_bytes();
+    let (endpoint_text, server) = live_fixture(archive, digest);
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("endpoint");
+    let root = temporary("bridge");
+    let (mut owner, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("owner");
+    let mut transport =
+        HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
+    let AcquisitionOutcome::Published(receipt) = owner.poll(&mut transport).expect("poll") else {
+        panic!("expected publication")
+    };
+    // The owner catalog is the materialization bridge: unknown coordinates
+    // resolve to a typed None, never a fabricated object.
+    let unknown = PackageCoordinate::parse("pkg:cargo/demo@9.9.9").expect("coordinate");
+    assert!(owner.published(&unknown).is_none());
+    assert!(owner.read_artifact(&unknown).expect("read").is_none());
+    assert_eq!(owner.published_packages().len(), 1);
+    server.join().expect("server");
+    // Tampering with the content-addressed object is corruption, not a new version.
+    let object_path = storage_root(&root, &endpoint)
+        .join("registry-objects")
+        .join(transport::hex(&digest));
+    let mut tampered = archive.to_vec();
+    tampered[0] ^= 0xff;
+    fs::write(&object_path, &tampered).expect("tamper");
+    assert!(matches!(
+        owner.read_artifact(&receipt.packages[0].coordinate),
+        Err(AcquisitionError::CorruptJournal)
+    ));
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn legacy_unscoped_journal_path_is_never_aliased() {
+    // Cache-layout compatibility: the pre-scoped `root/registry.journal`
+    // path is ignored; each endpoint owns `root/<eco>/<id>/`.
+    let root = temporary("legacy-layout");
+    fs::create_dir_all(&root).expect("root");
+    fs::write(root.join("registry.journal"), b"legacy").expect("legacy file");
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let (owner, recovery) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Offline, limits())
+            .expect("owner");
+    assert_eq!(recovery.cursor.sequence(), 0);
+    assert!(recovery.pending.is_none());
+    assert!(storage_root(&root, &endpoint).join("registry.journal").is_file());
+    assert_eq!(owner.cursor().sequence(), 0);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
 fn digest_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
