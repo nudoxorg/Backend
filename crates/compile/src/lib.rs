@@ -8,9 +8,6 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-/// Bounded registry acquisition and durable sparse-index ingestion.
-pub mod acquire;
-
 mod cancel;
 mod contract;
 mod embedding;

@@ -501,10 +501,15 @@ pub struct AcquisitionLimits {
 impl Default for AcquisitionLimits {
     fn default() -> Self {
         Self {
-            max_items: 128,
-            max_feed_bytes: 1024 * 1024,
-            max_archive_bytes: 64 * 1024 * 1024,
-            max_page_archive_bytes: 256 * 1024 * 1024,
+            // One page admits a 200-package selection without an artificial
+            // second page, while still bounding a single server reply.
+            max_items: 256,
+            max_feed_bytes: 8 * 1024 * 1024,
+            // Source archives and sdists can exceed the 64 MiB replication
+            // object cap; the default is measured and configurable, and a
+            // deliberate overrun returns a typed `Overrun`.
+            max_archive_bytes: 512 * 1024 * 1024,
+            max_page_archive_bytes: 1024 * 1024 * 1024,
             max_catalog_items: 1_000_000,
             connect_timeout: Duration::from_secs(5),
             read_timeout: Duration::from_secs(30),

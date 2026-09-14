@@ -170,6 +170,18 @@ pub enum AcquisitionError {
     InvalidCoordinate,
     /// Arithmetic, item, byte, or history bound was exceeded.
     Bounds,
+    /// A measured source extent exceeded an explicit configured bound.
+    ///
+    /// This is the non-silent terminal for archives, pages, and catalogs that
+    /// are larger than the operator's configured admission limit. It reports
+    /// the measured extent so a cap can be raised deliberately rather than
+    /// rejecting a legitimate large sdist or a long version list.
+    Overrun {
+        /// Extent actually observed from the source or staging operation.
+        measured: u64,
+        /// Configured admission limit that was exceeded.
+        limit: u64,
+    },
     /// Transport returned a terminal protocol, integrity, or policy rejection.
     Transport(TransportFailure),
     /// Durable history is inconsistent or noncanonical.
@@ -187,6 +199,7 @@ impl fmt::Display for AcquisitionError {
             Self::InvalidConfiguration => "invalid registry configuration",
             Self::InvalidCoordinate => "invalid package coordinate",
             Self::Bounds => "registry acquisition bound exceeded",
+            Self::Overrun { .. } => "registry acquisition extent exceeds configured bound",
             Self::Transport(_) => "registry transport rejected response",
             Self::CorruptJournal => "registry journal is corrupt",
             Self::Io(_) => "registry persistence failed",
@@ -234,6 +247,22 @@ impl<S: FeedSchema> fmt::Debug for RegistryOwner<S> {
     }
 }
 
+/// Deterministic on-disk root for one registry source.
+///
+/// The single acquisition authority stores every source under
+/// `root/<ecosystem>/<registry-id>`, where the registry id is the stable
+/// credential-free hash of the admitted endpoint. Distinct ecosystems and
+/// distinct endpoints therefore never share a journal or object directory,
+/// and the same endpoint always resolves to the same cache root across
+/// processes and restarts. Version selection is pinned by the exact package
+/// coordinate committed in the receipt, and archive bytes are content
+/// addressed, so a warm cache is reproducible from the path alone.
+#[must_use]
+pub fn storage_root(root: &Path, endpoint: &RegistryEndpoint) -> PathBuf {
+    root.join(endpoint.ecosystem().as_str())
+        .join(super::transport::hex(&endpoint.id().as_bytes()))
+}
+
 impl RegistryOwner {
     /// Opens and validates one production v1 feed owner.
     ///
@@ -246,12 +275,13 @@ impl RegistryOwner {
         limits: AcquisitionLimits,
     ) -> Result<(Self, RegistryRecovery), AcquisitionError> {
         let limits = limits.validate()?;
-        fs::create_dir_all(root.as_ref())?;
-        let objects = root.as_ref().join("registry-objects");
+        let root = storage_root(root.as_ref(), &endpoint);
+        fs::create_dir_all(&root)?;
+        let objects = root.join("registry-objects");
         fs::create_dir_all(&objects)?;
         cleanup_temporary(&objects)?;
         let (journal, recovery) =
-            HashChainJournal::<RegistryLog>::open(root.as_ref().join("registry.journal"))?;
+            HashChainJournal::<RegistryLog>::open(root.join("registry.journal"))?;
         let mut cursor = FeedCursor::genesis(endpoint.id());
         let mut pending: BTreeMap<EffectKey, AcquisitionIntent> = BTreeMap::new();
         let mut last_receipt = None;
@@ -558,10 +588,19 @@ impl RegistryOwner {
         bytes: &[u8],
         page_bytes: usize,
     ) -> Result<PublishedPackage, AcquisitionError> {
-        if bytes.len() > self.limits.max_archive_bytes
-            || page_bytes > self.limits.max_page_archive_bytes
-        {
-            return Err(AcquisitionError::Bounds);
+        if bytes.len() > self.limits.max_archive_bytes {
+            return Err(AcquisitionError::Overrun {
+                measured: u64::try_from(bytes.len()).map_err(|_| AcquisitionError::Bounds)?,
+                limit: u64::try_from(self.limits.max_archive_bytes)
+                    .map_err(|_| AcquisitionError::Bounds)?,
+            });
+        }
+        if page_bytes > self.limits.max_page_archive_bytes {
+            return Err(AcquisitionError::Overrun {
+                measured: u64::try_from(page_bytes).map_err(|_| AcquisitionError::Bounds)?,
+                limit: u64::try_from(self.limits.max_page_archive_bytes)
+                    .map_err(|_| AcquisitionError::Bounds)?,
+            });
         }
         let artifact = package
             .verify_archive(bytes)
@@ -668,13 +707,15 @@ fn validate_receipt_catalog(
             None => additional = additional.checked_add(1).ok_or(AcquisitionError::Bounds)?,
         }
     }
-    if catalog
+    let total = catalog
         .len()
         .checked_add(additional)
-        .ok_or(AcquisitionError::Bounds)?
-        > maximum
-    {
-        return Err(AcquisitionError::Bounds);
+        .ok_or(AcquisitionError::Bounds)?;
+    if total > maximum {
+        return Err(AcquisitionError::Overrun {
+            measured: u64::try_from(total).map_err(|_| AcquisitionError::Bounds)?,
+            limit: u64::try_from(maximum).map_err(|_| AcquisitionError::Bounds)?,
+        });
     }
     Ok(())
 }

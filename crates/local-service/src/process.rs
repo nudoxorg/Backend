@@ -66,6 +66,17 @@ pub const REGISTRY_AUTH_FILE_ENV: &str = "BACKEND_REGISTRY_AUTH_FILE";
 pub const REGISTRY_NATIVE_ENV: &str = "BACKEND_REGISTRY_NATIVE";
 /// Environment variable disabling registry network effects.
 pub const REGISTRY_OFFLINE_ENV: &str = "BACKEND_REGISTRY_OFFLINE";
+/// Environment variable overriding the maximum admitted registry archive bytes.
+pub const REGISTRY_MAX_ARCHIVE_BYTES_ENV: &str = "BACKEND_REGISTRY_MAX_ARCHIVE_BYTES";
+
+/// Default registry archive admission for a single source archive.
+///
+/// Source sdists routinely exceed the 64 MiB replication object budget, so the
+/// registry cap is deliberately independent of that transport limit and can be
+/// raised with [`REGISTRY_MAX_ARCHIVE_BYTES_ENV`]. Values above the ceiling are
+/// clamped and a deliberate overrun returns a typed acquisition error.
+const REGISTRY_MAX_ARCHIVE_DEFAULT_BYTES: usize = 512 * 1024 * 1024;
+const REGISTRY_MAX_ARCHIVE_CEILING_BYTES: usize = 1024 * 1024 * 1024;
 
 const EX_USAGE: u8 = 64;
 const EX_UNAVAILABLE: u8 = 69;
@@ -196,12 +207,10 @@ fn registry_limits(listener: &ListenerConfig) -> AcquisitionLimits {
     let transport = listener.limits.transport;
     let max_items = transport.max_inputs.clamp(1, 4096);
     let max_feed_bytes = listener.limits.max_frame.clamp(1, 16 * 1024 * 1024);
-    let max_archive_bytes = usize::try_from(transport.max_object)
-        .unwrap_or(usize::MAX)
-        .clamp(1, 1024 * 1024 * 1024);
+    let max_archive_bytes = registry_max_archive_bytes();
     let max_page_archive_bytes = max_archive_bytes
         .saturating_mul(max_items)
-        .min(1024 * 1024 * 1024)
+        .min(REGISTRY_MAX_ARCHIVE_CEILING_BYTES)
         .max(max_archive_bytes);
     AcquisitionLimits {
         max_items,
@@ -213,6 +222,14 @@ fn registry_limits(listener: &ListenerConfig) -> AcquisitionLimits {
         read_timeout: listener.io_timeout,
         attempts: NonZeroU8::MIN,
     }
+}
+
+fn registry_max_archive_bytes() -> usize {
+    std::env::var(REGISTRY_MAX_ARCHIVE_BYTES_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(REGISTRY_MAX_ARCHIVE_DEFAULT_BYTES)
+        .clamp(1, REGISTRY_MAX_ARCHIVE_CEILING_BYTES)
 }
 
 impl ProcessConfig {
