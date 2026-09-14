@@ -4,7 +4,7 @@
 use backend_version::GenerationId;
 use backend_semantic::index_core::{
     ExactDegradation, ExactManifest, ExactOperation, ExactResolution, ExactRow, ExactSegment,
-    ExactTerminal, IndexSnapshot,
+    ExactSegmentVerifier, ExactTerminal, IndexSnapshot,
 };
 
 const ALPHA: &[u8] = b"alpha";
@@ -12,6 +12,24 @@ const BETA: &[u8] = b"beta";
 
 fn generation() -> GenerationId {
     GenerationId::from_canonical_bytes(b"published-ir-generation")
+}
+
+#[test]
+fn streaming_verifier_reopens_a_beyond_two_hundred_fifty_six_row_lane() {
+    let keys: Vec<[u8; 4]> = (0..300_u32).map(u32::to_be_bytes).collect();
+    let rows: Vec<ExactRow<'_>> = keys
+        .iter()
+        .map(|key| ExactRow::present(key.as_slice(), b"value"))
+        .collect();
+    let segment = ExactSegment::new(&rows).expect("materialized exact segment");
+    let mut verifier = ExactSegmentVerifier::new(rows.len()).expect("row-count admission");
+    for row in &rows {
+        verifier.admit(*row).expect("canonical row admission");
+    }
+    assert_eq!(
+        verifier.finish().expect("complete canonical lane"),
+        segment.id
+    );
 }
 
 #[test]

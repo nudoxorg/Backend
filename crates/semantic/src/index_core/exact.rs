@@ -9,10 +9,29 @@ use backend_version::{ContentHasher, FixedCanonicalRecord, IndexExactSegmentDoma
 use crate::index_vocabulary::ExactSegmentId;
 
 /// Maximum number of rows admitted by one exact segment view.
-pub const MAX_EXACT_ROWS: usize = 256;
+///
+/// This is the per-segment row budget, not a manifest-wide wall: a manifest
+/// may select up to [`crate::index_core::MAX_SELECTED_SEGMENTS`] segments, so
+/// a fragment with more entities than this row budget rolls over into
+/// additional segments instead of being rejected. The bound keeps one
+/// segment's row array, canonical verifier, and payload accounting bounded at
+/// a measured 4,096 rows (the previous 256-row wall rejected real multi-package
+/// fragments before rollover existed).
+pub const MAX_EXACT_ROWS: usize = 4096;
 
 /// Maximum key and value bytes admitted by one exact segment.
-pub const MAX_EXACT_PAYLOAD_BYTES: usize = 65_536;
+///
+/// This is derived from two measured facts rather than a fixed constant: one
+/// admitted row never needs more than [`MAX_EXACT_ROW_PAYLOAD_BYTES`] of key
+/// plus value bytes, and the segment admits at most [`MAX_EXACT_ROWS`] rows.
+/// Scaling the payload budget with the row budget keeps the same per-row
+/// headroom after the row wall was raised, so a larger real fragment is not
+/// rejected by a stale byte ceiling. A segment whose complete payload exceeds
+/// this still returns the typed [`ExactSegmentError::PayloadBytesLimit`].
+pub const MAX_EXACT_PAYLOAD_BYTES: usize = MAX_EXACT_ROWS * MAX_EXACT_ROW_PAYLOAD_BYTES;
+
+/// Per-row key-plus-value payload budget inside one exact segment.
+pub const MAX_EXACT_ROW_PAYLOAD_BYTES: usize = 256;
 
 const CANONICAL_CHUNK_BYTES: usize = 32;
 

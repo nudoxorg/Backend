@@ -33,7 +33,15 @@ pub use crate::index_vocabulary::{ExactSegmentId, IndexSnapshotId, LexicalSegmen
 pub use self::snapshot::{IndexSnapshot, IndexSnapshotError, IndexSnapshotLane, IndexSnapshotView};
 
 /// Maximum exact or lexical segments a single borrowed manifest can select.
-pub const MAX_SELECTED_SEGMENTS: usize = 8;
+///
+/// This is the multi-segment rollover budget: the real corpus fragments exceed
+/// the old eight-segment wall, and each fragment's entities may roll over
+/// across several segments. 255 is the largest count the immutable pack header
+/// can encode in its one-byte lane cell, so it is the protocol ceiling rather
+/// than an arbitrary product limit. The selection bound keeps the manifest
+/// directory, match-range scratch, and packed directory bounded by one
+/// `u8`-wide lane instead of growing without limit.
+pub const MAX_SELECTED_SEGMENTS: usize = 255;
 
 /// A checked borrowed manifest for one immutable exact snapshot.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

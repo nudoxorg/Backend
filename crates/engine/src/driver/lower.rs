@@ -74,23 +74,43 @@ const MAX_EMISSION_TYPE_CHILDREN: usize = MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN
 const MAX_PENDING_TYPE_CHILDREN: u8 = MAX_TYPE_CHILDREN as u8;
 const _: () = assert!(MAX_TYPE_CHILDREN <= u8::MAX as usize);
 /// Dense bound of the occurrence lane committed beside the declarations.
-pub(super) const MAX_EMISSION_OCCURRENCES: usize = 8192;
+///
+/// This is the protocol ceiling for the *pooled* occurrence lane, which
+/// [`ResourcePlan::for_source`] budgets from entered bytes; it exists so a
+/// genuine measured overrun is a typed `OccurrenceCapacity` fault rather than
+/// an eager maximum allocation. Raised from 8,192 to the declaration-fact
+/// budget because real multi-package fragments emit more occurrences than
+/// declarations, and the old bound rejected them before the measured budget
+/// could be consumed.
+pub(super) const MAX_EMISSION_OCCURRENCES: usize = MAX_EMISSION_FACTS;
 /// Dense bound of the documentation lane; measured maximum is 13,529 fragments (`StringUtils.java`), so 16,384 is next.
 pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 16384;
 /// Dense bound of extension atoms admitted beside declaration names.
 pub(super) const MAX_EXTENSION_ATOMS: usize = 2048;
 /// Dense bound of pooled type parameters.
-pub(super) const MAX_TYPE_PARAMETERS: usize = 512;
+///
+/// [`ResourcePlan::for_source`] derives the actual reservation from entered
+/// bytes; this protocol ceiling only bounds a genuine measured overrun. Raised
+/// from 512 because real generic-heavy multi-package fragments exceed 512
+/// pooled parameters.
+pub(super) const MAX_TYPE_PARAMETERS: usize = 4096;
 /// Dense bound of ordered type/lifetime bounds across one request.
 /// Each bound has written source evidence, so the request geometry scales
 /// with entered bytes rather than allocating a language-wide maximum.
 pub(super) const MAX_TYPE_PARAMETER_BOUNDS: usize = MAX_TYPE_PARAMETERS * MAX_REF_LIST_ELEMENTS;
 /// Dense bound of pooled reference lists per lane kind.
-pub(super) const MAX_REF_LISTS: usize = 512;
+///
+/// The request reservation is `min(facts, MAX_REF_LISTS)`, so this ceiling
+/// only bites for a source whose measured list count reaches it. Raised from
+/// 512 to keep real multi-package fragment import/override lists from becoming
+/// a hard `RefListCapacity` wall.
+pub(super) const MAX_REF_LISTS: usize = 4096;
 /// Dense bound of one pooled reference list.
 /// The measured corpus maximum is 46 (`ToStringBuilder.append`).
-/// 64 is the next dense bound, preserving the old geometry for lists up to 16.
-pub(super) const MAX_REF_LIST_ELEMENTS: usize = 64;
+/// Raised from 64 to 128 to admit larger real import/signature lists while
+/// preserving the dense geometry; a list beyond this is still a typed
+/// `RefListElements` rejection, never a truncated emission.
+pub(super) const MAX_REF_LIST_ELEMENTS: usize = 128;
 /// Total atom budget: one name per fact plus every extension atom.
 pub(super) const MAX_EMISSION_ATOMS: usize = MAX_EMISSION_FACTS + MAX_EXTENSION_ATOMS;
 /// Dense bound of anonymous type rows interned beside the fact rows.

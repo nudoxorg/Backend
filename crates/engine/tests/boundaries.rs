@@ -107,7 +107,7 @@ fn maximum_duplicate_names_receive_unique_exact_entity_keys() -> Result<(), Test
     let fixture = Fixture::new("maximum")?;
     let publisher = fixture.publisher()?;
     let entities = [entity(EntityKind::Function, 0); MAX_INDEX_ROWS];
-    let mut bytes = [0_u8; 8_192];
+    let mut bytes = [0_u8; MAX_INDEX_ROWS * 24 + 1_024];
     let length = write_fragment(
         &mut bytes,
         b"maximum",
@@ -219,7 +219,7 @@ fn one_over_maximum_rejects_before_writing_any_region() -> Result<(), TestError>
     let fixture = Fixture::new("over-limit")?;
     let publisher = fixture.publisher()?;
     let entities = [entity(EntityKind::Constant, 0); OVER_LIMIT];
-    let mut bytes = [0_u8; 8_192];
+    let mut bytes = [0_u8; OVER_LIMIT * 24 + 1_024];
     let length = write_fragment(
         &mut bytes,
         b"over-limit",
@@ -252,6 +252,75 @@ fn one_over_maximum_rejects_before_writing_any_region() -> Result<(), TestError>
         return Err(TestError::BuildProof(
             BuildProofError::EntityLimitPreflightFailed,
         ));
+    }
+    publisher.shutdown()?;
+    fixture.remove()?;
+    Ok(())
+}
+
+#[test]
+fn fragment_beyond_two_hundred_fifty_six_entities_indexes_into_existing_segments()
+-> Result<(), TestError> {
+    const ENTITY_COUNT: usize = 300;
+
+    let fixture = Fixture::new("beyond-256")?;
+    let publisher = fixture.publisher()?;
+    let entities = [entity(EntityKind::Function, 0); ENTITY_COUNT];
+    let mut bytes = [0_u8; ENTITY_COUNT * 24 + 1_024];
+    let length = write_fragment(
+        &mut bytes,
+        b"beyond-two-hundred-fifty-six",
+        &entities,
+        &[TypeNode::Primitive(PrimitiveType::Bool)],
+        &[AtomInput { bytes: b"wide" }],
+    )?;
+    publish(
+        &publisher,
+        &fixture.artifacts(),
+        &[compiled(written(&bytes, length)?)?],
+    )?;
+    let mut reopened = OpenBuffers::new();
+    let opened = reopened.open(&publisher, &fixture.artifacts())?;
+    let fragment = next_fragment(&mut opened.fragments(), 0)?;
+    let mut projections = Box::<[EntityProjection<'_>]>::new_uninit_slice(ENTITY_COUNT);
+    let mut facts = Box::<[EntityFact<'_>]>::new_uninit_slice(ENTITY_COUNT);
+    let mut exact = Box::<[ExactRow<'_>]>::new_uninit_slice(ENTITY_COUNT);
+    let mut lexical = Box::<[LexicalRow<'_>]>::new_uninit_slice(ENTITY_COUNT);
+    let mut atoms = [MaybeUninit::<Atom<'_>>::uninit(); 1];
+    let mut types = [MaybeUninit::<TypeNode>::uninit(); 1];
+    let index = build(
+        &fragment,
+        IndexBuildScratch {
+            projections: &mut projections,
+            entities: &mut facts,
+            exact_rows: &mut exact,
+            lexical_rows: &mut lexical,
+            atoms: &mut atoms,
+            type_nodes: &mut types,
+        },
+    )?;
+    if index.entities.len() != ENTITY_COUNT
+        || index.exact.rows.len() != ENTITY_COUNT
+        || index.lexical.rows.len() != ENTITY_COUNT
+    {
+        return Err(TestError::BuildProof(
+            BuildProofError::MaximumEntityCountRejected,
+        ));
+    }
+    for fact in index.entities.iter() {
+        let Some(row) = index
+            .exact
+            .lookup(ExactOperation::new(fact.exact_key.as_ref()))
+        else {
+            return Err(TestError::BuildProof(
+                BuildProofError::ExactEntityLookupMismatch,
+            ));
+        };
+        if row.value_bytes().is_none() {
+            return Err(TestError::BuildProof(
+                BuildProofError::ExactEntityLookupMismatch,
+            ));
+        }
     }
     publisher.shutdown()?;
     fixture.remove()?;

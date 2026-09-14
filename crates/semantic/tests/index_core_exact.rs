@@ -1,7 +1,9 @@
 //! Exercises the `backend-semantic::index_core` tests exact contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use backend_semantic::index_core::{ExactOperation, ExactRow, ExactSegment, ExactSegmentError};
+use backend_semantic::index_core::{
+    ExactOperation, ExactRow, ExactSegment, ExactSegmentError, MAX_EXACT_ROWS,
+};
 
 const ALPHA: &[u8] = b"alpha";
 const BETA: &[u8] = b"beta";
@@ -64,14 +66,29 @@ fn exact_segment_rejects_duplicate_and_out_of_order_keys_before_publication() {
 
 #[test]
 fn exact_segment_rejects_the_first_row_beyond_the_bounded_capacity() {
-    let rows = [ExactRow::tombstone(b"row"); 257];
+    let rows = vec![ExactRow::tombstone(b"row"); MAX_EXACT_ROWS + 1];
     assert_eq!(
         ExactSegment::new(&rows),
         Err(ExactSegmentError::TooManyRows {
-            max: 256,
-            observed: 257,
+            max: MAX_EXACT_ROWS,
+            observed: MAX_EXACT_ROWS + 1,
         })
     );
+}
+
+#[test]
+fn exact_segment_admits_more_than_the_old_two_hundred_fifty_six_row_wall() {
+    let keys: Vec<[u8; 4]> = (0..300_u32).map(u32::to_be_bytes).collect();
+    let rows: Vec<ExactRow<'_>> = keys
+        .iter()
+        .map(|key| ExactRow::present(key.as_slice(), b"value"))
+        .collect();
+    let segment = ExactSegment::new(&rows);
+    assert!(segment.is_ok());
+    let Some(segment) = segment.ok() else {
+        return;
+    };
+    assert_eq!(segment.rows.len(), 300);
 }
 
 #[test]

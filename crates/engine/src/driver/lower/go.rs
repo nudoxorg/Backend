@@ -4128,7 +4128,7 @@ mod tests {
             fix
         };
 
-        for count in 33..=64 {
+        for count in 33..=MAX_REF_LIST_ELEMENTS {
             let legal = fixture(count);
             let bytes = lower(&legal, b"package demo\ntype Authority struct{}\n")?;
             let view = FragmentView::validate(&bytes)?;
@@ -4145,7 +4145,7 @@ mod tests {
             }
         }
 
-        let beyond_width = fixture(65);
+        let beyond_width = fixture(MAX_REF_LIST_ELEMENTS + 1);
         match lower(&beyond_width, b"package demo\ntype Authority struct{}\n") {
             Err(TestError::Collect(GoCollectError::Lowering(
                 LoweringUnsupported::GoProjection {

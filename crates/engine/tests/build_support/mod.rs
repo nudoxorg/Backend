@@ -34,7 +34,7 @@ use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPat
 use thiserror::Error;
 
 pub(crate) const CAPACITY: usize = 4;
-pub(crate) const LARGE_FRAGMENT_BYTES: usize = 8_192;
+pub(crate) const LARGE_FRAGMENT_BYTES: usize = 128 * 1_024;
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
