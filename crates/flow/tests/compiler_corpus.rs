@@ -589,18 +589,73 @@ fn real_package_inventory_keeps_source_provenance_and_closed_terminals()
             },
         });
     }
-    if let Some(first) = audit.mismatches.first().copied() {
-        return Err(CorpusAuditError::Mismatches {
-            count: audit.mismatches.len(),
-            first: Some(first),
-        });
-    }
-    if let CorpusCapacityVerdict::Insufficient { observed, required } = audit.capacity {
-        return Err(CorpusAuditError::Inventory {
-            cause: InventoryInvariant::CorpusCapacity { observed, required },
-        });
-    }
+    real::real_audit_verdict(&audit)?;
     Ok(())
+}
+
+/// Non-vacuity proof for the real-package accounting.
+///
+/// The audit's final decision must be driven by genuine parity mismatches:
+/// counted observer/source/toolchain Unavailable terminals must pass, while a
+/// real source-vs-output disagreement must still fail. The unavailable case is
+/// the exact shape the former code mis-filed into the mismatch sink, and the
+/// mismatch case proves that routing did not blunt real parity enforcement.
+#[test]
+fn real_audit_verdict_separates_unavailable_terminals_from_parity_mismatches() {
+    let case = inventory::real_package_cases()
+        .next()
+        .expect("the committed fleet manifest always selects at least one case");
+
+    let mut lanes = [real_lane(0); CorpusLanguage::ALL.len()];
+    lanes[0] = real_lane(REAL_PACKAGE_COUNT);
+
+    let unavailable_only = real::RealAuditSummary {
+        lanes,
+        capacity: CorpusCapacityVerdict::MeetsMinimum,
+        unavailable: vec![CorpusMismatch::RealUnavailable {
+            case,
+            field: comparison::RealAuditField::SourceSpans,
+            cause: AuthorityUnavailableCause::ObserverUnavailable,
+        }]
+        .into_boxed_slice(),
+        mismatches: Vec::new().into_boxed_slice(),
+    };
+    real::real_audit_verdict(&unavailable_only)
+        .expect("counted Unavailable terminals must not fail the capacity verdict");
+
+    let genuine_mismatch = real::RealAuditSummary {
+        lanes,
+        capacity: CorpusCapacityVerdict::MeetsMinimum,
+        unavailable: Vec::new().into_boxed_slice(),
+        mismatches: vec![CorpusMismatch::Real {
+            case,
+            field: comparison::RealAuditField::SourceSpans,
+            expected: [0_u8; 32],
+            observed: [1_u8; 32],
+        }]
+        .into_boxed_slice(),
+    };
+    let error = real::real_audit_verdict(&genuine_mismatch)
+        .expect_err("a genuine parity mismatch must remain fatal");
+    assert!(
+        matches!(
+            error,
+            CorpusAuditError::Mismatches { count: 1, first: Some(_) }
+        ),
+        "expected a mismatch verdict, observed {error:?}"
+    );
+}
+
+fn real_lane(attempted: usize) -> real::RealLaneSummary {
+    real::RealLaneSummary {
+        attempted,
+        source_bound: 0,
+        output: 0,
+        verified: 0,
+        unavailable: 0,
+        terminals: 0,
+        mismatches: 0,
+    }
 }
 
 fn run_pass(

@@ -70,9 +70,47 @@ struct SourceExpectation {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RealCaseDisposition {
-    Output { mismatches: usize, verified: bool },
+    Output {
+        mismatches: usize,
+        /// Counted observer-plane terminals produced by this compiled row.
+        /// They are deliberately separate from `mismatches`: a deferred
+        /// observer plane is a typed Unavailable outcome, never a parity
+        /// disagreement.
+        unavailable: usize,
+        verified: bool,
+    },
     Unavailable(AuthorityUnavailableCause),
     Terminal(CompileTerminalKind),
+}
+
+/// Final accounting decision for a real-package audit.
+///
+/// Source, toolchain, and deferred observer-plane absence are counted in the
+/// typed `unavailable` terminal collection and can never be mistaken for a
+/// parity disagreement. Only a genuine source-vs-output disagreement
+/// (`mismatches`) is fatal, together with a shortfall in attempted capacity.
+pub(super) fn real_audit_verdict(audit: &RealAuditSummary) -> Result<(), CorpusAuditError> {
+    let accounted: usize = audit.lanes.iter().map(|lane| lane.attempted).sum();
+    if accounted != REAL_PACKAGE_COUNT {
+        return Err(CorpusAuditError::Inventory {
+            cause: InventoryInvariant::TotalCount {
+                observed: accounted,
+                expected: REAL_PACKAGE_COUNT,
+            },
+        });
+    }
+    if let Some(first) = audit.mismatches.first().copied() {
+        return Err(CorpusAuditError::Mismatches {
+            count: audit.mismatches.len(),
+            first: Some(first),
+        });
+    }
+    if let CorpusCapacityVerdict::Insufficient { observed, required } = audit.capacity {
+        return Err(CorpusAuditError::Inventory {
+            cause: InventoryInvariant::CorpusCapacity { observed, required },
+        });
+    }
+    Ok(())
 }
 
 /// Runs all locally source-bound rows in inventory order.  The function is
@@ -115,14 +153,19 @@ pub(super) fn audit_real_inventory(
                     resolved,
                     authorities,
                     &mut publisher,
+                    &mut unavailable,
                     &mut mismatches,
                 ) {
                     Ok(RealCaseDisposition::Output {
                         mismatches: count,
+                        unavailable: observer_unavailable,
                         verified,
                     }) => {
                         lane.output = lane.output.saturating_add(1);
                         lane.mismatches = lane.mismatches.saturating_add(count);
+                        if observer_unavailable > 0 {
+                            lane.unavailable = lane.unavailable.saturating_add(1);
+                        }
                         lane.verified += usize::from(verified);
                     }
                     Ok(RealCaseDisposition::Unavailable(cause)) => {
@@ -187,6 +230,7 @@ fn audit_source_case(
     resolved: &ResolvedTools<'_>,
     authorities: &AuthorityFactory,
     publisher: &mut PassPublisher,
+    unavailable_sink: &mut Vec<CorpusMismatch>,
     mismatch_sink: &mut Vec<CorpusMismatch>,
 ) -> Result<RealCaseDisposition, CorpusAuditError> {
     let (profile, toolchain) = match native_slot(case.language, resolved) {
@@ -279,7 +323,15 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
+            finish_real_compile(
+                case,
+                expected,
+                compiled,
+                work,
+                publisher,
+                unavailable_sink,
+                mismatch_sink,
+            )
         }
         CorpusLanguage::Go => {
             let fixture = match go_fixture_for_source(case.case_id.raw(), &source.bytes) {
@@ -313,7 +365,15 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
+            finish_real_compile(
+                case,
+                expected,
+                compiled,
+                work,
+                publisher,
+                unavailable_sink,
+                mismatch_sink,
+            )
         }
         CorpusLanguage::Java => {
             let ProviderSlot::Ready(provider) = &authorities.java else {
@@ -343,7 +403,15 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
+            finish_real_compile(
+                case,
+                expected,
+                compiled,
+                work,
+                publisher,
+                unavailable_sink,
+                mismatch_sink,
+            )
         }
         CorpusLanguage::CSharp => {
             let ProviderSlot::Ready(provider) = &authorities.csharp else {
@@ -373,7 +441,15 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
+            finish_real_compile(
+                case,
+                expected,
+                compiled,
+                work,
+                publisher,
+                unavailable_sink,
+                mismatch_sink,
+            )
         }
         CorpusLanguage::TypeScript => {
             let checker = backend_frontend_typescript::legacy::Checker::default();
@@ -401,7 +477,15 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
+            finish_real_compile(
+                case,
+                expected,
+                compiled,
+                work,
+                publisher,
+                unavailable_sink,
+                mismatch_sink,
+            )
         }
         CorpusLanguage::Python => {
             let profile = PythonVersion::Python314;
@@ -438,7 +522,15 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
+            finish_real_compile(
+                case,
+                expected,
+                compiled,
+                work,
+                publisher,
+                unavailable_sink,
+                mismatch_sink,
+            )
         }
         CorpusLanguage::Clang => {
             let compiled = compile_with_authority(
@@ -452,7 +544,15 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
+            finish_real_compile(
+                case,
+                expected,
+                compiled,
+                work,
+                publisher,
+                unavailable_sink,
+                mismatch_sink,
+            )
         }
     }
 }
@@ -465,6 +565,7 @@ fn finish_real_compile<'diagnostic, 'output>(
     compiled: Result<CompiledSemantic<'output>, CompileFailure<'diagnostic>>,
     work: NativeWork,
     publisher: &mut PassPublisher,
+    unavailable_sink: &mut Vec<CorpusMismatch>,
     mismatch_sink: &mut Vec<CorpusMismatch>,
 ) -> Result<RealCaseDisposition, CorpusAuditError> {
     let compiled = match compiled {
@@ -495,18 +596,22 @@ fn finish_real_compile<'diagnostic, 'output>(
     let owned = observe_owned_semantic(&compiled.ir, None);
     let reopened = publisher.publish(&compiled, None)?;
     let before = mismatch_sink.len();
+    let before_unavailable = unavailable_sink.len();
     check_real_output(
         case,
         expected,
         &compiled,
         owned,
         reopened.semantic,
+        unavailable_sink,
         mismatch_sink,
     );
     let count = mismatch_sink.len().saturating_sub(before);
-    let verified = count == 0;
+    let observer_unavailable = unavailable_sink.len().saturating_sub(before_unavailable);
+    let verified = count == 0 && observer_unavailable == 0;
     Ok(RealCaseDisposition::Output {
         mismatches: count,
+        unavailable: observer_unavailable,
         verified,
     })
 }
@@ -517,6 +622,7 @@ fn check_real_output(
     compiled: &CompiledSemantic<'_>,
     owned: observation::SemanticObservation,
     reopened: observation::SemanticObservation,
+    unavailable: &mut Vec<CorpusMismatch>,
     mismatches: &mut Vec<CorpusMismatch>,
 ) {
     if compiled.artifact.source != expected.source {
@@ -587,7 +693,7 @@ fn check_real_output(
             }
         }
         SourceAuthorityFacts::Unavailable => {
-            mismatches.push(CorpusMismatch::RealUnavailable {
+            unavailable.push(CorpusMismatch::RealUnavailable {
                 case,
                 field: RealAuditField::SourceSpans,
                 cause: AuthorityUnavailableCause::ObserverUnavailable,
@@ -604,7 +710,7 @@ fn check_real_output(
         RealAuditField::CanonicalType,
         RealAuditField::Render,
     ] {
-        mismatches.push(CorpusMismatch::RealUnavailable {
+        unavailable.push(CorpusMismatch::RealUnavailable {
             case,
             field,
             cause: AuthorityUnavailableCause::ObserverUnavailable,
@@ -615,6 +721,7 @@ fn check_real_output(
         expected,
         owned.image,
         RealAuditField::SemanticImage,
+        unavailable,
         mismatches,
     );
     check_image_provenance(
@@ -622,6 +729,7 @@ fn check_real_output(
         expected,
         reopened.image,
         RealAuditField::Reopened,
+        unavailable,
         mismatches,
     );
     if owned.identity != reopened.identity {
@@ -639,10 +747,11 @@ fn check_image_provenance(
     expected: SourceExpectation,
     image: Option<backend_semantic::ir::SemanticImageFacts>,
     field: RealAuditField,
+    unavailable: &mut Vec<CorpusMismatch>,
     mismatches: &mut Vec<CorpusMismatch>,
 ) {
     let Some(image) = image else {
-        mismatches.push(CorpusMismatch::RealUnavailable {
+        unavailable.push(CorpusMismatch::RealUnavailable {
             case,
             field,
             cause: AuthorityUnavailableCause::ObserverUnavailable,
@@ -672,7 +781,7 @@ fn check_image_provenance(
                 });
             }
         }
-        ImageProvenance::Unavailable => mismatches.push(CorpusMismatch::RealUnavailable {
+        ImageProvenance::Unavailable => unavailable.push(CorpusMismatch::RealUnavailable {
             case,
             field,
             cause: AuthorityUnavailableCause::ObserverUnavailable,
