@@ -573,6 +573,22 @@ fn real_package_inventory_keeps_source_provenance_and_closed_terminals()
         );
     }
     eprintln!("real-corpus capacity={:?}", audit.capacity);
+    eprintln!(
+        "real-corpus manifest={} seed={:#x} unavailable_terminals={} parity_mismatches={}",
+        inventory::fleet_manifest::FLEET_MANIFEST_VERSION,
+        inventory::fleet_manifest::FLEET_SELECTION_SEED,
+        audit.unavailable.len(),
+        audit.mismatches.len(),
+    );
+    let accounted: usize = audit.lanes.iter().map(|lane| lane.attempted).sum();
+    if accounted != REAL_PACKAGE_COUNT {
+        return Err(CorpusAuditError::Inventory {
+            cause: InventoryInvariant::TotalCount {
+                observed: accounted,
+                expected: REAL_PACKAGE_COUNT,
+            },
+        });
+    }
     if let Some(first) = audit.mismatches.first().copied() {
         return Err(CorpusAuditError::Mismatches {
             count: audit.mismatches.len(),
@@ -678,4 +694,53 @@ fn run_pass(
         summary,
         mismatches: mismatches.into_boxed_slice(),
     })
+}
+
+/// Proves the fleet manifest selection is seeded and deterministic: the same
+/// seed produces byte-identical selections and a different seed does not. Both
+/// invocations run in-process against the committed manifest, so this is a
+/// genuine reproducibility check rather than a recorded constant.
+#[test]
+fn fleet_selection_is_seeded_and_reproducible() {
+    use inventory::fleet_manifest::{
+        manifest_lane_counts, manifest_origin_counts, selection_bytes_for_seed, FLEET_MANIFEST_VERSION,
+        FLEET_SELECTION_SEED,
+    };
+
+    let first = selection_bytes_for_seed(FLEET_SELECTION_SEED);
+    let second = selection_bytes_for_seed(FLEET_SELECTION_SEED);
+    assert_eq!(
+        first, second,
+        "the same seed must select the same rows in the same order"
+    );
+    assert_eq!(
+        first.iter().filter(|byte| **byte == b'\n').count(),
+        REAL_PACKAGE_COUNT,
+        "the selection must contain exactly one row per newline"
+    );
+
+    let alternate_seed = FLEET_SELECTION_SEED ^ 0x00C0_FFEE_0000_0001;
+    let alternate = selection_bytes_for_seed(alternate_seed);
+    assert_ne!(
+        first, alternate,
+        "a different seed must not reproduce the default selection"
+    );
+
+    let fingerprint = first.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+
+    eprintln!(
+        "fleet-selection version={} seed={:#x} alternate_seed={:#x} rows={} bytes={} fingerprint={fingerprint:#018x}",
+        FLEET_MANIFEST_VERSION,
+        FLEET_SELECTION_SEED,
+        alternate_seed,
+        REAL_PACKAGE_COUNT,
+        first.len(),
+    );
+    eprintln!(
+        "fleet-selection lane_candidates={:?} origin_candidates(locked,committed,host)={:?}",
+        manifest_lane_counts(),
+        manifest_origin_counts(),
+    );
 }

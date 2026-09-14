@@ -8,30 +8,28 @@
 
 use super::*;
 
+#[path = "fleet_manifest.rs"]
+pub(super) mod fleet_manifest;
 #[path = "inventory_resolve.rs"]
 mod inventory_resolve;
-#[path = "inventory_tables.rs"]
-mod inventory_tables;
-use inventory_resolve::resolve_package_source;
-use inventory_tables::{
-    CLANG_PROJECTS, CSHARP_PACKAGES, GO_PACKAGES, JAVA_PACKAGES, PYTHON_PACKAGES, RUST_PACKAGES,
-    TYPESCRIPT_PACKAGES,
+use fleet_manifest::{
+    candidate_at, FLEET_CANDIDATE_LANES, FLEET_SELECTION, FLEET_SELECTION_SEED,
+    FLEET_SELECTION_TARGET, FLEET_PACKAGE_MINIMUM,
 };
+use inventory_resolve::resolve_package_source;
 
-/// The frozen driver tables contain twenty rows for every lane except Go,
-/// whose table also carries the `rsc.io/quote` source package.  Keep that
-/// asymmetry explicit instead of silently trimming a committed row to fit a
-/// convenient rectangular matrix.
-pub(super) const REAL_CASES_PER_LANE: usize = 20;
-pub(super) const GO_CASES_PER_LANE: usize = 21;
-pub(super) const REAL_PACKAGE_COUNT: usize =
-    REAL_CASES_PER_LANE * (CorpusLanguage::ALL.len() - 1) + GO_CASES_PER_LANE;
-/// The requested package audit is a 200+ row audit.  The committed primary
-/// lane tables currently contain only 141 distinct coordinates; this is kept
-/// as an explicit capacity terminal rather than padded with generated cases,
-/// dependency metadata, or invented package names.
-pub(super) const MIN_REAL_PACKAGE_COUNT: usize = 200;
+/// The requested package audit is a 200+ row audit.  The count is derived from
+/// the versioned fleet manifest's seeded selection rather than from a frozen
+/// rectangle, so extending the manifest directly extends the audit.
+pub(super) const REAL_PACKAGE_COUNT: usize = fleet_manifest::selection_len();
+pub(super) const MIN_REAL_PACKAGE_COUNT: usize = FLEET_PACKAGE_MINIMUM;
 pub(super) const REAL_SOURCE_BYTE_LIMIT: u64 = 4 * 1024 * 1024;
+
+const _: () = {
+    assert!(FLEET_SELECTION.len() == REAL_PACKAGE_COUNT);
+    assert!(REAL_PACKAGE_COUNT <= FLEET_SELECTION_TARGET);
+    assert!(FLEET_SELECTION_SEED != 0);
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) enum PackageCoordinate {
@@ -148,7 +146,6 @@ pub(super) struct CorpusLane {
     pub(super) language: CorpusLanguage,
     pub(super) profile: LanguageProfile,
     pub(super) table: CorpusTable,
-    coordinates: &'static [PackageCoordinate],
     root: SourceRoot,
 }
 
@@ -192,6 +189,9 @@ pub(super) enum InventoryInvariant {
         observed: CaseId,
     },
     MissingCaseId,
+    SelectionIndex {
+        index: usize,
+    },
     DuplicateCoordinate {
         language: CorpusLanguage,
         coordinate: PackageCoordinate,
@@ -330,7 +330,6 @@ const LANES: [CorpusLane; 7] = [
         language: CorpusLanguage::Rust,
         profile: LanguageProfile::Rust(RustEdition::Rust2024),
         table: CorpusTable::RustDriver,
-        coordinates: &RUST_PACKAGES,
         root: SourceRoot::Environment {
             variable: "NUDOX_RUST_CORPUS_DIR",
             relative: "",
@@ -342,7 +341,6 @@ const LANES: [CorpusLane; 7] = [
         language: CorpusLanguage::TypeScript,
         profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
         table: CorpusTable::TypeScriptDriver,
-        coordinates: &TYPESCRIPT_PACKAGES,
         root: SourceRoot::Environment {
             variable: "NUDOX_TYPESCRIPT_CORPUS_DIR",
             relative: "",
@@ -354,7 +352,6 @@ const LANES: [CorpusLane; 7] = [
         language: CorpusLanguage::Python,
         profile: LanguageProfile::Python(PythonVersion::Python314),
         table: CorpusTable::PythonDriver,
-        coordinates: &PYTHON_PACKAGES,
         root: SourceRoot::Environment {
             variable: "NUDOX_PYTHON_CORPUS_DIR",
             relative: "",
@@ -366,7 +363,6 @@ const LANES: [CorpusLane; 7] = [
         language: CorpusLanguage::Go,
         profile: LanguageProfile::Go(GoVersion::Go125),
         table: CorpusTable::GoDriver,
-        coordinates: &GO_PACKAGES,
         root: SourceRoot::Environment {
             variable: "NUDOX_GO_CORPUS_DIR",
             relative: "",
@@ -378,7 +374,6 @@ const LANES: [CorpusLane; 7] = [
         language: CorpusLanguage::Java,
         profile: LanguageProfile::Java(JavaRelease::Java21),
         table: CorpusTable::JavaDriver,
-        coordinates: &JAVA_PACKAGES,
         root: SourceRoot::Environment {
             variable: "NUDOX_JAVA_CORPUS_DIR",
             relative: "",
@@ -390,7 +385,6 @@ const LANES: [CorpusLane; 7] = [
         language: CorpusLanguage::CSharp,
         profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
         table: CorpusTable::CSharpDriver,
-        coordinates: &CSHARP_PACKAGES,
         root: SourceRoot::Environment {
             variable: "NUDOX_CSHARP_CORPUS_DIR",
             relative: "",
@@ -402,7 +396,6 @@ const LANES: [CorpusLane; 7] = [
         language: CorpusLanguage::Clang,
         profile: LanguageProfile::Cxx(CxxStandard::Cxx23),
         table: CorpusTable::ClangEvidence,
-        coordinates: &CLANG_PROJECTS,
         root: SourceRoot::Environment {
             variable: "NUDOX_CLANG_CORPUS_DIR",
             relative: "",
@@ -506,60 +499,45 @@ pub(super) fn local_fixture_inputs() -> impl Iterator<Item = LocalFixtureInput> 
         })
 }
 
+/// Resolve the manifest's seeded selection into concrete cases. Every selected
+/// flat manifest index is mapped through its lane so a row can never be
+/// partially constructed or silently dropped: the stride is a bijection over
+/// the manifest and [`validate_real_inventory`] proves the index set is
+/// distinct and in range before this iterator is consumed.
 pub(super) fn real_package_cases() -> impl Iterator<Item = RealPackageCase> {
-    LANES.iter().enumerate().flat_map(|(lane_index, lane)| {
-        let offset = match lane_index {
-            0 => 0,
-            1 => REAL_CASES_PER_LANE,
-            2 => REAL_CASES_PER_LANE * 2,
-            3 => REAL_CASES_PER_LANE * 3,
-            4 => REAL_CASES_PER_LANE * 3 + GO_CASES_PER_LANE,
-            5 => REAL_CASES_PER_LANE * 4 + GO_CASES_PER_LANE,
-            6 => REAL_CASES_PER_LANE * 5 + GO_CASES_PER_LANE,
-            _ => REAL_PACKAGE_COUNT,
-        };
-        lane.coordinates
-            .iter()
-            .copied()
-            .enumerate()
-            .map(move |(index, coordinate)| RealPackageCase {
-                ordinal: offset + index,
-                case_id: CaseId((offset + index) as u16),
+    FLEET_SELECTION
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(ordinal, flat)| {
+            let (lane_index, local_index) = candidate_at(flat)
+                .expect("seeded fleet selection always addresses a manifest row");
+            let lane = LANES[lane_index];
+            let candidate = FLEET_CANDIDATE_LANES[lane_index][local_index];
+            RealPackageCase {
+                ordinal,
+                case_id: CaseId(ordinal as u16),
                 language: lane.language,
                 profile: lane.profile,
-                table: lane.table,
-                coordinate,
+                table: candidate.table,
+                coordinate: candidate.coordinate,
                 root: lane.root,
-            })
-    })
+            }
+        })
 }
 
 pub(super) fn validate_real_inventory() -> Result<(), InventoryInvariant> {
-    let mut total = 0_usize;
     let mut all_coordinates = Vec::new();
-    for lane in real_package_inventory().iter().copied() {
-        let observed = lane.coordinates.len();
-        let expected = match lane.language {
-            CorpusLanguage::Go => GO_CASES_PER_LANE,
-            _ => REAL_CASES_PER_LANE,
-        };
-        if observed != expected {
+    for (lane_index, candidates) in FLEET_CANDIDATE_LANES.iter().enumerate() {
+        let lane = LANES[lane_index];
+        if candidates.is_empty() {
             return Err(InventoryInvariant::LaneCount {
                 language: lane.language,
-                observed,
-                expected,
+                observed: 0,
+                expected: 1,
             });
         }
-        let expected_profile = match lane.language {
-            CorpusLanguage::Rust => LanguageProfile::Rust(RustEdition::Rust2024),
-            CorpusLanguage::TypeScript => LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
-            CorpusLanguage::Python => LanguageProfile::Python(PythonVersion::Python314),
-            CorpusLanguage::Go => LanguageProfile::Go(GoVersion::Go125),
-            CorpusLanguage::Java => LanguageProfile::Java(JavaRelease::Java21),
-            CorpusLanguage::CSharp => LanguageProfile::CSharp(CSharpVersion::CSharp14),
-            CorpusLanguage::Clang => LanguageProfile::Cxx(CxxStandard::Cxx23),
-        };
-        if lane.profile != expected_profile {
+        if lane.profile != expected_profile(lane.language) {
             return Err(InventoryInvariant::ProfileMismatch {
                 language: lane.language,
                 profile: lane.profile,
@@ -571,26 +549,25 @@ pub(super) fn validate_real_inventory() -> Result<(), InventoryInvariant> {
                 table: lane.table,
             });
         }
-        for (index, left) in lane.coordinates.iter().copied().enumerate() {
-            if lane.coordinates[index + 1..]
+        for (index, left) in candidates.iter().copied().enumerate() {
+            if left.table != expected_table(lane.language) {
+                return Err(InventoryInvariant::TableMismatch {
+                    language: lane.language,
+                    table: left.table,
+                });
+            }
+            if candidates[index + 1..]
                 .iter()
                 .copied()
-                .any(|right| right == left)
+                .any(|right| right.coordinate == left.coordinate)
             {
                 return Err(InventoryInvariant::DuplicateCoordinate {
                     language: lane.language,
-                    coordinate: left,
+                    coordinate: left.coordinate,
                 });
             }
         }
-        all_coordinates.extend(lane.coordinates.iter().copied());
-        total += observed;
-    }
-    if total != REAL_PACKAGE_COUNT {
-        return Err(InventoryInvariant::TotalCount {
-            observed: total,
-            expected: REAL_PACKAGE_COUNT,
-        });
+        all_coordinates.extend(candidates.iter().map(|candidate| candidate.coordinate));
     }
     all_coordinates.sort_unstable();
     for pair in all_coordinates.windows(2) {
@@ -599,6 +576,32 @@ pub(super) fn validate_real_inventory() -> Result<(), InventoryInvariant> {
                 coordinate: pair[0],
             });
         }
+    }
+    // The manifest must be able to serve the requested audit size; otherwise
+    // the capacity terminal stays typed and red rather than silently shrinking
+    // the minimum.
+    let manifest_len = fleet_manifest::manifest_candidate_count();
+    if manifest_len < MIN_REAL_PACKAGE_COUNT {
+        return Err(InventoryInvariant::TotalCount {
+            observed: manifest_len,
+            expected: MIN_REAL_PACKAGE_COUNT,
+        });
+    }
+    // Every selected row must be a distinct, in-range manifest slot. A repeated
+    // or out-of-range index would be a silent skip in disguise, so it is a
+    // typed invariant failure.
+    let mut selection_seen = vec![false; manifest_len];
+    for &flat in FLEET_SELECTION.iter() {
+        if flat >= manifest_len || selection_seen[flat] {
+            return Err(InventoryInvariant::SelectionIndex { index: flat });
+        }
+        selection_seen[flat] = true;
+    }
+    if selection_seen.iter().filter(|seen| **seen).count() != REAL_PACKAGE_COUNT {
+        return Err(InventoryInvariant::TotalCount {
+            observed: selection_seen.iter().filter(|seen| **seen).count(),
+            expected: REAL_PACKAGE_COUNT,
+        });
     }
     let mut seen_case_ids = [false; REAL_PACKAGE_COUNT];
     for case in real_package_cases() {
@@ -721,7 +724,7 @@ pub(super) fn validate_source_inventory() -> Result<RealInventorySummary, Invent
         source_bound: [0; CorpusLanguage::ALL.len()],
         unavailable: [0; CorpusLanguage::ALL.len()],
         capacity: CorpusCapacityVerdict::Insufficient {
-            observed: REAL_PACKAGE_COUNT,
+            observed: 0,
             required: MIN_REAL_PACKAGE_COUNT,
         },
     };
@@ -797,6 +800,18 @@ const fn expected_table(language: CorpusLanguage) -> CorpusTable {
         CorpusLanguage::Java => CorpusTable::JavaDriver,
         CorpusLanguage::CSharp => CorpusTable::CSharpDriver,
         CorpusLanguage::Clang => CorpusTable::ClangEvidence,
+    }
+}
+
+const fn expected_profile(language: CorpusLanguage) -> LanguageProfile {
+    match language {
+        CorpusLanguage::Rust => LanguageProfile::Rust(RustEdition::Rust2024),
+        CorpusLanguage::TypeScript => LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+        CorpusLanguage::Python => LanguageProfile::Python(PythonVersion::Python314),
+        CorpusLanguage::Go => LanguageProfile::Go(GoVersion::Go125),
+        CorpusLanguage::Java => LanguageProfile::Java(JavaRelease::Java21),
+        CorpusLanguage::CSharp => LanguageProfile::CSharp(CSharpVersion::CSharp14),
+        CorpusLanguage::Clang => LanguageProfile::Cxx(CxxStandard::Cxx23),
     }
 }
 
