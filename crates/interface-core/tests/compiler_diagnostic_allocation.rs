@@ -9,14 +9,29 @@ use allocation_counter::{AllocationInfo, measure};
 use backend_semantic::vocabulary::{Language, LanguageProfile, RustEdition, Stage};
 use interface_core::{
     ApplicationInput, ApplicationOutcome, ApplicationService, Capability, CompilerCapability,
-    CompilerDiagnostic, CompilerRequest, CompilerTerminal, CorrelationId, InputText,
-    MAX_NATIVE_DIAGNOSTIC_BYTES, ReplyBody, UnavailableCompiler,
+    CompilerDiagnostic, CompilerRequest, CompilerTerminal, CorrelationId, DurableReceiptAuthority,
+    InputText, MAX_NATIVE_DIAGNOSTIC_BYTES, ReplyBody, UnavailableCompiler,
 };
 
-// The durable semantic result adds one 32-byte image identity and its exact
-// extent to the former compact-artifact reply layout.
-const EXPECTED_APPLICATION_REPLY_BYTES: usize = 312;
-const EXPECTED_APPLICATION_OUTCOME_BYTES: usize = 304;
+// The durable semantic result previously added one 32-byte image identity and
+// its exact extent to the compact-artifact reply layout (312 bytes). A later
+// revision added the durable publication receipt to `PublicationAuthority`:
+// `DurableReceiptAuthority` is 48 bytes (two u64 frame ends plus two 16-byte
+// checksums), which accounts for the entire growth to the intended 360-byte
+// LP64 reply. The const assertions below pin the exact width and prove the
+// delta is exactly that receipt so a future divergent change is caught.
+const EXPECTED_APPLICATION_REPLY_BYTES: usize = 360;
+const EXPECTED_APPLICATION_OUTCOME_BYTES: usize = 352;
+
+const _: () = assert!(
+    EXPECTED_APPLICATION_REPLY_BYTES - size_of::<DurableReceiptAuthority>() == 312,
+    "reply grew by something other than the durable publication receipt"
+);
+const _: () = assert!(
+    EXPECTED_APPLICATION_OUTCOME_BYTES
+        == EXPECTED_APPLICATION_REPLY_BYTES - size_of::<CorrelationId>(),
+    "outcome plus correlation must equal the reply width"
+);
 
 #[derive(Debug, Eq, PartialEq)]
 enum DiagnosticAllocationTestError {

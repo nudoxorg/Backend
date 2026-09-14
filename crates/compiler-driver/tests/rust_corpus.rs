@@ -118,12 +118,17 @@ const CORPUS: [CorpusRow; 20] = [
         purl: "cargo:windows_x86_64_gnullvm@0.48.5",
         kind: LocateKind::Registry,
     },
+    // `compiler-ir-vocabulary` and `compiler-ir` both folded into the
+    // `backend-semantic` package. The frozen corpus keeps two distinct
+    // workspace coordinates, so the second row names `backend-version`, the
+    // current home of the canonical identity/version primitives that
+    // `compiler-ir` re-exported from the former `heart-identity` crate.
     CorpusRow {
-        purl: "cargo:compiler-ir-vocabulary@0.1.0",
+        purl: "cargo:backend-semantic@0.1.0",
         kind: LocateKind::Workspace,
     },
     CorpusRow {
-        purl: "cargo:compiler-ir@0.1.0",
+        purl: "cargo:backend-version@0.1.0",
         kind: LocateKind::Workspace,
     },
 ];

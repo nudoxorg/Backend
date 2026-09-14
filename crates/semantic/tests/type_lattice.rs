@@ -85,7 +85,6 @@ fn leaf_tags_reject_any_foreign_cell() {
     for tag in [
         SemanticTypeTag::Never,
         SemanticTypeTag::Any,
-        SemanticTypeTag::Inferred,
         SemanticTypeTag::Tuple,
         SemanticTypeTag::Union,
         SemanticTypeTag::Intersection,
@@ -124,6 +123,31 @@ fn leaf_tags_reject_any_foreign_cell() {
             })
         );
     }
+    // `Inferred` is also a zero-child leaf, but it owns an optional source
+    // spelling (`_`, `auto`, `var`); only its payload cells are reserved.
+    let mut inferred = record(SemanticTypeTag::Inferred);
+    inferred.payload0 = 1;
+    assert_eq!(
+        inferred.validate(0),
+        Err(SemanticTypeFault::ReservedCell {
+            tag: SemanticTypeTag::Inferred,
+            cell: TypeCell::Payload0,
+            actual: 1,
+        })
+    );
+    let mut inferred = record(SemanticTypeTag::Inferred);
+    inferred.payload1 = 1;
+    assert_eq!(
+        inferred.validate(0),
+        Err(SemanticTypeFault::ReservedCell {
+            tag: SemanticTypeTag::Inferred,
+            cell: TypeCell::Payload1,
+            actual: 1,
+        })
+    );
+    let mut inferred = record(SemanticTypeTag::Inferred);
+    inferred.text = Some(b"_");
+    assert_eq!(inferred.validate(0), Ok(()));
     // Conditional and Apply own children, so their cell laws are proven at
     // a legal child count.
     for tag in [SemanticTypeTag::Conditional, SemanticTypeTag::Apply] {
@@ -313,12 +337,14 @@ fn primitive_rows_own_cells_by_shape() {
     );
     row.text = Some(b"Date");
     assert_eq!(row.validate(0), Ok(()));
-    // An unknown shape keeps its exact operand.
+    // An unknown shape keeps its exact operand. The closed set now runs
+    // through 27 (`CWideUnsignedChar`); 9 is a real `CPointer` shape and is
+    // therefore no longer a valid "unknown" probe.
     let mut row = record(SemanticTypeTag::Primitive);
-    row.payload0 = 9;
+    row.payload0 = 28;
     assert_eq!(
         row.validate(0),
-        Err(SemanticTypeFault::PrimitiveShape { actual: 9 })
+        Err(SemanticTypeFault::PrimitiveShape { actual: 28 })
     );
 }
 
@@ -641,18 +667,28 @@ fn variadic_function_rows_have_one_final_rest_parameter_and_plain_results() {
         name: None,
         flags,
     };
+    // With two committed results out of three children, there is exactly one
+    // parameter, at position 0, and that final parameter must carry the rest
+    // marker. Positions 1 and 2 are the result range and may carry neither
+    // rest nor optional.
     assert_eq!(
         row.validate_child_in_row(0, 3, &child(SemanticTypeChild::FLAG_REST)),
-        Err(SemanticTypeFault::ChildFlagsForbidden {
-            tag: SemanticTypeTag::FunctionPointer,
+        Ok(())
+    );
+    assert_eq!(
+        row.validate_child_in_row(0, 3, &child(0)),
+        Err(SemanticTypeFault::VariadicParameter {
             position: 0,
-            actual: SemanticTypeChild::FLAG_REST,
+            actual: 0,
         })
     );
-    assert_eq!(row.validate_child_in_row(0, 3, &child(0)), Ok(()));
     assert_eq!(
         row.validate_child_in_row(1, 3, &child(SemanticTypeChild::FLAG_REST)),
-        Ok(())
+        Err(SemanticTypeFault::ChildFlagsForbidden {
+            tag: SemanticTypeTag::FunctionPointer,
+            position: 1,
+            actual: SemanticTypeChild::FLAG_REST,
+        })
     );
     assert_eq!(
         row.validate_child_in_row(2, 3, &child(SemanticTypeChild::FLAG_OPTIONAL)),

@@ -24,8 +24,11 @@ pub(super) const RUST_PACKAGES: [PackageCoordinate; REAL_CASES_PER_LANE] = [
     PackageCoordinate::Purl("cargo:typed-arena@2.0.2"),
     PackageCoordinate::Purl("cargo:wasmtime-internal-versioned-export-macros@47.0.3"),
     PackageCoordinate::Purl("cargo:windows_x86_64_gnullvm@0.48.5"),
-    PackageCoordinate::Purl("cargo:compiler-ir-vocabulary@0.1.0"),
-    PackageCoordinate::Purl("cargo:compiler-ir@0.1.0"),
+    // `compiler-ir-vocabulary` and `compiler-ir` both folded into
+    // `backend-semantic`; `backend-version` keeps the two frozen workspace
+    // coordinates distinct while naming a real current package.
+    PackageCoordinate::Purl("cargo:backend-semantic@0.1.0"),
+    PackageCoordinate::Purl("cargo:backend-version@0.1.0"),
 ];
 
 pub(super) const TYPESCRIPT_PACKAGES: [PackageCoordinate; REAL_CASES_PER_LANE] = [
