@@ -289,7 +289,10 @@ fn oversized_feed_is_rejected_before_unbounded_read() {
             cursor,
             max_items: 1
         }),
-        Err(TransportFailure::Bounds)
+        Err(TransportFailure::Overrun {
+            measured: 65,
+            limit: 64
+        })
     ));
     server.join().expect("server");
 }
@@ -469,6 +472,220 @@ fn package_coordinates_are_closed_and_render_canonically() {
         admit_registry_coordinate(&incomplete_maven),
         Err(AcquisitionError::InvalidCoordinate)
     ));
+}
+
+#[test]
+fn cold_cache_resolution_is_typed_for_every_ecosystem() {
+    struct PanicTransport;
+    impl RegistryTransport for PanicTransport {
+        fn fetch_page(
+            &mut self,
+            _: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            panic!("offline resolution must not touch the network")
+        }
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<Vec<u8>>, TransportFailure> {
+            panic!("offline resolution must not touch the network")
+        }
+    }
+    let cases = [
+        (RegistryEcosystem::Cargo, "pkg:cargo/serde@1.0.0"),
+        (RegistryEcosystem::Npm, "pkg:npm/@types/node@20.0.0"),
+        (RegistryEcosystem::Pypi, "pkg:pypi/typing_extensions@4.0.0"),
+        (
+            RegistryEcosystem::Maven,
+            "pkg:maven/com.google.guava/guava@33.0.0-jre",
+        ),
+        (RegistryEcosystem::Nuget, "pkg:nuget/AutoMapper@13.0.0"),
+        (
+            RegistryEcosystem::Golang,
+            "pkg:golang/github.com/pkg/errors@v0.9.1",
+        ),
+        (
+            RegistryEcosystem::Cpp,
+            "pkg:generic/stable/example/zlib@1.2.13",
+        ),
+    ];
+    for (ecosystem, text) in cases {
+        let coordinate = PackageCoordinate::parse(text).expect("representative coordinate");
+        assert_eq!(coordinate.package_type().registry(), Some(ecosystem));
+        let endpoint =
+            RegistryEndpoint::new(ecosystem, "https://registry.example.test").expect("endpoint");
+        let root = temporary("cold-cache");
+        let (mut owner, recovery) = RegistryOwner::open(
+            &root,
+            endpoint.clone(),
+            AcquisitionPolicy::Offline,
+            limits(),
+        )
+        .expect("cold-cache owner");
+        assert_eq!(recovery.cursor.sequence(), 0);
+        assert!(
+            matches!(
+                owner.poll(&mut PanicTransport).expect("typed offline"),
+                AcquisitionOutcome::Offline { .. }
+            ),
+            "{ecosystem:?} cold cache must resolve to a typed offline terminal"
+        );
+        let layout = storage_root(&root, &endpoint);
+        assert!(
+            layout.join("registry.journal").is_file(),
+            "{ecosystem:?} cache root is not deterministic"
+        );
+        assert!(layout.join("registry-objects").is_dir());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+}
+
+#[test]
+fn acquisition_cache_layout_is_deterministic_and_ecosystem_scoped() {
+    let cargo = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("cargo endpoint");
+    let npm = RegistryEndpoint::new(RegistryEcosystem::Npm, "https://registry.example.test")
+        .expect("npm endpoint");
+    let root = temporary("layout");
+    let cargo_root = storage_root(&root, &cargo);
+    assert_eq!(
+        cargo_root,
+        root.join("cargo")
+            .join(transport::hex(&cargo.id().as_bytes()))
+    );
+    assert_eq!(cargo_root, storage_root(&root, &cargo));
+    assert_ne!(cargo_root, storage_root(&root, &npm));
+    let (owner, _) =
+        RegistryOwner::open(&root, cargo.clone(), AcquisitionPolicy::Offline, limits())
+            .expect("owner");
+    assert!(cargo_root.join("registry.journal").is_file());
+    assert!(cargo_root.join("registry-objects").is_dir());
+    drop(owner);
+    let (_, recovery) =
+        RegistryOwner::open(&root, cargo, AcquisitionPolicy::Offline, limits()).expect("reopen");
+    assert_eq!(recovery.cursor.sequence(), 0);
+    assert!(recovery.pending.is_none());
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn unavailable_source_is_a_typed_terminal_for_every_ecosystem() {
+    struct UnavailableTransport;
+    impl RegistryTransport for UnavailableTransport {
+        fn fetch_page(
+            &mut self,
+            _: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            Ok(TransportResult::Unavailable)
+        }
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<Vec<u8>>, TransportFailure> {
+            panic!("archive called without an admitted page")
+        }
+    }
+    for ecosystem in [
+        RegistryEcosystem::Cargo,
+        RegistryEcosystem::Npm,
+        RegistryEcosystem::Pypi,
+        RegistryEcosystem::Maven,
+        RegistryEcosystem::Nuget,
+        RegistryEcosystem::Golang,
+        RegistryEcosystem::Cpp,
+    ] {
+        let endpoint =
+            RegistryEndpoint::new(ecosystem, "https://registry.example.test").expect("endpoint");
+        let root = temporary("unavailable-eco");
+        let (mut owner, _) =
+            RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+                .expect("owner");
+        assert!(matches!(
+            owner.poll(&mut UnavailableTransport).expect("typed"),
+            AcquisitionOutcome::Unavailable { .. }
+        ));
+        assert_eq!(owner.cursor().sequence(), 0);
+        drop(owner);
+        let (_, recovery) =
+            RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+                .expect("recovery");
+        assert!(recovery.pending.is_some(), "durable retry intent retained");
+        assert_eq!(recovery.cursor.sequence(), 0);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+}
+
+#[test]
+fn archive_extent_over_the_cap_is_a_measured_typed_overrun() {
+    let archive = vec![0x5a_u8; 4096];
+    let (endpoint_text, server) = live_fixture(&archive, [0_u8; 32]);
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("endpoint");
+    let root = temporary("archive-overrun");
+    let mut constrained = limits();
+    constrained.max_archive_bytes = 256;
+    constrained.max_page_archive_bytes = 256;
+    let (mut owner, _) = RegistryOwner::open(
+        &root,
+        endpoint.clone(),
+        AcquisitionPolicy::Online,
+        constrained,
+    )
+    .expect("owner");
+    let mut transport = HttpRegistryTransport::new(endpoint, None, constrained).expect("transport");
+    match owner.poll(&mut transport) {
+        Err(AcquisitionError::Transport(TransportFailure::Overrun { measured, limit })) => {
+            assert_eq!(limit, 256);
+            assert!(measured > limit, "measured extent must exceed the cap");
+        }
+        other => panic!("expected measured typed overrun, got {other:?}"),
+    }
+    assert_eq!(owner.cursor().sequence(), 0, "no cursor advance on overrun");
+    server.join().expect("server");
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn default_limits_admit_large_sdists_and_more_than_two_hundred_packages() {
+    let limits = AcquisitionLimits::default();
+    assert!(limits.max_items >= 200);
+    assert!(limits.max_archive_bytes > 64 * 1024 * 1024);
+    assert!(limits.max_page_archive_bytes >= limits.max_archive_bytes);
+    assert!(limits.max_catalog_items >= 200);
+    assert!(limits.validate().is_ok());
+}
+
+#[test]
+fn native_metadata_admits_more_than_two_hundred_versions() {
+    let origin = "https://registry.example.test";
+    let checksum = "0".repeat(64);
+    let rows = (0..250)
+        .map(|index| {
+            format!("{{\"name\":\"demo\",\"vers\":\"1.0.{index}\",\"cksum\":\"{checksum}\"}}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, origin).expect("endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint.clone(),
+        PackageName::new("demo").expect("package"),
+        None,
+    )
+    .expect("adapter");
+    let releases = adapter
+        .decode(rows.as_bytes())
+        .expect("decode 250 versions");
+    assert_eq!(releases.len(), 250);
+    let page = adapter
+        .admit_page(
+            rows.as_bytes(),
+            FeedRequest {
+                cursor: FeedCursor::genesis(endpoint.id()),
+                max_items: 250,
+            },
+        )
+        .expect("admit 250 versions");
+    assert_eq!(page.packages.len(), 250);
 }
 
 fn digest_hex(bytes: &[u8]) -> String {

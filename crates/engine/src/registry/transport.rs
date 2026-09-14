@@ -97,6 +97,17 @@ pub enum TransportFailure {
     Configuration,
     /// Response exceeded an admission bound.
     Bounds,
+    /// Response exceeded an admission bound, with the measured extent.
+    ///
+    /// Carries the observed byte count and the configured cap so a legitimate
+    /// large archive or metadata page can be distinguished from a malformed or
+    /// hostile response, and the cap raised deliberately.
+    Overrun {
+        /// Bytes actually read from the bounded response.
+        measured: u64,
+        /// Configured maximum admitted bytes.
+        limit: u64,
+    },
     /// Remote response did not match the canonical feed grammar.
     Protocol,
     /// Registry rejected the request permanently.
@@ -225,7 +236,11 @@ impl HttpRegistryTransport {
                         .read_to_end(&mut bytes)
                         .map_err(|_| TransportFailure::Protocol)?;
                     if bytes.len() > maximum {
-                        return Err(TransportFailure::Bounds);
+                        return Err(TransportFailure::Overrun {
+                            measured: u64::try_from(bytes.len())
+                                .map_err(|_| TransportFailure::Bounds)?,
+                            limit: u64::try_from(maximum).map_err(|_| TransportFailure::Bounds)?,
+                        });
                     }
                     return Ok(TransportResult::Available(bytes));
                 }

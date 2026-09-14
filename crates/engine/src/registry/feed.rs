@@ -26,7 +26,10 @@ pub(super) fn admit_page(
         .and_then(Value::as_array)
         .ok_or(TransportFailure::Protocol)?;
     if rows.len() > request.max_items {
-        return Err(TransportFailure::Bounds);
+        return Err(TransportFailure::Overrun {
+            measured: u64::try_from(rows.len()).map_err(|_| TransportFailure::Bounds)?,
+            limit: u64::try_from(request.max_items).map_err(|_| TransportFailure::Bounds)?,
+        });
     }
     let mut packages = Vec::with_capacity(rows.len());
     for row in rows {
