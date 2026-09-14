@@ -122,7 +122,8 @@
       "name": "backend-frontend-clang",
       "manifest_path": "frontends/clang/Cargo.toml",
       "dependencies": [
-        "backend-compile"
+        "backend-compile",
+        "backend-semantic"
       ],
       "layer": "frontend",
       "order": 11
@@ -131,7 +132,8 @@
       "name": "backend-frontend-csharp",
       "manifest_path": "frontends/csharp/Cargo.toml",
       "dependencies": [
-        "backend-compile"
+        "backend-compile",
+        "backend-semantic"
       ],
       "layer": "frontend",
       "order": 12
@@ -140,7 +142,8 @@
       "name": "backend-frontend-go",
       "manifest_path": "frontends/go/Cargo.toml",
       "dependencies": [
-        "backend-compile"
+        "backend-compile",
+        "backend-semantic"
       ],
       "layer": "frontend",
       "order": 13
@@ -158,7 +161,8 @@
       "name": "backend-frontend-python",
       "manifest_path": "frontends/python/Cargo.toml",
       "dependencies": [
-        "backend-compile"
+        "backend-compile",
+        "backend-semantic"
       ],
       "layer": "frontend",
       "order": 15
@@ -167,7 +171,8 @@
       "name": "backend-frontend-rust",
       "manifest_path": "frontends/rust/Cargo.toml",
       "dependencies": [
-        "backend-compile"
+        "backend-compile",
+        "backend-semantic"
       ],
       "layer": "frontend",
       "order": 16
@@ -176,7 +181,8 @@
       "name": "backend-frontend-typescript",
       "manifest_path": "frontends/typescript/Cargo.toml",
       "dependencies": [
-        "backend-compile"
+        "backend-compile",
+        "backend-semantic"
       ],
       "layer": "frontend",
       "order": 17
@@ -209,6 +215,7 @@
       "dependencies": [
         "backend-execution",
         "backend-replication",
+        "backend-semantic",
         "backend-version"
       ],
       "layer": "extension",

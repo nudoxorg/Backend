@@ -8638,17 +8638,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "server-index-registry"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "server-index-acquire",
- "thiserror 2.0.20",
- "ureq",
-]
-
-[[package]]
 name = "server-index-retrieval"
 version = "0.1.0"
 dependencies = [
