@@ -120,3 +120,98 @@ fn tree_sitter_is_confined_to_structural_frontends_and_syntax_compile() {
         "boundary scan covered too few shipping files"
     );
 }
+
+/// Every frontend exposes exactly one canonical `Authority` adapter and
+/// documents its retained `legacy` module as subordinate, so no frontend can
+/// present a second semantic plane.
+#[test]
+fn frontends_declare_one_canonical_authority_path() {
+    let mut failures = Vec::new();
+    for frontend in [
+        "clang",
+        "csharp",
+        "go",
+        "java",
+        "python",
+        "rust",
+        "typescript",
+    ] {
+        let lib = source(&format!("frontends/{frontend}/lib.rs"));
+        if lib.matches("impl Authority for").count() != 1 {
+            failures.push(format!(
+                "frontends/{frontend}/lib.rs: expected exactly one canonical Authority impl"
+            ));
+        }
+        let legacy = source(&format!("frontends/{frontend}/src/legacy/mod.rs"));
+        if !legacy.contains("CANONICAL AUTHORITY PATH") {
+            failures.push(format!(
+                "frontends/{frontend}/src/legacy/mod.rs: missing canonical authority path marker"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Real-authority frontend tests may not silently pass when their toolchain is
+/// absent. Each formerly self-skipping test must resolve its toolchain through
+/// the typed probe/terminal path, and no silent-skip marker may remain.
+#[test]
+fn real_authority_tests_do_not_self_skip() {
+    let mut failures = Vec::new();
+    let offenders = [
+        (
+            "frontends/csharp/tests/producer_parity.rs",
+            "probe_dotnet()",
+            &["replaying committed fixtures only"][..],
+        ),
+        (
+            "frontends/go/tests/protocol.rs",
+            "explicit_go_toolchain()",
+            &["Go authority test skipped"][..],
+        ),
+        (
+            "frontends/go/tests/native_helper.rs",
+            "COMPILER_GO_COMPILER",
+            &["find_executable"][..],
+        ),
+        (
+            "frontends/python/tests/native_helper.rs",
+            "COMPILER_PYTHON_COMPILER",
+            &["find_executable"][..],
+        ),
+        (
+            "frontends/python/tests/pyrefly_package.rs",
+            "PyreflyPackageError::Unavailable",
+            &[][..],
+        ),
+        (
+            "frontends/typescript/tests/checker_protocol.rs",
+            "checker.run(TypeScriptSource",
+            &["skipping TypeScript checker e2e"][..],
+        ),
+        (
+            "frontends/typescript/tests/legacy_checker_protocol.rs",
+            "checker.run(",
+            &[
+                "skipping TypeScript checker e2e",
+                "Err(CheckerError::ModuleUnavailable { .. }) => return Ok(())",
+            ][..],
+        ),
+    ];
+    for (relative, required, forbidden) in offenders {
+        let text = source(relative);
+        if !text.contains(required) {
+            failures.push(format!(
+                "{relative}: missing typed authority terminal `{required}`"
+            ));
+        }
+        for marker in forbidden {
+            if text.contains(marker) {
+                failures.push(format!(
+                    "{relative}: retained silent-skip marker `{marker}`"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

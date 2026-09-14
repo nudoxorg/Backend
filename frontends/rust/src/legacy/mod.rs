@@ -1,6 +1,11 @@
 //! Provides Rust's in-process semantic authority for the compiler.
 //! Loads one Cargo graph under an explicit Rust edition and extracts only HIR-backed facts.
 //! Keeps rust-analyzer implementation values within a bounded, non-serialized transaction.
+//!
+//! CANONICAL AUTHORITY PATH: this module is the retained low-level authority
+//! contract. Product and compiler-driver callers must reach it only through
+//! the crate-level `Authority` adapter in `lib.rs`; it must never be wired in
+//! as a second semantic plane.
 
 use std::{path::PathBuf, process::Command};
 
