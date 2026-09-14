@@ -17,7 +17,7 @@ use server_index_build::{IndexBuildScratch, build};
 use server_index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
-use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use std::{
     fs,
     mem::MaybeUninit,

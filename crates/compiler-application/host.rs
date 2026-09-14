@@ -21,7 +21,7 @@ use std::{
 use authority::NativeExecutables;
 use backend_semantic::vocabulary::NativeTool;
 use paths::create_directory;
-use server_journal::PublicationLimits;
+use backend_store::journal::PublicationLimits;
 
 use crate::{
     LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,

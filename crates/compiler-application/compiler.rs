@@ -13,17 +13,17 @@ use compiler_publication::{
     SemanticImageArtifactFacts, SemanticPublicationScratch, open_published_semantic,
     open_semantic_generation, publish_semantic, semantic_generation_requirements,
 };
-use compiler_registry::{AdapterRoute, FullRegistry};
+use backend_semantic::registry::{AdapterRoute, FullRegistry};
 use backend_version::{
     ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain,
 };
-use interface_core::{
+use backend_library::interface::{
     CompilerCapability, CompilerReadiness, CompilerRequest as ApplicationCompilerRequest,
     CompilerTerminal, GeneratedArtifact, PackageCompilePhase, PackageCompileRequest,
     PackageDeclarationScopeCause, PackageSourceCause, PublicationAuthority,
     SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot, SourceAuthority,
 };
-use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError};
 use thiserror::Error;
 
 use crate::{
@@ -1151,13 +1151,13 @@ fn generated(
             byte_len: semantic_image.byte_length,
         },
         publication: PublicationAuthority {
-            generation: interface_core::GenerationAuthority {
+            generation: backend_library::interface::GenerationAuthority {
                 pinned_root: publication.publication.generation.pinned_root,
                 dep_set: publication.publication.generation.dep_set,
             },
             manifest: publication.manifest.identity,
             binding: publication.binding.identity,
-            receipt: interface_core::DurableReceiptAuthority {
+            receipt: backend_library::interface::DurableReceiptAuthority {
                 sequence: *publication.publication.stable.sequence,
                 durable_end: *publication.publication.stable.durable_end,
                 immutable_checksum: publication.publication.immutable.checksum,
@@ -1208,7 +1208,7 @@ fn package_authority_terminal(
             request,
             source,
             toolchain,
-            interface_core::CompilerCause::DeadlineExceeded { diagnostic: None },
+            backend_library::interface::CompilerCause::DeadlineExceeded { diagnostic: None },
         ),
         cause => {
             let (phase, class) = package_authority_projection(&cause);
@@ -1216,7 +1216,7 @@ fn package_authority_terminal(
                 request,
                 source,
                 toolchain,
-                interface_core::CompilerCause::Authority {
+                backend_library::interface::CompilerCause::Authority {
                     phase,
                     class,
                     diagnostic: None,
@@ -1230,7 +1230,7 @@ fn compiler_attempt_terminal(
     request: ApplicationCompilerRequest<'_>,
     source: SourceAuthority,
     toolchain: ToolchainSelection<'_>,
-    cause: interface_core::CompilerCause,
+    cause: backend_library::interface::CompilerCause,
 ) -> CompilerTerminal {
     let ToolchainSelection::ResolvedNative(resolved) = toolchain else {
         return CompilerTerminal::Toolchain {
@@ -1252,7 +1252,7 @@ fn compiler_attempt_terminal(
         resolved.identity,
     );
     CompilerTerminal::Compile {
-        attempted: interface_core::CompilerAttempt {
+        attempted: backend_library::interface::CompilerAttempt {
             source,
             recipe: recipe.identity,
         },
@@ -1342,7 +1342,7 @@ mod tests {
     use std::path::Path;
 
     use compiler_driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
-    use compiler_registry::AdapterRoute;
+    use backend_semantic::registry::AdapterRoute;
     use backend_semantic::vocabulary::NativeTool;
     use thiserror::Error;
 

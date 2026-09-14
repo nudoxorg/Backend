@@ -20,7 +20,7 @@ use server_index_build::{IndexBuildScratch, PreparedIndex, build};
 use server_index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
-use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use sha2::{Digest, Sha256};
 use std::{
     fs,

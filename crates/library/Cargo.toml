@@ -7,16 +7,27 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+arrayvec.workspace = true
 blake3.workspace = true
 backend-version = { path = "../version" }
 backend-flow = { path = "../flow" }
 backend-semantic = { path = "../semantic" }
 backend-compile = { path = "../compile" }
+backend-execution = { path = "../execution" }
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+allocation-counter.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true
 
 [lib]
 path = "lib.rs"
+
+[[bench]]
+name = "client_sync"
+path = "benches/client_sync.rs"
+harness = false

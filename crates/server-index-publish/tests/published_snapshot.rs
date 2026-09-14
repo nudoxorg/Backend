@@ -16,14 +16,14 @@ use backend_semantic::ir::{
     SourceIdentity, TypeNode,
 };
 use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-use heart_hydration::{PlanScratch, Projection, demand, plan};
+use backend_store::hydration::{PlanScratch, Projection, demand, plan};
 use backend_version::{
     ArtifactId, ContentId, GenerationId, IrFragmentDomain, IrFragmentEncoding, ObjectDomain,
     SourceFactDomain, ToolchainDomain,
 };
 use backend_store::memory::{InsertOutcome, MemoryStore, StoreCapacity};
 use backend_version::object::ObjectRef;
-use heart_root::{ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry};
+use backend_store::root::{ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry};
 use backend_version::schema::SchemaId;
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactManifest, ExactOperation, ExactResolution,
@@ -38,7 +38,7 @@ use server_index_publish::{PublishedIndexSnapshot, PublishedIndexSnapshotError};
 use backend_extension_qdrant::server::{QdrantBlockingAdapter, QdrantDataKey, QdrantError};
 use backend_extension_tantivy::server::{TantivyHit, TantivyLexical};
 use backend_extension_trustfall::server::TrustfallGraph;
-use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 

@@ -6,11 +6,11 @@
 use std::collections::TryReserveError;
 use std::num::TryFromIntError;
 
-use heart_hydration::{Need, PlanError, PlanScratch, Projection, VerificationError, plan_borrowed};
+use backend_store::hydration::{Need, PlanError, PlanScratch, Projection, VerificationError, plan_borrowed};
 use backend_version::{ContentId, GenerationId, ObjectDomain};
 use backend_store::memory::{InsertOutcome, MemoryStore, RejectedInsert, StoreCapacity, StoreInitError};
 use backend_version::object::{ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet};
-use heart_root::{
+use backend_store::root::{
     BorrowedGenerationView, ClosureScratch, EntryKey, GenerationRoot, LocalityError,
     LocalityException, LocalityWriteError, NonResident, PreparedLocality, RootBuildError,
     RootEntry, RootReadError, RootWriteError, ValidatedRoot,
@@ -121,7 +121,7 @@ fn exact_store_witness_binds_once_and_keeps_promised_bytes_local() -> Result<(),
 
 fn assert_bound_routes<PayloadOwner: AsRef<[u8]>>(
     view: &BorrowedGenerationView<'_, '_, ObjectDomain>,
-    verified: &heart_hydration::VerifiedGeneration<'_, ObjectDomain, PayloadOwner>,
+    verified: &backend_store::hydration::VerifiedGeneration<'_, ObjectDomain, PayloadOwner>,
     first: ObjectRef<ObjectDomain>,
     second: ObjectRef<ObjectDomain>,
 ) -> Result<(), JourneyError> {
@@ -147,7 +147,7 @@ fn assert_bound_routes<PayloadOwner: AsRef<[u8]>>(
 fn assert_stale_precedes_lookup<PayloadOwner: AsRef<[u8]>>(
     first: ObjectRef<ObjectDomain>,
     view: &BorrowedGenerationView<'_, '_, ObjectDomain>,
-    verified: &heart_hydration::VerifiedGeneration<'_, ObjectDomain, PayloadOwner>,
+    verified: &backend_store::hydration::VerifiedGeneration<'_, ObjectDomain, PayloadOwner>,
 ) -> Result<(), JourneyError> {
     let stale_owned_root = GenerationRoot::new(Vec::from([RootEntry {
         key: EntryKey::from(9),

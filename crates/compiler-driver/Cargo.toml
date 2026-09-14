@@ -11,7 +11,6 @@ publish.workspace = true
 
 [dependencies]
 backend-semantic = { path = "../semantic" }
-compiler-registry = { path = "../compiler-registry" }
 backend-frontend-clang = { path = "../../frontends/clang" }
 backend-frontend-csharp = { path = "../../frontends/csharp" }
 backend-frontend-go = { path = "../../frontends/go" }
@@ -24,9 +23,9 @@ sha2 = "=0.10.9"
 thiserror.workspace = true
 
 [dev-dependencies]
+backend-store = { path = "../store" }
 serde_json = { workspace = true }
 compiler-publication = { path = "../compiler-publication" }
-server-journal = { path = "../server-journal" }
 ureq = { workspace = true }
 flate2 = { workspace = true }
 server-index-build = { path = "../server-index-build" }

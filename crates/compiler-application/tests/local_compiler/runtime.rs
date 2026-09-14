@@ -14,11 +14,11 @@ use compiler_application::{
 };
 use backend_semantic::vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
 use backend_version::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
-use interface_core::{
+use backend_library::interface::{
     CompilerCapability, CompilerRequest, CompilerTerminal, SemanticImageAccessError,
     SemanticImageAuthority,
 };
-use server_journal::PublicationLimits;
+use backend_store::journal::PublicationLimits;
 
 static RUNTIME_ORDINAL: AtomicUsize = AtomicUsize::new(0);
 

@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Static low-cardinality names for portable semantic events.
 
-use heart_hydration::{HydrationOutcome, PlanRejection};
+use backend_store::hydration::{HydrationOutcome, PlanRejection};
 use backend_store::memory::StoreAdmission;
 use backend_runtime::server::{
     RejectionReason, RuntimeAdmission, RuntimeContainment, RuntimeExecution, RuntimeProbeEvent,
@@ -147,7 +147,7 @@ pub(crate) const fn event_name(event: EventName) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use heart_hydration::{HydrationOutcome, PlanRejection};
+    use backend_store::hydration::{HydrationOutcome, PlanRejection};
 
     use super::hydration_fields;
 

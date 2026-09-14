@@ -12,10 +12,7 @@ publish.workspace = true
 [dependencies]
 backend-semantic = { path = "../semantic" }
 compiler-driver = { path = "../compiler-driver" }
-server-journal = { path = "../server-journal" }
-heart-hydration = { path = "../heart-hydration" }
 backend-version = { path = "../version" }
-heart-root = { path = "../heart-root" }
 backend-store = { path = "../store" }
 thiserror.workspace = true
 

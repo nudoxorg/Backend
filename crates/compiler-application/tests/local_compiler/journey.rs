@@ -7,7 +7,7 @@ use backend_semantic::vocabulary::{
     Language, LanguageProfile, PythonVersion, RustEdition, Stage, TypeScriptSource,
 };
 use backend_version::{ContentId, SourceFactDomain};
-use interface_core::{
+use backend_library::interface::{
     ApplicationDisposition, ApplicationOutcome, ApplicationReply, ApplicationService,
     CompilerTerminal, Diagnostic, DiagnosticCode, DiagnosticDetail, ReplyBody,
 };
@@ -74,7 +74,7 @@ fn configured_python_compiler_lowers_publishes_and_preserves_exact_terminals()
 
 fn assert_generated(
     reply: ApplicationReply,
-) -> Result<interface_core::GeneratedArtifact, LocalCompilerTestError> {
+) -> Result<backend_library::interface::GeneratedArtifact, LocalCompilerTestError> {
     let facts = match reply.outcome {
         ApplicationOutcome::Resolved(ReplyBody::Generated(facts))
             if ApplicationDisposition::from(&ReplyBody::Generated(facts))

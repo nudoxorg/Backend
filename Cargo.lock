@@ -857,15 +857,12 @@ dependencies = [
  "blake3",
  "compiler-driver",
  "compiler-publication",
- "heart-hydration",
- "heart-root",
  "nix",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry_sdk",
  "rustix 1.1.4",
  "serde_json",
- "server-journal",
  "sha2",
  "thiserror 2.0.20",
  "tracing",
@@ -961,10 +958,7 @@ dependencies = [
  "blake3",
  "compiler-driver",
  "compiler-publication",
- "heart-hydration",
- "heart-root",
  "server-index-build",
- "server-journal",
  "sha2",
  "thiserror 2.0.20",
 ]
@@ -1131,13 +1125,17 @@ dependencies = [
 name = "backend-library"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
+ "arrayvec",
  "backend-compile",
+ "backend-execution",
  "backend-flow",
  "backend-semantic",
  "backend-version",
  "blake3",
  "serde",
  "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1157,8 +1155,10 @@ dependencies = [
  "backend-frontend-python",
  "backend-frontend-rust",
  "backend-frontend-typescript",
+ "backend-library",
  "backend-runtime",
  "backend-semantic",
+ "backend-store",
  "backend-version",
  "blake3",
  "compiler-application",
@@ -1166,8 +1166,6 @@ dependencies = [
  "flate2",
  "futures-executor",
  "futures-util",
- "heart-hydration",
- "interface-core",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -1269,13 +1267,24 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
+ "backend-extension-tantivy",
+ "backend-extension-trustfall",
+ "backend-semantic",
  "backend-version",
  "blake3",
  "bolero",
+ "compiler-driver",
+ "compiler-publication",
  "derive_more",
+ "fearless_simd",
+ "loom",
  "rstest",
+ "serde",
+ "serde_json",
+ "server-index-build",
  "strum 0.28.0",
  "thiserror 2.0.20",
+ "trybuild",
  "zerocopy",
 ]
 
@@ -2092,14 +2101,13 @@ dependencies = [
  "backend-frontend-python",
  "backend-frontend-rust",
  "backend-frontend-typescript",
+ "backend-library",
  "backend-semantic",
+ "backend-store",
  "backend-version",
  "blake3",
  "compiler-driver",
  "compiler-publication",
- "compiler-registry",
- "interface-core",
- "server-journal",
  "thiserror 2.0.20",
 ]
 
@@ -2115,14 +2123,13 @@ dependencies = [
  "backend-frontend-rust",
  "backend-frontend-typescript",
  "backend-semantic",
+ "backend-store",
  "backend-version",
  "compiler-publication",
- "compiler-registry",
  "flate2",
  "serde_json",
  "server-index-build",
  "server-index-publish",
- "server-journal",
  "sha2",
  "thiserror 2.0.20",
  "ureq",
@@ -2136,17 +2143,7 @@ dependencies = [
  "backend-store",
  "backend-version",
  "compiler-driver",
- "heart-hydration",
- "heart-root",
- "server-journal",
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "compiler-registry"
-version = "0.1.0"
-dependencies = [
- "backend-semantic",
 ]
 
 [[package]]
@@ -4056,41 +4053,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "heart-hydration"
-version = "0.1.0"
-dependencies = [
- "backend-store",
- "backend-version",
- "heart-root",
- "rstest",
- "thiserror 2.0.20",
- "trybuild",
- "zerocopy",
-]
-
-[[package]]
-name = "heart-root"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "backend-extension-tantivy",
- "backend-extension-trustfall",
- "backend-semantic",
- "backend-version",
- "bolero",
- "compiler-driver",
- "compiler-publication",
- "derive_more",
- "fearless_simd",
- "serde",
- "serde_json",
- "server-index-build",
- "server-journal",
- "thiserror 2.0.20",
- "zerocopy",
-]
-
-[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4547,31 +4509,6 @@ checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "block-padding",
  "generic-array",
-]
-
-[[package]]
-name = "interface-core"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "arrayvec",
- "backend-execution",
- "backend-semantic",
- "backend-version",
- "compiler-registry",
-]
-
-[[package]]
-name = "interface-protocol"
-version = "0.1.0"
-dependencies = [
- "backend-execution",
- "backend-semantic",
- "backend-version",
- "interface-core",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -8545,10 +8482,10 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "backend-semantic",
+ "backend-store",
  "backend-version",
  "compiler-driver",
  "compiler-publication",
- "server-journal",
  "thiserror 2.0.20",
  "zerocopy",
 ]
@@ -8566,10 +8503,7 @@ dependencies = [
  "backend-version",
  "compiler-driver",
  "compiler-publication",
- "heart-hydration",
- "heart-root",
  "server-index-build",
- "server-journal",
  "thiserror 2.0.20",
  "zerocopy",
 ]
@@ -8582,32 +8516,14 @@ dependencies = [
  "backend-extension-qdrant",
  "backend-extension-tantivy",
  "backend-extension-trustfall",
+ "backend-library",
  "backend-semantic",
  "backend-store",
  "backend-version",
  "futures-core",
- "heart-hydration",
- "heart-root",
- "interface-protocol",
  "serde_json",
  "server-index-publish",
- "server-journal",
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "server-journal"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "backend-store",
- "backend-version",
- "blake3",
- "heart-hydration",
- "heart-root",
- "loom",
- "thiserror 2.0.20",
- "zerocopy",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@
 //! This module owns the types compile invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use backend_semantic::ir::{FragmentView, PrepareError};
-use compiler_registry::{AdapterRoute, FullRegistry};
+use backend_semantic::registry::{AdapterRoute, FullRegistry};
 use backend_semantic::vocabulary::{Language, LanguageProfile, Stage};
 
 use crate::lower::{self, AdmissionFault, typescript::TypeScriptCollectError};

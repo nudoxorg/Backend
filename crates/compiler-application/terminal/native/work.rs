@@ -4,7 +4,7 @@
 //! Exact caller-owned native-work and paired-cleanup terminal projection.
 
 use compiler_driver::{NativeWorkError, NativeWorkPrimary};
-use interface_core::{
+use backend_library::interface::{
     NativeArtifactAction, NativeArtifactCause, NativeArtifactRole, NativeDirectoryCause,
     NativePrimaryCause, NativeWorkCause, NativeWorkCleanupCause, NativeWorkPhase,
 };

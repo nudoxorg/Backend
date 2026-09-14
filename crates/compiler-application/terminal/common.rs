@@ -4,12 +4,12 @@
 //! Allocation-free facts shared by native and durable terminal projection.
 
 use compiler_driver::{AuthorityDiagnostic, NativeDiagnostic};
-use interface_core::{
+use backend_library::interface::{
     CompilerAttempt, CompilerCause, CompilerDiagnostic, CompilerTerminal, NativeIoFact,
 };
 
 pub(super) const fn compile(
-    source: interface_core::SourceAuthority,
+    source: backend_library::interface::SourceAuthority,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
     cause: CompilerCause,
 ) -> CompilerTerminal {
@@ -28,7 +28,7 @@ pub(super) const fn compile_from_driver(
 }
 
 pub(super) const fn attempt(
-    source: interface_core::SourceAuthority,
+    source: backend_library::interface::SourceAuthority,
     recipe: backend_semantic::vocabulary::CompileRecipeFact,
 ) -> CompilerAttempt {
     CompilerAttempt {
@@ -39,8 +39,8 @@ pub(super) const fn attempt(
 
 pub(crate) const fn source_authority(
     source: backend_semantic::ir::SourceIdentity,
-) -> interface_core::SourceAuthority {
-    interface_core::SourceAuthority {
+) -> backend_library::interface::SourceAuthority {
+    backend_library::interface::SourceAuthority {
         identity: source.identity,
         byte_len: source.byte_len,
     }

@@ -8,7 +8,7 @@ mod work;
 use compiler_driver::{
     CompileFailure, NativeDiagnostic, NativeWorkError, NativeWorkPrimary, ToolchainSelectionFact,
 };
-use interface_core::{
+use backend_library::interface::{
     CompilerCause, CompilerTerminal, FragmentCause, NativeIoPhase, NativePrimaryCause,
     NativeWorkCause, NativeWorkPhase,
 };
@@ -94,7 +94,7 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
 }
 
 fn lowering(cause: backend_semantic::vocabulary::LoweringUnsupported) -> CompilerCause {
-    CompilerCause::Lowering(interface_core::LoweringCause::new(cause))
+    CompilerCause::Lowering(backend_library::interface::LoweringCause::new(cause))
 }
 
 fn authority_terminal(
@@ -295,7 +295,7 @@ mod tests {
         PythonVersion, Stage, TypeScriptSource,
     };
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
-    use interface_core::{CompilerCause, CompilerTerminal};
+    use backend_library::interface::{CompilerCause, CompilerTerminal};
 
     use super::authority_terminal;
 

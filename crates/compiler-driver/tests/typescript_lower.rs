@@ -28,7 +28,7 @@ use backend_semantic::vocabulary::{
     LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, ProjectionSemanticTypeFault,
     ProjectionSemanticTypeTag, Stage, TypeScriptSource,
 };
-use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 
 const SOURCE: &[u8] = include_bytes!("../../../frontends/typescript/tests/fixtures/source.ts");
 const TRANSCRIPT: &[u8] =

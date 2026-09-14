@@ -12,8 +12,8 @@ use backend_semantic::ir::{
     RecipeFact, SectionKind, SemanticImageIdentity, SemanticImageReopenError, SemanticImageView,
     SourceIdentity,
 };
-use heart_hydration::VerifiedGenerationFacts;
-use server_journal::PublicationFacts;
+use backend_store::hydration::VerifiedGenerationFacts;
+use backend_store::journal::PublicationFacts;
 use thiserror::Error;
 
 use crate::{
@@ -615,7 +615,7 @@ fn fragment_fact_mismatch(
 )]
 pub enum OpenPublishedError {
     #[error("durable journal published facts could not be read")]
-    Journal(#[source] server_journal::PublicationOpenError),
+    Journal(#[source] backend_store::journal::PublicationOpenError),
     #[error("durable selected compiler generation has no immutable binding")]
     MissingBinding { generation: VerifiedGenerationFacts },
     #[error("durable selected compiler binding could not be opened")]

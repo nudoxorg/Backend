@@ -77,7 +77,7 @@ const fn entity() -> EntityRecord {
 }
 
 fn reject_reopen(
-    publisher: &server_journal::DurablePublisher,
+    publisher: &backend_store::journal::DurablePublisher,
     artifacts: &std::path::Path,
     accepted: BuildProofError,
 ) -> Result<(), TestError> {

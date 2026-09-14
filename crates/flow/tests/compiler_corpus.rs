@@ -69,7 +69,7 @@ use multilingual_corpus::{
     RenderAvailability, SOURCE_BYTE_LIMIT, corpus_packages,
 };
 use native_tooling::{HostTool, NativeToolingError, NativeWork};
-use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;
 
 use authority::{
@@ -201,11 +201,11 @@ enum CorpusAuditError {
         source: io::Error,
     },
     #[error("corpus durable publisher limits were rejected")]
-    Limits(#[from] server_journal::PublicationLimitError),
+    Limits(#[from] backend_store::journal::PublicationLimitError),
     #[error("corpus durable publisher could not be created")]
-    Publisher(#[from] server_journal::PublicationOpenError),
+    Publisher(#[from] backend_store::journal::PublicationOpenError),
     #[error("corpus durable publisher could not be shut down")]
-    Shutdown(#[from] server_journal::ShutdownError),
+    Shutdown(#[from] backend_store::journal::ShutdownError),
     #[error("corpus publication failed")]
     Publish(#[from] compiler_publication::PublishCompiledError),
     #[error("corpus semantic publication failed")]

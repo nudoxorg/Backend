@@ -161,7 +161,7 @@ pub(super) struct ActivatedProductSemantics {
 }
 
 impl ActivatedProductSemantics {
-    pub(super) fn images(&self) -> &[interface_core::SemanticImageSnapshot] {
+    pub(super) fn images(&self) -> &[backend_library::interface::SemanticImageSnapshot] {
         &self.publication.images
     }
 }

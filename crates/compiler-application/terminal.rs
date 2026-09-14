@@ -27,7 +27,7 @@ pub enum LocalCompilerOpenError {
     },
     /// The supplied durable journal directory could not create its local publication owner.
     #[error("could not create local durable compiler publication owner")]
-    Publisher(#[source] server_journal::PublicationOpenError),
+    Publisher(#[source] backend_store::journal::PublicationOpenError),
 }
 
 /// Named explicit local storage path required by one compiler capability instance.

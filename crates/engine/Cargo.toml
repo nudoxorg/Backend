@@ -18,8 +18,6 @@ blake3.workspace = true
 backend-compile = { path = "../compile" }
 backend-library = { path = "../library" }
 compiler-publication = { path = "../compiler-publication" }
-heart-hydration = { path = "../heart-hydration" }
-heart-root = { path = "../heart-root" }
 opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true
 opentelemetry_sdk.workspace = true
@@ -40,6 +38,5 @@ nix = { version = "0.30.1", default-features = false, features = ["socket", "use
 [dev-dependencies]
 compiler-driver = { path = "../compiler-driver" }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
-server-journal = { path = "../server-journal" }
 [lints]
 workspace = true

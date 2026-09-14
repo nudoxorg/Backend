@@ -13,7 +13,7 @@ use backend_frontend_python::legacy::Pyrefly;
 use backend_frontend_rust::legacy::{RustToolchain, SourceByteLimit};
 use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
 use backend_semantic::vocabulary::NativeTool;
-use interface_core::PackageEcosystem;
+use backend_library::interface::PackageEcosystem;
 
 use super::paths::canonicalize_existing;
 use super::{

@@ -6,13 +6,13 @@
 use core::num::TryFromIntError;
 use std::collections::TryReserveError;
 
-use heart_hydration::{PlanError, PlanScratch, Projection, VerificationError, demand, plan};
+use backend_store::hydration::{PlanError, PlanScratch, Projection, VerificationError, demand, plan};
 use backend_version::{ContentId, ObjectDomain};
 use backend_store::memory::{
     InsertOutcome, MemoryStore, RejectedInsert, StoreCapacity, StoreError, StoreInitError,
 };
 use backend_version::object::{ObjectKind, ObjectLength, ObjectRef};
-use heart_root::{
+use backend_store::root::{
     ClosureScratch, GenerationRoot, GenerationRootBuilder, GenerationView, PreparedLocality,
     RootBuildError, RootEntry, RootPushError,
 };
@@ -164,7 +164,7 @@ pub(super) fn verify_generation(
     root: &GenerationRoot<ObjectDomain>,
     store: &MemoryStore<ObjectDomain, &[u8]>,
     locality_output: &mut [u8],
-) -> Result<heart_hydration::VerifiedGenerationFacts, GenerationBuildError> {
+) -> Result<backend_store::hydration::VerifiedGenerationFacts, GenerationBuildError> {
     let prepared = PreparedLocality::prepare(root, &[]).map_err(GenerationBuildError::Locality)?;
     let locality = prepared
         .write(locality_output)
@@ -318,9 +318,9 @@ pub enum GenerationBuildError {
     #[error("compiler package root repeated object descriptor {object:?}")]
     DuplicateObject { object: ObjectRef<ObjectDomain> },
     #[error("could not prepare the all-resident compiler generation locality")]
-    Locality(#[source] heart_root::LocalityError),
+    Locality(#[source] backend_store::root::LocalityError),
     #[error("caller locality output could not encode the all-resident compiler generation")]
-    LocalityWrite(#[source] heart_root::LocalityWriteError),
+    LocalityWrite(#[source] backend_store::root::LocalityWriteError),
     #[error("could not reserve compiler generation closure scratch")]
     ClosureReservation(#[source] TryReserveError),
     #[error("could not reserve compiler generation plan scratch")]

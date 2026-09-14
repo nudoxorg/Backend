@@ -89,9 +89,9 @@ pub enum BindingStoreError {
     #[error("stored generation binding facts disagree with its deterministic generation path")]
     GenerationMismatch {
         /// Generation facts derived from the deterministic path.
-        expected: heart_hydration::VerifiedGenerationFacts,
+        expected: backend_store::hydration::VerifiedGenerationFacts,
         /// Generation facts carried by immutable binding bytes.
-        observed: heart_hydration::VerifiedGenerationFacts,
+        observed: backend_store::hydration::VerifiedGenerationFacts,
     },
     /// Existing binding bytes had a different complete immutable identity or manifest fact.
     #[error("stored generation binding facts conflict with the requested immutable binding")]
@@ -200,7 +200,7 @@ impl GenerationBindingStore {
     )]
     pub(crate) fn load(
         &self,
-        generation: heart_hydration::VerifiedGenerationFacts,
+        generation: backend_store::hydration::VerifiedGenerationFacts,
     ) -> Result<Option<StoredBinding>, BindingStoreError> {
         let path = self.path_for(generation);
         self.read_existing(&path, generation)
@@ -214,7 +214,7 @@ impl GenerationBindingStore {
     fn read_existing(
         &self,
         path: &Path,
-        expected_generation: heart_hydration::VerifiedGenerationFacts,
+        expected_generation: backend_store::hydration::VerifiedGenerationFacts,
     ) -> Result<Option<CompilationBindingFacts>, BindingStoreError> {
         let mut file = match File::open(path) {
             Ok(file) => file,
@@ -368,7 +368,7 @@ impl GenerationBindingStore {
         }
     }
 
-    fn path_for(&self, generation: heart_hydration::VerifiedGenerationFacts) -> PathBuf {
+    fn path_for(&self, generation: backend_store::hydration::VerifiedGenerationFacts) -> PathBuf {
         self.directory.join(format!(
             "{}-{}{}",
             hexadecimal(generation.pinned_root.as_ref()),

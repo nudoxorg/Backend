@@ -39,8 +39,14 @@ mod proof;
 mod residency;
 mod tree;
 
+/// Pure wanted/have planning and typed readiness publication.
+pub mod hydration;
+/// Durable generation publication journal and recovery.
+pub mod journal;
 /// Bounded first-write-wins immutable object storage in caller-selected memory.
 pub mod memory;
+/// Canonical packed generation roots, closure selection, and structural diffs.
+pub mod root;
 /// Indexed immutable object-pack writing and allocation-free borrowing.
 pub mod object_pack;
 /// Structural validation witnesses and allocation-free borrowed frame views.

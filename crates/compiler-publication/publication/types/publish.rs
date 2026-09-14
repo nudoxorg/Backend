@@ -13,8 +13,8 @@ use backend_semantic::ir::{
     FragmentRangeManifestError, RecipeFact, SemanticImageEncodeError, SemanticImageReopenError,
     SourceIdentity,
 };
-use heart_hydration::VerifiedGenerationFacts;
-use server_journal::{PublicationFacts, SharedPublicationFailure};
+use backend_store::hydration::VerifiedGenerationFacts;
+use backend_store::journal::{PublicationFacts, SharedPublicationFailure};
 use thiserror::Error;
 
 use crate::{

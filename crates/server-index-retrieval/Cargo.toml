@@ -20,13 +20,10 @@ thiserror.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true
-server-journal = { path = "../server-journal" }
-heart-hydration = { path = "../heart-hydration" }
+backend-library = { path = "../library" }
 backend-version = { path = "../version" }
-heart-root = { path = "../heart-root" }
 backend-store = { path = "../store" }
 futures-core.workspace = true
-interface-protocol = { path = "../interface-protocol" }
 serde_json.workspace = true
 [lints]
 workspace = true

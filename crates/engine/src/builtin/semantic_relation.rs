@@ -24,7 +24,7 @@ use compiler_publication::{
     manifest::{CompilationManifestFacts, CompilationManifestFormat, CompilationManifestIdentity},
 };
 use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, Stage};
-use heart_hydration::VerifiedGenerationFacts;
+use backend_store::hydration::VerifiedGenerationFacts;
 use backend_version::{ContentId, DependencySetDomain, GenerationId};
 
 const MAGIC: &[u8; 4] = b"PSP1";
@@ -927,7 +927,7 @@ mod tests {
         CStandard, CompileRecipeFact, CxxStandard, LanguageProfile, NativeTool, RustEdition, Stage,
     };
     use backend_version::{IrManifestDomain, IrManifestEncoding, SourceFactDomain, ToolchainDomain};
-    use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+    use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
     use std::{fs, num::NonZeroUsize};
 
     fn test_error(error: impl std::fmt::Display) -> std::io::Error {

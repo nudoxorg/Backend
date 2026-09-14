@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use interface_core::{
+use backend_library::interface::{
     PackageEcosystem, PackagePathComponentError, PackageSourceCause, PackageSourceIoFact,
     PackageSourceIoPhase, PackageTextRange, PackageUrl,
 };

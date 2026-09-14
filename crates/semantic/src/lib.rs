@@ -34,6 +34,8 @@ pub mod index_vocabulary;
 /// Canonical compiler IR fragments: encoding, validation, mapping, and borrowing.
 pub mod ir;
 pub mod ir_vocabulary;
+/// Static dispatch from closed language-stage requests to concrete native compiler tools.
+pub mod registry;
 pub mod vocabulary;
 
 pub use canonical::*;

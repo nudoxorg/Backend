@@ -26,7 +26,7 @@ use backend_version::{
     ArtifactId, CompilePublicationDomain, ContentId, GenerationId, IrFragmentDomain,
     IrFragmentEncoding,
 };
-use interface_protocol::{UntrustedDocumentId, UntrustedSourceSpan};
+use backend_library::protocol::{UntrustedDocumentId, UntrustedSourceSpan};
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalOperation, LexicalRow,
     LexicalScore, LexicalSegment,
