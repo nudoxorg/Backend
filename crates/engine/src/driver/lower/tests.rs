@@ -984,7 +984,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     // The raised lane's exact eight-child product payload is larger than the
     // former 64 KiB fixture; retain the same untouched-tail proof with ample
     // caller-owned output scratch.
-    let mut output = vec![0xa5_u8; 4 * 1024 * 1024];
+    let mut output = vec![0xa5_u8; 8 * 1024 * 1024];
     let length = super::admit(
         &maximal,
         identity()?,

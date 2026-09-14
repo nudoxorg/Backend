@@ -7,7 +7,14 @@ use crate::index_vocabulary::{
 };
 
 /// Maximum number of versions admitted from either side of one reconciliation page/batch.
-pub const MAX_RECONCILIATION_ROWS: usize = 64;
+///
+/// This is a measured page budget, not a product wall: real multi-package
+/// ingestion pages exceed the old 64-row bound, so it is raised to a bounded
+/// 256 rows (matching the per-segment row scale) while keeping the
+/// `O(rows^2)` duplicate check and the fixed `[bool; ..]` ordering scratch
+/// bounded. A page beyond this still returns the typed
+/// [`ReconciliationFault::InputTooLong`] rejection.
+pub const MAX_RECONCILIATION_ROWS: usize = 256;
 
 /// Declarative source of an observed version.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

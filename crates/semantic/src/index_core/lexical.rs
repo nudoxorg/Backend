@@ -11,10 +11,25 @@ use crate::index_vocabulary::LexicalSegmentId;
 use crate::index_core::document::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId};
 
 /// Maximum number of rows admitted by one lexical segment view.
-pub const MAX_LEXICAL_ROWS: usize = 256;
+///
+/// This is the per-segment row budget, not a manifest-wide wall: a manifest
+/// may select up to [`crate::index_core::MAX_SELECTED_SEGMENTS`] segments, so
+/// a fragment with more term/document rows than this budget rolls over into
+/// additional segments instead of being rejected. 4,096 rows keeps one
+/// segment's rank scratch and identity pass bounded while admitting real
+/// multi-package fragments.
+pub const MAX_LEXICAL_ROWS: usize = 4096;
 
 /// Maximum term bytes admitted by one lexical segment.
-pub const MAX_LEXICAL_PAYLOAD_BYTES: usize = 65_536;
+///
+/// Derived from the measured per-row term budget and the admitted row bound so
+/// the byte ceiling scales with [`MAX_LEXICAL_ROWS`] instead of rejecting a
+/// larger real fragment. A segment whose complete term payload exceeds this
+/// still returns the typed [`LexicalSegmentError::PayloadBytesLimit`].
+pub const MAX_LEXICAL_PAYLOAD_BYTES: usize = MAX_LEXICAL_ROWS * MAX_LEXICAL_ROW_PAYLOAD_BYTES;
+
+/// Per-row term payload budget inside one lexical segment.
+pub const MAX_LEXICAL_ROW_PAYLOAD_BYTES: usize = 256;
 
 const CANONICAL_CHUNK_BYTES: usize = 32;
 

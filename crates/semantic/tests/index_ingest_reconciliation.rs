@@ -6,8 +6,8 @@ use backend_semantic::ir::{
 };
 use backend_version::{CompilePublicationDomain, ContentId, GenerationId};
 use backend_semantic::index_ingest::{
-    Checkpoint, IngestedVersion, IngestedVersionFault, IngestionOrigin, ReconciliationFault,
-    ReconciliationOperation, reconcile_into,
+    Checkpoint, IngestedVersion, IngestedVersionFault, IngestionOrigin, MAX_RECONCILIATION_ROWS,
+    ReconciliationFault, ReconciliationOperation, reconcile_into,
 };
 use backend_semantic::index_vocabulary::{
     CanonicalEntityLocator, IndexLocatorFacts, IndexSnapshotId, PackageCoordinate, PackageVersion,
@@ -446,7 +446,7 @@ fn verified_locator_admission_rejects_cross_image_and_duplicates() -> Result<(),
     ) {
         return Err("short scratch accepted".into());
     }
-    let too_many = [duplicate; 65];
+    let too_many = vec![duplicate; MAX_RECONCILIATION_ROWS + 1];
     if !matches!(
         reconcile_into(&too_many, &[], &mut output),
         Err(ReconciliationFault::InputTooLong)

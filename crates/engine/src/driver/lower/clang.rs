@@ -139,20 +139,67 @@ fn push<'source>(
 /// the budget is purely defensive.
 const DEPTH_LIMIT: usize = 64;
 
-/// Direct libclang declaration slots reserved by the collection transaction.
-const DECLARATION_CAPACITY: usize = MAX_CLANG_DECLARATIONS;
-/// Recursive type slots reserved by the collection transaction.
-const TYPE_CAPACITY: usize = MAX_CLANG_TYPES;
-/// Recursive type edge slots reserved by the collection transaction.
-const TYPE_EDGE_CAPACITY: usize = MAX_CLANG_TYPE_EDGES;
-/// Reference slots reserved by the collection transaction.
-const REFERENCE_CAPACITY: usize = MAX_CLANG_REFERENCES;
-/// Diagnostic slots reserved by the collection transaction.
-const DIAGNOSTIC_CAPACITY: usize = MAX_CLANG_DIAGNOSTICS;
-/// Include slots reserved by the collection transaction.
-const INCLUDE_CAPACITY: usize = MAX_CLANG_INCLUDES;
-/// C++ override-authority slots reserved by the collection transaction.
-const OVERRIDE_CAPACITY: usize = MAX_CLANG_OVERRIDES;
+/// Minimum declaration slots reserved for any source. Small but
+/// declaration-dense translation units (macros, generated headers) must not be
+/// rejected by a byte-count heuristic, so this is the recorded
+/// `ScratchCapacity{Declarations:1024}` floor the real corpus previously hit.
+const MIN_DECLARATION_SLOTS: usize = 1_024;
+/// Minimum recursive type and type-edge slots reserved for any source.
+const MIN_TYPE_SLOTS: usize = 4_096;
+/// Minimum reference slots reserved for any source. This is the recorded
+/// `ScratchCapacity{References:4096}` floor.
+const MIN_REFERENCE_SLOTS: usize = 4_096;
+/// Minimum include slots reserved for any source.
+const MIN_AUXILIARY_SLOTS: usize = 1_024;
+
+/// Measured declaration budget: at least the small-source floor, at most the
+/// protocol maximum. Each declaration owns written source bytes, so entered
+/// length is a safe upper bound on the count.
+fn declaration_slots(source_len: usize) -> usize {
+    source_len
+        .saturating_add(1)
+        .clamp(MIN_DECLARATION_SLOTS, MAX_CLANG_DECLARATIONS)
+}
+
+/// Measured recursive-type budget; a type row is reached through a cursor, so
+/// four typed rows per entered byte is a conservative measured bound.
+fn type_slots(source_len: usize) -> usize {
+    source_len
+        .saturating_mul(4)
+        .clamp(MIN_TYPE_SLOTS, MAX_CLANG_TYPES)
+}
+
+/// Measured recursive type-edge budget.
+fn type_edge_slots(source_len: usize) -> usize {
+    source_len
+        .saturating_mul(4)
+        .clamp(MIN_TYPE_SLOTS, MAX_CLANG_TYPE_EDGES)
+}
+
+/// Measured reference budget.
+fn reference_slots(source_len: usize) -> usize {
+    source_len
+        .saturating_mul(4)
+        .clamp(MIN_REFERENCE_SLOTS, MAX_CLANG_REFERENCES)
+}
+
+/// Diagnostic slots. Diagnostics are not main-file bounded: libclang can
+/// report header diagnostics against a tiny primary source, so this lane keeps
+/// the full protocol reservation instead of a source-derived budget.
+const DIAGNOSTIC_SLOTS: usize = MAX_CLANG_DIAGNOSTICS;
+
+/// Measured include budget; an include cursor is recorded only when its span
+/// belongs to the primary source, so at most one row per entered byte.
+fn include_slots(source_len: usize) -> usize {
+    source_len
+        .saturating_add(1)
+        .clamp(MIN_AUXILIARY_SLOTS, MAX_CLANG_INCLUDES)
+}
+
+/// Override slots. Override pairs are keyed by USR and can cross into headers
+/// from a small primary source, so this lane keeps the full protocol
+/// reservation instead of a source-derived budget.
+const OVERRIDE_SLOTS: usize = MAX_CLANG_OVERRIDES;
 
 /// `PrimitiveShape::Integer` wire cell (`repr(u32)` discriminant).
 const SHAPE_INTEGER: u32 = 0;
@@ -258,13 +305,15 @@ fn collect_input<'source>(
     cancelled: &AtomicBool,
     facts: &mut FactSet<'source>,
 ) -> Result<(), ClangCollectError> {
-    let mut declarations = vec![empty_declaration(); DECLARATION_CAPACITY].into_boxed_slice();
-    let mut types = vec![empty_type(); TYPE_CAPACITY].into_boxed_slice();
-    let mut type_edges = vec![empty_type_edge(); TYPE_EDGE_CAPACITY].into_boxed_slice();
-    let mut references = vec![empty_reference(); REFERENCE_CAPACITY].into_boxed_slice();
-    let mut diagnostics = vec![empty_diagnostic(); DIAGNOSTIC_CAPACITY].into_boxed_slice();
-    let mut includes = vec![empty_include(); INCLUDE_CAPACITY].into_boxed_slice();
-    let mut overrides = vec![empty_override(); OVERRIDE_CAPACITY].into_boxed_slice();
+    let source_len = source.len();
+    let mut declarations =
+        vec![empty_declaration(); declaration_slots(source_len)].into_boxed_slice();
+    let mut types = vec![empty_type(); type_slots(source_len)].into_boxed_slice();
+    let mut type_edges = vec![empty_type_edge(); type_edge_slots(source_len)].into_boxed_slice();
+    let mut references = vec![empty_reference(); reference_slots(source_len)].into_boxed_slice();
+    let mut diagnostics = vec![empty_diagnostic(); DIAGNOSTIC_SLOTS].into_boxed_slice();
+    let mut includes = vec![empty_include(); include_slots(source_len)].into_boxed_slice();
+    let mut overrides = vec![empty_override(); OVERRIDE_SLOTS].into_boxed_slice();
     let authority = collect_cancellable(
         input,
         ClangScratch {
