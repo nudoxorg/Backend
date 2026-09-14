@@ -1,18 +1,23 @@
-//! Lane coverage and capability inventories, projected into chips.
-//! A chip states one lane's or one capability's honest result in three glyphs.
-//! An unavailable lane is drawn unavailable, with its reason, never as zero hits.
+//! Lane coverage and capability inventories, sized for a chip.
+//!
+//! The *fold* from a reply's coverage slice to a per-lane statement is
+//! [`backend_present::CoverageLine`], which is what makes the desktop's strip
+//! and the CLI's `~lanes` line the same claim. This module adds only the two
+//! things a window needs on top of it: the sentence a pointer reveals, and the
+//! same treatment for the capability inventory, which the CLI summarises as
+//! rollups and a window shows one tile at a time.
 //!
 //! This is the module that keeps the product from lying by omission. Every
 //! search sheet, every status bar, and every empty state reads its chips from
 //! here, so "no results" and "the semantic lane is not configured in this
 //! build" can never render as the same thing.
 
-use super::fault::{lane_name, reason_name};
-use crate::theme::language::Language;
+use crate::theme::language::label as language_label;
 use backend_library::{
     CapabilityFamily, CapabilityInventory, CapabilityLifecycle, CapabilityStatus,
     CapabilityUnavailable, Coverage, Lane, LanguageOracleTask, Reason,
 };
+use backend_present::{CoverageLine, Language, LaneCoverage, LaneState, reason_name};
 
 /// How a lane or capability resolved.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -23,6 +28,8 @@ pub(crate) enum Standing {
     Partial,
     /// No authoritative result.
     Absent,
+    /// The reply said nothing about this lane either way.
+    Unobserved,
 }
 
 impl Standing {
@@ -32,11 +39,12 @@ impl Standing {
             Self::Complete => '✓',
             Self::Partial => '◐',
             Self::Absent => '✗',
+            Self::Unobserved => '·',
         }
     }
 }
 
-/// One lane's honest result.
+/// One lane's honest result, with the sentence behind its glyph.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LaneChip {
     lane: Lane,
@@ -46,44 +54,14 @@ pub(crate) struct LaneChip {
 }
 
 impl LaneChip {
-    /// Projects one coverage value into a chip.
-    pub(crate) fn new(coverage: Coverage) -> Self {
-        match coverage {
-            Coverage::Complete => Self {
-                lane: Lane::Exact,
-                standing: Standing::Complete,
-                detail: String::new(),
-                explanation: "This lane covered its declared scope.".to_owned(),
-            },
-            Coverage::Partial {
-                lane,
-                completed,
-                total,
-            } => Self {
-                lane,
-                standing: Standing::Partial,
-                detail: format!("{completed}/{total}"),
-                explanation: format!(
-                    "{completed} of {total} shards answered before the bound was reached."
-                ),
-            },
-            Coverage::Unavailable { lane, reason } => Self {
-                lane,
-                standing: Standing::Absent,
-                detail: reason_name(reason).to_owned(),
-                explanation: explain(reason).to_owned(),
-            },
-        }
-    }
-
     /// Returns the lane this chip reports.
     pub(crate) const fn lane(&self) -> Lane {
         self.lane
     }
 
-    /// Returns the lane's reader-facing name.
+    /// Returns the lane's stable lowercase name.
     pub(crate) const fn name(&self) -> &'static str {
-        lane_name(self.lane)
+        backend_present::lane_name(self.lane)
     }
 
     /// Returns how the lane resolved.
@@ -101,7 +79,7 @@ impl LaneChip {
         &self.explanation
     }
 
-    /// Returns the chip as one line of text, as the status bar spells it.
+    /// Returns the chip as one line of text, as a strip spells it.
     pub(crate) fn line(&self) -> String {
         if self.detail.is_empty() {
             format!("{} {}", self.name(), self.standing.glyph())
@@ -111,54 +89,46 @@ impl LaneChip {
     }
 }
 
-/// Projects every declared lane, filling in lanes the root did not mention.
+/// Projects every declared lane, filling in lanes the reply did not mention.
 ///
-/// A root that reports only `Complete` says nothing about which lanes ran. All
-/// four lanes are always drawn so the reader can see which ones this build
-/// actually has, rather than inferring it from which chips happen to appear.
+/// All four lanes are always drawn: a reply that says only "complete" says
+/// nothing about which lanes ran, and a reader should be able to see which
+/// lanes this build actually has rather than infer it from which chips
+/// happened to appear.
 pub(crate) fn lane_chips(coverage: &[Coverage]) -> Vec<LaneChip> {
-    const LANES: [Lane; 4] = [Lane::Exact, Lane::Names, Lane::Graph, Lane::Semantic];
-    let complete = coverage.iter().copied().any(Coverage::is_complete);
-    LANES
-        .into_iter()
-        .map(|lane| {
-            coverage
-                .iter()
-                .copied()
-                .find(|entry| mentions(*entry, lane))
-                .map_or_else(
-                    || fallback(lane, complete),
-                    |entry| LaneChip {
-                        lane,
-                        ..LaneChip::new(entry)
-                    },
-                )
-        })
-        .collect()
+    let line = CoverageLine::new(coverage, None);
+    line.lanes().iter().copied().map(chip_of).collect()
 }
 
-fn mentions(coverage: Coverage, lane: Lane) -> bool {
-    match coverage {
-        Coverage::Complete => false,
-        Coverage::Partial { lane: named, .. } | Coverage::Unavailable { lane: named, .. } => {
-            named == lane
-        }
+fn chip_of(lane: LaneCoverage) -> LaneChip {
+    let (standing, detail, explanation) = match lane.state() {
+        LaneState::Complete => (
+            Standing::Complete,
+            String::new(),
+            "This lane covered its declared scope.".to_owned(),
+        ),
+        LaneState::Partial { completed, total } => (
+            Standing::Partial,
+            format!("{completed}/{total}"),
+            format!("{completed} of {total} shards answered before the bound was reached."),
+        ),
+        LaneState::Unavailable { reason } => (
+            Standing::Absent,
+            reason_name(reason).to_owned(),
+            explain(reason).to_owned(),
+        ),
+        LaneState::Unobserved => (
+            Standing::Unobserved,
+            String::new(),
+            "This reply said nothing about this lane.".to_owned(),
+        ),
+    };
+    LaneChip {
+        lane: lane.lane(),
+        standing,
+        detail,
+        explanation,
     }
-}
-
-fn fallback(lane: Lane, complete: bool) -> LaneChip {
-    if complete {
-        return LaneChip {
-            lane,
-            standing: Standing::Complete,
-            detail: String::new(),
-            explanation: "This lane covered its declared scope.".to_owned(),
-        };
-    }
-    LaneChip::new(Coverage::Unavailable {
-        lane,
-        reason: Reason::NoIndex,
-    })
 }
 
 const fn explain(reason: Reason) -> &'static str {
@@ -221,12 +191,12 @@ pub(crate) fn capability_chips(inventory: &CapabilityInventory) -> Vec<Capabilit
 
 /// Summarises an inventory as ready, probing, and unavailable counts.
 pub(crate) fn capability_totals(inventory: &CapabilityInventory) -> (usize, usize, usize) {
-    let mut totals = (0usize, 0usize, 0usize);
+    let mut totals = (0_usize, 0_usize, 0_usize);
     for status in inventory.as_slice() {
         match standing_of(status.lifecycle()) {
             Standing::Complete => totals.0 = totals.0.saturating_add(1),
             Standing::Partial => totals.1 = totals.1.saturating_add(1),
-            Standing::Absent => totals.2 = totals.2.saturating_add(1),
+            Standing::Absent | Standing::Unobserved => totals.2 = totals.2.saturating_add(1),
         }
     }
     totals
@@ -249,7 +219,7 @@ fn describe(family: CapabilityFamily) -> (String, String, Option<Language>) {
         CapabilityFamily::StructuralFrontend { profile } => {
             let language = language_of(&format!("{:?}", profile.language()));
             (
-                language.label().to_owned(),
+                language_label(language).to_owned(),
                 "structural frontend".to_owned(),
                 Some(language),
             )
@@ -257,7 +227,7 @@ fn describe(family: CapabilityFamily) -> (String, String, Option<Language>) {
         CapabilityFamily::LanguageOracle { profile, task } => {
             let language = language_of(&format!("{:?}", profile.language()));
             (
-                language.label().to_owned(),
+                language_label(language).to_owned(),
                 task_name(task).to_owned(),
                 Some(language),
             )
@@ -282,12 +252,13 @@ fn language_of(debug_name: &str) -> Language {
     match debug_name {
         "Rust" => Language::Rust,
         "Python" => Language::Python,
-        "TypeScript" => Language::TypeScript,
+        "TypeScript" | "JavaScript" => Language::TypeScript,
         "Go" => Language::Go,
         "Java" => Language::Java,
         "CSharp" => Language::CSharp,
-        "Clang" => Language::Clang,
-        _ => Language::Other,
+        "C" => Language::C,
+        "Cxx" | "Cpp" | "Clang" => Language::Cxx,
+        _ => Language::Unknown,
     }
 }
 
