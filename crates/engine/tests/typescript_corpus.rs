@@ -15,8 +15,8 @@ use backend_engine::publication::{
 };
 use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
 use serde_json::json;
-use server_index_build::{IndexBuildScratch, build};
-use server_index_publish::{
+use backend_engine::index_build::{IndexBuildScratch, build};
+use backend_engine::index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};

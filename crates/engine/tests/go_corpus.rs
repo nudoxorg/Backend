@@ -16,7 +16,7 @@ use backend_semantic::vocabulary::{
     GoVersion, LanguageProfile, LoweringUnsupported, NativeTool, ProjectionAdmissionFault, Stage,
 };
 use backend_version::{ContentId, SourceFactDomain};
-use server_index_build::{IndexBuildScratch, build};
+use backend_engine::index_build::{IndexBuildScratch, build};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use std::{
     fs,
@@ -428,8 +428,8 @@ fn row(
         },
     ) {
         Ok(_)
-        | Err(server_index_build::BuildError::Admission(
-            server_index_build::BuildAdmissionError::EntityLimit {
+        | Err(backend_engine::index_build::BuildError::Admission(
+            backend_engine::index_build::BuildAdmissionError::EntityLimit {
                 maximum: CAPACITY, ..
             },
         )) => {}

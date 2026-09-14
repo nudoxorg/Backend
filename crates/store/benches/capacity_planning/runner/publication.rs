@@ -10,7 +10,7 @@ use backend_engine::driver::CompiledFragment;
 use backend_engine::publication::{
     PublicationScratch, PublishControl, binding::COMPILATION_BINDING_BYTES, publish_compiled,
 };
-use server_index_build::{EntityFact, EntityProjection, build};
+use backend_engine::index_build::{EntityFact, EntityProjection, build};
 use backend_semantic::index_core::{ExactRow, LexicalRow};
 use backend_store::journal::{DurablePublisher, PublicationLimits};
 
@@ -117,7 +117,7 @@ fn build_opened_fragment(
         array::from_fn(|_| MaybeUninit::uninit());
     let built = build(
         fragment,
-        server_index_build::IndexBuildScratch {
+        backend_engine::index_build::IndexBuildScratch {
             projections: &mut projections,
             entities: &mut entities,
             exact_rows: &mut exact_rows,

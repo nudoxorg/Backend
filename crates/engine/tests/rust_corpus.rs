@@ -12,8 +12,8 @@ use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
 use backend_semantic::vocabulary::{LanguageProfile, Stage};
-use server_index_build::{IndexBuildScratch, build};
-use server_index_publish::{
+use backend_engine::index_build::{IndexBuildScratch, build};
+use backend_engine::index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
@@ -652,7 +652,7 @@ fn cause_is_lane_bound(cause: &CrateCause) -> bool {
 }
 
 /// The second recorded class, currently string-plumbed from the typed
-/// `server_index_build::BuildAdmissionError::EntityLimit` terminal.
+/// `backend_engine::index_build::BuildAdmissionError::EntityLimit` terminal.
 fn publication_is_lane_bound(message: &str) -> bool {
     message.starts_with("fragment has ") && message.contains("shared segment capacity is ")
 }

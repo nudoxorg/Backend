@@ -15,8 +15,8 @@ use backend_engine::publication::{
 };
 use backend_semantic::vocabulary::{GoVersion, LanguageProfile, NativeTool, Stage};
 use backend_version::{ContentId, SourceFactDomain};
-use server_index_build::{IndexBuildScratch, build};
-use server_index_publish::{
+use backend_engine::index_build::{IndexBuildScratch, build};
+use backend_engine::index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
@@ -368,8 +368,8 @@ fn lifecycle(
         },
     ) {
         Ok(prepared) => Some(prepared),
-        Err(server_index_build::BuildError::Admission(
-            server_index_build::BuildAdmissionError::EntityLimit { maximum, observed },
+        Err(backend_engine::index_build::BuildError::Admission(
+            backend_engine::index_build::BuildAdmissionError::EntityLimit { maximum, observed },
         )) if expected_capacity == Some((maximum, observed)) => {
             eprintln!(
                 "typed index terminal: fragment has {observed} entities; shared segment capacity is {maximum}"

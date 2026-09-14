@@ -100,7 +100,7 @@ run_retrieval_facade() {
   QDRANT_URL="$qdrant_url" \
     cargo test \
       --manifest-path "$project_dir/Cargo.toml" \
-      -p server-index-retrieval \
+      -p backend-engine \
       --test sealed_boundary_public \
       --locked \
       --offline \

@@ -11,13 +11,11 @@ use std::process::Command;
 
 const FORBIDDEN_MARKERS: &[&str] = &[
     "server-index-acquire",
-    "server-index-build",
     "server-index-catalog",
     "server-index-graph-vector",
     "server-index-ingest",
-    "server-index-publish",
+    "backend-engine",
     "backend-extension-qdrant",
-    "server-index-retrieval",
     "tantivy",
     "backend-extension-tantivy",
     "backend-extension-trustfall",

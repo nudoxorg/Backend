@@ -21,7 +21,6 @@ backend-frontend-java = { path = "../../frontends/java" }
 backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
 backend-frontend-python = { path = "../../frontends/python" }
-server-index-build = { path = "../server-index-build" }
 sha2 = "=0.10.9"
 
 [lints]
