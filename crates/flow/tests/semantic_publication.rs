@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use compiler_driver::{
+use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile_semantic,
 };
@@ -18,7 +18,7 @@ use backend_semantic::ir::{
     SemanticImageCensus, SemanticImageDiscovery, SemanticImageFacts, SemanticReader,
     full_semantic_image_len, prepare_canonical_type,
 };
-use compiler_publication::{
+use backend_engine::publication::{
     OpenSemanticPublicationScratch, PublishControl, SemanticPublicationScratch,
     binding::COMPILATION_BINDING_BYTES,
     manifest::{COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES, SemanticImageRegion},
@@ -43,7 +43,7 @@ static NEXT_JOURNEY: AtomicUsize = AtomicUsize::new(0);
 #[derive(Debug, Error)]
 enum SemanticJourneyError {
     #[error("could not construct the typed Go toolchain fact")]
-    Toolchain(#[from] compiler_driver::ToolchainResolutionError),
+    Toolchain(#[from] backend_engine::driver::ToolchainResolutionError),
     #[error("could not create the semantic publication directory")]
     Create(#[source] std::io::Error),
     #[error(transparent)]
@@ -53,9 +53,9 @@ enum SemanticJourneyError {
     #[error("semantic image measurement failed")]
     Measure(#[from] backend_semantic::ir::SemanticImageEncodeError),
     #[error("the fused compiler output did not reach a stable semantic publication")]
-    Publish(#[from] compiler_publication::PublishSemanticError),
+    Publish(#[from] backend_engine::publication::PublishSemanticError),
     #[error("the stable semantic publication did not reopen")]
-    Open(#[from] compiler_publication::OpenPublishedError),
+    Open(#[from] backend_engine::publication::OpenPublishedError),
     #[error("semantic discovery found an invalid pooled reference")]
     Discovery(#[from] backend_semantic::ir::SemanticDiscoveryError),
     #[error("canonical semantic type rendering failed")]
@@ -67,7 +67,7 @@ enum SemanticJourneyError {
     #[error("the semantic package contained no artifact")]
     MissingArtifact,
     #[error("the semantic artifact cursor rejected its first paired artifact")]
-    Artifact(#[from] compiler_publication::OpenedSemanticArtifactError),
+    Artifact(#[from] backend_engine::publication::OpenedSemanticArtifactError),
     #[error("the semantic image contained no canonical declaration")]
     MissingEntity,
     #[error("the semantic declaration omitted its admitted type coordinate")]
@@ -129,7 +129,7 @@ fn authority_truth_survives_publication_reopen_discovery_render_and_index()
             profile: LanguageProfile::Go(GoVersion::Go125),
             stage: Stage::LowerIr,
             source: SOURCE,
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
+            declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
             authority: SemanticAuthorityInput::Go { image: &authority },
             control: CompileControl {

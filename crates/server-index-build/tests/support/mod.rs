@@ -15,11 +15,11 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use compiler_driver::CompiledFragment;
+use backend_engine::driver::CompiledFragment;
 use backend_semantic::ir::{
     Atom, AtomInput, EntityRecord, FragmentView, PreparedFragment, SourceIdentity, TypeNode,
 };
-use compiler_publication::{
+use backend_engine::publication::{
     OpenPublicationScratch, OpenedCompilation, OpenedFragment, OpenedFragmentCursor,
     PublicationScratch, PublishControl, open_published, publish_compiled,
 };
@@ -61,22 +61,22 @@ pub(crate) enum TestError {
     #[error("immutable fragment artifact operation failed")]
     Artifact {
         #[source]
-        source: Box<compiler_publication::immutable::ImmutableArtifactError>,
+        source: Box<backend_engine::publication::immutable::ImmutableArtifactError>,
     },
     #[error("compiler publication failed")]
     Publish {
         #[source]
-        source: Box<compiler_publication::PublishCompiledError>,
+        source: Box<backend_engine::publication::PublishCompiledError>,
     },
     #[error("compiler publication reopen failed")]
     Open {
         #[source]
-        source: Box<compiler_publication::OpenPublishedError>,
+        source: Box<backend_engine::publication::OpenPublishedError>,
     },
     #[error("reopened fragment reconstruction failed")]
     Opened {
         #[source]
-        source: Box<compiler_publication::OpenedFragmentError>,
+        source: Box<backend_engine::publication::OpenedFragmentError>,
     },
     #[error("source length cannot fit compact source facts")]
     SourceLength(#[from] core::num::TryFromIntError),
@@ -144,7 +144,7 @@ pub(crate) enum BuildProofError {
     #[error("immutable reopen reported an unexpected terminal")]
     UnexpectedReopenTerminal {
         #[source]
-        cause: Box<compiler_publication::OpenPublishedError>,
+        cause: Box<backend_engine::publication::OpenPublishedError>,
     },
 }
 
@@ -263,32 +263,32 @@ impl From<BuildError<'_>> for TestError {
     }
 }
 
-impl From<compiler_publication::immutable::ImmutableArtifactError> for TestError {
-    fn from(source: compiler_publication::immutable::ImmutableArtifactError) -> Self {
+impl From<backend_engine::publication::immutable::ImmutableArtifactError> for TestError {
+    fn from(source: backend_engine::publication::immutable::ImmutableArtifactError) -> Self {
         Self::Artifact {
             source: Box::new(source),
         }
     }
 }
 
-impl From<compiler_publication::PublishCompiledError> for TestError {
-    fn from(source: compiler_publication::PublishCompiledError) -> Self {
+impl From<backend_engine::publication::PublishCompiledError> for TestError {
+    fn from(source: backend_engine::publication::PublishCompiledError) -> Self {
         Self::Publish {
             source: Box::new(source),
         }
     }
 }
 
-impl From<compiler_publication::OpenPublishedError> for TestError {
-    fn from(source: compiler_publication::OpenPublishedError) -> Self {
+impl From<backend_engine::publication::OpenPublishedError> for TestError {
+    fn from(source: backend_engine::publication::OpenPublishedError) -> Self {
         Self::Open {
             source: Box::new(source),
         }
     }
 }
 
-impl From<compiler_publication::OpenedFragmentError> for TestError {
-    fn from(source: compiler_publication::OpenedFragmentError) -> Self {
+impl From<backend_engine::publication::OpenedFragmentError> for TestError {
+    fn from(source: backend_engine::publication::OpenedFragmentError) -> Self {
         Self::Opened {
             source: Box::new(source),
         }
@@ -358,7 +358,7 @@ impl Fixture {
 
 pub struct OpenBuffers {
     pub(crate) manifest: [u8; 1024],
-    pub(crate) facts: [Option<compiler_publication::manifest::StoredFragmentFacts>; 2],
+    pub(crate) facts: [Option<backend_engine::publication::manifest::StoredFragmentFacts>; 2],
     pub(crate) fragments: [u8; LARGE_FRAGMENT_BYTES],
     pub(crate) locality: [u8; 1024],
 }
@@ -436,12 +436,12 @@ pub fn publish(
     publisher: &DurablePublisher,
     artifacts: &Path,
     fragments: &[CompiledFragment<'_>],
-) -> Result<compiler_publication::PublishedCompilation, TestError> {
+) -> Result<backend_engine::publication::PublishedCompilation, TestError> {
     let mut manifest = [0_u8; 1024];
     let mut facts = [None; 2];
     let mut ordinals = [0_usize; 2];
     let mut locality = [0_u8; 1024];
-    let mut binding = [0_u8; compiler_publication::binding::COMPILATION_BINDING_BYTES];
+    let mut binding = [0_u8; backend_engine::publication::binding::COMPILATION_BINDING_BYTES];
     Ok(publish_compiled(
         publisher,
         artifacts,

@@ -10,7 +10,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-compiler-publication = { path = "../compiler-publication" }
+backend-engine = { path = "../engine" }
 backend-version = { path = "../version" }
 backend-semantic = { path = "../semantic" }
 thiserror.workspace = true
@@ -19,7 +19,6 @@ zerocopy.workspace = true
 [dev-dependencies]
 allocation-counter.workspace = true
 backend-store = { path = "../store" }
-compiler-driver = { path = "../compiler-driver" }
 [lints]
 workspace = true
 

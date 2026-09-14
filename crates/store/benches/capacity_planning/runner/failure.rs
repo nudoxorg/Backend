@@ -3,7 +3,7 @@
 //! Results support capacity decisions without changing the measured implementation.
 //! Lossless projections of closed upstream failures used by terminal benchmark errors.
 
-use compiler_driver::{
+use backend_engine::driver::{
     CompileFailure, NativeArtifactRole, NativeTool, NativeWorkError, NativeWorkPhase,
     NativeWorkPrimary, ToolchainSelectionFact,
 };
@@ -119,7 +119,7 @@ pub(crate) enum CompileFailureFact {
         profile: LanguageProfile,
     },
     LoweringUnsupported {
-        cause: compiler_driver::LoweringUnsupported,
+        cause: backend_engine::driver::LoweringUnsupported,
     },
     ExtensionAtomUnbound {
         row: usize,
@@ -133,7 +133,7 @@ pub(crate) enum CompileFailureFact {
         element_count: usize,
     },
     ClangProjection {
-        fault: Box<compiler_driver::ClangProjectionFault>,
+        fault: Box<backend_engine::driver::ClangProjectionFault>,
     },
     Build {
         cause: backend_semantic::ir::BuildError,
@@ -572,7 +572,7 @@ pub(crate) fn compile_failure_fact(error: CompileFailure<'_>) -> CompileFailureF
     }
 }
 
-const fn diagnostic_fact(diagnostic: compiler_driver::NativeDiagnostic<'_>) -> DiagnosticFact {
+const fn diagnostic_fact(diagnostic: backend_engine::driver::NativeDiagnostic<'_>) -> DiagnosticFact {
     DiagnosticFact {
         captured_bytes: diagnostic.bytes.len(),
         truncated: diagnostic.truncated,

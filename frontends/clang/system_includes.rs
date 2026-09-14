@@ -4,7 +4,7 @@
 //!
 //! [`super::producer::ClangProducer::invoke`] calls `clang_parseTranslationUnit`
 //! directly through libclang's C API — there is no shell in the loop, and
-//! critically, no compiler-driver *wrapper script* in the loop either. On a
+//! critically, no driver *wrapper script* in the loop either. On a
 //! system whose `clang`/`cc` on `PATH` is such a wrapper — nix's
 //! `cc-wrapper` is exactly this shape — the wrapper is what injects the
 //! toolchain's own `-isystem`/`-isysroot` flags (derived from its build

@@ -3,7 +3,7 @@
 use core::mem::MaybeUninit;
 
 use backend_semantic::ir::{SemanticCoreReader, SemanticReader};
-use compiler_publication::{
+use backend_engine::publication::{
     OpenedSemanticArtifact, semantic_immutable::SemanticImageArtifactFacts,
 };
 use backend_semantic::index_core::{

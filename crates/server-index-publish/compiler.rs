@@ -5,7 +5,7 @@
 
 use core::ops::Deref;
 
-use compiler_publication::OpenedCompilation;
+use backend_engine::publication::OpenedCompilation;
 use server_index_build::PreparedIndex;
 use backend_semantic::index_core::{ExactSegmentId, IndexSnapshot, IndexSnapshotError, LexicalSegmentId};
 
@@ -183,9 +183,9 @@ pub enum CompilationIndexError {
         /// Canonical manifest position.
         ordinal: usize,
         /// Manifest-selected immutable fragment.
-        expected: compiler_publication::immutable::FragmentIdentity,
+        expected: backend_engine::publication::immutable::FragmentIdentity,
         /// Immutable fragment actually indexed.
-        observed: compiler_publication::immutable::FragmentIdentity,
+        observed: backend_engine::publication::immutable::FragmentIdentity,
     },
     /// Canonical segment identities did not form an immutable snapshot.
     #[error("compiler-derived segment identities did not form an index snapshot")]

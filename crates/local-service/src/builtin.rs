@@ -157,7 +157,7 @@ pub(crate) fn admitted_coverage() -> Result<CoverageWitness, BuiltinModelError> 
 /// from receiving an image whose manifest is valid under another package or
 /// language scope.
 pub(super) struct ActivatedProductSemantics {
-    publication: compiler_application::ActivatedSemanticPackage,
+    publication: backend_engine::application::ActivatedSemanticPackage,
 }
 
 impl ActivatedProductSemantics {
@@ -167,7 +167,7 @@ impl ActivatedProductSemantics {
 }
 
 pub(super) fn activate_semantic_publication(
-    compiler: &compiler_application::LocalCompilerClient,
+    compiler: &backend_engine::application::LocalCompilerClient,
     key: &backend_engine::builtin::ProductSemanticPublicationKey,
     claim: backend_engine::builtin::SemanticPublicationClaim,
 ) -> Result<ActivatedProductSemantics, BuiltinModelError> {
@@ -575,7 +575,7 @@ fn admitted_view_bytes(rows: &[Row]) -> Result<usize, BuiltinModelError> {
 
 fn view_for_workspace(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
-    compiler: &compiler_application::LocalCompilerClient,
+    compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
 ) -> Result<ViewRoot, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
@@ -597,7 +597,7 @@ fn view_for_workspace(
 
 fn publish_builtin_view(
     daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
-    compiler: &compiler_application::LocalCompilerClient,
+    compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
 ) -> Result<Vec<backend_engine::CommittedViewDelta>, BuiltinModelError> {
     let mut current = daemon.engine().daemon().library().view().clone();
@@ -762,7 +762,7 @@ pub(crate) fn compose_owner(
     )
     .map_err(|error| ProcessError::Profile(error.to_string()))?;
     let compiler =
-        compiler_application::LocalCompilerHost::production_at(config.workspace.join("compiler"))
+        backend_engine::application::LocalCompilerHost::production_at(config.workspace.join("compiler"))
             .open()
             .map_err(|error| ProcessError::Profile(format!("open compiler owner: {error}")))?;
     // Admit optional semantic configuration without network I/O. Missing or

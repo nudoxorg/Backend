@@ -335,7 +335,7 @@ impl BuiltinIntent {
             }
         }
         if (changes.is_empty() && semantic_changes.is_empty())
-            || semantic_changes.len() > compiler_application::MAX_MANIFEST_ENTRIES
+            || semantic_changes.len() > backend_engine::application::MAX_MANIFEST_ENTRIES
             || semantic_changes
                 .windows(2)
                 .any(|window| window[0].key >= window[1].key)
@@ -752,7 +752,7 @@ impl<'a> IntentDecoder<'a> {
 
     fn semantic_changes(&mut self) -> Result<Vec<BuiltinSemanticChange>, BuiltinModelError> {
         let count = self.read_u32()? as usize;
-        if count > compiler_application::MAX_MANIFEST_ENTRIES {
+        if count > backend_engine::application::MAX_MANIFEST_ENTRIES {
             return Err(BuiltinModelError(
                 "malformed semantic publication change count".to_owned(),
             ));
@@ -1410,7 +1410,7 @@ pub(super) fn builtin_dispatcher(
 #[cfg(test)]
 mod persisted_intent_tests {
     use super::*;
-    use compiler_publication::{
+    use backend_engine::publication::{
         binding::{COMPILATION_BINDING_BYTES, CompilationBindingView},
         manifest::{CompilationManifestFacts, CompilationManifestFormat},
     };

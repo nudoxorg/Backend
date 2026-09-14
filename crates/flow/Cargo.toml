@@ -13,8 +13,7 @@ blake3.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-compiler-driver = { path = "../compiler-driver" }
-compiler-publication = { path = "../compiler-publication" }
+backend-engine = { path = "../engine" }
 backend-semantic = { path = "../semantic" }
 backend-frontend-csharp = { path = "../../frontends/csharp" }
 backend-frontend-go = { path = "../../frontends/go" }

@@ -6,7 +6,7 @@ use super::{
 };
 use backend_engine::builtin::ProductSemanticPublicationRecord;
 use backend_engine::{DeclarationKind, Fragment, Row, RowId, ViewRoot, product_source_file_key};
-use compiler_application::{DocumentationFragment, DocumentationSession, LocalCompilerClient};
+use backend_engine::application::{DocumentationFragment, DocumentationSession, LocalCompilerClient};
 use backend_semantic::ir::{
     DeclarationIdentity, ExternalTargetIdentity, ItemKind, LinkTarget, SemanticCoreReader as _,
     SemanticImageView, SemanticReader as _,
@@ -460,7 +460,7 @@ fn append_image_rows(
 fn semantic_row_content<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     profile: backend_semantic::vocabulary::LanguageProfile,
     reader: &Reader,
-    entity: &compiler_application::DocumentationEntity<'_, Reader>,
+    entity: &backend_engine::application::DocumentationEntity<'_, Reader>,
     package: backend_engine::PackageKey,
     image_identity: [u8; 32],
 ) -> Result<SemanticRowContent, BuiltinModelError> {
@@ -538,10 +538,10 @@ fn documentation_fragment<Reader: backend_semantic::ir::SemanticReader + ?Sized>
         DocumentationFragment::Link { label, target } => Fragment::Link {
             label: label.to_owned(),
             target: match target {
-                compiler_application::DocumentationTarget::Local(target) => {
+                backend_engine::application::DocumentationTarget::Local(target) => {
                     semantic_symbol(package, target.entity.version.identity())
                 }
-                compiler_application::DocumentationTarget::External { id, .. } => {
+                backend_engine::application::DocumentationTarget::External { id, .. } => {
                     let identity =
                         ExternalTargetIdentity::capture(reader, id).map_err(|error| {
                             BuiltinModelError(format!(
@@ -565,7 +565,7 @@ pub(super) fn external_semantic_symbol(
 }
 
 fn semantic_signature<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
-    entity: &compiler_application::DocumentationEntity<'_, Reader>,
+    entity: &backend_engine::application::DocumentationEntity<'_, Reader>,
 ) -> Result<Option<String>, BuiltinModelError> {
     let Some(semantic_type) = entity
         .semantic_type()

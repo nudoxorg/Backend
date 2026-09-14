@@ -12,7 +12,7 @@ use backend_semantic::ir::{
     AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, PrimitiveType,
     TypeNode,
 };
-use compiler_publication::{
+use backend_engine::publication::{
     OpenPublicationScratch, OpenPublishedError, immutable::ImmutableArtifactStore, open_published,
 };
 use support::{

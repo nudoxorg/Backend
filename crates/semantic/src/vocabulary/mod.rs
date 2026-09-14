@@ -308,7 +308,7 @@ pub enum AuthorityPhase {
 
 /// Closed class of diagnostic authority retained at application boundaries.
 ///
-/// The concrete frontend error stays in `compiler-driver`; this compact class
+/// The concrete frontend error stays in the `backend-engine` driver; this compact class
 /// lets CLI, MCP, and GPUI distinguish syntax, binding, type, infrastructure,
 /// and canonical-projection failures without rendering an error string.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

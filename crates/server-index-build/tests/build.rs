@@ -1,7 +1,7 @@
 //! Exercises the `server-index-build` tests build contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-//! Public compiler-publication to existing-core index journeys and canonicality attacks.
+//! Public compiler publication to existing-core index journeys and canonicality attacks.
 
 mod support;
 
@@ -328,7 +328,7 @@ fn label_witnesses(
 }
 
 fn assert_warm_build_does_not_allocate(
-    fragment: &compiler_publication::OpenedFragment<'_>,
+    fragment: &backend_engine::publication::OpenedFragment<'_>,
 ) -> Result<(), TestError> {
     let mut warmup = BuildBuffers::new();
     core::hint::black_box(warmup.build(fragment)?);

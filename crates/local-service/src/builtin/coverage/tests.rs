@@ -10,8 +10,8 @@ use backend_engine::builtin::{
     SemanticPublicationCoverage, SemanticUnavailableReason,
 };
 use backend_engine::{Lane, Reason, ViewCoverage};
-use compiler_publication::binding::{COMPILATION_BINDING_BYTES, CompilationBindingView};
-use compiler_publication::manifest::{CompilationManifestFacts, CompilationManifestFormat};
+use backend_engine::publication::binding::{COMPILATION_BINDING_BYTES, CompilationBindingView};
+use backend_engine::publication::manifest::{CompilationManifestFacts, CompilationManifestFormat};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
 use backend_store::hydration::VerifiedGenerationFacts;
 use backend_version::{

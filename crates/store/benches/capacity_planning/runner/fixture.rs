@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use compiler_driver::CompiledFragment;
+use backend_engine::driver::CompiledFragment;
 use backend_semantic::ir::FragmentView;
 use backend_store::journal::PublicationPaths;
 
