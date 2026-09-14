@@ -92,6 +92,7 @@
       "manifest_path": "crates/library/Cargo.toml",
       "dependencies": [
         "backend-compile",
+        "backend-execution",
         "backend-flow",
         "backend-semantic",
         "backend-version"
@@ -265,8 +266,10 @@
         "backend-frontend-python",
         "backend-frontend-rust",
         "backend-frontend-typescript",
+        "backend-library",
         "backend-runtime",
         "backend-semantic",
+        "backend-store",
         "backend-version"
       ],
       "layer": "application",
