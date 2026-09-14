@@ -10,26 +10,37 @@ impl EcosystemAdapter {
         bytes: &[u8],
     ) -> Result<Vec<super::NativeRelease>, TransportFailure> {
         let text = std::str::from_utf8(bytes).map_err(|_| TransportFailure::Protocol)?;
-        text.lines()
-            .filter(|line| !line.is_empty())
-            .map(|line| {
-                let row: Value =
-                    serde_json::from_str(line).map_err(|_| TransportFailure::Protocol)?;
-                if field(&row, "name")? != self.package.as_str() {
-                    return Err(TransportFailure::Protocol);
-                }
-                let version = field(&row, "vers")?;
-                let checksum = RegistryChecksum::sha256_hex(field(&row, "cksum")?)?;
-                let url = format!(
-                    "{}/crates/{}/{}-{}.crate",
-                    self.endpoint.url(),
-                    component(self.package.as_str()),
-                    component(self.package.as_str()),
-                    component(version)
-                );
-                self.release(version, url, checksum, line.as_bytes())
-            })
-            .collect()
+        // A yanked sparse row is never published: the owner catalog is
+        // append-only, so skipping here avoids ever fetching a withdrawn
+        // archive while a previously committed yanked version stays readable.
+        // Tombstone removal across snapshots is intentionally unsupported and
+        // has no silent publish path.
+        let mut releases = Vec::new();
+        for line in text.lines().filter(|line| !line.is_empty()) {
+            let row: Value =
+                serde_json::from_str(line).map_err(|_| TransportFailure::Protocol)?;
+            if row
+                .get("yanked")
+                .and_then(Value::as_bool)
+                .is_some_and(|yanked| yanked)
+            {
+                continue;
+            }
+            if field(&row, "name")? != self.package.as_str() {
+                return Err(TransportFailure::Protocol);
+            }
+            let version = field(&row, "vers")?;
+            let checksum = RegistryChecksum::sha256_hex(field(&row, "cksum")?)?;
+            let url = format!(
+                "{}/crates/{}/{}-{}.crate",
+                self.endpoint.url(),
+                component(self.package.as_str()),
+                component(self.package.as_str()),
+                component(version)
+            );
+            releases.push(self.release(version, url, checksum, line.as_bytes())?);
+        }
+        Ok(releases)
     }
 
     pub(super) fn decode_npm(
