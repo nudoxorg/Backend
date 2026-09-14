@@ -213,6 +213,41 @@ fn dropping_a_real_pending_witness_is_drained_before_shutdown() -> Result<(), Bo
 }
 
 #[test]
+fn overlapping_submission_at_queue_capacity_returns_typed_full() -> Result<(), Box<dyn Error>> {
+    let directory = fixture_path();
+    fs::create_dir_all(&directory)?;
+    let paths = PublicationPaths::in_directory(&directory);
+    let limits = PublicationLimits::new(
+        NonZeroUsize::new(1).ok_or_else(|| io::Error::other("nonzero queue capacity"))?,
+        NonZeroUsize::new(1).ok_or_else(|| io::Error::other("nonzero group capacity"))?,
+    )?;
+    let fixture: &'static VerifiedFixture = Box::leak(Box::new(VerifiedFixture::new()?));
+    let publisher = DurablePublisher::create(&paths, limits)?;
+    let held = match publisher.try_publish(fixture.verified()?) {
+        Ok(pending) => pending,
+        Err(_) => return Err(io::Error::other("first submission was rejected").into()),
+    };
+    match publisher.try_publish(fixture.verified()?) {
+        Err(backend_store::journal::SubmitError::Full { .. }) => {}
+        Err(other) => {
+            return Err(io::Error::other(format!(
+                "overlapping submission did not return typed Full: {other:?}"
+            ))
+            .into());
+        }
+        Ok(_) => {
+            return Err(
+                io::Error::other("overlapping submission unexpectedly fit queue capacity").into(),
+            );
+        }
+    }
+    let _published = held.wait()?;
+    publisher.shutdown()?;
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
 fn warmed_public_admission_and_terminal_have_bounded_thread_local_allocations()
 -> Result<(), Box<dyn Error>> {
     let directory = fixture_path();
