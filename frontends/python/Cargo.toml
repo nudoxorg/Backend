@@ -8,6 +8,8 @@ publish.workspace = true
 workspace = true
 [dependencies]
 backend-compile = { path = "../../crates/compile" }
+backend-semantic = { path = "../../crates/semantic" }
+blake3.workspace = true
 ruff_python_ast = "=0.0.8"
 ruff_python_parser = "=0.0.8"
 ruff_text_size = "=0.0.8"

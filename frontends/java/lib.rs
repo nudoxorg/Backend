@@ -20,6 +20,9 @@ pub mod repo;
 
 pub use backend_compile::JavaRelease;
 
+#[path = "src/legacy/mod.rs"]
+pub mod legacy;
+
 const LANGUAGE: &str = "java";
 const PAYLOAD_VERSION: &str = "java-semantic-v1";
 

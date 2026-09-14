@@ -29,9 +29,9 @@ use thiserror::Error;
 
 const PROFILE: LanguageProfile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
 const STAGE: Stage = Stage::LowerIr;
-const SOURCE: &[u8] = include_bytes!("../../compiler-language-typescript/tests/fixtures/source.ts");
+const SOURCE: &[u8] = include_bytes!("../../../frontends/typescript/tests/fixtures/source.ts");
 const GOLDEN: &[u8] =
-    include_bytes!("../../compiler-language-typescript/tests/transcripts/golden.json");
+    include_bytes!("../../../frontends/typescript/tests/transcripts/golden.json");
 
 #[derive(Debug, Error)]
 enum TestError {
@@ -302,7 +302,7 @@ fn lifecycle_body(purl_text: &str) -> Result<(usize, usize), TestError> {
             cause: cause.to_string(),
         })?;
     FragmentView::validate(old.as_ref()).map_err(|source| TestError::Fragment { source })?;
-    compiler_languages_typescript::Checker::default()
+    backend_frontend_typescript::legacy::Checker::default()
         .decode(GOLDEN)
         .map_err(|cause| {
             TestError::Law(Box::leak(

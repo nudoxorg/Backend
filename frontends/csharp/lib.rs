@@ -11,6 +11,9 @@ use backend_compile::{
 };
 use std::{fmt, path::Path};
 
+#[path = "src/legacy/mod.rs"]
+pub mod legacy;
+
 const LANGUAGE: &str = "csharp";
 const PAYLOAD_VERSION: &str = "csharp-semantic-v1";
 

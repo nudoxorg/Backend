@@ -19,12 +19,12 @@ use std::{
 
 use arrayvec::ArrayVec;
 use compiler_driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
-use compiler_languages_csharp::{CSharpAuthorityConfiguration, CSharpOracle};
-use compiler_languages_go::ConfiguredGoOracle;
-use compiler_languages_java::harness::JdkToolchain;
-use compiler_languages_python::Pyrefly;
-use compiler_languages_rust::{RustFeatureControl, RustToolchain, SourceByteLimit};
-use compiler_languages_typescript::ExplicitTypeScriptChecker;
+use backend_frontend_csharp::legacy::{CSharpAuthorityConfiguration, CSharpOracle};
+use backend_frontend_go::legacy::ConfiguredGoOracle;
+use backend_frontend_java::legacy::harness::JdkToolchain;
+use backend_frontend_python::legacy::Pyrefly;
+use backend_frontend_rust::legacy::{RustFeatureControl, RustToolchain, SourceByteLimit};
+use backend_frontend_typescript::legacy::ExplicitTypeScriptChecker;
 use compiler_publication::{binding::CompilationBindingFacts, manifest::CompilationManifestFacts};
 use backend_semantic::vocabulary::{Language, LanguageProfile, NativeTool, Stage};
 use backend_version::{CompilationTargetDomain, ContentId, ToolchainDomain};

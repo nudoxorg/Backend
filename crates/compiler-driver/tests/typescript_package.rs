@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-use compiler_languages_typescript::{Checker, CheckerError, Origin};
+use backend_frontend_typescript::legacy::{Checker, CheckerError, Origin};
 use backend_semantic::vocabulary::TypeScriptSource;
 use sha2::{Digest, Sha256};
 use std::{
@@ -81,7 +81,7 @@ fn collect(
     Ok(())
 }
 
-fn rows(report: &compiler_languages_typescript::Report) -> Vec<(String, Option<String>)> {
+fn rows(report: &backend_frontend_typescript::legacy::Report) -> Vec<(String, Option<String>)> {
     report
         .references
         .iter()

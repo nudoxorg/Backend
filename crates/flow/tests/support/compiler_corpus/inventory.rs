@@ -429,54 +429,54 @@ pub(super) const LOCAL_FIXTURES: [LocalFixture; 7] = [
     LocalFixture {
         language: CorpusLanguage::TypeScript,
         profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
-        path: "crates/compiler-language-typescript/tests/fixtures/source.ts",
+        path: "frontends/typescript/tests/fixtures/source.ts",
         bytes: Some(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../compiler-language-typescript/tests/fixtures/source.ts"
+            "/../../frontends/typescript/tests/fixtures/source.ts"
         ))),
         absence: None,
     },
     LocalFixture {
         language: CorpusLanguage::Python,
         profile: LanguageProfile::Python(PythonVersion::Python314),
-        path: "crates/compiler-language-python/tests",
+        path: "frontends/python/tests",
         bytes: None,
         absence: Some(SourceUnavailableKind::RepositoryFixtureMissing),
     },
     LocalFixture {
         language: CorpusLanguage::Go,
         profile: LanguageProfile::Go(GoVersion::Go125),
-        path: "crates/compiler-language-go/tests/fixtures/module/demo.go",
+        path: "frontends/go/tests/fixtures/module/demo.go",
         bytes: Some(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../compiler-language-go/tests/fixtures/module/demo.go"
+            "/../../frontends/go/tests/fixtures/module/demo.go"
         ))),
         absence: None,
     },
     LocalFixture {
         language: CorpusLanguage::Java,
         profile: LanguageProfile::Java(JavaRelease::Java21),
-        path: "crates/compiler-language-java/tests/fixtures/authority/src/demo/Cafe.java",
+        path: "frontends/java/tests/fixtures/authority/src/demo/Cafe.java",
         bytes: Some(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../compiler-language-java/tests/fixtures/authority/src/demo/Cafe.java"
+            "/../../frontends/java/tests/fixtures/authority/src/demo/Cafe.java"
         ))),
         absence: None,
     },
     LocalFixture {
         language: CorpusLanguage::CSharp,
         profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
-        path: "crates/compiler-language-csharp/tests/fixtures/producer/fidelity.cs",
+        path: "frontends/csharp/tests/fixtures/producer/fidelity.cs",
         bytes: Some(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../compiler-language-csharp/tests/fixtures/producer/fidelity.cs"
+            "/../../frontends/csharp/tests/fixtures/producer/fidelity.cs"
         ))),
         absence: None,
     },
     LocalFixture {
         language: CorpusLanguage::Clang,
         profile: LanguageProfile::Cxx(CxxStandard::Cxx23),
-        path: "crates/compiler-language-clang/tests",
+        path: "frontends/clang/tests",
         bytes: None,
         absence: Some(SourceUnavailableKind::RepositoryFixtureMissing),
     },

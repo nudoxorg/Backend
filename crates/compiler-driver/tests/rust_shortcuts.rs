@@ -14,7 +14,7 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use backend_semantic::ir::{FragmentView, TypeFactSegment};
-use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
+use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
 fn fixture(source: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -121,7 +121,7 @@ fn registry_log_compiles_within_the_corpus_deadline() -> Result<(), Box<dyn std:
         .ok_or_else(|| std::io::Error::other("no cargo home"))?
         .join("registry/src");
     let cancelled = AtomicBool::new(false);
-    let located = compiler_languages_rust::RustPackageUrl::parse("cargo:log@0.4.34")?.locate(
+    let located = backend_frontend_rust::legacy::RustPackageUrl::parse("cargo:log@0.4.34")?.locate(
         &workspace,
         &toolchain,
         Some(&registry),

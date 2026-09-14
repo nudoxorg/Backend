@@ -6,12 +6,12 @@ use std::{
 };
 
 use arrayvec::ArrayVec;
-use compiler_languages_csharp::{CSharpOracle, DEFAULT_SOURCE_LIMIT};
-use compiler_languages_go::{GoOracle, GoOracleConfiguration};
-use compiler_languages_java::harness::JdkToolchain;
-use compiler_languages_python::Pyrefly;
-use compiler_languages_rust::{RustToolchain, SourceByteLimit};
-use compiler_languages_typescript::Checker as TypeScriptChecker;
+use backend_frontend_csharp::legacy::{CSharpOracle, DEFAULT_SOURCE_LIMIT};
+use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
+use backend_frontend_java::legacy::harness::JdkToolchain;
+use backend_frontend_python::legacy::Pyrefly;
+use backend_frontend_rust::legacy::{RustToolchain, SourceByteLimit};
+use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
 use backend_semantic::vocabulary::NativeTool;
 use interface_core::PackageEcosystem;
 

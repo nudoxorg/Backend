@@ -725,7 +725,7 @@ fn python_fragment_apply_base_decodes_to_the_list_builtin_row() -> Result<(), Te
 
 #[test]
 fn checker_inference_is_rendered_when_pyrefly_is_available() -> Result<(), TestError> {
-    let checker = compiler_languages_python::Pyrefly::from_env();
+    let checker = backend_frontend_python::legacy::Pyrefly::from_env();
     if !checker.is_available() {
         return Ok(());
     }

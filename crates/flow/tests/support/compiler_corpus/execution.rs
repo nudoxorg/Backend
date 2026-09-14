@@ -134,7 +134,7 @@ pub(super) fn run_package(
                 toolchain,
                 SemanticAuthorityInput::Rust {
                     project: &fixture.project,
-                    maximum_source_bytes: compiler_languages_rust::SourceByteLimit(
+                    maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit(
                         u32::try_from(source.len()).unwrap_or(u32::MAX),
                     ),
                     features: fixture.features,

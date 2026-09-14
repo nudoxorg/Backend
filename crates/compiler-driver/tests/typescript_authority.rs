@@ -15,16 +15,16 @@ use compiler_driver::{
     CompileScratch, NativeTool, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
     compile, compile_ir,
 };
-use compiler_languages_typescript::{
+use backend_frontend_typescript::legacy::{
     AuthorityError, Checker, CheckerError, Origin, Report, TypeTree, source_digest,
 };
 use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage, TypeScriptSource};
 
 const SIMPLE_SOURCE: &[u8] = b"export const n: number = 1;";
 const GOLDEN_SOURCE: &[u8] =
-    include_bytes!("../../compiler-language-typescript/tests/fixtures/source.ts");
+    include_bytes!("../../../frontends/typescript/tests/fixtures/source.ts");
 const GOLDEN_TRANSCRIPT: &[u8] =
-    include_bytes!("../../compiler-language-typescript/tests/transcripts/golden.json");
+    include_bytes!("../../../frontends/typescript/tests/transcripts/golden.json");
 
 fn empty_report(source: &[u8]) -> Report {
     let digest = source_digest(source);
@@ -189,8 +189,8 @@ fn report_for_mutated_source_is_a_source_binding_failure() {
     assert!(matches!(
         failure,
         AuthorityFailure::TypeScript {
-            cause: compiler_languages_typescript::AuthorityError::Checker {
-                cause: compiler_languages_typescript::CheckerError::SourceBinding { .. }
+            cause: backend_frontend_typescript::legacy::AuthorityError::Checker {
+                cause: backend_frontend_typescript::legacy::CheckerError::SourceBinding { .. }
             },
             ..
         }

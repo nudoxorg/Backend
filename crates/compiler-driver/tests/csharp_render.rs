@@ -20,13 +20,13 @@ use thiserror::Error;
 
 const PROFILE: LanguageProfile = LanguageProfile::CSharp(CSharpVersion::CSharp14);
 const FIDELITY_SOURCE: &[u8] =
-    include_bytes!("../../compiler-language-csharp/tests/fixtures/producer/fidelity.cs");
+    include_bytes!("../../../frontends/csharp/tests/fixtures/producer/fidelity.cs");
 const FIDELITY_IMAGE: &[u8] =
-    include_bytes!("../../compiler-language-csharp/tests/fixtures/producer/fidelity.ncaimg");
+    include_bytes!("../../../frontends/csharp/tests/fixtures/producer/fidelity.ncaimg");
 const UNICODE_SOURCE: &[u8] =
-    include_bytes!("../../compiler-language-csharp/tests/fixtures/producer/unicode.cs");
+    include_bytes!("../../../frontends/csharp/tests/fixtures/producer/unicode.cs");
 const UNICODE_IMAGE: &[u8] =
-    include_bytes!("../../compiler-language-csharp/tests/fixtures/producer/unicode.ncaimg");
+    include_bytes!("../../../frontends/csharp/tests/fixtures/producer/unicode.ncaimg");
 const FIDELITY_GOLDEN: &str = include_str!("fixtures/csharp_render/fidelity.txt");
 const UNICODE_GOLDEN: &str = include_str!("fixtures/csharp_render/unicode.txt");
 

@@ -1,5 +1,5 @@
 //! C and C++ native authority adapter.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 use backend_compile::{
     Authority, AuthorityError, AuthorityIdentity, DiscoverySnapshot, Extraction, FactKeySchema,
@@ -16,6 +16,9 @@ mod compile_commands;
 mod extract;
 mod oracle;
 mod system_includes;
+
+#[path = "src/legacy/mod.rs"]
+pub mod legacy;
 
 pub use authority::{
     ClangAuthorityError, ClangProject, analyze_file, analyze_source, native_records,

@@ -6,7 +6,7 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use backend_semantic::ir::FragmentView;
-use compiler_languages_rust::{RustPackageUrl, RustPurlError, RustToolchain};
+use backend_frontend_rust::legacy::{RustPackageUrl, RustPurlError, RustToolchain};
 use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
@@ -40,7 +40,7 @@ enum TestError {
     #[error("no rustc was found")]
     MissingRustc,
     #[error("rust toolchain discovery failed: {0}")]
-    Toolchain(#[from] compiler_languages_rust::LoadError),
+    Toolchain(#[from] backend_frontend_rust::legacy::LoadError),
     #[error("PURL failure: {0}")]
     Purl(String),
     #[error("compile failure: {0}")]
@@ -92,7 +92,7 @@ fn rustc() -> Result<(PathBuf, RustToolchain, ResolvedToolchain<'static>), TestE
 
 fn compile_one<'source>(
     source: &'source [u8],
-    project: &'source compiler_languages_rust::RustProject,
+    project: &'source backend_frontend_rust::legacy::RustProject,
     tool: &ResolvedToolchain<'_>,
     output: &'source mut [u8],
 ) -> Result<compiler_driver::CompiledFragment<'source>, TestError> {
@@ -107,8 +107,8 @@ fn compile_one<'source>(
             toolchain: ToolchainSelection::ResolvedNative(*tool),
             authority: SemanticAuthorityInput::Rust {
                 project,
-                maximum_source_bytes: compiler_languages_rust::SourceByteLimit::from(65_536),
-                features: compiler_languages_rust::RustFeatureControl::default(),
+                maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit::from(65_536),
+                features: backend_frontend_rust::legacy::RustFeatureControl::default(),
             },
             control: CompileControl {
                 deadline: std::time::Instant::now() + Duration::from_secs(120),
@@ -128,7 +128,7 @@ fn compile_one<'source>(
 
 fn compile_ir_one(
     source: &[u8],
-    project: &compiler_languages_rust::RustProject,
+    project: &backend_frontend_rust::legacy::RustProject,
     tool: &ResolvedToolchain<'_>,
 ) -> Result<compiler_driver::CompiledIr, TestError> {
     let cancelled = AtomicBool::new(false);
@@ -142,8 +142,8 @@ fn compile_ir_one(
             toolchain: ToolchainSelection::ResolvedNative(*tool),
             authority: SemanticAuthorityInput::Rust {
                 project,
-                maximum_source_bytes: compiler_languages_rust::SourceByteLimit::from(65_536),
-                features: compiler_languages_rust::RustFeatureControl::default(),
+                maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit::from(65_536),
+                features: backend_frontend_rust::legacy::RustFeatureControl::default(),
             },
             control: CompileControl {
                 deadline: std::time::Instant::now() + Duration::from_secs(120),

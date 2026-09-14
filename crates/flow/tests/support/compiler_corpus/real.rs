@@ -263,7 +263,7 @@ fn audit_source_case(
                 toolchain,
                 SemanticAuthorityInput::Rust {
                     project: &fixture.project,
-                    maximum_source_bytes: compiler_languages_rust::SourceByteLimit(
+                    maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit(
                         u32::try_from(source.bytes.len()).unwrap_or(u32::MAX),
                     ),
                     features: fixture.features,
@@ -370,7 +370,7 @@ fn audit_source_case(
             finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
         }
         CorpusLanguage::TypeScript => {
-            let checker = compiler_languages_typescript::Checker::default();
+            let checker = backend_frontend_typescript::legacy::Checker::default();
             let LanguageProfile::TypeScript(profile) = profile else {
                 return Ok(RealCaseDisposition::Unavailable(
                     AuthorityUnavailableCause::TypeScriptChecker,
@@ -399,7 +399,7 @@ fn audit_source_case(
         }
         CorpusLanguage::Python => {
             let profile = PythonVersion::Python314;
-            let facts = match compiler_languages_python::extract(&source.bytes, profile) {
+            let facts = match backend_frontend_python::legacy::extract(&source.bytes, profile) {
                 Ok(facts) => facts,
                 Err(_) => {
                     return Ok(RealCaseDisposition::Unavailable(
@@ -407,7 +407,7 @@ fn audit_source_case(
                     ));
                 }
             };
-            let checker = compiler_languages_python::Pyrefly::from_env();
+            let checker = backend_frontend_python::legacy::Pyrefly::from_env();
             if !checker.is_available() {
                 return Ok(RealCaseDisposition::Unavailable(
                     AuthorityUnavailableCause::PythonChecker,

@@ -50,7 +50,7 @@ use backend_semantic::ir::{
     ReferenceKind, RelSpan, RelSpanFault, SemanticProductConstructor, SemanticTypeChild,
     SemanticTypeRecord, SemanticTypeTag, TypeListId, TypeParameterListId, TypeReason, TypeWidth,
 };
-use compiler_languages_go::{
+use backend_frontend_go::legacy::{
     ChanDir, Declaration, DeclarationKind, DocOwner, GoImage, HeaderError, ImageError, MemberKind,
     TypeRowKind, parse_constraint_blob,
 };
@@ -1325,7 +1325,7 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// field fact's root record.
     fn fields(
         &mut self,
-        row: &compiler_languages_go::TypeRow<'source>,
+        row: &backend_frontend_go::legacy::TypeRow<'source>,
         fields: &mut Vec<u32>,
     ) -> Result<(), GoCollectError> {
         for member_index in member_run(row) {
@@ -1352,7 +1352,7 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// Pushes one function fact per interface method signature.
     fn interface_methods(
         &mut self,
-        row: &compiler_languages_go::TypeRow<'source>,
+        row: &backend_frontend_go::legacy::TypeRow<'source>,
         methods: &mut Vec<(u32, &'source [u8])>,
     ) -> Result<(), GoCollectError> {
         for member_index in member_run(row) {
@@ -2173,7 +2173,7 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// universe name folds to the typed unknown that retains its spelling.
     fn named_root(
         &mut self,
-        row: &compiler_languages_go::TypeRow<'source>,
+        row: &backend_frontend_go::legacy::TypeRow<'source>,
     ) -> Result<RootType<'source>, GoCollectError> {
         if !row.package.is_empty()
             && let Some(base) = self.lookup(row.package, row.name)
@@ -2558,7 +2558,7 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// name — `error` among them — on the typed unknown that retains it.
     fn basic_leaf(
         &self,
-        row: &compiler_languages_go::TypeRow<'source>,
+        row: &backend_frontend_go::legacy::TypeRow<'source>,
     ) -> SemanticTypeRecord<'source> {
         let signed = |width: u32| {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
@@ -2614,7 +2614,7 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// The pooled child-run row indices of one type row, image order.
     fn row_children(
         &self,
-        row: &compiler_languages_go::TypeRow<'source>,
+        row: &backend_frontend_go::legacy::TypeRow<'source>,
     ) -> Result<Vec<u32>, GoCollectError> {
         let start = index_of(row.children.0);
         let count = row.children.1 as usize;
@@ -2669,7 +2669,7 @@ impl WithShape for SemanticTypeRecord<'_> {
 }
 
 /// The member-run row indices of one struct or interface row.
-fn member_run(row: &compiler_languages_go::TypeRow<'_>) -> Vec<usize> {
+fn member_run(row: &backend_frontend_go::legacy::TypeRow<'_>) -> Vec<usize> {
     let start = index_of(row.members.0);
     let count = row.members.1 as usize;
     (start..start + count).collect()
@@ -2678,7 +2678,7 @@ fn member_run(row: &compiler_languages_go::TypeRow<'_>) -> Vec<usize> {
 /// The embedded-run row indices of one interface row.
 fn embedded_run<'image>(
     image: GoImage<'image>,
-    row: &compiler_languages_go::TypeRow<'image>,
+    row: &backend_frontend_go::legacy::TypeRow<'image>,
 ) -> impl Iterator<Item = Result<u32, ImageError>> + 'image {
     let start = index_of(row.children.0);
     let count = row.children.1 as usize;
@@ -2690,7 +2690,7 @@ fn embedded_run<'image>(
 
 /// The first embedded row's spelling; anonymous embeddeds carry none and
 /// take the blank identifier.
-fn embedded_name<'image>(row: &compiler_languages_go::TypeRow<'image>) -> &'image [u8] {
+fn embedded_name<'image>(row: &backend_frontend_go::legacy::TypeRow<'image>) -> &'image [u8] {
     if row.name.is_empty() {
         UNNAMED
     } else {

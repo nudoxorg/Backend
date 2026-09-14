@@ -19,12 +19,12 @@ compiler-publication = { path = "../compiler-publication" }
 backend-semantic = { path = "../semantic" }
 server-journal = { path = "../server-journal" }
 backend-version = { path = "../version" }
-compiler-languages-csharp = { path = "../compiler-language-csharp" }
-compiler-languages-go = { path = "../compiler-language-go" }
-compiler-languages-java = { path = "../compiler-language-java" }
-compiler-languages-python = { path = "../compiler-language-python" }
-compiler-languages-rust = { path = "../compiler-language-rust" }
-compiler-languages-typescript = { path = "../compiler-language-typescript" }
+backend-frontend-csharp = { path = "../../frontends/csharp" }
+backend-frontend-go = { path = "../../frontends/go" }
+backend-frontend-java = { path = "../../frontends/java" }
+backend-frontend-python = { path = "../../frontends/python" }
+backend-frontend-rust = { path = "../../frontends/rust" }
+backend-frontend-typescript = { path = "../../frontends/typescript" }
 thiserror.workspace = true
 interface-core = { path = "../interface-core" }
 

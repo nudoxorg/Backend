@@ -97,7 +97,7 @@ pub enum AuthorityFailure<'diagnostic> {
         diagnostic: AuthorityDiagnostic<'diagnostic>,
         /// Exact libclang source failure.
         #[source]
-        cause: compiler_languages_clang::CollectError,
+        cause: backend_frontend_clang::legacy::CollectError,
     },
     /// Rust-analyzer did not yield complete HIR/type facts for the selected Cargo graph.
     #[error("Rust semantic authority failed")]
@@ -106,7 +106,7 @@ pub enum AuthorityFailure<'diagnostic> {
         diagnostic: AuthorityDiagnostic<'diagnostic>,
         /// Exact rust-analyzer source failure.
         #[source]
-        cause: compiler_languages_rust::RustAuthorityError,
+        cause: backend_frontend_rust::legacy::RustAuthorityError,
     },
     /// OXC syntax/binding authority did not yield TypeScript facts.
     #[error("TypeScript semantic authority failed")]
@@ -115,7 +115,7 @@ pub enum AuthorityFailure<'diagnostic> {
         diagnostic: AuthorityDiagnostic<'diagnostic>,
         /// Exact OXC source failure.
         #[source]
-        cause: compiler_languages_typescript::AuthorityError,
+        cause: backend_frontend_typescript::legacy::AuthorityError,
     },
     /// TypeScript source bytes could not be lent to OXC as valid UTF-8 text.
     #[error("TypeScript source is not valid UTF-8")]
@@ -143,7 +143,7 @@ pub enum AuthorityFailure<'diagnostic> {
         diagnostic: AuthorityDiagnostic<'diagnostic>,
         /// Exact Python source failure.
         #[source]
-        cause: compiler_languages_python::ExtractionError,
+        cause: backend_frontend_python::legacy::ExtractionError,
     },
     /// Pyrefly started for this source but did not complete its type-authority
     /// transaction. This is not checker unavailability: the exact failure is
@@ -154,7 +154,7 @@ pub enum AuthorityFailure<'diagnostic> {
         diagnostic: AuthorityDiagnostic<'diagnostic>,
         /// Exact pyrefly transaction failure.
         #[source]
-        cause: compiler_languages_python::CheckerError,
+        cause: backend_frontend_python::legacy::CheckerError,
     },
     /// Ruff returned a declaration span outside the exact Python source authority.
     #[error("Python authority returned an invalid source span")]
@@ -173,7 +173,7 @@ pub enum AuthorityFailure<'diagnostic> {
         diagnostic: AuthorityDiagnostic<'diagnostic>,
         /// Exact Go source failure.
         #[source]
-        cause: compiler_languages_go::OracleError,
+        cause: backend_frontend_go::legacy::OracleError,
     },
     /// The fixed Go authority image failed before lending semantic facts.
     #[error("Go authority image failed")]
@@ -182,7 +182,7 @@ pub enum AuthorityFailure<'diagnostic> {
         diagnostic: AuthorityDiagnostic<'diagnostic>,
         /// Exact binary-image validation failure.
         #[source]
-        cause: compiler_languages_go::ImageError,
+        cause: backend_frontend_go::legacy::ImageError,
     },
     /// A Go image was produced for a source other than the compile request.
     #[error("Go authority image source binding differs from the compile request")]
@@ -201,7 +201,7 @@ pub enum AuthorityFailure<'diagnostic> {
         diagnostic: AuthorityDiagnostic<'diagnostic>,
         /// Exact Roslyn source failure.
         #[source]
-        cause: compiler_languages_csharp::DecodeError,
+        cause: backend_frontend_csharp::legacy::DecodeError,
     },
     /// The fixed Roslyn authority image failed before lending declarations.
     #[error("C# authority image failed")]
@@ -210,7 +210,7 @@ pub enum AuthorityFailure<'diagnostic> {
         diagnostic: AuthorityDiagnostic<'diagnostic>,
         /// Exact binary authority-image validation cause.
         #[source]
-        cause: compiler_languages_csharp::ImageError,
+        cause: backend_frontend_csharp::legacy::ImageError,
     },
     /// A Roslyn image was generated for a source other than the compile request.
     #[error("C# authority image source binding differs from the compile request")]
@@ -239,7 +239,7 @@ pub enum AuthorityFailure<'diagnostic> {
         diagnostic: AuthorityDiagnostic<'diagnostic>,
         /// Exact javac image failure.
         #[source]
-        cause: compiler_languages_java::ImageError,
+        cause: backend_frontend_java::legacy::ImageError,
     },
     /// The source-bound javac authority envelope failed before yielding facts.
     #[error("Java source-bound authority image failed")]
@@ -248,7 +248,7 @@ pub enum AuthorityFailure<'diagnostic> {
         diagnostic: AuthorityDiagnostic<'diagnostic>,
         /// Exact outer-envelope or embedded image failure.
         #[source]
-        cause: compiler_languages_java::BoundImageError,
+        cause: backend_frontend_java::legacy::BoundImageError,
     },
     /// A source-bound javac image was generated for a different Java release.
     #[error("Java authority image release differs from the requested profile")]
@@ -258,7 +258,7 @@ pub enum AuthorityFailure<'diagnostic> {
         /// Java release selected by the compiler request.
         requested: backend_semantic::vocabulary::JavaRelease,
         /// Java release retained by the attributed javac image.
-        observed: compiler_languages_java::JavaRelease,
+        observed: backend_frontend_java::legacy::JavaRelease,
     },
     /// A source-bound javac image was generated for source bytes other than this request.
     #[error("Java authority image source binding differs from the compile request")]
@@ -443,29 +443,29 @@ pub struct AuthorityProfileMismatch<'diagnostic> {
     pub failure: AuthorityFailure<'diagnostic>,
 }
 
-fn clang_phase(cause: &compiler_languages_clang::CollectError) -> AuthorityPhase {
+fn clang_phase(cause: &backend_frontend_clang::legacy::CollectError) -> AuthorityPhase {
     match cause {
-        compiler_languages_clang::CollectError::Parse { .. }
-        | compiler_languages_clang::CollectError::SourceContainsNul
-        | compiler_languages_clang::CollectError::SourceTooLarge { .. }
-        | compiler_languages_clang::CollectError::SourceLengthTooLarge { .. } => {
+        backend_frontend_clang::legacy::CollectError::Parse { .. }
+        | backend_frontend_clang::legacy::CollectError::SourceContainsNul
+        | backend_frontend_clang::legacy::CollectError::SourceTooLarge { .. }
+        | backend_frontend_clang::legacy::CollectError::SourceLengthTooLarge { .. } => {
             AuthorityPhase::Parse
         }
-        compiler_languages_clang::CollectError::ScratchCapacity { .. }
-        | compiler_languages_clang::CollectError::CoordinateTooLarge { .. }
-        | compiler_languages_clang::CollectError::SlotOrdinalTooLarge { .. }
-        | compiler_languages_clang::CollectError::SlotCountOverflow { .. } => {
+        backend_frontend_clang::legacy::CollectError::ScratchCapacity { .. }
+        | backend_frontend_clang::legacy::CollectError::CoordinateTooLarge { .. }
+        | backend_frontend_clang::legacy::CollectError::SlotOrdinalTooLarge { .. }
+        | backend_frontend_clang::legacy::CollectError::SlotCountOverflow { .. } => {
             AuthorityPhase::Project
         }
-        compiler_languages_clang::CollectError::Cancelled
-        | compiler_languages_clang::CollectError::Library(_)
-        | compiler_languages_clang::CollectError::MissingApi { .. }
-        | compiler_languages_clang::CollectError::IndexUnavailable
-        | compiler_languages_clang::CollectError::MainFileUnavailable => AuthorityPhase::Open,
+        backend_frontend_clang::legacy::CollectError::Cancelled
+        | backend_frontend_clang::legacy::CollectError::Library(_)
+        | backend_frontend_clang::legacy::CollectError::MissingApi { .. }
+        | backend_frontend_clang::legacy::CollectError::IndexUnavailable
+        | backend_frontend_clang::legacy::CollectError::MainFileUnavailable => AuthorityPhase::Open,
     }
 }
 
-fn clang_class(cause: &compiler_languages_clang::CollectError) -> AuthorityDiagnosticClass {
+fn clang_class(cause: &backend_frontend_clang::legacy::CollectError) -> AuthorityDiagnosticClass {
     match clang_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
         AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
@@ -475,34 +475,34 @@ fn clang_class(cause: &compiler_languages_clang::CollectError) -> AuthorityDiagn
     }
 }
 
-fn rust_phase(cause: &compiler_languages_rust::RustAuthorityError) -> AuthorityPhase {
+fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> AuthorityPhase {
     match cause {
-        compiler_languages_rust::RustAuthorityError::Workspace { .. }
-        | compiler_languages_rust::RustAuthorityError::SourceNotLoaded { .. }
-        | compiler_languages_rust::RustAuthorityError::EditionMismatch { .. }
-        | compiler_languages_rust::RustAuthorityError::MissingSemanticFact { .. } => {
+        backend_frontend_rust::legacy::RustAuthorityError::Workspace { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SourceNotLoaded { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::EditionMismatch { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::MissingSemanticFact { .. } => {
             AuthorityPhase::Resolve
         }
-        compiler_languages_rust::RustAuthorityError::UnresolvedInferredType => {
+        backend_frontend_rust::legacy::RustAuthorityError::UnresolvedInferredType => {
             AuthorityPhase::TypeCheck
         }
-        compiler_languages_rust::RustAuthorityError::InvalidSpan { .. }
-        | compiler_languages_rust::RustAuthorityError::Coordinate { .. }
-        | compiler_languages_rust::RustAuthorityError::Admission { .. } => AuthorityPhase::Project,
-        compiler_languages_rust::RustAuthorityError::SourceBinding { .. } => AuthorityPhase::Parse,
-        compiler_languages_rust::RustAuthorityError::Cancelled
-        | compiler_languages_rust::RustAuthorityError::DeadlineExceeded
-        | compiler_languages_rust::RustAuthorityError::Toolchain(_)
-        | compiler_languages_rust::RustAuthorityError::ProjectRoot { .. }
-        | compiler_languages_rust::RustAuthorityError::ProjectSource { .. }
-        | compiler_languages_rust::RustAuthorityError::MissingManifest { .. }
-        | compiler_languages_rust::RustAuthorityError::SourceNotFile { .. }
-        | compiler_languages_rust::RustAuthorityError::SourceBudget { .. }
-        | compiler_languages_rust::RustAuthorityError::SourceRead { .. } => AuthorityPhase::Open,
+        backend_frontend_rust::legacy::RustAuthorityError::InvalidSpan { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::Coordinate { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::Admission { .. } => AuthorityPhase::Project,
+        backend_frontend_rust::legacy::RustAuthorityError::SourceBinding { .. } => AuthorityPhase::Parse,
+        backend_frontend_rust::legacy::RustAuthorityError::Cancelled
+        | backend_frontend_rust::legacy::RustAuthorityError::DeadlineExceeded
+        | backend_frontend_rust::legacy::RustAuthorityError::Toolchain(_)
+        | backend_frontend_rust::legacy::RustAuthorityError::ProjectRoot { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::ProjectSource { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::MissingManifest { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SourceNotFile { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SourceBudget { .. }
+        | backend_frontend_rust::legacy::RustAuthorityError::SourceRead { .. } => AuthorityPhase::Open,
     }
 }
 
-fn rust_class(cause: &compiler_languages_rust::RustAuthorityError) -> AuthorityDiagnosticClass {
+fn rust_class(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> AuthorityDiagnosticClass {
     match rust_phase(cause) {
         AuthorityPhase::Resolve => AuthorityDiagnosticClass::Binding,
         AuthorityPhase::TypeCheck => AuthorityDiagnosticClass::Type,
@@ -511,47 +511,47 @@ fn rust_class(cause: &compiler_languages_rust::RustAuthorityError) -> AuthorityD
     }
 }
 
-fn typescript_phase(cause: &compiler_languages_typescript::AuthorityError) -> AuthorityPhase {
+fn typescript_phase(cause: &backend_frontend_typescript::legacy::AuthorityError) -> AuthorityPhase {
     match cause {
-        compiler_languages_typescript::AuthorityError::Syntax { .. } => AuthorityPhase::Parse,
-        compiler_languages_typescript::AuthorityError::Binding { .. } => AuthorityPhase::Resolve,
+        backend_frontend_typescript::legacy::AuthorityError::Syntax { .. } => AuthorityPhase::Parse,
+        backend_frontend_typescript::legacy::AuthorityError::Binding { .. } => AuthorityPhase::Resolve,
         // A checker authority rejection is the type-checking phase by
         // definition: the checker ran and rejected the transaction.
-        compiler_languages_typescript::AuthorityError::Checker { .. } => AuthorityPhase::TypeCheck,
+        backend_frontend_typescript::legacy::AuthorityError::Checker { .. } => AuthorityPhase::TypeCheck,
     }
 }
 
 fn typescript_class(
-    cause: &compiler_languages_typescript::AuthorityError,
+    cause: &backend_frontend_typescript::legacy::AuthorityError,
 ) -> AuthorityDiagnosticClass {
     match cause {
-        compiler_languages_typescript::AuthorityError::Syntax { .. } => {
+        backend_frontend_typescript::legacy::AuthorityError::Syntax { .. } => {
             AuthorityDiagnosticClass::Syntax
         }
-        compiler_languages_typescript::AuthorityError::Binding { .. } => {
+        backend_frontend_typescript::legacy::AuthorityError::Binding { .. } => {
             AuthorityDiagnosticClass::Binding
         }
         // A checker rejection classifies as a type diagnostic.
-        compiler_languages_typescript::AuthorityError::Checker { .. } => {
+        backend_frontend_typescript::legacy::AuthorityError::Checker { .. } => {
             AuthorityDiagnosticClass::Type
         }
     }
 }
 
-fn python_phase(cause: &compiler_languages_python::ExtractionError) -> AuthorityPhase {
+fn python_phase(cause: &backend_frontend_python::legacy::ExtractionError) -> AuthorityPhase {
     match cause {
-        compiler_languages_python::ExtractionError::RejectedSyntax { .. }
-        | compiler_languages_python::ExtractionError::NonModuleParse { .. }
-        | compiler_languages_python::ExtractionError::InvalidUtf8 { .. } => AuthorityPhase::Parse,
-        compiler_languages_python::ExtractionError::SourceLength { .. }
-        | compiler_languages_python::ExtractionError::InvalidRange { .. }
-        | compiler_languages_python::ExtractionError::MissingFunctionDelimiter { .. } => {
+        backend_frontend_python::legacy::ExtractionError::RejectedSyntax { .. }
+        | backend_frontend_python::legacy::ExtractionError::NonModuleParse { .. }
+        | backend_frontend_python::legacy::ExtractionError::InvalidUtf8 { .. } => AuthorityPhase::Parse,
+        backend_frontend_python::legacy::ExtractionError::SourceLength { .. }
+        | backend_frontend_python::legacy::ExtractionError::InvalidRange { .. }
+        | backend_frontend_python::legacy::ExtractionError::MissingFunctionDelimiter { .. } => {
             AuthorityPhase::Project
         }
     }
 }
 
-fn python_class(cause: &compiler_languages_python::ExtractionError) -> AuthorityDiagnosticClass {
+fn python_class(cause: &backend_frontend_python::legacy::ExtractionError) -> AuthorityDiagnosticClass {
     match python_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
         AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
@@ -561,21 +561,21 @@ fn python_class(cause: &compiler_languages_python::ExtractionError) -> Authority
     }
 }
 
-fn go_phase(cause: &compiler_languages_go::OracleError) -> AuthorityPhase {
+fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase {
     match cause {
-        compiler_languages_go::OracleError::Decode { .. } => AuthorityPhase::Parse,
-        compiler_languages_go::OracleError::Staleness { .. } => AuthorityPhase::Project,
-        compiler_languages_go::OracleError::Spawn { .. }
-        | compiler_languages_go::OracleError::ToolingUnavailable { .. }
-        | compiler_languages_go::OracleError::Exit { .. }
-        | compiler_languages_go::OracleError::OutputLimit { .. }
-        | compiler_languages_go::OracleError::Timeout { .. }
-        | compiler_languages_go::OracleError::Pipe { .. }
-        | compiler_languages_go::OracleError::WorkerPanic { .. } => AuthorityPhase::Open,
+        backend_frontend_go::legacy::OracleError::Decode { .. } => AuthorityPhase::Parse,
+        backend_frontend_go::legacy::OracleError::Staleness { .. } => AuthorityPhase::Project,
+        backend_frontend_go::legacy::OracleError::Spawn { .. }
+        | backend_frontend_go::legacy::OracleError::ToolingUnavailable { .. }
+        | backend_frontend_go::legacy::OracleError::Exit { .. }
+        | backend_frontend_go::legacy::OracleError::OutputLimit { .. }
+        | backend_frontend_go::legacy::OracleError::Timeout { .. }
+        | backend_frontend_go::legacy::OracleError::Pipe { .. }
+        | backend_frontend_go::legacy::OracleError::WorkerPanic { .. } => AuthorityPhase::Open,
     }
 }
 
-fn go_class(cause: &compiler_languages_go::OracleError) -> AuthorityDiagnosticClass {
+fn go_class(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityDiagnosticClass {
     match go_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
         AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
@@ -585,15 +585,15 @@ fn go_class(cause: &compiler_languages_go::OracleError) -> AuthorityDiagnosticCl
     }
 }
 
-fn go_image_phase(cause: &compiler_languages_go::ImageError) -> AuthorityPhase {
+fn go_image_phase(cause: &backend_frontend_go::legacy::ImageError) -> AuthorityPhase {
     match cause {
-        compiler_languages_go::ImageError::Header(_)
-        | compiler_languages_go::ImageError::Digest => AuthorityPhase::Parse,
+        backend_frontend_go::legacy::ImageError::Header(_)
+        | backend_frontend_go::legacy::ImageError::Digest => AuthorityPhase::Parse,
         _ => AuthorityPhase::Project,
     }
 }
 
-fn go_image_class(cause: &compiler_languages_go::ImageError) -> AuthorityDiagnosticClass {
+fn go_image_class(cause: &backend_frontend_go::legacy::ImageError) -> AuthorityDiagnosticClass {
     match go_image_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
         AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
@@ -603,28 +603,28 @@ fn go_image_class(cause: &compiler_languages_go::ImageError) -> AuthorityDiagnos
     }
 }
 
-fn csharp_phase(_cause: &compiler_languages_csharp::DecodeError) -> AuthorityPhase {
+fn csharp_phase(_cause: &backend_frontend_csharp::legacy::DecodeError) -> AuthorityPhase {
     AuthorityPhase::Parse
 }
 
-fn csharp_class(_cause: &compiler_languages_csharp::DecodeError) -> AuthorityDiagnosticClass {
+fn csharp_class(_cause: &backend_frontend_csharp::legacy::DecodeError) -> AuthorityDiagnosticClass {
     AuthorityDiagnosticClass::Syntax
 }
 
-fn csharp_image_phase(cause: &compiler_languages_csharp::ImageError) -> AuthorityPhase {
+fn csharp_image_phase(cause: &backend_frontend_csharp::legacy::ImageError) -> AuthorityPhase {
     match cause {
-        compiler_languages_csharp::ImageError::Header(_)
-        | compiler_languages_csharp::ImageError::Digest => AuthorityPhase::Parse,
-        compiler_languages_csharp::ImageError::DeclarationKind { .. }
-        | compiler_languages_csharp::ImageError::DeclarationReserved { .. }
-        | compiler_languages_csharp::ImageError::NameRange { .. }
-        | compiler_languages_csharp::ImageError::NameUtf8 { .. }
-        | compiler_languages_csharp::ImageError::Span { .. }
-        | compiler_languages_csharp::ImageError::TypeChildCount { .. } => AuthorityPhase::Project,
+        backend_frontend_csharp::legacy::ImageError::Header(_)
+        | backend_frontend_csharp::legacy::ImageError::Digest => AuthorityPhase::Parse,
+        backend_frontend_csharp::legacy::ImageError::DeclarationKind { .. }
+        | backend_frontend_csharp::legacy::ImageError::DeclarationReserved { .. }
+        | backend_frontend_csharp::legacy::ImageError::NameRange { .. }
+        | backend_frontend_csharp::legacy::ImageError::NameUtf8 { .. }
+        | backend_frontend_csharp::legacy::ImageError::Span { .. }
+        | backend_frontend_csharp::legacy::ImageError::TypeChildCount { .. } => AuthorityPhase::Project,
     }
 }
 
-fn csharp_image_class(cause: &compiler_languages_csharp::ImageError) -> AuthorityDiagnosticClass {
+fn csharp_image_class(cause: &backend_frontend_csharp::legacy::ImageError) -> AuthorityDiagnosticClass {
     match csharp_image_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
         AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
@@ -634,25 +634,25 @@ fn csharp_image_class(cause: &compiler_languages_csharp::ImageError) -> Authorit
     }
 }
 
-fn java_phase(cause: &compiler_languages_java::ImageError) -> AuthorityPhase {
+fn java_phase(cause: &backend_frontend_java::legacy::ImageError) -> AuthorityPhase {
     match cause {
-        compiler_languages_java::ImageError::Header(_)
-        | compiler_languages_java::ImageError::Section { .. }
-        | compiler_languages_java::ImageError::Digest => AuthorityPhase::Parse,
-        compiler_languages_java::ImageError::Atom { .. }
-        | compiler_languages_java::ImageError::AbsentAtom
-        | compiler_languages_java::ImageError::Coordinate { .. }
-        | compiler_languages_java::ImageError::Tag { .. }
-        | compiler_languages_java::ImageError::ChildRange { .. }
-        | compiler_languages_java::ImageError::ReferenceRange { .. }
-        | compiler_languages_java::ImageError::DocumentationPresence
-        | compiler_languages_java::ImageError::ModifierBits { .. }
-        | compiler_languages_java::ImageError::RecordComponentKind { .. }
-        | compiler_languages_java::ImageError::ExtensionReserved => AuthorityPhase::Project,
+        backend_frontend_java::legacy::ImageError::Header(_)
+        | backend_frontend_java::legacy::ImageError::Section { .. }
+        | backend_frontend_java::legacy::ImageError::Digest => AuthorityPhase::Parse,
+        backend_frontend_java::legacy::ImageError::Atom { .. }
+        | backend_frontend_java::legacy::ImageError::AbsentAtom
+        | backend_frontend_java::legacy::ImageError::Coordinate { .. }
+        | backend_frontend_java::legacy::ImageError::Tag { .. }
+        | backend_frontend_java::legacy::ImageError::ChildRange { .. }
+        | backend_frontend_java::legacy::ImageError::ReferenceRange { .. }
+        | backend_frontend_java::legacy::ImageError::DocumentationPresence
+        | backend_frontend_java::legacy::ImageError::ModifierBits { .. }
+        | backend_frontend_java::legacy::ImageError::RecordComponentKind { .. }
+        | backend_frontend_java::legacy::ImageError::ExtensionReserved => AuthorityPhase::Project,
     }
 }
 
-fn java_class(cause: &compiler_languages_java::ImageError) -> AuthorityDiagnosticClass {
+fn java_class(cause: &backend_frontend_java::legacy::ImageError) -> AuthorityDiagnosticClass {
     match java_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
         AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
@@ -662,15 +662,15 @@ fn java_class(cause: &compiler_languages_java::ImageError) -> AuthorityDiagnosti
     }
 }
 
-fn java_bound_phase(cause: &compiler_languages_java::BoundImageError) -> AuthorityPhase {
+fn java_bound_phase(cause: &backend_frontend_java::legacy::BoundImageError) -> AuthorityPhase {
     match cause {
-        compiler_languages_java::BoundImageError::Header(_)
-        | compiler_languages_java::BoundImageError::Digest => AuthorityPhase::Parse,
-        compiler_languages_java::BoundImageError::Image(cause) => java_phase(cause),
+        backend_frontend_java::legacy::BoundImageError::Header(_)
+        | backend_frontend_java::legacy::BoundImageError::Digest => AuthorityPhase::Parse,
+        backend_frontend_java::legacy::BoundImageError::Image(cause) => java_phase(cause),
     }
 }
 
-fn java_bound_class(cause: &compiler_languages_java::BoundImageError) -> AuthorityDiagnosticClass {
+fn java_bound_class(cause: &backend_frontend_java::legacy::BoundImageError) -> AuthorityDiagnosticClass {
     match java_bound_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
         AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,

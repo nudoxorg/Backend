@@ -63,7 +63,7 @@ use backend_semantic::ir::{
     ReferenceKind as LaneReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
     SemanticTypeTag, TypeParameterListId, TypeReason, TypeWidth,
 };
-use compiler_languages_clang::{
+use backend_frontend_clang::legacy::{
     ClangInput, ClangScratch, CollectError, DeclarationFact, DeclarationId, DeclarationKind,
     DefinitionState, IncludeFact, MAX_CLANG_DECLARATIONS, MAX_CLANG_DIAGNOSTICS,
     MAX_CLANG_INCLUDES, MAX_CLANG_OVERRIDES, MAX_CLANG_REFERENCES, MAX_CLANG_TYPE_EDGES,
@@ -314,7 +314,7 @@ const fn empty_type() -> TypeFact {
     TypeFact {
         id: AuthorityTypeId { raw: 0 },
         kind: TypeKind::Unknown,
-        qualifiers: compiler_languages_clang::TypeQualifiers {
+        qualifiers: backend_frontend_clang::legacy::TypeQualifiers {
             is_const: false,
             is_volatile: false,
             is_restrict: false,
@@ -339,7 +339,7 @@ const fn empty_type_edge() -> TypeEdge {
 /// Packs direct libclang cv/restrict facts only at the vocabulary boundary.
 /// The corresponding row is always a `CQualified` wrapper, so this bit cell
 /// has a single canonical owner and never leaks as generic mutability.
-const fn c_qualifiers(qualifiers: compiler_languages_clang::TypeQualifiers) -> u32 {
+const fn c_qualifiers(qualifiers: backend_frontend_clang::legacy::TypeQualifiers) -> u32 {
     (if qualifiers.is_const { 1 } else { 0 })
         | (if qualifiers.is_volatile { 1 << 1 } else { 0 })
         | (if qualifiers.is_restrict { 1 << 2 } else { 0 })
@@ -351,7 +351,7 @@ const fn c_qualifiers(qualifiers: compiler_languages_clang::TypeQualifiers) -> u
 /// semantic node and therefore terminate with the original authority row.
 const fn qualifiers_are_legal(
     kind: TypeKind,
-    qualifiers: compiler_languages_clang::TypeQualifiers,
+    qualifiers: backend_frontend_clang::legacy::TypeQualifiers,
 ) -> bool {
     if qualifiers.is_restrict && !matches!(kind, TypeKind::Pointer) {
         return false;
@@ -376,9 +376,9 @@ const fn empty_reference() -> ReferenceFact {
     }
 }
 
-const fn empty_diagnostic() -> compiler_languages_clang::DiagnosticFact {
-    compiler_languages_clang::DiagnosticFact {
-        severity: compiler_languages_clang::DiagnosticSeverity::Ignored,
+const fn empty_diagnostic() -> backend_frontend_clang::legacy::DiagnosticFact {
+    backend_frontend_clang::legacy::DiagnosticFact {
+        severity: backend_frontend_clang::legacy::DiagnosticSeverity::Ignored,
         location: None,
         category: 0,
         message: None,
@@ -387,7 +387,7 @@ const fn empty_diagnostic() -> compiler_languages_clang::DiagnosticFact {
 
 const fn empty_include() -> IncludeFact {
     IncludeFact {
-        kind: compiler_languages_clang::SourceDependencyKind::Include,
+        kind: backend_frontend_clang::legacy::SourceDependencyKind::Include,
         span: empty_span(),
         resolved: None,
     }
@@ -533,7 +533,7 @@ impl<'source> Projected<'source> {
 /// The two-pass Clang projector over one direct authority image.
 struct Projector<'authority, 'scratch, 'source> {
     source: &'source [u8],
-    authority: compiler_languages_clang::ClangFacts<'scratch>,
+    authority: backend_frontend_clang::legacy::ClangFacts<'scratch>,
     facts: &'authority mut FactSet<'source>,
     /// For every authority declaration, the winning declaration of its
     /// identity group: the definition when the group has one, else the
@@ -571,7 +571,7 @@ enum ClangParentage {
 impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     fn new(
         source: &'source [u8],
-        authority: compiler_languages_clang::ClangFacts<'scratch>,
+        authority: backend_frontend_clang::legacy::ClangFacts<'scratch>,
         facts: &'authority mut FactSet<'source>,
     ) -> Self {
         let declaration_count = authority.declarations.len();
@@ -1336,62 +1336,62 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             None => None,
         };
         let record = match builtin {
-            compiler_languages_clang::BuiltinClass::Void => {
+            backend_frontend_clang::legacy::BuiltinClass::Void => {
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
                 record.payload0 = SHAPE_BUILTIN;
                 record.text = Some(VOID_SPELLING);
                 record
             }
-            compiler_languages_clang::BuiltinClass::Bool => {
+            backend_frontend_clang::legacy::BuiltinClass::Bool => {
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
                 record.payload0 = SHAPE_BOOL;
                 record
             }
-            compiler_languages_clang::BuiltinClass::PlainCharSigned
-            | compiler_languages_clang::BuiltinClass::PlainCharUnsigned
-            | compiler_languages_clang::BuiltinClass::SignedChar
-            | compiler_languages_clang::BuiltinClass::UnsignedChar
-            | compiler_languages_clang::BuiltinClass::Utf16CodeUnit
-            | compiler_languages_clang::BuiltinClass::Utf32CodeUnit
-            | compiler_languages_clang::BuiltinClass::WideCharSigned
-            | compiler_languages_clang::BuiltinClass::WideCharUnsigned
-            | compiler_languages_clang::BuiltinClass::WideCharSignednessUnavailable => {
+            backend_frontend_clang::legacy::BuiltinClass::PlainCharSigned
+            | backend_frontend_clang::legacy::BuiltinClass::PlainCharUnsigned
+            | backend_frontend_clang::legacy::BuiltinClass::SignedChar
+            | backend_frontend_clang::legacy::BuiltinClass::UnsignedChar
+            | backend_frontend_clang::legacy::BuiltinClass::Utf16CodeUnit
+            | backend_frontend_clang::legacy::BuiltinClass::Utf32CodeUnit
+            | backend_frontend_clang::legacy::BuiltinClass::WideCharSigned
+            | backend_frontend_clang::legacy::BuiltinClass::WideCharUnsigned
+            | backend_frontend_clang::legacy::BuiltinClass::WideCharSignednessUnavailable => {
                 let Some(width) = width(row.size_bits) else {
                     return Projected::leaf(unknown_record(TypeReason::OracleGap, None));
                 };
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
                 record.payload0 = match builtin {
-                    compiler_languages_clang::BuiltinClass::PlainCharSigned => {
+                    backend_frontend_clang::legacy::BuiltinClass::PlainCharSigned => {
                         SHAPE_C_PLAIN_SIGNED_CHAR
                     }
-                    compiler_languages_clang::BuiltinClass::PlainCharUnsigned => {
+                    backend_frontend_clang::legacy::BuiltinClass::PlainCharUnsigned => {
                         SHAPE_C_PLAIN_UNSIGNED_CHAR
                     }
-                    compiler_languages_clang::BuiltinClass::SignedChar => SHAPE_C_SIGNED_CHAR,
-                    compiler_languages_clang::BuiltinClass::UnsignedChar => SHAPE_C_UNSIGNED_CHAR,
-                    compiler_languages_clang::BuiltinClass::Utf16CodeUnit => SHAPE_UTF16_CODE_UNIT,
-                    compiler_languages_clang::BuiltinClass::Utf32CodeUnit => SHAPE_UTF32_CODE_UNIT,
-                    compiler_languages_clang::BuiltinClass::WideCharSigned => {
+                    backend_frontend_clang::legacy::BuiltinClass::SignedChar => SHAPE_C_SIGNED_CHAR,
+                    backend_frontend_clang::legacy::BuiltinClass::UnsignedChar => SHAPE_C_UNSIGNED_CHAR,
+                    backend_frontend_clang::legacy::BuiltinClass::Utf16CodeUnit => SHAPE_UTF16_CODE_UNIT,
+                    backend_frontend_clang::legacy::BuiltinClass::Utf32CodeUnit => SHAPE_UTF32_CODE_UNIT,
+                    backend_frontend_clang::legacy::BuiltinClass::WideCharSigned => {
                         SHAPE_C_WIDE_SIGNED_CHAR
                     }
-                    compiler_languages_clang::BuiltinClass::WideCharUnsigned => {
+                    backend_frontend_clang::legacy::BuiltinClass::WideCharUnsigned => {
                         SHAPE_C_WIDE_UNSIGNED_CHAR
                     }
-                    compiler_languages_clang::BuiltinClass::WideCharSignednessUnavailable => {
+                    backend_frontend_clang::legacy::BuiltinClass::WideCharSignednessUnavailable => {
                         SHAPE_C_WIDE_CHAR
                     }
-                    compiler_languages_clang::BuiltinClass::Void
-                    | compiler_languages_clang::BuiltinClass::Bool
-                    | compiler_languages_clang::BuiltinClass::Integer { .. }
-                    | compiler_languages_clang::BuiltinClass::Float
-                    | compiler_languages_clang::BuiltinClass::Other => {
+                    backend_frontend_clang::legacy::BuiltinClass::Void
+                    | backend_frontend_clang::legacy::BuiltinClass::Bool
+                    | backend_frontend_clang::legacy::BuiltinClass::Integer { .. }
+                    | backend_frontend_clang::legacy::BuiltinClass::Float
+                    | backend_frontend_clang::legacy::BuiltinClass::Other => {
                         unreachable!("character class matched above")
                     }
                 };
                 record.payload1 = width;
                 record
             }
-            compiler_languages_clang::BuiltinClass::Integer { signed } => {
+            backend_frontend_clang::legacy::BuiltinClass::Integer { signed } => {
                 let Some(width) = width(row.size_bits) else {
                     return Projected::leaf(unknown_record(TypeReason::OracleGap, None));
                 };
@@ -1401,7 +1401,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     (width << INTEGER_WIDTH_SHIFT) | u32::from(signed) * INTEGER_SIGNED_FLAG;
                 record
             }
-            compiler_languages_clang::BuiltinClass::Float => {
+            backend_frontend_clang::legacy::BuiltinClass::Float => {
                 let Some(width) = width(row.size_bits) else {
                     return Projected::leaf(unknown_record(TypeReason::OracleGap, None));
                 };
@@ -1410,7 +1410,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 record.payload1 = width;
                 record
             }
-            compiler_languages_clang::BuiltinClass::Other => {
+            backend_frontend_clang::legacy::BuiltinClass::Other => {
                 return Projected::leaf(unknown_record(TypeReason::OracleGap, None));
             }
         };
@@ -1805,7 +1805,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             .and_then(|root| self.type_row(root))
             .map_or(
                 (
-                    compiler_languages_clang::TypeQualifiers {
+                    backend_frontend_clang::legacy::TypeQualifiers {
                         is_const: false,
                         is_volatile: false,
                         is_restrict: false,
@@ -2247,7 +2247,7 @@ mod tests {
         FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
         SourceIdentity,
     };
-    use compiler_languages_clang::{
+    use backend_frontend_clang::legacy::{
         CollectError, IncludeFact, MAX_CLANG_DECLARATIONS, SourceSpan, SymbolIdentity,
     };
     use backend_semantic::vocabulary::{CStandard, CompileRecipeFact, LanguageProfile, NativeTool, Stage};
@@ -2913,7 +2913,7 @@ mod tests {
             &mut facts,
         ) {
             Err(ClangCollectError::Authority(CollectError::ScratchCapacity {
-                lane: compiler_languages_clang::ScratchLane::Declarations,
+                lane: backend_frontend_clang::legacy::ScratchLane::Declarations,
                 capacity,
                 required,
             })) if capacity == MAX_CLANG_DECLARATIONS && required == capacity + 1 => Ok(()),
@@ -2953,7 +2953,7 @@ mod tests {
         let spelling = include_spelling(
             source,
             &IncludeFact {
-                kind: compiler_languages_clang::SourceDependencyKind::Include,
+                kind: backend_frontend_clang::legacy::SourceDependencyKind::Include,
                 span: directive,
                 resolved: None,
             },

@@ -227,11 +227,11 @@ pub enum SemanticAuthorityInput<'source> {
     /// Caller-selected Cargo graph for in-process rust-analyzer admission.
     Rust {
         /// Exact Cargo root and toolchain context selected by the caller.
-        project: &'source compiler_languages_rust::RustProject,
+        project: &'source backend_frontend_rust::legacy::RustProject,
         /// Exact root-source byte budget checked before Cargo graph loading.
-        maximum_source_bytes: compiler_languages_rust::SourceByteLimit,
+        maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
         /// Complete Cargo feature controls forwarded to the rust-analyzer CargoConfig.
-        features: compiler_languages_rust::RustFeatureControl<'source>,
+        features: backend_frontend_rust::legacy::RustFeatureControl<'source>,
     },
     /// Validated `go/packages` authority image bound to the exact request source.
     Go {
@@ -251,12 +251,12 @@ pub enum SemanticAuthorityInput<'source> {
     /// Borrowed TypeScript checker report bound to the exact request source.
     TypeScript {
         /// Validated checker facts produced for this source.
-        report: &'source compiler_languages_typescript::Report,
+        report: &'source backend_frontend_typescript::legacy::Report,
     },
     /// Borrowed Python checker report bound to the exact request source.
     Python {
         /// Validated checker facts produced for this source.
-        report: &'source compiler_languages_python::CheckerReport,
+        report: &'source backend_frontend_python::legacy::CheckerReport,
     },
 }
 

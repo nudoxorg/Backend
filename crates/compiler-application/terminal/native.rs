@@ -289,7 +289,7 @@ const fn configured_tool(fact: ToolchainSelectionFact) -> Option<backend_semanti
 #[cfg(test)]
 mod tests {
     use compiler_driver::{AuthorityDiagnostic, AuthorityFailure};
-    use compiler_languages_typescript::{AuthorityError, with_analysis};
+    use backend_frontend_typescript::legacy::{AuthorityError, with_analysis};
     use backend_semantic::vocabulary::{
         AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, LanguageProfile, NativeTool,
         PythonVersion, Stage, TypeScriptSource,

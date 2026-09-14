@@ -45,7 +45,7 @@ use backend_semantic::ir::{
     ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
     SemanticTypeTag, SourceSpan, TypeParameterListId, TypeReason, TypeWidth,
 };
-use compiler_languages_csharp::{
+use backend_frontend_csharp::legacy::{
     CSharpImage, Declaration, DeclarationKind, HeaderError, ImageError, NullabilityCell, Parameter,
     PartialRole, RefKind, ReferenceTag, ResolvedReference, Section, TypeNode, TypeNodeKind,
     TypeRef, VarianceTag,
@@ -2101,7 +2101,7 @@ fn push_doc<'source>(
     facts: &mut FactSet<'source>,
     names: &Names<'source>,
     ordinals: &Ordinals,
-    doc: &compiler_languages_csharp::Doc<'source>,
+    doc: &backend_frontend_csharp::legacy::Doc<'source>,
 ) -> Result<(), ProjectionFault> {
     let coordinate =
         usize::try_from(doc.declaration).map_err(|_| ProjectionFault::IndexCapacity {
@@ -2345,7 +2345,7 @@ mod tests {
         FragmentView, LanguageExtensionWireFact, NominalRef, OccurrenceTarget, PrimitiveShape,
         SemanticTypeTag, SourceIdentity,
     };
-    use compiler_languages_csharp::{ImageError, VarianceTag};
+    use backend_frontend_csharp::legacy::{ImageError, VarianceTag};
     use backend_semantic::vocabulary::{
         CSharpImageFault, CSharpProjectionFault as PortableCSharpProjectionFault, CSharpVersion,
         CompileRecipeFact, LanguageProfile, LoweringUnsupported, NativeTool, Stage,
