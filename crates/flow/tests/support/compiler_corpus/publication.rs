@@ -44,9 +44,9 @@ impl PassPublisher {
     /// callback keeps this helper free of self-referential reader values.
     pub(super) fn publish_with_reader<T>(
         &mut self,
-        compiled: &compiler_driver::CompiledSemantic<'_>,
+        compiled: &backend_engine::driver::CompiledSemantic<'_>,
         inspect: impl FnOnce(
-            &compiler_publication::OpenedFragment<'_>,
+            &backend_engine::publication::OpenedFragment<'_>,
             &backend_semantic::ir::SemanticImageView<'_>,
         ) -> Result<T, CorpusAuditError>,
     ) -> Result<T, CorpusAuditError> {
@@ -56,7 +56,7 @@ impl PassPublisher {
         let mut semantic_image_plan = [SemanticImageRegion::EMPTY; 1];
         let mut semantic_image_output = vec![0_u8; SEMANTIC_IMAGE_BYTES];
         let mut locality = vec![0_u8; LOCALITY_BYTES];
-        let mut binding = vec![0_u8; compiler_publication::binding::COMPILATION_BINDING_BYTES];
+        let mut binding = vec![0_u8; backend_engine::publication::binding::COMPILATION_BINDING_BYTES];
         let publisher = self.publisher.as_ref().ok_or(CorpusAuditError::Invariant {
             key: None,
             cause: CorpusInvariant::PublisherClosed,
@@ -126,7 +126,7 @@ impl PassPublisher {
 
     pub(super) fn publish(
         &mut self,
-        compiled: &compiler_driver::CompiledSemantic<'_>,
+        compiled: &backend_engine::driver::CompiledSemantic<'_>,
         primary: Option<EntityId>,
     ) -> Result<ReopenedObservation, CorpusAuditError> {
         self.publish_with_reader(compiled, |fragment, semantic_image| {

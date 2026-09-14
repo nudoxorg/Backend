@@ -8,7 +8,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use compiler_driver::{NativeTool, ResolvedToolchain, ToolchainResolutionError};
+use backend_engine::driver::{NativeTool, ResolvedToolchain, ToolchainResolutionError};
 use thiserror::Error;
 
 static WORK_SEQUENCE: AtomicUsize = AtomicUsize::new(0);

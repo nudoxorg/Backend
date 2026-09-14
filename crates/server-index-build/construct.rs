@@ -10,8 +10,8 @@ use crate::{
 };
 use backend_semantic::ir::{Atom, FragmentView, TypeNode};
 use backend_semantic::ir::{AtomId, EntityId, TypeId};
-use compiler_publication::OpenedFragment;
-use compiler_publication::manifest::StoredFragmentFacts;
+use backend_engine::publication::OpenedFragment;
+use backend_engine::publication::manifest::StoredFragmentFacts;
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactRow, ExactSegment, LexicalRow, LexicalScore,
     LexicalSegment, MAX_EXACT_ROWS, MAX_LEXICAL_ROWS,

@@ -64,7 +64,7 @@ dispatched, so the frontend can synthesize one borrowed row on the stack at a
 time. The 120-byte compatibility rows are never collected, while the cheap
 first pass still gives every arena an exact reservation.
 
-The `compiler_driver::compile_ir` terminal returns this representation directly.
+The `backend_engine::driver::compile_ir` terminal returns this representation directly.
 New pipelines should pass `&Ir` or `ItemView`/`LinkIter` views onward. The older
 fragment byte API remains temporarily for durable-publication compatibility and
 must not be used as an intermediate by new semantic, graph, rendering, or VCS

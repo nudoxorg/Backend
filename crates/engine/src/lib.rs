@@ -16,14 +16,17 @@
 pub use blake3;
 pub use serde_json;
 
+pub mod application;
 pub mod builtin;
 pub mod capability;
 pub mod daemon;
 pub mod dispatch;
+pub mod driver;
 pub mod effects;
 pub mod fault;
 pub mod journal;
 pub mod platform;
+pub mod publication;
 pub mod queue;
 pub mod registry;
 pub mod schema;

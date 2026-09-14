@@ -5,7 +5,7 @@
 
 use std::{sync::atomic::AtomicBool, time::Duration};
 
-use compiler_driver::{
+use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     ToolchainSelection, compile,
 };
@@ -43,9 +43,9 @@ pub(crate) fn compile_corpus(
                 profile: LanguageProfile::Rust(RustEdition::Rust2024),
                 stage: CompileStage::LowerIr,
                 source: corpus.source(index)?,
-                declaration_scope: compiler_driver::DeclarationScope::fixture(),
+                declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
                 toolchain: ToolchainSelection::ResolvedNative(*toolchain),
-                authority: compiler_driver::SemanticAuthorityInput::None,
+                authority: backend_engine::driver::SemanticAuthorityInput::None,
                 control: CompileControl {
                     deadline: std::time::Instant::now() + Duration::from_secs(30),
                     cancelled: &cancelled,

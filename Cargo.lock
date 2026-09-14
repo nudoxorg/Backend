@@ -844,9 +844,17 @@ dependencies = [
 name = "backend-engine"
 version = "0.1.0"
 dependencies = [
+ "arrayvec",
  "backend-compile",
  "backend-execution",
  "backend-flow",
+ "backend-frontend-clang",
+ "backend-frontend-csharp",
+ "backend-frontend-go",
+ "backend-frontend-java",
+ "backend-frontend-python",
+ "backend-frontend-rust",
+ "backend-frontend-typescript",
  "backend-library",
  "backend-replication",
  "backend-runtime",
@@ -855,14 +863,15 @@ dependencies = [
  "backend-version",
  "base64 0.22.1",
  "blake3",
- "compiler-driver",
- "compiler-publication",
+ "flate2",
  "nix",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry_sdk",
  "rustix 1.1.4",
  "serde_json",
+ "server-index-build",
+ "server-index-publish",
  "sha2",
  "thiserror 2.0.20",
  "tracing",
@@ -946,6 +955,7 @@ dependencies = [
 name = "backend-flow"
 version = "0.1.0"
 dependencies = [
+ "backend-engine",
  "backend-frontend-csharp",
  "backend-frontend-go",
  "backend-frontend-java",
@@ -956,8 +966,6 @@ dependencies = [
  "backend-store",
  "backend-version",
  "blake3",
- "compiler-driver",
- "compiler-publication",
  "server-index-build",
  "sha2",
  "thiserror 2.0.20",
@@ -1161,8 +1169,6 @@ dependencies = [
  "backend-store",
  "backend-version",
  "blake3",
- "compiler-application",
- "compiler-publication",
  "flate2",
  "futures-executor",
  "futures-util",
@@ -1267,14 +1273,13 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
+ "backend-engine",
  "backend-extension-tantivy",
  "backend-extension-trustfall",
  "backend-semantic",
  "backend-version",
  "blake3",
  "bolero",
- "compiler-driver",
- "compiler-publication",
  "derive_more",
  "fearless_simd",
  "loom",
@@ -2088,62 +2093,6 @@ dependencies = [
  "itoa",
  "static_assertions",
  "zmij",
-]
-
-[[package]]
-name = "compiler-application"
-version = "0.1.0"
-dependencies = [
- "arrayvec",
- "backend-frontend-csharp",
- "backend-frontend-go",
- "backend-frontend-java",
- "backend-frontend-python",
- "backend-frontend-rust",
- "backend-frontend-typescript",
- "backend-library",
- "backend-semantic",
- "backend-store",
- "backend-version",
- "blake3",
- "compiler-driver",
- "compiler-publication",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "compiler-driver"
-version = "0.1.0"
-dependencies = [
- "backend-frontend-clang",
- "backend-frontend-csharp",
- "backend-frontend-go",
- "backend-frontend-java",
- "backend-frontend-python",
- "backend-frontend-rust",
- "backend-frontend-typescript",
- "backend-semantic",
- "backend-store",
- "backend-version",
- "compiler-publication",
- "flate2",
- "serde_json",
- "server-index-build",
- "server-index-publish",
- "sha2",
- "thiserror 2.0.20",
- "ureq",
-]
-
-[[package]]
-name = "compiler-publication"
-version = "0.1.0"
-dependencies = [
- "backend-semantic",
- "backend-store",
- "backend-version",
- "compiler-driver",
- "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -8481,11 +8430,10 @@ name = "server-index-build"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-engine",
  "backend-semantic",
  "backend-store",
  "backend-version",
- "compiler-driver",
- "compiler-publication",
  "thiserror 2.0.20",
  "zerocopy",
 ]
@@ -8495,14 +8443,13 @@ name = "server-index-publish"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-engine",
  "backend-extension-qdrant",
  "backend-extension-tantivy",
  "backend-extension-trustfall",
  "backend-semantic",
  "backend-store",
  "backend-version",
- "compiler-driver",
- "compiler-publication",
  "server-index-build",
  "thiserror 2.0.20",
  "zerocopy",

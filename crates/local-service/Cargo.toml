@@ -25,7 +25,6 @@ backend-runtime = { path = "../runtime" }
 backend-semantic = { path = "../semantic" }
 backend-store = { path = "../store" }
 backend-version = { path = "../version" }
-compiler-application = { path = "../compiler-application" }
 blake3.workspace = true
 futures-executor.workspace = true
 futures-util.workspace = true
@@ -35,9 +34,6 @@ serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }
-
-[dev-dependencies]
-compiler-publication = { path = "../compiler-publication" }
 
 [lints]
 workspace = true

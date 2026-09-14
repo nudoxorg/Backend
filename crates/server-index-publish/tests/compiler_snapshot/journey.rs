@@ -14,13 +14,13 @@ use std::{
 };
 
 use allocation_counter::{AllocationInfo, measure};
-use compiler_driver::CompiledFragment;
+use backend_engine::driver::CompiledFragment;
 use backend_semantic::ir::{
     Atom, AtomInput, EntityKind, EntityRecord, FragmentError, FragmentView, PrepareError,
     PreparedFragment, PrimitiveType, SourceIdentity, TypeNode, WriteError,
 };
 use backend_semantic::ir::{AtomId, TypeId};
-use compiler_publication::{
+use backend_engine::publication::{
     OpenPublicationScratch, OpenPublishedError, OpenedCompilation, OpenedFragmentError,
     PublicationScratch, PublishCompiledError, PublishControl, PublishedCompilation,
     binding::COMPILATION_BINDING_BYTES, open_published, publish_compiled,

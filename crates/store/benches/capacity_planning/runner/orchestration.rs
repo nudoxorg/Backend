@@ -8,7 +8,7 @@ use std::{
     process::Command,
 };
 
-use compiler_driver::{NativeTool, ResolvedToolchain};
+use backend_engine::driver::{NativeTool, ResolvedToolchain};
 
 use crate::{
     BenchmarkError,

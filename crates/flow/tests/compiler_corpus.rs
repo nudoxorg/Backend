@@ -40,7 +40,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use compiler_driver::{
+use backend_engine::driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
     CompiledSemantic, DeclarationScope, NativeTool, ResolvedToolchain, SemanticAuthorityInput,
     ToolchainSelection, compile_semantic,
@@ -52,8 +52,8 @@ use backend_semantic::ir::{
     SemanticImageIdentity, SemanticReader, SourceIdentity, SourceSpan, TypeExpr, TypeId, TypeNode,
     VariantFingerprint, Visibility,
 };
-use compiler_publication::manifest::SemanticImageRegion;
-use compiler_publication::{
+use backend_engine::publication::manifest::SemanticImageRegion;
+use backend_engine::publication::{
     OpenPublicationScratch, OpenSemanticPublicationScratch, OpenedFragmentError,
     PublicationScratch, PublishControl, SemanticPublicationScratch, open_published,
     open_published_semantic, publish_compiled, publish_semantic,
@@ -207,15 +207,15 @@ enum CorpusAuditError {
     #[error("corpus durable publisher could not be shut down")]
     Shutdown(#[from] backend_store::journal::ShutdownError),
     #[error("corpus publication failed")]
-    Publish(#[from] compiler_publication::PublishCompiledError),
+    Publish(#[from] backend_engine::publication::PublishCompiledError),
     #[error("corpus semantic publication failed")]
-    PublishSemantic(#[from] compiler_publication::PublishSemanticError),
+    PublishSemantic(#[from] backend_engine::publication::PublishSemanticError),
     #[error("corpus publication reopen failed")]
-    Open(#[from] compiler_publication::OpenPublishedError),
+    Open(#[from] backend_engine::publication::OpenPublishedError),
     #[error("corpus reopened fragment failed")]
     OpenedFragment(#[from] OpenedFragmentError),
     #[error("corpus reopened semantic artifact failed")]
-    OpenedSemanticArtifact(#[from] compiler_publication::OpenedSemanticArtifactError),
+    OpenedSemanticArtifact(#[from] backend_engine::publication::OpenedSemanticArtifactError),
     #[error("corpus fragment range manifest could not be reconstructed")]
     Ranges(#[from] backend_semantic::ir::FragmentRangeManifestError),
     #[error("corpus authority setup failed for {key:?}")]

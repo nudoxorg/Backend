@@ -73,7 +73,7 @@ fn undersized_lexical_output_does_not_poison_reusable_caller_regions() -> Result
 }
 
 fn rejects_missing_lexical(
-    fragment: &compiler_publication::OpenedFragment<'_>,
+    fragment: &backend_engine::publication::OpenedFragment<'_>,
 ) -> Result<(), TestError> {
     match preflight(
         fragment,

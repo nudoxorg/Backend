@@ -267,7 +267,7 @@ const fn entity(kind: EntityKind, semantic_type: u32) -> EntityRecord {
 }
 
 fn assert_one_over_limit_rejection(
-    fragment: &compiler_publication::OpenedFragment<'_>,
+    fragment: &backend_engine::publication::OpenedFragment<'_>,
 ) -> Result<(), TestError> {
     match preflight(
         fragment,
@@ -341,7 +341,7 @@ fn assert_overload_rows(index: &server_index_build::PreparedIndex<'_>) -> Result
 }
 
 fn short_region(
-    fragment: &compiler_publication::OpenedFragment<'_>,
+    fragment: &backend_engine::publication::OpenedFragment<'_>,
     region: BuildRegion,
 ) -> Result<(), TestError> {
     let projections = [MaybeUninit::<EntityProjection<'_>>::zeroed(); 1];

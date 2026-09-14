@@ -15,7 +15,7 @@ use backend_version::{
     CanonicalRelation, Relation, RelationDecodeError, RelationState, StateRoot, WorkspaceRoot,
 };
 use backend_semantic::ir::{ImageProvenance, PackageLineage, SemanticCoreReader, SemanticImageAuthority};
-use compiler_publication::{
+use crate::publication::{
     OpenedSemanticArtifactCursor, OpenedSemanticGeneration,
     binding::{
         COMPILATION_BINDING_BYTES, CompilationBindingFacts, CompilationBindingIdentity,
@@ -914,12 +914,12 @@ fn take_u32(bytes: &[u8]) -> Result<(u32, &[u8]), RelationDecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compiler_driver::{CompiledFragment, CompiledSemantic};
+    use crate::driver::{CompiledFragment, CompiledSemantic};
     use backend_semantic::ir::{
         AtomId, AtomInput, EntityKind, EntityRecord, FragmentView, IrBuilder, PreparedFragment,
         PrimitiveType, SourceIdentity, TypeId, TypeNode,
     };
-    use compiler_publication::{
+    use crate::publication::{
         OpenSemanticPublicationScratch, PublishControl, SemanticPublicationScratch,
         manifest::SemanticImageRegion, open_published_semantic, publish_semantic,
     };

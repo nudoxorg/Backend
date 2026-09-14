@@ -6,8 +6,8 @@
 use core::mem::{MaybeUninit, size_of_val};
 use std::{array, num::NonZeroUsize};
 
-use compiler_driver::CompiledFragment;
-use compiler_publication::{
+use backend_engine::driver::CompiledFragment;
+use backend_engine::publication::{
     PublicationScratch, PublishControl, binding::COMPILATION_BINDING_BYTES, publish_compiled,
 };
 use server_index_build::{EntityFact, EntityProjection, build};
@@ -29,7 +29,7 @@ const LOCALITY_BYTES: usize = 16_384;
     reason = "the public publication API takes caller-owned bounded buffers; moving them to the heap would hide required working-set capacity"
 )]
 pub(crate) fn deterministic_build(fixture: &Fixture) -> Result<StageWork, BenchmarkError> {
-    use compiler_publication::{OpenPublicationScratch, open_published};
+    use backend_engine::publication::{OpenPublicationScratch, open_published};
 
     let publisher = DurablePublisher::reopen(
         &fixture.journal(),
@@ -64,7 +64,7 @@ pub(crate) fn deterministic_build(fixture: &Fixture) -> Result<StageWork, Benchm
 }
 
 fn build_opened_fragments(
-    opened: &compiler_publication::OpenedCompilation<'_, '_>,
+    opened: &backend_engine::publication::OpenedCompilation<'_, '_>,
 ) -> Result<StageWork, BenchmarkError> {
     let mut input_bytes = 0_u64;
     let mut output_bytes = 0_u64;
@@ -101,7 +101,7 @@ fn build_opened_fragments(
 }
 
 fn build_opened_fragment(
-    fragment: &compiler_publication::OpenedFragment<'_>,
+    fragment: &backend_engine::publication::OpenedFragment<'_>,
 ) -> Result<(usize, usize), BenchmarkError> {
     let mut projections: [MaybeUninit<EntityProjection<'_>>; MAX_CORPUS] =
         array::from_fn(|_| MaybeUninit::uninit());

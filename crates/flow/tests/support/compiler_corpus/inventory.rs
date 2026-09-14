@@ -419,10 +419,10 @@ pub(super) const LOCAL_FIXTURES: [LocalFixture; 7] = [
     LocalFixture {
         language: CorpusLanguage::Rust,
         profile: LanguageProfile::Rust(RustEdition::Rust2024),
-        path: "crates/compiler-driver/tests/native_compile/matrix.rs",
+        path: "crates/engine/tests/native_compile/matrix.rs",
         bytes: Some(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../compiler-driver/tests/native_compile/matrix.rs"
+            "/../engine/tests/native_compile/matrix.rs"
         ))),
         absence: None,
     },

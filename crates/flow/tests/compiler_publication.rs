@@ -1,4 +1,4 @@
-//! Exercises the `backend-flow` operation tests compiler-publication contract through its observable boundary.
+//! Exercises the `backend-flow` operation tests engine publication contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 //! Chief-owned public compiler and publication falsifiers.
@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use compiler_driver::{
+use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile_semantic,
 };
@@ -22,7 +22,7 @@ use backend_semantic::ir::{EntityKind, ImageProvenance, PrimitiveType, TypeNode}
 use backend_frontend_rust::legacy::{
     LoadError, RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
-use compiler_publication::{
+use backend_engine::publication::{
     OpenPublicationScratch, OpenPublishedError, PublicationScratch, PublishCompiledError,
     PublishControl, PublishedCompilation, binding::COMPILATION_BINDING_BYTES, open_published,
     publish_compiled,
@@ -268,7 +268,7 @@ fn request<'source, 'toolchain, 'cancel>(
         profile: LanguageProfile::Rust(RustEdition::Rust2024),
         stage: Stage::LowerIr,
         source,
-        declaration_scope: compiler_driver::DeclarationScope::fixture(),
+        declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
         toolchain: ToolchainSelection::ResolvedNative(toolchain),
         authority: SemanticAuthorityInput::Rust {
             project,

@@ -22,8 +22,8 @@ use std::{
     time::SystemTimeError,
 };
 
-use compiler_driver::ToolchainResolutionError;
-use compiler_publication::PublishCompiledError;
+use backend_engine::driver::ToolchainResolutionError;
+use backend_engine::publication::PublishCompiledError;
 use backend_store::journal::{PublicationLimitError, PublicationOpenError, ShutdownError};
 use thiserror::Error;
 
@@ -144,11 +144,11 @@ enum BenchmarkError {
         shutdown: Box<ShutdownError>,
     },
     #[error("could not reopen the selected durable compiler publication")]
-    OpenPublished(#[source] Box<compiler_publication::OpenPublishedError>),
+    OpenPublished(#[source] Box<backend_engine::publication::OpenPublishedError>),
     #[error("durable compiler publication selected no package")]
     MissingPublishedCompilation,
     #[error("could not reconstruct a manifest-named durable compact fragment")]
-    OpenedFragment(#[source] Box<compiler_publication::OpenedFragmentError>),
+    OpenedFragment(#[source] Box<backend_engine::publication::OpenedFragmentError>),
     #[error("valid generated exact rows were rejected: {cause:?}")]
     ExactSegment { cause: runner::ExactSegmentFault },
     #[error("generated exact snapshot was rejected")]

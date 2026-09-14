@@ -11,7 +11,7 @@ use backend_engine::builtin::{
     ProductSemanticPublicationKey, ProductSemanticPublicationRecord, SemanticPublicationClaim,
     SemanticPublicationCoverage, SemanticPublicationSelection, SemanticUnavailableReason,
 };
-use compiler_application::{
+use backend_engine::application::{
     LocalCompilerClient, OwnedPackageSource, OwnedPackageSourceSet, PackageSemanticError,
     PackageSemanticRuntimeError,
 };
@@ -165,7 +165,7 @@ fn semantic_graph_ids(
     source_id: backend_engine::RowId,
     include_incoming: bool,
 ) -> Result<Option<Vec<backend_engine::RowId>>, BuiltinModelError> {
-    let session = compiler_application::DocumentationSession::new(image);
+    let session = backend_engine::application::DocumentationSession::new(image);
     let source_entity = session
         .canonical_entities()
         .find_map(|entity| match entity {

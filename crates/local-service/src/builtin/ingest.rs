@@ -335,7 +335,7 @@ impl ProductFrontend {
 
 pub(super) fn semantic_capabilities(
     baseline: &backend_engine::CapabilityInventory,
-    compiler: &compiler_application::LocalCompilerClient,
+    compiler: &backend_engine::application::LocalCompilerClient,
 ) -> Result<backend_engine::CapabilityInventory, String> {
     let frontends = FrontendSet::build()?;
     let target = backend_engine::CapabilityTarget::Native {
@@ -349,18 +349,18 @@ pub(super) fn semantic_capabilities(
             backend_engine::CapabilityFamily::LanguageOracle { profile, task } => {
                 let compiler_capability = compiler.capabilities().for_profile(profile);
                 return match compiler_capability.state() {
-                    compiler_application::LocalCompilerCapabilityState::Probing => {
+                    backend_engine::application::LocalCompilerCapabilityState::Probing => {
                         backend_engine::CapabilityStatus::probing(status.id(), status.family())
                     }
-                    compiler_application::LocalCompilerCapabilityState::ProbeFailed => {
+                    backend_engine::application::LocalCompilerCapabilityState::ProbeFailed => {
                         backend_engine::CapabilityStatus::unavailable(
                             status.id(),
                             status.family(),
                             backend_engine::CapabilityUnavailable::ProbeFailed,
                         )
                     }
-                    compiler_application::LocalCompilerCapabilityState::Unavailable => *status,
-                    compiler_application::LocalCompilerCapabilityState::Ready => {
+                    backend_engine::application::LocalCompilerCapabilityState::Unavailable => *status,
+                    backend_engine::application::LocalCompilerCapabilityState::Ready => {
                         let Some(manifest) = compiler_capability.manifest() else {
                             return *status;
                         };
@@ -754,7 +754,7 @@ fn scan_one(
     }
 
     // Structural parsing is an explicit baseline projection for local browsing.
-    // Package semantics are compiled and published by compiler-application.
+    // Package semantics are compiled and published by the engine application module.
     let analyzed = frontend
         .baseline
         .analyze(Path::new(&relative), &bytes)
