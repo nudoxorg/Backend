@@ -18,8 +18,8 @@ zerocopy.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true
+backend-store = { path = "../store" }
 compiler-driver = { path = "../compiler-driver" }
-server-journal = { path = "../server-journal" }
 [lints]
 workspace = true
 

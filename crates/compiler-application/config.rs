@@ -10,7 +10,7 @@ use std::{
 use compiler_driver::ToolchainSelection;
 use compiler_publication::manifest::StoredFragmentFacts;
 use backend_semantic::vocabulary::{MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool};
-use interface_core::PackageEcosystem;
+use backend_library::interface::PackageEcosystem;
 use thiserror::Error;
 
 /// Maximum explicit native-tool rows one local compiler configuration may borrow.

@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use backend_semantic::ir::{FragmentRangeManifest, ImageProvenance, SemanticCoreReader};
-use server_journal::DurablePublisher;
+use backend_store::journal::DurablePublisher;
 
 use super::types::{
     OpenPublicationScratch, OpenPublishedError, OpenSemanticPublicationScratch, OpenedCompilation,
@@ -195,7 +195,7 @@ pub fn open_semantic_generation<'manifest, 'facts, 'fragments, 'semantic>(
 
 fn load_semantic_binding(
     artifact_directory: &Path,
-    generation: heart_hydration::VerifiedGenerationFacts,
+    generation: backend_store::hydration::VerifiedGenerationFacts,
 ) -> Result<crate::binding::CompilationBindingFacts, OpenPublishedError> {
     GenerationBindingStore::existing(artifact_directory)
         .load(generation)

@@ -20,7 +20,7 @@ use backend_semantic::ir::{
 };
 use backend_semantic::vocabulary::{Language, LanguageProfile};
 use futures_util::StreamExt as _;
-use interface_core::{CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl};
+use backend_library::interface::{CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl};
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::path::Path;
@@ -1432,26 +1432,26 @@ fn semantic_unavailable_reason(error: &PackageSemanticRuntimeError) -> SemanticU
         PackageSemanticRuntimeError::Package(PackageSemanticError::Compile {
             terminal, ..
         }) => match terminal.as_ref() {
-            interface_core::CompilerTerminal::Toolchain { .. }
-            | interface_core::CompilerTerminal::ToolingUnavailable { .. }
-            | interface_core::CompilerTerminal::Unavailable { .. } => {
+            backend_library::interface::CompilerTerminal::Toolchain { .. }
+            | backend_library::interface::CompilerTerminal::ToolingUnavailable { .. }
+            | backend_library::interface::CompilerTerminal::Unavailable { .. } => {
                 SemanticUnavailableReason::Toolchain
             }
-            interface_core::CompilerTerminal::PackageCancelled { .. }
-            | interface_core::CompilerTerminal::Cancelled { .. } => {
+            backend_library::interface::CompilerTerminal::PackageCancelled { .. }
+            | backend_library::interface::CompilerTerminal::Cancelled { .. } => {
                 SemanticUnavailableReason::Cancelled
             }
-            interface_core::CompilerTerminal::Compile {
-                cause: interface_core::CompilerCause::Authority { .. },
+            backend_library::interface::CompilerTerminal::Compile {
+                cause: backend_library::interface::CompilerCause::Authority { .. },
                 ..
             }
-            | interface_core::CompilerTerminal::PackageSource { .. } => {
+            | backend_library::interface::CompilerTerminal::PackageSource { .. } => {
                 SemanticUnavailableReason::ProjectAuthority
             }
             _ => SemanticUnavailableReason::Rejected,
         },
         PackageSemanticRuntimeError::Runtime(
-            interface_core::CompilerTerminal::PackageCancelled { .. },
+            backend_library::interface::CompilerTerminal::PackageCancelled { .. },
         ) => SemanticUnavailableReason::Cancelled,
         PackageSemanticRuntimeError::Admission(_)
         | PackageSemanticRuntimeError::Runtime(_)

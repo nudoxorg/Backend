@@ -11,7 +11,7 @@ publish.workspace = true
 
 [dependencies]
 compiler-publication = { path = "../compiler-publication" }
-server-journal = { path = "../server-journal" }
+backend-store = { path = "../store" }
 backend-version = { path = "../version" }
 backend-semantic = { path = "../semantic" }
 server-index-build = { path = "../server-index-build" }
@@ -21,12 +21,9 @@ zerocopy.workspace = true
 [dev-dependencies]
 allocation-counter.workspace = true
 compiler-driver = { path = "../compiler-driver" }
-heart-hydration = { path = "../heart-hydration" }
 backend-extension-qdrant = { path = "../../extensions/qdrant" }
 backend-extension-tantivy = { path = "../../extensions/tantivy" }
 backend-extension-trustfall = { path = "../../extensions/trustfall" }
-heart-root = { path = "../heart-root" }
-backend-store = { path = "../store" }
 [lints]
 workspace = true
 

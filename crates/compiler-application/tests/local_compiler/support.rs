@@ -17,10 +17,10 @@ use compiler_application::{
 };
 use compiler_driver::{NativeTool, ResolvedToolchain, ToolchainSelection};
 use backend_semantic::vocabulary::{LanguageProfile, Stage};
-use interface_core::{
+use backend_library::interface::{
     CorrelationId, GenerateRequest, GenerateTarget, RejectedSourceText, SourceText,
 };
-use server_journal::PublicationLimits;
+use backend_store::journal::PublicationLimits;
 use thiserror::Error;
 
 static FIXTURE_ORDINAL: AtomicUsize = AtomicUsize::new(0);
@@ -46,18 +46,18 @@ pub(super) enum LocalCompilerTestError {
     #[error("local compiler timeout was rejected")]
     Timeout(#[from] LocalCompilerTimeoutError),
     #[error("durable publication limits were rejected")]
-    Limits(#[from] server_journal::PublicationLimitError),
+    Limits(#[from] backend_store::journal::PublicationLimitError),
     #[error("the required two-slot publication capacity was not representable")]
     PublicationCapacity,
     #[error("local compiler publication owner could not open")]
     CompilerOpen(#[from] LocalCompilerOpenError),
     #[error("local compiler publication owner could not shut down")]
-    Shutdown(#[from] server_journal::ShutdownError),
+    Shutdown(#[from] backend_store::journal::ShutdownError),
     #[error("compiler fixture source was rejected: {0:?}")]
     Source(RejectedSourceText),
     #[error("generated reply did not retain complete generated facts")]
     GeneratedOutcome {
-        observed: Box<interface_core::ApplicationOutcome>,
+        observed: Box<backend_library::interface::ApplicationOutcome>,
     },
     #[error("generated recipe did not retain the requested Rust LowerIr authority")]
     GeneratedRecipe {
@@ -72,7 +72,7 @@ pub(super) enum LocalCompilerTestError {
     GeneratedSemanticImageAbsent,
     #[error("compiler diagnostic did not preserve the expected closed terminal")]
     CompilerDiagnostic {
-        observed: Box<interface_core::ApplicationOutcome>,
+        observed: Box<backend_library::interface::ApplicationOutcome>,
     },
     #[error("toolchain table order did not produce the required typed rejection")]
     ToolchainOrder {
@@ -217,8 +217,8 @@ pub(super) fn generate(
     profile: LanguageProfile,
     stage: Stage,
     source: &str,
-) -> Result<interface_core::ApplicationInput, LocalCompilerTestError> {
-    Ok(interface_core::ApplicationInput::Generate(
+) -> Result<backend_library::interface::ApplicationInput, LocalCompilerTestError> {
+    Ok(backend_library::interface::ApplicationInput::Generate(
         GenerateRequest {
             target: GenerateTarget {
                 correlation: CorrelationId(1),

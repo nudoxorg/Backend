@@ -34,7 +34,7 @@ use server_index_publish::{
     IndexPackStore, IndexPackStoreError, encode_index_pack, plan_index_pack,
     seal_compilation_index,
 };
-use server_journal::{
+use backend_store::journal::{
     DurablePublisher, PublicationLimitError, PublicationLimits, PublicationOpenError,
     PublicationPaths, ShutdownError,
 };

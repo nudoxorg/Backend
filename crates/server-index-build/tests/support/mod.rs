@@ -30,7 +30,7 @@ use server_index_build::{
     IndexBuildScratch, PreparedIndex, build,
 };
 use backend_semantic::index_core::{ExactRow, ExactSegmentError, LexicalRow, LexicalSegmentError};
-use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;
 
 pub(crate) const CAPACITY: usize = 4;
@@ -43,11 +43,11 @@ pub(crate) enum TestError {
     #[error("filesystem fixture failed")]
     Io(#[from] io::Error),
     #[error("durable publisher limit configuration failed")]
-    Limits(#[from] server_journal::PublicationLimitError),
+    Limits(#[from] backend_store::journal::PublicationLimitError),
     #[error("durable publisher open failed")]
-    Publisher(#[from] server_journal::PublicationOpenError),
+    Publisher(#[from] backend_store::journal::PublicationOpenError),
     #[error("durable publisher shutdown failed")]
-    Shutdown(#[from] server_journal::ShutdownError),
+    Shutdown(#[from] backend_store::journal::ShutdownError),
     #[error("compact fragment preparation failed")]
     Prepare(#[from] backend_semantic::ir::PrepareError),
     #[error("compact fragment encoding failed")]
@@ -508,7 +508,7 @@ pub fn next_fragment<'fragment>(
     }
 }
 
-pub fn limits() -> Result<PublicationLimits, server_journal::PublicationLimitError> {
+pub fn limits() -> Result<PublicationLimits, backend_store::journal::PublicationLimitError> {
     PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)
 }
 

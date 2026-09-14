@@ -14,10 +14,10 @@ publish.workspace = true
 arrayvec.workspace = true
 blake3.workspace = true
 compiler-driver = { path = "../compiler-driver" }
-compiler-registry = { path = "../compiler-registry" }
 compiler-publication = { path = "../compiler-publication" }
+backend-library = { path = "../library" }
 backend-semantic = { path = "../semantic" }
-server-journal = { path = "../server-journal" }
+backend-store = { path = "../store" }
 backend-version = { path = "../version" }
 backend-frontend-csharp = { path = "../../frontends/csharp" }
 backend-frontend-go = { path = "../../frontends/go" }
@@ -26,7 +26,6 @@ backend-frontend-python = { path = "../../frontends/python" }
 backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
 thiserror.workspace = true
-interface-core = { path = "../interface-core" }
 
 [lints]
 workspace = true

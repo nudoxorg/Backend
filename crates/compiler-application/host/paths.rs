@@ -8,7 +8,7 @@ use std::{
 
 use arrayvec::ArrayVec;
 use backend_semantic::vocabulary::NativeTool;
-use interface_core::PackageEcosystem;
+use backend_library::interface::PackageEcosystem;
 
 use super::{
     LocalCompilerHost, LocalCompilerHostError, LocalHostDiscovery, LocalHostEnvironment,

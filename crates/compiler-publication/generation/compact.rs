@@ -4,10 +4,10 @@
 //! Paired compact/semantic generation construction lives in the sibling module so
 //! its two-entry-per-artifact topology cannot accidentally enter this grammar.
 
-use heart_hydration::{PlanScratch, Projection, VerifiedGeneration, demand, plan};
+use backend_store::hydration::{PlanScratch, Projection, VerifiedGeneration, demand, plan};
 use backend_version::ObjectDomain;
 use backend_store::memory::MemoryStore;
-use heart_root::{
+use backend_store::root::{
     ClosureScratch, GenerationRoot, GenerationRootBuilder, GenerationView, PreparedLocality,
     RootEntry,
 };
@@ -91,7 +91,7 @@ pub(crate) fn verify_reopened_generation(
     manifest: &CompilationManifestView<'_, '_>,
     fragment_bytes: &[u8],
     locality_output: &mut [u8],
-) -> Result<heart_hydration::VerifiedGenerationFacts, GenerationBuildError> {
+) -> Result<backend_store::hydration::VerifiedGenerationFacts, GenerationBuildError> {
     let root = build_reopened_root(manifest, fragment_bytes)?;
     let capacity = store_capacity(manifest)?;
     let mut store = MemoryStore::<ObjectDomain, &[u8]>::new(capacity)

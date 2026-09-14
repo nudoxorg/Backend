@@ -17,7 +17,7 @@ use backend_semantic::vocabulary::{
 };
 use backend_version::{ContentId, SourceFactDomain};
 use server_index_build::{IndexBuildScratch, build};
-use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use std::{
     fs,
     mem::MaybeUninit,
@@ -372,7 +372,7 @@ fn row(
     journal
         .shutdown()
         .map_err(|e| Error::Failure(e.to_string()))?;
-    let reopened = server_journal::DurablePublisher::reopen(
+    let reopened = backend_store::journal::DurablePublisher::reopen(
         &PublicationPaths::in_directory(&journal_dir),
         limits,
     )

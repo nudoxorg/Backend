@@ -8,7 +8,7 @@ use backend_frontend_python::legacy::PyreflyExecutableError;
 use backend_frontend_rust::legacy::LoadError as RustLoadError;
 use backend_frontend_typescript::legacy::TypeScriptCheckerProgramError;
 use backend_semantic::vocabulary::NativeTool;
-use server_journal::PublicationLimitError;
+use backend_store::journal::PublicationLimitError;
 use thiserror::Error;
 
 use super::{LocalHostDirectory, LocalHostPathKind, LocalHostPathRole, LocalHostVariable};

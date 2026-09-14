@@ -8,9 +8,9 @@ use backend_semantic::ir::{
     FragmentRangeManifest, ImageProvenance, SemanticCoreReader, SemanticImageView,
     encode_full_semantic_image, full_semantic_image_len,
 };
-use heart_hydration::VerifiedGeneration;
+use backend_store::hydration::VerifiedGeneration;
 use backend_version::ObjectDomain;
-use server_journal::{CancelError, DurablePublisher, PublicationError, SubmitError};
+use backend_store::journal::{CancelError, DurablePublisher, PublicationError, SubmitError};
 
 use super::types::{
     PublicationScratch, PublishCompiledError, PublishControl, PublishSemanticError,

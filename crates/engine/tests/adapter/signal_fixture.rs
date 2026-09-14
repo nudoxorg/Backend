@@ -3,10 +3,10 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 //! Typed input fixture for the adapter's complete signal vocabulary.
 
-use heart_hydration::{AbsentCount, HydrationOutcome, HydrationProbeEvent, PlanCoverage};
+use backend_store::hydration::{AbsentCount, HydrationOutcome, HydrationProbeEvent, PlanCoverage};
 use backend_store::memory::{StoreAdmission, StoreProbeEvent};
 use backend_version::observe::Probe;
-use heart_root::{RootProbeEvent, SelectedCount, SelectionWork};
+use backend_store::root::{RootProbeEvent, SelectedCount, SelectionWork};
 use backend_engine::telemetry::TracingProbe;
 use backend_runtime::server::{
     RejectionReason, RuntimeAdmission, RuntimeExecution, RuntimeMetrics, RuntimeProbeEvent,

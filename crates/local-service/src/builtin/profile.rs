@@ -1414,7 +1414,7 @@ mod persisted_intent_tests {
         binding::{COMPILATION_BINDING_BYTES, CompilationBindingView},
         manifest::{CompilationManifestFacts, CompilationManifestFormat},
     };
-    use heart_hydration::VerifiedGenerationFacts;
+    use backend_store::hydration::VerifiedGenerationFacts;
     use backend_version::{
         ContentId, DependencySetDomain, GenerationId, IrManifestDomain, IrManifestEncoding,
     };

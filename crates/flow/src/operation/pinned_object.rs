@@ -9,10 +9,10 @@
 
 use core::{convert::Infallible, marker::PhantomData, ops::Deref};
 
-use heart_hydration::VerifiedGeneration;
+use backend_store::hydration::VerifiedGeneration;
 use backend_version::{Domain, GenerationId};
 use backend_version::object::{ObjectRef, ProviderSet};
-use heart_root::{BorrowedGenerationView, EntryKey, GenerationEntry, GenerationView, Locality};
+use backend_store::root::{BorrowedGenerationView, EntryKey, GenerationEntry, GenerationView, Locality};
 use backend_version::schema::OperationId;
 use thiserror::Error;
 
@@ -40,7 +40,7 @@ mod tests {
     use backend_version::object::{
         ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet, RemoteBase,
     };
-    use heart_root::{
+    use backend_store::root::{
         EntryKey, GenerationRoot, GenerationView, LocalityError, LocalityException,
         LocalityWriteError, NonResident, PreparedLocality, RootBuildError, RootEntry,
     };

@@ -3,10 +3,10 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Static server-side span tree and portable probe event mapping.
 
-use heart_hydration::HydrationProbeEvent;
+use backend_store::hydration::HydrationProbeEvent;
 use backend_store::memory::StoreProbeEvent;
 use backend_version::observe::Probe;
-use heart_root::RootProbeEvent;
+use backend_store::root::RootProbeEvent;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use backend_runtime::server::RuntimeProbeEvent;
 use backend_store::workflow::WorkflowProbeEvent;

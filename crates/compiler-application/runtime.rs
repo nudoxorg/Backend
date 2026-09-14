@@ -28,12 +28,12 @@ use backend_frontend_typescript::legacy::ExplicitTypeScriptChecker;
 use compiler_publication::{binding::CompilationBindingFacts, manifest::CompilationManifestFacts};
 use backend_semantic::vocabulary::{Language, LanguageProfile, NativeTool, Stage};
 use backend_version::{CompilationTargetDomain, ContentId, ToolchainDomain};
-use interface_core::{
+use backend_library::interface::{
     CompilerCapability, CompilerReadiness, CompilerRequest, CompilerRuntimeCause, CompilerTerminal,
     GeneratedArtifact, PackageCompilePhase, PackageCompileRequest, SemanticImageAccessError,
     SemanticImageAuthority, SemanticImageSnapshot,
 };
-use server_journal::PublicationLimits;
+use backend_store::journal::PublicationLimits;
 use thiserror::Error;
 
 use crate::toolchain_probe::{ToolchainProbeError, ToolchainProbeLimits, probe_version};
@@ -581,7 +581,7 @@ impl core::ops::Deref for LocalRuntimeToolchain {
 #[derive(Debug, Eq, PartialEq)]
 pub struct LocalRuntimePackageRootFacts {
     /// Closed ecosystem owned by this root.
-    pub ecosystem: interface_core::PackageEcosystem,
+    pub ecosystem: backend_library::interface::PackageEcosystem,
     /// Explicit absolute root path.
     pub path: Box<Path>,
 }
@@ -599,7 +599,7 @@ impl LocalRuntimePackageRoot {
     ///
     /// Rejects a relative path with its exact ecosystem.
     pub fn new(
-        ecosystem: interface_core::PackageEcosystem,
+        ecosystem: backend_library::interface::PackageEcosystem,
         path: PathBuf,
     ) -> Result<Self, LocalPackageRootError> {
         LocalPackageRoot::new(ecosystem, &path)?;
@@ -773,7 +773,7 @@ pub enum LocalCompilerRuntimeOpenError {
     StartupOwnerStopped,
     /// The compiler owner panicked during setup and retained its bounded payload.
     #[error("local compiler owner panicked during setup: {0:?}")]
-    WorkerPanic(interface_core::CompilerRuntimePanic),
+    WorkerPanic(backend_library::interface::CompilerRuntimePanic),
 }
 
 /// Cloneable, bounded client for one single-owner local compiler runtime.
@@ -844,7 +844,7 @@ impl LocalCompilerClient {
                 match worker.join() {
                     Ok(()) => Err(LocalCompilerRuntimeOpenError::StartupOwnerStopped),
                     Err(payload) => Err(LocalCompilerRuntimeOpenError::WorkerPanic(
-                        interface_core::CompilerRuntimePanic::capture(payload.as_ref()),
+                        backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref()),
                     )),
                 }
             }
@@ -1501,7 +1501,7 @@ fn run_worker_generation(
                         let _ = response.send(RuntimeEvent::Complete(result));
                     }
                     Err(payload) => {
-                        let cause = interface_core::CompilerRuntimePanic::capture(payload.as_ref());
+                        let cause = backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref());
                         let _ = response.send(RuntimeEvent::Complete(Err(
                             facts.terminal(CompilerRuntimeCause::WorkerPanic(cause))
                         )));
@@ -1521,7 +1521,7 @@ fn run_worker_generation(
                         let _ = response.send(result);
                     }
                     Err(payload) => {
-                        let cause = interface_core::CompilerRuntimePanic::capture(payload.as_ref());
+                        let cause = backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref());
                         let _ = response.send(Err(SemanticImageAccessError::WorkerPanic {
                             requested,
                             cause,
@@ -1545,7 +1545,7 @@ fn run_worker_generation(
                         let _ = response.send(result);
                     }
                     Err(payload) => {
-                        let cause = interface_core::CompilerRuntimePanic::capture(payload.as_ref());
+                        let cause = backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref());
                         let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
                             facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)),
                         )));
@@ -1569,7 +1569,7 @@ fn run_worker_generation(
                         let _ = response.send(result);
                     }
                     Err(payload) => {
-                        let cause = interface_core::CompilerRuntimePanic::capture(payload.as_ref());
+                        let cause = backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref());
                         let terminal = RequestFacts {
                             language: profile.language(),
                             stage: Stage::LowerIr,
@@ -1594,7 +1594,7 @@ fn join_failed_start(
     match worker.join() {
         Ok(()) => Err(error),
         Err(payload) => Err(LocalCompilerRuntimeOpenError::WorkerPanic(
-            interface_core::CompilerRuntimePanic::capture(payload.as_ref()),
+            backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref()),
         )),
     }
 }

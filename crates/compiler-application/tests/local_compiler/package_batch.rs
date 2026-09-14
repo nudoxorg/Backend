@@ -15,10 +15,10 @@ use compiler_application::{
 use compiler_driver::{ResolvedToolchain, ToolchainSelection};
 use backend_semantic::ir::SemanticImageView;
 use backend_semantic::vocabulary::{CStandard, LanguageProfile, NativeTool, Stage};
-use interface_core::{
+use backend_library::interface::{
     CorrelationId, GenerateTarget, PackageCompilePhase, PackageCompileRequest, PackageUrl,
 };
-use server_journal::PublicationLimits;
+use backend_store::journal::PublicationLimits;
 
 #[test]
 fn two_sources_publish_as_one_reopened_package_generation() -> Result<(), Box<dyn std::error::Error>>

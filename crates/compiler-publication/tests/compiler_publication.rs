@@ -25,7 +25,7 @@ use compiler_publication::{
 };
 use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
-use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
@@ -39,11 +39,11 @@ enum TestError {
     #[error("test filesystem operation failed")]
     Io(#[from] io::Error),
     #[error("could not configure the bounded durable publisher")]
-    Limits(#[from] server_journal::PublicationLimitError),
+    Limits(#[from] backend_store::journal::PublicationLimitError),
     #[error("could not create or reopen the durable publisher")]
-    Publisher(#[from] server_journal::PublicationOpenError),
+    Publisher(#[from] backend_store::journal::PublicationOpenError),
     #[error("could not shut down the durable publisher")]
-    Shutdown(#[from] server_journal::ShutdownError),
+    Shutdown(#[from] backend_store::journal::ShutdownError),
     #[error("could not prepare a compact IR fixture")]
     Prepare(#[from] backend_semantic::ir::PrepareError),
     #[error("could not write a compact IR fixture")]
@@ -946,7 +946,7 @@ fn assert_opened_fragment(
     Ok(())
 }
 
-fn limits() -> Result<PublicationLimits, server_journal::PublicationLimitError> {
+fn limits() -> Result<PublicationLimits, backend_store::journal::PublicationLimitError> {
     PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)
 }
 

@@ -16,7 +16,7 @@ use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
 use backend_semantic::vocabulary::Language;
-use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;
 
 use super::support::*;
@@ -34,9 +34,9 @@ enum TypeScriptPublicationError {
     #[error("TypeScript publication fixture could not create a journal directory")]
     JournalDirectory(#[source] std::io::Error),
     #[error("TypeScript publication limit was rejected")]
-    Limits(#[source] server_journal::PublicationLimitError),
+    Limits(#[source] backend_store::journal::PublicationLimitError),
     #[error("TypeScript publication owner could not open")]
-    Publisher(#[source] server_journal::PublicationOpenError),
+    Publisher(#[source] backend_store::journal::PublicationOpenError),
     #[error("TypeScript compact fragment could not publish")]
     Publish(#[source] compiler_publication::PublishCompiledError),
     #[error("TypeScript compact publication could not reopen")]
@@ -48,7 +48,7 @@ enum TypeScriptPublicationError {
     #[error("TypeScript publication reopen returned an invalid fragment")]
     Fragment(#[source] compiler_publication::OpenedFragmentError),
     #[error("TypeScript publication owner could not shut down")]
-    Shutdown(#[source] server_journal::ShutdownError),
+    Shutdown(#[source] backend_store::journal::ShutdownError),
 }
 
 #[test]

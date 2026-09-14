@@ -3,7 +3,7 @@
 //! The crate façade exposes the stable product vocabulary. Versioned catalog
 //! behavior lives in the catalog module, canonical identity schemas and
 //! admission in [`canonical`], immutable view state in the view module, and
-//! transport DTOs in the protocol module. None of these modules owns a process, socket, filesystem,
+//! transport DTOs in the wire module. None of these modules owns a process, socket, filesystem,
 //! scheduler, or native compiler implementation.
 
 #![deny(unsafe_code)]
@@ -18,10 +18,14 @@ mod cursor;
 mod delta;
 mod error;
 mod graph_query;
+/// Transport-independent application service and reply vocabulary.
+pub mod interface;
 mod progress;
-mod protocol;
+/// Bounded transport decoding and presentation for thin CLI and MCP consumers.
+pub mod protocol;
 mod surface;
 mod view;
+mod wire;
 
 /// Maximum number of events admitted from one bounded subscription payload.
 pub const MAX_SUBSCRIPTION_EVENTS: usize = 256;
@@ -81,7 +85,7 @@ pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
     ProgressError, SourceUnavailableReason,
 };
-pub use protocol::{
+pub use wire::{
     CommandDto, DTO_VERSION, EventDto, MAX_COMMAND_BODY, MAX_COMMAND_TEXT, ReplyAdmissionError,
     ReplyDto, RequestAdmissionError, SnapshotHydrator, SnapshotPageClaim, SnapshotPageDto,
     SubscriptionDto, ViewDto, WireCertificate, WireClaim, WireSchema, admit_reply,

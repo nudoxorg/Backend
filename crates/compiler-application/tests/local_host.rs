@@ -6,7 +6,7 @@ use compiler_application::{
     LocalCompilerHost, LocalCompilerHostError, LocalHostDiscovery, LocalHostEnvironment,
     LocalHostVariable,
 };
-use interface_core::{CompilerCapability, CompilerReadiness};
+use backend_library::interface::{CompilerCapability, CompilerReadiness};
 
 #[derive(Clone)]
 struct ExplicitDataRoot {

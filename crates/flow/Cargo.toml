@@ -10,8 +10,6 @@ publish.workspace = true
 backend-version = { path = "../version" }
 backend-store = { path = "../store" }
 blake3.workspace = true
-heart-hydration = { path = "../heart-hydration" }
-heart-root = { path = "../heart-root" }
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -24,7 +22,6 @@ backend-frontend-java = { path = "../../frontends/java" }
 backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
 backend-frontend-python = { path = "../../frontends/python" }
-server-journal = { path = "../server-journal" }
 server-index-build = { path = "../server-index-build" }
 sha2 = "=0.10.9"
 

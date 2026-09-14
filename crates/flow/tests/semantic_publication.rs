@@ -29,7 +29,7 @@ use server_index_build::{
     IndexedType, SemanticIndexBuildScratch, SemanticTypeFact, build_semantic,
 };
 use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId};
-use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -47,9 +47,9 @@ enum SemanticJourneyError {
     #[error("could not create the semantic publication directory")]
     Create(#[source] std::io::Error),
     #[error(transparent)]
-    Limits(#[from] server_journal::PublicationLimitError),
+    Limits(#[from] backend_store::journal::PublicationLimitError),
     #[error(transparent)]
-    Publisher(#[from] server_journal::PublicationOpenError),
+    Publisher(#[from] backend_store::journal::PublicationOpenError),
     #[error("semantic image measurement failed")]
     Measure(#[from] backend_semantic::ir::SemanticImageEncodeError),
     #[error("the fused compiler output did not reach a stable semantic publication")]
@@ -61,7 +61,7 @@ enum SemanticJourneyError {
     #[error("canonical semantic type rendering failed")]
     Render(#[from] backend_semantic::ir::CanonicalTypeRenderError),
     #[error("the publisher did not shut down cleanly")]
-    Shutdown(#[from] server_journal::ShutdownError),
+    Shutdown(#[from] backend_store::journal::ShutdownError),
     #[error("the stable publication contained no semantic package")]
     MissingPackage,
     #[error("the semantic package contained no artifact")]

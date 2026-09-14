@@ -13,11 +13,11 @@ use compiler_application::{
     LocalCompilerTimeout, LocalPackageRoot, LocalPackageRootSet, LocalToolchainSet,
 };
 use backend_semantic::vocabulary::{CStandard, Language, LanguageProfile, NativeTool, Stage};
-use interface_core::{
+use backend_library::interface::{
     CompilerCapability, CompilerTerminal, CorrelationId, GenerateTarget, PackageCompilePhase,
     PackageCompileRequest, PackageEcosystem, PackageSourceCause, PackageUrl, PackageUrlError,
 };
-use server_journal::{PublicationLimits, ShutdownError};
+use backend_store::journal::{PublicationLimits, ShutdownError};
 
 static FIXTURE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 

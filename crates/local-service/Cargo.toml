@@ -20,11 +20,12 @@ backend-frontend-java = { path = "../../frontends/java" }
 backend-frontend-python = { path = "../../frontends/python" }
 backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
+backend-library = { path = "../library" }
 backend-runtime = { path = "../runtime" }
 backend-semantic = { path = "../semantic" }
+backend-store = { path = "../store" }
 backend-version = { path = "../version" }
 compiler-application = { path = "../compiler-application" }
-interface-core = { path = "../interface-core" }
 blake3.workspace = true
 futures-executor.workspace = true
 futures-util.workspace = true
@@ -37,7 +38,6 @@ rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"]
 
 [dev-dependencies]
 compiler-publication = { path = "../compiler-publication" }
-heart-hydration = { path = "../heart-hydration" }
 
 [lints]
 workspace = true
