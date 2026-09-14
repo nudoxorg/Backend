@@ -1,99 +1,69 @@
-//! The seven supported source languages, as a two-letter tag and a hue.
+//! Where each shared language sits on the chromatic plane, and its short tag.
 //!
-//! A project's language mix is one of the few facts about it that is true at a
-//! glance, so the shelf shows it as a hue-coded bar rather than as a sentence.
-//! The tag is what the tooltip and the narrow rail fall back to.
+//! The language *set* is [`backend_present::Language`] — the same nine values
+//! the CLI prints and the MCP tools report — so a window can never think a
+//! file is TypeScript that `backend outline` calls `JavaScript`. What lives here
+//! is the part a terminal has no use for: one hue per language and one
+//! two-character tag, so a project's language mix reads as a proportion at a
+//! glance rather than as a sentence.
 
 use super::ramp::Hue;
+use backend_present::Language;
 
-/// One supported source language.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum Language {
-    /// Rust.
-    Rust,
-    /// Python.
-    Python,
-    /// TypeScript and JavaScript.
-    TypeScript,
-    /// Go.
-    Go,
-    /// Java.
-    Java,
-    /// C#.
-    CSharp,
-    /// C and C++.
-    Clang,
-    /// A source file this build does not compile.
-    Other,
+/// Returns the two-character tag drawn in a language tile.
+pub(crate) const fn tag(language: Language) -> &'static str {
+    match language {
+        Language::Rust => "rs",
+        Language::Python => "py",
+        Language::TypeScript => "ts",
+        Language::Go => "go",
+        Language::Java => "jv",
+        Language::CSharp => "c#",
+        Language::C => "c",
+        Language::Cxx => "c+",
+        Language::Unknown => "··",
+    }
 }
 
-impl Language {
-    /// Every language in display order.
-    pub(crate) const ALL: [Self; 8] = [
-        Self::Rust,
-        Self::Python,
-        Self::TypeScript,
-        Self::Go,
-        Self::Java,
-        Self::CSharp,
-        Self::Clang,
-        Self::Other,
-    ];
-
-    /// Returns the two-character tag drawn in the glyph tile.
-    pub(crate) const fn tag(self) -> &'static str {
-        match self {
-            Self::Rust => "rs",
-            Self::Python => "py",
-            Self::TypeScript => "ts",
-            Self::Go => "go",
-            Self::Java => "jv",
-            Self::CSharp => "c#",
-            Self::Clang => "c+",
-            Self::Other => "··",
-        }
+/// Returns the spelled language name used in tooltips and legends.
+pub(crate) const fn label(language: Language) -> &'static str {
+    match language {
+        Language::Rust => "Rust",
+        Language::Python => "Python",
+        Language::TypeScript => "TypeScript",
+        Language::Go => "Go",
+        Language::Java => "Java",
+        Language::CSharp => "C#",
+        Language::C => "C",
+        Language::Cxx => "C++",
+        Language::Unknown => "Other",
     }
+}
 
-    /// Returns the spelled language name used in tooltips.
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Rust => "Rust",
-            Self::Python => "Python",
-            Self::TypeScript => "TypeScript",
-            Self::Go => "Go",
-            Self::Java => "Java",
-            Self::CSharp => "C#",
-            Self::Clang => "C and C++",
-            Self::Other => "Other",
-        }
-    }
+/// Returns the hue this language occupies on the single chromatic plane.
+///
+/// C and C++ are deliberately close but not equal: one frontend claims both,
+/// and a reader scanning a mixed tree should see that kinship without losing
+/// the distinction.
+pub(crate) fn hue(language: Language) -> Hue {
+    Hue::degrees(match language {
+        Language::Rust => 24.0,
+        Language::Python => 52.0,
+        Language::TypeScript => 216.0,
+        Language::Go => 186.0,
+        Language::Java => 2.0,
+        Language::CSharp => 288.0,
+        Language::C => 132.0,
+        Language::Cxx => 118.0,
+        Language::Unknown => 232.0,
+    })
+}
 
-    /// Returns the hue this language occupies on the chromatic plane.
-    pub(crate) fn hue(self) -> Hue {
-        Hue::degrees(match self {
-            Self::Rust => 24.0,
-            Self::Python => 52.0,
-            Self::TypeScript => 216.0,
-            Self::Go => 186.0,
-            Self::Java => 2.0,
-            Self::CSharp => 288.0,
-            Self::Clang => 132.0,
-            Self::Other => 232.0,
+/// Returns the language a package-relative path implies.
+pub(crate) fn of_path(path: &str) -> Language {
+    path.rsplit_once('.')
+        .map_or(Language::Unknown, |(_, extension)| {
+            Language::from_extension(&extension.to_ascii_lowercase())
         })
-    }
-
-    /// Classifies a source path by its extension.
-    pub(crate) fn of_path(path: &str) -> Self {
-        let extension = path.rsplit('.').next().unwrap_or_default();
-        match extension {
-            "rs" => Self::Rust,
-            "py" | "pyi" => Self::Python,
-            "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" => Self::TypeScript,
-            "go" => Self::Go,
-            "java" => Self::Java,
-            "cs" => Self::CSharp,
-            "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "m" | "mm" => Self::Clang,
-            _ => Self::Other,
-        }
-    }
 }
+

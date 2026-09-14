@@ -110,6 +110,7 @@ pub struct HealthReport {
     coverage: Box<[crate::Coverage]>,
     row_count: u64,
     capabilities: crate::CapabilityInventory,
+    progress: crate::IngestProgress,
 }
 
 impl HealthReport {
@@ -122,7 +123,27 @@ impl HealthReport {
             coverage: root.coverage().to_vec().into_boxed_slice(),
             row_count: root.row_count(),
             capabilities: crate::CapabilityInventory::explicitly_unavailable(),
+            progress: crate::IngestProgress::default(),
         }
+    }
+
+    /// Replaces the empty baseline with the owner's observed ingest counts.
+    ///
+    /// Progress is additive on purpose. A report that carries no counts is a
+    /// report from a producer that does not publish them, which reads as an
+    /// empty [`crate::IngestProgress`] rather than as a project with no files;
+    /// the two are distinguished by the row count and coverage that every
+    /// report already carries.
+    #[must_use]
+    pub fn with_progress(mut self, progress: crate::IngestProgress) -> Self {
+        self.progress = progress;
+        self
+    }
+
+    /// Returns the owner's typed ingest counts for the visible revision.
+    #[must_use]
+    pub const fn progress(&self) -> &crate::IngestProgress {
+        &self.progress
     }
 
     /// Replaces the explicit baseline with owner-observed capability states.
@@ -147,6 +168,7 @@ impl HealthReport {
             coverage,
             row_count,
             capabilities,
+            progress: crate::IngestProgress::default(),
         }
     }
 

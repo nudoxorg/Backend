@@ -54,11 +54,6 @@ pub(crate) struct LaneChip {
 }
 
 impl LaneChip {
-    /// Returns the lane this chip reports.
-    pub(crate) const fn lane(&self) -> Lane {
-        self.lane
-    }
-
     /// Returns the lane's stable lowercase name.
     pub(crate) const fn name(&self) -> &'static str {
         backend_present::lane_name(self.lane)
@@ -77,15 +72,6 @@ impl LaneChip {
     /// Returns the sentence shown on hover.
     pub(crate) fn explanation(&self) -> &str {
         &self.explanation
-    }
-
-    /// Returns the chip as one line of text, as a strip spells it.
-    pub(crate) fn line(&self) -> String {
-        if self.detail.is_empty() {
-            format!("{} {}", self.name(), self.standing.glyph())
-        } else {
-            format!("{} {} {}", self.name(), self.standing.glyph(), self.detail)
-        }
     }
 }
 
@@ -171,11 +157,6 @@ impl CapabilityChip {
     /// Returns how the capability resolved.
     pub(crate) const fn standing(&self) -> Standing {
         self.standing
-    }
-
-    /// Returns the lifecycle state name.
-    pub(crate) fn state(&self) -> &str {
-        &self.state
     }
 
     /// Returns the sentence shown on hover.

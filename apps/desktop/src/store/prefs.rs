@@ -74,6 +74,15 @@ impl EditorScheme {
 }
 
 /// Every persisted preference.
+///
+/// Three of the eight fields are booleans, and they stay booleans: each one is
+/// a single independent switch a reader flips, and folding them into a bitset
+/// or a state enum would make the file format less readable without removing a
+/// single state from the product.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "three independent reader switches, one line each in a human-readable file"
+)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Preferences {
     appearance: Appearance,

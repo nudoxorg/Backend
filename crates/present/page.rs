@@ -82,6 +82,7 @@ pub struct Member {
     identity: Identity,
     kind: Option<DeclarationKind>,
     signature: Option<Signature>,
+    summary: Option<String>,
 }
 
 impl Member {
@@ -96,7 +97,26 @@ impl Member {
             identity,
             kind,
             signature,
+            summary: None,
         }
+    }
+
+    /// Attaches the first line of the member's own documentation.
+    ///
+    /// A member line answers "what is in here?" and a name plus a signature
+    /// answers only half of it. The sentence is the producer's own first line,
+    /// never a paraphrase, and it is optional because most members have none.
+    #[must_use]
+    pub fn with_summary(mut self, summary: impl Into<String>) -> Self {
+        let text = summary.into();
+        self.summary = (!text.trim().is_empty()).then_some(text);
+        self
+    }
+
+    /// Returns the first line of the member's documentation, when it has one.
+    #[must_use]
+    pub fn summary(&self) -> Option<&str> {
+        self.summary.as_deref()
     }
 
     /// Returns the member's identity.

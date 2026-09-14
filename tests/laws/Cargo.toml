@@ -12,6 +12,11 @@ backend-store = { path = "../../crates/store" }
 backend-version = { path = "../../crates/version" }
 
 [dev-dependencies]
+# Test-only. The shedding ladder that keeps one source row inside the
+# canonical node capacity is a producer contract, so the law that pins it has
+# to reach the producer; the production dependency closure is unchanged.
+backend-compile = { path = "../../crates/compile" }
+backend-engine = { path = "../../crates/engine" }
 blake3.workspace = true
 proptest.workspace = true
 

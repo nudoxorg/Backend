@@ -11,7 +11,7 @@
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Radius, hairline, radius};
-use gpui::{Div, Styled, div, px};
+use gpui::{Div, Styled, div};
 
 /// Returns the window ground.
 pub(crate) fn ground(theme: &Theme) -> Div {
@@ -42,35 +42,7 @@ pub(crate) fn sunken(theme: &Theme) -> Div {
         .border_color(theme.paint(Paint::Hairline))
 }
 
-/// Returns a full-width horizontal hairline.
-pub(crate) fn rule(theme: &Theme) -> Div {
-    div()
-        .h(hairline())
-        .w_full()
-        .flex_none()
-        .bg(theme.paint(Paint::Hairline))
-}
-
-/// Returns a full-height vertical hairline.
-pub(crate) fn spine(theme: &Theme) -> Div {
-    div()
-        .w(hairline())
-        .h_full()
-        .flex_none()
-        .bg(theme.paint(Paint::Hairline))
-}
-
 /// Returns the scrim drawn behind a floating surface.
 pub(crate) fn scrim(theme: &Theme) -> Div {
     div().absolute().inset_0().bg(theme.paint(Paint::Scrim))
-}
-
-/// Returns a focus ring drawn around the region that owns the keyboard.
-pub(crate) fn focus_ring(theme: &Theme, focused: bool) -> Div {
-    let ink = if focused {
-        theme.paint(Paint::Focus)
-    } else {
-        theme.paint(Paint::Hairline)
-    };
-    div().border(px(1.0)).border_color(ink)
 }

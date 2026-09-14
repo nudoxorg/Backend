@@ -18,6 +18,7 @@ mod cursor;
 mod delta;
 mod error;
 mod graph_query;
+mod progress;
 mod protocol;
 mod surface;
 mod view;
@@ -26,7 +27,9 @@ mod view;
 pub const MAX_SUBSCRIPTION_EVENTS: usize = 256;
 
 pub use arrangement::QueryWork;
-pub use backend_compile::{DeclarationKind, SourceExcerpt, SourceExcerptExtent, SourceLocation};
+pub use backend_compile::{
+    DeclarationKind, SourceExcerpt, SourceExcerptExtent, SourceLanguage, SourceLocation,
+};
 pub use backend_semantic::{Read, ReadManifest, ReadSelector};
 pub use backend_version::{
     AdmittedProducerObservation, AuthorityScopeClaim, AuthorizedCompleteCoverage, CoverageWitness,
@@ -73,6 +76,10 @@ pub use graph_query::{
     GraphQueryControl, GraphQueryError, GraphQueryPage, GraphQueryRequest, GraphQueryRow,
     GraphValue, MAX_GRAPH_QUERY_BYTES, MAX_GRAPH_QUERY_FIELDS, MAX_GRAPH_VALUE_BYTES,
     MAX_GRAPH_VALUE_DEPTH,
+};
+pub use progress::{
+    FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
+    ProgressError, SourceUnavailableReason,
 };
 pub use protocol::{
     CommandDto, DTO_VERSION, EventDto, MAX_COMMAND_BODY, MAX_COMMAND_TEXT, ReplyAdmissionError,

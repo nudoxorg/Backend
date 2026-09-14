@@ -1224,10 +1224,21 @@ fn admit_persisted_relations(
         .head()
         .map_err(|error| BuiltinModelError(format!("read selected workspace head: {error:?}")))?
         .ok_or_else(|| BuiltinModelError("selected workspace head disappeared".to_owned()))?;
+    // The workspace closure is published root-only — `write_workspace_root_closure`
+    // admits the retained objects and leaves their relation children in the
+    // node store, because a path-copying tree does not re-list untouched
+    // canonical nodes in every closure. Reading it back through the
+    // complete-closure rule therefore rejects every workspace whose relation
+    // tree needed an internal node: a one-leaf project reopened, and a real
+    // crate did not. Read it with the reader that matches the writer.
+    let closure_id = selected.descriptor().closure();
     let persisted_objects = store
-        .read_closure(selected.descriptor().closure())
+        .read_workspace_root_closure(closure_id)
         .map_err(|error| {
-            BuiltinModelError(format!("read selected workspace closure: {error:?}"))
+            BuiltinModelError(format!(
+                "read selected workspace closure {}: {error:?}",
+                backend_engine::encode_id(closure_id.as_bytes())
+            ))
         })?;
     let closure = WorkspaceClosure::from_checked_transition_root_only_with_registry(
         &manifest,

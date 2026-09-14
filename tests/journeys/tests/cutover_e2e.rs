@@ -1567,7 +1567,7 @@ mod unix_journeys {
         drop(completion);
 
         let first_json = cli_health(&endpoint, "first restart health");
-        let first_root = first_json["reply"]["data"]["root"].clone();
+        let first_root = first_json["revision"].clone();
 
         // ChildGuard performs a bounded kill/wait; the next profile startup
         // must recover the same durable checked genesis through the stale
@@ -1577,7 +1577,7 @@ mod unix_journeys {
         wait_for_socket(&endpoint, &mut second);
         let second_json = cli_health(&endpoint, "second restart health");
         assert_eq!(
-            second_json["reply"]["data"]["root"], first_root,
+            second_json["revision"], first_root,
             "restart changed the checked workspace root"
         );
         let mut recovered = connect_locald(&endpoint);
@@ -2854,12 +2854,22 @@ mod unix_journeys {
         );
         let cli_json: serde_json::Value = serde_json::from_slice(&cli_output.stdout)
             .unwrap_or_else(|error| panic!("decode CLI JSON: {error}"));
-        assert_eq!(cli_json["request_id"], serde_json::json!(1));
-        assert_eq!(cli_json["reply"]["kind"], serde_json::json!("revision"));
-        let cli_reply_root = cli_json["reply"]["data"]["root"].clone();
-        let cli_has_certificate = cli_json
-            .get("certificate")
-            .is_some_and(|certificate| !certificate.is_null());
+        // `--format json` is the presentation projection, not the wire reply:
+        // a consumer must not bind to certificate claims or cursor internals.
+        // It still carries the *exact* revision, so a caller can pin to it.
+        assert_eq!(cli_json["answer"], serde_json::json!("status"));
+        assert!(
+            cli_json.get("certificate").is_none(),
+            "the product JSON must not leak wire proof: {cli_json}"
+        );
+        let cli_reply_root = cli_json["revision"].clone();
+        assert!(
+            cli_reply_root
+                .as_str()
+                .is_some_and(|revision| revision.len() == 64),
+            "the typed status must carry the whole revision: {cli_json}"
+        );
+
 
         let request = CommandDto::new(1, Command::Health);
         let input = backend_mcp::encode_request(&request)
@@ -2872,7 +2882,10 @@ mod unix_journeys {
         );
         let mcp_json: serde_json::Value = serde_json::from_slice(&mcp_output[4..])
             .unwrap_or_else(|error| panic!("decode MCP reply JSON: {error}"));
-        assert_eq!(mcp_json["reply"]["data"]["root"], cli_reply_root);
+        assert_eq!(
+            mcp_json["reply"]["data"]["root"], cli_reply_root,
+            "the framed MCP transport and the CLI read one revision"
+        );
         let mcp_has_certificate = mcp_json
             .get("certificate")
             .is_some_and(|certificate| !certificate.is_null());
@@ -2972,35 +2985,35 @@ mod unix_journeys {
             json_replies[0]["result"]["protocolVersion"],
             serde_json::json!("2025-11-25")
         );
+        // A search page is a page of addresses, not of source. Each record
+        // carries the exact coordinate, the file and line it is at, and its
+        // signature — which is what a reader needs to choose one and then ask
+        // `backend.document` for it. Carrying every excerpt here is what made
+        // the old projection cost four times the tokens for the same choice,
+        // so the evidence is asserted where it is now served: on the page.
+        let search_records = json_replies[1]["result"]["structuredContent"]["records"]
+            .as_array()
+            .unwrap_or_else(|| panic!("MCP search returned no records: {:?}", json_replies[1]))
+            .clone();
         assert!(
-            json_replies[1]["result"]["structuredContent"]["rows"]
-                .as_array()
-                .is_some_and(|rows| rows.iter().any(|row| {
-                    row["coordinate"]
-                        .as_str()
-                        .is_some_and(|coordinate| coordinate.contains("turing"))
-                })),
+            search_records.iter().any(|record| {
+                record["identity"]["coordinate"]
+                    .as_str()
+                    .is_some_and(|coordinate| coordinate.contains("turing"))
+            }),
             "MCP tool search did not return the TypeScript declaration: {:?}",
             json_replies[1]
         );
         assert!(
-            json_replies[1]["result"]["structuredContent"]["rows"]
-                .as_array()
-                .is_some_and(|rows| rows.iter().any(|row| {
-                    row["coordinate"]
-                        .as_str()
-                        .is_some_and(|coordinate| coordinate.contains("turing"))
-                        && row["source"]["state"] == serde_json::json!("captured")
-                        && row["source"]["path"]
-                            .as_str()
-                            .is_some_and(|path| path == "src/main.ts")
-                        && row["excerpt"]["state"] == serde_json::json!("captured")
-                        && row["excerpt"]["text"]
-                            .as_str()
-                            .is_some_and(|text| text.contains("turing"))
-                        && row["excerpt"]["extent"] == serde_json::json!("complete")
-                })),
-            "MCP search lost exact source evidence: {:?}",
+            search_records.iter().any(|record| {
+                record["identity"]["coordinate"]
+                    .as_str()
+                    .is_some_and(|coordinate| coordinate.contains("turing"))
+                    && record["identity"]["path"] == serde_json::json!("src/main.ts")
+                    && record["identity"]["line"].as_u64().is_some()
+                    && record["language"] == serde_json::json!("typescript")
+            }),
+            "MCP search lost the exact site of its own result: {:?}",
             json_replies[1]
         );
         let trustfall_returned_live_typescript =
@@ -3024,27 +3037,42 @@ mod unix_journeys {
                 "{tool} failed against the live indexed view: {reply:?}"
             );
         }
+        let page = json_replies[3]["result"]["structuredContent"].clone();
+        assert_eq!(page["answer"], serde_json::json!("page"));
+        assert_eq!(
+            page["identity"]["coordinate"],
+            serde_json::json!(ferris_coordinate),
+            "the page must answer at the exact coordinate it was asked for"
+        );
         assert!(
-            json_replies[3]["result"]["structuredContent"]["signature"]
+            page["signature"]
                 .as_str()
                 .is_some_and(|signature| signature.contains("ferris")),
-            "document retrieval lost the indexed Rust declaration: {:?}",
-            json_replies[3]
+            "document retrieval lost the indexed Rust declaration: {page:?}"
         );
         assert_eq!(
-            json_replies[3]["result"]["structuredContent"]["excerpt"]["state"],
-            serde_json::json!("captured")
-        );
-        assert_eq!(
-            json_replies[3]["result"]["structuredContent"]["excerpt"]["extent"],
-            serde_json::json!("complete")
+            page["source"]["extent"],
+            serde_json::json!("complete"),
+            "the page did not retain complete source: {page:?}"
         );
         assert!(
-            json_replies[3]["result"]["structuredContent"]["excerpt"]["text"]
+            page["source"]["lines"]
+                .as_array()
+                .is_some_and(|lines| lines.iter().any(|line| {
+                    line.as_str().is_some_and(|text| text.contains("ferris"))
+                })),
+            "document retrieval did not return bounded Rust source: {page:?}"
+        );
+        assert!(
+            json_replies[3]["result"]["content"][0]["text"]
                 .as_str()
-                .is_some_and(|text| text.contains("ferris")),
-            "document retrieval did not return bounded Rust source: {:?}",
+                .is_some_and(|text| text.contains(&ferris_coordinate)),
+            "the readable block dropped the coordinate an agent passes back: {:?}",
             json_replies[3]
+        );
+        assert_eq!(
+            json_replies[5]["result"]["structuredContent"]["answer"],
+            serde_json::json!("outline")
         );
         assert_eq!(
             json_replies[5]["result"]["structuredContent"]["extent"],
@@ -3267,9 +3295,13 @@ mod unix_journeys {
         assert!(read.is_ok(), "desktop subscription failed: {read:?}");
         assert_eq!(desktop.root().root(), readiness.revision().root());
         assert!(desktop.root().row_count() >= 15);
+        // The CLI's own contribution to this claim is asserted where it is
+        // observable: it read the same exact revision, through a session that
+        // admits producer certificates, and its product JSON carried none of
+        // them onward. The proof lives on the wire, not in the answer.
         assert!(
-            cli_has_certificate && mcp_has_certificate && read.is_ok(),
-            "proof-bearing client journey failed: cli_certificate={cli_has_certificate}, mcp_certificate={mcp_has_certificate}, desktop_subscription={:?}",
+            mcp_has_certificate && read.is_ok(),
+            "proof-bearing client journey failed: mcp_certificate={mcp_has_certificate}, desktop_subscription={:?}",
             read.as_ref().err()
         );
 
@@ -3292,7 +3324,7 @@ mod unix_journeys {
         let reopened_json: serde_json::Value = serde_json::from_slice(&reopened.stdout)
             .unwrap_or_else(|error| panic!("decode restarted CLI JSON: {error}"));
         assert_eq!(
-            reopened_json["reply"]["data"]["root"], cli_reply_root,
+            reopened_json["revision"], cli_reply_root,
             "restart changed the immutable product view root"
         );
         assert!(

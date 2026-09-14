@@ -11,7 +11,7 @@
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{TypeScale, line_height, type_size};
-use gpui::{Div, FontWeight, Hsla, SharedString, Styled, div, px};
+use gpui::{Div, FontWeight, Hsla, SharedString, Styled, div};
 
 /// Returns a text block at one rung of the type ladder.
 pub(crate) fn text_at(theme: &Theme, scale: TypeScale, role: Paint) -> Div {
@@ -44,11 +44,6 @@ pub(crate) fn dim(theme: &Theme) -> Div {
 /// Returns a tertiary text block, for counts and hints.
 pub(crate) fn faint(theme: &Theme) -> Div {
     text_at(theme, TypeScale::Tiny, Paint::TextFaint)
-}
-
-/// Returns a monospace specimen block: signatures, source, and keys.
-pub(crate) fn specimen(theme: &Theme, scale: TypeScale, role: Paint) -> Div {
-    text_at(theme, scale, role).font_family(theme.specimen())
 }
 
 /// Returns text the reader can follow to another declaration.
@@ -92,15 +87,5 @@ pub(crate) fn single_line(block: Div) -> Div {
 
 /// Shortens a path for display, eliding its middle and never its ends.
 pub(crate) fn elide(text: &str, budget: usize) -> SharedString {
-    SharedString::from(crate::presentation::identity::elide_middle(text, budget))
-}
-
-/// Returns a hairline-thin separator dot used between inline facts.
-pub(crate) fn separator(theme: &Theme) -> Div {
-    div()
-        .w(px(3.0))
-        .h(px(3.0))
-        .rounded_full()
-        .bg(theme.paint(Paint::TextFaint))
-        .flex_none()
+    SharedString::from(crate::presentation::crumb::elide_middle(text, budget))
 }

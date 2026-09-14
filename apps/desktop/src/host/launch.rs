@@ -28,6 +28,14 @@ const ATTEMPTS: usize = 12;
 /// How long to wait between bootstrap attempts.
 const RETRY: Duration = Duration::from_millis(120);
 
+/// Longest this process will spend trying to reach an owner before reporting.
+///
+/// The attempt count alone is not a bound: one attempt can sit in a socket
+/// read for its full timeout, and twelve of those is six minutes of a process
+/// that has neither opened a window nor said anything. A reader is owed an
+/// answer inside a few seconds, even when the answer is a failure.
+const DEADLINE: Duration = Duration::from_secs(20);
+
 /// Exit code used when the local service could never be reached.
 const EXIT_NO_SERVICE: u8 = 70;
 
@@ -83,7 +91,17 @@ fn run(opened: Opened) {
             let opened = cx.open_window(options, move |_window, cx| {
                 cx.new(|cx| {
                     Workspace::new(
-                        endpoint, project, data, mode, root, model, transport, prefs, cx,
+                        crate::views::workspace::Bootstrap {
+                            endpoint,
+                            project,
+                            data,
+                            mode,
+                            root,
+                            model,
+                            transport,
+                            prefs,
+                        },
+                        cx,
                     )
                 })
             });
@@ -107,7 +125,8 @@ fn install(cx: &mut App, preferences: Preferences) {
 }
 
 fn window_options(cx: &mut App) -> WindowOptions {
-    let bounds = Bounds::centered(None, size(px(WINDOW.0), px(WINDOW.1)), cx);
+    let (width, height) = opening_size();
+    let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
@@ -121,13 +140,46 @@ fn window_options(cx: &mut App) -> WindowOptions {
     }
 }
 
+/// Returns the size the window opens at.
+///
+/// Preview builds can be asked for an exact size, because the layouts worth
+/// reviewing are the ones at the ends of the range — the narrowest supported
+/// window, where both panels have to fold, and the widest, where the reading
+/// measure has to stop growing. A shipped build has no such knob.
+#[cfg(feature = "preview")]
+fn opening_size() -> (f32, f32) {
+    let Ok(spelling) = std::env::var("BACKEND_DESKTOP_PREVIEW_SIZE") else {
+        return WINDOW;
+    };
+    let Some((width, height)) = spelling.split_once('x') else {
+        return WINDOW;
+    };
+    match (width.trim().parse::<f32>(), height.trim().parse::<f32>()) {
+        (Ok(width), Ok(height)) => (width.max(MINIMUM.0), height.max(MINIMUM.1)),
+        _ => WINDOW,
+    }
+}
+
+/// Returns the size the window opens at.
+#[cfg(not(feature = "preview"))]
+const fn opening_size() -> (f32, f32) {
+    WINDOW
+}
+
 /// Reaches the owner and hydrates one admitted root, retrying briefly.
 fn open() -> Result<Opened, String> {
+    let started = std::time::Instant::now();
     let mut last = "the local service did not become ready".to_owned();
     for attempt in 0..ATTEMPTS {
         match attempt_once() {
             Ok(opened) => return Ok(opened),
             Err(message) => last = message,
+        }
+        if started.elapsed() >= DEADLINE {
+            return Err(format!(
+                "{last} (gave up after {}s)",
+                started.elapsed().as_secs()
+            ));
         }
         if attempt.saturating_add(1) < ATTEMPTS {
             std::thread::sleep(RETRY);
@@ -137,7 +189,7 @@ fn open() -> Result<Opened, String> {
 }
 
 fn attempt_once() -> Result<Opened, String> {
-    let host = DesktopHost::start().map_err(describe)?;
+    let host = DesktopHost::start().map_err(|error| describe(&error))?;
     let mut transport = UnixSubscriptionTransport::connect(host.endpoint())
         .map_err(|error| format!("open the subscription transport: {error}"))?;
     match transport.bootstrap_root() {
@@ -151,6 +203,6 @@ fn attempt_once() -> Result<Opened, String> {
     }
 }
 
-fn describe(error: HostError) -> String {
+fn describe(error: &HostError) -> String {
     format!("reach the local service at {}: {error}", error.operand())
 }

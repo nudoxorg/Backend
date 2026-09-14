@@ -5,7 +5,7 @@
 pub(crate) mod actions;
 mod context;
 mod first_run;
-mod library;
+pub(crate) mod library;
 mod omnibar;
 mod overlays;
 mod page;

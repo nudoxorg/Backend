@@ -6,19 +6,30 @@
 //! a choice and a control that offers no choice is noise. Middle-click closes,
 //! option-click opens behind — the two gestures a reader brings from every
 //! other document surface they use.
+//!
+//! The scrolling element is the reading column itself rather than a full-width
+//! box wrapped around one, and that is load-bearing rather than cosmetic: it
+//! makes each region of the page a direct child of the scroll container, which
+//! is what lets the outline panel's jump list scroll to a section by index
+//! instead of guessing at an offset.
 
 use super::workspace::Workspace;
-use crate::presentation::identity::Identity;
+use crate::motion::{Beat, entering_opacity, once};
 use crate::store::document::{Content, Tab, Target};
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Chrome, Radius, Space, TypeScale, hairline, radius, space};
 use crate::ui::{button, fault as fault_ui, surface, text};
+use backend_present::Identity;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px,
+    AnimationExt as _, AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement,
+    IntoElement, ParentElement, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    div, px,
 };
+
+/// Widest the reading column ever grows, in pixels.
+const MEASURE: f32 = 880.0;
 
 impl Workspace {
     /// Returns the centre column.
@@ -57,13 +68,12 @@ impl Workspace {
                 titles
                     .into_iter()
                     .enumerate()
-                    .map(|(at, title)| self.tab(theme, at, &title, at == active, cx)),
+                    .map(|(at, title)| Self::tab(theme, at, &title, at == active, cx)),
             )
     }
 
     fn tab(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         at: usize,
         title: &str,
         active: bool,
@@ -100,12 +110,11 @@ impl Workspace {
                 .child(title.to_owned()),
             )
             .child(
-                button::icon_button(theme, format!("tab-close-{at}"), crate::ui::icon::Icon::Close).on_click(cx.listener(
-                    move |this, _, _, cx| {
+                button::icon_button(theme, format!("tab-close-{at}"), crate::ui::icon::Icon::Close)
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         this.document
                             .update(cx, |document, cx| document.close(at, cx));
-                    },
-                )),
+                    })),
             )
             .into_any_element()
     }
@@ -114,36 +123,36 @@ impl Workspace {
         if self.document.read(cx).is_empty() {
             return self.first_run(theme, cx).into_any_element();
         }
-        let pending = self
-            .document
-            .read(cx)
-            .tab()
-            .and_then(|tab| tab.pending().cloned());
-        let content = self
-            .document
-            .read(cx)
-            .tab()
-            .map(|tab| tab.content().clone())
-            .unwrap_or(Content::Blank);
+        let tab = self.document.read(cx).tab();
+        let pending = tab.and_then(|tab| tab.pending().cloned());
+        let scroll = tab.map_or_else(ScrollHandle::new, |tab| tab.scroll().clone());
+        let content = tab
+            .map_or(Content::Blank, |tab| tab.content().clone());
+        let regions = self.content(theme, &content, cx);
+        let reduced = theme.reduced_motion();
+        let generation = self.document.read(cx).generation();
         div()
             .id("reader-body")
             .flex_1()
             .min_h(px(0.0))
+            .w_full()
+            .max_w(px(MEASURE))
+            .mx_auto()
+            .px(space(Space::Margin))
+            .py(space(Space::Gutter))
             .overflow_y_scroll()
-            .child(
-                div()
-                    .w_full()
-                    .max_w(px(880.0))
-                    .mx_auto()
-                    .px(space(Space::Margin))
-                    .py(space(Space::Gutter))
-                    .flex()
-                    .flex_col()
-                    .gap(space(Space::Gutter))
-                    .when_some(pending, |body, identity| {
-                        body.child(loading_bar(theme, &identity))
-                    })
-                    .child(self.content(theme, &content, cx)),
+            .track_scroll(&scroll)
+            .flex()
+            .flex_col()
+            .gap(space(Space::Gutter))
+            .when_some(pending, |body, identity| {
+                body.child(loading_bar(theme, &identity))
+            })
+            .children(regions)
+            .with_animation(
+                ElementId::Name(SharedString::from(format!("page-swap-{generation}"))),
+                once(Beat::Reveal, reduced),
+                |body, delta| body.opacity(entering_opacity(delta)),
             )
             .into_any_element()
     }
@@ -153,16 +162,16 @@ impl Workspace {
         theme: &Theme,
         content: &Content,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Vec<AnyElement> {
         match content {
-            Content::Blank => reserved(theme).into_any_element(),
-            Content::Page(page) => self.declaration_page(theme, page, cx).into_any_element(),
+            Content::Blank => vec![reserved(theme).into_any_element()],
+            Content::Page(page) => self.declaration_page(theme, page, cx),
             Content::Project { coordinate } => {
-                self.project_page(theme, coordinate, cx).into_any_element()
+                vec![self.project_page(theme, coordinate, cx).into_any_element()]
             }
             Content::Faulted(fault) => {
-                let actions = self.affordances(theme, "reader", fault, "", cx);
-                fault_ui::block(theme, fault, actions).into_any_element()
+                let actions = Self::affordances(theme, "reader", fault, "", cx);
+                vec![fault_ui::block(theme, fault, actions).into_any_element()]
             }
         }
     }
@@ -177,12 +186,7 @@ fn reserved(theme: &Theme) -> Div {
         .gap(space(Space::Base))
         .child(skeleton(theme, 280.0, 22.0))
         .child(skeleton(theme, 520.0, 14.0))
-        .child(
-            surface::sunken(theme)
-                .w_full()
-                .h(px(76.0))
-                .flex_none(),
-        )
+        .child(surface::sunken(theme).w_full().h(px(76.0)).flex_none())
         .child(skeleton(theme, 640.0, 14.0))
         .child(skeleton(theme, 480.0, 14.0))
 }

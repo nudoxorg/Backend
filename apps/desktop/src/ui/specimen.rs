@@ -4,19 +4,25 @@
 //!
 //! GPUI has no inline-flow element, so rich text is built the other way round:
 //! one string, a list of byte ranges with highlight styles, and a parallel list
-//! of clickable ranges. That is exactly what a tokenized signature already is,
-//! and it keeps ligatures, wrapping, and caret geometry correct in a way that
-//! a flex row of per-token divs never could.
+//! of clickable ranges. That is exactly what a tokenized
+//! [`backend_present::Signature`] already is, and it keeps ligatures, wrapping,
+//! and caret geometry correct in a way that a flex row of per-token divs never
+//! could.
+//!
+//! A linked type is underlined with a *dotted* rule rather than a solid one,
+//! and the reason is honesty: [`backend_present::Resolved::ByName`] is the only
+//! resolution the model claims, and it is a spelling match, not a proven
+//! semantic edge. A solid underline would promise more than the engine knows.
 
-use crate::presentation::signature::{Resolved, Signature, TokenKind};
 use crate::theme::Theme;
 use crate::theme::kind::kind_glyph;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Space, TypeScale, line_height, space, type_size};
 use backend_library::{DeclarationKind, SymbolKey};
+use backend_present::{IdentityKey, Signature, TokenKind};
 use gpui::{
     App, Div, ElementId, HighlightStyle, InteractiveText, ParentElement, SharedString, StyledText,
-    UnderlineStyle, Window, div, px,
+    UnderlineStyle, Window, px,
 };
 use gpui::{FontWeight, Styled};
 use std::ops::Range;
@@ -48,17 +54,15 @@ pub(crate) fn signature_block(
         .child(interactive(runs, id, open))
 }
 
-/// Returns a one-line signature preview, coloured but not interactive.
-pub(crate) fn signature_line(theme: &Theme, signature: &Signature, scale: TypeScale) -> Div {
-    let runs = signature_runs(theme, signature);
-    div()
-        .font_family(theme.specimen())
-        .text_size(type_size(scale))
-        .whitespace_nowrap()
-        .overflow_hidden()
-        .text_ellipsis()
-        .text_color(theme.paint(Paint::TextDim))
-        .child(StyledText::new(runs.text).with_highlights(runs.highlights))
+/// Returns a signature flattened to one line and clipped to a budget.
+pub(crate) fn preview(signature: &Signature, budget: usize) -> String {
+    let flattened = signature.text();
+    let squeezed: String = flattened.split_whitespace().collect::<Vec<_>>().join(" ");
+    if squeezed.chars().count() <= budget {
+        return squeezed;
+    }
+    let kept: String = squeezed.chars().take(budget.saturating_sub(1)).collect();
+    format!("{kept}…")
 }
 
 fn interactive(
@@ -79,7 +83,7 @@ fn interactive(
 }
 
 fn signature_runs(theme: &Theme, signature: &Signature) -> Runs {
-    let mut text = String::with_capacity(signature.text().len());
+    let mut text = String::new();
     let mut highlights = Vec::new();
     let mut links = Vec::new();
     let mut targets = Vec::new();
@@ -87,11 +91,14 @@ fn signature_runs(theme: &Theme, signature: &Signature) -> Runs {
         let start = text.len();
         text.push_str(token.text());
         let range = start..text.len();
-        let linked = matches!(token.resolved(), Resolved::Declaration(_));
-        highlights.push((range.clone(), style_for(theme, token.kind(), linked)));
-        if let Resolved::Declaration(symbol) = token.resolved() {
+        let symbol = token.target().and_then(|target| match target.key() {
+            IdentityKey::Symbol(key) => Some(key),
+            IdentityKey::Package(_) | IdentityKey::Absent => None,
+        });
+        highlights.push((range.clone(), style_for(theme, token.kind(), symbol.is_some())));
+        if let Some(key) = symbol {
             links.push(range);
-            targets.push(symbol);
+            targets.push(key);
         }
     }
     Runs {
@@ -125,10 +132,10 @@ fn ink_for(theme: &Theme, kind: TokenKind) -> gpui::Hsla {
         TokenKind::Keyword => theme.on_plane(kind_glyph(DeclarationKind::Module).hue()),
         TokenKind::Name => theme.paint(Paint::TextStrong),
         TokenKind::Type => theme.on_plane(kind_glyph(DeclarationKind::Struct).hue()),
-        TokenKind::Parameter => theme.on_plane(kind_glyph(DeclarationKind::Field).hue()),
+        TokenKind::Binding => theme.on_plane(kind_glyph(DeclarationKind::Field).hue()),
         TokenKind::Literal => theme.on_plane(kind_glyph(DeclarationKind::Constant).hue()),
-        TokenKind::Marker => theme.on_plane(kind_glyph(DeclarationKind::Macro).hue()),
+        TokenKind::Lifetime => theme.on_plane(kind_glyph(DeclarationKind::Macro).hue()),
         TokenKind::Punctuation => theme.paint(Paint::TextFaint),
-        TokenKind::Space | TokenKind::Plain => theme.paint(Paint::Text),
+        TokenKind::Text => theme.paint(Paint::Text),
     }
 }

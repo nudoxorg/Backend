@@ -34,12 +34,10 @@ page is `complete`, hit its `limit_reached` bound, or was `cancelled`.
 
 ## starting edges
 
-| edge | rows |
-|---|---|
-| `Project` | one per package on the shelf |
-| `Declaration` | one per declaration in the revision |
-| `ExternalTarget` | one per declaration resolved into another package |
-| `Item` | every row of any kind |
+`Project` — one row per package on the shelf.
+`Declaration` — one row per declaration in the revision.
+`ExternalTarget` — one row per declaration resolved into another package.
+`Item` — every row, of any kind.
 
 ## fields on a row
 
@@ -116,6 +114,7 @@ Each declaration and its neighbours in the graph:
 "#;
 
 /// Lifts every fenced `graphql` block out of the schema card.
+#[cfg(test)]
 pub(super) fn worked_queries(card: &str) -> Vec<&str> {
     let mut queries = Vec::new();
     let mut rest = card;

@@ -5,18 +5,23 @@
 //! Three modes share one field because they share one question — "what do I
 //! want to reach?" — and switching between them should cost a single character.
 //! A leading `>` means the answer is a command; a leading `@name ` narrows the
-//! answer to one project; anything else searches declarations. The palette is
-//! projected from the library's own command registry, so its titles and
-//! descriptions are the same words the CLI and MCP surfaces use.
+//! answer to one project; anything else searches declarations.
+//!
+//! The palette is the command grammar, not a list this window wrote. Rows come
+//! from [`backend_present::GRAMMARS`], which is checked against
+//! [`backend_library::COMMANDS`] in that crate's own tests, so a command the
+//! CLI can run and this palette cannot is a test failure rather than a quiet
+//! gap. Titles and descriptions are the registry's own words, verbatim, and
+//! the usage line is the one the CLI's `--help` prints.
 
 use super::events::SearchEvent;
 use super::service::{Endpoint, Outcome, Request};
-use crate::presentation::fault::{self, Fault, Operand};
-use crate::presentation::identity::Identity;
-use crate::presentation::signature::Signature;
-use crate::presentation::status::{self, CapabilityChip, LaneChip};
-use backend_library::{
-    COMMANDS, CommandDomain, CommandId, CommandSpec, DeclarationKind, QueryLimit, RowId, SymbolKey,
+use crate::presentation::chips::{self, CapabilityChip, LaneChip};
+use crate::presentation::fault::wrong_shape;
+use backend_library::{CommandDomain, CommandId, CommandSpec, QueryLimit, SymbolKey};
+use backend_present::{
+    CommandGrammar, Fault, GRAMMARS, Identity, IdentityKey, Operand, Record,
+    record_list_from_rows,
 };
 use gpui::AppContext as _;
 use gpui::{Context, EventEmitter, Task};
@@ -25,8 +30,8 @@ use std::time::Duration;
 /// How long the field waits after a keystroke before asking the service.
 const DEBOUNCE: Duration = Duration::from_millis(120);
 
-/// Character budget for a result row's signature line.
-const PREVIEW: usize = 120;
+/// How many result rows one page of the sheet lists.
+pub(crate) const PAGE: usize = 8;
 
 /// What the text in the field means.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -97,46 +102,42 @@ impl Parsed {
     }
 }
 
-/// One declaration the service returned.
+/// One declaration the service returned, with what opening it needs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResultRow {
-    id: RowId,
+    record: Record,
     symbol: Option<SymbolKey>,
-    identity: Identity,
-    kind: Option<DeclarationKind>,
-    preview: String,
 }
 
 impl ResultRow {
-    /// Returns the stable row identity.
-    pub(crate) const fn id(&self) -> RowId {
-        self.id
-    }
-
-    /// Returns the declaration this row opens.
-    pub(crate) const fn symbol(&self) -> Option<SymbolKey> {
-        self.symbol
+    /// Returns the shared record every surface renders this row from.
+    pub(crate) const fn record(&self) -> &Record {
+        &self.record
     }
 
     /// Returns the row's identity.
     pub(crate) const fn identity(&self) -> &Identity {
-        &self.identity
+        self.record.identity()
     }
 
-    /// Returns the typed declaration kind.
-    pub(crate) const fn kind(&self) -> Option<DeclarationKind> {
-        self.kind
+    /// Returns the declaration this row opens, when it is one.
+    pub(crate) const fn symbol(&self) -> Option<SymbolKey> {
+        self.symbol
     }
 
-    /// Returns the one-line signature preview.
-    pub(crate) fn preview(&self) -> &str {
-        &self.preview
+    fn of(record: Record) -> Self {
+        let symbol = match record.identity().key() {
+            IdentityKey::Symbol(key) => Some(key),
+            IdentityKey::Package(_) | IdentityKey::Absent => None,
+        };
+        Self { record, symbol }
     }
 }
 
 /// One command the palette can run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CommandRow {
+    grammar: CommandGrammar,
     spec: CommandSpec,
 }
 
@@ -144,6 +145,11 @@ impl CommandRow {
     /// Returns the registry row, whose words every surface shares.
     pub(crate) const fn spec(self) -> CommandSpec {
         self.spec
+    }
+
+    /// Returns the argument grammar behind this command.
+    pub(crate) const fn grammar(self) -> CommandGrammar {
+        self.grammar
     }
 
     /// Returns the domain header this command groups under.
@@ -177,6 +183,7 @@ pub(crate) struct SearchStore {
     results: Vec<ResultRow>,
     commands: Vec<CommandRow>,
     coverage: Vec<LaneChip>,
+    more: bool,
     selected: usize,
     open: bool,
     searching: bool,
@@ -198,6 +205,7 @@ impl SearchStore {
             results: Vec::new(),
             commands: palette_rows(""),
             coverage: Vec::new(),
+            more: false,
             selected: 0,
             open: false,
             searching: false,
@@ -206,11 +214,6 @@ impl SearchStore {
             pending: None,
             generation: 0,
         }
-    }
-
-    /// Returns the raw field text.
-    pub(crate) fn text(&self) -> &str {
-        &self.text
     }
 
     /// Returns the parsed mode and term.
@@ -231,6 +234,11 @@ impl SearchStore {
     /// Returns the honest lane coverage behind the current results.
     pub(crate) fn coverage(&self) -> &[LaneChip] {
         &self.coverage
+    }
+
+    /// Returns whether the service held back rows beyond this page.
+    pub(crate) const fn has_more(&self) -> bool {
+        self.more
     }
 
     /// Returns the selected row index.
@@ -262,7 +270,7 @@ impl SearchStore {
     pub(crate) fn len(&self) -> usize {
         match self.parsed.mode {
             Mode::Palette => self.commands.len(),
-            _ => self.results.len(),
+            Mode::Search | Mode::Scoped { .. } => self.results.len(),
         }
     }
 
@@ -332,7 +340,7 @@ impl SearchStore {
     pub(crate) fn selected_result(&self) -> Option<&ResultRow> {
         match self.parsed.mode {
             Mode::Palette => None,
-            _ => self.results.get(self.selected),
+            Mode::Search | Mode::Scoped { .. } => self.results.get(self.selected),
         }
     }
 
@@ -340,7 +348,7 @@ impl SearchStore {
     pub(crate) fn selected_command(&self) -> Option<CommandRow> {
         match self.parsed.mode {
             Mode::Palette => self.commands.get(self.selected).copied(),
-            _ => None,
+            Mode::Search | Mode::Scoped { .. } => None,
         }
     }
 
@@ -359,6 +367,7 @@ impl SearchStore {
             self.searching = false;
             self.results.clear();
             self.coverage.clear();
+            self.more = false;
             self.fault = None;
             return;
         }
@@ -367,7 +376,7 @@ impl SearchStore {
         let endpoint = self.endpoint.clone();
         let scope = match &self.parsed.mode {
             Mode::Scoped { project } => Some(project.clone()),
-            _ => None,
+            Mode::Search | Mode::Palette => None,
         };
         self.searching = true;
         self.pending = Some(cx.spawn(async move |this, cx| {
@@ -397,28 +406,28 @@ impl SearchStore {
             return;
         }
         self.searching = false;
+        let operand = Operand::Text(term.to_owned());
         match outcome {
             Ok(Outcome::Rows(page)) => {
-                self.coverage = status::lane_chips(page.coverage());
+                let list = record_list_from_rows(term, page.rows(), page.coverage(), false);
+                self.coverage = chips::lane_chips(page.coverage());
                 self.fault = None;
-                self.results = page
-                    .into_rows()
+                self.more = list.has_more();
+                self.results = list
+                    .records()
                     .iter()
-                    .filter_map(|row| result_row(row))
-                    .filter(|row| scope.is_none_or(|name| row.identity.project_name() == name))
+                    .cloned()
+                    .map(ResultRow::of)
+                    .filter(|row| within(row, scope))
                     .collect();
                 self.selected = 0;
             }
-            Ok(_) => self.fault = Some(shape_fault(term)),
+            Ok(_) => self.fault = Some(wrong_shape(operand, "a page of rows")),
             Err(error) => {
                 self.results.clear();
                 self.coverage.clear();
-                self.fault = Some(fault::from_client(
-                    &error,
-                    Operand::Query {
-                        text: term.to_owned(),
-                    },
-                ));
+                self.more = false;
+                self.fault = Some(Fault::from_client_error(&error, operand));
             }
         }
         cx.emit(SearchEvent::Changed);
@@ -429,9 +438,10 @@ impl SearchStore {
 /// Running a command from the palette.
 impl SearchStore {
     /// Runs one registry command and shows its typed reply inside the sheet.
-    pub(crate) fn run(&mut self, spec: CommandSpec, cx: &mut Context<Self>) {
+    pub(crate) fn run(&mut self, row: CommandRow, cx: &mut Context<Self>) {
+        let spec = row.spec();
         let Some(request) = argument_free_request(spec) else {
-            self.reply = Reply::Guidance(guidance_for(spec));
+            self.reply = Reply::Guidance(guidance_for(row));
             cx.emit(SearchEvent::Accepted);
             cx.notify();
             return;
@@ -452,46 +462,54 @@ impl SearchStore {
     }
 }
 
+fn within(row: &ResultRow, scope: Option<&str>) -> bool {
+    scope.is_none_or(|name| {
+        row.identity()
+            .project()
+            .is_some_and(|project| project.name() == name)
+    })
+}
+
 fn reply_of(spec: CommandSpec, outcome: Result<Outcome, backend_client::ClientError>) -> Reply {
-    let operand = Operand::Capability {
-        name: spec.title.to_owned(),
-    };
+    let operand = Operand::Argument(spec.name.to_owned());
     match outcome {
         Ok(Outcome::Health(report)) => {
-            Reply::Capabilities(status::capability_chips(report.capabilities()))
+            Reply::Capabilities(chips::capability_chips(report.capabilities()))
         }
         Ok(Outcome::Rows(page)) => Reply::Lines(
             page.rows()
                 .iter()
-                .map(|row| Identity::parse(&row.label).compact())
+                .map(|row| {
+                    let identity = Identity::parse(&row.label);
+                    crate::presentation::crumb::compact(&identity)
+                })
                 .collect(),
         ),
         Ok(Outcome::Surface(reply)) => Reply::Lines(surface_lines(&reply)),
         Ok(_) => Reply::Lines(vec![format!("{} completed.", spec.title)]),
-        Err(error) => Reply::Faulted(Box::new(fault::from_client(&error, operand))),
+        Err(error) => Reply::Faulted(Box::new(Fault::from_client_error(&error, operand))),
     }
 }
 
 fn surface_lines(reply: &backend_library::SurfaceReply) -> Vec<String> {
-    match reply {
-        backend_library::SurfaceReply::Projects(rows) => rows
-            .iter()
-            .map(|row| format!("{} · {} members", row.name.as_str(), row.members.len()))
-            .collect(),
-        backend_library::SurfaceReply::Subscriptions(rows) => rows
-            .iter()
-            .map(|row| row.package.as_str().to_owned())
-            .collect(),
-        backend_library::SurfaceReply::Releases(rows) => rows
-            .iter()
-            .map(|row| format!("{} {}", row.package.as_str(), row.version.as_str()))
-            .collect(),
-        backend_library::SurfaceReply::Tree(rows) => rows
-            .iter()
-            .map(|row| row.title.as_str().to_owned())
-            .collect(),
-        other => vec![format!("{:?} returned no listable rows.", other.id())],
+    let view = backend_present::product_view(reply);
+    if let Some(fault) = view.fault() {
+        return vec![fault.cause().sentence().to_owned()];
     }
+    if view.records().is_empty() {
+        return vec![
+            view.note()
+                .unwrap_or("This command returned no rows.")
+                .to_owned(),
+        ];
+    }
+    view.records()
+        .iter()
+        .map(|record| match record.operand() {
+            Some(operand) => format!("{}  {operand}", record.title()),
+            None => record.title().to_owned(),
+        })
+        .collect()
 }
 
 /// Returns the request for a command that needs no argument to be useful.
@@ -519,57 +537,48 @@ fn argument_free_request(spec: CommandSpec) -> Option<Request> {
     })
 }
 
-fn guidance_for(spec: CommandSpec) -> String {
+fn guidance_for(row: CommandRow) -> String {
+    let spec = row.spec();
     format!(
-        "{} needs an operand. {} Run it from the row it applies to, or from the CLI as `backend {}`.",
-        spec.title, spec.description, spec.name
+        "{} needs an operand. {} Usage: {}",
+        spec.title,
+        spec.description,
+        row.grammar().usage()
     )
 }
 
 fn palette_rows(term: &str) -> Vec<CommandRow> {
     let needle = term.trim().to_ascii_lowercase();
-    COMMANDS
+    let mut rows: Vec<CommandRow> = GRAMMARS
         .into_iter()
-        .filter(|spec| matches_command(*spec, &needle))
-        .map(|spec| CommandRow { spec })
-        .collect()
+        .filter_map(|grammar| grammar.spec().map(|spec| CommandRow { grammar, spec }))
+        .filter(|row| matches_command(*row, &needle))
+        .collect();
+    rows.sort_by_key(|row| (domain_rank(row.domain()), row.spec().name));
+    rows
 }
 
-fn matches_command(spec: CommandSpec, needle: &str) -> bool {
+const fn domain_rank(domain: CommandDomain) -> u8 {
+    match domain {
+        CommandDomain::Library => 0,
+        CommandDomain::Registry => 1,
+        CommandDomain::Home => 2,
+        CommandDomain::Session => 3,
+        CommandDomain::System => 4,
+    }
+}
+
+fn matches_command(row: CommandRow, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
     }
+    let spec = row.spec();
     spec.name.to_ascii_lowercase().contains(needle)
         || spec.title.to_ascii_lowercase().contains(needle)
         || spec.description.to_ascii_lowercase().contains(needle)
-}
-
-fn result_row(row: &backend_library::Row) -> Option<ResultRow> {
-    let identity = Identity::parse(&row.label);
-    let preview = row.signature.as_deref().map_or_else(
-        || identity.compact(),
-        |text| Signature::parse(text, identity.name()).preview(PREVIEW),
-    );
-    Some(ResultRow {
-        id: row.id,
-        symbol: match row.id {
-            RowId::Symbol(symbol) => Some(symbol),
-            _ => None,
-        },
-        kind: row.kind,
-        identity,
-        preview,
-    })
-}
-
-fn shape_fault(term: &str) -> Fault {
-    Fault::new(
-        fault::Severity::Fault,
-        Operand::Query {
-            text: term.to_owned(),
-        },
-        "The search reply changed shape",
-        "the service answered a search with a reply this build cannot admit",
-        vec![fault::Affordance::Retry],
-    )
+        || row
+            .grammar()
+            .aliases()
+            .iter()
+            .any(|alias| alias.to_ascii_lowercase().contains(needle))
 }

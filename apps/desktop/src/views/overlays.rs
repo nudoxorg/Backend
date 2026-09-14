@@ -95,7 +95,7 @@ impl Workspace {
                 surface::scrim(theme)
                     .id("settings-scrim")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.shell.update(cx, |shell, cx| shell.toggle_settings(cx));
+                        this.shell.update(cx, super::super::store::shell::ShellStore::toggle_settings);
                     })),
             )
             .child(
@@ -120,7 +120,8 @@ impl Workspace {
                             .child(self.size_setting(theme, cx))
                             .child(self.motion_setting(theme, cx))
                             .child(self.editor_setting(theme, cx))
-                            .child(self.capability_setting(theme, cx)),
+                            .child(self.capability_setting(theme, cx))
+                            .child(legend_setting(theme)),
                     ),
             )
     }
@@ -249,7 +250,7 @@ impl Workspace {
     }
 
     fn capability_setting(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let chips = self.workspace.read(cx).capabilities().to_vec();
+        let chips = self.engine.read(cx).capabilities().to_vec();
         setting(
             theme,
             "Capabilities",
@@ -270,6 +271,51 @@ impl Workspace {
                 ),
         )
     }
+}
+
+/// Returns the legend: every glyph this window draws, and what it means.
+///
+/// The interface leans on eighteen lettered kind tiles and eight language
+/// tags, all on one luminance plane. That is only readable if a reader can
+/// find out, once, what each letter stands for — so the vocabulary is written
+/// down inside the product rather than assumed.
+fn legend_setting(theme: &Theme) -> Div {
+    setting(
+        theme,
+        "Legend",
+        "Every mark this window draws, and what it stands for.",
+    )
+    .child(
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(space(Space::Snug))
+            .children(crate::theme::kind::ALL_KINDS.map(|kind| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space(Space::Tight))
+                    .child(glyph::kind_tile(theme, Some(kind), false))
+                    .child(text::faint(theme).child(glyph::kind_label(Some(kind))))
+            })),
+    )
+    .child(
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(space(Space::Snug))
+            .children(backend_present::Language::ALL.map(|language| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space(Space::Tight))
+                    .child(glyph::language_tag(theme, language))
+                    .child(
+                        text::faint(theme)
+                            .child(crate::theme::language::label(language)),
+                    )
+            })),
+    )
 }
 
 fn setting(theme: &Theme, title: &str, detail: &str) -> Div {

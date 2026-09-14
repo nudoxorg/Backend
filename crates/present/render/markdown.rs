@@ -20,6 +20,7 @@ use core::fmt::Write as _;
 
 use super::Lines;
 use crate::coverage::CoverageLine;
+use crate::drive::Answer;
 use crate::fault::Fault;
 use crate::glyph::KindGlyph;
 use crate::identity::ProjectRef;
@@ -34,6 +35,23 @@ use crate::status::Status;
 #[must_use]
 pub fn coverage(line: CoverageLine) -> String {
     line.render()
+}
+
+/// Renders whichever answer a surface produced.
+///
+/// This is the single entry point an agent-facing surface calls. The CLI's
+/// `--format markdown` and the MCP text block both reach it, which is what
+/// makes them byte-identical rather than merely similar.
+#[must_use]
+pub fn answer(answer: &Answer) -> String {
+    match answer {
+        Answer::Page(value) => page(value),
+        Answer::Records(value) => records(value, None),
+        Answer::Shelf(value) => shelf(value),
+        Answer::Outline(value) => outline(value),
+        Answer::Status(value) => status(value),
+        Answer::Product(value) => product(value),
+    }
 }
 
 /// Renders one fault, with its affordance as the exact next tool call.

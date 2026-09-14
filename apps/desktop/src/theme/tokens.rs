@@ -14,8 +14,6 @@ const ROOT_PIXELS: f32 = 16.0;
 /// One step on the 4px spacing grid.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Space {
-    /// 2px — the gap inside a glyph cluster.
-    Hair,
     /// 4px — the gap between a glyph and its label.
     Tight,
     /// 8px — the gap between fields in one row.
@@ -37,7 +35,6 @@ pub(crate) enum Space {
 /// Returns the `rem` length of one spacing step.
 pub(crate) fn space(step: Space) -> Rems {
     rems(match step {
-        Space::Hair => 0.125,
         Space::Tight => 0.25,
         Space::Snug => 0.5,
         Space::Base => 0.75,
@@ -94,8 +91,7 @@ pub(crate) fn line_height(scale: TypeScale) -> Rems {
         TypeScale::Tiny => 1.0,
         TypeScale::Small => 1.125,
         TypeScale::Interface => 1.25,
-        TypeScale::Body => 1.5,
-        TypeScale::Section => 1.5,
+        TypeScale::Body | TypeScale::Section => 1.5,
         TypeScale::Title => 1.75,
         TypeScale::Display => 2.125,
     })
@@ -201,7 +197,11 @@ impl PanelWidth {
     /// Default context panel width.
     pub(crate) const DEFAULT_CONTEXT: f32 = 252.0;
     /// Width of a panel collapsed to its glyph rail.
-    pub(crate) const RAIL: f32 = 0.0;
+    ///
+    /// A collapsed panel is a rail, not an absence: a reader who folds the
+    /// shelf away to read a wide signature still wants to see that a project
+    /// is indexing, and twenty-six pixels of readiness marks says so.
+    pub(crate) const RAIL: f32 = 26.0;
     /// Below this window width both panels auto-collapse.
     pub(crate) const AUTO_COLLAPSE_WINDOW: f32 = 1040.0;
     /// Below this window width the context panel auto-collapses.
@@ -218,16 +218,8 @@ impl Chrome {
     pub(crate) const TABS: f32 = 32.0;
     /// Status bar height.
     pub(crate) const STATUS: f32 = 24.0;
-    /// Height of one library shelf row.
-    pub(crate) const SHELF_ROW: f32 = 46.0;
-    /// Height of one search result row.
-    pub(crate) const RESULT_ROW: f32 = 46.0;
     /// Height of one outline row.
     pub(crate) const OUTLINE_ROW: f32 = 22.0;
-    /// Height of one source line.
-    pub(crate) const SOURCE_LINE: f32 = 19.0;
-    /// Height of one palette row.
-    pub(crate) const PALETTE_ROW: f32 = 42.0;
     /// Maximum height of the omnibar sheet.
     pub(crate) const SHEET_MAX: f32 = 460.0;
     /// Width of the omnibar capsule.

@@ -10,6 +10,7 @@ use core::fmt::Write as _;
 
 use super::{Lines, Style, Theme};
 use crate::coverage::CoverageLine;
+use crate::drive::Answer;
 use crate::fault::Fault;
 use crate::glyph::{KindGlyph, LanguageGlyph};
 use crate::identity::{Identity, ProjectRef};
@@ -20,6 +21,19 @@ use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf, ShelfEntry};
 use crate::signature::{Signature, TokenKind};
 use crate::status::Status;
+
+/// Renders whichever answer a surface produced, painted for a terminal.
+#[must_use]
+pub fn answer(answer: &Answer, theme: Theme) -> String {
+    match answer {
+        Answer::Page(value) => page(value, theme),
+        Answer::Records(value) => records(value, None, theme),
+        Answer::Shelf(value) => shelf(value, theme),
+        Answer::Outline(value) => outline(value, theme),
+        Answer::Status(value) => status(value, theme),
+        Answer::Product(value) => product(value, theme),
+    }
+}
 
 /// Renders one identity trail, with the project dropped when it is `within`.
 #[must_use]

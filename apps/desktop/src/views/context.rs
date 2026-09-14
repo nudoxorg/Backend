@@ -6,27 +6,36 @@
 //! the window that shows the whole project at once, so it is a flat, dense,
 //! file-ordered list rather than a tree that must be unfolded — a reader
 //! scanning for a name should not have to guess which branch it is under.
+//!
+//! Two things make it usable at ten thousand rows. The list is a
+//! `uniform_list`, so only the visible rows are built. And the row for the
+//! declaration being read is scrolled into view whenever it changes, so
+//! following a link from a signature moves the panel with the reader instead
+//! of leaving them to scroll for their own position.
 
 use super::workspace::Workspace;
-use crate::presentation::identity::Identity;
 use crate::store::document::{Content, Target};
 use crate::store::shell::Side;
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Chrome, Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{
+    Chrome, PanelWidth, Radius, Space, TypeScale, hairline, radius, space, type_size,
+};
 use crate::ui::{button, glyph, surface, text};
 use backend_library::{DeclarationKind, RowId, SymbolKey};
+use backend_present::{Identity, IdentityKey};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Context, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px, uniform_list,
+    AnyElement, Context, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    uniform_list,
 };
 
 /// One row of the outline list.
 #[derive(Clone)]
 struct OutlineRow {
-    symbol: SymbolKey,
-    identity: Identity,
+    symbol: Option<SymbolKey>,
+    label: String,
     kind: Option<DeclarationKind>,
     file: bool,
 }
@@ -38,12 +47,13 @@ impl Workspace {
         theme: &Theme,
         width: f32,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        if width < 1.0 {
-            return div();
+    ) -> AnyElement {
+        if width < PanelWidth::MIN_CONTEXT {
+            return Self::context_rail(theme, width, cx);
         }
         let rows = self.outline_rows(cx);
         let current = self.current_symbol(cx);
+        self.reveal_current(&rows, current);
         surface::panel(theme)
             .flex_none()
             .w(px(width))
@@ -53,14 +63,39 @@ impl Workspace {
             .border_color(theme.paint(Paint::Hairline))
             .flex()
             .flex_col()
-            .child(self.context_head(theme, rows.len(), cx))
+            .child(Self::context_head(theme, rows.len(), cx))
             .child(self.outline_list(theme, rows, current, cx))
             .child(self.jump_list(theme, cx))
+            .into_any_element()
+    }
+
+    fn context_rail(theme: &Theme, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        if width < 1.0 {
+            return div().into_any_element();
+        }
+        surface::panel(theme)
+            .flex_none()
+            .w(px(width))
+            .h_full()
+            .overflow_hidden()
+            .border_l(hairline())
+            .border_color(theme.paint(Paint::Hairline))
+            .flex()
+            .flex_col()
+            .items_center()
+            .py(space(Space::Snug))
+            .child(
+                button::icon_button(theme, "expand-context", crate::ui::icon::Icon::ChevronLeft)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.shell
+                            .update(cx, |shell, cx| shell.toggle_panel(Side::Context, cx));
+                    })),
+            )
+            .into_any_element()
     }
 
     fn context_head(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         count: usize,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -74,12 +109,11 @@ impl Workspace {
             .border_b(hairline())
             .border_color(theme.paint(Paint::Hairline))
             .child(
-                button::icon_button(theme, "collapse-context", crate::ui::icon::Icon::ChevronRight).on_click(cx.listener(
-                    |this, _, _, cx| {
+                button::icon_button(theme, "collapse-context", crate::ui::icon::Icon::ChevronRight)
+                    .on_click(cx.listener(|this, _, _, cx| {
                         this.shell
                             .update(cx, |shell, cx| shell.toggle_panel(Side::Context, cx));
-                    },
-                )),
+                    })),
             )
             .child(
                 text::faint(theme)
@@ -88,6 +122,24 @@ impl Workspace {
                     .child("OUTLINE"),
             )
             .child(text::faint(theme).child(count.to_string()))
+    }
+
+    /// Scrolls the row for the declaration being read into view.
+    fn reveal_current(&mut self, rows: &[OutlineRow], current: Option<SymbolKey>) {
+        let Some(current) = current else {
+            return;
+        };
+        if self.revealed == Some(current) {
+            return;
+        }
+        let Some(at) = rows
+            .iter()
+            .position(|row| !row.file && row.symbol == Some(current))
+        else {
+            return;
+        };
+        self.outline_scroll.scroll_to_item(at, ScrollStrategy::Center);
+        self.revealed = Some(current);
     }
 
     fn outline_list(
@@ -101,7 +153,7 @@ impl Workspace {
         let entity = cx.entity();
         let count = rows.len();
         div().flex_1().min_h(px(0.0)).child(
-            uniform_list("outline-rows", count, move |range, _window, cx| {
+            uniform_list("outline-rows", count, move |range, _window, _cx| {
                 let theme = theme.clone();
                 let entity = entity.clone();
                 rows.get(range.clone())
@@ -110,10 +162,11 @@ impl Workspace {
                     .enumerate()
                     .map(|(offset, row)| {
                         let at = range.start.saturating_add(offset);
-                        outline_row(&theme, &entity, at, row, current == Some(row.symbol), cx)
+                        outline_row(&theme, &entity, at, row, current == row.symbol && !row.file)
                     })
                     .collect()
             })
+            .track_scroll(&self.outline_scroll)
             .h_full(),
         )
     }
@@ -137,37 +190,57 @@ impl Workspace {
             .when(sections.is_empty(), |list| {
                 list.child(text::faint(theme).child("Nothing open."))
             })
-            .children(sections.into_iter().map(|section| {
-                text::single_line(text::dim(theme))
+            .children(sections.into_iter().map(|(label, index)| {
+                div()
+                    .id(ElementId::Name(SharedString::from(format!(
+                        "jump-{index}"
+                    ))))
                     .py(px(1.0))
-                    .child(section)
+                    .px(space(Space::Tight))
+                    .rounded(radius(Radius::Hair))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.paint(Paint::Hover)))
+                    .child(text::single_line(text::dim(theme)).child(label))
+                    .on_click(cx.listener(move |this, _, _, cx| this.jump_to(index, cx)))
             }))
     }
 
-    fn page_sections(&self, cx: &Context<Self>) -> Vec<String> {
-        let Some(Content::Page(page)) = self.document.read(cx).tab().map(|tab| tab.content().clone())
+    /// Scrolls the reader to one region of the page it is showing.
+    fn jump_to(&mut self, index: usize, cx: &mut Context<Self>) {
+        let handle = self
+            .document
+            .read(cx)
+            .tab()
+            .map(|tab| tab.scroll().clone());
+        if let Some(handle) = handle {
+            handle.scroll_to_item(index);
+            cx.notify();
+        }
+    }
+
+    /// Returns each listable region of the open page, with its child index.
+    ///
+    /// The indices come from [`super::page::regions`], which is the same list
+    /// the reader renders, so a jump can never land on the wrong section.
+    fn page_sections(&self, cx: &Context<Self>) -> Vec<(String, usize)> {
+        let Some(Content::Page(page)) = self.document.read(cx).tab().map(super::super::store::document::Tab::content)
         else {
             return Vec::new();
         };
-        let mut sections = Vec::new();
-        if !page.signature().is_empty() {
-            sections.push("Signature".to_owned());
-        }
-        if !page.prose().is_empty() {
-            sections.push("Documentation".to_owned());
-        }
-        for group in page.members() {
-            sections.push(format!(
-                "{} · {}",
-                crate::theme::kind::group_title(group.kind()),
-                group.members().len()
-            ));
-        }
-        for group in page.relations() {
-            sections.push(format!("{} · {}", group.label(), group.entries().len()));
-        }
-        sections.push("Source".to_owned());
-        sections
+        let offset = usize::from(
+            self.document
+                .read(cx)
+                .tab()
+                .is_some_and(|tab| tab.pending().is_some()),
+        );
+        super::page::regions(page)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(at, region)| {
+                super::page::region_label(page, &region)
+                    .map(|label| (label, at.saturating_add(offset)))
+            })
+            .collect()
     }
 
     fn current_symbol(&self, cx: &Context<Self>) -> Option<SymbolKey> {
@@ -181,27 +254,31 @@ impl Workspace {
         let Some(identity) = self.active_identity(cx) else {
             return self.all_rows(cx);
         };
-        let project = identity.project().to_owned();
+        let Some(project) = identity.project().map(|project| project.root().to_owned()) else {
+            return self.all_rows(cx);
+        };
         let mut rows = Vec::new();
         let mut file = String::new();
-        for row in self.workspace.read(cx).declarations_in(&project) {
+        for row in self.engine.read(cx).declarations_in(&project) {
             let RowId::Symbol(symbol) = row.id else {
                 continue;
             };
-            let identity = Identity::parse(&row.label);
-            let path = identity.path().unwrap_or_default().to_owned();
+            let identity = Identity::parse_with_key(&row.label, IdentityKey::Symbol(symbol));
+            let path = identity
+                .path()
+                .map_or_else(String::new, |path| path.as_str().to_owned());
             if path != file {
                 file.clone_from(&path);
                 rows.push(OutlineRow {
-                    symbol,
-                    identity: Identity::parse(&path),
+                    symbol: None,
+                    label: path.clone(),
                     kind: None,
                     file: true,
                 });
             }
             rows.push(OutlineRow {
-                symbol,
-                identity,
+                symbol: Some(symbol),
+                label: identity.name().to_owned(),
                 kind: row.kind,
                 file: false,
             });
@@ -210,19 +287,19 @@ impl Workspace {
     }
 
     fn all_rows(&self, cx: &Context<Self>) -> Vec<OutlineRow> {
-        self.workspace
+        self.engine
             .read(cx)
             .root()
             .rows()
             .iter()
             .filter_map(|row| match row.id {
                 RowId::Symbol(symbol) => Some(OutlineRow {
-                    symbol,
-                    identity: Identity::parse(&row.label),
+                    symbol: Some(symbol),
+                    label: Identity::parse(&row.label).name().to_owned(),
                     kind: row.kind,
                     file: false,
                 }),
-                _ => None,
+                RowId::Package(_) | RowId::Object(_) => None,
             })
             .collect()
     }
@@ -234,13 +311,13 @@ fn outline_row(
     at: usize,
     row: &OutlineRow,
     current: bool,
-    cx: &mut gpui::App,
-) -> gpui::AnyElement {
-    let _ = cx;
+) -> AnyElement {
     if row.file {
-        return file_header(theme, at, &row.identity);
+        return file_header(theme, at, &row.label);
     }
-    let symbol = row.symbol;
+    let Some(symbol) = row.symbol else {
+        return div().h(px(Chrome::OUTLINE_ROW)).into_any_element();
+    };
     let entity = entity.clone();
     div()
         .id(ElementId::Name(SharedString::from(format!("outline-{at}"))))
@@ -268,12 +345,12 @@ fn outline_row(
             })
             .flex_1()
             .min_w(px(0.0))
-            .child(row.identity.name().to_owned()),
+            .child(row.label.clone()),
         )
         .into_any_element()
 }
 
-fn file_header(theme: &Theme, at: usize, identity: &Identity) -> gpui::AnyElement {
+fn file_header(theme: &Theme, at: usize, path: &str) -> AnyElement {
     div()
         .id(ElementId::Name(SharedString::from(format!(
             "outline-file-{at}"
@@ -286,7 +363,7 @@ fn file_header(theme: &Theme, at: usize, identity: &Identity) -> gpui::AnyElemen
             text::single_line(text::faint(theme))
                 .font_family(theme.specimen())
                 .text_size(type_size(TypeScale::Micro))
-                .child(identity.coordinate().to_owned()),
+                .child(text::elide(path, 34).to_string()),
         )
         .into_any_element()
 }

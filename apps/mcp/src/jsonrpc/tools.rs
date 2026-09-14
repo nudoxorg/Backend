@@ -107,13 +107,13 @@ fn answer_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "kind": {
+            "answer": {
                 "type": "string",
                 "enum": ["page", "records", "shelf", "outline", "status", "product", "fault"],
                 "description": "Which presentation answer this is; `fault` accompanies isError."
             }
         },
-        "required": ["kind"],
+        "required": ["answer"],
         "additionalProperties": true
     })
 }

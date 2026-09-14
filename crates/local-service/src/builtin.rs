@@ -86,6 +86,9 @@ use product_state::ProductState;
 #[path = "builtin/coverage.rs"]
 mod coverage;
 use coverage::{SemanticDeployment, reconcile_semantic_lane, view_coverage};
+#[path = "builtin/progress.rs"]
+mod progress;
+use progress::ingest_progress;
 
 #[path = "query/mod.rs"]
 pub mod query;

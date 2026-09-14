@@ -9,7 +9,8 @@ use crate::{
     CapabilityStatus, CapabilityTarget, CapabilityUnavailable, EmbeddingCapabilityRecipe,
     EmbeddingEncoding, EmbeddingMetric, EmbeddingNormalization, EmbeddingPooling,
     EmbeddingRecipeId, EmbeddingSource, LanguageOracleTask, MAX_CAPABILITY_INVENTORY,
-    PackageAuthorityIdentity, decode_id, encode_id,
+    FaultRows, IngestProgress, LanguageRows, PackageAuthorityIdentity, SourceLanguage,
+    SourceUnavailableReason, decode_id, encode_id,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -28,6 +29,172 @@ pub(crate) struct HealthWire {
     pub(crate) coverage: Vec<CoverageWire>,
     pub(crate) row_count: u64,
     pub(crate) capabilities: CapabilityInventoryWire,
+    /// Additive since the first health wire. A producer that publishes no
+    /// ingest counts omits the field entirely and every reader admits the
+    /// report with an empty [`IngestProgress`].
+    #[serde(default)]
+    pub(crate) progress: IngestProgressWire,
+}
+
+/// Wire projection of the owner's typed ingest counts.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct IngestProgressWire {
+    #[serde(default)]
+    pub(crate) files_discovered: u64,
+    #[serde(default)]
+    pub(crate) files_indexed: u64,
+    #[serde(default)]
+    pub(crate) files_unavailable: u64,
+    #[serde(default)]
+    pub(crate) declarations: u64,
+    #[serde(default)]
+    pub(crate) languages: Vec<LanguageRowsWire>,
+    #[serde(default)]
+    pub(crate) faults: Vec<FaultRowsWire>,
+}
+
+/// One language's file and declaration contribution on the wire.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LanguageRowsWire {
+    pub(crate) language: LanguageWire,
+    pub(crate) files: u64,
+    pub(crate) declarations: u64,
+}
+
+/// One terminal's file count on the wire.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FaultRowsWire {
+    pub(crate) reason: SourceFaultWire,
+    pub(crate) files: u64,
+}
+
+/// Closed language token shared by every surface.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum LanguageWire {
+    Rust,
+    TypeScript,
+    Python,
+    Go,
+    Java,
+    CSharp,
+    Clang,
+}
+
+/// Closed per-file terminal token shared by every surface.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SourceFaultWire {
+    Unreadable,
+    NotText,
+    TooLarge,
+    Unparsed,
+}
+
+impl From<SourceLanguage> for LanguageWire {
+    fn from(value: SourceLanguage) -> Self {
+        match value {
+            SourceLanguage::Rust => Self::Rust,
+            SourceLanguage::TypeScript => Self::TypeScript,
+            SourceLanguage::Python => Self::Python,
+            SourceLanguage::Go => Self::Go,
+            SourceLanguage::Java => Self::Java,
+            SourceLanguage::CSharp => Self::CSharp,
+            SourceLanguage::Clang => Self::Clang,
+        }
+    }
+}
+
+impl From<LanguageWire> for SourceLanguage {
+    fn from(value: LanguageWire) -> Self {
+        match value {
+            LanguageWire::Rust => Self::Rust,
+            LanguageWire::TypeScript => Self::TypeScript,
+            LanguageWire::Python => Self::Python,
+            LanguageWire::Go => Self::Go,
+            LanguageWire::Java => Self::Java,
+            LanguageWire::CSharp => Self::CSharp,
+            LanguageWire::Clang => Self::Clang,
+        }
+    }
+}
+
+impl From<SourceUnavailableReason> for SourceFaultWire {
+    fn from(value: SourceUnavailableReason) -> Self {
+        match value {
+            SourceUnavailableReason::Unreadable => Self::Unreadable,
+            SourceUnavailableReason::NotText => Self::NotText,
+            SourceUnavailableReason::TooLarge => Self::TooLarge,
+            SourceUnavailableReason::Unparsed => Self::Unparsed,
+        }
+    }
+}
+
+impl From<SourceFaultWire> for SourceUnavailableReason {
+    fn from(value: SourceFaultWire) -> Self {
+        match value {
+            SourceFaultWire::Unreadable => Self::Unreadable,
+            SourceFaultWire::NotText => Self::NotText,
+            SourceFaultWire::TooLarge => Self::TooLarge,
+            SourceFaultWire::Unparsed => Self::Unparsed,
+        }
+    }
+}
+
+/// Projects the owner's ingest counts onto the wire.
+pub(crate) fn progress_to_wire(progress: &IngestProgress) -> IngestProgressWire {
+    IngestProgressWire {
+        files_discovered: progress.files_discovered(),
+        files_indexed: progress.files_indexed(),
+        files_unavailable: progress.files_unavailable(),
+        declarations: progress.declarations(),
+        languages: progress
+            .languages()
+            .iter()
+            .map(|row| LanguageRowsWire {
+                language: row.language().into(),
+                files: row.files(),
+                declarations: row.declarations(),
+            })
+            .collect(),
+        faults: progress
+            .faults()
+            .iter()
+            .map(|row| FaultRowsWire {
+                reason: row.reason().into(),
+                files: row.files(),
+            })
+            .collect(),
+    }
+}
+
+/// Admits one wire progress report.
+///
+/// The bounds and the accounting invariant are re-checked here rather than
+/// trusted, because this value crosses a process boundary.
+pub(crate) fn progress_from_wire(wire: IngestProgressWire) -> Result<IngestProgress, String> {
+    let languages = wire
+        .languages
+        .into_iter()
+        .map(|row| LanguageRows::new(row.language.into(), row.files, row.declarations))
+        .collect::<Vec<_>>();
+    let faults = wire
+        .faults
+        .into_iter()
+        .map(|row| FaultRows::new(row.reason.into(), row.files))
+        .collect::<Vec<_>>();
+    IngestProgress::new(
+        wire.files_discovered,
+        wire.files_indexed,
+        wire.files_unavailable,
+        wire.declarations,
+        languages,
+        faults,
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

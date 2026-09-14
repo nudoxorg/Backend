@@ -13,8 +13,10 @@
 
 use super::events::CatalogEvent;
 use super::service::{Endpoint, Outcome, Request};
-use backend_library::{ProductText, RegistryPackageRecord, SurfaceCommand, SurfaceReply};
-use backend_present::Fault;
+use backend_library::{
+    PackageReference, ProductText, RegistryPackageRecord, SurfaceCommand, SurfaceReply,
+};
+use backend_present::{Fault, ProductView, product_view};
 use gpui::AppContext as _;
 use gpui::{Context, EventEmitter, Task};
 use std::time::Duration;
@@ -86,11 +88,27 @@ pub(crate) enum Catalog {
     Faulted(Box<Fault>),
 }
 
-/// The registry catalog behind the add-a-project field.
+/// One named section of registry facts about one package.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Facts {
+    coordinate: String,
+    sections: Vec<(&'static str, ProductView)>,
+}
+
+impl Facts {
+    /// Returns each section and the view the engine answered with.
+    pub(crate) fn sections(&self) -> &[(&'static str, ProductView)] {
+        &self.sections
+    }
+}
+
+/// The registry catalog behind the add-a-project field and the project page.
 pub(crate) struct CatalogStore {
     endpoint: Endpoint,
     state: Catalog,
+    facts: Option<Facts>,
     pending: Option<Task<()>>,
+    facts_task: Option<Task<()>>,
     generation: u64,
 }
 
@@ -102,14 +120,57 @@ impl CatalogStore {
         Self {
             endpoint,
             state: Catalog::Idle,
+            facts: None,
             pending: None,
+            facts_task: None,
             generation: 0,
         }
     }
 
-    /// Returns what the catalog last said.
+    /// Returns what the catalog last said about the add field.
     pub(crate) const fn state(&self) -> &Catalog {
         &self.state
+    }
+
+    /// Returns the registry facts last read for one package, if they match.
+    pub(crate) fn facts_for(&self, coordinate: &str) -> Option<&Facts> {
+        self.facts
+            .as_ref()
+            .filter(|facts| facts.coordinate == coordinate)
+    }
+
+    /// Reads the registry sections one pinned package coordinate has.
+    ///
+    /// Only a pinned package has them. A local folder is not in any registry,
+    /// and the page says exactly that rather than drawing three empty
+    /// sections that look like a failure.
+    pub(crate) fn read_facts(&mut self, coordinate: &str, cx: &mut Context<Self>) {
+        if self.facts_for(coordinate).is_some() {
+            return;
+        }
+        let Ok(package) = PackageReference::parse(coordinate) else {
+            self.facts = Some(Facts {
+                coordinate: coordinate.to_owned(),
+                sections: Vec::new(),
+            });
+            cx.notify();
+            return;
+        };
+        let endpoint = self.endpoint.clone();
+        let wanted = coordinate.to_owned();
+        self.facts_task = Some(cx.spawn(async move |this, cx| {
+            let sections = cx
+                .background_spawn(async move { read_sections(&endpoint, &package) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.facts = Some(Facts {
+                    coordinate: wanted,
+                    sections,
+                });
+                cx.emit(CatalogEvent::Changed);
+                cx.notify();
+            });
+        }));
     }
 
     /// Forgets the last lookup, for when the flow closes.
@@ -203,5 +264,40 @@ fn rows_of(reply: &SurfaceReply) -> Vec<Suggestion> {
             records.iter().map(Suggestion::of).collect()
         }
         _ => Vec::new(),
+    }
+}
+
+/// The three registry sections a package page can carry, in reading order.
+fn read_sections(
+    endpoint: &Endpoint,
+    package: &PackageReference,
+) -> Vec<(&'static str, ProductView)> {
+    [
+        ("Versions", SurfaceCommand::PackageVersions {
+            package: package.clone(),
+        }),
+        ("Dependents", SurfaceCommand::Dependents {
+            package: package.clone(),
+        }),
+        ("Registry", SurfaceCommand::Package {
+            package: package.clone(),
+        }),
+    ]
+    .into_iter()
+    .filter_map(|(title, command)| section(endpoint, title, command))
+    .collect()
+}
+
+fn section(
+    endpoint: &Endpoint,
+    title: &'static str,
+    command: SurfaceCommand,
+) -> Option<(&'static str, ProductView)> {
+    let request = Request::Surface {
+        command: Box::new(command),
+    };
+    match super::service::run(endpoint.path(), &request) {
+        Ok(Outcome::Surface(reply)) => Some((title, product_view(&reply))),
+        _ => None,
     }
 }

@@ -67,11 +67,6 @@ impl Icon {
     }
 }
 
-/// Returns one icon at the default fourteen-pixel size in the dim ink.
-pub(crate) fn icon(theme: &Theme, mark: Icon) -> Svg {
-    sized(theme, mark, 14.0, Paint::TextDim)
-}
-
 /// Returns one icon at an explicit size and paint role.
 pub(crate) fn sized(theme: &Theme, mark: Icon, side: f32, role: Paint) -> Svg {
     svg()

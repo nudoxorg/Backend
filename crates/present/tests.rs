@@ -78,6 +78,107 @@ fn package_module_semantic_and_windows_spellings_all_parse() {
     assert_eq!(unicode.coordinate().as_str(), "/abs/日本::src/lib.rs:7::χ");
 }
 
+/// Every closed coordinate spelling, with the parts a reader is owed.
+///
+/// The awkward ones are the point: a path with a space, a project whose
+/// name is not ASCII, a Windows drive letter that is not a line number, a
+/// declaration the producer never gave a line.
+const SPELLINGS: [(&str, IdentityShape, &str, &str); 8] = [
+    (
+        "/abs/polyglot",
+        IdentityShape::Package,
+        "polyglot",
+        "polyglot",
+    ),
+    (
+        "/abs/polyglot::src/lib.rs",
+        IdentityShape::Module,
+        "lib.rs",
+        "polyglot › src/lib.rs",
+    ),
+    (
+        "/abs/polyglot::src/lib.rs::ferris",
+        IdentityShape::Declaration,
+        "ferris",
+        "polyglot › src/lib.rs › ferris",
+    ),
+    (
+        "/abs/my project::src/my file.rs:3::my fn",
+        IdentityShape::Declaration,
+        "my fn",
+        "my project › src/my file.rs:3 › my fn",
+    ),
+    (
+        "C:\\code\\polyglot::src\\lib.rs:2::ferris",
+        IdentityShape::Declaration,
+        "ferris",
+        "polyglot › src\\lib.rs:2 › ferris",
+    ),
+    (
+        "/abs/日本::src/lib.rs:7::χ",
+        IdentityShape::Declaration,
+        "χ",
+        "日本 › src/lib.rs:7 › χ",
+    ),
+    (
+        "/abs/polyglot::src/lib.rs:9::Outer::inner::deep",
+        IdentityShape::Declaration,
+        "deep",
+        "polyglot › src/lib.rs:9 › Outer::inner::deep",
+    ),
+    (
+        "/abs/polyglot::external::libc::malloc",
+        IdentityShape::External,
+        "malloc",
+        "polyglot › libc::malloc",
+    ),
+];
+
+#[test]
+fn every_closed_spelling_round_trips_byte_exact() {
+    for (coordinate, shape, name, trail) in SPELLINGS {
+        let identity = Identity::parse(coordinate);
+        assert_eq!(
+            identity.coordinate().as_str(),
+            coordinate,
+            "`{coordinate}` must round-trip to the exact bytes the engine accepts"
+        );
+        assert_eq!(identity.shape(), shape, "`{coordinate}` shape");
+        assert_eq!(identity.name(), name, "`{coordinate}` name");
+        assert_eq!(identity.trail_within(None), trail, "`{coordinate}` trail");
+        let dto = IdentityDto::new(&identity);
+        assert_eq!(dto.coordinate, coordinate);
+        assert_eq!(dto.trail, trail);
+    }
+}
+
+#[test]
+fn a_symbol_the_producer_gave_no_line_says_so_instead_of_inventing_one() {
+    let identity = Identity::parse("/abs/polyglot::src/lib.rs::ferris");
+    assert_eq!(identity.line(), None);
+    assert_eq!(
+        identity.path().map(|path| path.as_str().to_owned()),
+        Some("src/lib.rs".to_owned())
+    );
+    assert_eq!(IdentityDto::new(&identity).line, None);
+}
+
+#[test]
+fn a_project_root_that_contains_the_separator_is_recovered_from_the_shelf() {
+    // `/abs/a::b` is a legal directory name and an ambiguous coordinate. The
+    // general parser cannot know; a caller that already holds the shelf row can
+    // say, and then nothing is guessed.
+    let project = ProjectRef::new("/abs/a::b");
+    let coordinate = "/abs/a::b::src/lib.rs:4::ferris";
+    let blind = Identity::parse(coordinate);
+    assert_ne!(blind.project().map(ProjectRef::root), Some("/abs/a::b"));
+    let known = Identity::parse_within(coordinate, &project, IdentityKey::Absent);
+    assert_eq!(known.coordinate().as_str(), coordinate);
+    assert_eq!(known.project().map(ProjectRef::root), Some("/abs/a::b"));
+    assert_eq!(known.name(), "ferris");
+    assert_eq!(known.line().map(LineNumber::get), Some(4));
+}
+
 #[test]
 fn a_nested_symbol_path_keeps_every_segment() {
     let identity = Identity::parse("/abs/p::src/lib.rs:9::Outer::inner::deep");
@@ -122,8 +223,48 @@ fn an_unavailable_lane_never_reads_like_an_empty_success() {
         thin.render(),
         "~lanes exact✓12 names✓12 graph◐3/7 semantic✗ unconfigured"
     );
-    assert_eq!(thin.readiness(), "unavailable");
+    // The graph lane is still working, so that is what the reader is waiting
+    // on. The semantic lane is off in this deployment and is still shown as
+    // unavailable — it just is not the answer to "what is this owner doing".
+    assert_eq!(thin.readiness(), "indexing");
     assert!(thin.has_unavailable());
+    assert!(!thin.has_failed_lane());
+
+    // Every lane the deployment declared finished; one it never configured did
+    // not. That owner is ready, and saying otherwise leaves a healthy project
+    // reporting a fault for the life of the deployment.
+    let unconfigured = CoverageLine::new(
+        &[
+            Coverage::Complete,
+            Coverage::Unavailable {
+                lane: Lane::Semantic,
+                reason: Reason::Unconfigured,
+            },
+        ],
+        Some(12),
+    );
+    assert_eq!(
+        unconfigured.render(),
+        "~lanes exact✓12 names✓12 graph✓12 semantic✗ unconfigured"
+    );
+    assert_eq!(unconfigured.readiness(), "ready");
+    assert!(unconfigured.has_unavailable());
+    assert!(!unconfigured.has_failed_lane());
+
+    // A lane that was asked to answer and could not is a different statement
+    // and must never be folded into the one above.
+    let failed = CoverageLine::new(
+        &[
+            Coverage::Complete,
+            Coverage::Unavailable {
+                lane: Lane::Semantic,
+                reason: Reason::Offline,
+            },
+        ],
+        Some(12),
+    );
+    assert_eq!(failed.readiness(), "unavailable");
+    assert!(failed.has_failed_lane());
 
     let silent = CoverageLine::new(&[], None);
     assert_eq!(silent.render(), "~lanes exact· names· graph· semantic·");
@@ -150,6 +291,39 @@ fn a_fault_names_its_operand_its_cause_and_its_next_step() {
         .expect("search affordance is a tool call");
     assert_eq!(call["name"], "backend.search");
     assert_eq!(call["arguments"]["query"], "ferris");
+}
+
+#[test]
+fn a_refusal_a_peer_flattened_into_a_message_is_still_a_typed_refusal() {
+    // A producer on the pre-typed reply schema sends only the failure's own
+    // text, and the shared client can only call that a protocol failure. Left
+    // alone, a mistyped coordinate reaches a reader as "a frame, DTO, or
+    // identity proof failed admission" — a sentence about wire proofs, in
+    // answer to a question about a name.
+    let operand = Operand::Coordinate(Coordinate::new(DECLARATION));
+    let flattened = backend_client::ClientError::Protocol(
+        backend_library::CommandFailure::NotFound.to_string(),
+    );
+    let fault = Fault::from_client_error(&flattened, operand.clone());
+    assert_eq!(fault.slug(), FaultSlug::NotFound);
+    assert_eq!(fault.cause().slug(), CauseSlug::Absent);
+    assert_eq!(fault.operand().render(), DECLARATION);
+
+    let invalid = backend_client::ClientError::Protocol(
+        backend_library::CommandFailure::InvalidQuery("limit is out of range".to_owned())
+            .to_string(),
+    );
+    let fault = Fault::from_client_error(&invalid, operand.clone());
+    assert_eq!(fault.slug(), FaultSlug::InvalidQuery);
+    assert_eq!(fault.cause().sentence(), "limit is out of range");
+
+    // A message this model does not recognise stays a protocol failure: a
+    // surface must not guess a class it was not told.
+    let unknown =
+        backend_client::ClientError::Protocol("the frame length prefix was truncated".to_owned());
+    let fault = Fault::from_client_error(&unknown, operand);
+    assert_eq!(fault.slug(), FaultSlug::Protocol);
+    assert!(fault.cause().sentence().contains("truncated"));
 }
 
 #[test]
@@ -451,6 +625,65 @@ fn the_shelf_states_readiness_for_every_project() {
 }
 
 #[test]
+fn the_answer_tag_never_overwrites_a_fact_the_payload_already_carries() {
+    // The first spelling of this tag was `kind`, and a page already has one:
+    // its declaration kind. The tag won, `"kind": "function"` silently became
+    // `"kind": "page"`, and nothing said so — a consumer simply read a fact that
+    // was no longer there. The discriminator now has a name no DTO uses, and
+    // this holds that true for every answer rather than for the one that was
+    // noticed.
+    let row = declaration_row();
+    let identity = Identity::parse_with_key(&row.label, row.id.into());
+    let site = SourceSite::new(
+        PackagePath::new("src/lib.rs"),
+        LineNumber::new(2).expect("one-based"),
+    );
+    let page = Page::new(
+        identity,
+        Some(DeclarationKind::Function),
+        Source::Captured {
+            lines: Source::number_lines("pub fn ferris() -> Beacon {}", site.line()),
+            site,
+            truncation: Truncation::Complete,
+        },
+    );
+    let answers = [
+        Answer::Page(Box::new(page)),
+        Answer::Records(Box::new(RecordList::new(
+            "ferris",
+            CoverageLine::new(&[Coverage::Complete], Some(1)),
+            vec![Record::from_row(&row)],
+        ))),
+        Answer::Shelf(Box::new(Shelf::new(KeyTag::from_key(&[0; 32]), Vec::new()))),
+        Answer::Product(Box::new(ProductView::stated("tree", "no node is open"))),
+    ];
+    for answer in &answers {
+        let value = answer_value(answer);
+        assert_eq!(
+            value["answer"], answer.kind(),
+            "every answer states which one it is"
+        );
+        let fields = value.as_object().expect("an answer projects to an object");
+        assert_eq!(
+            fields.keys().filter(|key| key.as_str() == "answer").count(),
+            1
+        );
+    }
+    let page_value = answer_value(&answers[0]);
+    assert_eq!(page_value["answer"], "page");
+    assert_eq!(
+        page_value["kind"], "function",
+        "the declaration kind survives the tag"
+    );
+    assert_eq!(page_value["identity"]["coordinate"], DECLARATION);
+
+    let fault = fault_value(&Fault::usage("limit", "`900` is not a page bound"));
+    assert_eq!(fault["answer"], "fault");
+    assert_eq!(fault["slug"], "usage");
+    assert_eq!(fault["operand"], "limit");
+}
+
+#[test]
 fn the_json_projection_keeps_the_exact_coordinate() {
     let row = declaration_row();
     let record = Record::from_row(&row);
@@ -487,6 +720,61 @@ fn every_registry_row_has_exactly_one_grammar() {
     let before = tools.len();
     tools.dedup();
     assert_eq!(before, tools.len(), "two registry rows share one tool name");
+}
+
+#[test]
+fn every_registry_row_is_reachable_by_both_a_cli_spelling_and_a_tool_name() {
+    // The two surfaces address the same rows through different vocabularies.
+    // Neither vocabulary is maintained by hand, and this is what says so: a row
+    // that lost one of them fails here rather than becoming unreachable on one
+    // surface and nobody noticing.
+    for spec in backend_library::COMMANDS {
+        let grammar = grammar_for(spec.name)
+            .unwrap_or_else(|| panic!("`{}` has no CLI spelling", spec.name));
+        let by_tool = grammar_for_tool(grammar.tool())
+            .unwrap_or_else(|| panic!("`{}` has no MCP tool name", spec.name));
+        assert_eq!(
+            by_tool, grammar,
+            "`{}` resolves to two different rows",
+            spec.name
+        );
+        assert_eq!(grammar.domain(), Some(spec.domain));
+        assert_eq!(
+            grammar.is_write(),
+            spec.mutation == backend_library::CommandMutation::Write
+        );
+        assert!(
+            !grammar.is_destructive() || grammar.is_write(),
+            "`{}` cannot take something away without writing",
+            spec.name
+        );
+    }
+    let grouped: usize = domains().iter().map(|domain| grammars_in(*domain).len()).sum();
+    assert_eq!(
+        grouped,
+        GRAMMARS.len(),
+        "a row whose domain is not in the display order would vanish from help"
+    );
+}
+
+#[test]
+fn the_five_removal_rows_are_the_only_destructive_ones() {
+    let destructive: Vec<&str> = GRAMMARS
+        .iter()
+        .filter(|grammar| grammar.is_destructive())
+        .map(|grammar| grammar.name())
+        .collect();
+    assert_eq!(
+        destructive,
+        vec![
+            "remove",
+            "unsubscribe",
+            "project-delete",
+            "project-remove",
+            "tree-close"
+        ],
+        "an agent gates on destructiveHint; changing this set is a product decision"
+    );
 }
 
 #[test]

@@ -349,6 +349,10 @@ fn unix_transport_executes_one_correlated_request() {
 
 #[cfg(unix)]
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one case per forged-identity variant keeps the proof readable"
+)]
 fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
     use std::os::unix::net::UnixStream;
 

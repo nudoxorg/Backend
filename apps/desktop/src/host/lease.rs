@@ -20,6 +20,13 @@ const ATTACH_ATTEMPTS: u32 = 40;
 /// How long to wait between attach attempts.
 const ATTACH_DELAY: Duration = Duration::from_millis(50);
 
+/// How long a liveness probe waits for an owner to complete its handshake.
+///
+/// Short on purpose. This is not a request; it is the question "is anyone
+/// actually serving this path?", and an owner that cannot answer it inside a
+/// second is not one this process should hand its startup to.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(750);
+
 /// How this GUI reached the local service.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostMode {
@@ -84,8 +91,27 @@ impl DesktopHost {
         ]
     }
 
+    /// Returns whether a live owner is answering on the workspace endpoint.
+    ///
+    /// A successful `connect` is not proof. A socket file left behind by a
+    /// dead owner still accepts connections on macOS, and a process that took
+    /// that as proof would skip embedding, connect to nothing, and then sit in
+    /// a thirty-second read for every bootstrap attempt — minutes of a window
+    /// that never opens and never says why. So liveness is proven the only way
+    /// it can be: by completing the peer handshake, under a short bound.
     fn endpoint_is_live(paths: &WorkspacePaths) -> bool {
-        std::os::unix::net::UnixStream::connect(paths.endpoint()).is_ok()
+        let endpoint = paths.endpoint();
+        let Ok(stream) = std::os::unix::net::UnixStream::connect(endpoint) else {
+            return false;
+        };
+        if stream
+            .set_read_timeout(Some(PROBE_TIMEOUT))
+            .and_then(|()| stream.set_write_timeout(Some(PROBE_TIMEOUT)))
+            .is_err()
+        {
+            return false;
+        }
+        backend_replication::AuthenticatedLocalPeer::authenticate(&stream, endpoint).is_ok()
     }
 
     /// Waits for the owner that refused this process to publish its endpoint.
@@ -149,13 +175,19 @@ pub enum HostError {
     Runtime(RuntimeError),
     /// The compiled service could not start.
     Service(ProcessError),
-    /// Another live process holds the workspace lock and never bound its endpoint.
+    /// This process could not become the owner, and no owner ever answered.
+    ///
+    /// Two different situations reach here and the message must not claim to
+    /// know which: another live process may hold the workspace lock and be
+    /// slow to bind, or the workspace itself may be unreadable by this build.
+    /// The service's own refusal is carried verbatim because it is the only
+    /// part of this that says which.
     Contended {
-        /// Endpoint this process waited for.
+        /// Endpoint this process waited on.
         endpoint: PathBuf,
-        /// Workspace directory whose lock is held elsewhere.
+        /// Workspace directory this process tried to own.
         data: PathBuf,
-        /// The owner's own refusal, retained verbatim.
+        /// The service's own refusal, retained verbatim.
         refusal: Box<ProcessError>,
     },
 }
@@ -182,7 +214,7 @@ impl fmt::Display for HostError {
                 refusal,
             } => write!(
                 formatter,
-                "another process owns {} and never bound {}: {refusal}",
+                "could not own {} and nothing answered on {}: {refusal}",
                 data.display(),
                 endpoint.display()
             ),

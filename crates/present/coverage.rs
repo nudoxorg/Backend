@@ -167,18 +167,37 @@ impl CoverageLine {
         self.lanes.iter().any(|lane| lane.is_unavailable())
     }
 
+    /// Returns whether any lane failed work it was asked to do.
+    ///
+    /// A lane the deployment never configured is unavailable without having
+    /// failed. It is still rendered `✗ unconfigured` on the `~lanes` line, and
+    /// [`Self::has_unavailable`] still reports it; it just does not make the
+    /// one-word summary claim that something went wrong.
+    #[must_use]
+    pub fn has_failed_lane(&self) -> bool {
+        self.lanes.iter().any(|lane| match lane.state {
+            LaneState::Unavailable { reason } => !reason.is_outside_declared_scope(),
+            LaneState::Complete | LaneState::Partial { .. } | LaneState::Unobserved => false,
+        })
+    }
+
     /// Returns whether every lane covered its declared scope.
+    ///
+    /// A lane the deployment never configured has no declared scope to cover,
+    /// so it neither completes nor withholds completeness.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.lanes
-            .iter()
-            .all(|lane| lane.state == LaneState::Complete)
+        self.lanes.iter().all(|lane| match lane.state {
+            LaneState::Complete => true,
+            LaneState::Unavailable { reason } => reason.is_outside_declared_scope(),
+            LaneState::Partial { .. } | LaneState::Unobserved => false,
+        })
     }
 
     /// Returns the single-word readiness summary.
     #[must_use]
     pub fn readiness(&self) -> &'static str {
-        if self.has_unavailable() {
+        if self.has_failed_lane() {
             "unavailable"
         } else if self
             .lanes

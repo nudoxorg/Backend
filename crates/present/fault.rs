@@ -565,6 +565,8 @@ impl Fault {
     pub fn from_client_error(error: &ClientError, operand: Operand) -> Self {
         match error {
             ClientError::CommandFailed(failure) => Self::from_command_failure(failure, operand),
+            ClientError::Protocol(message) => Self::recovered(message, &operand)
+                .unwrap_or_else(|| Self::from_simple_client_error(error, operand)),
             ClientError::BasisMismatch { expected, observed } => Self::new(
                 FaultSlug::WrongBasis,
                 Operand::Basis {
@@ -588,6 +590,59 @@ impl Fault {
             ),
             other => Self::from_simple_client_error(other, operand),
         }
+    }
+
+    /// Recovers a typed refusal that a peer flattened into a message.
+    ///
+    /// `CommandReply::Error` is the pre-typed reply schema, and a producer that
+    /// still answers with it sends only the failure's own `Display` text. The
+    /// shared client can do nothing but call that a protocol failure — so the
+    /// commonest refusal an agent can provoke, asking for a coordinate no
+    /// revision publishes, reaches a reader as *"a frame, DTO, or identity
+    /// proof failed admission: library record not found"*. That is both wrong
+    /// and unactionable.
+    ///
+    /// The comparison below is against [`CommandFailure`]'s own rendering, not
+    /// against a spelling invented here, so it cannot silently stop matching if
+    /// the library rewords a failure: the candidate text is computed from the
+    /// same value the producer stringified. A message that matches nothing stays
+    /// a protocol failure, which is the honest answer for a peer this model does
+    /// not understand.
+    ///
+    /// The real repair belongs to the producer — `CommandFailure` already
+    /// converts from the library's error type — and this recovery becomes dead
+    /// weight the day it lands. It is here because a surface must not print an
+    /// admission failure at a person who mistyped a name.
+    fn recovered(message: &str, operand: &Operand) -> Option<Self> {
+        let closed = [
+            CommandFailure::NotFound,
+            CommandFailure::CursorMismatch,
+            CommandFailure::SequenceOverflow,
+            CommandFailure::MutationRequiresOwner,
+        ];
+        if let Some(failure) = closed
+            .into_iter()
+            .find(|failure| failure.to_string() == message)
+        {
+            return Some(Self::from_command_failure(&failure, operand.clone()));
+        }
+        let invalid = CommandFailure::InvalidQuery(String::new()).to_string();
+        if let Some(detail) = message.strip_prefix(&invalid) {
+            return Some(Self::from_command_failure(
+                &CommandFailure::InvalidQuery(detail.to_owned()),
+                operand.clone(),
+            ));
+        }
+        // A flattened wrong basis lost both revisions on the way out, so the
+        // operand stays the one the caller supplied rather than two invented
+        // digests.
+        let moved = CommandFailure::WrongBasis {
+            expected: ViewRevision::from(backend_library::view_state_root(&[])),
+            observed: ViewRevision::from(backend_library::view_state_root(&[])),
+        };
+        (moved.to_string() == message).then(|| {
+            Self::from_command_failure(&moved, operand.clone()).about(operand.clone())
+        })
     }
 
     fn from_simple_client_error(error: &ClientError, operand: Operand) -> Self {

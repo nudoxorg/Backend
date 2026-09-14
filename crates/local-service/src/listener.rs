@@ -385,7 +385,18 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
                 last_progress = Instant::now();
                 continue;
             }
-            let _ = self.idle_window_elapsed(last_progress);
+            if self.idle_window_elapsed(last_progress) {
+                // Nothing has been connected and no owner work has progressed
+                // for the whole window. A detached daemon has no parent to
+                // reap it, so this branch is the only thing between one
+                // abandoned surface and a socket per workspace that lives
+                // until the machine restarts. Setting the stop flag rather
+                // than only breaking means a host holding a
+                // `ListenerShutdown` observes the retirement instead of
+                // waiting on a loop that already ended.
+                self.stop.store(true, Ordering::Release);
+                break;
+            }
             thread::sleep(self.config.poll_interval);
         }
         self.finish_workers();

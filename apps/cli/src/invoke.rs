@@ -153,14 +153,13 @@ pub fn help() -> String {
     out
 }
 
+/// One listing line: the usage, then the registry's own sentence, verbatim.
+///
+/// The *when to use it* sentence belongs to the long help and to the MCP tool
+/// description; reprinting both here would make `--help` a page nobody reads.
 fn help_line(grammar: CommandGrammar) -> String {
-    let description = grammar
-        .spec()
-        .map_or("", |spec| spec.description)
-        .split('.')
-        .next()
-        .unwrap_or_default();
-    format!("  {:<38}  {description}.\n", grammar.usage())
+    let description = grammar.spec().map_or("", |spec| spec.description);
+    format!("  {:<38}  {description}\n", grammar.usage())
 }
 
 /// Renders the long help for one command, including when to reach for it.

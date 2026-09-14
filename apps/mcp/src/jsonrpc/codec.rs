@@ -44,26 +44,6 @@ pub(super) fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'
         .ok_or_else(|| RpcError::invalid(format!("{key} must be a non-empty string")))
 }
 
-pub(super) fn required_string<'a>(
-    object: &'a Map<String, Value>,
-    key: &str,
-) -> Result<&'a str, RpcError> {
-    string(object, key)
-}
-
-pub(super) fn optional_string<'a>(
-    object: &'a Map<String, Value>,
-    key: &str,
-) -> Result<Option<&'a str>, RpcError> {
-    match object.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value)),
-        Some(_) => Err(RpcError::invalid(format!(
-            "{key} must be a non-empty string"
-        ))),
-    }
-}
-
 pub(super) fn limit(arguments: &Map<String, Value>) -> Result<u16, RpcError> {
     match arguments.get("limit") {
         None => Ok(50),

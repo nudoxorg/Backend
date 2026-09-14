@@ -30,15 +30,6 @@ pub(crate) struct Stiffness(f32);
 impl Stiffness {
     /// A panel width or a sheet height: firm, arrives in about 240 ms.
     pub(crate) const PANEL: Self = Self(220.0);
-    /// A selection nib or a chevron: quick, arrives in about 140 ms.
-    pub(crate) const NIB: Self = Self(620.0);
-    /// A disclosure or a large reveal: softer, arrives in about 320 ms.
-    pub(crate) const REVEAL: Self = Self(150.0);
-
-    /// Names a stiffness directly.
-    pub(crate) const fn new(value: f32) -> Self {
-        Self(value)
-    }
 
     /// Returns the stiffness constant.
     pub(crate) const fn get(self) -> f32 {
@@ -77,11 +68,6 @@ impl Spring {
     /// Returns the value the spring is travelling toward.
     pub(crate) const fn target(self) -> f32 {
         self.target
-    }
-
-    /// Returns the current velocity, in units per second.
-    pub(crate) const fn velocity(self) -> f32 {
-        self.velocity
     }
 
     /// Returns whether the spring has arrived and needs no further frames.

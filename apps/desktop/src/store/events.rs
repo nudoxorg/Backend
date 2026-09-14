@@ -7,7 +7,7 @@
 //! status bar does can travel back. Views subscribe; stores never subscribe to
 //! views.
 
-use crate::presentation::fault::Fault;
+use backend_present::Fault;
 
 /// Something changed in the shelf, the live feed, or the engine's health.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,9 +59,16 @@ pub(crate) enum JobsEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ShellEvent {
     /// A panel opened, closed, or resized.
-    LayoutChanged,
+    Layout,
     /// A persisted preference changed.
-    PreferencesChanged,
+    Preferences,
     /// A transient notice was raised or dismissed.
-    NoticeChanged,
+    Notice,
+}
+
+/// Something changed in the registry catalog behind the add-a-project field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CatalogEvent {
+    /// A catalog lookup started, answered, or failed.
+    Changed,
 }

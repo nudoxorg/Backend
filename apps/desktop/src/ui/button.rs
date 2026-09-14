@@ -80,32 +80,6 @@ pub(crate) fn icon_button(
         .child(super::icon::sized(theme, mark, 13.0, Paint::TextDim))
 }
 
-/// Returns a compact square button holding a single glyph.
-pub(crate) fn glyph_button(
-    theme: &Theme,
-    id: impl Into<SharedString>,
-    glyph: &str,
-) -> Stateful<Div> {
-    div()
-        .id(ElementId::Name(id.into()))
-        .flex()
-        .flex_none()
-        .w(px(22.0))
-        .h(px(22.0))
-        .items_center()
-        .justify_center()
-        .rounded(radius(Radius::Small))
-        .text_size(type_size(TypeScale::Small))
-        .text_color(theme.paint(Paint::TextDim))
-        .cursor_pointer()
-        .hover(|style| {
-            style
-                .bg(theme.paint(Paint::Hover))
-                .text_color(theme.paint(Paint::TextStrong))
-        })
-        .child(glyph.to_owned())
-}
-
 /// Returns the keyboard hint drawn beside an affordance.
 pub(crate) fn key_hint(theme: &Theme, keys: &str) -> Div {
     div()

@@ -26,8 +26,8 @@ use crate::record::{Record, RecordList};
 use crate::shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
 use crate::signature::Signature;
 use backend_library::{
-    Document, Outline, Row, RowId, RowState, SourceAvailability, SourceExcerpt, SymbolKey,
-    ViewSnapshot,
+    Coverage, Document, Outline, Row, RowId, RowState, SourceAvailability, SourceExcerpt,
+    SymbolKey, ViewRoot, ViewSnapshot,
 };
 use std::collections::BTreeMap;
 
@@ -145,13 +145,17 @@ fn member_groups(rows: &[Row], parent: SymbolKey) -> Box<[MemberGroup]> {
         .map(|row| {
             let identity = Identity::parse_with_key(&row.label, row.id.into());
             let language = identity.language();
-            Member::new(
+            let member = Member::new(
                 identity,
                 row.kind,
                 row.signature
                     .as_ref()
                     .map(|text| Signature::tokenize(text, language)),
-            )
+            );
+            match summary_of(row) {
+                Some(text) => member.with_summary(text),
+                None => member,
+            }
         })
         .collect::<Vec<_>>();
     MemberGroup::group(members)
@@ -172,11 +176,28 @@ fn relation_groups(rows: &[Row], centre: SymbolKey) -> Box<[RelationGroup]> {
 /// Builds one result page from a bounded snapshot.
 #[must_use]
 pub fn record_list(query: &str, snapshot: &ViewSnapshot) -> RecordList {
-    let rows = snapshot.root.rows();
-    let coverage = CoverageLine::new(
+    record_list_from_rows(
+        query,
+        snapshot.root.rows(),
         snapshot.root.coverage(),
-        u64::try_from(rows.len()).ok(),
-    );
+        snapshot.next.is_some(),
+    )
+}
+
+/// Builds one result page from rows a surface already holds.
+///
+/// The desktop reads rows and coverage out of a reply without retaining the
+/// snapshot they arrived in; it calls this so its result rows are derived by
+/// the same function the CLI and MCP surfaces use rather than by a second
+/// projection that could drift from it.
+#[must_use]
+pub fn record_list_from_rows(
+    query: &str,
+    rows: &[Row],
+    coverage: &[Coverage],
+    more: bool,
+) -> RecordList {
+    let line = CoverageLine::new(coverage, u64::try_from(rows.len()).ok());
     let records = rows
         .iter()
         .map(|row| {
@@ -187,7 +208,7 @@ pub fn record_list(query: &str, snapshot: &ViewSnapshot) -> RecordList {
             }
         })
         .collect::<Vec<_>>();
-    RecordList::new(query, coverage, records).with_more(snapshot.next.is_some())
+    RecordList::new(query, line, records).with_more(more)
 }
 
 fn summary_of(row: &Row) -> Option<String> {
@@ -205,7 +226,34 @@ fn summary_of(row: &Row) -> Option<String> {
 /// Builds the shelf from one packages snapshot.
 #[must_use]
 pub fn shelf_from_snapshot(snapshot: &ViewSnapshot, revision: KeyTag) -> Shelf {
-    let rows = snapshot.root.rows();
+    shelf_from_root(&snapshot.root, revision)
+}
+
+/// Builds the shelf from one immutable view root.
+///
+/// A project reaches the shelf two ways. Normally the owner publishes a
+/// package row for it, and that row carries the readiness the engine actually
+/// committed. But a root can also carry declarations whose project has no
+/// package row yet — a freshly indexed folder whose package row has not landed
+/// on this revision. Dropping those would make a window that holds thousands
+/// of readable declarations render an empty shelf, so they are synthesised
+/// here from the declarations themselves and marked ready, which is exactly
+/// what they are: readable, with a known count.
+#[must_use]
+pub fn shelf_from_root(root: &ViewRoot, revision: KeyTag) -> Shelf {
+    let rows = root.rows();
+    let counts = language_counts(rows);
+    let mut entries = rows
+        .iter()
+        .filter(|row| matches!(row.id, RowId::Package(_)))
+        .map(|row| shelf_entry(row, &counts))
+        .collect::<Vec<_>>();
+    synthesise_loose(&mut entries, &counts);
+    entries.sort_by(|left, right| left.identity().name().cmp(right.identity().name()));
+    Shelf::new(revision, entries)
+}
+
+fn language_counts(rows: &[Row]) -> BTreeMap<String, BTreeMap<Language, u64>> {
     let mut counts: BTreeMap<String, BTreeMap<Language, u64>> = BTreeMap::new();
     for row in rows {
         let identity = Identity::parse(&row.label);
@@ -220,12 +268,31 @@ pub fn shelf_from_snapshot(snapshot: &ViewSnapshot, revision: KeyTag) -> Shelf {
                 .or_default() += 1;
         }
     }
-    let entries = rows
-        .iter()
-        .filter(|row| matches!(row.id, RowId::Package(_)))
-        .map(|row| shelf_entry(row, &counts))
-        .collect::<Vec<_>>();
-    Shelf::new(revision, entries)
+    counts
+}
+
+fn synthesise_loose(
+    entries: &mut Vec<ShelfEntry>,
+    counts: &BTreeMap<String, BTreeMap<Language, u64>>,
+) {
+    for (root, per_language) in counts {
+        let already = entries.iter().any(|entry| {
+            entry
+                .identity()
+                .project()
+                .is_some_and(|project| project.root() == root)
+        });
+        if already {
+            continue;
+        }
+        let languages = per_language
+            .iter()
+            .map(|(language, count)| LanguageCount::new(*language, *count))
+            .collect::<Vec<_>>();
+        entries.push(
+            ShelfEntry::new(Identity::parse(root), Readiness::Ready).with_languages(languages),
+        );
+    }
 }
 
 fn shelf_entry(row: &Row, counts: &BTreeMap<String, BTreeMap<Language, u64>>) -> ShelfEntry {
@@ -248,10 +315,19 @@ fn shelf_entry(row: &Row, counts: &BTreeMap<String, BTreeMap<Language, u64>>) ->
     ShelfEntry::new(identity, readiness_of(row, published)).with_languages(languages)
 }
 
+/// Reads one project's readiness from the row the owner published.
+///
+/// `published` is how many declarations of this project the *same* reply
+/// carried, and it is used for the language tags and nothing else. It must not
+/// decide readiness: the shelf reply carries package rows and no declarations,
+/// so a count of zero means "this reply did not say", not "nothing is indexed".
+/// Reading it as the latter is how a project with eighteen readable
+/// declarations came to render as `○ polyglot requested` next to a `health`
+/// line that said `ready · 18 row(s)`. The owner's own [`RowState`] is the
+/// authority, and it is the only thing consulted here.
 fn readiness_of(row: &Row, published: u64) -> Readiness {
     match row.state {
-        RowState::Ready if published > 0 => Readiness::Ready,
-        RowState::Ready => Readiness::Requested,
+        RowState::Ready => Readiness::Ready,
         RowState::Loading => Readiness::Indexing {
             rows: RowCount::new(published),
         },

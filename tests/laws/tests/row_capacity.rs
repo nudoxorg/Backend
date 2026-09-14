@@ -6,8 +6,8 @@
 //! failure is a producer contract violation, not a storage accident.
 //!
 //! Before these laws existed the bound was implicit. `backend-local-service`
-//! admitted source records up to 1 MiB while the tree could never store one
-//! above 64 KiB, so indexing `memchr 2.8.3` failed on
+//! admitted source records up to 1 `MiB` while the tree could never store one
+//! above 64 `KiB`, so indexing `memchr 2.8.3` failed on
 //! `src/arch/x86_64/avx2/memchr.rs` - a 65 686 byte row against a 65 464 byte
 //! capacity - with an opaque `workspace relation node was rejected` that named
 //! neither the file, the relation, nor the reason.
@@ -19,6 +19,13 @@
 //! rejected by *both* admission paths, because a producer that reaches the
 //! tree through the bulk builder must not be able to route around the check
 //! that the incremental builder applies.
+
+#![allow(
+    clippy::panic,
+    reason = "a law reports a violated contract by panicking with the exact \
+              measurement that violated it; propagating an error instead would \
+              hide the number the reader needs"
+)]
 
 use backend_version::{
     CANONICAL_CUT_POLICY_VERSION, CANONICAL_TREE_ABI, CutPolicy, DEFAULT_CUT_POLICY,
@@ -176,4 +183,133 @@ fn the_policy_tags_the_capacity_belongs_to_are_the_published_ones() {
         DEFAULT_CUT_POLICY.max_encoded_bytes(),
         CutPolicy::MAX_ENCODED_BYTES
     );
+}
+
+/// Laws for the shedding ladder that keeps one source row inside a node.
+///
+/// A producer cannot refuse a file just because it is dense, and it cannot
+/// hand the tree a row the tree must reject. The only honest outcome is a row
+/// that states, in typed form, how much of the extraction it kept.
+///
+/// The ladder sheds excerpts, then prose, then whole declarations. The last
+/// rung is the one that hides a defect: the retention label it writes —
+/// `Truncated { retained, extracted }` — is itself two fixed-width counts on
+/// the wire, so a prefix chosen while wearing the *previous* rung's label fits
+/// by exactly the bytes that label does not carry. The oracle here is the
+/// published capacity and the relation's own encoder; the mutation case is a
+/// declaration set small enough per item that the ladder must reach the last
+/// rung rather than settling on names-only.
+mod shedding {
+    use backend_compile::{DeclarationKind, SourceDeclaration};
+    use backend_engine::{
+        DeclarationRetention, ProductSourceLanguage, ProductSourceRecord, ProductSourceRelation,
+        Relation,
+    };
+
+    const PROJECT: [u8; 32] = [5; 32];
+
+    fn declarations(count: usize) -> Vec<SourceDeclaration> {
+        (0..count)
+            .map(|index| {
+                SourceDeclaration::new(
+                    format!("declaration_{index}"),
+                    DeclarationKind::Function,
+                    1,
+                    "fn f()",
+                    "",
+                )
+                .unwrap_or_else(|error| panic!("checked declaration {index}: {error}"))
+            })
+            .collect()
+    }
+
+    /// Independently measures the encoded value bytes of one record.
+    fn encoded_value_bytes(record: &ProductSourceRecord) -> usize {
+        let mut bytes = Vec::new();
+        ProductSourceRelation::encode_value(record, &mut bytes);
+        bytes.len()
+    }
+
+    fn shed(count: usize) -> ProductSourceRecord {
+        ProductSourceRecord::file_within_row_capacity(
+            PROJECT,
+            "src/dense.rs",
+            ProductSourceLanguage::Rust,
+            [1; 32],
+            [2; 32],
+            declarations(count),
+        )
+        .unwrap_or_else(|error| {
+            panic!("the shedding ladder refused {count} declarations outright: {error}")
+        })
+    }
+
+    #[test]
+    fn every_rung_of_the_ladder_produces_a_row_the_tree_admits() {
+        // 4 000 small declarations exceed one node even with every excerpt,
+        // signature and doc comment already gone, so this walks the ladder to
+        // its last rung. Below the fix the last rung overshot by the width of
+        // the retention counts and the whole call failed.
+        for count in [1usize, 64, 512, 2_000, 4_000, 8_000] {
+            let record = shed(count);
+            let bytes = encoded_value_bytes(&record);
+            assert!(
+                bytes <= ProductSourceRecord::ROW_VALUE_CAPACITY,
+                "a shed row for {count} declarations is {bytes} bytes, above the \
+                 {} byte published capacity",
+                ProductSourceRecord::ROW_VALUE_CAPACITY
+            );
+        }
+    }
+
+    #[test]
+    fn a_truncated_row_states_exactly_what_it_dropped() {
+        let extracted = 8_000;
+        let record = shed(extracted);
+        let file = record
+            .file_fields()
+            .unwrap_or_else(|| panic!("a shed source row is not a file record"));
+        let DeclarationRetention::Truncated(counts) = file.retention else {
+            panic!(
+                "8 000 declarations did not reach the truncating rung; the law \
+                 cannot see the defect it exists for, retention was {:?}",
+                file.retention
+            )
+        };
+        assert_eq!(
+            u32::try_from(extracted).unwrap_or(u32::MAX),
+            counts.extracted(),
+            "a truncated row misreported how much was extracted"
+        );
+        assert!(
+            counts.retained() < counts.extracted(),
+            "a row labelled truncated retained everything"
+        );
+        assert_eq!(
+            u64::from(counts.retained()),
+            u64::try_from(file.declarations.len()).unwrap_or(u64::MAX),
+            "the retention label and the retained declarations disagree"
+        );
+    }
+
+    #[test]
+    fn shedding_is_monotone_in_the_extracted_count() {
+        // A denser file may keep fewer declarations, never more. A ladder that
+        // picked its prefix against the wrong label would violate this at the
+        // rung where the label changes.
+        let mut previous = u32::MAX;
+        for count in [2_000usize, 4_000, 8_000, 16_000] {
+            let record = shed(count);
+            let file = record
+                .file_fields()
+                .unwrap_or_else(|| panic!("a shed source row is not a file record"));
+            let retained = u32::try_from(file.declarations.len()).unwrap_or(u32::MAX);
+            assert!(
+                retained <= previous,
+                "a denser file retained more declarations ({retained}) than a \
+                 sparser one ({previous}) at {count} extracted"
+            );
+            previous = retained;
+        }
+    }
 }

@@ -12,8 +12,8 @@
 
 use backend_client::{ClientError, Session};
 use backend_library::{
-    CommandReply, Coverage, Document, HealthReport, Outline, PackageReference, QueryLimit, Row,
-    SemanticVersionRecord, SurfaceCommand, SurfaceReply, SymbolKey,
+    CommandReply, Coverage, Document, HealthReport, QueryLimit, Row, SurfaceCommand, SurfaceReply,
+    SymbolKey,
 };
 use std::path::{Path, PathBuf};
 
@@ -27,32 +27,10 @@ pub(crate) enum Request {
         /// Bounded page size.
         limit: QueryLimit,
     },
-    /// Resolve a canonical name.
-    Names {
-        /// Name text or prefix.
-        text: String,
-        /// Bounded page size.
-        limit: QueryLimit,
-    },
-    /// Read one declaration document by coordinate.
-    Document {
-        /// Exact coordinate.
-        coordinate: String,
-    },
     /// Read one declaration document by stable identity.
     DocumentSymbol {
         /// Admitted declaration key.
         symbol: SymbolKey,
-    },
-    /// Read one declaration's captured source.
-    Source {
-        /// Exact coordinate.
-        coordinate: String,
-    },
-    /// Read one package outline.
-    Outline {
-        /// Project coordinate.
-        coordinate: String,
     },
     /// Read graph neighbours for one declaration.
     Graph {
@@ -81,31 +59,6 @@ pub(crate) enum Request {
         /// The closed surface command.
         command: Box<SurfaceCommand>,
     },
-    /// Read immutable compiler generation history for one package.
-    SemanticVersions {
-        /// Package reference.
-        package: Box<PackageReference>,
-    },
-}
-
-impl Request {
-    /// Returns the operand a fault should blame when this request fails.
-    pub(crate) fn operand_spelling(&self) -> String {
-        match self {
-            Self::Search { text, .. } | Self::Names { text, .. } => text.clone(),
-            Self::Document { coordinate }
-            | Self::Source { coordinate }
-            | Self::Outline { coordinate }
-            | Self::Index { coordinate }
-            | Self::Remove { coordinate } => coordinate.clone(),
-            Self::DocumentSymbol { symbol } | Self::Graph { symbol } | Self::Related { symbol } => {
-                backend_library::encode_id(symbol.as_bytes())
-            }
-            Self::Health => "engine health".to_owned(),
-            Self::Surface { command } => format!("{:?}", command.id()),
-            Self::SemanticVersions { package } => package.as_str().to_owned(),
-        }
-    }
 }
 
 /// A page of rows with the coverage the service vouched for.
@@ -139,16 +92,12 @@ pub(crate) enum Outcome {
     Rows(RowPage),
     /// One declaration document.
     Document(Box<Document>),
-    /// One package outline.
-    Outline(Box<Outline>),
     /// A durable intent was accepted.
     Accepted,
     /// Bounded health, coverage, and capability state.
     Health(Box<HealthReport>),
     /// A durable product-surface result.
     Surface(Box<SurfaceReply>),
-    /// Immutable compiler generations.
-    Versions(Vec<SemanticVersionRecord>),
 }
 
 /// Runs one request against the local service endpoint.
@@ -163,24 +112,15 @@ pub(crate) fn run(endpoint: &Path, request: &Request) -> Result<Outcome, ClientE
 fn dispatch(session: &mut Session, request: &Request) -> Result<Outcome, ClientError> {
     match request {
         Request::Search { text, limit } => rows(session.search(text, limit.get())?),
-        Request::Names { text, limit } => rows(session.names(text, limit.get())?),
-        Request::Document { coordinate } => document(session.document(coordinate)?),
         Request::DocumentSymbol { symbol } => document(session.document_symbol(*symbol)?),
-        Request::Source { coordinate } => document(session.source(coordinate)?),
-        Request::Outline { coordinate } => outline(session.outline(coordinate)?),
         Request::Graph { symbol } => rows(session.graph_symbol(*symbol)?),
         Request::Related { symbol } => rows(session.related_symbol(*symbol)?),
-        Request::Index { coordinate } => accepted(session.index(coordinate)?),
-        Request::Remove { coordinate } => accepted(session.remove(coordinate)?),
+        Request::Index { coordinate } => accepted(&session.index(coordinate)?),
+        Request::Remove { coordinate } => accepted(&session.remove(coordinate)?),
         Request::Health => Ok(Outcome::Health(Box::new(session.health()?))),
         Request::Surface { command } => Ok(Outcome::Surface(Box::new(
             session.surface(command.as_ref().clone())?,
         ))),
-        Request::SemanticVersions { package } => Ok(Outcome::Versions(
-            session
-                .semantic_versions(package.as_ref().clone())?
-                .into_vec(),
-        )),
     }
 }
 
@@ -205,14 +145,7 @@ fn document(reply: backend_library::ReplyDto) -> Result<Outcome, ClientError> {
     Ok(Outcome::Document(Box::new(document)))
 }
 
-fn outline(reply: backend_library::ReplyDto) -> Result<Outcome, ClientError> {
-    let CommandReply::Outline(outline) = reply.reply else {
-        return Err(shape("outline"));
-    };
-    Ok(Outcome::Outline(Box::new(outline)))
-}
-
-fn accepted(reply: backend_library::ReplyDto) -> Result<Outcome, ClientError> {
+fn accepted(reply: &backend_library::ReplyDto) -> Result<Outcome, ClientError> {
     match reply.reply {
         CommandReply::Added(_) | CommandReply::Removed(_) => Ok(Outcome::Accepted),
         _ => Err(shape("intent")),

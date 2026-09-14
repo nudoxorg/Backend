@@ -592,7 +592,7 @@ fn markdown_output_is_the_shared_renderer_and_json_is_the_typed_dto() {
     );
     let json = render::json(&answer);
     let value: serde_json::Value = serde_json::from_str(&json).expect("typed DTO");
-    assert_eq!(value["kind"], "records");
+    assert_eq!(value["answer"], "records");
     assert_eq!(value["query"], "ferris");
     assert!(value["coverage"].is_array());
     assert!(

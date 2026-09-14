@@ -25,15 +25,15 @@ use gpui::{
 impl Workspace {
     /// Returns the status bar row.
     pub(super) fn status_bar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let workspace = self.workspace.read(cx);
-        let rows = workspace.row_count();
-        let revision = workspace.revision().to_owned();
-        let mode = workspace.mode();
-        let endpoint = workspace.endpoint().spelling();
-        let hydrating = workspace.hydrating();
-        let fault = workspace.fault().cloned();
-        let lanes: Vec<_> = workspace.coverage().to_vec();
-        let totals = workspace.capability_totals();
+        let engine = self.engine.read(cx);
+        let rows = engine.row_count();
+        let revision = engine.revision().to_owned();
+        let mode = engine.mode();
+        let endpoint = engine.endpoint().spelling();
+        let hydrating = engine.hydrating();
+        let fault = engine.fault().cloned();
+        let lanes: Vec<_> = engine.coverage().to_vec();
+        let totals = engine.capability_totals();
         div()
             .flex_none()
             .h(px(Chrome::STATUS))

@@ -312,12 +312,51 @@ impl FileStore {
 
     /// Reads and admits a complete immutable closure manifest.
     ///
+    /// Every relation node referenced as a child by a node in this closure
+    /// must also be *in* this closure. That is the right rule for a closure
+    /// that has to travel — a replication payload is complete or it is
+    /// useless — and the wrong rule for a workspace closure, which is written
+    /// root-only against a node-addressed store. Use
+    /// [`Self::read_workspace_root_closure`] for the latter.
+    ///
     /// # Errors
     ///
     /// Returns [`StoreError::Corrupt`] for a missing or malformed object and
     /// [`StoreError::Io`] for other filesystem failures.
     pub fn read_closure(&self, id: ClosureId) -> Result<ClosureManifest, StoreError> {
         self.read_closure_inner(id, true)
+    }
+
+    /// Reads a closure written by the workspace root-only publication path.
+    ///
+    /// [`Self::write_workspace_root_closure`] admits a workspace closure with
+    /// `admit_objects_with_registry`: every retained object is checked, and
+    /// the relation *children* of those objects are deliberately not required
+    /// to be members, because a path-copying persistent tree retains untouched
+    /// canonical nodes in the node store rather than re-listing them in every
+    /// closure. Reading the same closure back through [`Self::read_closure`]
+    /// applies the complete-closure rule instead and rejects exactly those
+    /// workspaces whose relation tree grew past a single node — a workspace
+    /// with one leaf has no child edges to miss, so the asymmetry stays
+    /// invisible until a project is large enough to need an internal node.
+    ///
+    /// This reader is the exact counterpart of the writer. It still admits
+    /// every retained object through the relation registry and still checks
+    /// that the reconstructed manifest hashes to `id`; only the
+    /// child-membership rule, which a root-only closure never claimed to
+    /// satisfy, is not applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Corrupt`] for a missing or malformed object or a
+    /// manifest whose identity is not `id`, [`StoreError::Bounds`] when the
+    /// closure envelope exceeds the configured pack ceiling, and
+    /// [`StoreError::Io`] for other filesystem failures.
+    pub fn read_workspace_root_closure(
+        &self,
+        id: ClosureId,
+    ) -> Result<ClosureManifest, StoreError> {
+        self.read_closure_inner(id, false)
     }
 
     /// Opens a compact node-CAS closure as an authenticated lazy view.

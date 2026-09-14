@@ -7,16 +7,24 @@
 //! two ways in — a folder on this machine, or a registry coordinate — are the
 //! two facts the engine can act on, and validation happens before anything is
 //! submitted so a typo is answered in the field rather than by a failed job.
+//!
+//! Collapsed, the panel becomes a rail rather than nothing. A shelf that
+//! vanishes takes its state with it: a reader who folds the panel to read a
+//! wide signature still wants to see that a project is indexing, and a rail of
+//! readiness marks costs twenty-six pixels to say so.
 
 use super::workspace::Workspace;
-use crate::presentation::shelf::{Readiness, ShelfEntry};
+use crate::presentation::project;
+use crate::store::catalog::{Catalog, Suggestion};
 use crate::store::shell::Side;
 use crate::theme::Theme;
+use crate::theme::language::label as language_label;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{PanelWidth, Radius, Space, TypeScale, hairline, radius, space, type_size};
 use crate::ui::{button, chip, fault as fault_ui, glyph, surface, text};
-use gpui::prelude::FluentBuilder as _;
+use backend_present::{Affordance, Fault, ShelfEntry};
 use gpui::Focusable as _;
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
@@ -31,14 +39,11 @@ impl Workspace {
         width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if width < 1.0 {
-            return div().into_any_element();
+        let merged = self.jobs.read(cx).merge(self.engine.read(cx).shelf());
+        let entries: Vec<ShelfEntry> = merged.entries().to_vec();
+        if width < PanelWidth::MIN_LIBRARY {
+            return Self::library_rail(theme, width, &entries, cx);
         }
-        let shelf = self
-            .jobs
-            .read(cx)
-            .merge(self.workspace.read(cx).shelf().clone());
-        let entries: Vec<ShelfEntry> = shelf.entries().to_vec();
         surface::panel(theme)
             .id("library-panel")
             .flex_none()
@@ -49,7 +54,7 @@ impl Workspace {
             .border_color(theme.paint(Paint::Hairline))
             .flex()
             .flex_col()
-            .child(self.library_head(theme, entries.len(), cx))
+            .child(Self::library_head(theme, entries.len(), cx))
             .child(
                 div()
                     .id("library-rows")
@@ -69,9 +74,57 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// Returns the collapsed panel: one readiness mark per project.
+    fn library_rail(
+                theme: &Theme,
+        width: f32,
+        entries: &[ShelfEntry],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if width < 1.0 {
+            return div().into_any_element();
+        }
+        surface::panel(theme)
+            .id("library-rail")
+            .flex_none()
+            .w(px(width))
+            .h_full()
+            .overflow_hidden()
+            .border_r(hairline())
+            .border_color(theme.paint(Paint::Hairline))
+            .flex()
+            .flex_col()
+            .items_center()
+            .py(space(Space::Snug))
+            .gap(space(Space::Snug))
+            .child(
+                button::icon_button(theme, "expand-library", crate::ui::icon::Icon::ChevronRight)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.shell
+                            .update(cx, |shell, cx| shell.toggle_panel(Side::Library, cx));
+                    })),
+            )
+            .children(entries.iter().enumerate().map(|(at, entry)| {
+                let coordinate = entry.identity().coordinate().as_str().to_owned();
+                let name = entry.identity().name().to_owned();
+                let readiness = project::summary(entry);
+                div()
+                    .id(ElementId::Name(SharedString::from(format!("rail-{at}"))))
+                    .cursor_pointer()
+                    .child(glyph::standing_mark(theme, project::standing(entry)))
+                    .tooltip_show_delay(std::time::Duration::from_millis(250))
+                    .tooltip(move |_window, cx| {
+                        chip::mono_tip(format!("{name} · {readiness}"), cx)
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_project(coordinate.clone(), cx);
+                    }))
+            }))
+            .into_any_element()
+    }
+
     fn library_head(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         count: usize,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -90,14 +143,13 @@ impl Workspace {
                     .child("SHELF"),
             )
             .child(div().flex_1())
-            .child(chip::count_chip(theme, count, "projects"))
+            .child(chip::count_chip(theme, count as u64, "projects"))
             .child(
-                button::icon_button(theme, "collapse-library", crate::ui::icon::Icon::ChevronLeft).on_click(cx.listener(
-                    |this, _, _, cx| {
+                button::icon_button(theme, "collapse-library", crate::ui::icon::Icon::ChevronLeft)
+                    .on_click(cx.listener(|this, _, _, cx| {
                         this.shell
                             .update(cx, |shell, cx| shell.toggle_panel(Side::Library, cx));
-                    },
-                )),
+                    })),
             )
     }
 
@@ -108,10 +160,14 @@ impl Workspace {
         entry: &ShelfEntry,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let coordinate = entry.identity().coordinate().to_owned();
-        let active = self
-            .active_identity(cx)
-            .is_some_and(|identity| identity.project() == entry.identity().project());
+        let coordinate = entry.identity().coordinate().as_str().to_owned();
+        let active = self.active_identity(cx).is_some_and(|identity| {
+            identity.project().map(backend_present::ProjectRef::root)
+                == entry
+                    .identity()
+                    .project()
+                    .map(backend_present::ProjectRef::root)
+        });
         div()
             .id(ElementId::Name(SharedString::from(format!("shelf-{at}"))))
             .flex()
@@ -129,75 +185,92 @@ impl Workspace {
             .child(shelf_title(theme, entry))
             .child(shelf_detail(theme, entry))
             .when_some(entry.readiness().fault().cloned(), |row, fault| {
-                row.child(self.failed_row(theme, at, &fault, coordinate.clone(), cx))
+                row.child(Self::failed_row(theme, at, &fault, &coordinate, cx))
             })
             .into_any_element()
     }
 
     fn failed_row(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         at: usize,
-        fault: &crate::presentation::fault::Fault,
-        coordinate: String,
+        fault: &Fault,
+        coordinate: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let actions = self.affordances(theme, &format!("shelf-{at}"), fault, &coordinate, cx);
+        let actions = Self::affordances(theme, &format!("shelf-{at}"), fault, coordinate, cx);
         div()
             .pt(px(3.0))
             .child(fault_ui::block(theme, fault, actions))
             .into_any_element()
     }
 
-    /// Returns the buttons for one fault's affordances, already wired.
+    /// Returns the buttons for one fault, already wired.
+    ///
+    /// A fault carries exactly one typed affordance — the engine's own answer
+    /// to "what next?" — and this window draws it as a button. It adds one of
+    /// its own beside it: the operand, copyable, because a failure a reader
+    /// cannot quote is a failure they cannot report.
     pub(super) fn affordances(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         prefix: &str,
-        fault: &crate::presentation::fault::Fault,
+        fault: &Fault,
         coordinate: &str,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        fault
-            .affordances()
-            .iter()
-            .enumerate()
-            .map(|(at, affordance)| {
-                let id = format!("{prefix}-affordance-{at}");
-                let action = affordance.clone();
-                let coordinate = coordinate.to_owned();
-                fault_ui::affordance_button(theme, id, affordance)
+        let mut actions = Vec::with_capacity(2);
+        let affordance = fault.affordance().clone();
+        if crate::presentation::fault::is_actionable(&affordance) {
+            let coordinate = coordinate.to_owned();
+            actions.push(
+                fault_ui::affordance_button(theme, format!("{prefix}-affordance"), &affordance)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.run_affordance(&action, &coordinate, window, cx);
+                        this.run_affordance(&affordance, &coordinate, window, cx);
                     }))
-                    .into_any_element()
-            })
-            .collect()
+                    .into_any_element(),
+            );
+        }
+        let spelling = crate::presentation::fault::operand_spelling(fault.operand());
+        if !spelling.is_empty() {
+            actions.push(
+                button::button(
+                    theme,
+                    format!("{prefix}-copy-operand"),
+                    "Copy operand",
+                    button::Weight::Quiet,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy("Operand copied", spelling.clone(), cx);
+                }))
+                .into_any_element(),
+            );
+        }
+        actions
     }
 
     fn run_affordance(
         &mut self,
-        affordance: &crate::presentation::fault::Affordance,
+        affordance: &Affordance,
         coordinate: &str,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        use crate::presentation::fault::Affordance;
         match affordance {
-            Affordance::Retry | Affordance::Refresh => {
-                self.document.update(cx, |document, cx| document.reload(cx));
-                self.workspace
-                    .update(cx, |workspace, cx| workspace.refresh_health(cx));
+            Affordance::Retry => {
+                self.document.update(cx, super::super::store::document::DocumentStore::reload);
+                self.engine
+                    .update(cx, super::super::store::workspace::WorkspaceStore::refresh_health);
             }
-            Affordance::Reindex { coordinate } => self.index_project(coordinate.clone(), cx),
-            Affordance::Remove { coordinate } => self.remove_project(coordinate.clone(), cx),
+            Affordance::Reindex { path } => {
+                let target = if path.is_empty() { coordinate } else { path };
+                self.index_project(target.to_owned(), cx);
+            }
             Affordance::OpenFolder { path } => cx.reveal_path(std::path::Path::new(path)),
-            Affordance::Copy { label, text } => self.copy(label, text.clone(), cx),
-            Affordance::Reconnect => self.jobs.update(cx, |jobs, cx| jobs.dismiss(coordinate, cx)),
-            Affordance::OpenSettings => {
-                self.shell.update(cx, |shell, cx| shell.toggle_settings(cx));
+            Affordance::UseCommand { name, args } => {
+                let text = Self::palette_for(name, args);
+                self.set_field(text, cx);
+                self.focus_field(window, cx);
             }
-            Affordance::Waiting => {}
+            Affordance::WaitForReadiness | Affordance::None => {}
         }
     }
 }
@@ -212,11 +285,11 @@ impl Workspace {
             .child(if self.adding {
                 self.add_form(theme, cx).into_any_element()
             } else {
-                self.add_button(theme, cx).into_any_element()
+                Self::add_button(theme, cx).into_any_element()
             })
     }
 
-    fn add_button(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn add_button(theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("add-project")
             .flex()
@@ -238,11 +311,29 @@ impl Workspace {
             .child(button::key_hint(theme, "⌘⇧A"))
     }
 
-    fn begin_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens the inline add flow and puts the caret in its field.
+    pub(crate) fn begin_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.adding = true;
         self.add_fault = None;
+        self.shell.update(cx, |shell, cx| {
+            if !shell.library_open() {
+                shell.toggle_panel(Side::Library, cx);
+            }
+            shell.focus_on(crate::store::shell::Focus::Library, cx);
+        });
+        let text = self.coordinate.read(cx).as_str().to_owned();
+        self.catalog
+            .update(cx, |catalog, cx| catalog.look_up(&text, cx));
         let handle = self.coordinate.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
+        cx.notify();
+    }
+
+    /// Closes the inline add flow and forgets its catalog lookup.
+    pub(super) fn cancel_add(&mut self, cx: &mut Context<Self>) {
+        self.adding = false;
+        self.add_fault = None;
+        self.catalog.update(cx, super::super::store::catalog::CatalogStore::clear);
         cx.notify();
     }
 
@@ -259,15 +350,23 @@ impl Workspace {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("ADD A PROJECT"),
             )
-            .child(self.folder_button(theme, cx))
-            .child(self.coordinate_field(theme, cx))
+            .child(Self::folder_button(theme, cx))
+            .child(self.coordinate_field(theme))
             .when_some(hint.filter(|_| !live.trim().is_empty()), |form, message| {
-                form.child(text::dim(theme).text_color(theme.paint(Paint::Caution)).child(message))
+                form.child(
+                    text::dim(theme)
+                        .text_color(theme.paint(Paint::Caution))
+                        .child(message),
+                )
             })
             .when_some(self.add_fault.clone(), |form, message| {
-                form.child(text::dim(theme).text_color(theme.paint(Paint::Fault)).child(message))
+                form.child(
+                    text::dim(theme)
+                        .text_color(theme.paint(Paint::Fault))
+                        .child(message),
+                )
             })
-            .child(self.add_examples(theme, cx))
+            .child(self.suggestions(theme, cx))
             .child(
                 div()
                     .flex()
@@ -278,16 +377,12 @@ impl Workspace {
                     )
                     .child(
                         button::button(theme, "add-cancel", "Cancel", button::Weight::Quiet)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.adding = false;
-                                this.add_fault = None;
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel_add(cx))),
                     ),
             )
     }
 
-    fn folder_button(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn folder_button(theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         button::button(
             theme,
             "add-folder",
@@ -296,11 +391,10 @@ impl Workspace {
         )
         .w_full()
         .justify_center()
-        .on_click(cx.listener(|this, _, _, cx| this.choose_folder(cx)))
+        .on_click(cx.listener(|_, _, _, cx| Self::choose_folder(cx)))
     }
 
-    fn coordinate_field(&mut self, theme: &Theme, cx: &Context<Self>) -> impl IntoElement {
-        let _ = cx;
+    fn coordinate_field(&mut self, theme: &Theme) -> impl IntoElement {
         div()
             .w_full()
             .px(space(Space::Snug))
@@ -321,32 +415,78 @@ impl Workspace {
             )
     }
 
-    fn add_examples(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Returns the live catalog rows behind the coordinate field.
+    fn suggestions(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        match self.catalog.read(cx).state().clone() {
+            Catalog::Idle => div().into_any_element(),
+            Catalog::Looking => text::faint(theme)
+                .child("Searching the local catalog…")
+                .into_any_element(),
+            Catalog::Faulted(fault) => fault_ui::inline(theme, &fault).into_any_element(),
+            Catalog::Rows(rows) if rows.is_empty() => text::faint(theme)
+                .child("The local catalog holds no package matching this text.")
+                .into_any_element(),
+            Catalog::Rows(rows) => div()
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .children(
+                    rows.iter()
+                        .enumerate()
+                        .map(|(at, row)| Self::suggestion_row(theme, at, row, cx)),
+                )
+                .into_any_element(),
+        }
+    }
+
+    fn suggestion_row(
+                theme: &Theme,
+        at: usize,
+        row: &Suggestion,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let coordinate = row.coordinate().to_owned();
         div()
+            .id(ElementId::Name(SharedString::from(format!(
+                "suggestion-{at}"
+            ))))
             .flex()
-            .flex_wrap()
+            .items_center()
             .gap(space(Space::Tight))
-            .children(EXAMPLES.iter().enumerate().map(|(at, example)| {
-                div()
-                    .id(ElementId::Name(SharedString::from(format!("example-{at}"))))
-                    .px(space(Space::Snug))
-                    .py(px(2.0))
-                    .rounded(radius(Radius::Hair))
-                    .bg(theme.paint(Paint::Hover))
-                    .font_family(theme.specimen())
-                    .text_size(type_size(TypeScale::Micro))
-                    .text_color(theme.paint(Paint::TextDim))
-                    .cursor_pointer()
-                    .hover(|style| style.text_color(theme.paint(Paint::Gilt)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.coordinate.update(cx, |field, cx| {
-                            field.emplace(example, cx);
-                            field.move_to(example.len(), cx);
-                        });
-                        cx.notify();
-                    }))
-                    .child((*example).to_owned())
+            .px(space(Space::Snug))
+            .py(px(2.0))
+            .rounded(radius(Radius::Hair))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.fill_coordinate(&coordinate, cx);
             }))
+            .child(chip::badge(theme, row.ecosystem()))
+            .child(
+                text::single_line(text::label(theme).text_size(type_size(TypeScale::Small)))
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .child(row.name().to_owned()),
+            )
+            .child(
+                text::faint(theme)
+                    .flex_none()
+                    .font_family(theme.specimen())
+                    .child(row.version().to_owned()),
+            )
+            .child(text::faint(theme).flex_none().child(bytes(row.bytes())))
+            .into_any_element()
+    }
+
+    /// Replaces the coordinate field's text and re-runs the catalog lookup.
+    pub(crate) fn fill_coordinate(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.coordinate.update(cx, |field, cx| {
+            field.emplace(text, cx);
+            field.move_to(text.len(), cx);
+        });
+        self.catalog
+            .update(cx, |catalog, cx| catalog.look_up(text, cx));
+        cx.notify();
     }
 
     fn submit_coordinate(&mut self, cx: &mut Context<Self>) {
@@ -356,6 +496,7 @@ impl Workspace {
                 self.add_fault = None;
                 self.adding = false;
                 self.coordinate.update(cx, |field, cx| field.emplace("", cx));
+                self.catalog.update(cx, super::super::store::catalog::CatalogStore::clear);
                 self.index_project(coordinate, cx);
             }
             Err(message) => {
@@ -365,7 +506,7 @@ impl Workspace {
         }
     }
 
-    fn choose_folder(&mut self, cx: &mut Context<Self>) {
+    fn choose_folder(cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
             directories: true,
@@ -439,36 +580,55 @@ fn shelf_title(theme: &Theme, entry: &ShelfEntry) -> Div {
         .items_center()
         .gap(space(Space::Tight))
         .min_w(px(0.0))
-        .child(glyph::readiness_mark(theme, entry.readiness()))
+        .child(glyph::standing_mark(theme, project::standing(entry)))
         .child(
             text::single_line(text::label(theme).font_weight(FontWeight::MEDIUM))
                 .flex_1()
                 .min_w(px(0.0))
-                .child(entry.identity().project_name().to_owned()),
+                .child(entry.identity().name().to_owned()),
         )
-        .child(chip::badge(theme, &entry.badge()))
+        .child(chip::badge(theme, &project::badge(entry.identity())))
 }
 
 fn shelf_detail(theme: &Theme, entry: &ShelfEntry) -> Div {
-    let state = match entry.readiness() {
-        Readiness::Indexing { declarations } => format!("indexing · {declarations} so far"),
-        Readiness::Requested => "requested".to_owned(),
-        Readiness::Failed(_) => "failed".to_owned(),
-        Readiness::Ready => format!(
-            "{} declarations · {} files",
-            entry.declarations(),
-            entry.files()
-        ),
-    };
+    let declarations = entry.declarations().get();
+    let state = project::summary(entry);
     div()
         .flex()
         .flex_col()
         .gap(px(3.0))
         .pl(px(20.0))
         .child(text::single_line(text::faint(theme)).child(state))
-        .child(glyph::language_bar(
-            theme,
-            entry.languages(),
-            entry.declarations(),
-        ))
+        .child(glyph::language_bar(theme, entry.languages(), declarations))
+        .when(!entry.languages().is_empty(), |detail| {
+            detail.child(
+                text::single_line(text::faint(theme)).child(
+                    entry
+                        .languages()
+                        .iter()
+                        .map(|count| {
+                            format!(
+                                "{} {}",
+                                language_label(count.language()),
+                                count.declarations().get()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" · "),
+                ),
+            )
+        })
+}
+
+/// Returns a short human size for a verified archive.
+fn bytes(count: u64) -> String {
+    const UNIT: u64 = 1024;
+    if count < UNIT {
+        return format!("{count} B");
+    }
+    let kilobytes = count / UNIT;
+    if kilobytes < UNIT {
+        return format!("{kilobytes} KB");
+    }
+    format!("{} MB", kilobytes / UNIT)
 }

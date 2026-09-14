@@ -1,18 +1,20 @@
-//! Pure projections from library values into the shapes views render.
-//! Identity, page, shelf, signature, prose, status, and fault live here.
-//! Nothing in this module touches GPUI, the filesystem, or the network.
+//! The GUI-only half of the presentation model.
 //!
-//! This is the layer a concurrent presentation crate is meant to replace. It
-//! is kept deliberately small and value-shaped — every type is `Clone + Eq`,
-//! every function is total, and there is one constructor per input shape — so
-//! that swapping it for a shared crate is a matter of changing imports rather
-//! than rewriting views. Until such a crate exists and compiles, this is the
-//! desktop's own copy and is tested on its own.
+//! Everything that is *the same* on every surface — identity, pages,
+//! signatures, prose, shelves, faults, coverage, outlines, the command
+//! grammar — lives in [`backend_present`] and is used directly here. This
+//! module holds only what a window needs and a terminal does not: a crumb
+//! trail whose steps are separately clickable, chips sized for a status bar,
+//! and the mapping from a shared [`backend_present::Fault`] to the weight a
+//! window draws it at.
+//!
+//! The rule that decides where a type belongs: if the CLI would print it, it
+//! belongs in `backend-present`; if only a pointer can reach it, it belongs
+//! here. A local copy of a shared type would mean the desktop could disagree
+//! with `backend search` about what a coordinate means, which is the one
+//! failure this split exists to make impossible.
 
+pub(crate) mod chips;
+pub(crate) mod crumb;
 pub(crate) mod fault;
-pub(crate) mod identity;
-pub(crate) mod page;
-pub(crate) mod prose;
-pub(crate) mod shelf;
-pub(crate) mod signature;
-pub(crate) mod status;
+pub(crate) mod project;

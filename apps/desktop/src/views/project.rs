@@ -7,15 +7,23 @@
 //! is rich for Rust and empty for the other six languages, and a page that is
 //! empty for six of seven languages is a page that lies about what the product
 //! is. Everything shown here is a fact the compiler produced.
+//!
+//! The Versions, Dependents, and Registry sections follow the same rule one
+//! step further. They are drawn from real `package-versions`, `dependents`,
+//! and `package` replies through [`backend_present::product_view`], which
+//! carries the engine's own `Unconfigured` and `NotRecorded` states — so a
+//! section that has nothing to say says which kind of nothing it is, and a
+//! local folder is told it is not in any registry rather than being shown
+//! three empty boxes.
 
 use super::workspace::Workspace;
-use crate::presentation::identity::Identity;
-use crate::presentation::shelf::{Readiness, ShelfEntry};
+use crate::presentation::project;
 use crate::theme::Theme;
-use crate::theme::language::Language;
+use crate::theme::language::{label as language_label, of_path};
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
 use crate::ui::{button, chip, fault as fault_ui, glyph, text};
+use backend_present::{Identity, IdentityKey, ProductView, ShelfEntry};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement, IntoElement,
@@ -26,6 +34,13 @@ use std::collections::BTreeMap;
 /// How many declarations one file group lists before it stops.
 const FILE_BUDGET: usize = 60;
 
+/// One row of a project's dense outline.
+type FileRow = (
+    backend_library::SymbolKey,
+    Identity,
+    Option<backend_library::DeclarationKind>,
+);
+
 impl Workspace {
     /// Returns the project page for one coordinate.
     pub(super) fn project_page(
@@ -34,35 +49,36 @@ impl Workspace {
         coordinate: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let shelf = self
-            .jobs
-            .read(cx)
-            .merge(self.workspace.read(cx).shelf().clone());
-        let Some(entry) = shelf.find(coordinate).cloned() else {
-            return self.missing_project(theme, coordinate, cx).into_any_element();
+        let merged = self.jobs.read(cx).merge(self.engine.read(cx).shelf());
+        let Some(entry) = project::find(&merged, coordinate).cloned() else {
+            return Self::missing_project(theme, coordinate, cx).into_any_element();
         };
+        let owned = coordinate.to_owned();
+        self.catalog
+            .update(cx, |catalog, cx| catalog.read_facts(&owned, cx));
         div()
             .w_full()
             .flex()
             .flex_col()
             .gap(space(Space::Gutter))
-            .child(self.project_header(theme, &entry, cx))
+            .child(Self::project_header(theme, &entry, cx))
             .when_some(entry.readiness().fault().cloned(), |body, fault| {
-                let actions = self.affordances(theme, "project", &fault, coordinate, cx);
+                let actions = Self::affordances(theme, "project", &fault, coordinate, cx);
                 body.child(fault_ui::block(theme, &fault, actions))
             })
-            .child(self.project_facts(theme, &entry))
+            .child(project_facts(theme, &entry))
+            .child(self.registry_facts(theme, coordinate, &entry, cx))
             .child(self.project_files(theme, &entry, cx))
             .into_any_element()
     }
 
     fn project_header(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         entry: &ShelfEntry,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let coordinate = entry.identity().coordinate().to_owned();
+        let coordinate = entry.identity().coordinate().as_str().to_owned();
+        let local = project::is_local(entry.identity());
         div()
             .w_full()
             .flex()
@@ -70,7 +86,7 @@ impl Workspace {
             .gap(space(Space::Snug))
             .child(
                 text::single_line(text::identity_text(theme, TypeScale::Small))
-                    .child(entry.identity().coordinate().to_owned()),
+                    .child(coordinate.clone()),
             )
             .child(
                 div()
@@ -80,18 +96,17 @@ impl Workspace {
                     .child(glyph::package_tile(theme, true))
                     .child(
                         text::heading(theme, TypeScale::Title)
-                            .child(entry.identity().project_name().to_owned()),
+                            .child(entry.identity().name().to_owned()),
                     )
-                    .child(chip::badge(theme, &entry.badge()))
-                    .child(readiness_chip(theme, entry.readiness()))
+                    .child(chip::badge(theme, &project::badge(entry.identity())))
+                    .child(standing_chip(theme, entry))
                     .child(div().flex_1())
-                    .child(self.project_actions(theme, &coordinate, entry.is_local(), cx)),
+                    .child(Self::project_actions(theme, &coordinate, local, cx)),
             )
     }
 
     fn project_actions(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         coordinate: &str,
         local: bool,
         cx: &mut Context<Self>,
@@ -126,47 +141,56 @@ impl Workspace {
             )
     }
 
-    fn project_facts(&self, theme: &Theme, entry: &ShelfEntry) -> impl IntoElement {
+    /// Returns the registry sections, or the one sentence that says there are none.
+    fn registry_facts(
+        &mut self,
+        theme: &Theme,
+        coordinate: &str,
+        entry: &ShelfEntry,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if project::is_local(entry.identity()) {
+            return head_and_body(
+                theme,
+                "Registry",
+                text::dim(theme)
+                    .child("This project is a folder on this Mac. No registry records it.")
+                    .into_any_element(),
+            )
+            .into_any_element();
+        }
+        let Some(facts) = self.catalog.read(cx).facts_for(coordinate) else {
+            return head_and_body(
+                theme,
+                "Registry",
+                text::faint(theme)
+                    .child("Reading the local registry…")
+                    .into_any_element(),
+            )
+            .into_any_element();
+        };
+        if facts.sections().is_empty() {
+            return head_and_body(
+                theme,
+                "Registry",
+                text::dim(theme)
+                    .child("The local registry answered no section for this package.")
+                    .into_any_element(),
+            )
+            .into_any_element();
+        }
+        let sections: Vec<AnyElement> = facts
+            .sections()
+            .iter()
+            .map(|(title, view)| product_section(theme, title, view))
+            .collect();
         div()
             .w_full()
             .flex()
             .flex_col()
-            .gap(space(Space::Snug))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(space(Space::Tight))
-                    .child(chip::count_chip(theme, entry.declarations(), "declarations"))
-                    .child(chip::count_chip(theme, entry.files(), "files"))
-                    .child(chip::count_chip(theme, entry.languages().len(), "languages")),
-            )
-            .child(glyph::language_bar(
-                theme,
-                entry.languages(),
-                entry.declarations(),
-            ))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(space(Space::Snug))
-                    .children(entry.languages().iter().map(|count| {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(space(Space::Tight))
-                            .child(glyph::language_tag(theme, count.language()))
-                            .child(
-                                text::dim(theme)
-                                    .child(format!(
-                                        "{} · {}",
-                                        count.language().label(),
-                                        count.declarations()
-                                    )),
-                            )
-                    })),
-            )
+            .gap(space(Space::Loose))
+            .children(sections)
+            .into_any_element()
     }
 
     fn project_files(
@@ -175,66 +199,53 @@ impl Workspace {
         entry: &ShelfEntry,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let groups = self.group_by_file(entry.identity().project(), cx);
+        let root = entry
+            .identity()
+            .project()
+            .map(|project| project.root().to_owned())
+            .unwrap_or_default();
+        let groups = self.group_by_file(&root, cx);
         div()
             .w_full()
             .flex()
             .flex_col()
             .gap(space(Space::Base))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(space(Space::Snug))
-                    .child(
-                        text::faint(theme)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("OUTLINE"),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .h(hairline())
-                            .bg(theme.paint(Paint::Hairline)),
-                    ),
-            )
+            .child(section_head(theme, "Outline"))
+            .when(groups.is_empty(), |body| {
+                body.child(
+                    text::dim(theme)
+                        .child("No declarations are published for this project yet."),
+                )
+            })
             .children(
                 groups
                     .into_iter()
-                    .map(|(file, rows)| self.file_group(theme, &file, &rows, cx)),
+                    .map(|(file, rows)| Self::file_group(theme, &file, &rows, cx)),
             )
     }
 
-    fn group_by_file(
-        &self,
-        project: &str,
-        cx: &Context<Self>,
-    ) -> BTreeMap<String, Vec<(backend_library::SymbolKey, Identity, Option<backend_library::DeclarationKind>)>>
-    {
-        let mut groups = BTreeMap::new();
-        for row in self.workspace.read(cx).declarations_in(project) {
+    fn group_by_file(&self, project: &str, cx: &Context<Self>) -> BTreeMap<String, Vec<FileRow>> {
+        let mut groups: BTreeMap<String, Vec<FileRow>> = BTreeMap::new();
+        for row in self.engine.read(cx).declarations_in(project) {
             let backend_library::RowId::Symbol(symbol) = row.id else {
                 continue;
             };
-            let identity = Identity::parse(&row.label);
-            let file = identity.path().unwrap_or("(no file)").to_owned();
+            let identity = Identity::parse_with_key(&row.label, IdentityKey::Symbol(symbol));
+            let file = identity
+                .path()
+                .map_or_else(|| "(no file)".to_owned(), |path| path.as_str().to_owned());
             groups
                 .entry(file)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push((symbol, identity, row.kind));
         }
         groups
     }
 
     fn file_group(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         file: &str,
-        rows: &[(
-            backend_library::SymbolKey,
-            Identity,
-            Option<backend_library::DeclarationKind>,
-        )],
+        rows: &[FileRow],
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
@@ -247,7 +258,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(space(Space::Snug))
-                    .child(glyph::language_tag(theme, Language::of_path(file)))
+                    .child(glyph::language_tag(theme, of_path(file)))
                     .child(
                         text::single_line(text::label(theme).font_weight(FontWeight::MEDIUM))
                             .flex_1()
@@ -261,26 +272,30 @@ impl Workspace {
                 rows.iter()
                     .take(FILE_BUDGET)
                     .enumerate()
-                    .map(|(at, row)| self.file_row(theme, file, at, row, cx)),
+                    .map(|(at, row)| Self::file_row(theme, file, at, row, cx)),
             )
+            .when(rows.len() > FILE_BUDGET, |group| {
+                group.child(
+                    text::faint(theme)
+                        .pl(space(Space::Loose))
+                        .child(format!("{} more in this file", rows.len() - FILE_BUDGET)),
+                )
+            })
             .into_any_element()
     }
 
     fn file_row(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         file: &str,
         at: usize,
-        row: &(
-            backend_library::SymbolKey,
-            Identity,
-            Option<backend_library::DeclarationKind>,
-        ),
+        row: &FileRow,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (symbol, identity, kind) = row;
         let symbol = *symbol;
-        let line = identity.line().map_or_else(String::new, |line| line.to_string());
+        let line = identity
+            .line()
+            .map_or_else(String::new, |line| line.get().to_string());
         div()
             .id(ElementId::Name(SharedString::from(format!(
                 "file-{file}-{at}"
@@ -316,35 +331,136 @@ impl Workspace {
     }
 
     fn missing_project(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         coordinate: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let fault = crate::presentation::fault::Fault::new(
-            crate::presentation::fault::Severity::Caution,
-            crate::presentation::fault::Operand::Project {
-                name: Identity::parse(coordinate).project_name().to_owned(),
-                spelling: coordinate.to_owned(),
-            },
-            "This project is not on the shelf",
-            "no row on the current revision answers to this coordinate",
-            vec![crate::presentation::fault::Affordance::Reindex {
-                coordinate: coordinate.to_owned(),
-            }],
-        );
-        let actions = self.affordances(theme, "missing-project", &fault, coordinate, cx);
+        let fault = crate::presentation::fault::project_missing(coordinate);
+        let actions = Self::affordances(theme, "missing-project", &fault, coordinate, cx);
         fault_ui::block(theme, &fault, actions)
     }
 }
 
-fn readiness_chip(theme: &Theme, readiness: &Readiness) -> Div {
-    let role = match readiness {
-        Readiness::Ready => Paint::Ok,
-        Readiness::Indexing { .. } => Paint::Caution,
-        Readiness::Failed(_) => Paint::Fault,
-        Readiness::Requested => Paint::Info,
+fn project_facts(theme: &Theme, entry: &ShelfEntry) -> Div {
+    let declarations = entry.declarations().get();
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(space(Space::Snug))
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(space(Space::Tight))
+                .child(chip::count_chip(theme, declarations, "declarations"))
+                .child(chip::count_chip(
+                    theme,
+                    entry.languages().len() as u64,
+                    "languages",
+                )),
+        )
+        .child(glyph::language_bar(theme, entry.languages(), declarations))
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(space(Space::Snug))
+                .children(entry.languages().iter().map(|count| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(space(Space::Tight))
+                        .child(glyph::language_tag(theme, count.language()))
+                        .child(text::dim(theme).child(format!(
+                            "{} · {}",
+                            language_label(count.language()),
+                            count.declarations().get()
+                        )))
+                })),
+        )
+}
+
+/// Returns one registry section exactly as the engine answered it.
+fn product_section(theme: &Theme, title: &str, view: &ProductView) -> AnyElement {
+    let body = if let Some(fault) = view.fault() {
+        fault_ui::block(theme, fault, Vec::new()).into_any_element()
+    } else if view.records().is_empty() {
+        text::dim(theme)
+            .child(
+                view.note()
+                    .unwrap_or("The engine recorded nothing for this section.")
+                    .to_owned(),
+            )
+            .into_any_element()
+    } else {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .children(view.records().iter().map(|record| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space(Space::Snug))
+                    .child(
+                        text::single_line(text::label(theme))
+                            .flex_none()
+                            .child(record.title().to_owned()),
+                    )
+                    .when_some(record.operand().map(ToOwned::to_owned), |row, operand| {
+                        row.child(
+                            text::single_line(text::faint(theme))
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .font_family(theme.specimen())
+                                .child(operand),
+                        )
+                    })
+                    .children(
+                        record
+                            .tags()
+                            .iter()
+                            .map(|tag| chip::badge(theme, tag).into_any_element()),
+                    )
+            }))
+            .into_any_element()
     };
+    head_and_body(theme, title, body).into_any_element()
+}
+
+fn head_and_body(theme: &Theme, title: &str, body: AnyElement) -> Div {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(space(Space::Snug))
+        .child(section_head(theme, title))
+        .child(body)
+}
+
+fn section_head(theme: &Theme, title: &str) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(space(Space::Snug))
+        .child(
+            text::faint(theme)
+                .flex_none()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title.to_ascii_uppercase()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .h(hairline())
+                .bg(theme.paint(Paint::Hairline)),
+        )
+}
+
+fn standing_chip(theme: &Theme, entry: &ShelfEntry) -> Div {
+    let standing = project::standing(entry);
+    let role = glyph::standing_paint(standing);
     let mut wash = theme.paint(role);
     wash.a = 0.12;
     div()
@@ -358,6 +474,6 @@ fn readiness_chip(theme: &Theme, readiness: &Readiness) -> Div {
         .bg(wash)
         .text_size(type_size(TypeScale::Micro))
         .text_color(theme.paint(role))
-        .child(readiness.glyph().to_string())
-        .child(readiness.name().to_owned())
+        .child(glyph::standing_glyph(standing))
+        .child(entry.readiness().name())
 }

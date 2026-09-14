@@ -98,8 +98,6 @@ pub(crate) enum Paint {
     Caution,
     /// Failed, unavailable, rejected.
     Fault,
-    /// A translucent wash behind a fault block.
-    FaultWash,
     /// Informational, unconfigured, not applicable.
     Info,
 }
@@ -139,11 +137,6 @@ impl Palette {
         }
     }
 
-    /// Returns which appearance generated this palette.
-    pub(crate) const fn appearance(self) -> Appearance {
-        self.appearance
-    }
-
     /// Returns the colour for one semantic role.
     pub(crate) fn paint(self, role: Paint) -> Hsla {
         match role {
@@ -154,9 +147,7 @@ impl Palette {
             Paint::TextStrong | Paint::Text | Paint::TextDim | Paint::TextFaint => self.type_ink(role),
             Paint::Gilt | Paint::GiltDim | Paint::GiltWash | Paint::Focus => self.accent(role),
             Paint::Hover | Paint::Selected => self.wash(role),
-            Paint::Ok | Paint::Caution | Paint::Fault | Paint::FaultWash | Paint::Info => {
-                self.signal(role)
-            }
+            Paint::Ok | Paint::Caution | Paint::Fault | Paint::Info => self.signal(role),
         }
     }
 
@@ -212,7 +203,6 @@ impl Palette {
             Paint::GiltDim => self.gilt.plane(0.620, Chroma::new(0.38)),
             Paint::GiltWash if dark => self.gilt.wash(Step::S9, 0.14),
             Paint::GiltWash => self.gilt.wash(Step::S10, 0.26),
-            Paint::Focus => solid,
             _ => solid,
         }
     }
@@ -232,8 +222,6 @@ impl Palette {
         match role {
             Paint::Ok => self.ok.plane(lightness, Chroma::new(0.52)),
             Paint::Caution => self.caution.plane(lightness, Chroma::new(0.68)),
-            Paint::FaultWash if self.appearance.is_dark() => self.fault.wash(Step::S6, 0.16),
-            Paint::FaultWash => self.fault.wash(Step::S10, 0.22),
             Paint::Fault => self.fault.plane(lightness, Chroma::new(0.66)),
             _ => self.info.plane(lightness, Chroma::new(0.40)),
         }
@@ -260,8 +248,4 @@ impl Palette {
         tone
     }
 
-    /// Returns the lightness of the chromatic plane, for the ramp tests.
-    pub(crate) fn plane_lightness(self) -> f32 {
-        if self.appearance.is_dark() { 0.620 } else { 0.380 }
-    }
 }

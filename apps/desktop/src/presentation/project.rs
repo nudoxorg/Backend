@@ -13,6 +13,58 @@
 
 use backend_present::{Identity, Readiness, Shelf, ShelfEntry};
 
+/// What a shelf row can actually offer a reader right now.
+///
+/// This is not the engine's readiness re-spelled; it is readiness *and* what
+/// was published, resolved into one statement. The engine can commit a package
+/// row as ready while that package has contributed no declarations — a pinned
+/// coordinate it accepted and then found nothing in — and a row that drew a ✓
+/// beside "0 declarations" would be telling the reader two different things at
+/// once. A project with nothing in it is not finished; it is empty, and this
+/// window says so.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Standing {
+    /// Declarations are published and readable.
+    Readable,
+    /// The engine calls this ready and published nothing under it.
+    Empty,
+    /// Rows are arriving.
+    Indexing,
+    /// Accepted, with no rows yet.
+    Requested,
+    /// Refused; the entry carries the fault.
+    Failed,
+}
+
+/// Returns what one shelf row can offer, readiness and row count together.
+pub(crate) fn standing(entry: &ShelfEntry) -> Standing {
+    match entry.readiness() {
+        Readiness::Ready if entry.declarations().get() == 0 => Standing::Empty,
+        Readiness::Ready => Standing::Readable,
+        Readiness::Indexing { .. } => Standing::Indexing,
+        Readiness::Requested => Standing::Requested,
+        Readiness::Failed { .. } => Standing::Failed,
+    }
+}
+
+/// Returns the sentence one shelf row prints under its name.
+pub(crate) fn summary(entry: &ShelfEntry) -> String {
+    let declarations = entry.declarations().get();
+    match standing(entry) {
+        Standing::Readable => format!(
+            "{declarations} declarations · {} languages",
+            entry.languages().len()
+        ),
+        Standing::Empty => "ready · nothing published under it".to_owned(),
+        Standing::Indexing => match entry.readiness() {
+            Readiness::Indexing { rows } => format!("indexing · {} so far", rows.get()),
+            _ => "indexing".to_owned(),
+        },
+        Standing::Requested => "requested · waiting for the first rows".to_owned(),
+        Standing::Failed => "failed".to_owned(),
+    }
+}
+
 /// Returns whether a project is a folder on this host.
 pub(crate) fn is_local(identity: &Identity) -> bool {
     !identity.coordinate().as_str().starts_with("pkg:")
@@ -60,7 +112,7 @@ pub(crate) fn with_requested(shelf: &Shelf, coordinates: &[String]) -> Shelf {
 pub(crate) fn with_failure(
     shelf: &Shelf,
     coordinate: &str,
-    fault: backend_present::Fault,
+    fault: &backend_present::Fault,
 ) -> Shelf {
     let entries = shelf
         .entries()

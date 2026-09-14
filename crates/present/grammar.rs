@@ -13,7 +13,9 @@
 //! grammar — or a grammar without a registry row — fails the build's tests
 //! rather than shipping a command nobody can call.
 
-use backend_library::{COMMANDS, CommandDomain, CommandMutation, CommandSpec, command_spec_named};
+use backend_library::{
+    COMMANDS, CommandDomain, CommandId, CommandMutation, CommandSpec, command_spec_named,
+};
 use core::fmt::Write as _;
 
 /// What one operand means, and therefore how each surface validates it.
@@ -237,6 +239,60 @@ impl CommandGrammar {
             .is_some_and(|spec| spec.mutation == CommandMutation::Write)
     }
 
+    /// Returns whether this command takes something away.
+    ///
+    /// MCP's `destructiveHint` is only meaningful for a write, and the registry
+    /// records *that* a row writes, not *what* it removes. The distinction is
+    /// answered here, once, by an exhaustive match: a registry row added
+    /// tomorrow does not compile until someone answers it for that row too.
+    #[must_use]
+    pub fn is_destructive(self) -> bool {
+        let Some(spec) = self.spec() else {
+            return false;
+        };
+        match spec.id {
+            CommandId::Remove
+            | CommandId::Unsubscribe
+            | CommandId::ProjectDelete
+            | CommandId::ProjectRemove
+            | CommandId::TreeClose => true,
+            CommandId::Packages
+            | CommandId::Add
+            | CommandId::Document
+            | CommandId::Show
+            | CommandId::Outline
+            | CommandId::Name
+            | CommandId::Resolve
+            | CommandId::Search
+            | CommandId::Graph
+            | CommandId::GraphQuery
+            | CommandId::Source
+            | CommandId::Related
+            | CommandId::Read
+            | CommandId::Diff
+            | CommandId::Explore
+            | CommandId::Package
+            | CommandId::Dependents
+            | CommandId::Owner
+            | CommandId::IndexSearch
+            | CommandId::PackageVersions
+            | CommandId::SemanticVersions
+            | CommandId::SelectSemanticVersion
+            | CommandId::PackageProfile
+            | CommandId::Subscribe
+            | CommandId::Subscriptions
+            | CommandId::Releases
+            | CommandId::Projects
+            | CommandId::ProjectCreate
+            | CommandId::ProjectAdd
+            | CommandId::ProjectSync
+            | CommandId::Tree
+            | CommandId::TreeOpen
+            | CommandId::Health
+            | CommandId::Revision => false,
+        }
+    }
+
     /// Returns the complete tool description: the registry sentence, then when
     /// an agent should reach for it.
     #[must_use]
@@ -280,6 +336,12 @@ pub fn grammar_for(name: &str) -> Option<CommandGrammar> {
         .iter()
         .copied()
         .find(|grammar| grammar.name == name || grammar.aliases.contains(&name))
+}
+
+/// Finds the grammar one MCP tool name reaches.
+#[must_use]
+pub fn grammar_for_tool(tool: &str) -> Option<CommandGrammar> {
+    GRAMMARS.iter().copied().find(|grammar| grammar.tool() == tool)
 }
 
 /// Returns every grammar whose registry row serves one domain.
@@ -446,7 +508,7 @@ pub const GRAMMARS: [CommandGrammar; 35] = [
         tool: "backend.resolve",
         aliases: &["name"],
         positional: &[ArgumentSpec::required(
-            "text",
+            "query",
             ArgumentKind::Text,
             "A readable declaration name or address.",
         )],
@@ -458,7 +520,7 @@ pub const GRAMMARS: [CommandGrammar; 35] = [
         tool: "backend.search",
         aliases: &[],
         positional: &[ArgumentSpec::required(
-            "text",
+            "query",
             ArgumentKind::Text,
             "Text to find in names, signatures, and documentation.",
         )],

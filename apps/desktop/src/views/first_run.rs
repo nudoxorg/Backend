@@ -15,7 +15,7 @@ use crate::ui::{button, fault as fault_ui, surface, text};
 use gpui::prelude::FluentBuilder as _;
 use gpui::Focusable as _;
 use gpui::{
-    Context, Div, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    Context, Div, ElementId, InteractiveElement, IntoElement, ParentElement,
     SharedString, StatefulInteractiveElement, Styled, div, px,
 };
 
@@ -25,9 +25,9 @@ impl Workspace {
         let empty_shelf = self
             .jobs
             .read(cx)
-            .merge(self.workspace.read(cx).shelf().clone())
+            .merge(self.engine.read(cx).shelf())
             .is_empty();
-        let fault = self.workspace.read(cx).fault().cloned();
+        let fault = self.engine.read(cx).fault().cloned();
         div()
             .flex_1()
             .min_h(px(0.0))
@@ -42,17 +42,16 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(space(Space::Loose))
-                    .child(self.welcome(theme, empty_shelf, cx))
+                    .child(Self::welcome(theme, empty_shelf, cx))
                     .when_some(fault, |card, fault| {
-                        let actions = self.affordances(theme, "first-run", &fault, "", cx);
+                        let actions = Self::affordances(theme, "first-run", &fault, "", cx);
                         card.child(fault_ui::block(theme, &fault, actions))
                     }),
             )
     }
 
     fn welcome(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         empty_shelf: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -73,13 +72,13 @@ impl Workspace {
                 "Search with ⌘K, or choose a project from the shelf on the left."
             }))
             .when(empty_shelf, |card| {
-                card.child(self.welcome_actions(theme, cx))
-                    .child(self.example_chips(theme, cx))
+                card.child(Self::welcome_actions(theme, cx))
+                    .child(Self::example_chips(theme, cx))
             })
-            .when(!empty_shelf, |card| card.child(self.shortcut_grid(theme)))
+            .when(!empty_shelf, |card| card.child(Self::shortcut_grid(theme)))
     }
 
-    fn welcome_actions(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn welcome_actions(theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .gap(space(Space::Snug))
@@ -108,7 +107,7 @@ impl Workspace {
             )
     }
 
-    fn example_chips(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn example_chips(theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -148,7 +147,7 @@ impl Workspace {
             )
     }
 
-    fn shortcut_grid(&self, theme: &Theme) -> Div {
+    fn shortcut_grid(theme: &Theme) -> Div {
         div()
             .flex()
             .flex_col()
@@ -164,11 +163,7 @@ impl Workspace {
     }
 
     fn start_add_from_welcome(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
-        self.adding = true;
-        self.add_fault = None;
-        let handle = self.coordinate.read(cx).focus_handle(cx);
-        window.focus(&handle, cx);
-        cx.notify();
+        self.begin_add(window, cx);
     }
 
     /// Moves focus into the omnibar field.
@@ -178,7 +173,7 @@ impl Workspace {
         self.shell.update(cx, |shell, cx| {
             shell.focus_on(crate::store::shell::Focus::Omnibar, cx);
         });
-        self.search.update(cx, |search, cx| search.open(cx));
+        self.search.update(cx, super::super::store::search::SearchStore::open);
     }
 }
 
@@ -191,8 +186,3 @@ const SHORTCUTS: [(&str, &str); 6] = [
     ("⌘\\", "Show or hide the outline"),
     ("⌘,", "Settings and capabilities"),
 ];
-
-/// Returns the label used when a heading needs the strongest weight.
-pub(super) const fn headline_weight() -> FontWeight {
-    FontWeight::SEMIBOLD
-}

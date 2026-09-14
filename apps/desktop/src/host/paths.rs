@@ -3,7 +3,7 @@
 //! launch contexts that reach the same folder differently must agree on it.
 //!
 //! This matters in practice: a shell launch resolves `/tmp/demo` while a
-//! LaunchServices launch resolves `/private/tmp/demo`, and the two hash to two
+//! `LaunchServices` launch resolves `/private/tmp/demo`, and the two hash to two
 //! different sockets even though they are one folder holding one owner lock.
 //! Canonicalising the data directory before the endpoint is derived is what
 //! makes "attach to the live owner" reliable rather than lucky.

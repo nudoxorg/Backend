@@ -12,9 +12,9 @@
 use super::events::WorkspaceEvent;
 use super::service::Endpoint;
 use crate::host::lease::HostMode;
-use crate::presentation::fault::{self, Fault, Operand};
-use crate::presentation::shelf::Shelf;
-use crate::presentation::status::{self, CapabilityChip, LaneChip};
+use crate::presentation::chips::{self, CapabilityChip, LaneChip};
+use crate::presentation::fault;
+use backend_present::{Coordinate, Fault, Identity, IdentityKey, KeyTag, Operand, Shelf};
 use crate::reducer::model::Model;
 use crate::transport::unix::UnixSubscriptionTransport;
 use backend_library::{HealthReport, Row, RowId, SymbolKey, ViewRoot, encode_id};
@@ -34,9 +34,22 @@ const EAGER_DELAY: Duration = Duration::from_millis(80);
 const IDLE_DELAY: Duration = Duration::from_secs(2);
 
 /// Poll delay while a bounded snapshot is being hydrated.
-const HYDRATION_DELAY: Duration = Duration::from_millis(1);
+///
+/// Hydration is the one phase where latency is worth spending on: the reader
+/// is looking at reserved geometry until it finishes. Eight milliseconds is
+/// faster than a frame and still leaves the core to the service doing the
+/// work, where a one-millisecond loop spent more time asking than the service
+/// spent answering.
+const HYDRATION_DELAY: Duration = Duration::from_millis(8);
 
 /// What the last lease exchange was doing.
+///
+/// The phase is kept for the fault it names, not for pacing. A batch that
+/// carries no events is still a batch, so treating "the service answered
+/// `Batch`" as "something changed" pinned this loop at its eager delay for the
+/// life of the window — twelve full view diffs a second over every published
+/// row, forever, on a window nobody was touching. Pacing is decided by whether
+/// the admitted root's version actually moved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase {
     Current,
@@ -49,7 +62,6 @@ enum Phase {
 pub(crate) struct WorkspaceStore {
     endpoint: Endpoint,
     project: PathBuf,
-    data: PathBuf,
     mode: HostMode,
     root: ViewRoot,
     shelf: Shelf,
@@ -64,22 +76,43 @@ pub(crate) struct WorkspaceStore {
 
 impl EventEmitter<WorkspaceEvent> for WorkspaceStore {}
 
+/// Everything the live feed needs to exist: where the owner is, what it owns,
+/// and the one admitted root and cursor the window starts from.
+///
+/// Passed as one value rather than as six arguments because these six are not
+/// independent — they all come from a single successful bootstrap, and a call
+/// site that could supply five of them and not the sixth would be a call site
+/// that could open a window onto nothing.
+pub(crate) struct EngineLink {
+    /// Where the local service is listening.
+    pub(crate) endpoint: Endpoint,
+    /// The project this window discovered.
+    pub(crate) project: PathBuf,
+    /// Whether this process owns the service or attached to it.
+    pub(crate) mode: HostMode,
+    /// The first admitted view root.
+    pub(crate) root: ViewRoot,
+    /// The reducer holding that root and its cursor.
+    pub(crate) model: Model,
+    /// The certified subscription transport.
+    pub(crate) transport: UnixSubscriptionTransport,
+}
+
 impl WorkspaceStore {
     /// Installs the first admitted root and starts the live feed.
-    pub(crate) fn new(
-        endpoint: Endpoint,
-        project: PathBuf,
-        data: PathBuf,
-        mode: HostMode,
-        root: ViewRoot,
-        model: Model,
-        transport: UnixSubscriptionTransport,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub(crate) fn new(link: EngineLink, cx: &mut Context<Self>) -> Self {
+        let EngineLink {
+            endpoint,
+            project,
+            mode,
+            root,
+            model,
+            transport,
+        } = link;
         let mut store = Self {
             revision: short_revision(&root),
-            shelf: Shelf::project(&root),
-            coverage: status::lane_chips(root.coverage()),
+            shelf: backend_present::shelf_from_root(&root, revision_tag(&root)),
+            coverage: chips::lane_chips(root.coverage()),
             capabilities: Vec::new(),
             capability_totals: (0, 0, 0),
             hydrating: false,
@@ -87,7 +120,6 @@ impl WorkspaceStore {
             live: None,
             endpoint,
             project,
-            data,
             mode,
             root,
         };
@@ -156,23 +188,37 @@ impl WorkspaceStore {
         &self.project
     }
 
-    /// Returns the durable workspace directory.
-    pub(crate) fn data(&self) -> &Path {
-        &self.data
-    }
-
     /// Returns the row with one stable identity.
     pub(crate) fn row(&self, id: RowId) -> Option<&Row> {
         self.root.row_ref(id)
     }
 
-    /// Returns the children of one declaration, in producer order.
-    pub(crate) fn children_of(&self, symbol: SymbolKey) -> Vec<&Row> {
+    /// Returns the rows a page assembly needs: the declaration and its members.
+    ///
+    /// [`backend_present::page_from_document`] reads the declaration's own kind
+    /// out of this slice and groups everything whose parent is the declaration
+    /// into member groups, so both have to be present and the order is the
+    /// producer's.
+    pub(crate) fn page_rows(&self, symbol: SymbolKey) -> Vec<Row> {
         self.root
             .rows()
             .iter()
-            .filter(|row| row.parent == Some(symbol))
+            .filter(|row| row.id == RowId::Symbol(symbol) || row.parent == Some(symbol))
+            .cloned()
             .collect()
+    }
+
+    /// Returns the declaration one exact coordinate names.
+    pub(crate) fn symbol_for(&self, coordinate: &str) -> Option<SymbolKey> {
+        self.root.rows().iter().find_map(|row| match row.id {
+            RowId::Symbol(symbol) if row.label == coordinate => Some(symbol),
+            _ => None,
+        })
+    }
+
+    /// Returns the typed kind one declaration row carries, when it has one.
+    pub(crate) fn kind_of(&self, symbol: SymbolKey) -> Option<backend_library::DeclarationKind> {
+        self.root.row_ref(RowId::Symbol(symbol)).and_then(|row| row.kind)
     }
 
     /// Returns the declarations belonging to one project coordinate.
@@ -185,14 +231,17 @@ impl WorkspaceStore {
             .collect()
     }
 
-    /// Resolves a declaration name to a stable identity, for signature links.
-    pub(crate) fn resolve_name(&self, name: &str) -> Option<SymbolKey> {
+    /// Resolves a declaration name to a coordinate and key, for signature links.
+    ///
+    /// The match is by spelled name and nothing else, which is exactly what
+    /// [`backend_present::Resolved::ByName`] claims: a name that happens to
+    /// match a declaration on this shelf, never a proven semantic edge.
+    pub(crate) fn resolve_name(&self, name: &str) -> Option<(Coordinate, IdentityKey)> {
         self.root.rows().iter().find_map(|row| match row.id {
-            RowId::Symbol(symbol)
-                if crate::presentation::identity::Identity::parse(&row.label).name() == name =>
-            {
-                Some(symbol)
-            }
+            RowId::Symbol(symbol) if Identity::parse(&row.label).name() == name => Some((
+                Coordinate::new(row.label.clone()),
+                IdentityKey::Symbol(symbol),
+            )),
             _ => None,
         })
     }
@@ -225,18 +274,18 @@ impl WorkspaceStore {
     }
 
     fn apply_health(&mut self, report: &HealthReport) {
-        self.capabilities = status::capability_chips(report.capabilities());
-        self.capability_totals = status::capability_totals(report.capabilities());
+        self.capabilities = chips::capability_chips(report.capabilities());
+        self.capability_totals = chips::capability_totals(report.capabilities());
         if !report.coverage().is_empty() {
-            self.coverage = status::lane_chips(report.coverage());
+            self.coverage = chips::lane_chips(report.coverage());
         }
     }
 
     fn install_root(&mut self, root: ViewRoot, cx: &mut Context<Self>) {
         let previous = self.shelf.entries().len();
         self.revision = short_revision(&root);
-        self.shelf = Shelf::project(&root);
-        self.coverage = status::lane_chips(root.coverage());
+        self.shelf = backend_present::shelf_from_root(&root, revision_tag(&root));
+        self.coverage = chips::lane_chips(root.coverage());
         self.root = root;
         if self.shelf.entries().len() == previous {
             cx.emit(WorkspaceEvent::RowsChanged);
@@ -351,12 +400,12 @@ impl Feed {
         self.lease = lease;
         self.model = Some(model);
         self.transport = Some(transport);
-        self.settle(result, changed, hydrating, root)
+        self.settle(&result, changed, hydrating, root)
     }
 
     fn settle(
         &mut self,
-        result: Result<Phase, crate::transport::error::ClientError>,
+        result: &Result<Phase, crate::transport::error::ClientError>,
         changed: bool,
         hydrating: bool,
         root: Option<ViewRoot>,
@@ -368,7 +417,7 @@ impl Feed {
         self.failing = fault.is_some();
         self.delay = if hydrating {
             HYDRATION_DELAY
-        } else if changed || recovered || matches!(result, Ok(Phase::Delta | Phase::Snapshot)) {
+        } else if changed || recovered {
             EAGER_DELAY
         } else {
             self.delay.saturating_mul(2).min(IDLE_DELAY)
@@ -443,10 +492,12 @@ fn short_revision(root: &ViewRoot) -> String {
         .collect()
 }
 
-/// Returns the operand a fault should blame for one project.
-pub(crate) fn project_operand(name: &str, spelling: &str) -> Operand {
-    Operand::Project {
-        name: name.to_owned(),
-        spelling: spelling.to_owned(),
-    }
+/// Returns the operand a fault should blame for one project or declaration.
+pub(crate) fn coordinate_operand(spelling: &str) -> Operand {
+    Operand::Coordinate(Coordinate::new(spelling))
+}
+
+/// Returns the abbreviated revision tag the shelf is stamped with.
+fn revision_tag(root: &ViewRoot) -> KeyTag {
+    KeyTag::from_key(root.version().as_bytes())
 }

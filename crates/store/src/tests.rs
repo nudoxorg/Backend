@@ -1276,17 +1276,15 @@ fn root_only_extension_durably_writes_every_registered_relation_root() {
     )
     .with_root_only();
     let authority = must(store.acquire_publication_authority());
-    must(must(store.prepare_checked_workspace_publication(publication)).durable())
-        .publish_with_authority(&authority)
-        .map(|_| ())
-        .unwrap_or_else(|error| panic!("publish root-only relation frontier: {error:?}"));
+    let published =
+        must(must(store.prepare_checked_workspace_publication(publication)).durable())
+            .publish_with_authority(&authority);
+    drop(must(published));
 
     let reopened = must(FileStore::open_with_registry(
         &path,
         8 * 1024 * 1024,
-        RelationAdmissionRegistry::default()
-            .with_relation::<AuxiliaryRelation>()
-            .unwrap(),
+        must(RelationAdmissionRegistry::default().with_relation::<AuxiliaryRelation>()),
     ));
     let closure = must(reopened.read_closure(extended.manifest().id()));
     assert!(closure.objects().iter().any(|object| {

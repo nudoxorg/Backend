@@ -34,8 +34,6 @@ pub(crate) enum Focus {
     /// The reader in the centre.
     #[default]
     Reader,
-    /// The context panel on the right.
-    Context,
 }
 
 /// Which side a panel is on.
@@ -67,6 +65,10 @@ impl Notice {
 }
 
 /// Panels, focus, notices, and preferences.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "three independent facts about one window: is anything moving, is the settings sheet up, is the window too narrow"
+)]
 pub(crate) struct ShellStore {
     data: PathBuf,
     prefs: Preferences,
@@ -79,6 +81,7 @@ pub(crate) struct ShellStore {
     animation: Option<Task<()>>,
     animating: bool,
     narrow: bool,
+    context_only: bool,
 }
 
 impl EventEmitter<ShellEvent> for ShellStore {}
@@ -102,6 +105,7 @@ impl ShellStore {
             animation: None,
             animating: false,
             narrow: false,
+            context_only: false,
             data,
             prefs,
         }
@@ -127,11 +131,6 @@ impl ShellStore {
         self.prefs.library_open()
     }
 
-    /// Returns whether the context panel is meant to be open.
-    pub(crate) const fn context_open(&self) -> bool {
-        self.prefs.context_open()
-    }
-
     /// Returns which region owns the keyboard.
     pub(crate) const fn focus(&self) -> Focus {
         self.focus
@@ -145,16 +144,6 @@ impl ShellStore {
     /// Returns the current confirmation notice.
     pub(crate) const fn notice(&self) -> Option<&Notice> {
         self.notice.as_ref()
-    }
-
-    /// Returns whether a spring is still moving.
-    pub(crate) const fn animating(&self) -> bool {
-        self.animating
-    }
-
-    /// Returns whether the window is too narrow for both panels.
-    pub(crate) const fn is_narrow(&self) -> bool {
-        self.narrow
     }
 
     /// Returns whether motion is suppressed.
@@ -191,42 +180,26 @@ impl ShellStore {
         self.prefs = self.prefs.with_open(library, context);
         self.retarget(cx);
         self.persist(cx);
-        cx.emit(ShellEvent::LayoutChanged);
-    }
-
-    /// Sets one panel's width while the reader drags its edge.
-    pub(crate) fn resize_panel(&mut self, side: Side, width: f32, cx: &mut Context<Self>) {
-        let prefs = match side {
-            Side::Library => self
-                .prefs
-                .with_widths(width, self.prefs.context_width()),
-            Side::Context => self
-                .prefs
-                .with_widths(self.prefs.library_width(), width),
-        };
-        self.prefs = prefs;
-        match side {
-            Side::Library => self.library.snap(open_width(
-                self.prefs.library_open() && !self.narrow,
-                self.prefs.library_width(),
-            )),
-            Side::Context => self.context.snap(open_width(
-                self.prefs.context_open() && !self.narrow,
-                self.prefs.context_width(),
-            )),
-        }
-        cx.emit(ShellEvent::LayoutChanged);
-        cx.notify();
+        cx.emit(ShellEvent::Layout);
     }
 
     /// Collapses panels that a narrow window cannot hold.
+    ///
+    /// This runs on every frame, so it must be a no-op on every frame where
+    /// the window has not actually crossed a threshold. Both thresholds have
+    /// to be remembered for that to hold: comparing only the narrower one made
+    /// every frame of a window between the two widths retarget the springs and
+    /// restart the animation loop, which notified, which drew, which ran this
+    /// again — a window that never stopped drawing for as long as it sat at a
+    /// perfectly ordinary size.
     pub(crate) fn fit_to(&mut self, width: f32, cx: &mut Context<Self>) {
         let narrow = width < PanelWidth::AUTO_COLLAPSE_WINDOW;
         let context_only = width < PanelWidth::AUTO_COLLAPSE_CONTEXT;
-        if narrow == self.narrow && !context_only {
+        if (narrow, context_only) == (self.narrow, self.context_only) {
             return;
         }
         self.narrow = narrow;
+        self.context_only = context_only;
         self.library.retarget(open_width(
             self.prefs.library_open() && !narrow,
             self.prefs.library_width(),
@@ -242,7 +215,7 @@ impl ShellStore {
     pub(crate) fn set_appearance(&mut self, appearance: Appearance, cx: &mut Context<Self>) {
         self.prefs = self.prefs.with_appearance(appearance);
         self.persist(cx);
-        cx.emit(ShellEvent::PreferencesChanged);
+        cx.emit(ShellEvent::Preferences);
         cx.notify();
     }
 
@@ -250,7 +223,7 @@ impl ShellStore {
     pub(crate) fn set_interface(&mut self, interface: InterfaceSize, cx: &mut Context<Self>) {
         self.prefs = self.prefs.with_interface(interface);
         self.persist(cx);
-        cx.emit(ShellEvent::PreferencesChanged);
+        cx.emit(ShellEvent::Preferences);
         cx.notify();
     }
 
@@ -263,7 +236,7 @@ impl ShellStore {
             self.animating = false;
         }
         self.persist(cx);
-        cx.emit(ShellEvent::PreferencesChanged);
+        cx.emit(ShellEvent::Preferences);
         cx.notify();
     }
 
@@ -271,7 +244,7 @@ impl ShellStore {
     pub(crate) fn set_editor(&mut self, editor: EditorScheme, cx: &mut Context<Self>) {
         self.prefs = self.prefs.with_editor(editor);
         self.persist(cx);
-        cx.emit(ShellEvent::PreferencesChanged);
+        cx.emit(ShellEvent::Preferences);
         cx.notify();
     }
 
@@ -286,13 +259,13 @@ impl ShellStore {
             text: text.into(),
             detail,
         });
-        cx.emit(ShellEvent::NoticeChanged);
+        cx.emit(ShellEvent::Notice);
         cx.notify();
         self.notice_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(NOTICE_LIFETIME).await;
             let _ = this.update(cx, |this, cx| {
                 this.notice = None;
-                cx.emit(ShellEvent::NoticeChanged);
+                cx.emit(ShellEvent::Notice);
                 cx.notify();
             });
         }));
@@ -304,7 +277,7 @@ impl ShellStore {
             self.prefs.library_width(),
         ));
         self.context.retarget(open_width(
-            self.prefs.context_open() && !self.narrow,
+            self.prefs.context_open() && !self.narrow && !self.context_only,
             self.prefs.context_width(),
         ));
         self.start(cx);

@@ -2353,10 +2353,18 @@ fn cli_and_mcp_framed_clients_share_one_locald_service_adapter() {
         .join()
         .unwrap_or_else(|_| panic!("mcp server thread"));
     assert_eq!(cli_reply, mcp_reply);
-    assert!(matches!(
-        cli_reply.reply,
-        backend_library::CommandReply::Health(_)
-    ));
+    // The owner answers `Health` with a constant-size readiness report; the
+    // whole-view `Health` shape is the compatibility spelling a legacy peer
+    // may still send. Both are the same command, and this case is about the
+    // two transports agreeing, not about which of the two shapes arrived.
+    assert!(
+        matches!(
+            cli_reply.reply,
+            backend_library::CommandReply::Readiness(_) | backend_library::CommandReply::Health(_)
+        ),
+        "a framed health request answered with something other than health: {:?}",
+        cli_reply.reply
+    );
 
     drop(service);
     std::fs::remove_dir_all(path).unwrap_or_else(|error| panic!("cleanup framed service: {error}"));

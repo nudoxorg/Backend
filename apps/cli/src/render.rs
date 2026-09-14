@@ -1,19 +1,16 @@
 //! Rendering: one presentation answer becomes bytes on a stream.
 //!
-//! This module contains no layout. Human output is
-//! [`backend_present::text`], Markdown output is
-//! [`backend_present::markdown`] — the same function the MCP text block calls
-//! — and JSON is the typed DTO projection. All this module decides is which of
-//! the three the caller asked for, and what exit code a fault means.
+//! This module contains no layout and no dispatch. Human output is
+//! [`backend_present::text::answer`], Markdown output is
+//! [`backend_present::markdown::answer`] — the same function the MCP text block
+//! calls — and JSON is [`backend_present::answer_value`], the same value the
+//! MCP puts in `structuredContent`. All this module decides is which of the
+//! three the caller asked for, and what exit code a fault means.
 
-use backend_present::{
-    Fault, FaultSlug, OutlineDto, PageDto, ProductDto, RecordListDto, ShelfDto, StatusDto,
-    markdown, text,
-};
+use backend_present::{Answer, Fault, FaultSlug, answer_value, fault_value, markdown, text};
 use std::process::ExitCode;
 
 use crate::options::{Format, Options};
-use crate::run::Answer;
 
 /// The process answered the question.
 pub const EXIT_OK: u8 = 0;
@@ -28,49 +25,22 @@ pub const EXIT_USAGE: u8 = 64;
 #[must_use]
 pub fn answer(answer: &Answer, options: &Options) -> String {
     match options.format() {
-        Format::Human => human(answer, options),
+        Format::Human => text::answer(answer, options.theme()),
         Format::Markdown => markdown_text(answer),
         Format::Json => json(answer),
-    }
-}
-
-fn human(answer: &Answer, options: &Options) -> String {
-    let theme = options.theme();
-    match answer {
-        Answer::Page(page) => text::page(page, theme),
-        Answer::Records(list) => text::records(list, None, theme),
-        Answer::Shelf(shelf) => text::shelf(shelf, theme),
-        Answer::Outline(tree) => text::outline(tree, theme),
-        Answer::Status(status) => text::status(status, theme),
-        Answer::Product(view) => text::product(view, theme),
     }
 }
 
 /// Renders one answer as the exact Markdown the MCP text block carries.
 #[must_use]
 pub fn markdown_text(answer: &Answer) -> String {
-    match answer {
-        Answer::Page(page) => markdown::page(page),
-        Answer::Records(list) => markdown::records(list, None),
-        Answer::Shelf(shelf) => markdown::shelf(shelf),
-        Answer::Outline(tree) => markdown::outline(tree),
-        Answer::Status(status) => markdown::status(status),
-        Answer::Product(view) => markdown::product(view),
-    }
+    markdown::answer(answer)
 }
 
 /// Renders one answer as the stable typed JSON projection.
 #[must_use]
 pub fn json(answer: &Answer) -> String {
-    let value = match answer {
-        Answer::Page(page) => tagged("page", &PageDto::new(page)),
-        Answer::Records(list) => tagged("records", &RecordListDto::new(list)),
-        Answer::Shelf(shelf) => tagged("shelf", &ShelfDto::new(shelf)),
-        Answer::Outline(tree) => tagged("outline", &OutlineDto::new(tree)),
-        Answer::Status(status) => tagged("status", &StatusDto::new(status)),
-        Answer::Product(view) => tagged("product", &ProductDto::new(view)),
-    };
-    encode(&value)
+    encode(&answer_value(answer))
 }
 
 /// Renders one fault in the caller's chosen format.
@@ -79,7 +49,7 @@ pub fn fault(fault: &Fault, options: &Options) -> String {
     match options.format() {
         Format::Human => text::fault(fault, options.theme()),
         Format::Markdown => markdown::fault(fault),
-        Format::Json => encode(&tagged("fault", &backend_present::FaultDto::new(fault))),
+        Format::Json => encode(&fault_value(fault)),
     }
 }
 
@@ -95,18 +65,6 @@ pub fn exit_code(fault: &Fault) -> ExitCode {
         FaultSlug::Endpoint | FaultSlug::Transport => EXIT_IO,
         _ => EXIT_REFUSED,
     })
-}
-
-fn tagged<T: serde::Serialize>(kind: &str, value: &T) -> serde_json::Value {
-    let mut body = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-    if let serde_json::Value::Object(fields) = &mut body {
-        fields.insert(
-            "kind".to_owned(),
-            serde_json::Value::String(kind.to_owned()),
-        );
-        return serde_json::Value::Object(fields.clone());
-    }
-    serde_json::json!({ "kind": kind, "value": body })
 }
 
 fn encode(value: &serde_json::Value) -> String {

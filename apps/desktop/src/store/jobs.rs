@@ -10,9 +10,9 @@
 
 use super::events::JobsEvent;
 use super::service::{Endpoint, Outcome, Request};
-use crate::presentation::fault::{self, Fault, Operand};
-use crate::presentation::identity::Identity;
-use crate::presentation::shelf::Shelf;
+use crate::presentation::fault::{headline, wrong_shape};
+use crate::presentation::project;
+use backend_present::{Coordinate, Fault, Identity, Operand, Readiness, Shelf};
 use gpui::AppContext as _;
 use gpui::{Context, EventEmitter, Task};
 
@@ -55,16 +55,6 @@ pub(crate) struct Job {
 }
 
 impl Job {
-    /// Returns the project path or package coordinate.
-    pub(crate) fn coordinate(&self) -> &str {
-        &self.coordinate
-    }
-
-    /// Returns what the job is doing.
-    pub(crate) const fn kind(&self) -> JobKind {
-        self.kind
-    }
-
     /// Returns how far along the job is.
     pub(crate) const fn state(&self) -> &JobState {
         &self.state
@@ -72,10 +62,11 @@ impl Job {
 
     /// Returns the one-line label shown in the status bar.
     pub(crate) fn line(&self) -> String {
-        let name = Identity::parse(&self.coordinate).project_name().to_owned();
+        let identity = Identity::parse(&self.coordinate);
+        let name = identity.name().to_owned();
         match &self.state {
             JobState::Submitted | JobState::Accepted => format!("{} {name}…", self.kind.verb()),
-            JobState::Failed(fault) => format!("{name}: {}", fault.headline()),
+            JobState::Failed(fault) => format!("{name}: {}", headline(fault)),
         }
     }
 }
@@ -99,11 +90,6 @@ impl JobsStore {
         }
     }
 
-    /// Returns every job, in submission order.
-    pub(crate) fn jobs(&self) -> &[Job] {
-        &self.jobs
-    }
-
     /// Returns the coordinates of jobs that have no shelf row yet.
     pub(crate) fn requested(&self) -> Vec<String> {
         self.jobs
@@ -123,11 +109,16 @@ impl JobsStore {
     }
 
     /// Merges requested and failed projects into a projected shelf.
-    pub(crate) fn merge(&self, shelf: Shelf) -> Shelf {
-        let mut merged = shelf.with_requested(&self.requested());
+    ///
+    /// The published shelf says what the engine committed. A window also knows
+    /// what its reader just asked for, and a project whose index request was
+    /// accepted a second ago belongs on the shelf marked `requested` rather
+    /// than being invisible until the first rows land.
+    pub(crate) fn merge(&self, published: &Shelf) -> Shelf {
+        let mut merged = project::with_requested(published, &self.requested());
         for job in &self.jobs {
             if let JobState::Failed(fault) = &job.state {
-                merged = merged.with_failure(&job.coordinate, fault.as_ref().clone());
+                merged = project::with_failure(&merged, &job.coordinate, fault.as_ref());
             }
         }
         merged
@@ -161,24 +152,14 @@ impl JobsStore {
         self.running.push(task);
     }
 
-    /// Drops a job the reader has acknowledged.
-    pub(crate) fn dismiss(&mut self, coordinate: &str, cx: &mut Context<Self>) {
-        self.jobs.retain(|job| job.coordinate != coordinate);
-        cx.emit(JobsEvent::Changed);
-        cx.notify();
-    }
-
     /// Drops jobs whose project the shelf now reports as ready.
-    pub(crate) fn reconcile(&mut self, shelf: &Shelf, cx: &mut Context<Self>) {
+    pub(crate) fn reconcile(&mut self, published: &Shelf, cx: &mut Context<Self>) {
         let before = self.jobs.len();
         self.jobs.retain(|job| match job.kind {
-            JobKind::Index => !shelf.find(&job.coordinate).is_some_and(|entry| {
-                matches!(
-                    entry.readiness(),
-                    crate::presentation::shelf::Readiness::Ready
-                ) && entry.declarations() > 0
+            JobKind::Index => !project::find(published, &job.coordinate).is_some_and(|entry| {
+                matches!(entry.readiness(), Readiness::Ready) && entry.declarations().get() > 0
             }),
-            JobKind::Remove => shelf.find(&job.coordinate).is_some(),
+            JobKind::Remove => project::find(published, &job.coordinate).is_some(),
         });
         if self.jobs.len() != before {
             cx.emit(JobsEvent::Changed);
@@ -197,8 +178,11 @@ impl JobsStore {
         };
         job.state = match outcome {
             Ok(Outcome::Accepted) => JobState::Accepted,
-            Ok(_) => JobState::Failed(Box::new(unexpected(coordinate))),
-            Err(error) => JobState::Failed(Box::new(fault::from_client(
+            Ok(_) => JobState::Failed(Box::new(wrong_shape(
+                operand_for(coordinate),
+                "an accepted intent",
+            ))),
+            Err(error) => JobState::Failed(Box::new(Fault::from_client_error(
                 &error,
                 operand_for(coordinate),
             ))),
@@ -209,18 +193,5 @@ impl JobsStore {
 }
 
 fn operand_for(coordinate: &str) -> Operand {
-    Operand::Project {
-        name: Identity::parse(coordinate).project_name().to_owned(),
-        spelling: coordinate.to_owned(),
-    }
-}
-
-fn unexpected(coordinate: &str) -> Fault {
-    Fault::new(
-        fault::Severity::Fault,
-        operand_for(coordinate),
-        "The service answered with something else",
-        "an intent request returned a reply shape this build does not admit",
-        vec![fault::Affordance::Retry],
-    )
+    Operand::Coordinate(Coordinate::new(coordinate))
 }

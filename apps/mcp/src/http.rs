@@ -3,7 +3,7 @@
 //! The transport owns connection/session concerns only. Every request still
 //! enters the same JSON-RPC server and typed product session as stdio MCP.
 
-use crate::jsonrpc::Server;
+use crate::jsonrpc::{SessionProduct, Server};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
@@ -103,12 +103,15 @@ impl SessionId {
     }
 }
 
+/// The live MCP sessions, each owning one connected daemon session.
+type LiveSessions = HashMap<SessionId, Arc<Mutex<Server<SessionProduct>>>>;
+
 struct Sessions {
     endpoint: PathBuf,
     project: String,
     token: BearerToken,
     next_id: AtomicU64,
-    live: Mutex<HashMap<SessionId, Arc<Mutex<Server<Session>>>>>,
+    live: Mutex<LiveSessions>,
     request_capacity: Arc<tokio::sync::Semaphore>,
 }
 
@@ -164,7 +167,7 @@ impl Sessions {
             Ok(product) => product,
             Err(error) => return rpc_error(StatusCode::BAD_GATEWAY, -32603, &error.to_string()),
         };
-        let mut server = Server::new(product, self.project.clone());
+        let mut server = Server::new(SessionProduct::new(product), self.project.clone());
         let reply = server.handle(body);
         let initialized = reply
             .as_ref()

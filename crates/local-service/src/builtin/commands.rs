@@ -1986,7 +1986,7 @@ impl CommandAdapter {
             .library()
             .execute(command.clone())
             .unwrap_or_else(|error| CommandReply::Error(error.to_string()));
-        let reply = semantic_readiness(reply, &self.remote_semantic, &self.compiler)?;
+        let reply = semantic_readiness(reply, daemon, &self.remote_semantic, &self.compiler)?;
         Self::certify(daemon, command, reply, certificate)
     }
 
@@ -2009,6 +2009,7 @@ impl CommandAdapter {
 
 fn semantic_readiness(
     reply: CommandReply,
+    daemon: &ProductDaemon,
     remote: &super::query::RemoteSemantic,
     compiler: &LocalCompilerClient,
 ) -> Result<CommandReply, BuiltinModelError> {
@@ -2030,6 +2031,12 @@ fn semantic_readiness(
         report.coverage(),
         super::SemanticDeployment::from_remote(remote),
     );
+    // Progress is read out of the committed source relation rather than out of
+    // a counter the scan kept, so it describes the revision this very report
+    // names. `readiness_certificate` compares revision, basis, coverage, and
+    // row count; the counts are derived from the same owner snapshot, so they
+    // cannot disagree with the root the certificate commits to.
+    let progress = super::ingest_progress(&daemon.engine().daemon().owner().snapshot())?;
     Ok(CommandReply::Readiness(
         backend_engine::HealthReport::from_admitted_parts(
             report.revision(),
@@ -2037,7 +2044,8 @@ fn semantic_readiness(
             coverage.into_boxed_slice(),
             report.row_count(),
             capabilities,
-        ),
+        )
+        .with_progress(progress),
     ))
 }
 

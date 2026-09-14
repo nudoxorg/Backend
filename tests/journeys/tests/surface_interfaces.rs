@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 const AUTHORITY_SECRET: [u8; 32] = [0x5a; 32];
 const LOCALD_DEADLINE: Duration = Duration::from_secs(20);
 const COMMAND_DEADLINE: Duration = Duration::from_secs(20);
-const MCP_DEADLINE: Duration = Duration::from_secs(60);
+const MCP_DEADLINE: Duration = Duration::from_mins(1);
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,7 +144,7 @@ fn run_bounded(mut command: ProcessCommand, label: &str, deadline: Duration) -> 
 fn run_with_input(
     mut command: ProcessCommand,
     label: &str,
-    input: Vec<u8>,
+    input: &[u8],
     deadline: Duration,
 ) -> Output {
     command
@@ -162,7 +162,7 @@ fn run_with_input(
         .stdin
         .take()
         .expect("command stdin")
-        .write_all(&input)
+        .write_all(input)
         .unwrap_or_else(|error| panic!("write {label} stdin: {error}"));
     let mut stdout = child.stdout.take().expect("command stdout");
     let mut stderr = child.stderr.take().expect("command stderr");
@@ -272,6 +272,10 @@ fn coordinate() -> PackageCoordinate {
     PackageCoordinate::parse("pkg:cargo/example@1.0.0").expect("admit package coordinate")
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one literal per registry surface row is the point: a table, not a loop"
+)]
 fn surface_cases(root: &Path) -> Vec<SurfaceCase> {
     let package = package();
     let name = ProjectName::new("surface-project").expect("admit project name");
@@ -488,30 +492,54 @@ fn assert_surface_registry_matches_cases(cases: &[SurfaceCase]) {
     }
 }
 
+/// Checks one CLI answer against the *presentation* contract.
+///
+/// `--format json` deliberately no longer emits the wire reply: a consumer that
+/// bound to it would be binding to certificate claims, cursor internals, and
+/// request correlation, none of which are product facts. What it emits is the
+/// tagged presentation DTO, so that is what this asserts — the answer's own
+/// discriminator for a success, and the shared fault's slug and operand for a
+/// refusal. The typed `SurfaceReply` identity is still proven per case on the
+/// surface that still carries it verbatim, by `assert_mcp_surface_reply`.
 fn assert_cli_surface_reply(value: &Value, case: &SurfaceCase, label: &str, status: bool) {
-    assert_eq!(value["request_id"], 1, "{label} request identity changed");
     match case.expectation {
-        SurfaceExpectation::Result(expected) => {
+        SurfaceExpectation::Result(_) => {
             assert!(status, "{label} failed: {value}");
-            assert_eq!(value["reply"]["kind"], "surface", "{label} reply kind");
-            let typed = serde_json::from_value::<SurfaceReply>(value["reply"]["data"].clone())
-                .unwrap_or_else(|error| panic!("decode typed {label} reply: {error}; {value}"));
-            assert_eq!(typed.id(), case.command.id(), "{label} typed identity");
-            assert_eq!(
-                value["reply"]["data"]["result"], expected,
-                "{label} result tag"
+            assert_eq!(value["answer"], "product", "{label} answer kind");
+            assert!(
+                value["heading"].as_str().is_some_and(|heading| !heading.is_empty()),
+                "{label} published no heading: {value}"
             );
+            assert!(
+                value.get("certificate").is_none(),
+                "{label} leaked wire proof into the product JSON"
+            );
+            // A registry feed that does not publish a fact answers *with* that
+            // fact: the reply is a success and the view carries a typed
+            // lane-unavailable fault naming what was not recorded. That is the
+            // whole point of the model, so it is asserted rather than excluded.
+            if let Some(fault) = value.get("fault").filter(|fault| !fault.is_null()) {
+                assert!(
+                    fault["slug"].as_str().is_some_and(|slug| !slug.is_empty()),
+                    "{label} carried an untyped fault: {value}"
+                );
+                assert!(
+                    fault["operand"].as_str().is_some_and(|operand| !operand.is_empty()),
+                    "{label} carried a fault with no operand: {value}"
+                );
+                assert!(
+                    fault["detail"].as_str().is_some_and(|detail| !detail.is_empty()),
+                    "{label} carried a fault with no sentence: {value}"
+                );
+            }
         }
         SurfaceExpectation::TypedInvalidQuery(allowed_details) => {
             assert!(!status, "{label} unexpectedly succeeded: {value}");
-            assert_eq!(value["reply"]["kind"], "failed", "{label} failure kind");
-            assert_eq!(
-                value["reply"]["data"]["kind"], "invalid_query",
-                "{label} failure type"
-            );
-            let detail = value["reply"]["data"]["data"]["text"]
+            assert_eq!(value["answer"], "fault", "{label} answer kind");
+            assert_eq!(value["slug"], "invalid-query", "{label} failure class");
+            let detail = value["detail"]
                 .as_str()
-                .unwrap_or_else(|| panic!("{label} omitted typed failure detail: {value}"));
+                .unwrap_or_else(|| panic!("{label} omitted its cause sentence: {value}"));
             assert!(
                 allowed_details.iter().any(|needle| detail.contains(needle)),
                 "{label} failure changed its typed cause: {detail}"
@@ -623,7 +651,7 @@ fn run_mcp_surface_matrix(root: &Path, endpoint: &Path, project: &Path, cases: &
     let output = run_with_input(
         command,
         "MCP surface matrix",
-        mcp_surface_input(cases),
+        &mcp_surface_input(cases),
         MCP_DEADLINE,
     );
     assert!(
@@ -774,6 +802,10 @@ fn every_surface_variant_crosses_the_real_cli_and_mcp_processes() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one live daemon paged, resumed, and cancelled in one sequence"
+)]
 fn live_mcp_trustfall_pages_resume_cancel_and_preserve_request_identity() {
     let root = unique_root("trustfall");
     let project = write_rust_project(&root);

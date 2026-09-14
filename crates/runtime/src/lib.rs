@@ -58,7 +58,24 @@ pub const RUNTIME_DIR_ENV: &str = "XDG_RUNTIME_DIR";
 
 const STATE_DIRECTORY: &str = ".backend/v2";
 const AUTHORITY_FILE: &str = "authority.secret";
-const START_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a daemon that is still running may take to publish its endpoint.
+///
+/// Opening a cold workspace is bounded by how much the last revision wrote,
+/// not by a constant a surface can guess: a one-file project binds in
+/// milliseconds and a real crate's workspace has a persisted transition,
+/// relation roots, and a projection to re-admit first. A five-second budget
+/// looked correct against a demo project and turned a healthy reopen of
+/// `memchr` into `backend-locald did not open <socket>` — advice to re-run a
+/// command that was already working. A live child is evidence that startup is
+/// progressing, so waiting on it is not the same act as waiting on nothing.
+const LIVE_START_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long to keep waiting after the spawned child has exited.
+///
+/// A contender that won the owner lease can publish its listener shortly after
+/// this child gives up, so an exit is not yet proof that no owner will appear.
+/// It is proof that *this* process will not produce one, which is why the
+/// window after an exit is short and the window before it is not.
+const EXITED_START_GRACE: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// Domain separator so an endpoint digest can never be confused with another
 /// blake3 use of the same path bytes.
@@ -318,7 +335,7 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|source| RuntimeError::Spawn { executable, source })?;
-    let deadline = Instant::now() + START_TIMEOUT;
+    let mut deadline = Instant::now() + LIVE_START_TIMEOUT;
     let mut child_exit = None;
     loop {
         if UnixStream::connect(paths.endpoint()).is_ok() {
@@ -329,9 +346,10 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
         {
             // A concurrent caller may have won the owner lease while this
             // child was composing. Its listener can appear shortly after the
-            // losing child exits, so every contender shares the same bounded
-            // readiness deadline instead of failing early.
+            // losing child exits, so the wait continues for a short grace
+            // window rather than failing on the exit itself.
             child_exit = Some(status.code());
+            deadline = Instant::now() + EXITED_START_GRACE;
         }
         if Instant::now() >= deadline {
             return child_exit.map_or_else(

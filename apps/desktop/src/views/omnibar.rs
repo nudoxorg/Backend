@@ -6,26 +6,39 @@
 //! so a reader's eye never has to travel: the answer appears exactly beneath
 //! the question. Its first row is the coverage strip, which means the honest
 //! account of what was searched is read before the results are.
+//!
+//! A result row has no lane tag, and that absence is deliberate. Coverage is a
+//! property of the *reply*, not of a row — the engine does not say which lane
+//! found which declaration — so the strip at the head states it once and
+//! honestly, rather than every row carrying a guess. What each row does carry
+//! is what the engine did say about it: its kind, its language, and its
+//! publication state.
 
 use super::workspace::Workspace;
-use crate::presentation::status::Standing;
+use crate::motion::{Beat, once};
+use crate::presentation::chips::Standing;
+use crate::presentation::crumb;
 use crate::store::search::{CommandRow, Mode, Reply, ResultRow, SearchStore};
 use crate::store::shell::Focus;
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Chrome, Radius, Space, TypeScale, hairline, radius, space, type_size};
 use crate::ui::{button, chip, fault as fault_ui, glyph, specimen, surface, text};
-use backend_library::{CommandDomain, CommandSpec};
-use gpui::prelude::FluentBuilder as _;
+use backend_library::CommandDomain;
+use backend_present::domain_name;
 use gpui::Focusable as _;
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    AnimationExt as _, AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement,
+    IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use gpui_elements::editable_text::text_input;
 
 /// Space reserved on the left of the titlebar for the platform's window buttons.
 const TRAFFIC_LIGHTS: f32 = 78.0;
+
+/// Character budget for a result row's second line.
+const PREVIEW: usize = 120;
 
 impl Workspace {
     /// Returns the titlebar row: window buttons, the omnibar, and the shell keys.
@@ -53,6 +66,11 @@ impl Workspace {
 
     fn titlebar_keys(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let appearance = self.shell.read(cx).prefs().appearance();
+        let mark = if appearance.is_dark() {
+            crate::ui::icon::Icon::Moon
+        } else {
+            crate::ui::icon::Icon::Sun
+        };
         div()
             .flex_none()
             .w(px(TRAFFIC_LIGHTS))
@@ -61,20 +79,21 @@ impl Workspace {
             .justify_end()
             .gap(space(Space::Tight))
             .child(
-                button::icon_button(theme, "appearance", if appearance.is_dark() { crate::ui::icon::Icon::Moon } else { crate::ui::icon::Icon::Sun })
-                    .on_click(cx.listener(|this, _, _, cx| {
+                button::icon_button(theme, "appearance", mark).on_click(cx.listener(
+                    |this, _, _, cx| {
                         this.shell.update(cx, |shell, cx| {
                             let next = shell.prefs().appearance().flipped();
                             shell.set_appearance(next, cx);
                         });
-                    })),
-            )
-            .child(
-                button::icon_button(theme, "settings", crate::ui::icon::Icon::Gear).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.shell.update(cx, |shell, cx| shell.toggle_settings(cx));
                     },
                 )),
+            )
+            .child(
+                button::icon_button(theme, "settings", crate::ui::icon::Icon::Gear).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.shell.update(cx, super::super::store::shell::ShellStore::toggle_settings);
+                    }),
+                ),
             )
     }
 
@@ -104,7 +123,7 @@ impl Workspace {
             .on_click(cx.listener(|this, _, window, cx| {
                 this.focus_omnibar_from_click(window, cx);
             }))
-            .child(self.omnibar_nib(theme, &mode))
+            .child(Self::omnibar_nib(theme, &mode))
             .when_some(scope_of(&mode), |bar, project| {
                 bar.child(chip::scope_chip(theme, &project))
             })
@@ -123,18 +142,23 @@ impl Workspace {
             .child(button::key_hint(theme, "⌘K"))
     }
 
-    fn omnibar_nib(&self, theme: &Theme, mode: &Mode) -> Div {
+    /// Returns the mark that says what the field is currently for.
+    ///
+    /// Deliberately never the character the reader typed. An earlier version
+    /// drew `›` for palette mode, which sat directly beside the `>` in the
+    /// field and read as a stutter. The mark names the *mode*; the field shows
+    /// the text.
+    fn omnibar_nib(theme: &Theme, mode: &Mode) -> Div {
         let (mark, role) = match mode {
-            Mode::Palette => ("›", Paint::Gilt),
-            Mode::Scoped { .. } => ("@", Paint::Gilt),
-            Mode::Search => ("⌕", Paint::TextFaint),
+            Mode::Palette => (crate::ui::icon::Icon::Command, Paint::Gilt),
+            Mode::Scoped { .. } => (crate::ui::icon::Icon::Folder, Paint::Gilt),
+            Mode::Search => (crate::ui::icon::Icon::Search, Paint::TextFaint),
         };
         div()
             .flex_none()
-            .text_size(type_size(TypeScale::Interface))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(theme.paint(role))
-            .child(mark)
+            .flex()
+            .items_center()
+            .child(crate::ui::icon::sized(theme, mark, 13.0, role))
     }
 
     fn focus_omnibar_from_click(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -142,7 +166,7 @@ impl Workspace {
         window.focus(&handle, cx);
         self.shell
             .update(cx, |shell, cx| shell.focus_on(Focus::Omnibar, cx));
-        self.search.update(cx, |search, cx| search.open(cx));
+        self.search.update(cx, SearchStore::open);
     }
 }
 
@@ -158,14 +182,26 @@ impl Workspace {
         if !self.search.read(cx).is_open() {
             return div();
         }
+        let reduced = theme.reduced_motion();
         div()
             .absolute()
-            .top(px(Chrome::TITLEBAR + 4.0))
-            .left_0()
-            .right_0()
-            .flex()
-            .justify_center()
+            .inset_0()
             .child(
+                surface::scrim(theme)
+                    .id("omnibar-scrim")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.dismiss_sheet_from_scrim(window, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(Chrome::TITLEBAR + 4.0))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(
                 surface::raised(theme)
                     .id("omnibar-sheet")
                     .w(px(Chrome::SHEET))
@@ -174,7 +210,15 @@ impl Workspace {
                     .flex_col()
                     .overflow_hidden()
                     .child(self.sheet_head(theme, cx))
-                    .child(self.sheet_body(theme, cx)),
+                    .child(self.sheet_body(theme, cx))
+                    .with_animation(
+                        "omnibar-sheet-drop",
+                        once(Beat::Unfold, reduced),
+                        move |sheet, delta| {
+                            sheet.opacity(crate::motion::entering_opacity(delta))
+                        },
+                    ),
+            ),
             )
     }
 
@@ -189,13 +233,11 @@ impl Workspace {
             .py(space(Space::Snug))
             .border_b(hairline())
             .border_color(theme.paint(Paint::Hairline))
-            .child(
-                text::faint(theme).child(match search.parsed().mode() {
-                    Mode::Palette => "commands".to_owned(),
-                    Mode::Scoped { project } => format!("in {project}"),
-                    Mode::Search => "declarations".to_owned(),
-                }),
-            )
+            .child(text::faint(theme).child(match search.parsed().mode() {
+                Mode::Palette => format!("commands · {}", backend_present::registry_size()),
+                Mode::Scoped { project } => format!("in {project}"),
+                Mode::Search => "declarations".to_owned(),
+            }))
             .child(div().flex_1())
             .children(
                 search
@@ -210,22 +252,27 @@ impl Workspace {
 
     fn sheet_body(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let reply = self.search.read(cx).reply().clone();
-        let rows = match self.search.read(cx).parsed().mode() {
+        let (rows, selected_child) = match self.search.read(cx).parsed().mode() {
             Mode::Palette => self.palette_rows(theme, cx),
-            _ => self.result_rows(theme, cx),
+            Mode::Search | Mode::Scoped { .. } => self.result_rows(theme, cx),
         };
+        self.reveal_row(selected_child);
         div()
             .id("omnibar-rows")
             .flex_1()
             .min_h(px(0.0))
             .overflow_y_scroll()
+            .track_scroll(&self.sheet_scroll)
             .flex()
             .flex_col()
             .py(space(Space::Tight))
             .children(rows)
+            .when(self.search.read(cx).has_more(), |body| {
+                body.child(more_rows(theme))
+            })
             .when_some(self.sheet_notice(theme, cx), ParentElement::child)
             .when(!matches!(reply, Reply::Idle), |body| {
-                body.child(self.palette_reply(theme, &reply))
+                body.child(Self::palette_reply(theme, &reply))
             })
     }
 
@@ -246,25 +293,57 @@ impl Workspace {
         Some(empty_sheet(theme, search).into_any_element())
     }
 
-    fn result_rows(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// Scrolls the row Return would act on into view when the selection moves.
+    ///
+    /// Without this the sheet opens wherever it was last left — for a
+    /// thirty-five row palette that means opening at the bottom, with the
+    /// selected row off screen and the arrow keys apparently doing nothing.
+    /// It only scrolls when the selection actually changed, so a reader who
+    /// scrolls the sheet by hand is not fought.
+    fn reveal_row(&mut self, child: Option<usize>) {
+        let Some(child) = child else {
+            self.revealed_row = None;
+            return;
+        };
+        if self.revealed_row == Some(child) {
+            return;
+        }
+        self.sheet_scroll.scroll_to_item(child);
+        self.revealed_row = Some(child);
+    }
+
+    fn result_rows(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> (Vec<AnyElement>, Option<usize>) {
         let search = self.search.read(cx);
         let selected = search.selected();
+        let reduced = theme.reduced_motion();
         let rows: Vec<ResultRow> = search.results().to_vec();
-        rows.into_iter()
+        let child = (selected < rows.len()).then_some(selected);
+        let elements = rows
+            .into_iter()
             .enumerate()
-            .map(|(at, row)| self.result_row(theme, at, &row, at == selected, cx))
-            .collect()
+            .map(|(at, row)| Self::result_row(theme, at, &row, at == selected, reduced, cx))
+            .collect();
+        (elements, child)
     }
 
     fn result_row(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         at: usize,
         row: &ResultRow,
         selected: bool,
+        reduced: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let symbol = row.symbol();
+        let record = row.record();
+        let second = record.signature().map_or_else(
+            || crumb::compact(record.identity()),
+            |signature| specimen::preview(signature, PREVIEW),
+        );
         div()
             .id(ElementId::Name(SharedString::from(format!("result-{at}"))))
             .flex()
@@ -281,7 +360,12 @@ impl Workspace {
                     this.set_field(String::new(), cx);
                 }
             }))
-            .child(div().pt(px(2.0)).child(glyph::kind_tile(theme, row.kind(), false)))
+            .child(nib(theme, at, selected, reduced))
+            .child(
+                div()
+                    .pt(px(2.0))
+                    .child(glyph::kind_tile(theme, record.kind(), false)),
+            )
             .child(
                 div()
                     .flex_1()
@@ -293,36 +377,65 @@ impl Workspace {
                     .child(
                         text::single_line(text::dim(theme))
                             .font_family(theme.specimen())
-                            .child(row.preview().to_owned()),
+                            .child(second),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .pt(px(2.0))
+                    .flex()
+                    .items_center()
+                    .gap(space(Space::Tight))
+                    .child(glyph::language_tag(theme, record.language()))
+                    .child(
+                        text::faint(theme)
+                            .flex_none()
+                            .child(record.state().name().to_owned()),
                     ),
             )
             .into_any_element()
     }
 
-    fn palette_rows(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// Returns the palette rows and the child index of the selected one.
+    ///
+    /// The two differ: domain headers are children too, so the selected
+    /// command's position in the list is not its position among the children
+    /// the sheet scrolls through.
+    fn palette_rows(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> (Vec<AnyElement>, Option<usize>) {
         let search = self.search.read(cx);
         let selected = search.selected();
+        let reduced = theme.reduced_motion();
         let rows: Vec<CommandRow> = search.commands().to_vec();
         let mut elements = Vec::with_capacity(rows.len().saturating_add(5));
         let mut domain: Option<CommandDomain> = None;
+        let mut child = None;
         for (at, row) in rows.into_iter().enumerate() {
             if domain != Some(row.domain()) {
                 domain = Some(row.domain());
                 elements.push(domain_header(theme, row.domain()));
             }
-            elements.push(self.palette_row(theme, at, row.spec(), at == selected, cx));
+            if at == selected {
+                child = Some(elements.len());
+            }
+            elements.push(Self::palette_row(theme, at, row, at == selected, reduced, cx));
         }
-        elements
+        (elements, child)
     }
 
     fn palette_row(
-        &mut self,
-        theme: &Theme,
+                theme: &Theme,
         at: usize,
-        spec: CommandSpec,
+        row: CommandRow,
         selected: bool,
+        reduced: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let spec = row.spec();
         div()
             .id(ElementId::Name(SharedString::from(format!("command-{at}"))))
             .flex()
@@ -330,13 +443,15 @@ impl Workspace {
             .gap(space(Space::Snug))
             .px(space(Space::Room))
             .py(space(Space::Snug))
-            .when(selected, |row| row.bg(theme.paint(Paint::Selected)))
+            .when(selected, |element| {
+                element.bg(theme.paint(Paint::Selected))
+            })
             .hover(|style| style.bg(theme.paint(Paint::Hover)))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.search.update(cx, |search, cx| search.run(spec, cx));
+                this.search.update(cx, |search, cx| search.run(row, cx));
             }))
-            .child(nib(theme, selected))
+            .child(nib(theme, at, selected, reduced))
             .child(
                 div()
                     .flex_1()
@@ -354,15 +469,19 @@ impl Workspace {
             .child(
                 div()
                     .flex_none()
+                    .max_w(px(280.0))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
                     .font_family(theme.specimen())
                     .text_size(type_size(TypeScale::Micro))
                     .text_color(theme.paint(Paint::TextFaint))
-                    .child(spec.name.to_owned()),
+                    .child(row.grammar().usage()),
             )
             .into_any_element()
     }
 
-    fn palette_reply(&self, theme: &Theme, reply: &Reply) -> AnyElement {
+    fn palette_reply(theme: &Theme, reply: &Reply) -> AnyElement {
         let body = div()
             .px(space(Space::Room))
             .py(space(Space::Snug))
@@ -373,7 +492,9 @@ impl Workspace {
             .gap(space(Space::Snug));
         match reply {
             Reply::Idle => div().into_any_element(),
-            Reply::Running(_) => body.child(text::dim(theme).child("Running…")).into_any_element(),
+            Reply::Running(_) => body
+                .child(text::dim(theme).child("Running…"))
+                .into_any_element(),
             Reply::Guidance(message) => body
                 .child(text::dim(theme).child(message.clone()))
                 .into_any_element(),
@@ -418,7 +539,7 @@ fn trail_line(theme: &Theme, row: &ResultRow) -> Div {
         )
         .child(
             text::single_line(text::faint(theme))
-                .child(text::elide(&identity.compact(), 72).to_string()),
+                .child(text::elide(&crumb::compact(identity), 72).to_string()),
         )
 }
 
@@ -430,32 +551,32 @@ fn domain_header(theme: &Theme, domain: CommandDomain) -> AnyElement {
         .child(
             text::faint(theme)
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(domain_name(domain)),
+                .child(domain_name(domain).to_ascii_uppercase()),
         )
         .into_any_element()
 }
 
-const fn domain_name(domain: CommandDomain) -> &'static str {
-    match domain {
-        CommandDomain::Library => "LIBRARY",
-        CommandDomain::Registry => "REGISTRY",
-        CommandDomain::Home => "HOME",
-        CommandDomain::Session => "SESSION",
-        CommandDomain::System => "SYSTEM",
+/// Returns the gilt nib that springs open beside the selected command.
+///
+/// The nib is the only moving thing in the palette, and it moves for one
+/// reason: it is the answer to "which row does Return run?". Under reduced
+/// motion the same element appears at full height on the first frame.
+fn nib(theme: &Theme, at: usize, selected: bool, reduced: bool) -> AnyElement {
+    if !selected {
+        return div().flex_none().w(px(2.0)).h(px(18.0)).into_any_element();
     }
-}
-
-fn nib(theme: &Theme, selected: bool) -> Div {
     div()
         .flex_none()
         .w(px(2.0))
         .h(px(18.0))
         .rounded_full()
-        .bg(if selected {
-            theme.paint(Paint::Gilt)
-        } else {
-            gpui::transparent_black()
-        })
+        .bg(theme.paint(Paint::Gilt))
+        .with_animation(
+            ElementId::Name(SharedString::from(format!("palette-nib-{at}"))),
+            once(Beat::Touch, reduced),
+            |element, delta| element.h(px(4.0 + 14.0 * delta)),
+        )
+        .into_any_element()
 }
 
 fn empty_sheet(theme: &Theme, search: &SearchStore) -> Div {
@@ -479,14 +600,26 @@ fn empty_sheet(theme: &Theme, search: &SearchStore) -> Div {
         })
 }
 
+/// Returns the line that says the service held rows back beyond this page.
+///
+/// A bounded reply that stops at its limit and says nothing about it reads as
+/// "that is all there is". This row is the difference between a complete
+/// answer and a first page.
+fn more_rows(theme: &Theme) -> Div {
+    div()
+        .px(space(Space::Room))
+        .py(space(Space::Snug))
+        .border_t(hairline())
+        .border_color(theme.paint(Paint::Hairline))
+        .child(
+            text::faint(theme)
+                .child("More declarations match than this page holds. Narrow the text to see them."),
+        )
+}
+
 fn scope_of(mode: &Mode) -> Option<String> {
     match mode {
         Mode::Scoped { project } => Some(project.clone()),
-        _ => None,
+        Mode::Search | Mode::Palette => None,
     }
-}
-
-/// Returns the signature preview builder the sheet shares with the reader.
-pub(super) fn preview_line(theme: &Theme, signature: &crate::presentation::signature::Signature) -> Div {
-    specimen::signature_line(theme, signature, TypeScale::Small)
 }

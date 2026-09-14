@@ -106,28 +106,14 @@ impl fmt::Display for RetainedDeclarations {
 /// large checkout made the project unindexable.  The file instead keeps its
 /// place in the frontier and states, in typed form, what could not be known
 /// about it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SourceUnavailableReason {
-    /// The file could not be opened or read.
-    Unreadable,
-    /// The bytes are not valid UTF-8 text.
-    NotText,
-    /// The file is larger than the bounded per-file ingest limit.
-    TooLarge,
-    /// The language frontend rejected the file's contents.
-    Unparsed,
-}
-
-impl fmt::Display for SourceUnavailableReason {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unreadable => formatter.write_str("unreadable"),
-            Self::NotText => formatter.write_str("not text"),
-            Self::TooLarge => formatter.write_str("too large"),
-            Self::Unparsed => formatter.write_str("unparsed"),
-        }
-    }
-}
+///
+/// The vocabulary itself lives in the portable product contract rather than
+/// here. It is written into a canonical relation row *and* rendered by every
+/// surface, and two copies of a closed four-variant terminal set are two
+/// copies that can drift: a fifth reason added on one side is a silent gap on
+/// the other. The relation owns the *encoding* of these discriminants; the
+/// product contract owns the set.
+pub use backend_library::SourceUnavailableReason;
 
 /// How much of a source file's extracted detail one relation row retains.
 ///
@@ -442,12 +428,29 @@ impl ProductSourceRecord {
         if let Ok(record) = build(Arc::clone(&names_only), DeclarationRetention::NamesOnly) {
             return Ok(record);
         }
+        // The prefix search must weigh the retention the record will really
+        // carry. Probing with `NamesOnly` and then writing `Truncated` picks a
+        // prefix that fits without the two retained/extracted counts and then
+        // adds them, so the largest prefix overshoots the node by exactly
+        // those bytes and the whole shedding ladder ends in the rejection it
+        // exists to avoid. `RetainedDeclarations` is fixed width, so the
+        // encoded size of a candidate depends only on its length and the
+        // search stays monotone.
+        let extracted_count =
+            u32::try_from(extracted.len()).map_err(|_| "extracted declaration count overflow")?;
+        let truncated_retention = |length: usize| {
+            u32::try_from(length)
+                .ok()
+                .and_then(|retained| RetainedDeclarations::new(retained, extracted_count).ok())
+                .map(DeclarationRetention::Truncated)
+        };
         let retained = largest_fitting_prefix(&names_only, |prefix| {
-            build(prefix, DeclarationRetention::NamesOnly).is_ok()
+            truncated_retention(prefix.len())
+                .is_some_and(|retention| build(prefix, retention).is_ok())
         });
         let counts = RetainedDeclarations::new(
             u32::try_from(retained).map_err(|_| "retained declaration count overflow")?,
-            u32::try_from(extracted.len()).map_err(|_| "extracted declaration count overflow")?,
+            extracted_count,
         )?;
         build(
             names_only

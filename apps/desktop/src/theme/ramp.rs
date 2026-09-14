@@ -31,19 +31,9 @@ impl Hue {
         Self(value)
     }
 
-    /// Returns the angle in degrees.
-    pub(crate) const fn degrees_value(self) -> f32 {
-        self.0
-    }
-
     /// Returns the angle as the 0..1 turn fraction GPUI expects.
     pub(crate) fn turns(self) -> f32 {
         (self.0 / 360.0).rem_euclid(1.0)
-    }
-
-    /// Returns this hue rotated by an angle in degrees.
-    pub(crate) fn rotated(self, degrees: f32) -> Self {
-        Self(self.0 + degrees)
     }
 }
 
@@ -61,11 +51,6 @@ impl Chroma {
     pub(crate) const fn get(self) -> f32 {
         self.0
     }
-
-    /// Returns this chroma scaled by a factor, for muted variants of a ramp.
-    pub(crate) fn scaled(self, factor: f32) -> Self {
-        Self(self.0 * factor)
-    }
 }
 
 /// One tone position on a ramp. [`Step::S0`] is the darkest tone.
@@ -81,12 +66,8 @@ impl Step {
     pub(crate) const S2: Self = Self(2);
     /// Hover wash.
     pub(crate) const S3: Self = Self(3);
-    /// Hairline.
-    pub(crate) const S4: Self = Self(4);
     /// Strong hairline.
     pub(crate) const S5: Self = Self(5);
-    /// Faint text.
-    pub(crate) const S6: Self = Self(6);
     /// Dim text.
     pub(crate) const S7: Self = Self(7);
     /// Secondary text.
@@ -122,7 +103,7 @@ impl Ramp {
         hsla(
             self.hue.turns(),
             self.chroma.get(),
-            self.lightness(step),
+            Self::lightness(step),
             1.0,
         )
     }
@@ -132,7 +113,7 @@ impl Ramp {
         hsla(
             self.hue.turns(),
             self.chroma.get(),
-            self.lightness(step),
+            Self::lightness(step),
             alpha,
         )
     }
@@ -146,20 +127,7 @@ impl Ramp {
     }
 
     /// Returns the ladder lightness of one step.
-    pub(crate) fn lightness(self, step: Step) -> f32 {
+    fn lightness(step: Step) -> f32 {
         LADDER.get(step.index()).copied().unwrap_or(0.5)
-    }
-
-    /// Returns this ramp's hue.
-    pub(crate) const fn hue(self) -> Hue {
-        self.hue
-    }
-
-    /// Returns this ramp with its chroma replaced.
-    pub(crate) const fn with_chroma(self, chroma: Chroma) -> Self {
-        Self {
-            hue: self.hue,
-            chroma,
-        }
     }
 }

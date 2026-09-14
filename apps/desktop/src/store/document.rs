@@ -8,17 +8,21 @@
 //! cards share the same discipline on a smaller budget: a card is requested
 //! only after the pointer has rested, and the answer is remembered so the
 //! second hover costs nothing.
+//!
+//! The page itself is assembled by [`backend_present::page_from_document`] —
+//! the same function `backend page` and the MCP `backend.page` tool call — so
+//! this store's job is only to decide *which* replies to ask for and when to
+//! install them, never what they mean.
 
 use super::events::DocumentEvent;
 use super::service::{Endpoint, Outcome, Request};
-use super::workspace::WorkspaceStore;
-use crate::presentation::fault::{self, Fault, Operand};
-use crate::presentation::identity::Identity;
-use crate::presentation::page::{Page, RelationGroup, RelationLane};
-use backend_library::{DeclarationKind, RowId, SymbolKey};
+use super::workspace::{WorkspaceStore, coordinate_operand};
+use crate::presentation::fault::wrong_shape;
+use backend_library::{DeclarationKind, Row, SymbolKey};
+use backend_present::{Fault, Identity, Page, page_from_document};
 use gpui::AppContext as _;
-use gpui::{Entity, EventEmitter, Point, Pixels, ScrollHandle, Task};
 use gpui::Context;
+use gpui::{Entity, EventEmitter, Pixels, Point, ScrollHandle, Task};
 use std::time::Duration;
 
 /// How many pages are remembered across tabs.
@@ -26,6 +30,9 @@ const PAGE_CACHE: usize = 64;
 
 /// How many hover cards are remembered.
 const HOVER_CACHE: usize = 128;
+
+/// Character budget for a hover card's signature line.
+const CARD_PREVIEW: usize = 140;
 
 /// How long the pointer must rest before a hover card is requested.
 const HOVER_DELAY: Duration = Duration::from_millis(350);
@@ -66,8 +73,6 @@ impl Subject {
 pub(crate) enum Target {
     /// Replace what the active tab is showing.
     Here,
-    /// Open a new tab and make it active.
-    NewTab,
     /// Open a new tab behind the active one.
     Background,
 }
@@ -132,10 +137,10 @@ impl Tab {
 
     /// Returns the tab strip label.
     pub(crate) fn title(&self) -> String {
-        self.subject()
-            .map_or_else(|| "Untitled".to_owned(), |subject| {
-                subject.identity().name().to_owned()
-            })
+        self.subject().map_or_else(
+            || "Untitled".to_owned(),
+            |subject| subject.identity().name().to_owned(),
+        )
     }
 
     /// Returns whether there is anywhere to go back to.
@@ -198,11 +203,6 @@ pub(crate) struct Hover {
 }
 
 impl Hover {
-    /// Returns the declaration being described.
-    pub(crate) const fn symbol(&self) -> SymbolKey {
-        self.symbol
-    }
-
     /// Returns where the card should be anchored.
     pub(crate) const fn anchor(&self) -> Point<Pixels> {
         self.anchor
@@ -265,6 +265,16 @@ impl DocumentStore {
         self.hover.as_ref()
     }
 
+    /// Returns a value that changes whenever the shown page changes.
+    ///
+    /// The reader keys its fade on this, so a page that arrives fades in once
+    /// and a page that is merely re-rendered does not flicker.
+    pub(crate) fn generation(&self) -> u64 {
+        let tab = u64::try_from(self.active).unwrap_or(0);
+        self.tab()
+            .map_or(tab, |open| tab.wrapping_mul(1024).wrapping_add(open.generation))
+    }
+
     /// Returns whether nothing is open.
     pub(crate) fn is_empty(&self) -> bool {
         self.tabs.is_empty()
@@ -278,17 +288,15 @@ impl DocumentStore {
                     tab.push(subject);
                 }
             }
-            Target::Background => {
-                self.tabs.push(Tab::new(subject));
-            }
-            _ => {
+            Target::Background => self.tabs.push(Tab::new(subject)),
+            Target::Here => {
                 self.tabs.push(Tab::new(subject));
                 self.active = self.tabs.len().saturating_sub(1);
             }
         }
         let index = match target {
             Target::Background => self.tabs.len().saturating_sub(1),
-            _ => self.active,
+            Target::Here => self.active,
         };
         cx.emit(DocumentEvent::TabsChanged);
         cx.notify();
@@ -347,10 +355,13 @@ impl DocumentStore {
     /// Re-reads whatever the active tab is showing.
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         let index = self.active;
-        if let Some(tab) = self.tabs.get_mut(index) {
-            if let Some(coordinate) = tab.subject().map(|subject| subject.coordinate().to_owned()) {
-                self.pages.retain(|(key, _)| *key != coordinate);
-            }
+        if let Some(coordinate) = self
+            .tabs
+            .get(index)
+            .and_then(Tab::subject)
+            .map(|subject| subject.coordinate().to_owned())
+        {
+            self.pages.retain(|(key, _)| *key != coordinate);
         }
         self.load(index, cx);
     }
@@ -359,12 +370,7 @@ impl DocumentStore {
 /// Loading pages.
 impl DocumentStore {
     fn load(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(subject) = self
-            .tabs
-            .get(index)
-            .and_then(Tab::subject)
-            .cloned()
-        else {
+        let Some(subject) = self.tabs.get(index).and_then(Tab::subject).cloned() else {
             return;
         };
         match subject {
@@ -401,14 +407,14 @@ impl DocumentStore {
             return;
         }
         let generation = self.begin(index, &coordinate, cx);
-        let base = self.base_page(symbol, &coordinate, cx);
         let endpoint = self.endpoint.clone();
+        let wanted = coordinate.clone();
         let task = cx.spawn(async move |this, cx| {
             let parts = cx
-                .background_spawn(async move { fetch(&endpoint, symbol, &coordinate) })
+                .background_spawn(async move { fetch(&endpoint, symbol, &wanted) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.finish(index, generation, base, parts, cx);
+                this.finish(index, generation, symbol, &coordinate, parts, cx);
             });
         });
         self.loading.push(task);
@@ -425,45 +431,54 @@ impl DocumentStore {
         tab.generation
     }
 
-    fn base_page(&self, symbol: SymbolKey, coordinate: &str, cx: &Context<Self>) -> Page {
-        let workspace = self.workspace.read(cx);
-        workspace.row(RowId::Symbol(symbol)).map_or_else(
-            || Page::from_row(&placeholder_row(coordinate)),
-            |row| {
-                let children = workspace.children_of(symbol);
-                Page::from_row(row).with_members(&children)
-            },
-        )
-    }
-
     fn finish(
         &mut self,
         index: usize,
         generation: u64,
-        base: Page,
+        symbol: SymbolKey,
+        coordinate: &str,
         parts: Parts,
         cx: &mut Context<Self>,
     ) {
-        let Some(tab) = self.tabs.get_mut(index) else {
-            return;
-        };
-        if tab.generation != generation {
+        let stale = self
+            .tabs
+            .get(index)
+            .is_none_or(|tab| tab.generation != generation);
+        if stale {
             return;
         }
-        tab.pending = None;
-        let content = match parts.into_page(base, &self.workspace, cx) {
+        let content = match self.assemble(symbol, coordinate, parts, cx) {
             Ok(page) => {
-                let coordinate = page.identity().coordinate().to_owned();
-                self.remember(coordinate, page.clone());
+                self.remember(coordinate.to_owned(), page.clone());
                 Content::Page(Box::new(page))
             }
             Err(fault) => Content::Faulted(Box::new(fault)),
         };
         if let Some(tab) = self.tabs.get_mut(index) {
+            tab.pending = None;
             tab.content = content;
         }
         cx.emit(DocumentEvent::Navigated);
         cx.notify();
+    }
+
+    fn assemble(
+        &self,
+        symbol: SymbolKey,
+        coordinate: &str,
+        parts: Parts,
+        cx: &Context<Self>,
+    ) -> Result<Page, Fault> {
+        let document = parts.document?;
+        let workspace = self.workspace.read(cx);
+        let members = workspace.page_rows(symbol);
+        let relations = parts.relations.unwrap_or_default();
+        let page = page_from_document(coordinate, &document, &members, &relations, parts.notes);
+        let resolver = |name: &str| workspace.resolve_name(name);
+        Ok(match page.signature().cloned() {
+            Some(signature) => page.with_signature(signature.resolve_types(resolver)),
+            None => page,
+        })
     }
 
     fn cached(&self, coordinate: &str) -> Option<Page> {
@@ -492,7 +507,11 @@ impl DocumentStore {
         anchor: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        if self.hover.as_ref().is_some_and(|hover| hover.symbol == symbol) {
+        if self
+            .hover
+            .as_ref()
+            .is_some_and(|hover| hover.symbol == symbol)
+        {
             return;
         }
         let card = self
@@ -512,7 +531,7 @@ impl DocumentStore {
             return;
         }
         let endpoint = self.endpoint.clone();
-        let base = self.hover_base(symbol, &coordinate, cx);
+        let kind = self.workspace.read(cx).kind_of(symbol);
         self.hover_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(HOVER_DELAY).await;
             let outcome = cx
@@ -521,7 +540,7 @@ impl DocumentStore {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.install_card(symbol, coordinate, base, outcome, cx);
+                this.install_card(symbol, coordinate, kind, outcome, cx);
             });
         }));
     }
@@ -537,117 +556,92 @@ impl DocumentStore {
         cx.notify();
     }
 
-    fn hover_base(&self, symbol: SymbolKey, coordinate: &str, cx: &Context<Self>) -> Page {
-        let workspace = self.workspace.read(cx);
-        workspace
-            .row(RowId::Symbol(symbol))
-            .map_or_else(|| Page::from_row(&placeholder_row(coordinate)), Page::from_row)
-    }
-
     fn install_card(
         &mut self,
         symbol: SymbolKey,
         coordinate: String,
-        base: Page,
+        kind: Option<DeclarationKind>,
         outcome: Result<Outcome, backend_client::ClientError>,
         cx: &mut Context<Self>,
     ) {
-        let page = match outcome {
-            Ok(Outcome::Document(document)) => base.with_document(&document),
-            _ => base,
-        };
-        let card = HoverCard {
-            kind: page.kind(),
-            signature: page.signature().preview(140),
-            summary: page.summary(),
-            identity: page.identity().clone(),
+        let identity = Identity::parse(&coordinate);
+        let card = match outcome {
+            Ok(Outcome::Document(document)) => {
+                let page = page_from_document(&coordinate, &document, &[], &[], Vec::new());
+                HoverCard {
+                    kind: page.kind().or(kind),
+                    signature: page.signature().map_or_else(String::new, |signature| {
+                        crate::ui::specimen::preview(signature, CARD_PREVIEW)
+                    }),
+                    summary: crate::ui::prose::summary(page.prose()),
+                    identity,
+                }
+            }
+            _ => HoverCard {
+                kind,
+                signature: String::new(),
+                summary: None,
+                identity,
+            },
         };
         self.cards.retain(|(key, _)| *key != coordinate);
         self.cards.push((coordinate, card.clone()));
         while self.cards.len() > HOVER_CACHE {
             self.cards.remove(0);
         }
-        if let Some(hover) = self.hover.as_mut() {
-            if hover.symbol == symbol {
-                hover.card = Some(card);
-                cx.emit(DocumentEvent::HoverChanged);
-                cx.notify();
-            }
+        if let Some(hover) = self.hover.as_mut()
+            && hover.symbol == symbol
+        {
+            hover.card = Some(card);
+            cx.emit(DocumentEvent::HoverChanged);
+            cx.notify();
         }
     }
 }
 
-/// The three replies a declaration page is assembled from.
+/// The replies a declaration page is assembled from.
 struct Parts {
-    document: Result<Box<backend_library::Document>, backend_client::ClientError>,
-    graph: Option<Vec<backend_library::Row>>,
-    related: Option<Vec<backend_library::Row>>,
-}
-
-impl Parts {
-    fn into_page(
-        self,
-        base: Page,
-        workspace: &Entity<WorkspaceStore>,
-        cx: &Context<DocumentStore>,
-    ) -> Result<Page, Fault> {
-        let document = self.document.map_err(|error| {
-            fault::from_client(
-                &error,
-                Operand::Declaration {
-                    spelling: base.identity().coordinate().to_owned(),
-                },
-            )
-        })?;
-        let symbol = base.symbol();
-        let mut groups = Vec::new();
-        if let Some(rows) = self.graph {
-            groups.push(RelationGroup::new(RelationLane::Graph, &rows, symbol));
-        }
-        if let Some(rows) = self.related {
-            groups.push(RelationGroup::new(RelationLane::Related, &rows, symbol));
-        }
-        let store = workspace.read(cx);
-        let resolver = |name: &str| store.resolve_name(name);
-        Ok(base
-            .with_document(&document)
-            .with_relations(groups)
-            .resolve_signature(&resolver))
-    }
+    document: Result<Box<backend_library::Document>, Fault>,
+    relations: Option<Vec<Row>>,
+    notes: Vec<Fault>,
 }
 
 fn fetch(endpoint: &Endpoint, symbol: SymbolKey, coordinate: &str) -> Parts {
-    let document = match super::service::run(
-        endpoint.path(),
-        &Request::DocumentSymbol { symbol },
-    ) {
+    let operand = coordinate_operand(coordinate);
+    let document = match super::service::run(endpoint.path(), &Request::DocumentSymbol { symbol }) {
         Ok(Outcome::Document(document)) => Ok(document),
-        Ok(_) => Err(backend_client::ClientError::Protocol(format!(
-            "desktop document reply changed shape for {coordinate}"
-        ))),
-        Err(error) => Err(error),
+        Ok(_) => Err(wrong_shape(operand.clone(), "a document")),
+        Err(error) => Err(Fault::from_client_error(&error, operand.clone())),
     };
+    let mut notes = Vec::new();
+    let mut relations: Option<Vec<Row>> = None;
+    for request in [Request::Graph { symbol }, Request::Related { symbol }] {
+        match rows_of(endpoint, &request) {
+            Ok(rows) => relations.get_or_insert_with(Vec::new).extend(rows),
+            Err(fault) => notes.push(fault.about(operand.clone())),
+        }
+    }
+    if let Some(rows) = relations.as_mut() {
+        rows.sort_by(|left, right| left.label.cmp(&right.label));
+        rows.dedup_by(|left, right| left.id == right.id);
+    }
     Parts {
         document,
-        graph: rows_of(endpoint, &Request::Graph { symbol }),
-        related: rows_of(endpoint, &Request::Related { symbol }),
+        relations,
+        notes,
     }
 }
 
-fn rows_of(endpoint: &Endpoint, request: &Request) -> Option<Vec<backend_library::Row>> {
+fn rows_of(endpoint: &Endpoint, request: &Request) -> Result<Vec<Row>, Fault> {
     match super::service::run(endpoint.path(), request) {
-        Ok(Outcome::Rows(page)) => Some(page.into_rows()),
-        _ => None,
+        Ok(Outcome::Rows(page)) => Ok(page.into_rows()),
+        Ok(_) => Err(wrong_shape(
+            backend_present::Operand::Whole,
+            "a page of rows",
+        )),
+        Err(error) => Err(Fault::from_client_error(
+            &error,
+            backend_present::Operand::Whole,
+        )),
     }
-}
-
-fn placeholder_row(coordinate: &str) -> backend_library::Row {
-    backend_library::Row::new(
-        RowId::Object(backend_library::object_version(coordinate.as_bytes())),
-        backend_library::Basis::new(
-            backend_library::view_state_root(&[]),
-            backend_library::object_version(&[]),
-        ),
-        coordinate,
-    )
 }

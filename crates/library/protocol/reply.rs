@@ -21,6 +21,7 @@ use super::{
     ReplyDto, WireCertificate, WireSchema, coverage_from_wire, coverage_to_wire, cursor_from_wire,
     cursor_from_wire_with_capability, cursor_to_wire, freshness_from_wire, freshness_to_wire,
     frontier_from_wire, frontier_to_wire, inventory_from_wire, inventory_to_wire,
+    progress_from_wire, progress_to_wire,
 };
 use crate::canonical::{
     BranchSchema, LogSchema, ObjectSchema, PackageSchema, SymbolSchema, ViewRecipeSchema,
@@ -300,6 +301,7 @@ pub(crate) fn reply_to_wire(reply: &CommandReply) -> ReplyWire {
                     .collect(),
                 row_count: report.row_count(),
                 capabilities: inventory_to_wire(report.capabilities()),
+                progress: progress_to_wire(report.progress()),
             })
         }
         CommandReply::Revision(receipt) => ReplyWire::Revision(RevisionWire {
@@ -433,13 +435,15 @@ fn readiness_from_wire<A: CoverageAdmission>(
         .into_iter()
         .map(coverage_from_wire)
         .collect::<Result<Vec<_>, _>>()?;
+    let progress = progress_from_wire(value.progress)?;
     Ok(HealthReport::from_admitted_parts(
         RevisionReceipt::new(root, cursor, source),
         basis,
         coverage.into_boxed_slice(),
         value.row_count,
         inventory_from_wire(value.capabilities)?,
-    ))
+    )
+    .with_progress(progress))
 }
 
 fn revision_from_wire<A: CoverageAdmission>(

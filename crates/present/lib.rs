@@ -12,11 +12,12 @@
 //! cannot name one.
 //!
 //! It sits at DAG order 10, in the `core` layer, above `backend-library` and
-//! `backend-client`. It depends on the client for exactly one reason: one
-//! shared lowering of [`backend_client::ClientError`] into [`Fault`]. If each
-//! surface mapped transport failures itself, the two surfaces would disagree
-//! about what a dropped endpoint is called the first time someone edited one
-//! of them; here they cannot.
+//! `backend-client`. It names exactly one client type — [`backend_client::ClientError`]
+//! — because the lowering of a transport failure into a [`Fault`] is shared. If
+//! each surface mapped transport failures itself, the two surfaces would
+//! disagree about what a dropped endpoint is called the first time someone
+//! edited one of them; here they cannot. It does *not* name a session, a
+//! socket, or a path: [`Engine`] is the abstract seam a surface implements.
 //!
 //! A desktop surface that wants the same model adds
 //! `backend-present = { path = "../../crates/present" }` to its manifest and
@@ -37,8 +38,10 @@
 //!   desktop print the same slug, the same operand, and the same next step.
 //! * **Parity is structural.** The Markdown renderer used by MCP and by the
 //!   CLI's `--format markdown` is the *same* function; the human renderer
-//!   differs only by colour and width. Divergence would have to be written on
-//!   purpose.
+//!   differs only by colour and width. So is the *request sequence*: [`answer`]
+//!   decides which probes a page or an outline needs, expressed against the
+//!   [`Engine`] trait rather than against a socket, so a surface contributes
+//!   only a mechanical adapter. Divergence would have to be written on purpose.
 //! * **No fabricated authority.** A type token resolved by name is marked
 //!   [`Resolved::ByName`] and never claims a proven semantic link; a lane with
 //!   no result renders `✗` with its reason rather than an empty success.
@@ -48,6 +51,7 @@
 mod assemble;
 mod call;
 mod coverage;
+mod drive;
 mod dto;
 mod fault;
 mod glyph;
@@ -64,7 +68,8 @@ mod signature;
 mod status;
 
 pub use assemble::{
-    outline_tree, page_from_document, project_of, record_list, shelf_from_snapshot,
+    outline_tree, page_from_document, project_of, record_list, record_list_from_rows,
+    shelf_from_root, shelf_from_snapshot,
 };
 pub use call::{
     DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, lower, lower_surface_json, row_for,
@@ -73,16 +78,17 @@ pub use coverage::{
     CoverageLine, LaneCoverage, LaneShards, LaneState, RowCount as CoverageRows, lane_name,
     reason_name,
 };
+pub use drive::{Answer, Engine, Probe, answer};
 pub use dto::{
     CapabilitiesDto, CoverageDto, FaultDto, IdentityDto, LanguageCountDto, MemberGroupDto,
     OutlineDto, OutlineNodeDto, PageDto, ProductDto, ProductRecordDto, ReasonDto, RecordDto, RecordListDto, RelationGroupDto,
-    ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto, StatusDto,
+    ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto, StatusDto, answer_value, fault_value,
 };
 pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
 pub use glyph::{KindGlyph, LanguageGlyph, RelationDirection, RelationLabel, relation_label};
 pub use grammar::{
     ArgumentKind, ArgumentSpec, CommandGrammar, GRAMMARS, domain_name, domains, grammar_for,
-    grammars_in, registry_size,
+    grammar_for_tool, grammars_in, registry_size,
 };
 pub use identity::{
     Coordinate, Identity, IdentityKey, IdentityShape, KeyTag, LineNumber, PackagePath, ProjectRef,

@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::coverage::{CoverageLine, LaneState};
+use crate::drive::Answer;
 use crate::fault::{Affordance, Fault};
 use crate::identity::Identity;
 use crate::outline::{OutlineEntry, OutlineTree};
@@ -20,6 +21,49 @@ use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf, ShelfEntry};
 use crate::signature::{Signature, Token};
 use crate::status::Status;
+
+/// Projects whichever answer a surface produced, tagged by its `answer` field.
+///
+/// The CLI's `--format json` and the MCP's `structuredContent` both emit this
+/// value, so a consumer that learns one has learned the other.
+///
+/// The discriminator is `answer` rather than the obvious `kind` because a page
+/// already has a `kind` — its declaration kind — and a tag that overwrites a
+/// payload field does not announce itself: the consumer simply reads
+/// `"kind": "page"` where `"kind": "function"` belonged and never learns that a
+/// fact went missing. No presentation DTO has a field called `answer`, and the
+/// crate's tests hold that true.
+#[must_use]
+pub fn answer_value(answer: &Answer) -> serde_json::Value {
+    match answer {
+        Answer::Page(value) => tagged(answer.kind(), &PageDto::new(value)),
+        Answer::Records(value) => tagged(answer.kind(), &RecordListDto::new(value)),
+        Answer::Shelf(value) => tagged(answer.kind(), &ShelfDto::new(value)),
+        Answer::Outline(value) => tagged(answer.kind(), &OutlineDto::new(value)),
+        Answer::Status(value) => tagged(answer.kind(), &StatusDto::new(value)),
+        Answer::Product(value) => tagged(answer.kind(), &ProductDto::new(value)),
+    }
+}
+
+/// Projects one fault as the same tagged shape an answer uses.
+#[must_use]
+pub fn fault_value(fault: &Fault) -> serde_json::Value {
+    tagged("fault", &FaultDto::new(fault))
+}
+
+fn tagged<T: Serialize>(kind: &str, value: &T) -> serde_json::Value {
+    let body = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
+    match body {
+        serde_json::Value::Object(mut fields) => {
+            fields.insert(
+                "answer".to_owned(),
+                serde_json::Value::String(kind.to_owned()),
+            );
+            serde_json::Value::Object(fields)
+        }
+        other => serde_json::json!({ "answer": kind, "value": other }),
+    }
+}
 
 /// One identity, in parts.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -317,7 +361,11 @@ impl PageDto {
                             language: None,
                             state: None,
                             signature: member.signature().map(Signature::text),
-                            summary: None,
+                            // A member's own first documentation line is worth
+                            // a field but not a second text line: the page's
+                            // Markdown keeps one line per member, and a program
+                            // that wants the sentence reads it here.
+                            summary: member.summary().map(ToOwned::to_owned),
                             score: None,
                         })
                         .collect(),
@@ -570,10 +618,18 @@ impl OutlineDto {
 pub struct StatusDto {
     /// The single-word readiness summary.
     pub readiness: String,
-    /// The current immutable view revision.
+    /// The exact current view revision, as canonical hexadecimal.
+    ///
+    /// This is the whole value, not the eight-digit tag a reader sees, because
+    /// a consumer that wants to pin its next request to this revision needs all
+    /// of it. The abbreviation is in `revision_tag` for anything that prints.
     pub revision: String,
-    /// The source object the view is based on.
+    /// The readable eight-digit abbreviation of `revision`.
+    pub revision_tag: String,
+    /// The exact source object the view is based on.
     pub source: String,
+    /// The readable eight-digit abbreviation of `source`.
+    pub source_tag: String,
     /// The owner's subscription sequence position.
     pub sequence: u64,
     /// How many rows the visible root committed.
@@ -622,8 +678,10 @@ impl StatusDto {
         let capabilities = status.capabilities();
         Self {
             readiness: status.readiness().to_owned(),
-            revision: status.revision().to_string(),
-            source: status.source().to_string(),
+            revision: status.revision_id(),
+            revision_tag: status.revision().to_string(),
+            source: status.source_id(),
+            source_tag: status.source().to_string(),
             sequence: status.sequence().get(),
             rows: status.rows().get(),
             project: status.project().map(|project| project.root().to_owned()),

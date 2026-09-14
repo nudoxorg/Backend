@@ -13,9 +13,11 @@ backend-store = { path = "../../crates/store" }
 backend-version = { path = "../../crates/version" }
 backend-cli = { path = "../../apps/cli" }
 backend-mcp = { path = "../../apps/mcp" }
+backend-present = { path = "../../crates/present" }
 backend-engine = { path = "../../crates/engine" }
 backend-execution = { path = "../../crates/execution" }
 backend-replication = { path = "../../crates/replication" }
+backend-client = { path = "../../crates/client" }
 backend-locald = { package = "backend-local-service", path = "../../crates/local-service" }
 backend-runtime = { path = "../../crates/runtime" }
 backend-worker = { path = "../../apps/worker" }

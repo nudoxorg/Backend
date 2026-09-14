@@ -7,14 +7,21 @@
 //! one luminance plane are read preattentively and still say something true in
 //! greyscale. The tile is washed rather than filled so a column of them reads
 //! as texture, and the letter carries the contrast.
+//!
+//! One glyph deliberately differs from the shared model's. `backend packages`
+//! prints `●` for a ready project because a terminal cannot draw weight; this
+//! window draws `✓`, which is what the same state looks like beside a `◐` and
+//! an `✗` in colour. The *state* is [`backend_present::Readiness`] in both
+//! places; only the mark is a drawing decision.
 
-use crate::presentation::shelf::Readiness;
-use crate::theme::kind::{KindGlyph, kind_glyph, package_glyph, untyped_glyph};
-use crate::theme::language::Language;
+use crate::theme::kind::{kind_glyph, package_glyph, untyped_glyph};
+use crate::theme::language::{hue as language_hue, tag as language_tag_text};
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Radius, TypeScale, radius, type_size};
 use crate::theme::{Theme, ramp::Hue};
 use backend_library::DeclarationKind;
+use crate::presentation::project::Standing;
+use backend_present::{Language, LanguageCount};
 use gpui::{Div, FontWeight, ParentElement, Styled, div, px};
 
 /// Side length of a glyph tile, in pixels.
@@ -37,17 +44,12 @@ pub(crate) fn package_tile(theme: &Theme, large: bool) -> Div {
 
 /// Returns the two-letter tag for one source language.
 pub(crate) fn language_tag(theme: &Theme, language: Language) -> Div {
-    tile(theme, language.hue(), language.tag(), false)
+    tile(theme, language_hue(language), language_tag_text(language), false)
 }
 
 /// Returns the readable name of one declaration kind.
 pub(crate) fn kind_label(kind: Option<DeclarationKind>) -> &'static str {
     kind.map_or_else(|| untyped_glyph().label(), |kind| kind_glyph(kind).label())
-}
-
-/// Returns the mark for one kind, for tooltips and group headers.
-pub(crate) fn glyph_for(kind: Option<DeclarationKind>) -> KindGlyph {
-    kind.map_or_else(untyped_glyph, kind_glyph)
 }
 
 fn tile(theme: &Theme, hue: Hue, letter: &str, large: bool) -> Div {
@@ -73,14 +75,28 @@ fn tile(theme: &Theme, hue: Hue, letter: &str, large: bool) -> Div {
         .child(letter.to_owned())
 }
 
-/// Returns the readiness mark drawn on a shelf row.
-pub(crate) fn readiness_mark(theme: &Theme, readiness: &Readiness) -> Div {
-    let role = match readiness {
-        Readiness::Ready => Paint::Ok,
-        Readiness::Indexing { .. } => Paint::Caution,
-        Readiness::Failed(_) => Paint::Fault,
-        Readiness::Requested => Paint::TextFaint,
-    };
+/// Returns the mark this window draws for one standing.
+pub(crate) const fn standing_glyph(standing: Standing) -> &'static str {
+    match standing {
+        Standing::Readable => "✓",
+        Standing::Indexing => "◐",
+        Standing::Failed => "✗",
+        Standing::Requested | Standing::Empty => "○",
+    }
+}
+
+/// Returns the paint role one standing is drawn in.
+pub(crate) const fn standing_paint(standing: Standing) -> Paint {
+    match standing {
+        Standing::Readable => Paint::Ok,
+        Standing::Indexing => Paint::Caution,
+        Standing::Failed => Paint::Fault,
+        Standing::Requested | Standing::Empty => Paint::Info,
+    }
+}
+
+/// Returns the standing mark drawn on a shelf row.
+pub(crate) fn standing_mark(theme: &Theme, standing: Standing) -> Div {
     div()
         .flex_none()
         .w(px(TILE))
@@ -88,8 +104,8 @@ pub(crate) fn readiness_mark(theme: &Theme, readiness: &Readiness) -> Div {
         .items_center()
         .justify_center()
         .text_size(type_size(TypeScale::Small))
-        .text_color(theme.paint(role))
-        .child(readiness.glyph().to_string())
+        .text_color(theme.paint(standing_paint(standing)))
+        .child(standing_glyph(standing))
 }
 
 /// Returns a hue-coded bar showing one project's language mix.
@@ -97,11 +113,7 @@ pub(crate) fn readiness_mark(theme: &Theme, readiness: &Readiness) -> Div {
 /// A bar rather than a sentence: the mix is a proportion, and a proportion is
 /// a length. The bar is the width of the row, so two projects can be compared
 /// at a glance without reading a single number.
-pub(crate) fn language_bar(
-    theme: &Theme,
-    counts: &[crate::presentation::shelf::LanguageCount],
-    total: usize,
-) -> Div {
+pub(crate) fn language_bar(theme: &Theme, counts: &[LanguageCount], total: u64) -> Div {
     let total = total.max(1);
     div()
         .h(px(3.0))
@@ -109,18 +121,18 @@ pub(crate) fn language_bar(
         .flex()
         .gap(px(1.0))
         .children(counts.iter().map(|count| {
-            let share = ratio(count.declarations(), total);
+            let share = ratio(count.declarations().get(), total);
             div()
                 .h_full()
                 .rounded_full()
-                .bg(theme.on_plane(count.language().hue()))
+                .bg(theme.on_plane(language_hue(count.language())))
                 .flex_basis(px(0.0))
                 .flex_grow(share)
                 .flex_shrink(1.0)
         }))
 }
 
-fn ratio(part: usize, total: usize) -> f32 {
+fn ratio(part: u64, total: u64) -> f32 {
     let part = u32::try_from(part).unwrap_or(u32::MAX);
     let total = u32::try_from(total).unwrap_or(u32::MAX).max(1);
     #[expect(

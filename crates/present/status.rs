@@ -17,7 +17,7 @@ use crate::coverage::CoverageLine;
 use crate::identity::{KeyTag, ProjectRef};
 use backend_library::{
     CapabilityFamily, CapabilityInventory, CapabilityLifecycle, CapabilityStatus,
-    CapabilityUnavailable, HealthReport,
+    CapabilityUnavailable, HealthReport, encode_id,
 };
 use core::fmt;
 
@@ -311,11 +311,17 @@ fn count_reason(reasons: &mut Vec<ReasonRollup>, reason: CapabilityUnavailable) 
 }
 
 /// The engine's whole state at one immutable revision.
+///
+/// The revision is retained whole. A [`KeyTag`] is what a *reader* sees, and
+/// eight hexadecimal digits are enough to tell two of them apart on a screen —
+/// but a program that wants to ask its next question at this exact revision
+/// needs all of it, and a model that had already thrown the rest away could not
+/// give it back. Display abbreviates; the value does not.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Status {
     project: Option<ProjectRef>,
-    revision: KeyTag,
-    source: KeyTag,
+    revision: [u8; 32],
+    source: [u8; 32],
     sequence: Sequence,
     coverage: CoverageLine,
     rows: PublishedRows,
@@ -329,8 +335,8 @@ impl Status {
         let revision = report.revision();
         Self {
             project,
-            revision: KeyTag::from_key(revision.root().as_bytes()),
-            source: KeyTag::from_key(report.basis().object.as_bytes()),
+            revision: *revision.root().as_bytes(),
+            source: *report.basis().object.as_bytes(),
             sequence: Sequence::new(revision.cursor().sequence()),
             coverage: CoverageLine::new(report.coverage(), Some(report.row_count())),
             rows: PublishedRows::new(report.row_count()),
@@ -344,16 +350,28 @@ impl Status {
         self.project.as_ref()
     }
 
-    /// Returns the current immutable view revision.
+    /// Returns the readable abbreviation of the current view revision.
     #[must_use]
-    pub const fn revision(&self) -> KeyTag {
-        self.revision
+    pub fn revision(&self) -> KeyTag {
+        KeyTag::from_key(&self.revision)
     }
 
-    /// Returns the source object the view is based on.
+    /// Returns the exact current view revision, as canonical hexadecimal.
     #[must_use]
-    pub const fn source(&self) -> KeyTag {
-        self.source
+    pub fn revision_id(&self) -> String {
+        encode_id(&self.revision)
+    }
+
+    /// Returns the readable abbreviation of the source object.
+    #[must_use]
+    pub fn source(&self) -> KeyTag {
+        KeyTag::from_key(&self.source)
+    }
+
+    /// Returns the exact source object, as canonical hexadecimal.
+    #[must_use]
+    pub fn source_id(&self) -> String {
+        encode_id(&self.source)
     }
 
     /// Returns the owner's subscription sequence position.

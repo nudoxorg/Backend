@@ -7,6 +7,7 @@
 //! layout, focus, notices, and the persisted preferences. Nothing flows back
 //! from a view into a store except as a method call the reader caused.
 
+pub(crate) mod catalog;
 pub(crate) mod document;
 pub(crate) mod events;
 pub(crate) mod jobs;

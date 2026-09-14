@@ -1087,6 +1087,7 @@ name = "backend-journeys"
 version = "0.1.0"
 dependencies = [
  "backend-cli",
+ "backend-client",
  "backend-compile",
  "backend-desktop",
  "backend-engine",
@@ -1102,6 +1103,7 @@ dependencies = [
  "backend-library",
  "backend-local-service",
  "backend-mcp",
+ "backend-present",
  "backend-replication",
  "backend-runtime",
  "backend-semantic",
@@ -1116,6 +1118,8 @@ dependencies = [
 name = "backend-laws"
 version = "0.1.0"
 dependencies = [
+ "backend-compile",
+ "backend-engine",
  "backend-flow",
  "backend-store",
  "backend-version",

@@ -169,6 +169,45 @@ impl Model {
         self.snapshot_next_token.as_deref()
     }
 
+    /// Admits one bounded snapshot page and folds it into the retained root.
+    ///
+    /// Split out of [`Self::reduce_lease_response`] because it is the only arm
+    /// that has to authenticate two continuations at once — the page token this
+    /// process asked with, and the next token the producer signed — and those
+    /// two checks read as one idea rather than as two more lines in a match.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either continuation fails to authenticate.
+    fn reduce_snapshot_frame(
+        &mut self,
+        page: &[u8],
+        next: Option<&[u8]>,
+        payload: &[u8],
+        capability: Option<CoverageCapability>,
+    ) -> Result<(), ClientError> {
+        let expected_page = self.snapshot_next_token.as_deref().unwrap_or_default();
+        if page != expected_page {
+            return Err(ClientError::Protocol(
+                "snapshot page continuation does not match the reducer".to_owned(),
+            ));
+        }
+        let claim = crate::transport::subscription::snapshot_page_from_bytes_with_capability(
+            payload,
+            self.cursor(),
+            None,
+            capability,
+        )?;
+        let expected_next = claim.next_token().map_err(ClientError::Protocol)?;
+        if expected_next.as_deref() != next {
+            return Err(ClientError::Protocol(
+                "snapshot page response continuation is not authenticated".to_owned(),
+            ));
+        }
+        self.reduce_snapshot_page(claim)?;
+        Ok(())
+    }
+
     /// Admits one producer response from a durable locald lease.
     ///
     /// The raw cursor and continuation fields in the local control envelope
@@ -176,6 +215,7 @@ impl Model {
     /// changes.  This keeps lease correlation, page replay protection, and
     /// event admission in one frontend adapter instead of letting each UI
     /// caller reconstruct a parallel state machine.
+    ///
     /// # Errors
     ///
     /// Returns an error when the transport payload or checked state is invalid.
@@ -236,28 +276,7 @@ impl Model {
                 next,
                 payload,
                 ..
-            } => {
-                let expected_page = self.snapshot_next_token.as_deref().unwrap_or_default();
-                if page.as_ref() != expected_page {
-                    return Err(ClientError::Protocol(
-                        "snapshot page continuation does not match the reducer".to_owned(),
-                    ));
-                }
-                let claim = crate::transport::subscription::snapshot_page_from_bytes_with_capability(
-                    &payload,
-                    self.cursor(),
-                    None,
-                    capability,
-                )?;
-                let expected_next = claim.next_token().map_err(ClientError::Protocol)?;
-                if expected_next.as_deref() != next.as_deref() {
-                    return Err(ClientError::Protocol(
-                        "snapshot page response continuation is not authenticated".to_owned(),
-                    ));
-                }
-                self.reduce_snapshot_page(claim)?;
-                Ok(())
-            }
+            } => self.reduce_snapshot_frame(&page, next.as_deref(), &payload, capability),
             LocalSubscriptionResponse::Acked { cursor, .. }
             | LocalSubscriptionResponse::Renewed { cursor, .. } => {
                 let observed = decode_control_cursor(&cursor, &self.root)?;

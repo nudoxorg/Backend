@@ -7,7 +7,7 @@
 //! a tooltip with the full sentence, because the glyph is a summary and a
 //! summary is only honest when the long form is one hover away.
 
-use crate::presentation::status::{CapabilityChip, LaneChip, Standing};
+use crate::presentation::chips::{CapabilityChip, LaneChip, Standing};
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
@@ -27,6 +27,7 @@ pub(crate) const fn standing_paint(standing: Standing) -> Paint {
         Standing::Complete => Paint::Ok,
         Standing::Partial => Paint::Caution,
         Standing::Absent => Paint::Info,
+        Standing::Unobserved => Paint::TextFaint,
     }
 }
 
@@ -54,7 +55,9 @@ pub(crate) fn capability_chip(theme: &Theme, chip: &CapabilityChip) -> impl Into
     let title = format!("{} · {}", chip.name(), chip.role());
     let ink = chip
         .language()
-        .map_or_else(|| theme.paint(role), |language| theme.on_plane(language.hue()));
+        .map_or_else(|| theme.paint(role), |language| {
+            theme.on_plane(crate::theme::language::hue(language))
+        });
     shell(theme, role)
         .id(ElementId::Name(SharedString::from(format!(
             "capability-{}-{}",
@@ -73,7 +76,7 @@ pub(crate) fn capability_chip(theme: &Theme, chip: &CapabilityChip) -> impl Into
 }
 
 /// Returns a plain count chip: a number with a noun.
-pub(crate) fn count_chip(theme: &Theme, count: usize, noun: &str) -> Div {
+pub(crate) fn count_chip(theme: &Theme, count: u64, noun: &str) -> Div {
     shell(theme, Paint::TextDim)
         .child(
             div()
@@ -142,6 +145,37 @@ fn word(theme: &Theme, text: &str, role: Paint) -> Div {
         .text_size(type_size(TypeScale::Micro))
         .text_color(theme.paint(role))
         .child(text.to_owned())
+}
+
+/// Returns a monospace tooltip holding one exact value, never abbreviated.
+///
+/// Anything this application shortens for display — a key tag, an elided path
+/// — carries one of these, so the complete spelling is always one hover away
+/// and the shortened form is never what a reader would copy.
+pub(crate) fn mono_tip(body: String, cx: &mut App) -> AnyView {
+    let theme = crate::theme::theme(cx);
+    cx.new(|_| MonoTip { theme, body }).into()
+}
+
+struct MonoTip {
+    theme: Theme,
+    body: String,
+}
+
+impl gpui::Render for MonoTip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        super::surface::raised(&self.theme)
+            .max_w(px(420.0))
+            .px(space(Space::Base))
+            .py(space(Space::Snug))
+            .child(
+                div()
+                    .font_family(self.theme.specimen())
+                    .text_size(type_size(TypeScale::Micro))
+                    .text_color(self.theme.paint(Paint::TextDim))
+                    .child(self.body.clone()),
+            )
+    }
 }
 
 fn explain(title: String, body: String, _window: &mut Window, cx: &mut App) -> AnyView {

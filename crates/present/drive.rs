@@ -93,10 +93,10 @@ impl Probe<'_> {
     pub fn operand(self) -> Operand {
         match self {
             Self::Packages => Operand::Whole,
-            Self::Index(path) | Self::Remove(path) | Self::OutlinePage { path, .. } => {
-                Operand::Path(path.to_owned())
-            }
-            Self::Outline(path) => Operand::Path(path.to_owned()),
+            Self::Index(path)
+            | Self::Remove(path)
+            | Self::Outline(path)
+            | Self::OutlinePage { path, .. } => Operand::Path(path.to_owned()),
             Self::Document(at) | Self::Source(at) | Self::Related(at) | Self::Graph(at) => {
                 Operand::Coordinate(Coordinate::new(at))
             }
@@ -217,6 +217,15 @@ fn shelf(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     ))))
 }
 
+/// Reads the whole engine state, without naming the caller's project.
+///
+/// [`Status`] can carry a [`crate::ProjectRef`], and it is deliberately not
+/// given one here. A surface's idea of "the active project" is a path it
+/// discovered for itself — the CLI keeps the workspace's spelling, the MCP
+/// canonicalises it — so putting it in the answer would make two surfaces
+/// disagree, byte for byte, about a fact neither of them read from the engine.
+/// Which projects exist is what the shelf answers, and it answers it with the
+/// exact coordinates the engine published.
 fn status(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     let report = engine
         .health()
@@ -335,6 +344,33 @@ fn read(engine: &mut dyn Engine, probe: Probe<'_>) -> Result<ReplyDto, Fault> {
     engine
         .probe(probe)
         .map_err(|error| Fault::from_client_error(&error, operand))
+        .map_err(|fault| next_step(fault, probe))
+}
+
+/// Offers the step a reader can actually take after an address missed.
+///
+/// The engine reports that nothing is published at a coordinate; it has no
+/// opinion about what to do instead, so [`Fault::from_command_failure`] leaves
+/// the affordance empty. But a reader who asked for a coordinate that does not
+/// exist almost always mistyped a name or is holding one from an older
+/// revision, and the answer to both is the same search. The name comes out of
+/// the coordinate they supplied, so this suggests their own word back to them
+/// rather than inventing a query.
+fn next_step(fault: Fault, probe: Probe<'_>) -> Fault {
+    let (Probe::Document(at) | Probe::Source(at) | Probe::Related(at) | Probe::Graph(at)) = probe
+    else {
+        return fault;
+    };
+    if fault.slug() != crate::fault::FaultSlug::NotFound
+        || !matches!(fault.affordance(), Affordance::None)
+    {
+        return fault;
+    }
+    let name = Identity::parse(at).name().to_owned();
+    if name.is_empty() {
+        return fault;
+    }
+    fault.with_affordance(Affordance::search(name))
 }
 
 /// Fetches the rows around one declaration, recording a note if it cannot.

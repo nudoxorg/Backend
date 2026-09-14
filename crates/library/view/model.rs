@@ -206,11 +206,48 @@ pub enum Coverage {
     },
 }
 
+impl Reason {
+    /// Returns whether this lane was never part of the declared scope.
+    ///
+    /// `Unconfigured` is the one reason that is a fact about the *deployment*
+    /// rather than about this revision's work: no timer, retry, or further
+    /// indexing will change it, and nothing was left undone. Every other
+    /// reason describes work that could have produced rows for this revision
+    /// and did not.
+    ///
+    /// A surface needs this distinction to answer "is this project ready" with
+    /// one word. Treating an unconfigured lane as a failure makes an owner
+    /// that has completed every lane it has report a fault forever, which is
+    /// the same fabricated state as reporting a partial fraction that can
+    /// never advance — it just fails in the other direction. The lane itself
+    /// must still be *shown* as unavailable with its reason; it simply must
+    /// not hold the summary word hostage.
+    #[must_use]
+    pub const fn is_outside_declared_scope(self) -> bool {
+        match self {
+            Self::Unconfigured => true,
+            Self::NoIndex | Self::Offline | Self::Cancelled | Self::Incomplete => false,
+        }
+    }
+}
+
 impl Coverage {
     /// Returns whether this coverage can claim completeness.
     #[must_use]
     pub const fn is_complete(self) -> bool {
         matches!(self, Self::Complete)
+    }
+
+    /// Returns whether this lane failed work it was asked to do.
+    ///
+    /// A lane the deployment never configured is unavailable but not failed;
+    /// see [`Reason::is_outside_declared_scope`].
+    #[must_use]
+    pub const fn is_failed_lane(self) -> bool {
+        match self {
+            Self::Unavailable { reason, .. } => !reason.is_outside_declared_scope(),
+            Self::Complete | Self::Partial { .. } => false,
+        }
     }
 
     pub(super) fn is_valid(self) -> bool {

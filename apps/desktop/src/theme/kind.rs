@@ -8,6 +8,7 @@
 
 use super::ramp::Hue;
 use backend_library::DeclarationKind;
+use backend_present::KindGlyph as SharedGlyph;
 
 /// A kind's mark: one letter and one hue.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -85,59 +86,25 @@ fn parts(kind: DeclarationKind) -> (char, f32, &'static str) {
     }
 }
 
-/// Returns the order kinds are grouped in on a declaration page.
-///
-/// Members are grouped structurally — what a thing *is*, then what it *does*,
-/// then what it *holds* — which matches the order a reader asks those
-/// questions in, rather than alphabetical order, which answers none of them.
-pub(crate) fn group_rank(kind: DeclarationKind) -> u8 {
-    match kind {
-        DeclarationKind::Module => 0,
-        DeclarationKind::Struct => 1,
-        DeclarationKind::Class => 2,
-        DeclarationKind::Enum => 3,
-        DeclarationKind::Union => 4,
-        DeclarationKind::Interface => 5,
-        DeclarationKind::Trait => 6,
-        DeclarationKind::Type => 7,
-        DeclarationKind::Constructor => 8,
-        DeclarationKind::Function => 9,
-        DeclarationKind::Method => 10,
-        DeclarationKind::Macro => 11,
-        DeclarationKind::Property => 12,
-        DeclarationKind::Field => 13,
-        DeclarationKind::Constant => 14,
-        DeclarationKind::Variable => 15,
-        DeclarationKind::Import => 16,
-        DeclarationKind::Unknown => 17,
-    }
-}
-
 /// Returns the plural group header for one kind.
-pub(crate) fn group_title(kind: DeclarationKind) -> &'static str {
-    match kind {
-        DeclarationKind::Module => "Modules",
-        DeclarationKind::Class => "Classes",
-        DeclarationKind::Struct => "Structs",
-        DeclarationKind::Enum => "Enums",
-        DeclarationKind::Union => "Unions",
-        DeclarationKind::Interface => "Interfaces",
-        DeclarationKind::Trait => "Traits",
-        DeclarationKind::Type => "Types",
-        DeclarationKind::Function => "Functions",
-        DeclarationKind::Method => "Methods",
-        DeclarationKind::Constructor => "Constructors",
-        DeclarationKind::Macro => "Macros",
-        DeclarationKind::Constant => "Constants",
-        DeclarationKind::Field => "Fields",
-        DeclarationKind::Property => "Properties",
-        DeclarationKind::Variable => "Variables",
-        DeclarationKind::Import => "Imports",
-        DeclarationKind::Unknown => "Declarations",
+///
+/// The words come from [`backend_present::KindGlyph::plural`], so a member
+/// group in this window and a member group in `backend page` are headed by the
+/// same noun; only the capitalisation is this surface's own.
+pub(crate) fn group_title(kind: DeclarationKind) -> String {
+    let plural = SharedGlyph::plural(kind);
+    let mut title = String::with_capacity(plural.len());
+    for (at, letter) in plural.chars().enumerate() {
+        if at == 0 {
+            title.extend(letter.to_uppercase());
+        } else {
+            title.push(letter);
+        }
     }
+    title
 }
 
-/// Every kind, in group order, for the preview fixtures and the ramp tests.
+/// Every declaration kind, in the order a member list groups them.
 pub(crate) const ALL_KINDS: [DeclarationKind; 18] = [
     DeclarationKind::Module,
     DeclarationKind::Struct,

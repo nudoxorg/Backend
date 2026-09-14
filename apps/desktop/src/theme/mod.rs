@@ -53,21 +53,6 @@ impl Theme {
         self.palette.plane_wash(hue, alpha)
     }
 
-    /// Returns the lit palette.
-    pub(crate) const fn palette(&self) -> Palette {
-        self.palette
-    }
-
-    /// Returns which appearance is lit.
-    pub(crate) fn appearance(&self) -> Appearance {
-        self.palette.appearance()
-    }
-
-    /// Returns the reading size preference.
-    pub(crate) const fn interface(&self) -> InterfaceSize {
-        self.interface
-    }
-
     /// Returns the root font size implied by the reading size.
     pub(crate) fn root_pixels(&self) -> Pixels {
         self.interface.root_pixels()
@@ -81,21 +66,6 @@ impl Theme {
     /// Returns the monospace family used for signatures and source.
     pub(crate) fn specimen(&self) -> SharedString {
         self.specimen.clone()
-    }
-
-    /// Relights the theme for a different appearance.
-    pub(crate) fn set_appearance(&mut self, appearance: Appearance) {
-        self.palette = Palette::new(appearance);
-    }
-
-    /// Rescales the theme for a different reading size.
-    pub(crate) fn set_interface(&mut self, interface: InterfaceSize) {
-        self.interface = interface;
-    }
-
-    /// Sets whether motion is suppressed.
-    pub(crate) fn set_reduced_motion(&mut self, reduced: bool) {
-        self.reduced_motion = reduced;
     }
 }
 

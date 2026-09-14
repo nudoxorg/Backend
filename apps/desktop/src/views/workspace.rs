@@ -16,9 +16,10 @@ use super::actions::{
     ToggleMotion, WINDOW_CONTEXT, tab_index,
 };
 use crate::host::lease::HostMode;
-use crate::presentation::identity::Identity;
+use backend_present::Identity;
 use crate::reducer::model::Model;
 use crate::store::document::{DocumentStore, Subject, Target};
+use crate::store::catalog::CatalogStore;
 use crate::store::jobs::{JobKind, JobsStore};
 use crate::store::prefs::Preferences;
 use crate::store::search::{Mode, SearchStore};
@@ -27,7 +28,6 @@ use crate::store::shell::{Focus, ShellStore, Side};
 use crate::store::workspace::WorkspaceStore;
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::Chrome;
 use crate::transport::unix::UnixSubscriptionTransport;
 use crate::ui::surface;
 use backend_library::{RowId, SymbolKey, ViewRoot};
@@ -41,99 +41,209 @@ use std::path::PathBuf;
 
 /// The window's root entity.
 pub(crate) struct Workspace {
-    pub(super) workspace: Entity<WorkspaceStore>,
+    pub(super) engine: Entity<WorkspaceStore>,
     pub(super) search: Entity<SearchStore>,
     pub(super) document: Entity<DocumentStore>,
     pub(super) jobs: Entity<JobsStore>,
+    pub(super) catalog: Entity<CatalogStore>,
     pub(super) shell: Entity<ShellStore>,
     pub(super) field: Entity<EditableTextState>,
     pub(super) coordinate: Entity<EditableTextState>,
     pub(super) adding: bool,
     pub(super) add_fault: Option<String>,
+    folded: Vec<String>,
+    unfurled: Vec<String>,
+    #[cfg(feature = "preview")]
+    scene: Option<crate::preview::Scene>,
+    pub(super) outline_scroll: gpui::UniformListScrollHandle,
+    pub(super) revealed: Option<SymbolKey>,
+    pub(super) sheet_scroll: gpui::ScrollHandle,
+    pub(super) revealed_row: Option<usize>,
     focus: FocusHandle,
-    subscriptions: Vec<Subscription>,
+    /// Held, not read: a `Subscription` unsubscribes the moment it is dropped.
+    _subscriptions: Vec<Subscription>,
+}
+
+/// Everything one window opens with, gathered before the platform starts.
+pub(crate) struct Bootstrap {
+    /// Where the local service is listening.
+    pub(crate) endpoint: Endpoint,
+    /// The project this window discovered.
+    pub(crate) project: PathBuf,
+    /// The durable workspace directory preferences live beside.
+    pub(crate) data: PathBuf,
+    /// Whether this process owns the service or attached to it.
+    pub(crate) mode: HostMode,
+    /// The first admitted view root.
+    pub(crate) root: ViewRoot,
+    /// The reducer holding that root and its cursor.
+    pub(crate) model: Model,
+    /// The certified subscription transport.
+    pub(crate) transport: UnixSubscriptionTransport,
+    /// The preferences read before the first frame.
+    pub(crate) prefs: Preferences,
 }
 
 impl Workspace {
     /// Builds the whole window around one admitted root and one live feed.
-    pub(crate) fn new(
-        endpoint: Endpoint,
-        project: PathBuf,
-        data: PathBuf,
-        mode: HostMode,
-        root: ViewRoot,
-        model: Model,
-        transport: UnixSubscriptionTransport,
-        prefs: Preferences,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let workspace = cx.new(|cx| {
+    pub(crate) fn new(opened: Bootstrap, cx: &mut Context<Self>) -> Self {
+        let Bootstrap {
+            endpoint,
+            project,
+            data,
+            mode,
+            root,
+            model,
+            transport,
+            prefs,
+        } = opened;
+        let engine = cx.new(|cx| {
             WorkspaceStore::new(
-                endpoint.clone(),
-                project,
-                data.clone(),
-                mode,
-                root,
-                model,
-                transport,
+                crate::store::workspace::EngineLink {
+                    endpoint: endpoint.clone(),
+                    project,
+                    mode,
+                    root,
+                    model,
+                    transport,
+                },
                 cx,
             )
         });
-        let search = cx.new(|_| SearchStore::new(endpoint.clone()));
-        let document = cx.new(|_| DocumentStore::new(endpoint.clone(), workspace.clone()));
-        let jobs = cx.new(|_| JobsStore::new(endpoint));
-        let shell = cx.new(|_| ShellStore::new(data, prefs));
-        let field = cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
-        let coordinate = cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
-        let subscriptions = Self::wire(&workspace, &search, &document, &jobs, &shell, &field, cx);
-        Self {
-            workspace,
+        let stores = Self::stores(&endpoint, &engine, data, prefs, cx);
+        let subscriptions = Self::wire(
+            &Wiring {
+                engine: &engine,
+                search: &stores.search,
+                document: &stores.document,
+                jobs: &stores.jobs,
+                catalog: &stores.catalog,
+                shell: &stores.shell,
+                field: &stores.field,
+                coordinate: &stores.coordinate,
+            },
+            cx,
+        );
+        Self::assemble(engine, stores, subscriptions, cx)
+    }
+
+    /// Returns the window with every store installed and nothing yet open.
+    fn assemble(
+        engine: Entity<WorkspaceStore>,
+        stores: Stores,
+        subscriptions: Vec<Subscription>,
+        cx: &Context<Self>,
+    ) -> Self {
+        let Stores {
             search,
             document,
             jobs,
+            catalog,
+            shell,
+            field,
+            coordinate,
+        } = stores;
+        Self {
+            engine,
+            search,
+            document,
+            jobs,
+            catalog,
             shell,
             field,
             coordinate,
             adding: false,
             add_fault: None,
+            folded: Vec::new(),
+            unfurled: Vec::new(),
+            #[cfg(feature = "preview")]
+            scene: crate::preview::Scene::from_env(),
+            outline_scroll: gpui::UniformListScrollHandle::new(),
+            revealed: None,
+            sheet_scroll: gpui::ScrollHandle::new(),
+            revealed_row: None,
             focus: cx.focus_handle(),
-            subscriptions,
+            _subscriptions: subscriptions,
         }
     }
 
-    fn wire(
-        workspace: &Entity<WorkspaceStore>,
-        search: &Entity<SearchStore>,
-        document: &Entity<DocumentStore>,
-        jobs: &Entity<JobsStore>,
-        shell: &Entity<ShellStore>,
-        field: &Entity<EditableTextState>,
+    /// Builds every store that hangs off one endpoint and the engine's feed.
+    fn stores(
+        endpoint: &Endpoint,
+        engine: &Entity<WorkspaceStore>,
+        data: PathBuf,
+        prefs: Preferences,
         cx: &mut Context<Self>,
-    ) -> Vec<Subscription> {
+    ) -> Stores {
+        Stores {
+            search: cx.new(|_| SearchStore::new(endpoint.clone())),
+            document: cx.new(|_| DocumentStore::new(endpoint.clone(), engine.clone())),
+            jobs: cx.new(|_| JobsStore::new(endpoint.clone())),
+            catalog: cx.new(|_| CatalogStore::new(endpoint.clone())),
+            shell: cx.new(|_| ShellStore::new(data, prefs)),
+            field: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
+            coordinate: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
+        }
+    }
+
+    fn wire(parts: &Wiring<'_>, cx: &mut Context<Self>) -> Vec<Subscription> {
         vec![
-            cx.observe(workspace, Self::on_workspace),
-            cx.observe(search, |_, _, cx| cx.notify()),
-            cx.observe(document, |_, _, cx| cx.notify()),
-            cx.observe(jobs, |_, _, cx| cx.notify()),
-            cx.observe(shell, |_, _, cx| cx.notify()),
-            cx.subscribe(field, Self::on_typed),
+            cx.observe(parts.engine, |this, store, cx| this.on_engine(&store, cx)),
+            cx.observe(parts.search, |_, _, cx| cx.notify()),
+            cx.observe(parts.document, |_, _, cx| cx.notify()),
+            cx.observe(parts.jobs, |_, _, cx| cx.notify()),
+            cx.observe(parts.catalog, |_, _, cx| cx.notify()),
+            cx.observe(parts.shell, |_, _, cx| cx.notify()),
+            cx.subscribe(parts.field, |this, field, event, cx| this.on_typed(&field, event, cx)),
+            cx.subscribe(parts.coordinate, |this, field, event, cx| {
+                this.on_coordinate_typed(&field, event, cx);
+            }),
         ]
     }
 
-    fn on_workspace(&mut self, store: Entity<WorkspaceStore>, cx: &mut Context<Self>) {
-        let shelf = store.read(cx).shelf().clone();
-        self.jobs.update(cx, |jobs, cx| jobs.reconcile(&shelf, cx));
+    fn on_engine(&mut self, store: &Entity<WorkspaceStore>, cx: &mut Context<Self>) {
+        let published = store.read(cx).shelf().clone();
+        self.jobs.update(cx, |jobs, cx| jobs.reconcile(&published, cx));
         cx.notify();
+    }
+
+    /// Opens whatever scene the preview build was asked for, once it can.
+    ///
+    /// A scene is applied on the first render where the live root can actually
+    /// satisfy it, because a scene applied before the first revision arrived
+    /// would only ever photograph the loading state.
+    #[cfg(feature = "preview")]
+    fn stage_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(scene) = self.scene else {
+            return;
+        };
+        if crate::preview::stage(self, scene, window, cx) {
+            eprintln!("backend-desktop: opened in the {} scene", scene.name());
+            self.scene = None;
+        }
     }
 
     fn on_typed(
         &mut self,
-        field: Entity<EditableTextState>,
+        field: &Entity<EditableTextState>,
         _: &TextChanged,
         cx: &mut Context<Self>,
     ) {
         let text = field.read(cx).as_str().to_owned();
         self.search.update(cx, |search, cx| search.set_text(text, cx));
+    }
+
+    fn on_coordinate_typed(
+        &mut self,
+        field: &Entity<EditableTextState>,
+        _: &TextChanged,
+        cx: &mut Context<Self>,
+    ) {
+        let text = field.read(cx).as_str().to_owned();
+        self.add_fault = None;
+        self.catalog
+            .update(cx, |catalog, cx| catalog.look_up(&text, cx));
+        cx.notify();
     }
 
     /// Returns the lit theme, kept in step with the shell's preferences.
@@ -152,7 +262,7 @@ impl Workspace {
     /// Opens one declaration, resolving its coordinate from the shelf.
     pub(super) fn open_symbol(&mut self, symbol: SymbolKey, target: Target, cx: &mut Context<Self>) {
         let coordinate = self
-            .workspace
+            .engine
             .read(cx)
             .row(RowId::Symbol(symbol))
             .map_or_else(
@@ -166,7 +276,7 @@ impl Workspace {
     }
 
     /// Opens one project's page.
-    pub(super) fn open_project(&mut self, coordinate: String, cx: &mut Context<Self>) {
+    pub(crate) fn open_project(&mut self, coordinate: String, cx: &mut Context<Self>) {
         self.document.update(cx, |document, cx| {
             document.open(Subject::Project { coordinate }, Target::Here, cx);
         });
@@ -195,8 +305,15 @@ impl Workspace {
         });
     }
 
+    /// Closes the omnibar sheet when the reader clicks the page behind it.
+    pub(super) fn dismiss_sheet_from_scrim(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_field(String::new(), cx);
+        self.dismiss_sheet(cx);
+        window.focus(&self.focus, cx);
+    }
+
     fn dismiss_sheet(&mut self, cx: &mut Context<Self>) {
-        self.search.update(cx, |search, cx| search.dismiss(cx));
+        self.search.update(cx, SearchStore::dismiss);
         self.shell
             .update(cx, |shell, cx| shell.focus_on(Focus::Reader, cx));
     }
@@ -207,6 +324,107 @@ impl Workspace {
             .read(cx)
             .tab()
             .and_then(|tab| tab.subject().map(Subject::identity))
+    }
+
+    /// Follows one crumb of the trail above the page.
+    ///
+    /// A project crumb opens that project. A file crumb cannot open a page —
+    /// the engine publishes declarations, not files — so it scopes the omnibar
+    /// to that file's project and searches for the file, which is the closest
+    /// honest thing to "show me what is in here".
+    pub(super) fn open_crumb(&mut self, destination: &super::page::Destination, cx: &mut Context<Self>) {
+        match destination {
+            super::page::Destination::Project(root) => self.open_project(root.clone(), cx),
+            super::page::Destination::File(path) => {
+                let scope = self
+                    .active_identity(cx)
+                    .and_then(|identity| identity.project().map(|project| project.name().to_owned()));
+                let text = match scope {
+                    Some(project) => format!("@{project} {path}"),
+                    None => path.clone(),
+                };
+                self.set_field(text, cx);
+                self.search.update(cx, SearchStore::open);
+            }
+            super::page::Destination::Symbol(coordinate) => {
+                let symbol = self.engine.read(cx).symbol_for(coordinate);
+                if let Some(symbol) = symbol {
+                    self.open_symbol(symbol, Target::Here, cx);
+                }
+            }
+        }
+    }
+
+    /// Opens one already-resolved subject, for the preview scenes.
+    #[cfg(feature = "preview")]
+    pub(crate) fn open_subject(
+        &mut self,
+        subject: Subject,
+        target: Target,
+        cx: &mut Context<Self>,
+    ) {
+        self.document
+            .update(cx, |document, cx| document.open(subject, target, cx));
+    }
+
+    /// Raises a hover card at an explicit anchor, for the preview scenes.
+    #[cfg(feature = "preview")]
+    pub(crate) fn preview_hover(
+        &mut self,
+        symbol: SymbolKey,
+        coordinate: String,
+        anchor: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.document.update(cx, |document, cx| {
+            document.hover_over(symbol, coordinate, anchor, cx);
+        });
+    }
+
+    /// Returns the merged shelf, for the preview scenes.
+    #[cfg(feature = "preview")]
+    pub(crate) fn preview_shelf(&self, cx: &Context<Self>) -> backend_present::Shelf {
+        self.jobs.read(cx).merge(self.engine.read(cx).shelf())
+    }
+
+    /// Returns the live view root, for the preview scenes.
+    #[cfg(feature = "preview")]
+    pub(crate) fn preview_root(&self, cx: &Context<Self>) -> ViewRoot {
+        self.engine.read(cx).root().clone()
+    }
+
+    /// Submits whatever is in the add field, for the preview scenes.
+    #[cfg(feature = "preview")]
+    pub(crate) fn submit_preview_coordinate(&mut self, cx: &mut Context<Self>) {
+        self.submit_add(cx);
+    }
+
+    /// Returns whether one page section is folded away.
+    pub(super) fn is_folded(&self, key: &str) -> bool {
+        self.folded.iter().any(|held| held == key)
+    }
+
+    /// Folds or unfolds one page section.
+    pub(super) fn toggle_fold(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.is_folded(key) {
+            self.folded.retain(|held| held != key);
+        } else {
+            self.folded.push(key.to_owned());
+        }
+        cx.notify();
+    }
+
+    /// Returns whether one page section is showing everything past its budget.
+    pub(super) fn is_unfurled(&self, key: &str) -> bool {
+        self.unfurled.iter().any(|held| held == key)
+    }
+
+    /// Shows everything one page section was holding back.
+    pub(super) fn unfurl(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !self.is_unfurled(key) {
+            self.unfurled.push(key.to_owned());
+        }
+        cx.notify();
     }
 }
 
@@ -221,6 +439,8 @@ impl Render for Workspace {
         let theme = self.theme(cx);
         window.set_rem_size(theme.root_pixels());
         self.fit(window, cx);
+        #[cfg(feature = "preview")]
+        self.stage_preview(window, cx);
         surface::ground(&theme)
             .id("nudox-window")
             .key_context(WINDOW_CONTEXT)
@@ -333,12 +553,12 @@ fn with_sheet_handlers<E: InteractiveElement>(element: E, cx: &mut Context<Works
 
 impl Workspace {
     fn focus_omnibar(&mut self, _: &FocusOmnibar, window: &mut Window, cx: &mut Context<Self>) {
-        self.field.update(cx, |field, cx| field.select_document(cx));
+        self.field.update(cx, EditableTextState::select_document);
         let handle = self.field.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
         self.shell
             .update(cx, |shell, cx| shell.focus_on(Focus::Omnibar, cx));
-        self.search.update(cx, |search, cx| search.open(cx));
+        self.search.update(cx, SearchStore::open);
     }
 
     fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
@@ -347,17 +567,7 @@ impl Workspace {
     }
 
     fn start_add(&mut self, _: &AddProject, window: &mut Window, cx: &mut Context<Self>) {
-        self.adding = true;
-        self.add_fault = None;
-        self.shell.update(cx, |shell, cx| {
-            if !shell.library_open() {
-                shell.toggle_panel(Side::Library, cx);
-            }
-            shell.focus_on(Focus::Library, cx);
-        });
-        let handle = self.coordinate.read(cx).focus_handle(cx);
-        window.focus(&handle, cx);
-        cx.notify();
+        self.begin_add(window, cx);
     }
 
     fn toggle_library(&mut self, _: &ToggleLibrary, _: &mut Window, cx: &mut Context<Self>) {
@@ -371,15 +581,15 @@ impl Workspace {
     }
 
     fn open_settings(&mut self, _: &OpenSettings, _: &mut Window, cx: &mut Context<Self>) {
-        self.shell.update(cx, |shell, cx| shell.toggle_settings(cx));
+        self.shell.update(cx, ShellStore::toggle_settings);
     }
 
     fn go_back(&mut self, _: &GoBack, _: &mut Window, cx: &mut Context<Self>) {
-        self.document.update(cx, |document, cx| document.back(cx));
+        self.document.update(cx, DocumentStore::back);
     }
 
     fn go_forward(&mut self, _: &GoForward, _: &mut Window, cx: &mut Context<Self>) {
-        self.document.update(cx, |document, cx| document.forward(cx));
+        self.document.update(cx, DocumentStore::forward);
     }
 
     fn close_tab(&mut self, _: &CloseTab, _: &mut Window, cx: &mut Context<Self>) {
@@ -412,7 +622,7 @@ impl Workspace {
         let Some(identity) = self.active_identity(cx) else {
             return;
         };
-        self.copy("Identity copied", identity.coordinate().to_owned(), cx);
+        self.copy("Identity copied", identity.coordinate().as_str().to_owned(), cx);
     }
 
     fn copy_key(&mut self, _: &CopyKey, _: &mut Window, cx: &mut Context<Self>) {
@@ -429,6 +639,11 @@ impl Workspace {
             }
             Subject::Project { coordinate } => Some(coordinate.clone()),
         }
+    }
+
+    /// Returns the omnibar text one command affordance would run.
+    pub(super) fn palette_for(name: &str, args: &[String]) -> String {
+        crate::presentation::fault::affordance_palette_text(name, args)
     }
 
     fn reset_interface(&mut self, _: &ResetInterface, _: &mut Window, cx: &mut Context<Self>) {
@@ -453,9 +668,9 @@ impl Workspace {
     }
 
     fn reload(&mut self, _: &Reload, _: &mut Window, cx: &mut Context<Self>) {
-        self.document.update(cx, |document, cx| document.reload(cx));
-        self.workspace
-            .update(cx, |workspace, cx| workspace.refresh_health(cx));
+        self.document.update(cx, DocumentStore::reload);
+        self.engine
+            .update(cx, WorkspaceStore::refresh_health);
     }
 
     fn toggle_appearance(&mut self, _: &ToggleAppearance, _: &mut Window, cx: &mut Context<Self>) {
@@ -477,13 +692,11 @@ impl Workspace {
 impl Workspace {
     fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
         if self.shell.read(cx).settings_open() {
-            self.shell.update(cx, |shell, cx| shell.toggle_settings(cx));
+            self.shell.update(cx, ShellStore::toggle_settings);
             return;
         }
         if self.adding {
-            self.adding = false;
-            self.add_fault = None;
-            cx.notify();
+            self.cancel_add(cx);
             return;
         }
         if self.search.read(cx).is_open() {
@@ -502,11 +715,11 @@ impl Workspace {
     }
 
     fn page_up(&mut self, _: &PageUp, _: &mut Window, cx: &mut Context<Self>) {
-        self.step_selection(-8, cx);
+        self.step_selection(-page_step(), cx);
     }
 
     fn page_down(&mut self, _: &PageDown, _: &mut Window, cx: &mut Context<Self>) {
-        self.step_selection(8, cx);
+        self.step_selection(page_step(), cx);
     }
 
     fn select_first(&mut self, _: &SelectFirst, _: &mut Window, cx: &mut Context<Self>) {
@@ -542,14 +755,14 @@ impl Workspace {
         }
         if let Some(command) = self.search.read(cx).selected_command() {
             self.search
-                .update(cx, |search, cx| search.run(command.spec(), cx));
+                .update(cx, |search, cx| search.run(command, cx));
             return;
         }
         let Some(symbol) = self
             .search
             .read(cx)
             .selected_result()
-            .and_then(super::super::store::search::ResultRow::symbol)
+            .and_then(crate::store::search::ResultRow::symbol)
         else {
             return;
         };
@@ -580,7 +793,7 @@ impl Workspace {
         }
     }
 
-    pub(super) fn set_field(&mut self, text: String, cx: &mut Context<Self>) {
+    pub(crate) fn set_field(&mut self, text: String, cx: &mut Context<Self>) {
         self.field.update(cx, |field, cx| {
             field.emplace(&text, cx);
             let end = field.as_str().len();
@@ -607,7 +820,30 @@ impl Workspace {
     }
 }
 
-/// Returns the fixed height of the titlebar row.
-pub(super) fn titlebar_height() -> gpui::Pixels {
-    px(Chrome::TITLEBAR)
+/// Every store one window owns besides the engine's own feed.
+struct Stores {
+    search: Entity<SearchStore>,
+    document: Entity<DocumentStore>,
+    jobs: Entity<JobsStore>,
+    catalog: Entity<CatalogStore>,
+    shell: Entity<ShellStore>,
+    field: Entity<EditableTextState>,
+    coordinate: Entity<EditableTextState>,
+}
+
+/// Every entity the window observes, named so wiring stays one call.
+struct Wiring<'a> {
+    engine: &'a Entity<WorkspaceStore>,
+    search: &'a Entity<SearchStore>,
+    document: &'a Entity<DocumentStore>,
+    jobs: &'a Entity<JobsStore>,
+    catalog: &'a Entity<CatalogStore>,
+    shell: &'a Entity<ShellStore>,
+    field: &'a Entity<EditableTextState>,
+    coordinate: &'a Entity<EditableTextState>,
+}
+
+/// Returns how many rows one page-up or page-down step moves.
+fn page_step() -> isize {
+    isize::try_from(crate::store::search::PAGE).unwrap_or(8)
 }

@@ -72,6 +72,19 @@ impl Options {
         }
     }
 
+    /// The options a non-interactive caller renders one format with.
+    ///
+    /// This is `fallback` with a chosen rendering: no colour, default width,
+    /// no endpoint. It exists so a test can ask for the exact bytes a piped
+    /// run produces without composing an argument vector to get them.
+    #[must_use]
+    pub fn plain(format: Format) -> Self {
+        Self {
+            format,
+            ..Self::fallback()
+        }
+    }
+
     /// Returns the requested rendering.
     #[must_use]
     pub const fn format(&self) -> Format {

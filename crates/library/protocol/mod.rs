@@ -53,7 +53,9 @@ pub(crate) use reply::{
     row_from_wire_against_with_capability, row_id_from_wire, row_id_to_wire, row_to_wire,
     snapshot_from_wire, snapshot_to_wire, view_root_from_wire, view_root_to_wire,
 };
-pub(crate) use reply_capability::{HealthWire, inventory_from_wire, inventory_to_wire};
+pub(crate) use reply_capability::{
+    HealthWire, inventory_from_wire, inventory_to_wire, progress_from_wire, progress_to_wire,
+};
 pub(crate) use reply_coverage::{
     CoverageWire, FreshnessWire, coverage_from_wire, coverage_to_wire, freshness_from_wire,
     freshness_to_wire,
