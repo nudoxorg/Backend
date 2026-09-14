@@ -8,7 +8,7 @@ use compiler_driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use backend_semantic::ir::{FragmentView, ImageProvenance};
-use compiler_languages_go::{GoImage, GoOracle};
+use backend_frontend_go::legacy::{GoImage, GoOracle};
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published,
 };
@@ -164,7 +164,7 @@ enum Error {
     #[error("toolchain: {0}")]
     Toolchain(String),
     #[error("oracle: {0}")]
-    Oracle(#[from] compiler_languages_go::OracleError),
+    Oracle(#[from] backend_frontend_go::legacy::OracleError),
 }
 
 fn toolchain() -> Result<ResolvedToolchain<'static>, Error> {

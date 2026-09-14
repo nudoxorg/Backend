@@ -2,11 +2,11 @@
 
 use std::{io, path::Path, str};
 
-use compiler_languages_go::GoOracleConfigurationError;
-use compiler_languages_java::harness::HarnessError;
-use compiler_languages_python::PyreflyExecutableError;
-use compiler_languages_rust::LoadError as RustLoadError;
-use compiler_languages_typescript::TypeScriptCheckerProgramError;
+use backend_frontend_go::legacy::GoOracleConfigurationError;
+use backend_frontend_java::legacy::harness::HarnessError;
+use backend_frontend_python::legacy::PyreflyExecutableError;
+use backend_frontend_rust::legacy::LoadError as RustLoadError;
+use backend_frontend_typescript::legacy::TypeScriptCheckerProgramError;
 use backend_semantic::vocabulary::NativeTool;
 use server_journal::PublicationLimitError;
 use thiserror::Error;

@@ -25,8 +25,8 @@ use compiler_driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use backend_semantic::ir::{EntityKind, FragmentView, ItemKind};
-use compiler_languages_java::{DeclarationKind, JavaAuthorityImage};
-use compiler_languages_java::{
+use backend_frontend_java::legacy::{DeclarationKind, JavaAuthorityImage};
+use backend_frontend_java::legacy::{
     JavaRelease as HarnessRelease,
     central::{Central, FetchError},
     harness::{Harness, HarnessError, HarnessRequest, JavaSource, JdkToolchain},

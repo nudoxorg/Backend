@@ -11,21 +11,21 @@ use std::{path::Path, sync::atomic::Ordering, time::Instant};
 use compiler_driver::{
     CompileControl, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
 };
-use compiler_languages_csharp::{
+use backend_frontend_csharp::legacy::{
     CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
     CSharpAuthorityRequest, CSharpOracle,
 };
-use compiler_languages_go::{ConfiguredGoOracle, OracleError};
-use compiler_languages_java::harness::{
+use backend_frontend_go::legacy::{ConfiguredGoOracle, OracleError};
+use backend_frontend_java::legacy::harness::{
     Harness, HarnessError, HarnessRequest, JavaSource, JdkToolchain,
 };
-use compiler_languages_python::{
+use backend_frontend_python::legacy::{
     CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly, extract,
 };
-use compiler_languages_rust::{
+use backend_frontend_rust::legacy::{
     RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
-use compiler_languages_typescript::{
+use backend_frontend_typescript::legacy::{
     CheckerError as TypeScriptCheckerError, ExplicitTypeScriptChecker, Report as TypeScriptReport,
 };
 use backend_semantic::vocabulary::{LanguageProfile, NativeTool, TypeScriptSource};
@@ -462,13 +462,13 @@ pub fn enter_package_authority<'request, 'config>(
 
 const fn java_authority_release(
     release: backend_semantic::vocabulary::JavaRelease,
-) -> compiler_languages_java::JavaRelease {
+) -> backend_frontend_java::legacy::JavaRelease {
     match release {
-        backend_semantic::vocabulary::JavaRelease::Java8 => compiler_languages_java::JavaRelease::Java8,
-        backend_semantic::vocabulary::JavaRelease::Java11 => compiler_languages_java::JavaRelease::Java11,
-        backend_semantic::vocabulary::JavaRelease::Java17 => compiler_languages_java::JavaRelease::Java17,
-        backend_semantic::vocabulary::JavaRelease::Java21 => compiler_languages_java::JavaRelease::Java21,
-        backend_semantic::vocabulary::JavaRelease::Java25 => compiler_languages_java::JavaRelease::Java25,
+        backend_semantic::vocabulary::JavaRelease::Java8 => backend_frontend_java::legacy::JavaRelease::Java8,
+        backend_semantic::vocabulary::JavaRelease::Java11 => backend_frontend_java::legacy::JavaRelease::Java11,
+        backend_semantic::vocabulary::JavaRelease::Java17 => backend_frontend_java::legacy::JavaRelease::Java17,
+        backend_semantic::vocabulary::JavaRelease::Java21 => backend_frontend_java::legacy::JavaRelease::Java21,
+        backend_semantic::vocabulary::JavaRelease::Java25 => backend_frontend_java::legacy::JavaRelease::Java25,
     }
 }
 
@@ -674,8 +674,8 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use compiler_languages_go::{GoOracle, GoOracleConfiguration};
-    use compiler_languages_typescript::Checker as TypeScriptChecker;
+    use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
+    use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
     use backend_semantic::vocabulary::{CSharpVersion, CStandard};
 
     use super::*;

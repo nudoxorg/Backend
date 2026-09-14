@@ -8,7 +8,7 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use backend_semantic::ir::{FragmentView, ImageProvenance};
-use compiler_languages_go::{GoImage, GoOracle};
+use backend_frontend_go::legacy::{GoImage, GoOracle};
 use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
@@ -61,7 +61,7 @@ enum TestError {
     #[error("Go oracle failed: {source}")]
     Oracle {
         #[source]
-        source: compiler_languages_go::OracleError,
+        source: backend_frontend_go::legacy::OracleError,
     },
     #[error("fragment validation failed: {source}")]
     Fragment {

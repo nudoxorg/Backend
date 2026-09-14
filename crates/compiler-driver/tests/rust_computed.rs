@@ -12,7 +12,7 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use backend_semantic::ir::{EntityKind, FragmentView, SemanticTypeTag, TypeFactSegment};
-use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
+use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);

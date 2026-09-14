@@ -8,7 +8,7 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use backend_semantic::ir::FragmentView;
-use compiler_languages_typescript::{Checker, Report};
+use backend_frontend_typescript::legacy::{Checker, Report};
 use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
@@ -31,7 +31,7 @@ use std::{
 const PROFILE: LanguageProfile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
 const STAGE: Stage = Stage::LowerIr;
 const GOLDEN: &[u8] =
-    include_bytes!("../../compiler-language-typescript/tests/transcripts/golden.json");
+    include_bytes!("../../../frontends/typescript/tests/transcripts/golden.json");
 /// A later run may be up to 2x slower than the frozen first run before review.
 pub const TYPESCRIPT_CORPUS_REGRESSION_CAP: f64 = 2.0;
 

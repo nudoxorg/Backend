@@ -11,6 +11,9 @@ use backend_compile::{
 };
 use std::{fmt, path::Path};
 
+#[path = "src/legacy/mod.rs"]
+pub mod legacy;
+
 const LANGUAGE: &str = "go";
 const PAYLOAD_VERSION: &str = "go-semantic-v1";
 

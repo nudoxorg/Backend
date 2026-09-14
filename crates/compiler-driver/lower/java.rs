@@ -24,7 +24,7 @@ use backend_semantic::ir::{
     OccurrenceTarget, ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor,
     SemanticTypeRecord, SemanticTypeTag, TypeListId, TypeReason, TypeWidth,
 };
-use compiler_languages_java::{
+use backend_frontend_java::legacy::{
     AtomError, BoundImageError, Declaration, DeclarationKind, DocFlavor, HeaderError, ImageError,
     ImagePlane, JavaAuthorityImage, JavaImage, JavaRelease, Reference, SectionError, SymbolRef,
     TypeFact, TypeKind, TypeRef,
@@ -2829,7 +2829,7 @@ mod tests {
             symbol: Some(0),
         });
         let bytes = fix.bind(b"")?;
-        let owner = compiler_languages_java::JavaAuthorityImage::open(&bytes)
+        let owner = backend_frontend_java::legacy::JavaAuthorityImage::open(&bytes)
             .map_err(|_| TestError::Missing("validated symbol fixture"))?
             .image
             .declarations()

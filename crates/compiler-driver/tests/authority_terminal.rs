@@ -5,8 +5,8 @@
 use compiler_driver::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, AuthorityProfileMismatch,
 };
-use compiler_languages_clang::CollectError;
-use compiler_languages_typescript::{AuthorityError, with_analysis};
+use backend_frontend_clang::legacy::CollectError;
+use backend_frontend_typescript::legacy::{AuthorityError, with_analysis};
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, LanguageProfile, PythonVersion, TypeScriptSource,
 };

@@ -5,12 +5,12 @@
 
 mod csharp_support;
 
-use compiler_languages_csharp::CSharpImage;
+use backend_frontend_csharp::legacy::CSharpImage;
 use std::{fs, path::PathBuf, process::Command};
 use thiserror::Error;
 
 const FIDELITY_IMAGE: &[u8] =
-    include_bytes!("../../compiler-language-csharp/tests/fixtures/producer/fidelity.ncaimg");
+    include_bytes!("../../../frontends/csharp/tests/fixtures/producer/fidelity.ncaimg");
 
 #[derive(Debug, Error)]
 enum TestError {

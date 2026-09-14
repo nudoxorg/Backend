@@ -60,17 +60,17 @@ pub(super) enum SourceUnavailableKind {
 #[derive(Debug, Error)]
 pub(super) enum AuthorityBuildError {
     #[error("Rust native authority could not load its selected toolchain")]
-    RustLoad(#[from] compiler_languages_rust::LoadError),
+    RustLoad(#[from] backend_frontend_rust::legacy::LoadError),
     #[error("Rust Cargo authority could not open its fixture")]
-    RustProject(#[from] compiler_languages_rust::RustAuthorityError),
+    RustProject(#[from] backend_frontend_rust::legacy::RustAuthorityError),
     #[error("Go authority image producer failed")]
-    Go(#[from] compiler_languages_go::OracleError),
+    Go(#[from] backend_frontend_go::legacy::OracleError),
     #[error("Java authority harness failed")]
-    Java(#[from] compiler_languages_java::harness::HarnessError),
+    Java(#[from] backend_frontend_java::legacy::harness::HarnessError),
     #[error("C# authority helper failed")]
     CSharp(#[from] CSharpHelperError),
     #[error("C# authority image validation failed")]
-    CSharpImage(#[from] compiler_languages_csharp::ImageError),
+    CSharpImage(#[from] backend_frontend_csharp::legacy::ImageError),
     #[error("authority fixture filesystem phase {phase:?} failed")]
     Io {
         phase: AuditIoPhase,
@@ -282,8 +282,8 @@ pub(super) const fn native_tool(language: CorpusLanguage) -> NativeTool {
 
 pub(super) struct RustAuthorityFixture {
     pub(super) _root: FixtureDir,
-    pub(super) project: compiler_languages_rust::RustProject,
-    pub(super) features: compiler_languages_rust::RustFeatureControl<'static>,
+    pub(super) project: backend_frontend_rust::legacy::RustProject,
+    pub(super) features: backend_frontend_rust::legacy::RustFeatureControl<'static>,
 }
 
 pub(super) struct GoAuthorityFixture {
@@ -292,8 +292,8 @@ pub(super) struct GoAuthorityFixture {
 }
 
 pub(super) struct JavaAuthorityProvider {
-    jdk: compiler_languages_java::harness::JdkToolchain<'static>,
-    harness: compiler_languages_java::harness::Harness,
+    jdk: backend_frontend_java::legacy::harness::JdkToolchain<'static>,
+    harness: backend_frontend_java::legacy::harness::Harness,
 }
 
 pub(super) struct CSharpAuthorityProvider {
@@ -355,21 +355,21 @@ impl JavaAuthorityProvider {
             })?
             .to_owned();
         let root = Box::leak(root.into_boxed_path());
-        let jdk = compiler_languages_java::harness::JdkToolchain::new(root)?;
-        let mut harness = compiler_languages_java::harness::Harness::new()?;
+        let jdk = backend_frontend_java::legacy::harness::JdkToolchain::new(root)?;
+        let mut harness = backend_frontend_java::legacy::harness::Harness::new()?;
         harness.prepare(&jdk)?;
         Ok(Self { jdk, harness })
     }
 
     pub(super) fn image(&self, source: &[u8]) -> Result<Vec<u8>, AuthorityBuildError> {
-        let sources = [compiler_languages_java::harness::JavaSource {
+        let sources = [backend_frontend_java::legacy::harness::JavaSource {
             name: Path::new("Package.java"),
             bytes: source,
         }];
-        let request = compiler_languages_java::harness::HarnessRequest {
+        let request = backend_frontend_java::legacy::harness::HarnessRequest {
             sources: &sources,
             classpath: &[],
-            release: compiler_languages_java::JavaRelease::Java21,
+            release: backend_frontend_java::legacy::JavaRelease::Java21,
         };
         let mut image = Vec::with_capacity(64 * 1024);
         self.harness.image(&self.jdk, request, &mut image)?;
@@ -390,7 +390,7 @@ impl CSharpAuthorityProvider {
             source,
         })?;
         let helper =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../compiler-language-csharp/helper");
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../frontends/csharp/src/legacy/helper");
         let mut command = Command::new(host.executable());
         command
             .args([
@@ -480,7 +480,7 @@ impl CSharpAuthorityProvider {
                 source,
             })
         })?;
-        compiler_languages_csharp::CSharpImage::open(&image)?;
+        backend_frontend_csharp::legacy::CSharpImage::open(&image)?;
         Ok(image)
     }
 }
@@ -489,9 +489,9 @@ fn java_setup_is_unavailable(error: &AuthorityBuildError) -> bool {
     matches!(
         error,
         AuthorityBuildError::Java(
-            compiler_languages_java::harness::HarnessError::MissingExecutable { .. }
-                | compiler_languages_java::harness::HarnessError::Spawn { .. }
-                | compiler_languages_java::harness::HarnessError::Command { .. }
+            backend_frontend_java::legacy::harness::HarnessError::MissingExecutable { .. }
+                | backend_frontend_java::legacy::harness::HarnessError::Spawn { .. }
+                | backend_frontend_java::legacy::harness::HarnessError::Command { .. }
         )
     )
 }
@@ -512,12 +512,12 @@ pub(super) fn rust_error_is_unavailable(error: &AuthorityBuildError) -> bool {
     matches!(error, AuthorityBuildError::RustLoad(_))
 }
 
-pub(super) fn go_error_is_unavailable(error: &compiler_languages_go::OracleError) -> bool {
+pub(super) fn go_error_is_unavailable(error: &backend_frontend_go::legacy::OracleError) -> bool {
     matches!(
         error,
-        compiler_languages_go::OracleError::ToolingUnavailable { .. }
-            | compiler_languages_go::OracleError::Spawn { .. }
-            | compiler_languages_go::OracleError::Timeout { .. }
+        backend_frontend_go::legacy::OracleError::ToolingUnavailable { .. }
+            | backend_frontend_go::legacy::OracleError::Spawn { .. }
+            | backend_frontend_go::legacy::OracleError::Timeout { .. }
     )
 }
 
@@ -556,9 +556,9 @@ pub(super) fn rust_fixture_for_source(
         phase: AuditIoPhase::RustSource,
         source,
     })?;
-    let toolchain = compiler_languages_rust::RustToolchain::discover(host.executable().to_owned())
+    let toolchain = backend_frontend_rust::legacy::RustToolchain::discover(host.executable().to_owned())
         .map_err(AuthorityBuildError::RustLoad)?;
-    let project = compiler_languages_rust::RustProject::open_with_source(
+    let project = backend_frontend_rust::legacy::RustProject::open_with_source(
         &root.path,
         &source_path,
         &toolchain,
@@ -568,7 +568,7 @@ pub(super) fn rust_fixture_for_source(
     Ok(RustAuthorityFixture {
         _root: root,
         project,
-        features: compiler_languages_rust::RustFeatureControl::default(),
+        features: backend_frontend_rust::legacy::RustFeatureControl::default(),
     })
 }
 
@@ -598,7 +598,7 @@ pub(super) fn go_fixture_for_source(
         phase: AuditIoPhase::GoSource,
         source,
     })?;
-    let oracle = compiler_languages_go::GoOracle {
+    let oracle = backend_frontend_go::legacy::GoOracle {
         output_limit: AUTHORITY_BYTES,
         timeout: DEADLINE,
     };

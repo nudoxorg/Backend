@@ -32,7 +32,7 @@ use backend_semantic::ir::{
     ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeChild, SemanticTypeRecord,
     SemanticTypeTag, TypeReason, TypeWidth,
 };
-use compiler_languages_python::{
+use backend_frontend_python::legacy::{
     Annotation, AnnotationFact, AnnotationPosition, CheckerError, CheckerReport, ClassForm,
     DeclarationFact, DeclarationKind, ExtractionError, InferredType, LiteralValue, ModuleFacts,
     OccurrenceFact, ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome,
@@ -1747,10 +1747,10 @@ fn owner_relative_span(owner: &Pushed<'_>, occurrence: &OccurrenceFact) -> RelSp
 /// The total, name-preserving reference-kind mapping. The extractor's closed
 /// call lattice and the lane's reference lattice share both categories, so
 /// no two extractor kinds collapse and no lane kind is unreachable.
-fn reference_kind(kind: compiler_languages_python::OccurrenceKind) -> ReferenceKind {
+fn reference_kind(kind: backend_frontend_python::legacy::OccurrenceKind) -> ReferenceKind {
     match kind {
-        compiler_languages_python::OccurrenceKind::FunctionCall => ReferenceKind::FunctionCall,
-        compiler_languages_python::OccurrenceKind::MethodCall => ReferenceKind::MethodCall,
+        backend_frontend_python::legacy::OccurrenceKind::FunctionCall => ReferenceKind::FunctionCall,
+        backend_frontend_python::legacy::OccurrenceKind::MethodCall => ReferenceKind::MethodCall,
     }
 }
 
@@ -2085,7 +2085,7 @@ fn docstring_content(raw: &[u8]) -> &[u8] {
 /// soft breaks. Link targets naming a module declaration resolve locally.
 fn doc_fragments<'source>(
     source: &'source [u8],
-    docstring: &compiler_languages_python::DocstringFact,
+    docstring: &backend_frontend_python::legacy::DocstringFact,
     rows: &[Pushed<'source>],
 ) -> Result<Vec<DocFragmentInput<'source>>, PythonCollectError> {
     let (raw_start, raw_end) = span_bounds(docstring.span)?;
@@ -2246,7 +2246,7 @@ fn span_bounds(span: Span) -> Result<(usize, usize), PythonCollectError> {
 mod tests {
     use super::{PythonCollectError, foreign_key_fault, foreign_universe, lineage_fault};
     use backend_semantic::ir::{ForeignKeyFault, PackageLineageFault};
-    use compiler_languages_python::Span;
+    use backend_frontend_python::legacy::Span;
     use backend_semantic::vocabulary::{
         ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
         PythonProjectionFault,

@@ -12,13 +12,13 @@ publish.workspace = true
 [dependencies]
 backend-semantic = { path = "../semantic" }
 compiler-registry = { path = "../compiler-registry" }
-compiler-languages-clang = { path = "../compiler-language-clang" }
-compiler-languages-csharp = { path = "../compiler-language-csharp" }
-compiler-languages-go = { path = "../compiler-language-go" }
-compiler-languages-java = { path = "../compiler-language-java" }
-compiler-languages-python = { path = "../compiler-language-python" }
-compiler-languages-rust = { path = "../compiler-language-rust" }
-compiler-languages-typescript = { path = "../compiler-language-typescript" }
+backend-frontend-clang = { path = "../../frontends/clang" }
+backend-frontend-csharp = { path = "../../frontends/csharp" }
+backend-frontend-go = { path = "../../frontends/go" }
+backend-frontend-java = { path = "../../frontends/java" }
+backend-frontend-python = { path = "../../frontends/python" }
+backend-frontend-rust = { path = "../../frontends/rust" }
+backend-frontend-typescript = { path = "../../frontends/typescript" }
 backend-version = { path = "../version" }
 sha2 = "=0.10.9"
 thiserror.workspace = true

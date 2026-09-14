@@ -13,7 +13,7 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
 use backend_semantic::ir::{EntityId, Ir, ItemKind};
-use compiler_languages_go::GoOracle;
+use backend_frontend_go::legacy::GoOracle;
 use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
 use thiserror::Error;
 
@@ -80,7 +80,7 @@ enum TestError {
     #[error("Go toolchain resolution failed")]
     Resolve,
     #[error("Go authority image failed: {0}")]
-    Oracle(#[source] compiler_languages_go::OracleError),
+    Oracle(#[source] backend_frontend_go::legacy::OracleError),
     #[error("compile_ir failed: {0}")]
     Compile(String),
     #[error("entity {name:?} was not found")]

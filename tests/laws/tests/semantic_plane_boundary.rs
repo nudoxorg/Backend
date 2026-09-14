@@ -71,7 +71,7 @@ fn semantic_adapters_do_not_rebuild_generic_product_rows() {
 
 #[test]
 fn go_authority_tests_do_not_probe_an_ambient_compiler_unbounded() {
-    let text = source("crates/compiler-language-go/tests/protocol.rs");
+    let text = source("frontends/go/tests/protocol.rs");
     let compact = text
         .chars()
         .filter(|character| !character.is_whitespace())

@@ -12,7 +12,7 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainResolutionError, ToolchainSelection, compile_ir,
 };
 use backend_semantic::ir::{EntityId, ItemKind};
-use compiler_languages_rust::{
+use backend_frontend_rust::legacy::{
     RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
@@ -84,7 +84,7 @@ enum TestError {
     #[error(transparent)]
     Authority(#[from] RustAuthorityError),
     #[error(transparent)]
-    Load(#[from] compiler_languages_rust::LoadError),
+    Load(#[from] backend_frontend_rust::legacy::LoadError),
     #[error(transparent)]
     Toolchain(#[from] ToolchainResolutionError),
     #[error("compile failed: {0}")]

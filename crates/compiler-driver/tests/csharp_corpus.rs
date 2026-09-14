@@ -64,9 +64,9 @@ const GEN_TWO_PROBE_CLASS: &[u8] = b"NudoxGenTwoProbe";
 const GEN_TWO_PROBE_MARKER: &[u8] = b"Marker";
 
 const FIDELITY_SOURCE: &[u8] =
-    include_bytes!("../../compiler-language-csharp/tests/fixtures/producer/fidelity.cs");
+    include_bytes!("../../../frontends/csharp/tests/fixtures/producer/fidelity.cs");
 const FIDELITY_IMAGE: &[u8] =
-    include_bytes!("../../compiler-language-csharp/tests/fixtures/producer/fidelity.ncaimg");
+    include_bytes!("../../../frontends/csharp/tests/fixtures/producer/fidelity.ncaimg");
 
 #[derive(Debug, Error)]
 enum TestError {
@@ -592,7 +592,7 @@ fn verify_digest(archive: &[u8], declared: &[u8; 64]) -> Result<(), TestError> {
 /// truths from `languages/csharp/tests/fixtures/producer/fidelity.cs`.
 #[test]
 fn committed_fidelity_fixture_collects_without_faults() -> Result<(), TestError> {
-    let image = compiler_languages_csharp::CSharpImage::open(FIDELITY_IMAGE).map_err(|cause| {
+    let image = backend_frontend_csharp::legacy::CSharpImage::open(FIDELITY_IMAGE).map_err(|cause| {
         TestError::JourneyCompile {
             cause: format!("authority image admission failed: {cause:?}"),
         }
@@ -627,7 +627,7 @@ fn committed_fidelity_fixture_collects_without_faults() -> Result<(), TestError>
         })?
         .into_iter()
         .filter(|reference| {
-            reference.kind == compiler_languages_csharp::ReferenceTag::InterfaceImplementation
+            reference.kind == backend_frontend_csharp::legacy::ReferenceTag::InterfaceImplementation
         })
         .count();
     if interface_bindings == 0 {
@@ -636,15 +636,15 @@ fn committed_fidelity_fixture_collects_without_faults() -> Result<(), TestError>
         ));
     }
     let operator = declarations.iter().any(|declaration| {
-        declaration.kind == compiler_languages_csharp::DeclarationKind::Operator
+        declaration.kind == backend_frontend_csharp::legacy::DeclarationKind::Operator
             && declaration.name.bytes == b"+"
     });
     let constructor = declarations.iter().any(|declaration| {
-        declaration.kind == compiler_languages_csharp::DeclarationKind::Constructor
+        declaration.kind == backend_frontend_csharp::legacy::DeclarationKind::Constructor
             && declaration.name.bytes == b"Widget"
     });
     let delegate = declarations.iter().any(|declaration| {
-        declaration.kind == compiler_languages_csharp::DeclarationKind::Delegate
+        declaration.kind == backend_frontend_csharp::legacy::DeclarationKind::Delegate
             && declaration.parameters.len() == 3
     });
     if !(operator && constructor && delegate) {
@@ -893,7 +893,7 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
 
     // The produced image must bind exactly the fetched primary bytes and
     // resolve exactly the pinned reference count.
-    let opened_image = compiler_languages_csharp::CSharpImage::open(&image).map_err(|cause| {
+    let opened_image = backend_frontend_csharp::legacy::CSharpImage::open(&image).map_err(|cause| {
         TestError::JourneyCompile {
             cause: format!("{cause:?}"),
         }

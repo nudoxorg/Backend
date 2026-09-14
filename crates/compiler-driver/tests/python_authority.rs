@@ -19,7 +19,7 @@ use backend_semantic::ir::{
     Confidence, DecodedOccurrence, EntityKind, FragmentView, LanguageExtensionWireFact,
     OccurrenceConfidence, OccurrenceTarget, PythonFacts,
 };
-use compiler_languages_python::{
+use backend_frontend_python::legacy::{
     CheckerReport, Inference, InferenceSite, InferredType, Span, SymbolOutcome, SymbolResolution,
 };
 use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage, TypeScriptSource};

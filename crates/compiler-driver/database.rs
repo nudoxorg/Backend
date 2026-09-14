@@ -12,7 +12,7 @@ use std::{
 use backend_semantic::ir::{
     CanonicalDataError, FragmentError, FragmentView, PrepareError, SourceIdentity, WriteError,
 };
-use compiler_languages_clang::{
+use backend_frontend_clang::legacy::{
     ClangInput, CompilationDatabase, DatabaseArgumentError, DatabaseError, MAX_DATABASE_ARGUMENTS,
 };
 use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
@@ -51,7 +51,7 @@ pub enum DatabaseCompileFailure<'source> {
     },
     /// Libclang rejected the selected translation unit.
     #[error("libclang rejected the database translation unit")]
-    Authority(#[source] compiler_languages_clang::CollectError),
+    Authority(#[source] backend_frontend_clang::legacy::CollectError),
     /// The bounded canonical fact lane rejected one exact fact.
     #[error("database translation unit rejected fact {rejected:?} for {recipe:?}")]
     Rejected {
@@ -251,7 +251,7 @@ fn compile_database_input<'input, 'source, 'toolchain, 'cancel, 'output>(
     )
     .map_err(|cause| match cause {
         lower::clang::ClangCollectError::Authority(
-            compiler_languages_clang::CollectError::Cancelled,
+            backend_frontend_clang::legacy::CollectError::Cancelled,
         ) => DatabaseCompileFailure::Cancelled { input: source },
         lower::clang::ClangCollectError::Authority(cause) => {
             DatabaseCompileFailure::Authority(cause)

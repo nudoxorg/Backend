@@ -18,7 +18,7 @@ use backend_semantic::ir::{
     DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
     OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag, TypeReason, TypeWidth,
 };
-use compiler_languages_typescript::{
+use backend_frontend_typescript::legacy::{
     Checker, MappedModifier as CheckerMappedModifier, Report, TypeTree,
 };
 use compiler_publication::{
@@ -30,13 +30,13 @@ use backend_semantic::vocabulary::{
 };
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 
-const SOURCE: &[u8] = include_bytes!("../../compiler-language-typescript/tests/fixtures/source.ts");
+const SOURCE: &[u8] = include_bytes!("../../../frontends/typescript/tests/fixtures/source.ts");
 const TRANSCRIPT: &[u8] =
-    include_bytes!("../../compiler-language-typescript/tests/transcripts/golden.json");
+    include_bytes!("../../../frontends/typescript/tests/transcripts/golden.json");
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
 fn report(source: &[u8]) -> Report {
-    let digest = compiler_languages_typescript::source_digest(source)
+    let digest = backend_frontend_typescript::legacy::source_digest(source)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
@@ -428,15 +428,15 @@ fn self_referential_alias_is_bounded_on_a_small_stack() {
 fn plugin_union_keeps_all_forty_literal_members_reachable() {
     const SOURCE: &[u8] = b"export const Plugin = null;";
     let mut checker = report(SOURCE);
-    checker.declarations = Box::new([compiler_languages_typescript::Declaration {
+    checker.declarations = Box::new([backend_frontend_typescript::legacy::Declaration {
         name_start: 13,
         name_end: 19,
-        origin: compiler_languages_typescript::Origin::Computed,
+        origin: backend_frontend_typescript::legacy::Origin::Computed,
         overload_index: None,
-        r#type: Some(compiler_languages_typescript::TypeTree::Union {
+        r#type: Some(backend_frontend_typescript::legacy::TypeTree::Union {
             members: (0..40)
-                .map(|index| compiler_languages_typescript::TypeTree::Literal {
-                    base: compiler_languages_typescript::LiteralBase::String,
+                .map(|index| backend_frontend_typescript::legacy::TypeTree::Literal {
+                    base: backend_frontend_typescript::legacy::LiteralBase::String,
                     text: index.to_string(),
                 })
                 .collect(),
@@ -465,10 +465,10 @@ fn checker_mapped_types_map_their_modifier_vocabularies_and_as_child_exactly() {
             .windows(name.len())
             .position(|window| window == name.as_bytes())
             .expect("mapped declaration name") as u32;
-        compiler_languages_typescript::Declaration {
+        backend_frontend_typescript::legacy::Declaration {
             name_start: start,
             name_end: start + u32::try_from(name.len()).expect("name width"),
-            origin: compiler_languages_typescript::Origin::Computed,
+            origin: backend_frontend_typescript::legacy::Origin::Computed,
             overload_index: None,
             r#type: Some(TypeTree::Mapped {
                 parameter: "K".to_owned(),
@@ -635,17 +635,17 @@ fn computed_reference_to_earlier_fact_resolves_locally() {
 #[test]
 fn narrowing_object_members_bind_spellings_at_the_assignment_site() {
     let mut r = report(b"let wide: number = 0;\nwide = { alpha: 1 };");
-    r.narrowings = Box::new([compiler_languages_typescript::Narrowing {
+    r.narrowings = Box::new([backend_frontend_typescript::legacy::Narrowing {
         name_start: 4,
         name_end: 8,
         start: 22,
         end: 42,
-        r#type: Some(compiler_languages_typescript::TypeTree::Object {
-            members: vec![compiler_languages_typescript::ObjectMember {
+        r#type: Some(backend_frontend_typescript::legacy::TypeTree::Object {
+            members: vec![backend_frontend_typescript::legacy::ObjectMember {
                 name: "alpha".into(),
                 optional: false,
                 readonly: false,
-                member_type: compiler_languages_typescript::TypeTree::Primitive {
+                member_type: backend_frontend_typescript::legacy::TypeTree::Primitive {
                     name: "number".into(),
                 },
             }],
@@ -695,12 +695,12 @@ fn genuinely_unresolvable_names_stay_honestly_external() {
 }
 #[test]
 fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() {
-    let declarations = std::iter::repeat(compiler_languages_typescript::Declaration {
+    let declarations = std::iter::repeat(backend_frontend_typescript::legacy::Declaration {
         name_start: 13,
         name_end: 14,
-        origin: compiler_languages_typescript::Origin::Computed,
+        origin: backend_frontend_typescript::legacy::Origin::Computed,
         overload_index: None,
-        r#type: Some(compiler_languages_typescript::TypeTree::This),
+        r#type: Some(backend_frontend_typescript::legacy::TypeTree::This),
     })
     .take(2048)
     .collect();
@@ -742,17 +742,17 @@ fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() {
 fn checker_object_member_without_source_spelling_retains_typed_child_cause() {
     const SOURCE: &[u8] = b"export const x = null;";
     let mut checker = report(SOURCE);
-    checker.declarations = Box::new([compiler_languages_typescript::Declaration {
+    checker.declarations = Box::new([backend_frontend_typescript::legacy::Declaration {
         name_start: 13,
         name_end: 14,
-        origin: compiler_languages_typescript::Origin::Computed,
+        origin: backend_frontend_typescript::legacy::Origin::Computed,
         overload_index: None,
-        r#type: Some(compiler_languages_typescript::TypeTree::Object {
-            members: vec![compiler_languages_typescript::ObjectMember {
+        r#type: Some(backend_frontend_typescript::legacy::TypeTree::Object {
+            members: vec![backend_frontend_typescript::legacy::ObjectMember {
                 name: "not-spelled".into(),
                 optional: false,
                 readonly: false,
-                member_type: compiler_languages_typescript::TypeTree::Primitive {
+                member_type: backend_frontend_typescript::legacy::TypeTree::Primitive {
                     name: "number".into(),
                 },
             }],
@@ -788,7 +788,7 @@ fn forward_nominal_checker_and_lowering_keep_the_later_class() {
         .unwrap();
     assert!(checker.declarations.iter().any(|declaration| {
         declaration.name_start == 13
-            && matches!(declaration.r#type, Some(compiler_languages_typescript::TypeTree::Reference { ref name, .. }) if name == "B")
+            && matches!(declaration.r#type, Some(backend_frontend_typescript::legacy::TypeTree::Reference { ref name, .. }) if name == "B")
     }));
     let lowered = try_lower(SOURCE, Some(&checker)).unwrap();
     let a = lowered.ir.items().find(|item| item.name() == b"a").unwrap();

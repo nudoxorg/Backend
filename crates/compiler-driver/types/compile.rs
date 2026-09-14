@@ -237,17 +237,17 @@ enum EnteredAuthority<'source> {
     },
     TypeScript {
         profile: backend_semantic::vocabulary::TypeScriptSource,
-        report: Option<&'source compiler_languages_typescript::Report>,
+        report: Option<&'source backend_frontend_typescript::legacy::Report>,
     },
     Python {
         profile: backend_semantic::vocabulary::PythonVersion,
-        report: Option<&'source compiler_languages_python::CheckerReport>,
+        report: Option<&'source backend_frontend_python::legacy::CheckerReport>,
     },
     Rust {
         profile: backend_semantic::vocabulary::RustEdition,
-        project: &'source compiler_languages_rust::RustProject,
-        maximum_source_bytes: compiler_languages_rust::SourceByteLimit,
-        features: compiler_languages_rust::RustFeatureControl<'source>,
+        project: &'source backend_frontend_rust::legacy::RustProject,
+        maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit,
+        features: backend_frontend_rust::legacy::RustFeatureControl<'source>,
     },
     Go {
         profile: backend_semantic::vocabulary::GoVersion,
@@ -330,7 +330,7 @@ impl LanguageSpec for ClangSpec {
 impl LanguageSpec for TypeScriptSpec {
     type Authority<'source> = (
         backend_semantic::vocabulary::TypeScriptSource,
-        Option<&'source compiler_languages_typescript::Report>,
+        Option<&'source backend_frontend_typescript::legacy::Report>,
     );
     type Extension = backend_semantic::ir::TypeScriptFacts;
 
@@ -343,7 +343,7 @@ impl LanguageSpec for TypeScriptSpec {
         let source = prepared.lease.bytes();
         let owned = if authority.1.is_none() {
             Some(
-                compiler_languages_typescript::Checker::default()
+                backend_frontend_typescript::legacy::Checker::default()
                     .run(authority.0, source)
                     .map_err(|cause| {
                         typescript_terminal(
@@ -352,7 +352,7 @@ impl LanguageSpec for TypeScriptSpec {
                             prepared.source,
                             prepared.recipe,
                             TypeScriptCollectError::Authority(
-                                compiler_languages_typescript::AuthorityError::Checker { cause },
+                                backend_frontend_typescript::legacy::AuthorityError::Checker { cause },
                             ),
                         )
                     })?,
@@ -381,7 +381,7 @@ impl LanguageSpec for TypeScriptSpec {
 impl LanguageSpec for PythonSpec {
     type Authority<'source> = (
         backend_semantic::vocabulary::PythonVersion,
-        Option<&'source compiler_languages_python::CheckerReport>,
+        Option<&'source backend_frontend_python::legacy::CheckerReport>,
     );
     type Extension = backend_semantic::ir::PythonFacts;
 
@@ -397,7 +397,7 @@ impl LanguageSpec for PythonSpec {
                 .map_err(|cause| python_terminal(prepared.source, prepared.recipe, cause)),
             Some(report) => {
                 let module =
-                    compiler_languages_python::extract(source, authority.0).map_err(|cause| {
+                    backend_frontend_python::legacy::extract(source, authority.0).map_err(|cause| {
                         python_terminal(
                             prepared.source,
                             prepared.recipe,
@@ -413,9 +413,9 @@ impl LanguageSpec for PythonSpec {
 
 impl LanguageSpec for RustSpec {
     type Authority<'source> = (
-        &'source compiler_languages_rust::RustProject,
-        compiler_languages_rust::SourceByteLimit,
-        compiler_languages_rust::RustFeatureControl<'source>,
+        &'source backend_frontend_rust::legacy::RustProject,
+        backend_frontend_rust::legacy::SourceByteLimit,
+        backend_frontend_rust::legacy::RustFeatureControl<'source>,
     );
     type Extension = backend_semantic::ir::RustFacts;
 
@@ -1071,7 +1071,7 @@ fn typescript_terminal<'diagnostic>(
 fn typescript_diagnostic<'diagnostic>(
     output: Option<&'diagnostic mut [u8]>,
     source: &[u8],
-    cause: &compiler_languages_typescript::AuthorityError,
+    cause: &backend_frontend_typescript::legacy::AuthorityError,
 ) -> AuthorityDiagnostic<'diagnostic> {
     let Some(span) = cause.primary_span() else {
         return AuthorityDiagnostic::absent();

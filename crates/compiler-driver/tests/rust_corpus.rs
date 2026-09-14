@@ -6,7 +6,7 @@ use compiler_driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use backend_semantic::ir::{EntityKind, FragmentError, FragmentView, OccurrenceConfidence, TypeFactSegment};
-use compiler_languages_rust::{RustAuthorityError, RustPackageUrl, RustPurlError, RustToolchain};
+use backend_frontend_rust::legacy::{RustAuthorityError, RustPackageUrl, RustPurlError, RustToolchain};
 use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
@@ -133,7 +133,7 @@ enum TestError {
     #[error("no absolute rustc was available")]
     MissingRustc,
     #[error("rust toolchain discovery failed: {0}")]
-    Toolchain(#[from] compiler_languages_rust::LoadError),
+    Toolchain(#[from] backend_frontend_rust::legacy::LoadError),
     #[error("{operation} failed: {source}")]
     Io {
         operation: &'static str,
@@ -307,8 +307,8 @@ fn compile_row(
         toolchain: ToolchainSelection::ResolvedNative(*tool),
         authority: SemanticAuthorityInput::Rust {
             project: located.project(),
-            maximum_source_bytes: compiler_languages_rust::SourceByteLimit::from(SOURCE_LIMIT),
-            features: compiler_languages_rust::RustFeatureControl::default(),
+            maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit::from(SOURCE_LIMIT),
+            features: backend_frontend_rust::legacy::RustFeatureControl::default(),
         },
         control: CompileControl {
             deadline: Instant::now() + Duration::from_secs(180),
@@ -469,15 +469,15 @@ fn twenty_real_crates_compile_with_decoded_lanes() -> Result<(), TestError> {
                 toolchain: ToolchainSelection::ResolvedNative(resolved),
                 authority: SemanticAuthorityInput::Rust {
                     project: located.project(),
-                    maximum_source_bytes: compiler_languages_rust::SourceByteLimit::from(
+                    maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit::from(
                         SOURCE_LIMIT,
                     ),
                     features: if feature_index == 0 {
-                        compiler_languages_rust::RustFeatureControl::default()
+                        backend_frontend_rust::legacy::RustFeatureControl::default()
                     } else {
-                        compiler_languages_rust::RustFeatureControl {
+                        backend_frontend_rust::legacy::RustFeatureControl {
                             features: &["derive"],
-                            ..compiler_languages_rust::RustFeatureControl::default()
+                            ..backend_frontend_rust::legacy::RustFeatureControl::default()
                         }
                     },
                 },

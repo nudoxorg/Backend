@@ -12,7 +12,7 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use backend_semantic::ir::{EntityKind, FragmentView};
-use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
+use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 
@@ -38,7 +38,7 @@ enum TestError {
     #[error("rustc was not found")]
     MissingRustc,
     #[error("Rust authority failed: {0}")]
-    Authority(#[source] compiler_languages_rust::RustAuthorityError),
+    Authority(#[source] backend_frontend_rust::legacy::RustAuthorityError),
     #[error("compile failed: {0}")]
     Compile(String),
     #[error("fragment validation failed: {0}")]

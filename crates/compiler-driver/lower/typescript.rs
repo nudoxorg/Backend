@@ -11,7 +11,7 @@ use backend_semantic::ir::{
     ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeChild,
     SemanticTypeRecord, SemanticTypeTag, TypeId, TypeParameterListId, TypeReason, TypeWidth,
 };
-use compiler_languages_typescript::{
+use backend_frontend_typescript::legacy::{
     AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan,
     MappedModifier as CheckerMappedModifier, NodeId, Origin, ReferenceFlags, Semantic, Span,
     SymbolFlags, SymbolId, SyntaxMappedModifier, TemplatePart, TypeTree, Utf8Span,
@@ -1411,21 +1411,21 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let base = if (text.starts_with(b"\"") && text.ends_with(b"\""))
             || (text.starts_with(b"'") && text.ends_with(b"'"))
         {
-            Some(compiler_languages_typescript::LiteralBase::String)
+            Some(backend_frontend_typescript::legacy::LiteralBase::String)
         } else if text == b"true" || text == b"false" {
-            Some(compiler_languages_typescript::LiteralBase::Boolean)
+            Some(backend_frontend_typescript::legacy::LiteralBase::Boolean)
         } else if text.ends_with(b"n")
             && text[..text.len().saturating_sub(1)]
                 .iter()
                 .all(u8::is_ascii_digit)
         {
-            Some(compiler_languages_typescript::LiteralBase::Bigint)
+            Some(backend_frontend_typescript::legacy::LiteralBase::Bigint)
         } else if !text.is_empty()
             && text
                 .iter()
                 .all(|byte| byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'+'))
         {
-            Some(compiler_languages_typescript::LiteralBase::Number)
+            Some(backend_frontend_typescript::legacy::LiteralBase::Number)
         } else {
             None
         }?;
@@ -1599,7 +1599,7 @@ pub(crate) fn collect<'source>(
 pub(crate) fn collect_with_checker<'source, 'report>(
     profile: TypeScriptSource,
     source: &'source [u8],
-    checker: Option<&'report compiler_languages_typescript::Report>,
+    checker: Option<&'report backend_frontend_typescript::legacy::Report>,
     facts: &mut FactSet<'source>,
 ) -> Result<(), TypeScriptCollectError> {
     let source = std::str::from_utf8(source).map_err(TypeScriptCollectError::Utf8)?;
@@ -3489,7 +3489,7 @@ fn checker_primitive(name: &str) -> Result<SemanticTypeRecord<'static>, TypeScri
 mod projection_tests {
     use super::{TypeScriptCollectError, foreign_fault, lineage_fault};
     use backend_semantic::ir::{ForeignKeyFault, PackageLineageFault};
-    use compiler_languages_typescript::Span;
+    use backend_frontend_typescript::legacy::Span;
     use backend_semantic::vocabulary::{
         ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
         TypeScriptProjectionFault,
@@ -3537,26 +3537,26 @@ mod projection_tests {
 
 /// The closed primitive record of one checker literal base.
 fn checker_literal(
-    base: compiler_languages_typescript::LiteralBase,
+    base: backend_frontend_typescript::legacy::LiteralBase,
 ) -> SemanticTypeRecord<'static> {
     match base {
-        compiler_languages_typescript::LiteralBase::Number => {
+        backend_frontend_typescript::legacy::LiteralBase::Number => {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
             record.payload0 = u32::from(PrimitiveShape::Integer);
             record.payload1 = (32_u32 << 1) | SemanticTypeRecord::INTEGER_SIGNED_FLAG;
             record
         }
-        compiler_languages_typescript::LiteralBase::String => {
+        backend_frontend_typescript::legacy::LiteralBase::String => {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
             record.payload0 = u32::from(PrimitiveShape::Str);
             record
         }
-        compiler_languages_typescript::LiteralBase::Boolean => {
+        backend_frontend_typescript::legacy::LiteralBase::Boolean => {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
             record.payload0 = u32::from(PrimitiveShape::Bool);
             record
         }
-        compiler_languages_typescript::LiteralBase::Bigint => {
+        backend_frontend_typescript::legacy::LiteralBase::Bigint => {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
             record.payload0 = u32::from(PrimitiveShape::Builtin);
             record.text = Some(&b"bigint"[..]);

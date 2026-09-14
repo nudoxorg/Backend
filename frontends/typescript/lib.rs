@@ -7,6 +7,9 @@ mod coordinate;
 mod error;
 mod package;
 
+#[path = "src/legacy/mod.rs"]
+pub mod legacy;
+
 pub use authority::{
     OxcDeclaration, OxcDeclarationKind, OxcModule, SyntaxMappedModifier, analyze,
     syntax_mapped_modifier, with_analysis,

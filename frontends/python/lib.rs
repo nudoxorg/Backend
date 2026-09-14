@@ -4,6 +4,9 @@
 mod checker;
 mod facts;
 
+#[path = "src/legacy/mod.rs"]
+pub mod legacy;
+
 pub use checker::{
     CheckerError, CheckerReport, Diagnostic, ImportResolution, Inference, InferenceSite,
     InferredType, Pyrefly, PyreflyExecutableError, SymbolOutcome, SymbolResolution, WorkerPanic,

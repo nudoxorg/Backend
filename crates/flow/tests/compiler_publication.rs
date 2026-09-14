@@ -19,7 +19,7 @@ use compiler_driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile_semantic,
 };
 use backend_semantic::ir::{EntityKind, ImageProvenance, PrimitiveType, TypeNode};
-use compiler_languages_rust::{
+use backend_frontend_rust::legacy::{
     LoadError, RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
 use compiler_publication::{

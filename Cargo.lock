@@ -938,17 +938,17 @@ dependencies = [
 name = "backend-flow"
 version = "0.1.0"
 dependencies = [
+ "backend-frontend-csharp",
+ "backend-frontend-go",
+ "backend-frontend-java",
+ "backend-frontend-python",
+ "backend-frontend-rust",
+ "backend-frontend-typescript",
  "backend-semantic",
  "backend-store",
  "backend-version",
  "blake3",
  "compiler-driver",
- "compiler-languages-csharp",
- "compiler-languages-go",
- "compiler-languages-java",
- "compiler-languages-python",
- "compiler-languages-rust",
- "compiler-languages-typescript",
  "compiler-publication",
  "heart-hydration",
  "heart-root",
@@ -964,7 +964,10 @@ name = "backend-frontend-clang"
 version = "0.1.0"
 dependencies = [
  "backend-compile",
+ "backend-semantic",
+ "blake3",
  "clang",
+ "clang-sys",
  "serde",
  "serde_json",
  "tempfile",
@@ -977,6 +980,11 @@ name = "backend-frontend-csharp"
 version = "0.1.0"
 dependencies = [
  "backend-compile",
+ "backend-semantic",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
  "tree-sitter-c-sharp",
 ]
 
@@ -985,6 +993,12 @@ name = "backend-frontend-go"
 version = "0.1.0"
 dependencies = [
  "backend-compile",
+ "backend-semantic",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
  "tree-sitter-go",
 ]
 
@@ -1005,6 +1019,8 @@ name = "backend-frontend-python"
 version = "0.1.0"
 dependencies = [
  "backend-compile",
+ "backend-semantic",
+ "blake3",
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",
@@ -1020,6 +1036,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "backend-compile",
+ "backend-semantic",
  "ra_ap_base_db",
  "ra_ap_hir",
  "ra_ap_hir_ty",
@@ -1039,6 +1056,7 @@ name = "backend-frontend-typescript"
 version = "0.1.0"
 dependencies = [
  "backend-compile",
+ "backend-semantic",
  "flate2",
  "oxc_allocator",
  "oxc_ast",
@@ -2051,16 +2069,16 @@ name = "compiler-application"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "backend-frontend-csharp",
+ "backend-frontend-go",
+ "backend-frontend-java",
+ "backend-frontend-python",
+ "backend-frontend-rust",
+ "backend-frontend-typescript",
  "backend-semantic",
  "backend-version",
  "blake3",
  "compiler-driver",
- "compiler-languages-csharp",
- "compiler-languages-go",
- "compiler-languages-java",
- "compiler-languages-python",
- "compiler-languages-rust",
- "compiler-languages-typescript",
  "compiler-publication",
  "compiler-registry",
  "interface-core",
@@ -2072,15 +2090,15 @@ dependencies = [
 name = "compiler-driver"
 version = "0.1.0"
 dependencies = [
+ "backend-frontend-clang",
+ "backend-frontend-csharp",
+ "backend-frontend-go",
+ "backend-frontend-java",
+ "backend-frontend-python",
+ "backend-frontend-rust",
+ "backend-frontend-typescript",
  "backend-semantic",
  "backend-version",
- "compiler-languages-clang",
- "compiler-languages-csharp",
- "compiler-languages-go",
- "compiler-languages-java",
- "compiler-languages-python",
- "compiler-languages-rust",
- "compiler-languages-typescript",
  "compiler-publication",
  "compiler-registry",
  "flate2",
@@ -2092,97 +2110,6 @@ dependencies = [
  "sha2",
  "thiserror 2.0.20",
  "ureq",
-]
-
-[[package]]
-name = "compiler-languages-clang"
-version = "0.1.0"
-dependencies = [
- "backend-semantic",
- "blake3",
- "clang-sys",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "compiler-languages-csharp"
-version = "0.1.0"
-dependencies = [
- "backend-semantic",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "compiler-languages-go"
-version = "0.1.0"
-dependencies = [
- "backend-semantic",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "compiler-languages-java"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "sha2",
- "thiserror 2.0.20",
- "ureq",
-]
-
-[[package]]
-name = "compiler-languages-python"
-version = "0.1.0"
-dependencies = [
- "backend-semantic",
- "blake3",
- "ruff_python_ast",
- "ruff_python_parser",
- "ruff_text_size",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "compiler-languages-rust"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "backend-semantic",
- "ra_ap_base_db",
- "ra_ap_hir",
- "ra_ap_hir_ty",
- "ra_ap_ide_db",
- "ra_ap_load-cargo",
- "ra_ap_project_model",
- "ra_ap_syntax",
- "ra_ap_vfs",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "compiler-languages-typescript"
-version = "0.1.0"
-dependencies = [
- "backend-semantic",
- "oxc_allocator",
- "oxc_ast",
- "oxc_diagnostics",
- "oxc_parser",
- "oxc_semantic",
- "oxc_span",
- "oxc_syntax",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.20",
 ]
 
 [[package]]

@@ -20,6 +20,9 @@ use std::{
 mod authority;
 pub mod purl;
 
+#[path = "src/legacy/mod.rs"]
+pub mod legacy;
+
 pub use authority::{
     ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
     RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustMethodCall,

@@ -70,7 +70,7 @@ use backend_semantic::ir::{
     ProductChildRole, ReferenceKind, RelSpan, RustFacts, RustOwnership, SemanticProductConstructor,
     SemanticTypeRecord, SemanticTypeTag, TypeParameterListId, TypeReason, TypeWidth,
 };
-use compiler_languages_rust::{
+use backend_frontend_rust::legacy::{
     ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
     RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustProject,
     SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir, ra_ap_ide_db, ra_ap_syntax,
@@ -2490,7 +2490,7 @@ mod tests {
         Occurrence, OccurrenceConfidence, OccurrenceFault, ReferenceKind, SourceIdentity,
         TypeFactFault,
     };
-    use compiler_languages_rust::{RustAuthorityError, RustProject, RustToolchain};
+    use backend_frontend_rust::legacy::{RustAuthorityError, RustProject, RustToolchain};
     use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use std::{

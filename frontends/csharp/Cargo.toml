@@ -8,6 +8,11 @@ publish.workspace = true
 workspace = true
 [dependencies]
 backend-compile = { path = "../../crates/compile" }
+backend-semantic = { path = "../../crates/semantic" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "=0.10.9"
+thiserror = { workspace = true }
 tree-sitter-c-sharp = "=0.23.5"
 [lib]
 path = "lib.rs"

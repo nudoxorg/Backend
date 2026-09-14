@@ -11,7 +11,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use compiler_languages_rust::{RustFeatureControl, RustPackageUrl, RustToolchain, SourceByteLimit};
+use backend_frontend_rust::legacy::{RustFeatureControl, RustPackageUrl, RustToolchain, SourceByteLimit};
 use backend_semantic::vocabulary::{LanguageProfile, Stage};
 
 fn rustc_path() -> Result<PathBuf, Box<dyn std::error::Error>> {

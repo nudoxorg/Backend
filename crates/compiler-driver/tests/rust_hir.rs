@@ -15,7 +15,7 @@ use compiler_driver::{
     compile,
 };
 use backend_semantic::ir::EntityKind;
-use compiler_languages_rust::{
+use backend_frontend_rust::legacy::{
     RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};

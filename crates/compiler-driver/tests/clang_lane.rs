@@ -24,7 +24,7 @@ static WORK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn database_argument_borrow_array_is_pointer_sized_and_stack_safe() {
-    use compiler_languages_clang::MAX_DATABASE_ARGUMENTS;
+    use backend_frontend_clang::legacy::MAX_DATABASE_ARGUMENTS;
     use core::ffi::CStr;
 
     assert_eq!(
@@ -1016,8 +1016,8 @@ fn capacity_terminal_preserves_clang_scratch_capacity_cause() -> Result<(), Test
             failure:
                 AuthorityFailure::Clang {
                     cause:
-                        compiler_languages_clang::CollectError::ScratchCapacity {
-                            lane: compiler_languages_clang::ScratchLane::Declarations,
+                        backend_frontend_clang::legacy::CollectError::ScratchCapacity {
+                            lane: backend_frontend_clang::legacy::ScratchLane::Declarations,
                             capacity: 1024,
                             required: 1025,
                         },

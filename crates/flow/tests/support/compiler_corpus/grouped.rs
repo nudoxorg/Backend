@@ -465,7 +465,7 @@ fn run_language(
                 toolchain,
                 SemanticAuthorityInput::Rust {
                     project: &fixture.project,
-                    maximum_source_bytes: compiler_languages_rust::SourceByteLimit(
+                    maximum_source_bytes: backend_frontend_rust::legacy::SourceByteLimit(
                         u32::try_from(batch.source().len()).unwrap_or(u32::MAX),
                     ),
                     features: fixture.features,
@@ -560,9 +560,9 @@ fn run_language(
                     AuthorityUnavailableCause::TypeScriptChecker,
                 ));
             };
-            let checker = compiler_languages_typescript::Checker {
+            let checker = backend_frontend_typescript::legacy::Checker {
                 timeout: BATCH_AUTHORITY_DEADLINE,
-                ..compiler_languages_typescript::Checker::default()
+                ..backend_frontend_typescript::legacy::Checker::default()
             };
             let report = match checker.run(ts_profile, batch.source()) {
                 Ok(report) => report,
@@ -601,7 +601,7 @@ fn run_language(
                     AuthorityUnavailableCause::PythonChecker,
                 ));
             };
-            let facts = match compiler_languages_python::extract(batch.source(), py_profile) {
+            let facts = match backend_frontend_python::legacy::extract(batch.source(), py_profile) {
                 Ok(facts) => facts,
                 Err(_) => {
                     return Ok(unavailable_result(
@@ -610,7 +610,7 @@ fn run_language(
                     ));
                 }
             };
-            let checker = compiler_languages_python::Pyrefly::from_env()
+            let checker = backend_frontend_python::legacy::Pyrefly::from_env()
                 .with_timeout(BATCH_AUTHORITY_DEADLINE);
             if !checker.is_available() {
                 return Ok(unavailable_result(

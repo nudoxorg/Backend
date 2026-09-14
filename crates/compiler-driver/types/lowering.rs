@@ -7,7 +7,7 @@
 //! that produced them.
 
 use backend_semantic::ir::{EntityId, ProductChildRole, ProductConstructorFault, SemanticTypeFault};
-use compiler_languages_clang::{
+use backend_frontend_clang::legacy::{
     DeclarationId as ClangDeclarationId, SourceSpan as ClangSourceSpan, SymbolIdentity,
     TypeId as ClangTypeId, TypeKind as ClangTypeKind, TypeQualifiers as ClangTypeQualifiers,
 };
