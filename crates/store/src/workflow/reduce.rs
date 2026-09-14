@@ -1,4 +1,4 @@
-//! Defines reduce behavior for `server-workflow`, whose purpose is to reduce durable workflow events into deterministic recovery state.
+//! Defines reduce behavior for the `workflow` module, whose purpose is to reduce durable workflow events into deterministic recovery state.
 //! This module owns the reduce invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Pure, monotone durable workflow reduction.
@@ -14,7 +14,7 @@
 use backend_version::observe::Probe;
 use thiserror::Error;
 
-use crate::{
+use crate::workflow::{
     EventKind, EventName, FailureCode, StageKey, WorkflowEvent, WorkflowVersion, key::StageOutput,
 };
 

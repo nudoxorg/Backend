@@ -859,7 +859,6 @@ dependencies = [
  "rustix 1.1.4",
  "serde_json",
  "server-journal",
- "server-workflow",
  "sha2",
  "thiserror 2.0.20",
  "tracing",
@@ -1269,6 +1268,7 @@ dependencies = [
  "bolero",
  "derive_more",
  "rstest",
+ "strum 0.28.0",
  "thiserror 2.0.20",
  "zerocopy",
 ]
@@ -8692,18 +8692,6 @@ dependencies = [
  "heart-hydration",
  "heart-root",
  "loom",
- "server-workflow",
- "thiserror 2.0.20",
- "zerocopy",
-]
-
-[[package]]
-name = "server-workflow"
-version = "0.1.0"
-dependencies = [
- "backend-runtime",
- "backend-version",
- "strum 0.28.0",
  "thiserror 2.0.20",
  "zerocopy",
 ]

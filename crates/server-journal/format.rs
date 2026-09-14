@@ -4,7 +4,7 @@
 use core::mem::size_of;
 
 use blake3::Hasher;
-use server_workflow::{WORKFLOW_RECORD_BYTES, WorkflowRecord};
+use backend_store::workflow::{WORKFLOW_RECORD_BYTES, WorkflowRecord};
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout,
     byteorder::{LittleEndian, U16, U64},
@@ -157,7 +157,7 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
-    use server_workflow::{EventKind, StageKey, WorkflowEvent, WorkflowRecord, WorkflowVersion};
+    use backend_store::workflow::{EventKind, StageKey, WorkflowEvent, WorkflowRecord, WorkflowVersion};
     use zerocopy::IntoBytes;
 
     use super::{FRAME_PAYLOAD_BYTES, FrameRecord};

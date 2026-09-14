@@ -45,6 +45,8 @@ pub mod memory;
 pub mod object_pack;
 /// Structural validation witnesses and allocation-free borrowed frame views.
 pub mod view;
+/// Generic durable workflow event reduction, records, and recovery.
+pub mod workflow;
 
 pub use backend_version::CoverageWitness;
 pub use canonical::{RawRelation, RawValue, StoredValue};

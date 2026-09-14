@@ -9,7 +9,7 @@ use backend_version::observe::Probe;
 use heart_root::RootProbeEvent;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use backend_runtime::server::RuntimeProbeEvent;
-use server_workflow::WorkflowProbeEvent;
+use backend_store::workflow::WorkflowProbeEvent;
 use tracing::{Level, Span};
 
 use super::{

@@ -8,7 +8,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use server_workflow::{
+use backend_store::workflow::{
     Effect, EffectAction, EventKind, Phase, Recovery, StageKey, WorkflowEvent, WorkflowRecord,
     WorkflowState, WorkflowVersion,
 };
@@ -406,7 +406,7 @@ fn sequence_and_canonical_decode_failures_remain_distinct() -> Result<(), FaultT
     )?;
 
     let record = WorkflowRecord::from(requested(23));
-    let mut record_bytes = [0; server_workflow::WORKFLOW_RECORD_BYTES];
+    let mut record_bytes = [0; backend_store::workflow::WORKFLOW_RECORD_BYTES];
     record_bytes.copy_from_slice(record.as_bytes());
     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
     record_bytes[event_offset] = u8::MAX;
@@ -421,7 +421,7 @@ fn sequence_and_canonical_decode_failures_remain_distinct() -> Result<(), FaultT
         |observed| {
             matches!(
                 observed,
-                JournalError::Decode(server_workflow::WorkflowRecordError::UnknownEvent {
+                JournalError::Decode(backend_store::workflow::WorkflowRecordError::UnknownEvent {
                     observed,
                 }) if *observed == u8::MAX
             )
@@ -490,7 +490,7 @@ fn plain_group_append_preserves_original_mismatched_key_error()
     assert!(matches!(
         journal.append_group(&events, &mut frames),
         Err(GroupCommitError::Reduction { source, .. })
-            if source == server_workflow::ReductionError::StageKeyMismatch { expected, observed }
+            if source == backend_store::workflow::ReductionError::StageKeyMismatch { expected, observed }
     ));
     fixture.remove()?;
     Ok(())
@@ -543,11 +543,11 @@ fn grouped_append_fault_retains_attempt_and_reopens_to_durable_prefix()
         let mut reopened = FileJournal::open(fixture.path())?;
         let recovery = reopened.replay()?;
         if prefix == JOURNAL_FRAME_BYTES * 2 {
-            assert_eq!(recovery.state.phase(), server_workflow::PhaseName::Admitted);
+            assert_eq!(recovery.state.phase(), backend_store::workflow::PhaseName::Admitted);
         } else if prefix >= JOURNAL_FRAME_BYTES {
             assert_eq!(
                 recovery.state.phase(),
-                server_workflow::PhaseName::Requested
+                backend_store::workflow::PhaseName::Requested
             );
         } else {
             assert_eq!(recovery.state, WorkflowState::New);

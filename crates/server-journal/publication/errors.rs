@@ -11,7 +11,7 @@ use std::{
 
 use heart_hydration::VerifiedGeneration;
 use backend_version::{ContentIdDecodeError, Domain};
-use server_workflow::{ReductionError, StageKey, WorkflowRecord};
+use backend_store::workflow::{ReductionError, StageKey, WorkflowRecord};
 use thiserror::Error;
 
 use super::facts::PublicationFacts;

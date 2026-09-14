@@ -8,7 +8,7 @@ use server_journal::{
     CommitError, FileJournal, FrameSequence, JOURNAL_FRAME_BYTES, JOURNAL_HEADER_BYTES,
     JournalError, JournalOffset, PublicationFacts, PublicationLimits,
 };
-use server_workflow::{EventKind, StageKey, WorkflowEvent, WorkflowVersion};
+use backend_store::workflow::{EventKind, StageKey, WorkflowEvent, WorkflowVersion};
 use thiserror::Error;
 
 const REPLAY_RECORDS: usize = 64;

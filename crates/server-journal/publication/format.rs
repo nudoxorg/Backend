@@ -11,7 +11,7 @@ use std::{
 use blake3::Hasher;
 use heart_hydration::VerifiedGenerationFacts;
 use backend_version::{ContentId, DependencySetDomain, GenerationId};
-use server_workflow::StageKey;
+use backend_store::workflow::StageKey;
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout,
     byteorder::{LittleEndian, U16, U64},
