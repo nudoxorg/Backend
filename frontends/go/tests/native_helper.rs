@@ -1,16 +1,32 @@
 //! End-to-end Go semantic helper integration.
+//!
+//! The Go authority test requires an explicitly admitted compiler. A missing
+//! or unusable compiler is a typed [`NativeHelperError`] terminal, never a
+//! silent pass, so the suite cannot report green without its toolchain.
 
 use backend_compile::{
-    Authority, FactKind, FlowSchema, ProfileSchema, SemanticBasisSchema, SessionKey, typed_of,
+    Authority, AuthorityError, FactKind, FlowSchema, ProfileSchema, SemanticBasisSchema,
+    SessionKey, typed_of,
 };
 use backend_frontend_go::GoFrontend;
-use std::{error::Error, path::PathBuf};
+use std::path::PathBuf;
+
+#[derive(Debug, thiserror::Error)]
+enum NativeHelperError {
+    #[error("COMPILER_GO_COMPILER must name the Go compiler used for the real Go authority test")]
+    MissingCompiler,
+    #[error("configured Go compiler is not a file: {path:?}")]
+    CompilerNotAFile {
+        /// Rejected compiler path.
+        path: PathBuf,
+    },
+    #[error(transparent)]
+    Authority(#[from] AuthorityError),
+}
 
 #[test]
-fn go_packages_helper_emits_admitted_semantics() -> Result<(), Box<dyn Error>> {
-    let Some(go) = find_executable("go") else {
-        return Ok(());
-    };
+fn go_packages_helper_emits_admitted_semantics() -> Result<(), NativeHelperError> {
+    let go = configured_compiler()?;
     let source = br#"package fixture
 
 import "fmt"
@@ -48,16 +64,18 @@ func Render(value Node[int]) string { return fmt.Sprint(value.Value) }
     Ok(())
 }
 
-fn find_executable(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .map(|directory| directory.join(name))
-        .find(|candidate| candidate.is_file())
-        .and_then(|candidate| candidate.canonicalize().ok())
+/// Resolves the explicitly configured compiler or returns a typed terminal.
+fn configured_compiler() -> Result<PathBuf, NativeHelperError> {
+    let path = std::env::var_os("COMPILER_GO_COMPILER")
+        .map(PathBuf::from)
+        .ok_or(NativeHelperError::MissingCompiler)?;
+    if !path.is_file() {
+        return Err(NativeHelperError::CompilerNotAFile { path });
+    }
+    Ok(path)
 }
 
-fn assert_semantics(frontend: &GoFrontend) -> Result<(), Box<dyn Error>> {
+fn assert_semantics(frontend: &GoFrontend) -> Result<(), NativeHelperError> {
     let snapshot = frontend.discover()?;
     let key = SessionKey::new(
         frontend.identity(),

@@ -1,6 +1,7 @@
 //! Source-truth parity and structural falsifiers for the Roslyn authority image.
 use backend_frontend_csharp::legacy::{
-    CSharpImage, DeclarationKind, ImageError, PartialRole, ReferenceTag, Section,
+    CSharpImage, DeclarationKind, ImageError, PartialRole, ReferenceTag, Section, probe_dotnet,
+    probe_dotnet_path,
 };
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -150,25 +151,17 @@ fn committed_fixtures_retain_deep_source_truth() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn Error>> {
-    let dotnet = Command::new("dotnet").arg("--version").output();
-    let Ok(version) = dotnet else {
-        // Observable environment receipt, not a silent skip: without a
-        // dotnet toolchain this test cannot regenerate, and the committed
-        // fixtures carry the parity proof alone.
-        eprintln!("producer parity: no dotnet on PATH; replaying committed fixtures only");
-        return Ok(());
-    };
-    if !version.status.success() {
-        eprintln!("producer parity: dotnet --version failed; replaying committed fixtures only");
-        return Ok(());
-    }
+    // The real Roslyn authority requires dotnet. `probe_dotnet` returns a
+    // typed `ToolingUnavailable` terminal when the configured executable is
+    // absent or unusable, so this test can never silently replay fixtures.
+    let dotnet = probe_dotnet()?;
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/producer");
-    let helper =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/legacy/helper/bin/Release/net10.0/oracle.dll");
+    let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/legacy/helper/bin/Release/net10.0/oracle.dll");
     let first = std::env::temp_dir().join("nudox-csharp-fidelity-first.ncaimg");
     let second = std::env::temp_dir().join("nudox-csharp-fidelity-second.ncaimg");
     for output in [&first, &second] {
-        let status = Command::new("dotnet")
+        let status = Command::new(&dotnet)
             .args([
                 helper.to_str().ok_or("helper path")?,
                 "--mode",
@@ -189,7 +182,7 @@ fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn E
     assert_eq!(first_bytes, IMAGE);
     assert_eq!(first_bytes, second_bytes);
     let unicode_output = std::env::temp_dir().join("nudox-csharp-fidelity-unicode.ncaimg");
-    let status = Command::new("dotnet")
+    let status = Command::new(&dotnet)
         .args([
             helper.to_str().ok_or("helper path")?,
             "--mode",
@@ -209,6 +202,17 @@ fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn E
     );
     assert_eq!(fs::read(unicode_output)?, UNICODE_IMAGE);
     Ok(())
+}
+
+/// The absent-toolchain terminal is itself observable: an explicit bogus
+/// dotnet path must return a typed `ToolingUnavailable` rather than let the
+/// producer test replay committed fixtures.
+#[test]
+fn absent_dotnet_is_a_typed_tooling_unavailable_terminal() {
+    let error = probe_dotnet_path(PathBuf::from("/definitely/not-a-dotnet"))
+        .expect_err("a bogus dotnet path must not resolve");
+    assert_eq!(error.language, "csharp");
+    assert_eq!(error.tool, PathBuf::from("/definitely/not-a-dotnet"));
 }
 
 #[test]

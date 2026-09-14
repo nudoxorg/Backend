@@ -1,8 +1,9 @@
 //! Offline falsifiers for the closed TypeScript checker protocol.
 //! Each test targets one schema, binding, or subprocess law.
 //! Subprocess falsifiers use only temporary local scripts through the typed
-//! program seam, so the suite never requires `node` or the `typescript`
-//! module and never mutates process-global configuration.
+//! program seam. The end-to-end authority test drives the real vendored
+//! checker and reports a typed [`CheckerError`] when `node` or the
+//! `typescript` module is unavailable; it never self-skips.
 
 use backend_compile::TypeScriptSource;
 use backend_frontend_typescript::{
@@ -493,31 +494,16 @@ fn end_to_end_fixture_preserves_overload_and_computed_facts() -> Result<(), Chec
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
         .expect("environment mutex");
-    if std::process::Command::new("node")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_err()
-    {
-        eprintln!("skipping TypeScript checker e2e: node is unavailable; put node on PATH");
-        return Ok(());
-    }
     let checker = Checker {
         timeout: std::time::Duration::from_secs(30),
         ..Checker::default()
     };
-    // The vendored driver exits 3 when the `typescript` module is not
-    // resolvable; that is honest tool absence, not a protocol fault.
-    match checker.run(TypeScriptSource::TypeScript, GOLDEN_SOURCE) {
-        Ok(report) => {
-            assert_eq!(report.source_digest, hex_of(GOLDEN_SOURCE));
-            assert!(!report.declarations.is_empty());
-        }
-        Err(CheckerError::ModuleUnavailable { .. }) => {
-            eprintln!("skipping TypeScript checker e2e: the typescript module is not resolvable");
-        }
-        Err(error) => return Err(error),
-    }
+    // The real checker authority must run. A missing `node` is
+    // `CheckerError::Spawn`; an unresolvable vendored `typescript` module is
+    // `CheckerError::ModuleUnavailable`. Both are typed terminals, so the
+    // suite cannot pass green without its toolchain.
+    let report = checker.run(TypeScriptSource::TypeScript, GOLDEN_SOURCE)?;
+    assert_eq!(report.source_digest, hex_of(GOLDEN_SOURCE));
+    assert!(!report.declarations.is_empty());
     Ok(())
 }

@@ -4,6 +4,11 @@
 //!
 //! The crate exposes two peer authorities: the Ruff syntax extractor in this
 //! module, and the bounded pyrefly type-authority transaction in [`checker`].
+//!
+//! CANONICAL AUTHORITY PATH: this module is the retained low-level authority
+//! contract. Product and compiler-driver callers must reach it only through
+//! the crate-level `Authority` adapter in `lib.rs`; it must never be wired in
+//! as a second semantic plane.
 
 pub mod checker;
 

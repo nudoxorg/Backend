@@ -10,6 +10,7 @@ use backend_frontend_go::legacy::oracle::DeclKind;
 use backend_frontend_go::legacy::{DocOwner, GoImage, GoOracle, OracleError};
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,32 +27,34 @@ fn adapter() -> GoOracle {
 /// process wedge in an uninterruptible kernel wait. The probe itself is
 /// bounded, and a timed-out child is left for the operating system to reap
 /// rather than turning test cleanup into another unbounded wait.
-fn explicit_go_toolchain_is_ready() -> bool {
-    let Ok(compiler) = std::env::var("COMPILER_GO_COMPILER") else {
-        eprintln!("Go authority test skipped: COMPILER_GO_COMPILER is not set");
-        return false;
-    };
-    let mut child = match Command::new(compiler)
+///
+/// A missing or unusable compiler is a typed [`OracleError::ToolingUnavailable`]
+/// terminal, never a silent skip, so the suite cannot pass green without its
+/// toolchain.
+fn explicit_go_toolchain() -> Result<PathBuf, OracleError> {
+    fn unavailable(message: String) -> OracleError {
+        OracleError::ToolingUnavailable {
+            tool: "COMPILER_GO_COMPILER",
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, message),
+        }
+    }
+    let compiler = std::env::var("COMPILER_GO_COMPILER")
+        .map_err(|error| unavailable(format!("COMPILER_GO_COMPILER is not set: {error}")))?;
+    let mut child = Command::new(&compiler)
         .arg("version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-    {
-        Ok(child) => child,
-        Err(error) => {
-            eprintln!("Go authority test skipped: bounded compiler spawn failed: {error}");
-            return false;
-        }
-    };
+        .map_err(|error| unavailable(format!("bounded compiler spawn failed: {error}")))?;
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                if !status.success() {
-                    eprintln!("Go authority test skipped: compiler probe returned {status}");
+                if status.success() {
+                    return Ok(PathBuf::from(compiler));
                 }
-                return status.success();
+                return Err(unavailable(format!("compiler probe returned {status}")));
             }
             Ok(None) if Instant::now() < deadline => thread::yield_now(),
             Ok(None) | Err(_) => {
@@ -63,8 +66,7 @@ fn explicit_go_toolchain_is_ready() -> bool {
                         Ok(None) => thread::yield_now(),
                     }
                 }
-                eprintln!("Go authority test skipped: compiler probe exceeded 2s");
-                return false;
+                return Err(unavailable("compiler probe exceeded 2s".to_owned()));
             }
         }
     }
@@ -284,6 +286,30 @@ mod bounded_child {
             }
         ));
     }
+
+    #[test]
+    fn unset_compiler_is_a_typed_unavailable_terminal() {
+        let _guard = super::ENVIRONMENT
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let saved = std::env::var_os("COMPILER_GO_COMPILER");
+        // SAFETY: the process-global test environment is serialized by the mutex.
+        unsafe { std::env::remove_var("COMPILER_GO_COMPILER") };
+        let error = super::explicit_go_toolchain()
+            .expect_err("an unset compiler must be typed unavailable");
+        // SAFETY: this test still exclusively holds the shared environment mutex.
+        if let Some(value) = saved {
+            unsafe { std::env::set_var("COMPILER_GO_COMPILER", value) };
+        }
+        assert!(matches!(
+            error,
+            OracleError::ToolingUnavailable {
+                tool: "COMPILER_GO_COMPILER",
+                ..
+            }
+        ));
+    }
 }
 
 #[test]
@@ -292,9 +318,7 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations() -> Result<(), 
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
         .unwrap();
-    if !explicit_go_toolchain_is_ready() {
-        return Ok(());
-    }
+    let _compiler = explicit_go_toolchain()?;
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module");
     let output = adapter().run(&fixture)?;
     let package_names: Vec<&str> = output
@@ -500,9 +524,7 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
         .unwrap();
-    if !explicit_go_toolchain_is_ready() {
-        return Ok(());
-    }
+    let _compiler = explicit_go_toolchain()?;
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module");
     let source = fixture.join("demo.go");
     // Both decodes come from the same oracle binary over the same module:
@@ -712,9 +734,7 @@ fn authority_image_carries_parameter_names_and_embedded_method_sets() -> Result<
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
         .unwrap();
-    if !explicit_go_toolchain_is_ready() {
-        return Ok(());
-    }
+    let _compiler = explicit_go_toolchain()?;
     let root = std::env::temp_dir().join(format!("nudox-go-image-v5-{}", std::process::id()));
     fs::create_dir_all(root.join("api")).expect("temp module directory");
     fs::write(

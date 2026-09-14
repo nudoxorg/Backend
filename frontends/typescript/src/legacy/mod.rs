@@ -2,6 +2,11 @@
 //! Preserves OXC's arena-borrowed program, module record, symbols, and diagnostics.
 //! Beside it sits the first-class checker authority: a typed transaction against
 //! the real TypeScript checker with its own bounded subprocess protocol.
+//!
+//! CANONICAL AUTHORITY PATH: this module is the retained low-level authority
+//! contract. Product and compiler-driver callers must reach it only through
+//! the crate-level `Authority` adapter in `lib.rs`; it must never be wired in
+//! as a second semantic plane.
 
 mod authority;
 mod checker;

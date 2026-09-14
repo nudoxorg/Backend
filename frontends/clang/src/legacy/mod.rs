@@ -5,6 +5,11 @@
 //! A caller supplies a closed [`ClangProfile`], borrowed source authority, and every fact slot.
 //! [`collect`] either fills prefixes of those slots from libclang or returns a typed failure.
 //! Native-library absence is explicit; the crate never scans source as a substitute authority.
+//!
+//! CANONICAL AUTHORITY PATH: this module is the retained low-level authority
+//! contract. Product and compiler-driver callers must reach it only through
+//! the crate-level `Authority` adapter in `lib.rs`; it must never be wired in
+//! as a second semantic plane.
 
 #![allow(
     unsafe_code,

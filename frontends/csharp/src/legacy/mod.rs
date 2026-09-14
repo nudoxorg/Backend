@@ -1,6 +1,11 @@
 //! C# oracle boundary: typed availability and source-preserving JSON replay.
 //! It also validates source-bound binary Roslyn authority images.
 //! Recorded fixtures prove offline terminals without semantic fallback.
+//!
+//! CANONICAL AUTHORITY PATH: this module is the retained low-level authority
+//! contract. Product and compiler-driver callers must reach it only through
+//! the crate-level `Authority` adapter in `lib.rs`; it must never be wired in
+//! as a second semantic plane.
 
 mod image;
 mod oracle;
