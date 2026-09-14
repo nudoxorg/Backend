@@ -18,6 +18,7 @@ mod engine;
 mod identity;
 mod incremental;
 mod provider;
+pub mod server;
 
 pub use admission::{
     AdapterError, Error, Materialization, incomplete_coverage, materialize,

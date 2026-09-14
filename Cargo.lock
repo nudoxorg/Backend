@@ -888,12 +888,18 @@ dependencies = [
 name = "backend-extension-qdrant"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
+ "arrayvec",
  "backend-execution",
  "backend-replication",
+ "backend-semantic",
  "backend-version",
  "blake3",
+ "flate2",
  "serde",
  "serde_json",
+ "server-index-graph-vector",
+ "server-index-vocabulary",
  "thiserror 2.0.20",
  "ureq",
 ]
@@ -905,13 +911,16 @@ dependencies = [
  "backend-semantic",
  "backend-version",
  "blake3",
+ "server-index-core",
  "tantivy",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "backend-extension-trustfall"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "backend-flow",
  "backend-library",
  "backend-semantic",
@@ -920,8 +929,11 @@ dependencies = [
  "futures-core",
  "futures-executor",
  "futures-util",
+ "server-index-graph-vector",
+ "server-index-vocabulary",
  "thiserror 2.0.20",
  "trustfall",
+ "trustfall_core",
 ]
 
 [[package]]
@@ -1158,7 +1170,6 @@ dependencies = [
  "serde",
  "serde_json",
  "server-index-graph-vector",
- "server-index-trustfall",
 ]
 
 [[package]]
@@ -4057,6 +4068,8 @@ name = "heart-root"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-extension-tantivy",
+ "backend-extension-trustfall",
  "backend-semantic",
  "backend-version",
  "bolero",
@@ -4069,8 +4082,6 @@ dependencies = [
  "server-index-build",
  "server-index-core",
  "server-index-graph-vector",
- "server-index-tantivy",
- "server-index-trustfall",
  "server-journal",
  "thiserror 2.0.20",
  "zerocopy",
@@ -8607,6 +8618,9 @@ name = "server-index-publish"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-extension-qdrant",
+ "backend-extension-tantivy",
+ "backend-extension-trustfall",
  "backend-semantic",
  "backend-store",
  "backend-version",
@@ -8617,29 +8631,10 @@ dependencies = [
  "server-index-build",
  "server-index-core",
  "server-index-graph-vector",
- "server-index-qdrant",
- "server-index-tantivy",
- "server-index-trustfall",
  "server-index-vocabulary",
  "server-journal",
  "thiserror 2.0.20",
  "zerocopy",
-]
-
-[[package]]
-name = "server-index-qdrant"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "arrayvec",
- "backend-semantic",
- "flate2",
- "serde",
- "serde_json",
- "server-index-graph-vector",
- "server-index-vocabulary",
- "thiserror 2.0.20",
- "ureq",
 ]
 
 [[package]]
@@ -8658,6 +8653,9 @@ name = "server-index-retrieval"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-extension-qdrant",
+ "backend-extension-tantivy",
+ "backend-extension-trustfall",
  "backend-semantic",
  "backend-store",
  "backend-version",
@@ -8669,38 +8667,9 @@ dependencies = [
  "server-index-core",
  "server-index-graph-vector",
  "server-index-publish",
- "server-index-qdrant",
- "server-index-tantivy",
- "server-index-trustfall",
  "server-index-vocabulary",
  "server-journal",
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "server-index-tantivy"
-version = "0.1.0"
-dependencies = [
- "backend-semantic",
- "backend-version",
- "server-index-core",
- "tantivy",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "server-index-trustfall"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "backend-semantic",
- "futures-core",
- "futures-util",
- "server-index-graph-vector",
- "server-index-vocabulary",
- "thiserror 2.0.20",
- "trustfall",
- "trustfall_core",
 ]
 
 [[package]]

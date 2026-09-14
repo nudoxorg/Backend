@@ -20,6 +20,7 @@ mod http;
 mod identity;
 mod incremental;
 mod provider;
+pub mod server;
 
 pub use admission::{
     AdapterError, Candidates, Error, Reranked, accept_remote, accept_remote_approximate,

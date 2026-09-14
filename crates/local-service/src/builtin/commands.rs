@@ -223,7 +223,7 @@ fn semantic_graph_targets(
     include_incoming: bool,
 ) -> Result<BTreeSet<backend_semantic::ir::EntityId>, BuiltinModelError> {
     let cancellation = server_index_graph_vector::Cancellation::new();
-    let graph = server_index_trustfall::SemanticTrustfallGraph::new(image, &cancellation);
+    let graph = backend_extension_trustfall::server::SemanticTrustfallGraph::new(image, &cancellation);
     futures_executor::block_on(async {
         let mut targets = BTreeSet::new();
         if include_incoming {

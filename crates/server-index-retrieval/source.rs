@@ -5,8 +5,8 @@ use backend_semantic::ir::{
     SemanticReader, SourceSpan,
 };
 use server_index_core::{EntityArtifactIdentity, EntityDocumentId};
-use server_index_tantivy::{TantivyProvenance, TantivySegmentHit};
-use server_index_trustfall::{OccurrenceSourceEvidence, SemanticOccurrenceHit};
+use backend_extension_tantivy::server::{TantivyProvenance, TantivySegmentHit};
+use backend_extension_trustfall::server::{OccurrenceSourceEvidence, SemanticOccurrenceHit};
 use server_index_vocabulary::{IndexSnapshotId, VerifiedSemanticPublication};
 
 /// A source location proved against one reopened canonical semantic image.

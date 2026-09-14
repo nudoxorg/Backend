@@ -37,8 +37,8 @@ use server_index_retrieval::{
     OwnedCanonicalOccurrenceSource, VerifiedSourceImage, resolve_occurrence_source,
     resolve_occurrence_sources, resolve_tantivy_source, resolve_tantivy_sources,
 };
-use server_index_tantivy::{TantivySegment, TantivySegmentHit, TantivySegmentStore};
-use server_index_trustfall::SemanticTrustfallGraph;
+use backend_extension_tantivy::server::{TantivySegment, TantivySegmentHit, TantivySegmentStore};
+use backend_extension_trustfall::server::SemanticTrustfallGraph;
 use server_index_vocabulary::{
     IndexLocatorFacts, IndexSnapshotId, SemanticImageExtent, SemanticImageLocator,
     VerifiedSemanticPublication,

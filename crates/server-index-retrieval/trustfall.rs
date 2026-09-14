@@ -7,7 +7,7 @@ use backend_semantic::ir::EntityId;
 use server_index_graph_vector::{
     GraphAuthority, GraphDegradation, GraphTerminal, MissingPartitions, ValidatedGraphView,
 };
-use server_index_trustfall::{TrustfallGraph, TrustfallHit, TrustfallTerminal};
+use backend_extension_trustfall::server::{TrustfallGraph, TrustfallHit, TrustfallTerminal};
 
 use crate::{
     CancellationCause, RetrievalAbsence, RetrievalBoundary, RetrievalCoverage,

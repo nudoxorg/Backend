@@ -125,7 +125,7 @@ enum BenchmarkError {
     #[error("canonical semantic rendering exceeded its accounting width")]
     SemanticRender,
     #[error("direct canonical-IR Trustfall query failed")]
-    TrustfallIr(#[source] server_index_trustfall::TrustfallGraphError),
+    TrustfallIr(#[source] backend_extension_trustfall::server::TrustfallGraphError),
     #[error("deterministic public index build failed: {cause:?}")]
     IndexBuild {
         cause: Box<runner::BuildFailureFact>,
@@ -162,7 +162,7 @@ enum BenchmarkError {
     #[error("generated lexical manifest was rejected")]
     LexicalManifest(server_index_core::LexicalManifestError),
     #[error("real Tantivy adapter operation failed")]
-    Tantivy(#[source] server_index_tantivy::TantivyAdapterError),
+    Tantivy(#[source] backend_extension_tantivy::server::TantivyAdapterError),
     #[error("generated vector ingress facts were rejected: {cause:?}")]
     VectorIngress {
         cause: Box<server_index_graph_vector::VectorSegmentError>,

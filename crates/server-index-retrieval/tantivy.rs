@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Tantivy preflight and terminal classification.
 
-use server_index_tantivy::{TantivyHit, TantivyLexical};
+use backend_extension_tantivy::server::{TantivyHit, TantivyLexical};
 
 use crate::{
     CancellationCause, RetrievalBoundary, RetrievalFailure, RetrievalOperationTerminal,

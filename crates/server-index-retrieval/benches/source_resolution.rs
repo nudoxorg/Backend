@@ -22,7 +22,7 @@ use server_index_core::{
     LexicalScore, LexicalSegment,
 };
 use server_index_retrieval::{CanonicalSource, resolve_tantivy_source, resolve_tantivy_sources};
-use server_index_tantivy::{TantivySegmentHit, TantivySegmentStore};
+use backend_extension_tantivy::server::{TantivySegmentHit, TantivySegmentStore};
 use server_index_vocabulary::{
     IndexLocatorFacts, SemanticImageExtent, SemanticImageLocator, VerifiedSemanticPublication,
 };
@@ -34,7 +34,7 @@ const SAMPLES: usize = 20;
 struct Fixture {
     root: std::path::PathBuf,
     store: TantivySegmentStore,
-    segment: server_index_tantivy::TantivySegment,
+    segment: backend_extension_tantivy::server::TantivySegment,
     bytes: Vec<u8>,
     locator: SemanticImageLocator,
 }
