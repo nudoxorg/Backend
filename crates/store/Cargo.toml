@@ -31,7 +31,6 @@ fearless_simd = { workspace = true, features = ["force_support_fallback", "std"]
 rstest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-server-index-build = { path = "../server-index-build" }
 trybuild.workspace = true
 
 [[bench]]

@@ -25,7 +25,7 @@ use backend_engine::publication::{
     open_published_semantic, publish_semantic,
 };
 use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
-use server_index_build::{
+use backend_engine::index_build::{
     IndexedType, SemanticIndexBuildScratch, SemanticTypeFact, build_semantic,
 };
 use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId};

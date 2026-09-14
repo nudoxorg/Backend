@@ -16,8 +16,8 @@ use backend_engine::publication::{
 };
 use backend_semantic::vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
 use backend_version::{ContentId, SourceFactDomain};
-use server_index_build::{IndexBuildScratch, PreparedIndex, build};
-use server_index_publish::{
+use backend_engine::index_build::{IndexBuildScratch, PreparedIndex, build};
+use backend_engine::index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
@@ -494,12 +494,12 @@ fn package_class_lifecycle(journey: &Journey) -> Result<(), TestError> {
     }
     let prepared = match built {
         Ok(prepared) => IndexOutcome::Prepared(prepared),
-        Err(server_index_build::BuildError::Admission(admission))
+        Err(backend_engine::index_build::BuildError::Admission(admission))
             if journey
                 .index_entity_limit
                 .is_some_and(|(maximum, observed)| {
                     admission
-                        == server_index_build::BuildAdmissionError::EntityLimit {
+                        == backend_engine::index_build::BuildAdmissionError::EntityLimit {
                             maximum,
                             observed,
                         }

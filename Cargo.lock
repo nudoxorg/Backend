@@ -844,9 +844,13 @@ dependencies = [
 name = "backend-engine"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "arrayvec",
  "backend-compile",
  "backend-execution",
+ "backend-extension-qdrant",
+ "backend-extension-tantivy",
+ "backend-extension-trustfall",
  "backend-flow",
  "backend-frontend-clang",
  "backend-frontend-csharp",
@@ -864,20 +868,20 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "flate2",
+ "futures-core",
  "nix",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry_sdk",
  "rustix 1.1.4",
  "serde_json",
- "server-index-build",
- "server-index-publish",
  "sha2",
  "thiserror 2.0.20",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
  "ureq",
+ "zerocopy",
 ]
 
 [[package]]
@@ -966,7 +970,6 @@ dependencies = [
  "backend-store",
  "backend-version",
  "blake3",
- "server-index-build",
  "sha2",
  "thiserror 2.0.20",
 ]
@@ -1286,7 +1289,6 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
- "server-index-build",
  "strum 0.28.0",
  "thiserror 2.0.20",
  "trybuild",
@@ -8423,54 +8425,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "server-index-build"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "backend-engine",
- "backend-semantic",
- "backend-store",
- "backend-version",
- "thiserror 2.0.20",
- "zerocopy",
-]
-
-[[package]]
-name = "server-index-publish"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "backend-engine",
- "backend-extension-qdrant",
- "backend-extension-tantivy",
- "backend-extension-trustfall",
- "backend-semantic",
- "backend-store",
- "backend-version",
- "server-index-build",
- "thiserror 2.0.20",
- "zerocopy",
-]
-
-[[package]]
-name = "server-index-retrieval"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "backend-extension-qdrant",
- "backend-extension-tantivy",
- "backend-extension-trustfall",
- "backend-library",
- "backend-semantic",
- "backend-store",
- "backend-version",
- "futures-core",
- "serde_json",
- "server-index-publish",
- "thiserror 2.0.20",
 ]
 
 [[package]]

@@ -12,7 +12,7 @@ use backend_semantic::ir::{FragmentError, PrepareError, WriteError};
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, Language, LanguageProfile, Stage as CompileStage,
 };
-use server_index_build::BuildError;
+use backend_engine::index_build::BuildError;
 use backend_semantic::index_core::{EntityDocumentId, ExactSegmentError, LexicalSegmentError};
 
 /// Exact structural facts retained when generated compiler input is unexpectedly rejected.
@@ -359,14 +359,14 @@ pub(crate) enum LexicalSegmentFault {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum BuildFailureFact {
     Admission {
-        cause: server_index_build::BuildAdmissionError,
+        cause: backend_engine::index_build::BuildAdmissionError,
     },
     MissingSemanticImage,
     EntityOrdinalAddressSpace {
         ordinal: usize,
     },
     ScratchInitialization {
-        region: server_index_build::BuildRegion,
+        region: backend_engine::index_build::BuildRegion,
         required: usize,
         available: usize,
     },
@@ -796,16 +796,16 @@ pub(crate) const fn build_failure_fact(error: BuildError<'_>) -> BuildFailureFac
 }
 
 const fn build_derivation_failure_fact(
-    error: &server_index_build::BuildDerivationError,
+    error: &backend_engine::index_build::BuildDerivationError,
 ) -> BuildFailureFact {
     match error {
-        server_index_build::BuildDerivationError::MissingSemanticImage => {
+        backend_engine::index_build::BuildDerivationError::MissingSemanticImage => {
             BuildFailureFact::MissingSemanticImage
         }
-        server_index_build::BuildDerivationError::EntityOrdinalAddressSpace { ordinal, .. } => {
+        backend_engine::index_build::BuildDerivationError::EntityOrdinalAddressSpace { ordinal, .. } => {
             BuildFailureFact::EntityOrdinalAddressSpace { ordinal: *ordinal }
         }
-        server_index_build::BuildDerivationError::ScratchInitialization {
+        backend_engine::index_build::BuildDerivationError::ScratchInitialization {
             region,
             required,
             available,
@@ -814,13 +814,13 @@ const fn build_derivation_failure_fact(
             required: *required,
             available: *available,
         },
-        server_index_build::BuildDerivationError::AtomAddressSpace { entity, name, .. } => {
+        backend_engine::index_build::BuildDerivationError::AtomAddressSpace { entity, name, .. } => {
             BuildFailureFact::AtomAddressSpace {
                 entity: *entity,
                 name: *name,
             }
         }
-        server_index_build::BuildDerivationError::TypeAddressSpace {
+        backend_engine::index_build::BuildDerivationError::TypeAddressSpace {
             entity,
             semantic_type,
             ..
@@ -828,13 +828,13 @@ const fn build_derivation_failure_fact(
             entity: *entity,
             semantic_type: *semantic_type,
         },
-        server_index_build::BuildDerivationError::MissingAtom { entity, name } => {
+        backend_engine::index_build::BuildDerivationError::MissingAtom { entity, name } => {
             BuildFailureFact::MissingAtom {
                 entity: *entity,
                 name: *name,
             }
         }
-        server_index_build::BuildDerivationError::MissingTypeNode {
+        backend_engine::index_build::BuildDerivationError::MissingTypeNode {
             entity,
             semantic_type,
         } => BuildFailureFact::MissingTypeNode {

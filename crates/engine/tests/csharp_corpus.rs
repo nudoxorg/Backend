@@ -30,8 +30,8 @@ use backend_engine::publication::{PublishedCompilation, immutable::ImmutableArti
 use backend_semantic::vocabulary::{CSharpVersion, LanguageProfile, NativeTool, Stage};
 use csharp_support::Error as SupportError;
 use backend_version::{ContentId, SourceFactDomain};
-use server_index_build::{IndexBuildScratch, build};
-use server_index_publish::{
+use backend_engine::index_build::{IndexBuildScratch, build};
+use backend_engine::index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
@@ -1088,8 +1088,8 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
             },
         ) {
             Ok(prepared) => Some(prepared),
-            Err(server_index_build::BuildError::Admission(
-                server_index_build::BuildAdmissionError::EntityLimit { maximum, observed },
+            Err(backend_engine::index_build::BuildError::Admission(
+                backend_engine::index_build::BuildAdmissionError::EntityLimit { maximum, observed },
             )) if row.expectation == Expectation::IndexEntityLimit { observed }
                 && maximum == 256 =>
             {

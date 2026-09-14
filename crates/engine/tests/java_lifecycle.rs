@@ -25,8 +25,8 @@ use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
 use backend_semantic::vocabulary::{JavaRelease, LanguageProfile, NativeTool, Stage};
-use server_index_build::{IndexBuildScratch, build};
-use server_index_publish::{
+use backend_engine::index_build::{IndexBuildScratch, build};
+use backend_engine::index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
@@ -347,8 +347,8 @@ fn index(
 }
 
 struct IndexScratch<'bytes> {
-    projections: [MaybeUninit<server_index_build::EntityProjection<'bytes>>; 512],
-    entities: [MaybeUninit<server_index_build::EntityFact<'bytes>>; 512],
+    projections: [MaybeUninit<backend_engine::index_build::EntityProjection<'bytes>>; 512],
+    entities: [MaybeUninit<backend_engine::index_build::EntityFact<'bytes>>; 512],
     exact: [MaybeUninit<backend_semantic::index_core::ExactRow<'bytes>>; 512],
     lexical: [MaybeUninit<backend_semantic::index_core::LexicalRow<'bytes>>; 512],
     atoms: [MaybeUninit<backend_semantic::ir::Atom<'bytes>>; 512],
