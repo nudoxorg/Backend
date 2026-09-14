@@ -13,7 +13,7 @@ use server_index_build::{
     BuildAdmissionError, BuildRegion, EntityFact, EntityProjection, IndexBuildCapacity,
     IndexBuildScratch, build, preflight,
 };
-use server_index_core::{ExactRow, LexicalRow};
+use backend_semantic::index_core::{ExactRow, LexicalRow};
 use support::{
     BuildProofError, Fixture, OpenBuffers, TestError, compiled, next_fragment, publish,
     write_fragment, written,

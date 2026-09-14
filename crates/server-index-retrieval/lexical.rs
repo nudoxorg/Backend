@@ -3,11 +3,11 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Lexical manifest construction and terminal classification.
 
-use server_index_core::{
+use backend_semantic::index_core::{
     EntityDocumentId, LexicalDegradation, LexicalManifest, LexicalOperation, LexicalSegment,
     LexicalSnapshotHit, LexicalTerminal, LexicalTopK,
 };
-use server_index_vocabulary::LexicalSegmentId;
+use backend_semantic::index_vocabulary::LexicalSegmentId;
 
 use crate::{
     CancellationCause, RetrievalAbsence, RetrievalBoundary, RetrievalCoverage,

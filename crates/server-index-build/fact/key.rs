@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::ops::Deref;
 
-use server_index_core::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId};
+use backend_semantic::index_core::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId};
 
 /// Exact serialized width of one compiler-artifact-global entity key.
 pub const EXACT_ENTITY_KEY_BYTES: usize = ENTITY_DOCUMENT_ID_BYTES;
@@ -43,7 +43,7 @@ mod tests {
     use super::ExactEntityKey;
     use backend_semantic::ir::EntityId;
     use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
-    use server_index_core::{EntityArtifactIdentity, EntityDocumentId, MAX_EXACT_ROWS};
+    use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId, MAX_EXACT_ROWS};
     use thiserror::Error;
 
     #[derive(Debug, Error)]

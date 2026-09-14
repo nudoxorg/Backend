@@ -1,8 +1,8 @@
 //! Verifies the production dependency closure of `interface-core` stays portable.
 //!
 //! This test intentionally asks Cargo for `normal` edges only.  The production client may use
-//! only the two no-std identity and borrowed-core foundations (`server-index-core` and
-//! `server-index-vocabulary`) for local borrowed queries; all server execution, writer, and
+//! only the two no-std identity and borrowed-core foundations (`backend-semantic::index_core` and
+//! `backend-semantic::index_vocabulary`) for local borrowed queries; all server execution, writer, and
 //! storage crates remain forbidden.
 //! Running through Cargo's own tree resolver makes this check cover transitive path and registry
 //! dependencies without duplicating Cargo's feature resolution in test code.

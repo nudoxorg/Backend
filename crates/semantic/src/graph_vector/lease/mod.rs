@@ -1,0 +1,30 @@
+//! Defines lease behavior for `backend-semantic::graph_vector`, whose purpose is to execute typed graph and vector work through bounded leased storage.
+//! This module owns the lease invariants and typed state transitions.
+//! Its narrow surface prevents representation and policy details from leaking outward.
+//! Bounded scoped graph-edge leases.
+//!
+//! `GraphLease` owns every slot on the caller's stack. `split()` lends its one producer and one
+//! consumer endpoint; neither endpoint allocates or owns a reference-counted state. The producer
+//! is movable to one scoped worker and the consumer is polled by one task. A slot is published by
+//! `Vacant -> Writing -> Ready`, borrowed by `Ready -> Reading`, and reused by
+//! `Reading -> Vacant`. Release/acquire on those transitions is the sole payload hand-off.
+//!
+//! This is an SPSC structure, not an MPSC queue. Its operations are lock-free: a stalled writer
+//! cannot prevent cancellation from closing a slot, and a stalled reader cannot prevent the
+//! writer from closing the stream. Progress of a particular batch still depends on that batch's
+//! owner releasing it, which is an intentional bounded-lease backpressure law.
+
+mod cancellation;
+mod cell;
+mod channel;
+mod contract;
+mod storage;
+mod wake;
+
+pub use self::cancellation::Cancellation;
+pub use self::channel::{
+    EdgeBatchProducer, EdgeBatchStream, GraphLease, GraphStreamEvent, LeasedGraphBatch,
+};
+pub use self::contract::{
+    GraphDegradation, GraphTerminal, LeaseCapacity, LeaseLoad, LeaseStateCell, StreamCapacityError,
+};

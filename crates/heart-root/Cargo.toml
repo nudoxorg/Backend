@@ -25,8 +25,6 @@ compiler-publication = { path = "../compiler-publication" }
 backend-semantic = { path = "../semantic" }
 server-journal = { path = "../server-journal" }
 server-index-build = { path = "../server-index-build" }
-server-index-core = { path = "../server-index-core" }
-server-index-graph-vector = { path = "../server-index-graph-vector" }
 backend-extension-trustfall = { path = "../../extensions/trustfall" }
 backend-extension-tantivy = { path = "../../extensions/tantivy" }
 serde.workspace = true

@@ -4,13 +4,13 @@ use std::time::{Duration, Instant};
 
 use backend_semantic::ir::EntityId;
 use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
-use server_index_core::{EntityArtifactIdentity, EntityDocumentId, IndexSnapshot};
+use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId, IndexSnapshot};
 use backend_execution::routing::{
     Coordinator, MAX_SEGMENTS, MissingAssignment, ObservedHit, OrderingRecipe, Query, RetryPolicy,
     RouteAttempt, RoutedHitSlot, SegmentOrdinal, SegmentRange, TopK, WorkerId, WorkerReply,
     merge_replies,
 };
-use server_index_vocabulary::LexicalSegmentId;
+use backend_semantic::index_vocabulary::LexicalSegmentId;
 
 const WARMUPS: usize = 20;
 const SAMPLES: usize = 100;

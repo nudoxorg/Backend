@@ -7,13 +7,13 @@ use core::{
     pin::Pin,
     task::{Context, Poll, Waker},
 };
-use server_index_graph_vector::{
+use backend_semantic::graph_vector::{
     AdmissionError, Cancellation, GraphAuthority, GraphEdge, GraphLease, GraphRow,
     GraphStreamEvent, GraphTerminal, LeaseCapacity, PartitionId, ProjectionId, StreamCapacityError,
     TraceProbe, ValidatedGraphView,
 };
 use backend_extension_trustfall::server::{TrustfallGraph, TrustfallGraphError, TrustfallHit};
-use server_index_vocabulary::IndexSnapshotId;
+use backend_semantic::index_vocabulary::IndexSnapshotId;
 
 fn graph_authority() -> GraphAuthority {
     GraphAuthority::new(

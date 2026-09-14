@@ -7,7 +7,7 @@ use core::ops::Deref;
 
 use compiler_publication::OpenedCompilation;
 use server_index_build::PreparedIndex;
-use server_index_core::{ExactSegmentId, IndexSnapshot, IndexSnapshotError, LexicalSegmentId};
+use backend_semantic::index_core::{ExactSegmentId, IndexSnapshot, IndexSnapshotError, LexicalSegmentId};
 
 use crate::PublishedIndexSnapshotView;
 

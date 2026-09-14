@@ -4,7 +4,7 @@
 //! Owner-generic structural and semantic validation failures.
 
 use backend_version::{ContentIdDecodeError, HASH_BYTES};
-use server_index_vocabulary::{ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId};
+use backend_semantic::index_vocabulary::{ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId};
 
 use super::{IndexPackLane, IndexPackRegion, IndexPackRowInvariant};
 use crate::pack::grammar::INDEX_PACK_MAGIC_BYTES;
@@ -220,7 +220,7 @@ pub enum IndexPackOpenError {
         row: usize,
         /// Exact typed document decoding cause.
         #[source]
-        source: server_index_core::EntityDocumentIdError,
+        source: backend_semantic::index_core::EntityDocumentIdError,
     },
     /// The existing core segment semantic invariant rejected decoded rows.
     #[error("index pack decoded rows violate their existing core segment invariant")]
@@ -265,7 +265,7 @@ pub enum IndexPackOpenError {
     SnapshotInvariant {
         /// Exact existing snapshot validation cause.
         #[source]
-        source: server_index_core::IndexSnapshotError,
+        source: backend_semantic::index_core::IndexSnapshotError,
     },
     /// A selected body did not consume exactly its declared range, or all bodies did not consume the pack.
     #[error("index pack directory geometry does not consume the declared range")]

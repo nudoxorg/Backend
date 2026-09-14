@@ -17,13 +17,13 @@ use backend_semantic::ir::{
     Visibility, encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_version::{CompilePublicationDomain, ContentId, GenerationId};
-use server_index_core::{
+use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalOperation, LexicalRow,
     LexicalScore, LexicalSegment,
 };
 use server_index_retrieval::{CanonicalSource, resolve_tantivy_source, resolve_tantivy_sources};
 use backend_extension_tantivy::server::{TantivySegmentHit, TantivySegmentStore};
-use server_index_vocabulary::{
+use backend_semantic::index_vocabulary::{
     IndexLocatorFacts, SemanticImageExtent, SemanticImageLocator, VerifiedSemanticPublication,
 };
 

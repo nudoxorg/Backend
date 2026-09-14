@@ -5,12 +5,12 @@
 
 use core::ops::Deref;
 
-use server_index_graph_vector::{
+use backend_semantic::graph_vector::{
     Cancellation, GraphAuthority, MAX_PARTITIONS, PartitionId, VectorAuthority,
     VectorSegmentDescriptor,
 };
 use server_index_publish::PublishedIndexSnapshot;
-use server_index_vocabulary::{IndexSnapshotId, VectorSegmentId};
+use backend_semantic::index_vocabulary::{IndexSnapshotId, VectorSegmentId};
 
 /// Immutable derived projection facts visible through a validated retrieval boundary.
 ///
@@ -263,7 +263,7 @@ mod tests {
 
         let snapshot = IndexSnapshotId::from_canonical_bytes(b"boundary-cold-evidence");
         let authority =
-            GraphAuthority::new(snapshot, server_index_graph_vector::ProjectionId::new(1));
+            GraphAuthority::new(snapshot, backend_semantic::graph_vector::ProjectionId::new(1));
         let allocations = measure(|| {
             let evidence = black_box(RetrievalBoundaryEvidence::graph_snapshot(
                 snapshot, authority,

@@ -6,7 +6,7 @@ use backend_semantic::ir::{SemanticCoreReader, SemanticReader};
 use compiler_publication::{
     OpenedSemanticArtifact, semantic_immutable::SemanticImageArtifactFacts,
 };
-use server_index_core::{
+use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactRow, ExactSegment, LexicalOrderKey, LexicalRow,
     LexicalScore, LexicalSegment,
 };

@@ -3,7 +3,7 @@
 //! Results support capacity decisions without changing the measured implementation.
 //! Exact-core immutable-segment construction and exact lookup phase.
 
-use server_index_core::{
+use backend_semantic::index_core::{
     ExactManifest, ExactOperation, ExactRow, ExactSegment, GenerationId, IndexSnapshot,
 };
 
@@ -48,8 +48,8 @@ pub(crate) fn exact_query(
     let result = std::hint::black_box(manifest.execute(ExactOperation::new(corpus.name(0)?)));
     let output_items = usize::from(matches!(
         result,
-        server_index_core::ExactTerminal::Complete {
-            resolution: server_index_core::ExactResolution::Present { .. },
+        backend_semantic::index_core::ExactTerminal::Complete {
+            resolution: backend_semantic::index_core::ExactResolution::Present { .. },
             ..
         }
     ));

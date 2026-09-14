@@ -13,18 +13,15 @@ publish.workspace = true
 compiler-publication = { path = "../compiler-publication" }
 server-journal = { path = "../server-journal" }
 backend-version = { path = "../version" }
+backend-semantic = { path = "../semantic" }
 server-index-build = { path = "../server-index-build" }
-server-index-core = { path = "../server-index-core" }
-server-index-vocabulary = { path = "../server-index-vocabulary" }
 thiserror.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true
 compiler-driver = { path = "../compiler-driver" }
-backend-semantic = { path = "../semantic" }
 heart-hydration = { path = "../heart-hydration" }
-server-index-graph-vector = { path = "../server-index-graph-vector" }
 backend-extension-qdrant = { path = "../../extensions/qdrant" }
 backend-extension-tantivy = { path = "../../extensions/tantivy" }
 backend-extension-trustfall = { path = "../../extensions/trustfall" }

@@ -1,4 +1,4 @@
-//! Exercises the typed retrieval seam with a test-only adapter over `server-index-core`.
+//! Exercises the typed retrieval seam with a test-only adapter over `backend-semantic::index_core`.
 //!
 //! The adapter is intentionally local to this integration test: production `interface-core`
 //! owns only the capability contract, not a fixture catalogue or a server-index dependency.
@@ -11,7 +11,7 @@ use interface_core::{
     RetrievalMode, RetrievalPhase, RetrievalQueryCause, RetrievalReadiness, RetrievalRequest,
     RetrievalRow, RetrievalRows, SnapshotFacts, UnavailableCompiler, UnloadReceipt,
 };
-use server_index_core::{
+use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactOperation, ExactRow, ExactSegment, LexicalHit,
     LexicalOperation, LexicalRow, LexicalScore, LexicalSegment, LexicalTopK,
 };

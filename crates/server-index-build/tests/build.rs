@@ -9,7 +9,7 @@ use allocation_counter::{AllocationInfo, measure};
 use backend_semantic::ir::{AtomId, TypeId};
 use backend_semantic::ir::{AtomInput, EntityKind, EntityRecord, PrimitiveType, TypeNode};
 use backend_version::{ContentId, SourceFactDomain};
-use server_index_core::{ExactOperation, IndexSnapshot, LexicalRow};
+use backend_semantic::index_core::{ExactOperation, IndexSnapshot, LexicalRow};
 use support::{
     BuildBuffers, BuildProofError, Fixture, OpenBuffers, TestError, compiled, next_fragment,
     publish, write_fragment, written,
@@ -157,11 +157,11 @@ fn verify_rows(index: &server_index_build::PreparedIndex<'_>) -> Result<(), Test
         .zip(index.exact.rows)
         .zip(index.lexical.rows)
     {
-        let document = server_index_core::EntityDocumentId {
-            artifact: server_index_core::EntityArtifactIdentity::Compact(index.fragment.fragment),
+        let document = backend_semantic::index_core::EntityDocumentId {
+            artifact: backend_semantic::index_core::EntityArtifactIdentity::Compact(index.fragment.fragment),
             entity: fact.entity,
         };
-        let document_bytes: [u8; server_index_core::ENTITY_DOCUMENT_ID_BYTES] = document.into();
+        let document_bytes: [u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES] = document.into();
         if exact.key != document_bytes
             || exact.key != fact.exact_key.as_ref()
             || exact.value_bytes().is_none()
@@ -199,8 +199,8 @@ fn ids_for(
     atoms: &[AtomInput<'_>],
 ) -> Result<
     (
-        server_index_core::ExactSegmentId,
-        server_index_core::LexicalSegmentId,
+        backend_semantic::index_core::ExactSegmentId,
+        backend_semantic::index_core::LexicalSegmentId,
     ),
     TestError,
 > {
@@ -226,10 +226,10 @@ fn ids_for(
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct SegmentWitness {
-    exact: server_index_core::ExactSegmentId,
-    lexical: server_index_core::LexicalSegmentId,
+    exact: backend_semantic::index_core::ExactSegmentId,
+    lexical: backend_semantic::index_core::LexicalSegmentId,
     key: server_index_build::ExactEntityKey,
-    document: server_index_core::EntityDocumentId,
+    document: backend_semantic::index_core::EntityDocumentId,
 }
 
 #[derive(Clone, Copy)]

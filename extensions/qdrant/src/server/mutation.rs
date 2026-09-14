@@ -4,7 +4,7 @@
 //! Verified point mutations and readback admission.
 
 use arrayvec::ArrayVec;
-use server_index_graph_vector::ValidatedVectorSegment;
+use backend_semantic::graph_vector::ValidatedVectorSegment;
 
 use super::{
     QdrantBlockingAdapter,

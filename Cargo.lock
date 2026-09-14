@@ -779,7 +779,13 @@ dependencies = [
  "backend-semantic",
  "backend-version",
  "blake3",
+ "futures-executor",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
  "tree-sitter",
+ "ureq",
 ]
 
 [[package]]
@@ -822,6 +828,7 @@ dependencies = [
  "backend-client",
  "backend-library",
  "backend-local-service",
+ "backend-present",
  "backend-replication",
  "backend-runtime",
  "blake3",
@@ -877,8 +884,6 @@ dependencies = [
  "backend-store",
  "backend-version",
  "blake3",
- "server-index-core",
- "server-index-vocabulary",
  "strum 0.28.0",
  "thiserror 2.0.20",
 ]
@@ -897,8 +902,6 @@ dependencies = [
  "flate2",
  "serde",
  "serde_json",
- "server-index-graph-vector",
- "server-index-vocabulary",
  "thiserror 2.0.20",
  "ureq",
 ]
@@ -910,7 +913,6 @@ dependencies = [
  "backend-semantic",
  "backend-version",
  "blake3",
- "server-index-core",
  "tantivy",
  "thiserror 2.0.20",
 ]
@@ -928,8 +930,6 @@ dependencies = [
  "futures-core",
  "futures-executor",
  "futures-util",
- "server-index-graph-vector",
- "server-index-vocabulary",
  "thiserror 2.0.20",
  "trustfall",
  "trustfall_core",
@@ -964,7 +964,6 @@ dependencies = [
  "heart-hydration",
  "heart-root",
  "server-index-build",
- "server-index-core",
  "server-journal",
  "sha2",
  "thiserror 2.0.20",
@@ -1168,7 +1167,6 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
- "server-index-graph-vector",
 ]
 
 [[package]]
@@ -1248,13 +1246,17 @@ name = "backend-semantic"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "arrayvec",
  "backend-flow",
  "backend-version",
  "blake3",
+ "futures-executor",
+ "loom",
  "memmap2",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "turso",
 ]
 
 [[package]]
@@ -2115,7 +2117,6 @@ dependencies = [
  "flate2",
  "serde_json",
  "server-index-build",
- "server-index-core",
  "server-index-publish",
  "server-journal",
  "sha2",
@@ -4080,8 +4081,6 @@ dependencies = [
  "serde",
  "serde_json",
  "server-index-build",
- "server-index-core",
- "server-index-graph-vector",
  "server-journal",
  "thiserror 2.0.20",
  "zerocopy",
@@ -4556,7 +4555,6 @@ dependencies = [
  "backend-semantic",
  "backend-version",
  "compiler-registry",
- "server-index-core",
 ]
 
 [[package]]
@@ -8538,23 +8536,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "server-index-acquire"
-version = "0.1.0"
-dependencies = [
- "backend-semantic",
- "backend-version",
- "futures-executor",
- "serde",
- "serde_json",
- "server-index-catalog",
- "server-index-ingest",
- "server-index-vocabulary",
- "sha2",
- "thiserror 2.0.20",
- "ureq",
-]
-
-[[package]]
 name = "server-index-build"
 version = "0.1.0"
 dependencies = [
@@ -8563,54 +8544,9 @@ dependencies = [
  "backend-version",
  "compiler-driver",
  "compiler-publication",
- "server-index-core",
  "server-journal",
  "thiserror 2.0.20",
  "zerocopy",
-]
-
-[[package]]
-name = "server-index-catalog"
-version = "0.1.0"
-dependencies = [
- "backend-semantic",
- "backend-version",
- "futures-executor",
- "server-index-ingest",
- "server-index-vocabulary",
- "thiserror 2.0.20",
- "turso",
-]
-
-[[package]]
-name = "server-index-core"
-version = "0.1.0"
-dependencies = [
- "arrayvec",
- "backend-semantic",
- "backend-version",
- "server-index-vocabulary",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "server-index-graph-vector"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "backend-semantic",
- "backend-version",
- "loom",
- "server-index-vocabulary",
-]
-
-[[package]]
-name = "server-index-ingest"
-version = "0.1.0"
-dependencies = [
- "backend-semantic",
- "backend-version",
- "server-index-vocabulary",
 ]
 
 [[package]]
@@ -8629,9 +8565,6 @@ dependencies = [
  "heart-hydration",
  "heart-root",
  "server-index-build",
- "server-index-core",
- "server-index-graph-vector",
- "server-index-vocabulary",
  "server-journal",
  "thiserror 2.0.20",
  "zerocopy",
@@ -8653,21 +8586,9 @@ dependencies = [
  "heart-root",
  "interface-protocol",
  "serde_json",
- "server-index-core",
- "server-index-graph-vector",
  "server-index-publish",
- "server-index-vocabulary",
  "server-journal",
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "server-index-vocabulary"
-version = "0.1.0"
-dependencies = [
- "allocation-counter",
- "backend-semantic",
- "backend-version",
 ]
 
 [[package]]

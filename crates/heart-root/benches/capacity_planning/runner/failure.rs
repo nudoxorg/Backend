@@ -13,7 +13,7 @@ use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, Language, LanguageProfile, Stage as CompileStage,
 };
 use server_index_build::BuildError;
-use server_index_core::{EntityDocumentId, ExactSegmentError, LexicalSegmentError};
+use backend_semantic::index_core::{EntityDocumentId, ExactSegmentError, LexicalSegmentError};
 
 /// Exact structural facts retained when generated compiler input is unexpectedly rejected.
 #[allow(

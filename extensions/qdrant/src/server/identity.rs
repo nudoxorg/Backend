@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Physical-coordinate derivation for the disposable Qdrant projection.
 
-use server_index_graph_vector::Metric;
+use backend_semantic::graph_vector::Metric;
 
 use super::{
     contract::{PhysicalPointId, QdrantDataKey},

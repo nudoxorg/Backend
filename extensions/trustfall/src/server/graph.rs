@@ -17,7 +17,7 @@ use backend_semantic::ir::{
 };
 use futures_core::Stream;
 use futures_util::stream;
-use server_index_graph_vector::{Cancellation, GraphAuthority, PartitionId, ValidatedGraphView};
+use backend_semantic::graph_vector::{Cancellation, GraphAuthority, PartitionId, ValidatedGraphView};
 use thiserror::Error;
 use trustfall::{
     FieldValue, Schema,
@@ -1295,8 +1295,8 @@ mod tests {
         ParentageAuthority, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
         VariantFingerprint, Visibility,
     };
-    use server_index_graph_vector::{GraphEdge, GraphRow, ProjectionId};
-    use server_index_vocabulary::IndexSnapshotId;
+    use backend_semantic::graph_vector::{GraphEdge, GraphRow, ProjectionId};
+    use backend_semantic::index_vocabulary::IndexSnapshotId;
     use trustfall::provider::check_adapter_invariants;
 
     use super::*;

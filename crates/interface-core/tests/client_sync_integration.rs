@@ -19,7 +19,7 @@ use interface_core::{
     SegmentDemand, SegmentId, SegmentRange, SelectionOutput, SelectionScratch, SyncCancellation,
     SyncTerminal,
 };
-use server_index_core::{EntityArtifactIdentity, EntityDocumentId};
+use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId};
 
 fn generation(value: u8) -> GenerationId {
     GenerationId::from_digest([value; 32])

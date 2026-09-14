@@ -12,11 +12,11 @@
 mod support;
 
 use backend_semantic::ir::EntityId;
-use server_index_core::{
+use backend_semantic::index_core::{
     ExactDegradation, ExactOperation, ExactResolution, LexicalDegradation, LexicalManifest,
     LexicalOperation, LexicalScore, LexicalSnapshotHit, LexicalTopK,
 };
-use server_index_graph_vector::{
+use backend_semantic::graph_vector::{
     Cancellation, GraphDegradation, GraphEdge, GraphRow, GraphTerminal, PartitionId,
     StreamCapacityError, ValidatedGraphView,
 };
@@ -409,7 +409,7 @@ fn assert_qdrant_coverage_and_live_facade_journey(fixture: &SealedFixture<'_>) {
     .expect("valid offline Qdrant adapter");
     let sentinel = Some(QdrantCandidate {
         authority: fixture.vector_authority,
-        segment: server_index_vocabulary::VectorSegmentId::from_canonical_bytes(b"sentinel"),
+        segment: backend_semantic::index_vocabulary::VectorSegmentId::from_canonical_bytes(b"sentinel"),
         partition: PartitionId::new(1),
         entity: EntityId::new(1),
         score: 0.0,

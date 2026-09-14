@@ -3,10 +3,10 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Exact manifest construction and terminal classification.
 
-use server_index_core::{
+use backend_semantic::index_core::{
     ExactDegradation, ExactManifest, ExactOperation, ExactResolution, ExactSegment, ExactTerminal,
 };
-use server_index_vocabulary::ExactSegmentId;
+use backend_semantic::index_vocabulary::ExactSegmentId;
 
 use crate::{
     CancellationCause, RetrievalAbsence, RetrievalBoundary, RetrievalCoverage,

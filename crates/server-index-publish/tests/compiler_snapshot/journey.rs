@@ -28,7 +28,7 @@ use compiler_publication::{
 use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use server_index_build::{EntityFact, EntityProjection, IndexBuildScratch, PreparedIndex, build};
-use server_index_core::{ExactRow, LexicalRow};
+use backend_semantic::index_core::{ExactRow, LexicalRow};
 use server_index_publish::{
     CompilationIndexError, CompilationIndexScratch, IndexPackEncodeError, IndexPackOpenError,
     IndexPackStore, IndexPackStoreError, encode_index_pack, plan_index_pack,
@@ -437,7 +437,7 @@ fn publish_and_reopen_index_pack(
 
 fn assert_hot_queries_do_not_allocate(
     pack: &server_index_publish::IndexPack<Vec<u8>>,
-    selected: server_index_core::ExactSegmentId,
+    selected: backend_semantic::index_core::ExactSegmentId,
     key: &[u8],
 ) -> Result<(), ReopenError> {
     let _warm_exact = pack.view().exact(selected)?;
@@ -480,8 +480,8 @@ fn build_index<'fragment: 'scratch, 'scratch>(
 fn reject_incomplete_coverage<'manifest, 'facts>(
     opened: OpenedCompilation<'manifest, 'facts>,
     selected: &PublishedCompilation,
-    exact: &mut [server_index_core::ExactSegmentId],
-    lexical: &mut [server_index_core::LexicalSegmentId],
+    exact: &mut [backend_semantic::index_core::ExactSegmentId],
+    lexical: &mut [backend_semantic::index_core::LexicalSegmentId],
 ) -> Result<OpenedCompilation<'manifest, 'facts>, ReopenError> {
     let empty = [];
     let rejected =

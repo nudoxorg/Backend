@@ -6,11 +6,11 @@
 use core::{cmp::Ordering, ops::Deref};
 
 use backend_version::{ArtifactId, HASH_BYTES};
-use server_index_core::{
+use backend_semantic::index_core::{
     EntityDocumentId, ExactRow, ExactSegmentError, ExactSegmentVerifier, IndexSnapshot, LexicalRow,
     LexicalScore, LexicalSegmentError, LexicalSegmentVerifier,
 };
-use server_index_vocabulary::{ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId};
+use backend_semantic::index_vocabulary::{ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId};
 
 use crate::pack::{
     MAX_PACK_SEGMENTS,
@@ -1125,7 +1125,7 @@ mod tests {
         #[error("exact fixture row was rejected")]
         Exact,
         #[error("fixture snapshot was rejected")]
-        Snapshot(#[source] server_index_core::IndexSnapshotError),
+        Snapshot(#[source] backend_semantic::index_core::IndexSnapshotError),
         #[error("fixture pack exceeded its fixed grammar address space")]
         Address(#[source] core::num::TryFromIntError),
         #[error("fixture pack header could not encode its fixed address space")]
@@ -1232,7 +1232,7 @@ mod tests {
         let snapshot = exact_snapshot()?;
         let rows = [ExactRow::present(b"alpha", b"value")];
         let segment =
-            server_index_core::ExactSegment::new(&rows).map_err(|_| PackTestError::Exact)?;
+            backend_semantic::index_core::ExactSegment::new(&rows).map_err(|_| PackTestError::Exact)?;
         let body = exact_body(&rows)?;
         let total = grammar::INDEX_PACK_HEADER_BYTES
             .checked_add(grammar::INDEX_PACK_DIRECTORY_BYTES)
@@ -1267,7 +1267,7 @@ mod tests {
         let body = original.get(body_start..).ok_or(PackTestError::Geometry)?;
         let rows = [ExactRow::present(b"alpha", b"value")];
         let segment =
-            server_index_core::ExactSegment::new(&rows).map_err(|_| PackTestError::Exact)?;
+            backend_semantic::index_core::ExactSegment::new(&rows).map_err(|_| PackTestError::Exact)?;
         let id = segment.id;
         let duplicate_body_start = body_start
             .checked_add(grammar::INDEX_PACK_DIRECTORY_BYTES)
@@ -1335,7 +1335,7 @@ mod tests {
     fn exact_snapshot() -> Result<IndexSnapshotId, PackTestError> {
         let rows = [ExactRow::present(b"alpha", b"value")];
         let segment =
-            server_index_core::ExactSegment::new(&rows).map_err(|_| PackTestError::Exact)?;
+            backend_semantic::index_core::ExactSegment::new(&rows).map_err(|_| PackTestError::Exact)?;
         let exact = [segment.id];
         IndexSnapshot::new(generation(), &exact, &[])
             .map(|snapshot| snapshot.id)

@@ -21,7 +21,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering as AtomicOrdering},
 };
 
-use server_index_core::{
+use backend_semantic::index_core::{
     IndexSnapshot, IndexSnapshotId, LexicalOperation, LexicalSegment, LexicalSegmentId,
 };
 

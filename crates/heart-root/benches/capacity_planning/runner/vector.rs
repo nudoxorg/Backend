@@ -6,7 +6,7 @@
 use core::mem::{size_of, size_of_val};
 
 use backend_semantic::ir::EntityId;
-use server_index_graph_vector::{
+use backend_semantic::graph_vector::{
     Metric as VectorMetric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority,
     VectorFact, VectorPoint, compact_vector_facts, exact_vector_query,
 };
@@ -19,7 +19,7 @@ const VECTOR_TOP_K: usize = 4;
 
 fn vector_authority() -> Result<VectorAuthority, BenchmarkError> {
     Ok(VectorAuthority::new(
-        server_index_core::IndexSnapshotId::from_canonical_bytes(b"capacity-vector-snapshot"),
+        backend_semantic::index_core::IndexSnapshotId::from_canonical_bytes(b"capacity-vector-snapshot"),
         ModelId::new([0x63; 16]),
         u16::try_from(VECTOR_DIMENSION).map_err(BenchmarkError::ByteCount)?,
         VectorMetric::SquaredEuclidean,

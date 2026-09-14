@@ -11,7 +11,7 @@ use compiler_publication::{
     PublicationScratch, PublishControl, binding::COMPILATION_BINDING_BYTES, publish_compiled,
 };
 use server_index_build::{EntityFact, EntityProjection, build};
-use server_index_core::{ExactRow, LexicalRow};
+use backend_semantic::index_core::{ExactRow, LexicalRow};
 use server_journal::{DurablePublisher, PublicationLimits};
 
 use crate::{

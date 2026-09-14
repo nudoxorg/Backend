@@ -1,7 +1,7 @@
 //! Typed, monomorphized retrieval capability facts for the application service.
 //!
 //! This module deliberately contains no index implementation.  Concrete consumption of
-//! `server-index-core` belongs to adapter or test code so the portable application service
+//! `backend-semantic::index_core` belongs to adapter or test code so the portable application service
 //! never manufactures snapshot authority, rows, or unload history.
 
 use core::ops::Deref;

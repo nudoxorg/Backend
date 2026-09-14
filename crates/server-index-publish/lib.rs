@@ -8,7 +8,7 @@
 use core::ops::Deref;
 
 use backend_version::ObjectDomain;
-use server_index_core::IndexSnapshot;
+use backend_semantic::index_core::IndexSnapshot;
 use server_journal::{PublicationFacts, PublishedGeneration};
 
 mod compiler;

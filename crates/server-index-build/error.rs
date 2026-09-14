@@ -4,7 +4,7 @@
 use core::num::TryFromIntError;
 
 use backend_semantic::ir::{AtomId, EntityId, TypeId};
-use server_index_core::{ExactSegmentError, LexicalSegmentError};
+use backend_semantic::index_core::{ExactSegmentError, LexicalSegmentError};
 use thiserror::Error;
 
 /// A caller-owned region required by one bounded compiler-to-index build.

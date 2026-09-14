@@ -1,5 +1,5 @@
 //! Durable projection data model and typed boundary errors.
-use server_index_core::{EntityDocumentId, IndexSnapshotId, LexicalScore, LexicalSegmentId};
+use backend_semantic::index_core::{EntityDocumentId, IndexSnapshotId, LexicalScore, LexicalSegmentId};
 use std::{io, path::PathBuf};
 use tantivy::{IndexReader, schema::Field};
 
@@ -219,7 +219,7 @@ pub enum TantivySegmentStoreError {
     MalformedDocument {
         #[source]
         /// Underlying identity decoding cause.
-        source: server_index_core::EntityDocumentIdError,
+        source: backend_semantic::index_core::EntityDocumentIdError,
     },
     /// The caller's hit output is too short.
     #[error("segment query output has {available} slots, requested {required}")]

@@ -2,8 +2,8 @@
 
 use core::cmp::Ordering;
 use core::mem::size_of;
-use server_index_core::{EntityDocumentId, IndexSnapshotId};
-use server_index_vocabulary::LexicalSegmentId;
+use backend_semantic::index_core::{EntityDocumentId, IndexSnapshotId};
+use backend_semantic::index_vocabulary::LexicalSegmentId;
 use thiserror::Error;
 
 use super::authority::{
@@ -391,7 +391,7 @@ fn insert_open(
     reason = "BLAKE3 digest is fixed at 32 bytes"
 )]
 fn document_hash(document: EntityDocumentId) -> usize {
-    let digest = blake3::hash(&<[u8; server_index_core::ENTITY_DOCUMENT_ID_BYTES]>::from(
+    let digest = blake3::hash(&<[u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES]>::from(
         document,
     ));
     let mut bytes = [0_u8; size_of::<usize>()];

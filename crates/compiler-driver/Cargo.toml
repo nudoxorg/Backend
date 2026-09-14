@@ -31,7 +31,6 @@ ureq = { workspace = true }
 flate2 = { workspace = true }
 server-index-build = { path = "../server-index-build" }
 server-index-publish = { path = "../server-index-publish" }
-server-index-core = { path = "../server-index-core" }
 
 [lib]
 path = "lib.rs"

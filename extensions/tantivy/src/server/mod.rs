@@ -5,7 +5,7 @@
 //! Real, bounded Tantivy lexical-membership projection over one immutable index snapshot.
 //!
 //! Tantivy establishes term membership only. Fixed-point scoring, update reconciliation, and
-//! global deterministic ranking remain in `server-index-core`; backend floating scores never cross
+//! global deterministic ranking remain in `backend-semantic::index_core`; backend floating scores never cross
 //! this adapter boundary.
 
 mod storage;
@@ -17,7 +17,7 @@ pub use self::storage::{
 
 use core::str::Utf8Error;
 
-use server_index_core::{
+use backend_semantic::index_core::{
     ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId, EntityDocumentIdError, IndexSnapshotId,
     LexicalManifest, LexicalOrderKey, LexicalSegmentId,
 };

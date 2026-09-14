@@ -2,8 +2,8 @@
 
 #[cfg(test)]
 use core::fmt;
-use server_index_core::IndexSnapshotId;
-use server_index_vocabulary::LexicalSegmentId;
+use backend_semantic::index_core::IndexSnapshotId;
+use backend_semantic::index_vocabulary::LexicalSegmentId;
 use thiserror::Error;
 
 use super::authority::{OrderingRecipe, QueryDigest, RouteId, SegmentOrdinal, TopK, WorkerId};

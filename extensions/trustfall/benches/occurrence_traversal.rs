@@ -13,7 +13,7 @@ use backend_semantic::ir::{
     full_semantic_image_len,
 };
 use futures_core::Stream;
-use server_index_graph_vector::Cancellation;
+use backend_semantic::graph_vector::Cancellation;
 use backend_extension_trustfall::server::SemanticTrustfallGraph;
 
 fn fixture(count: u32) -> Result<(Vec<u8>, EntityId), Box<dyn std::error::Error>> {

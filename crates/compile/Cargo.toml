@@ -13,8 +13,16 @@ path = "src/lib.rs"
 backend-version = { path = "../version" }
 backend-flow = { path = "../flow" }
 backend-semantic = { path = "../semantic" }
-tree-sitter.workspace = true
 blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tree-sitter.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+futures-executor.workspace = true
 
 [lints]
 workspace = true

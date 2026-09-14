@@ -1,7 +1,7 @@
 //! Snapshot-pinned planning and deterministic rendezvous affinity.
 
-use server_index_core::{EntityDocumentId, IndexSnapshot, IndexSnapshotId};
-use server_index_vocabulary::LexicalSegmentId;
+use backend_semantic::index_core::{EntityDocumentId, IndexSnapshot, IndexSnapshotId};
+use backend_semantic::index_vocabulary::LexicalSegmentId;
 use thiserror::Error;
 
 use super::authority::{

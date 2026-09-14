@@ -75,7 +75,7 @@ lists, entity/source/language columns, cold semantic-authority facts, graph
 CSR, render data, and VCS order. `Ir::image_provenance()` retains a compiled
 source/recipe/package-scope header when one authority transaction built the
 image; manually assembled images state `Unavailable` explicitly.
-It is not a second wire schema. `IrVectorColumn` in `server-index-graph-vector`
+It is not a second wire schema. `IrVectorColumn` in `backend-semantic::graph_vector`
 adds model coordinates through the same `EntityId`-aligned ordinal pattern and
 queries them without constructing point or segment rows. `embedding_text()`
 streams signatures, docs, and typed graph context directly into any

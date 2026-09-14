@@ -19,10 +19,10 @@ use super::super::{
     },
     limits::{MAX_BATCH_POINTS, MAX_QUERY_SEGMENTS, QUERY_SCAN_LIMIT},
 };
-use server_index_graph_vector::{
+use backend_semantic::graph_vector::{
     Metric as VectorMetric, ModelId, VectorAuthority, VectorSegmentDescriptor,
 };
-use server_index_vocabulary::{IndexSnapshotId, VectorSegmentId};
+use backend_semantic::index_vocabulary::{IndexSnapshotId, VectorSegmentId};
 
 /// Qdrant's closed collection-level distance vocabulary.
 #[derive(Clone, Copy, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]

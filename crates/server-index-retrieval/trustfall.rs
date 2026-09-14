@@ -4,7 +4,7 @@
 //! Bounded graph-acquisition composition and synchronous Trustfall classification.
 
 use backend_semantic::ir::EntityId;
-use server_index_graph_vector::{
+use backend_semantic::graph_vector::{
     GraphAuthority, GraphDegradation, GraphTerminal, MissingPartitions, ValidatedGraphView,
 };
 use backend_extension_trustfall::server::{TrustfallGraph, TrustfallHit, TrustfallTerminal};

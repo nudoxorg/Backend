@@ -15,7 +15,6 @@ backend-execution = { path = "../execution" }
 compiler-registry = { path = "../compiler-registry" }
 backend-semantic = { path = "../semantic" }
 backend-version = { path = "../version" }
-server-index-core = { path = "../server-index-core" }
 [dev-dependencies]
 allocation-counter.workspace = true
 

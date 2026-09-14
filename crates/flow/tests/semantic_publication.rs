@@ -28,7 +28,7 @@ use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
 use server_index_build::{
     IndexedType, SemanticIndexBuildScratch, SemanticTypeFact, build_semantic,
 };
-use server_index_core::{EntityArtifactIdentity, EntityDocumentId};
+use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId};
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -75,7 +75,7 @@ enum SemanticJourneyError {
     #[error("the canonical type-render depth fixture was zero")]
     TypeDepth,
     #[error("the exact index key did not decode as a typed document authority")]
-    Document(#[from] server_index_core::EntityDocumentIdError),
+    Document(#[from] backend_semantic::index_core::EntityDocumentIdError),
     #[error("owned and reopened semantic censuses diverged")]
     CensusMismatch {
         owned: SemanticImageCensus,

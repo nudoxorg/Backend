@@ -10,7 +10,7 @@
 
 use backend_semantic::ir::EntityId;
 use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
-use server_index_core::{
+use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalOperation, LexicalRow,
     LexicalScore, LexicalSegment,
 };

@@ -13,7 +13,6 @@ default = []
 backend-version = { path = "../../crates/version" }
 backend-semantic = { path = "../../crates/semantic" }
 blake3.workspace = true
-server-index-core = { path = "../../crates/server-index-core" }
 tantivy = "0.26.1"
 thiserror.workspace = true
 

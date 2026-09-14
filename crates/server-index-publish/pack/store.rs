@@ -20,7 +20,7 @@ use crate::pack::{
     grammar::MAX_INDEX_PACK_BYTES,
     view::IndexPack,
 };
-use server_index_vocabulary::IndexPackId;
+use backend_semantic::index_vocabulary::IndexPackId;
 
 const TEMPORARY_NAME_ATTEMPTS: usize = 16;
 /// One byte beyond the bounded owner maximum detects a hostile short metadata report.

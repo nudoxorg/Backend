@@ -14,7 +14,7 @@ use interface_core::{
     RemoteSearchCandidate, ResidentRange, SegmentDemand, SegmentId, SegmentRange, SelectionOutput,
     SelectionScratch, SyncCancellation, SyncTerminal,
 };
-use server_index_core::{EntityArtifactIdentity, EntityDocumentId, IndexSnapshot};
+use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId, IndexSnapshot};
 
 #[derive(Debug)]
 enum TestError {

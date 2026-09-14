@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use thiserror::Error;
 
 /// Maximum selected lexical segments in one immutable snapshot.
-pub const MAX_SEGMENTS: usize = server_index_core::MAX_SELECTED_SEGMENTS;
+pub const MAX_SEGMENTS: usize = backend_semantic::index_core::MAX_SELECTED_SEGMENTS;
 /// Maximum worker candidates retained for one segment's bounded retry route.
 pub const MAX_WORKERS: usize = 64;
 /// Maximum result rows admitted by the routing boundary.

@@ -7,7 +7,7 @@
 use core::mem::MaybeUninit;
 
 use backend_semantic::ir::{EntityKind, LinkKind, TypeTag};
-use server_index_core::{
+use backend_semantic::index_core::{
     ExactDegradation, ExactManifest, ExactOperation, ExactResolution, ExactSegmentId,
     ExactTerminal, IndexSnapshotId, LexicalDegradation, LexicalSegmentId, LexicalSnapshotHit,
     LexicalTerminal,
@@ -105,7 +105,7 @@ impl FacetTable {
     fn increment<'value>(
         &mut self,
         cell: FacetCell,
-        document: server_index_core::EntityDocumentId,
+        document: backend_semantic::index_core::EntityDocumentId,
     ) -> Result<(), FacetJoinError<'value>> {
         let Some(slot) = self.slot(cell) else {
             return Ok(());
@@ -170,7 +170,7 @@ pub struct FacetHitFact {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FacetHit {
     /// Stable document identity resolved by both planes.
-    pub document: server_index_core::EntityDocumentId,
+    pub document: backend_semantic::index_core::EntityDocumentId,
     /// Typed exact fact, or `None` for a deleted or absent exact row.
     pub fact: Option<FacetHitFact>,
 }
@@ -205,7 +205,7 @@ pub enum FacetJoinError<'value> {
     #[error("exact value for document {document:?} could not be decoded")]
     ValueDecode {
         /// Rejected document identity.
-        document: server_index_core::EntityDocumentId,
+        document: backend_semantic::index_core::EntityDocumentId,
         /// Complete rejected fixed-width bytes.
         value: &'value [u8],
         /// Exact typed decode cause.
@@ -218,7 +218,7 @@ pub enum FacetJoinError<'value> {
         /// Overflowing closed cell.
         cell: FacetCell,
         /// Document whose admission overflowed the cell.
-        document: server_index_core::EntityDocumentId,
+        document: backend_semantic::index_core::EntityDocumentId,
     },
     /// Caller context cannot retain one row per lexical hit.
     #[error("facet context holds {available} rows; {required} lexical hits need rows")]
@@ -263,7 +263,7 @@ pub fn join_facets<'table, 'lexical, 'manifest, 'segment, 'context>(
         })?;
     let mut exact_standing = FacetExactStanding::Complete;
     let context = try_initialize(region, hits.iter(), |hit| {
-        let key: [u8; server_index_core::ENTITY_DOCUMENT_ID_BYTES] = hit.document.into();
+        let key: [u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES] = hit.document.into();
         let (resolution, observed) = exact_parts(exact.execute(ExactOperation::new(&key)));
         exact_standing = widen_exact_standing(exact_standing, observed);
         let fact = match resolution {
@@ -323,7 +323,7 @@ pub fn join_facets<'table, 'lexical, 'manifest, 'segment, 'context>(
 fn record_hit<'value>(
     table: &mut FacetTable,
     fact: FacetHitFact,
-    document: server_index_core::EntityDocumentId,
+    document: backend_semantic::index_core::EntityDocumentId,
 ) -> Result<(), FacetJoinError<'value>> {
     table.increment(FacetCell::Kind(fact.kind), document)?;
     if let IndexedType::Semantic(Some(semantic_type)) = fact.semantic_type {
@@ -411,7 +411,7 @@ mod tests {
     use backend_semantic::ir::{EntityId, EntityKind, LinkKind, TypeId, TypeTag};
     use core::mem::MaybeUninit;
     use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
-    use server_index_core::{
+    use backend_semantic::index_core::{
         EntityArtifactIdentity, EntityDocumentId, ExactManifest, ExactRow, ExactSegment,
         IndexSnapshot, LexicalManifest, LexicalOperation, LexicalRow, LexicalScore, LexicalSegment,
         LexicalSnapshotHit, LexicalTopK,
@@ -432,7 +432,7 @@ mod tests {
             })),
             links,
         );
-        let key: [u8; server_index_core::ENTITY_DOCUMENT_ID_BYTES] = document.into();
+        let key: [u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES] = document.into();
         let exact_rows = [ExactRow::present(&key, value.as_ref())];
         let lexical_rows = [LexicalRow::new(b"derive", document, LexicalScore::from(9))];
         let exact = ExactSegment::new(&exact_rows).expect("canonical exact fixture");

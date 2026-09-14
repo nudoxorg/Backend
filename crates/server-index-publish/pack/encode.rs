@@ -7,18 +7,18 @@ use core::ops::Deref;
 
 use backend_version::{ArtifactHasher, GenerationId, HASH_BYTES};
 use server_index_build::PreparedIndex;
-use server_index_core::{
+use backend_semantic::index_core::{
     ENTITY_DOCUMENT_ID_BYTES, ExactRow, ExactSegment, LexicalRow, LexicalRowValue, LexicalSegment,
     MAX_EXACT_ROWS, MAX_LEXICAL_ROWS,
 };
-use server_index_vocabulary::{ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId};
+use backend_semantic::index_vocabulary::{ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId};
 use zerocopy::IntoBytes;
 
 use crate::pack::error::{IndexPackEncodeError, IndexPackLane};
 use crate::{OpenedCompilationSnapshot, pack::grammar};
 
 /// Maximum selected segment bodies held by one immutable index snapshot.
-pub(crate) const MAX_PACK_SEGMENTS: usize = server_index_core::MAX_SELECTED_SEGMENTS;
+pub(crate) const MAX_PACK_SEGMENTS: usize = backend_semantic::index_core::MAX_SELECTED_SEGMENTS;
 
 /// Immutable public preflight facts for one direct pack encoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -10,7 +10,7 @@ use backend_version::{
     ContentId, GenerationId, IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexSnapshotId,
     IndexSnapshotIdentityError, ObjectDomain, derive_index_snapshot,
 };
-use server_index_core::EntityDocumentId;
+use backend_semantic::index_core::EntityDocumentId;
 
 /// The maximum number of requested segment ranges in one local selection.
 pub const MAX_CLIENT_DEMANDS: usize = 256;

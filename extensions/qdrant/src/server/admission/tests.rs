@@ -3,8 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use super::{prepare_keys, reject_identity_pair};
 use crate::server::contract::{PhysicalPointId, QdrantAdmissionError, QdrantDataKey};
-use server_index_graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
-use server_index_vocabulary::{IndexSnapshotId, VectorSegmentId};
+use backend_semantic::graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
+use backend_semantic::index_vocabulary::{IndexSnapshotId, VectorSegmentId};
 
 fn authority(byte: u8) -> VectorAuthority {
     VectorAuthority::new(

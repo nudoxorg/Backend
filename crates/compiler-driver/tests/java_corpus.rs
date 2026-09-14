@@ -458,8 +458,8 @@ fn open_one<'a>(
 struct IndexScratch<'bytes> {
     projections: [MaybeUninit<server_index_build::EntityProjection<'bytes>>; 512],
     entities: [MaybeUninit<server_index_build::EntityFact<'bytes>>; 512],
-    exact: [MaybeUninit<server_index_core::ExactRow<'bytes>>; 512],
-    lexical: [MaybeUninit<server_index_core::LexicalRow<'bytes>>; 512],
+    exact: [MaybeUninit<backend_semantic::index_core::ExactRow<'bytes>>; 512],
+    lexical: [MaybeUninit<backend_semantic::index_core::LexicalRow<'bytes>>; 512],
     atoms: [MaybeUninit<backend_semantic::ir::Atom<'bytes>>; 512],
     types: [MaybeUninit<backend_semantic::ir::TypeNode>; 512],
 }

@@ -1,7 +1,7 @@
 use super::*;
 
-use server_index_core::{EntityDocumentId, IndexSnapshot, IndexSnapshotId};
-use server_index_vocabulary::LexicalSegmentId;
+use backend_semantic::index_core::{EntityDocumentId, IndexSnapshot, IndexSnapshotId};
+use backend_semantic::index_vocabulary::LexicalSegmentId;
 
 use backend_semantic::ir::EntityId;
 use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
@@ -12,13 +12,13 @@ fn snapshot_id(value: u8) -> IndexSnapshotId {
 
 fn index_snapshot(
     segments: &[LexicalSegmentId],
-) -> Result<IndexSnapshot<'_>, server_index_core::IndexSnapshotError> {
+) -> Result<IndexSnapshot<'_>, backend_semantic::index_core::IndexSnapshotError> {
     IndexSnapshot::new(GenerationId::from_digest([9; 32]), &[], segments)
 }
 
 fn document(value: u8) -> EntityDocumentId {
     EntityDocumentId {
-        artifact: server_index_core::EntityArtifactIdentity::Compact(ArtifactId::<
+        artifact: backend_semantic::index_core::EntityArtifactIdentity::Compact(ArtifactId::<
             IrFragmentEncoding,
             IrFragmentDomain,
         >::from_digest(

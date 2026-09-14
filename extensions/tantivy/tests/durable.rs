@@ -14,7 +14,7 @@ use std::{
 
 use backend_semantic::ir::EntityId;
 use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
-use server_index_core::{
+use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalManifest, LexicalOperation,
     LexicalRow, LexicalScore, LexicalSegment, LexicalSnapshotHit, LexicalTopK,
 };
@@ -41,7 +41,7 @@ fn document(entity: u32) -> EntityDocumentId {
     }
 }
 
-fn snapshot(ids: &[server_index_core::LexicalSegmentId]) -> IndexSnapshot<'_> {
+fn snapshot(ids: &[backend_semantic::index_core::LexicalSegmentId]) -> IndexSnapshot<'_> {
     IndexSnapshot::new(
         GenerationId::from_canonical_bytes(b"durable-generation"),
         &[],
@@ -239,7 +239,7 @@ fn durable_union_matches_core_manifest_for_overlapping_terms_and_tombstones() {
             )
             .expect("core prefix");
         let prefix_hits = match prefix_terminal {
-            server_index_core::LexicalTerminal::Complete { hits, .. } => hits,
+            backend_semantic::index_core::LexicalTerminal::Complete { hits, .. } => hits,
             _ => &[],
         };
         assert!(
@@ -257,7 +257,7 @@ fn durable_union_matches_core_manifest_for_overlapping_terms_and_tombstones() {
         )
         .expect("core exact");
     let exact_hits = match exact_terminal {
-        server_index_core::LexicalTerminal::Complete { hits, .. } => hits,
+        backend_semantic::index_core::LexicalTerminal::Complete { hits, .. } => hits,
         _ => &[],
     };
     assert_eq!(exact_hits.len(), 1);

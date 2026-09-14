@@ -12,13 +12,10 @@ publish.workspace = true
 
 [dependencies]
 backend-semantic = { path = "../semantic" }
-server-index-core = { path = "../server-index-core" }
-server-index-graph-vector = { path = "../server-index-graph-vector" }
 server-index-publish = { path = "../server-index-publish" }
 backend-extension-qdrant = { path = "../../extensions/qdrant" }
 backend-extension-tantivy = { path = "../../extensions/tantivy" }
 backend-extension-trustfall = { path = "../../extensions/trustfall" }
-server-index-vocabulary = { path = "../server-index-vocabulary" }
 thiserror.workspace = true
 
 [dev-dependencies]

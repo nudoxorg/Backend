@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Qdrant authority, exact vector-coverage, and terminal classification.
 
-use server_index_graph_vector::{
+use backend_semantic::graph_vector::{
     MAX_PARTITIONS, MissingPartitions, MissingPartitionsError, PartitionId, VectorAuthority,
     VectorSegmentDescriptor,
 };
@@ -73,7 +73,7 @@ where
 }
 
 const fn classify_qdrant_result<'output>(
-    snapshot: server_index_vocabulary::IndexSnapshotId,
+    snapshot: backend_semantic::index_vocabulary::IndexSnapshotId,
     route: VectorRoute,
     result: QueryCandidateCount,
     missing: Option<MissingPartitions>,

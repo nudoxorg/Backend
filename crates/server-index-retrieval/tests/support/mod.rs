@@ -34,11 +34,11 @@ use backend_store::memory::{InsertOutcome, MemoryStore, StoreCapacity};
 use backend_version::object::ObjectRef;
 use heart_root::{ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry};
 use backend_version::schema::SchemaId;
-use server_index_core::{
+use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactRow, ExactSegment, IndexSnapshot, LexicalRow,
     LexicalScore, LexicalSegment,
 };
-use server_index_graph_vector::{
+use backend_semantic::graph_vector::{
     Cancellation, GraphAuthority, GraphDegradation, GraphEdge, GraphLease, GraphStreamEvent,
     GraphTerminal, LeaseCapacity, LeaseStateCell, Metric, ModelId, PartitionId, ProjectionId,
     StreamCapacityError, TraceProbe, ValidatedVectorSegment, VectorAuthority, VectorPoint,

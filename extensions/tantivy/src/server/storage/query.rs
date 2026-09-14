@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering as AtomicOrdering},
 };
 
-use server_index_core::{
+use backend_semantic::index_core::{
     ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId, IndexSnapshotId, LexicalOperation, LexicalRowValue,
     LexicalScore, LexicalSegmentId, MAX_SELECTED_SEGMENTS,
 };
@@ -305,11 +305,11 @@ pub(crate) fn select<'segment>(
     let query = codec::encode_term(operation.term)?;
     let term = Term::from_field_text(segment.body_field, &query);
     match operation.match_mode {
-        server_index_core::LexicalMatch::Exact => {
+        backend_semantic::index_core::LexicalMatch::Exact => {
             let parsed = TermQuery::new(term, IndexRecordOption::Basic);
             collect_backend_matches(segment, operation, segment_index, &parsed, candidates)
         }
-        server_index_core::LexicalMatch::Prefix => {
+        backend_semantic::index_core::LexicalMatch::Prefix => {
             let parsed = FuzzyTermQuery::new_prefix(term, 0, true);
             collect_backend_matches(segment, operation, segment_index, &parsed, candidates)
         }
@@ -326,7 +326,7 @@ fn collect_backend_matches<'segment, Q: Query>(
     let searcher = segment.reader.searcher();
     let count = usize::try_from(searcher.num_docs())
         .map_err(|_| TantivySegmentStoreError::CountOverflow)?;
-    if count > server_index_core::MAX_LEXICAL_ROWS {
+    if count > backend_semantic::index_core::MAX_LEXICAL_ROWS {
         return Err(TantivySegmentStoreError::CompositionCapacity);
     }
     if count == 0 {
@@ -367,8 +367,8 @@ fn collect_backend_matches<'segment, Q: Query>(
                 detail: "backend result ordinal out of range",
             })?;
         let selected = match operation.match_mode {
-            server_index_core::LexicalMatch::Exact => row.term == operation.term,
-            server_index_core::LexicalMatch::Prefix => row.term.starts_with(operation.term),
+            backend_semantic::index_core::LexicalMatch::Exact => row.term == operation.term,
+            backend_semantic::index_core::LexicalMatch::Prefix => row.term.starts_with(operation.term),
         };
         if !selected {
             return Err(TantivySegmentStoreError::Corrupt {

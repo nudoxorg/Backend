@@ -6,7 +6,7 @@ use core::ops::Deref;
 use super::{ExactEntityKey, ExactEntityValue, IndexedType, LinkKinds, SemanticTypeFact};
 use backend_semantic::ir::EntityId;
 use backend_semantic::ir::{EntityKind, TypeNode};
-use server_index_core::EntityDocumentId;
+use backend_semantic::index_core::EntityDocumentId;
 
 /// A nonforgeable semantic entity fact selected from one reopened compiler fragment.
 ///

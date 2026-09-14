@@ -3,7 +3,7 @@
 use backend_semantic::ir::EntityId;
 use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use interface_core::{query_local_exact, query_local_lexical};
-use server_index_core::{
+use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactResolution, ExactRow, ExactSegment,
     ExactTerminal, IndexSnapshot, LexicalRow, LexicalScore, LexicalSegment, LexicalSnapshotHit,
     LexicalTerminal, LexicalTopK,
@@ -55,7 +55,7 @@ fn local_lexical_wrapper_preserves_hit_and_missing_segment_terminal() -> TestRes
         LexicalScore::from(9),
     )];
     let segment = LexicalSegment::new(&rows).map_err(|_| "fixed lexical test rows are invalid")?;
-    let missing = server_index_core::LexicalSegmentId::from_canonical_bytes(b"missing-local");
+    let missing = backend_semantic::index_core::LexicalSegmentId::from_canonical_bytes(b"missing-local");
     let selected = [segment.id, missing];
     let snapshot = IndexSnapshot::new(generation(), &[], &selected)
         .map_err(|_| "fixed lexical snapshot is not representable")?;

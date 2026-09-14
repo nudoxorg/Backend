@@ -12,7 +12,6 @@ publish.workspace = true
 [dependencies]
 compiler-publication = { path = "../compiler-publication" }
 backend-version = { path = "../version" }
-server-index-core = { path = "../server-index-core" }
 backend-semantic = { path = "../semantic" }
 thiserror.workspace = true
 zerocopy.workspace = true

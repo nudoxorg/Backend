@@ -6,7 +6,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use server_index_core::{EntityDocumentId, LexicalSegment, LexicalSegmentId, MAX_LEXICAL_ROWS};
+use backend_semantic::index_core::{EntityDocumentId, LexicalSegment, LexicalSegmentId, MAX_LEXICAL_ROWS};
 use tantivy::{
     Index, IndexReader, doc,
     schema::{FieldType, IndexRecordOption, STORED, STRING, Schema, Type, Value},
@@ -105,7 +105,7 @@ pub(crate) fn build_projection(
         .map_err(|source| backend_error(StorePhase::Writer, &index_path, source))?;
     for (ordinal, row) in rows.iter().enumerate() {
         let text = codec::encode_term(&row.term)?;
-        let bytes: [u8; server_index_core::ENTITY_DOCUMENT_ID_BYTES] = row.document.into();
+        let bytes: [u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES] = row.document.into();
         let ordinal =
             u64::try_from(ordinal).map_err(|_| TantivySegmentStoreError::CountOverflow)?;
         writer.add_document(doc!(body_field => text, document_field => bytes.to_vec(), ordinal_field => ordinal))

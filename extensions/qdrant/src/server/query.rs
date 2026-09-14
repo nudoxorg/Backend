@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Exact Qdrant query admission, parsing, and deterministic result publication.
 
-use server_index_graph_vector::VectorSegmentDescriptor;
+use backend_semantic::graph_vector::VectorSegmentDescriptor;
 
 use super::{
     QdrantBlockingAdapter, admission,
@@ -64,8 +64,8 @@ impl QdrantBlockingAdapter {
 #[cfg(test)]
 mod tests {
     use backend_semantic::ir::EntityId;
-    use server_index_graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
-    use server_index_vocabulary::{IndexSnapshotId, VectorSegmentId};
+    use backend_semantic::graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
+    use backend_semantic::index_vocabulary::{IndexSnapshotId, VectorSegmentId};
 
     use super::*;
     use crate::server::{PhysicalPointId, QdrantCandidate};

@@ -1,6 +1,6 @@
 //! Thin portable entrypoints for the shared borrowed index query engine.
 
-use server_index_core::{
+use backend_semantic::index_core::{
     EntityDocumentId, ExactManifest, ExactManifestError, ExactOperation, ExactSegment,
     ExactSegmentId, ExactTerminal, IndexSnapshot, LexicalManifest, LexicalManifestError,
     LexicalOperation, LexicalQueryError, LexicalSegment, LexicalSegmentId, LexicalSnapshotHit,

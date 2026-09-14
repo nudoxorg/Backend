@@ -29,7 +29,7 @@ use server_index_build::{
     BuildAdmissionError, BuildDerivationError, BuildError, EntityFact, EntityProjection,
     IndexBuildScratch, PreparedIndex, build,
 };
-use server_index_core::{ExactRow, ExactSegmentError, LexicalRow, LexicalSegmentError};
+use backend_semantic::index_core::{ExactRow, ExactSegmentError, LexicalRow, LexicalSegmentError};
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;
 
@@ -133,7 +133,7 @@ pub(crate) enum BuildProofError {
     MissingIndexedEntity,
     #[error("the immutable snapshot rejected distinct reopened projections: {cause:?}")]
     SnapshotRejected {
-        cause: server_index_core::IndexSnapshotError,
+        cause: backend_semantic::index_core::IndexSnapshotError,
     },
     #[error("changing one fragment atom changed another fragment's segment proof")]
     AtomChangeEscapedFragment,

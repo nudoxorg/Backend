@@ -12,7 +12,7 @@ use backend_semantic::ir::{
     OccurrenceAuthorityFacts, Snapshot, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
     VariantFingerprint, Visibility,
 };
-use server_index_graph_vector::{
+use backend_semantic::graph_vector::{
     Metric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority, VectorPoint,
     exact_vector_query,
 };
@@ -201,7 +201,7 @@ pub(crate) fn trustfall(ir: &Ir) -> Result<StageWork, BenchmarkError> {
 pub(crate) fn vector(ir: &Ir) -> Result<StageWork, BenchmarkError> {
     let count = ir.entity_count();
     let authority = VectorAuthority::new(
-        server_index_core::IndexSnapshotId::from_canonical_bytes(b"semantic-vector-snapshot"),
+        backend_semantic::index_core::IndexSnapshotId::from_canonical_bytes(b"semantic-vector-snapshot"),
         ModelId::new([0x81; 16]),
         u16::try_from(VECTOR_DIMENSION).map_err(BenchmarkError::ByteCount)?,
         Metric::SquaredEuclidean,
@@ -246,7 +246,7 @@ pub(crate) fn vector(ir: &Ir) -> Result<StageWork, BenchmarkError> {
         bytes_read: u64::try_from(count * VECTOR_DIMENSION * size_of::<i16>())
             .map_err(BenchmarkError::ByteCount)?,
         bytes_written: u64::try_from(
-            result.written * size_of::<server_index_graph_vector::VectorHit>(),
+            result.written * size_of::<backend_semantic::graph_vector::VectorHit>(),
         )
         .map_err(BenchmarkError::ByteCount)?,
         durable_bytes: 0,

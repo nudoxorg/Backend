@@ -152,28 +152,28 @@ enum BenchmarkError {
     #[error("valid generated exact rows were rejected: {cause:?}")]
     ExactSegment { cause: runner::ExactSegmentFault },
     #[error("generated exact snapshot was rejected")]
-    IndexSnapshot(server_index_core::IndexSnapshotError),
+    IndexSnapshot(backend_semantic::index_core::IndexSnapshotError),
     #[error("generated exact manifest was rejected")]
-    ExactManifest(server_index_core::ExactManifestError),
+    ExactManifest(backend_semantic::index_core::ExactManifestError),
     #[error("generated lexical segment was rejected: {cause:?}")]
     LexicalSegment {
         cause: Box<runner::LexicalSegmentFault>,
     },
     #[error("generated lexical manifest was rejected")]
-    LexicalManifest(server_index_core::LexicalManifestError),
+    LexicalManifest(backend_semantic::index_core::LexicalManifestError),
     #[error("real Tantivy adapter operation failed")]
     Tantivy(#[source] backend_extension_tantivy::server::TantivyAdapterError),
     #[error("generated vector ingress facts were rejected: {cause:?}")]
     VectorIngress {
-        cause: Box<server_index_graph_vector::VectorSegmentError>,
+        cause: Box<backend_semantic::graph_vector::VectorSegmentError>,
     },
     #[error("generated validated vector segment was rejected: {cause:?}")]
     VectorSegment {
-        cause: Box<server_index_graph_vector::VectorSegmentError>,
+        cause: Box<backend_semantic::graph_vector::VectorSegmentError>,
     },
     #[error("real scalar vector query failed: {cause:?}")]
     VectorQuery {
-        cause: Box<server_index_graph_vector::VectorQueryError>,
+        cause: Box<backend_semantic::graph_vector::VectorQueryError>,
     },
     #[error("could not create capacity result file {path}")]
     CreateResult {

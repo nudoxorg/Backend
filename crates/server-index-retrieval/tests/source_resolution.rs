@@ -27,11 +27,11 @@ use backend_version::{
     IrFragmentEncoding,
 };
 use interface_protocol::{UntrustedDocumentId, UntrustedSourceSpan};
-use server_index_core::{
+use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalOperation, LexicalRow,
     LexicalScore, LexicalSegment,
 };
-use server_index_graph_vector::Cancellation;
+use backend_semantic::graph_vector::Cancellation;
 use server_index_retrieval::{
     CanonicalOccurrenceSource, CanonicalSource, CanonicalSourceError,
     OwnedCanonicalOccurrenceSource, VerifiedSourceImage, resolve_occurrence_source,
@@ -39,7 +39,7 @@ use server_index_retrieval::{
 };
 use backend_extension_tantivy::server::{TantivySegment, TantivySegmentHit, TantivySegmentStore};
 use backend_extension_trustfall::server::SemanticTrustfallGraph;
-use server_index_vocabulary::{
+use backend_semantic::index_vocabulary::{
     IndexLocatorFacts, IndexSnapshotId, SemanticImageExtent, SemanticImageLocator,
     VerifiedSemanticPublication,
 };
@@ -388,7 +388,7 @@ fn only_a_canonical_source_can_materialize_owned_client_reply_facts() -> TestRes
     assert_eq!(owned.publication(), publication);
     assert_eq!(owned.image(), fixture.locator.identity);
     let (path, start, end, snapshot, document) = owned.into_transport_parts();
-    let document: [u8; server_index_core::ENTITY_DOCUMENT_ID_BYTES] = document.into();
+    let document: [u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES] = document.into();
     let wire = UntrustedSourceSpan::new(
         path,
         start,
@@ -401,7 +401,7 @@ fn only_a_canonical_source_can_materialize_owned_client_reply_facts() -> TestRes
     assert_eq!(round_trip.path(), b"src/\xff-owned.rs");
     assert_eq!((round_trip.start(), round_trip.end()), (5, 11));
     assert_eq!(round_trip.snapshot(), expected_snapshot);
-    let document: [u8; server_index_core::ENTITY_DOCUMENT_ID_BYTES] = expected_document.into();
+    let document: [u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES] = expected_document.into();
     assert_eq!(round_trip.document().as_bytes(), &document);
     Ok(())
 }

@@ -8,7 +8,7 @@ use std::{
 };
 
 use backend_semantic::ir::EntityId;
-use server_index_graph_vector::{
+use backend_semantic::graph_vector::{
     Metric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority, VectorPoint,
     VectorQueryError, VectorSegmentError, exact_vector_query,
 };
@@ -16,7 +16,7 @@ use backend_extension_qdrant::server::{
     CollectionField, CollectionValue, MalformedResponseCause, QdrantBlockingAdapter, QdrantDataKey,
     QdrantError, RequestPhase,
 };
-use server_index_vocabulary::IndexSnapshotId;
+use backend_semantic::index_vocabulary::IndexSnapshotId;
 
 fn authority_for(metric: Metric, seed: u8) -> VectorAuthority {
     VectorAuthority::new(

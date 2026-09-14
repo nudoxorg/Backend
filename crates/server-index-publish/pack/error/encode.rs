@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Preflight and caller-output failures for canonical pack encoding.
 
-use server_index_vocabulary::{ExactSegmentId, LexicalSegmentId};
+use backend_semantic::index_vocabulary::{ExactSegmentId, LexicalSegmentId};
 
 use super::IndexPackLane;
 

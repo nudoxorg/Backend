@@ -7,7 +7,7 @@
 //! Allocation-free, compiler-authoritative construction of existing immutable index segments.
 //!
 //! This crate owns only the transformation from a reopened compiler publication to
-//! `server-index-core` rows and proofs. It does not invent another segment identity grammar: exact
+//! `backend-semantic::index_core` rows and proofs. It does not invent another segment identity grammar: exact
 //! retrieval, Tantivy, and snapshot publication consume the same `ExactSegment` and
 //! `LexicalSegment` returned here.
 

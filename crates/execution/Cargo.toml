@@ -11,14 +11,10 @@ backend-version = { path = "../version" }
 backend-store = { path = "../store" }
 backend-flow = { path = "../flow" }
 backend-replication = { path = "../replication" }
-server-index-core = { path = "../server-index-core" }
-server-index-vocabulary = { path = "../server-index-vocabulary" }
+backend-semantic = { path = "../semantic" }
 blake3.workspace = true
 strum.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-backend-semantic = { path = "../semantic" }
 
 [lints]
 workspace = true

@@ -17,10 +17,10 @@ use super::super::{
 };
 use super::request::{CollectionMetric, PayloadIndexDescriptor};
 use backend_semantic::ir::EntityId;
-use server_index_graph_vector::{
+use backend_semantic::graph_vector::{
     Metric as VectorMetric, ModelId, PartitionId, VectorAuthority, VectorSegmentDescriptor,
 };
-use server_index_vocabulary::{IndexSnapshotId, VectorSegmentId};
+use backend_semantic::index_vocabulary::{IndexSnapshotId, VectorSegmentId};
 
 /// Decodes one JSON response into its endpoint-specific DTO.
 pub(crate) fn decode<'body, T: Deserialize<'body>>(

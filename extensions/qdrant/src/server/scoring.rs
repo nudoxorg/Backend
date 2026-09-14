@@ -5,7 +5,7 @@
 
 use std::cmp::Ordering;
 
-use server_index_graph_vector::Metric;
+use backend_semantic::graph_vector::Metric;
 
 use super::contract::QdrantCandidate;
 

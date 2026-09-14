@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-use server_index_core::{
+use backend_semantic::index_core::{
     ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId, LexicalRow, LexicalRowValue, LexicalSegment,
     LexicalSegmentId, MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS,
 };

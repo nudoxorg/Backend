@@ -4,7 +4,7 @@
 //! Qdrant connection, collection lifecycle, and adapter-level orchestration.
 
 use serde::Serialize;
-use server_index_graph_vector::VectorAuthority;
+use backend_semantic::graph_vector::VectorAuthority;
 
 use super::{
     config,
