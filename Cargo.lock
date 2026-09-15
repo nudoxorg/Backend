@@ -860,6 +860,7 @@ dependencies = [
  "backend-frontend-rust",
  "backend-frontend-typescript",
  "backend-library",
+ "backend-platform",
  "backend-replication",
  "backend-runtime",
  "backend-semantic",
@@ -1171,6 +1172,7 @@ dependencies = [
  "backend-frontend-rust",
  "backend-frontend-typescript",
  "backend-library",
+ "backend-platform",
  "backend-runtime",
  "backend-semantic",
  "backend-store",
@@ -1224,6 +1226,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-platform"
+version = "0.1.0"
+dependencies = [
+ "socket2",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "backend-present"
 version = "0.1.0"
 dependencies = [
@@ -1237,6 +1247,7 @@ dependencies = [
 name = "backend-replication"
 version = "0.1.0"
 dependencies = [
+ "backend-platform",
  "backend-store",
  "backend-version",
  "blake3",
@@ -1249,6 +1260,7 @@ name = "backend-runtime"
 version = "0.1.0"
 dependencies = [
  "atomic-waker",
+ "backend-platform",
  "backend-version",
  "blake3",
  "loom",
@@ -1319,6 +1331,7 @@ name = "backend-worker"
 version = "0.1.0"
 dependencies = [
  "backend-engine",
+ "backend-platform",
  "rustix 1.1.4",
 ]
 

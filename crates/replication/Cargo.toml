@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 backend-version = { path = "../version" }
 backend-store = { path = "../store" }
+backend-platform = { path = "../platform" }
 blake3.workspace = true
 
 [target.'cfg(unix)'.dependencies]

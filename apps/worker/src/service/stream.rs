@@ -22,10 +22,10 @@ pub(crate) trait PollableWorkerStream {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
 }
 
-#[cfg(unix)]
-impl PollableWorkerStream for std::os::unix::net::UnixStream {
+#[cfg(any(unix, windows))]
+impl PollableWorkerStream for backend_engine::LocalStream {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        std::os::unix::net::UnixStream::set_read_timeout(self, timeout)
+        backend_engine::LocalStream::set_read_timeout(self, timeout)
     }
 }
 

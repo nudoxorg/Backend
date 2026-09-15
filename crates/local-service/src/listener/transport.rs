@@ -3,7 +3,6 @@
 use super::{Inbound, ListenerError};
 use crate::protocol::{FrameLimits, ProtocolError, read_frame, write_frame};
 use std::io;
-use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
@@ -16,14 +15,14 @@ pub(super) struct ConnectionContext {
     pub(super) stop: Arc<AtomicBool>,
     pub(super) active: Arc<AtomicUsize>,
     pub(super) streams:
-        Arc<Mutex<std::collections::BTreeMap<usize, std::os::unix::net::UnixStream>>>,
+        Arc<Mutex<std::collections::BTreeMap<usize, backend_engine::LocalStream>>>,
     pub(super) connection_id: usize,
     pub(super) limits: FrameLimits,
     pub(super) timeout: Duration,
 }
 
 pub(super) fn connection_worker(
-    mut stream: std::os::unix::net::UnixStream,
+    mut stream: backend_engine::LocalStream,
     context: ConnectionContext,
 ) {
     let ConnectionContext {
@@ -111,7 +110,7 @@ pub(super) fn connection_worker(
 }
 
 pub(super) fn configure_stream(
-    stream: &std::os::unix::net::UnixStream,
+    stream: &backend_engine::LocalStream,
     timeout: Duration,
 ) -> Result<(), ListenerError> {
     stream
@@ -135,10 +134,10 @@ pub(super) fn prepare_socket_path(path: &Path) -> Result<(), ListenerError> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(ListenerError::Io(error.kind())),
     };
-    if !metadata.file_type().is_socket() {
+    if !is_endpoint_file(&metadata) {
         return Err(ListenerError::EndpointOccupied);
     }
-    match std::os::unix::net::UnixStream::connect(path) {
+    match backend_engine::LocalStream::connect(path) {
         Ok(_) => Err(ListenerError::AlreadyRunning),
         Err(error)
             if matches!(
@@ -154,6 +153,7 @@ pub(super) fn prepare_socket_path(path: &Path) -> Result<(), ListenerError> {
     }
 }
 
+#[cfg(unix)]
 pub(super) fn set_private_socket_permissions(path: &Path) -> Result<(), ListenerError> {
     use std::os::unix::fs::PermissionsExt;
     let mut permissions = std::fs::metadata(path)
@@ -161,4 +161,23 @@ pub(super) fn set_private_socket_permissions(path: &Path) -> Result<(), Listener
         .permissions();
     permissions.set_mode(0o600);
     std::fs::set_permissions(path, permissions).map_err(|error| ListenerError::Io(error.kind()))
+}
+
+/// Restricts the endpoint to its owner with a protected DACL, the Windows
+/// counterpart of mode `0600`.
+#[cfg(windows)]
+pub(super) fn set_private_socket_permissions(path: &Path) -> Result<(), ListenerError> {
+    backend_platform::win32::security::restrict_to_current_user(path)
+        .map_err(|error| ListenerError::Io(error.kind()))
+}
+
+#[cfg(unix)]
+fn is_endpoint_file(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    metadata.file_type().is_socket()
+}
+
+#[cfg(windows)]
+fn is_endpoint_file(metadata: &std::fs::Metadata) -> bool {
+    backend_platform::win32::security::is_endpoint_metadata(metadata)
 }

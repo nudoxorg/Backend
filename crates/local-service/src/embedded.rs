@@ -141,22 +141,22 @@ fn wait_for_live_owner(
     Err(refusal)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn endpoint_is_live(endpoint: &Path) -> bool {
-    std::os::unix::net::UnixStream::connect(endpoint).is_ok()
+    backend_engine::LocalStream::connect(endpoint).is_ok()
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 const fn endpoint_is_live(_endpoint: &Path) -> bool {
     false
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn sweep_endpoint(endpoint: &Path) -> Result<(), ListenerError> {
     crate::listener::sweep_endpoint(endpoint)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 const fn sweep_endpoint(_endpoint: &Path) -> Result<(), ListenerError> {
     Ok(())
 }

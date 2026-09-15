@@ -79,9 +79,13 @@ impl ProjectRoot {
         }
         #[cfg(not(unix))]
         {
-            Ok(Self {
-                canonical: path.to_path_buf(),
-            })
+            // Every source path is canonicalized before it is compared against
+            // this root, and `canonicalize` returns the verbatim `\\?\` spelling
+            // on Windows, so the root must be held in that same spelling.
+            let canonical = path
+                .canonicalize()
+                .map_err(|error| format!("open project directory {}: {error}", path.display()))?;
+            Ok(Self { canonical })
         }
     }
 

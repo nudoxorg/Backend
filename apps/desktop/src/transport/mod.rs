@@ -12,8 +12,8 @@ pub(crate) mod error;
 pub(crate) mod limits;
 pub(crate) mod subscription;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) mod diff;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) mod search;
 pub(crate) mod unix;

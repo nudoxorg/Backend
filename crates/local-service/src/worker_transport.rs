@@ -25,15 +25,15 @@ static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 /// Connected stream kinds accepted by the locald worker connector.
 #[derive(Debug)]
 pub(crate) enum WorkerStream {
-    #[cfg(unix)]
-    Unix(std::os::unix::net::UnixStream),
+    #[cfg(any(unix, windows))]
+    Unix(backend_engine::LocalStream),
     AuthenticatedTcp(AuthenticatedTcpStream<std::net::TcpStream>),
 }
 
 impl WorkerStream {
     fn set_timeouts(&self, timeout: Option<Duration>) -> io::Result<()> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Unix(stream) => stream
                 .set_read_timeout(timeout)
                 .and_then(|()| stream.set_write_timeout(timeout)),
@@ -46,15 +46,15 @@ impl WorkerStream {
 }
 
 enum WorkerWake {
-    #[cfg(unix)]
-    Unix(std::os::unix::net::UnixStream),
+    #[cfg(any(unix, windows))]
+    Unix(backend_engine::LocalStream),
     Tcp(std::net::TcpStream),
 }
 
 impl WorkerWake {
     fn shutdown(self) {
         let result = match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Unix(stream) => stream.shutdown(std::net::Shutdown::Both),
             Self::Tcp(stream) => stream.shutdown(std::net::Shutdown::Both),
         };
@@ -65,7 +65,7 @@ impl WorkerWake {
 impl Read for WorkerStream {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Unix(stream) => stream.read(bytes),
             Self::AuthenticatedTcp(stream) => stream.read(bytes),
         }
@@ -75,7 +75,7 @@ impl Read for WorkerStream {
 impl Write for WorkerStream {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Unix(stream) => stream.write(bytes),
             Self::AuthenticatedTcp(stream) => stream.write(bytes),
         }
@@ -83,7 +83,7 @@ impl Write for WorkerStream {
 
     fn flush(&mut self) -> io::Result<()> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Unix(stream) => stream.flush(),
             Self::AuthenticatedTcp(stream) => stream.flush(),
         }
@@ -151,7 +151,7 @@ impl AsyncWorkerTransport {
         let (commands, command_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (inbox_tx, inbox) = mpsc::sync_channel(INBOX_CAPACITY);
         let wake = match stream {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             WorkerStream::Unix(stream) => {
                 let wake = stream
                     .try_clone()
@@ -343,9 +343,9 @@ pub(crate) fn authenticate_tcp(
     Ok(WorkerStream::AuthenticatedTcp(stream))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn authenticate_unix(
-    stream: std::os::unix::net::UnixStream,
+    stream: backend_engine::LocalStream,
     timeout: Duration,
 ) -> Result<WorkerStream, io::Error> {
     stream.set_read_timeout(Some(timeout))?;
