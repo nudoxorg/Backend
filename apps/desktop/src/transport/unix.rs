@@ -5,42 +5,42 @@
 //! a cursor/read is rejected because it cannot distinguish an empty suffix from
 //! a dropped event or reset.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::transport::subscription::{
     snapshot_page_from_bytes_with_verifier, subscription_read_from_bytes,
     subscription_read_from_bytes_against,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::{
     CertifiedSubscriptionTransport, ClientError, MAX_EVENTS, MAX_FRAME, SubscriptionRequest,
     SubscriptionTransport,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use backend_library::{CoverageCapability, Cursor, CursorRead, SnapshotHydrator, ViewRoot};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use backend_replication::{
     LOCAL_CONTROL_MAX_CURSOR, LOCAL_CONTROL_MAX_ERROR, LocalControlClient, LocalControlError,
     LocalControlLimits, LocalControlRequest, LocalControlResponse, LocalSubscriptionId,
     LocalSubscriptionOperation, LocalSubscriptionRequest, LocalSubscriptionResponse,
     ReplicationError,
 };
-#[cfg(all(unix, test))]
+#[cfg(all(any(unix, windows), test))]
 use backend_replication::{
     encode_request as encode_local_control_request, read_frame as read_local_frame,
     write_frame as write_local_frame,
 };
-#[cfg(all(unix, test))]
+#[cfg(all(any(unix, windows), test))]
 use std::io::{Read, Write};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const CONNECTION_FRAME_BUDGET: usize = 240;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn control_limits() -> LocalControlLimits {
     LocalControlLimits {
         max_frame: MAX_FRAME,
@@ -49,7 +49,7 @@ fn control_limits() -> LocalControlLimits {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn map_control_error(error: LocalControlError) -> ClientError {
     match error {
         LocalControlError::FrameTooLarge => {
@@ -64,16 +64,16 @@ fn map_control_error(error: LocalControlError) -> ClientError {
 }
 
 /// A bounded Unix endpoint subscription adapter.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub struct UnixSubscriptionTransport {
-    client: LocalControlClient<std::os::unix::net::UnixStream>,
+    client: LocalControlClient<backend_replication::LocalStream>,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
     endpoint: Option<PathBuf>,
     frames_on_connection: usize,
     next_request_id: u64,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl UnixSubscriptionTransport {
     /// Connects to a local daemon Unix endpoint.
     ///
@@ -103,7 +103,7 @@ impl UnixSubscriptionTransport {
 
     /// Wraps an already connected Unix stream.
     #[must_use]
-    pub fn from_stream(stream: std::os::unix::net::UnixStream) -> Self {
+    pub fn from_stream(stream: backend_replication::LocalStream) -> Self {
         let timeout = Duration::from_secs(30);
         let _ = stream
             .set_read_timeout(Some(timeout))
@@ -445,9 +445,9 @@ impl UnixSubscriptionTransport {
     }
 }
 
-#[cfg(unix)]
-fn connect_stream(path: &Path) -> Result<std::os::unix::net::UnixStream, ClientError> {
-    let stream = std::os::unix::net::UnixStream::connect(path)
+#[cfg(any(unix, windows))]
+fn connect_stream(path: &Path) -> Result<backend_replication::LocalStream, ClientError> {
+    let stream = backend_replication::LocalStream::connect(path)
         .map_err(|error| ClientError::Io(error.to_string()))?;
     let timeout = Duration::from_secs(30);
     stream
@@ -457,19 +457,19 @@ fn connect_stream(path: &Path) -> Result<std::os::unix::net::UnixStream, ClientE
     Ok(stream)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl SubscriptionTransport for UnixSubscriptionTransport {
     fn subscribe(&mut self, request: SubscriptionRequest) -> Result<CursorRead, ClientError> {
         self.exchange(request, None)
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn encode_cursor(cursor: Cursor) -> Vec<u8> {
     cursor.encode_control().into_vec()
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[cfg(test)]
 pub(crate) fn encode_control_request(
     request_id: u64,
@@ -483,7 +483,7 @@ pub(crate) fn encode_control_request(
     encode_local_control_request(&request, control_limits()).map_err(map_control_error)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn decode_control_response(
     response: LocalControlResponse,
     request_id: u64,
@@ -515,7 +515,7 @@ fn decode_control_response(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn enforce_credit(read: CursorRead, credit: usize) -> Result<CursorRead, ClientError> {
     if let CursorRead::Events { events, .. } = &read
         && events.len() > credit
@@ -525,7 +525,7 @@ fn enforce_credit(read: CursorRead, credit: usize) -> Result<CursorRead, ClientE
     Ok(read)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl CertifiedSubscriptionTransport for UnixSubscriptionTransport {
     fn subscribe_with_certificate(
         &mut self,
@@ -545,13 +545,13 @@ impl CertifiedSubscriptionTransport for UnixSubscriptionTransport {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[cfg(test)]
 pub(crate) fn write_frame(writer: &mut impl Write, body: &[u8]) -> Result<(), ClientError> {
     write_local_frame(writer, body, control_limits()).map_err(map_control_error)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[cfg(test)]
 pub(crate) fn read_frame(reader: &mut impl Read) -> Result<Vec<u8>, ClientError> {
     read_local_frame(reader, control_limits()).map_err(map_control_error)

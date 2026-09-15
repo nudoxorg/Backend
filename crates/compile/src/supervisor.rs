@@ -436,7 +436,38 @@ fn terminate_process_group(pid: u32) -> Result<(), ProcessError> {
             crate::UnsupportedLimit::ProcessGroup,
         ))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        /// `CREATE_NO_WINDOW` from the Win32 process creation flags.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // `taskkill /T` walks the child's descendants by parent process ID, the
+        // closest Windows counterpart of signalling a Unix process group. It
+        // runs before the direct child is killed, while that chain still
+        // exists. The absolute path keeps a `taskkill` earlier on `PATH` from
+        // standing in for the system tool, as `/bin/kill` does on Unix.
+        let executable = std::env::var_os("SystemRoot")
+            .map_or_else(|| std::path::PathBuf::from(r"C:\Windows"), std::path::PathBuf::from)
+            .join("System32")
+            .join("taskkill.exe");
+        if executable.is_file() {
+            let result = Command::new(&executable)
+                .args(["/T", "/F", "/PID"])
+                .arg(pid.to_string())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+            if result.is_ok_and(|status| status.success()) {
+                return Ok(());
+            }
+        }
+        Err(ProcessError::UnsupportedLimit(
+            crate::UnsupportedLimit::ProcessGroup,
+        ))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         Err(ProcessError::UnsupportedLimit(

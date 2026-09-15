@@ -11,7 +11,7 @@
 
 #![deny(unsafe_code)]
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod host;
 mod motion;
 mod presentation;
@@ -19,12 +19,12 @@ mod reducer;
 mod store;
 mod theme;
 mod transport;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod ui;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod views;
 
-#[cfg(all(unix, feature = "preview"))]
+#[cfg(all(any(unix, windows), feature = "preview"))]
 mod preview;
 
 #[cfg(test)]
@@ -41,9 +41,9 @@ pub use backend_replication::{
     LocalSubscriptionId, LocalSubscriptionOperation, LocalSubscriptionRequest,
     LocalSubscriptionResponse,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use host::lease::{DesktopHost, HostError, HostMode};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use host::launch::main_entry;
 pub use reducer::model::{Model, poll};
 pub use transport::error::ClientError;
@@ -52,9 +52,9 @@ pub use transport::subscription::{
     CertifiedSubscriptionTransport, LocalEngine, SubscriptionRequest, SubscriptionTransport,
     snapshot_page_from_bytes, snapshot_page_from_value,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use transport::diff::diff_endpoint;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use transport::search::search_endpoint;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use transport::unix::UnixSubscriptionTransport;

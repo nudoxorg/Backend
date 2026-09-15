@@ -101,7 +101,7 @@ impl DesktopHost {
     /// it can be: by completing the peer handshake, under a short bound.
     fn endpoint_is_live(paths: &WorkspacePaths) -> bool {
         let endpoint = paths.endpoint();
-        let Ok(stream) = std::os::unix::net::UnixStream::connect(endpoint) else {
+        let Ok(stream) = backend_replication::LocalStream::connect(endpoint) else {
             return false;
         };
         if stream

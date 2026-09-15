@@ -1,6 +1,6 @@
 //! MCP process startup, stdio framing, and endpoint composition.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::UnixCommandTransport;
 use crate::{
     MAX_ENDPOINT_PATH, decode_request, dispatch_frame_with_transport, error_frame,
@@ -16,7 +16,7 @@ use std::process::ExitCode;
 enum Mode {
     Mcp,
     Framed,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Http(crate::http::LoopbackBind),
 }
 
@@ -61,13 +61,13 @@ pub fn main_entry() -> ExitCode {
     match options.mode {
         Mode::Mcp => json_rpc_main(&options.paths),
         Mode::Framed => framed_main(&options.paths),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         Mode::Http(bind) => crate::http::main_entry(&options.paths, bind),
     }
 }
 
 fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let result = (|| {
         let endpoint = backend_runtime::ensure_locald(paths).map_err(|error| error.to_string())?;
         let project = paths
@@ -89,7 +89,7 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
         )
         .map_err(|error| error.to_string())
     })();
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let result: Result<(), String> =
         Err("local Unix endpoint transport is unavailable on this platform".to_owned());
     match result {
@@ -102,7 +102,7 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
 }
 
 fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let (mut transport, connect_error) = match backend_runtime::ensure_locald(session) {
         Ok(path) => match UnixCommandTransport::connect(path) {
             Ok(transport) => (Some(transport), None),
@@ -110,7 +110,7 @@ fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
         },
         Err(error) => (None, Some(error.to_string())),
     };
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let (mut transport, connect_error): (Option<()>, Option<String>) = (
         None,
         Some("local Unix endpoint transport is unavailable on this platform".to_owned()),
@@ -155,7 +155,7 @@ fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
 /// so the decision that matters — a dispatch failure and a missing endpoint are
 /// both failures, and both still owe the caller a correlated reply — is written
 /// once here rather than twice inside the loop.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn framed_reply(
     transport: Option<&mut UnixCommandTransport>,
     input: &[u8],
@@ -173,7 +173,7 @@ fn framed_reply(
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn framed_reply(
     transport: Option<&mut ()>,
     input: &[u8],
@@ -200,7 +200,7 @@ fn options_from_args(args: impl IntoIterator<Item = String>) -> Result<Options, 
             continue;
         }
         if argument == "--http" {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             {
                 let address = args
                     .next()
@@ -211,7 +211,7 @@ fn options_from_args(args: impl IntoIterator<Item = String>) -> Result<Options, 
                 mode = Mode::Http(crate::http::LoopbackBind::new(address)?);
                 continue;
             }
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
             return Err("--http requires Unix local transport support".to_owned());
         }
         if matches!(argument.as_str(), "--help" | "-h") {

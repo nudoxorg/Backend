@@ -52,7 +52,7 @@ pub use protocol::{
 };
 pub use render::{EXIT_IO, EXIT_OK, EXIT_REFUSED, EXIT_USAGE};
 pub use run::Answer;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use transport::UnixCommandTransport;
 pub use transport::{CertifiedCommandTransport, CommandTransport, InProcessTransport, LocalEngine};
 

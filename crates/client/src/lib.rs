@@ -140,13 +140,13 @@ impl<E: LocalEngine + ?Sized> CertifiedCommandTransport for InProcessTransport<'
 }
 
 /// One authenticated Unix command connection.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub struct UnixCommandTransport {
-    stream: std::os::unix::net::UnixStream,
+    stream: backend_replication::LocalStream,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl UnixCommandTransport {
     /// Connects and authenticates the local endpoint owner.
     ///
@@ -156,7 +156,7 @@ impl UnixCommandTransport {
         let endpoint = backend_replication::UnixEndpointRef::new(path.as_ref())
             .map_err(|_| ClientError::Transport(ReplicationError::MessageTooLarge))?;
         let path = endpoint.as_path();
-        let stream = std::os::unix::net::UnixStream::connect(path)
+        let stream = backend_replication::LocalStream::connect(path)
             .map_err(|error| ClientError::Io(error.to_string()))?;
         let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, path)
             .map_err(|error| {
@@ -171,7 +171,7 @@ impl UnixCommandTransport {
 
     /// Wraps a connected stream for tests and embedded transports.
     #[must_use]
-    pub fn from_stream(stream: std::os::unix::net::UnixStream) -> Self {
+    pub fn from_stream(stream: backend_replication::LocalStream) -> Self {
         let _ = configure(&stream);
         Self { stream, peer: None }
     }
@@ -202,7 +202,7 @@ impl UnixCommandTransport {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl CommandTransport for UnixCommandTransport {
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
         let body = encode_request(&request)?;
@@ -213,7 +213,7 @@ impl CommandTransport for UnixCommandTransport {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl CertifiedCommandTransport for UnixCommandTransport {
     fn request_with_certificate(
         &mut self,
@@ -238,7 +238,7 @@ impl CertifiedCommandTransport for UnixCommandTransport {
 /// The session obtains the current immutable root and its producer proof only
 /// for commands that need freshness. Callers never assemble basis flags or
 /// identity certificates themselves.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub struct Session {
     transport: UnixCommandTransport,
     next_request_id: u64,
@@ -247,7 +247,7 @@ pub struct Session {
 
 /// One admitted health revision retained long enough to build a dependent
 /// query request without copying the view.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub struct Revision {
     /// Current immutable product view root.
     pub root: ViewStateRoot,
@@ -255,7 +255,7 @@ pub struct Revision {
     cursor: backend_library::Cursor,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Revision {
     /// Returns the exact owner cursor paired with this immutable root.
     #[must_use]
@@ -264,7 +264,7 @@ impl Revision {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Session {
     /// Connects one revision-aware session.
     ///
@@ -893,7 +893,7 @@ fn key_certificate(schema: WireSchema, id: &[u8; 32], value: &str) -> WireCertif
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn selected_symbol_certificate(certificate: WireCertificate, symbol: SymbolKey) -> WireCertificate {
     certificate.with_claim_once(WireClaim::KeyCommitment {
         schema: WireSchema::Symbol,
@@ -901,8 +901,8 @@ fn selected_symbol_certificate(certificate: WireCertificate, symbol: SymbolKey) 
     })
 }
 
-#[cfg(unix)]
-fn configure(stream: &std::os::unix::net::UnixStream) -> Result<(), ClientError> {
+#[cfg(any(unix, windows))]
+fn configure(stream: &backend_replication::LocalStream) -> Result<(), ClientError> {
     let timeout = Some(Duration::from_secs(30));
     stream
         .set_read_timeout(timeout)

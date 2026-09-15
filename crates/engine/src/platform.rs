@@ -7,14 +7,12 @@
 
 use std::path::Path;
 
-#[cfg(unix)]
 use std::io::Read;
 
+#[cfg(any(unix, windows))]
+pub use backend_replication::{PeerCredentialError, peer_is_same_effective_uid};
 #[cfg(unix)]
-pub use backend_replication::{
-    PeerCredentialError, PeerCredentials, current_effective_uid, peer_credentials,
-    peer_is_same_effective_uid,
-};
+pub use backend_replication::{PeerCredentials, current_effective_uid, peer_credentials};
 
 /// Failure while loading a process authority credential.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,7 +90,31 @@ pub fn read_authority_secret(path: &Path) -> Result<[u8; 32], AuthoritySecretErr
         .map_err(|error| AuthoritySecretError::Io(error.kind()))?
     };
     #[cfg(not(unix))]
-    return Err(AuthoritySecretError::Unsupported);
+    let mut file = {
+        // There is no `O_NOFOLLOW` here. Opening the reparse point itself means
+        // a link swapped in after this check is inspected rather than followed,
+        // and the regular-file check below then refuses it.
+        #[cfg(windows)]
+        use std::os::windows::fs::OpenOptionsExt as _;
+        /// `FILE_FLAG_OPEN_REPARSE_POINT` from the Win32 file API.
+        #[cfg(windows)]
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+        if std::fs::symlink_metadata(path)
+            .map_err(|error| AuthoritySecretError::Io(error.kind()))?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(AuthoritySecretError::SymbolicLink);
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        options
+            .open(path)
+            .map_err(|error| AuthoritySecretError::Io(error.kind()))?
+    };
 
     let metadata = file
         .metadata()
@@ -111,6 +133,21 @@ pub fn read_authority_secret(path: &Path) -> Result<[u8; 32], AuthoritySecretErr
         }
         let owner = metadata.uid();
         if current_effective_uid().map_err(|_| AuthoritySecretError::WrongOwner)? != owner {
+            return Err(AuthoritySecretError::WrongOwner);
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Windows has no mode bits to compare. The credential is created with a
+        // protected owner-only DACL; here it must be owned by this user, or by
+        // this token's default owner as for an elevated administrator. The
+        // owner is read from the same handle the secret is read from.
+        use backend_platform::win32::identity;
+        let owner =
+            identity::owner_of(&file).map_err(|error| AuthoritySecretError::Io(error.kind()))?;
+        if !identity::is_owned_by_current_user(&owner)
+            .map_err(|_| AuthoritySecretError::WrongOwner)?
+        {
             return Err(AuthoritySecretError::WrongOwner);
         }
     }

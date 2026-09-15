@@ -35,7 +35,9 @@ pub mod server;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+#[cfg(unix)]
+use std::io::Read;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -243,20 +245,18 @@ impl LiveEndpoint {
 /// owner may hold the workspace lock and not yet have bound its listener, so
 /// callers that need certainty follow a `None` with a bounded retry rather
 /// than with a failure.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[must_use]
 pub fn try_attach(paths: &WorkspacePaths) -> Option<LiveEndpoint> {
-    use std::os::unix::net::UnixStream;
-
-    UnixStream::connect(paths.endpoint())
+    backend_platform::local::LocalStream::connect(paths.endpoint())
         .ok()
         .map(|_probe| LiveEndpoint {
             endpoint: paths.endpoint().to_path_buf(),
         })
 }
 
-/// Reports that endpoint probing is Unix-only.
-#[cfg(not(unix))]
+/// Reports that endpoint probing is unavailable on this platform.
+#[cfg(not(any(unix, windows)))]
 #[must_use]
 pub fn try_attach(_paths: &WorkspacePaths) -> Option<LiveEndpoint> {
     None
@@ -269,19 +269,18 @@ pub fn try_attach(_paths: &WorkspacePaths) -> Option<LiveEndpoint> {
 /// connection — the kernel states that mean no process is listening. A
 /// non-socket, a permission failure, or any other error is left alone so a
 /// misconfigured path fails loudly at bind instead of being deleted here.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn unlink_dead_endpoint(endpoint: &Path) -> bool {
+    use backend_platform::local::LocalStream;
     use std::io::ErrorKind;
-    use std::os::unix::fs::FileTypeExt;
-    use std::os::unix::net::UnixStream;
 
     let Ok(metadata) = fs::symlink_metadata(endpoint) else {
         return false;
     };
-    if !metadata.file_type().is_socket() {
+    if !is_endpoint_file(&metadata) {
         return false;
     }
-    match UnixStream::connect(endpoint) {
+    match LocalStream::connect(endpoint) {
         Ok(_live) => false,
         Err(error)
             if matches!(
@@ -293,6 +292,19 @@ fn unlink_dead_endpoint(endpoint: &Path) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// Returns whether `metadata` describes a local socket endpoint.
+#[cfg(unix)]
+fn is_endpoint_file(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    metadata.file_type().is_socket()
+}
+
+/// Returns whether `metadata` describes a local socket endpoint.
+#[cfg(windows)]
+fn is_endpoint_file(metadata: &fs::Metadata) -> bool {
+    backend_platform::win32::security::is_endpoint_metadata(metadata)
 }
 
 /// Ensures the shared local daemon is accepting connections and returns its
@@ -307,9 +319,9 @@ fn unlink_dead_endpoint(endpoint: &Path) -> bool {
 /// # Errors
 /// Returns an error when setup, executable discovery, process startup, or the
 /// bounded readiness wait fails.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
-    use std::os::unix::net::UnixStream;
+    use backend_platform::local::LocalStream as UnixStream;
 
     if let Some(live) = try_attach(paths) {
         return Ok(live.into_endpoint());
@@ -323,7 +335,8 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     // from "somebody else is already listening".
     unlink_dead_endpoint(paths.endpoint());
     let executable = locald_executable()?;
-    let mut child = Command::new(&executable)
+    let mut command = Command::new(&executable);
+    command
         .arg("--endpoint")
         .arg(paths.endpoint())
         .arg("--workspace")
@@ -332,7 +345,9 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
         .arg(paths.authority_secret())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    detach(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|source| RuntimeError::Spawn { executable, source })?;
     let mut deadline = Instant::now() + LIVE_START_TIMEOUT;
@@ -361,8 +376,27 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     }
 }
 
+/// Starts a spawned daemon outside the launching console's control group.
+///
+/// Every process attached to a Windows console receives that console's Ctrl+C,
+/// so a daemon started by one CLI command would otherwise die at the next
+/// Ctrl+C typed in the same terminal. A detached process in its own group
+/// matches Unix, where the daemon simply outlives its launcher.
+#[cfg(windows)]
+fn detach(command: &mut Command) {
+    use std::os::windows::process::CommandExt as _;
+    /// `DETACHED_PROCESS` from the Win32 process creation flags.
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    /// `CREATE_NEW_PROCESS_GROUP` from the Win32 process creation flags.
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+}
+
+#[cfg(not(windows))]
+const fn detach(_command: &mut Command) {}
+
 /// Reports that automatic local daemon composition is Unix-only.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn ensure_locald(_paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     Err(RuntimeError::Unsupported)
 }
@@ -514,9 +548,12 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
         fs::create_dir_all(parent).map_err(RuntimeError::Io)?;
     }
     let mut bytes = [0_u8; 32];
+    #[cfg(unix)]
     fs::File::open("/dev/urandom")
         .and_then(|mut source| source.read_exact(&mut bytes))
         .map_err(RuntimeError::Io)?;
+    #[cfg(windows)]
+    backend_platform::win32::random::fill(&mut bytes).map_err(RuntimeError::Io)?;
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -540,6 +577,14 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
         .and_then(|()| file.sync_all())
         .map_err(RuntimeError::Io);
     drop(file);
+    // Windows has no mode bits. The credential gets a protected owner-only
+    // DACL before it is published, so the hard link below never exposes a
+    // file that the project directory's inherited ACL would let others read.
+    #[cfg(windows)]
+    let staged = staged.and_then(|()| {
+        backend_platform::win32::security::restrict_to_current_user(&temporary)
+            .map_err(RuntimeError::Io)
+    });
     if let Err(error) = staged {
         let _ = fs::remove_file(&temporary);
         return Err(error);
@@ -691,6 +736,7 @@ mod tests {
         fs::remove_dir_all(root).expect("remove runtime fixture");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_dead_endpoint_is_unlinked_and_a_live_one_is_left_alone() {
         // A bindable endpoint must fit the platform `sun_path` budget, which
