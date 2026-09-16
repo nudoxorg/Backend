@@ -38,7 +38,7 @@ use backend_library::{
 };
 use backend_present::{
     Coordinate, Fault, GRAMMARS, Identity, IdentityShape, KeyTag, Language, Operand, Readiness,
-    RowCount, Shelf, ShelfEntry, domain_name, domains, registry_size,
+    RowCount, Shelf, domain_name, domains, registry_size,
 };
 use backend_replication::ReplicationError;
 
@@ -288,7 +288,11 @@ fn an_unfiltered_palette_lists_the_whole_registry_in_five_domains() {
 
 // -------------------------------------------------------------------- shelf --
 
-#[cfg(unix)]
+// These three reach `crate::ui::glyph`, which exists on every platform that
+// has a window — `#[cfg(unix)]` was one platform too narrow and quietly took
+// the shelf marks, including the ✗ a failed index now draws, out of the
+// Windows suite along with the imports they use.
+#[cfg(any(unix, windows))]
 fn shelf_fault() -> Fault {
     Fault::from_command_failure(
         &CommandFailure::NotFound,
@@ -296,7 +300,7 @@ fn shelf_fault() -> Fault {
     )
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn each_standing_draws_the_mark_this_window_reserves_for_it() {
     use crate::presentation::project::standing;
@@ -334,7 +338,7 @@ fn each_standing_draws_the_mark_this_window_reserves_for_it() {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn a_ready_project_that_published_nothing_does_not_draw_as_finished() {
     use crate::presentation::project::{Standing, standing, summary};
