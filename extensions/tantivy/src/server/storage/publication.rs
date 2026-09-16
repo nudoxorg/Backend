@@ -323,15 +323,7 @@ fn validate_documents(
 }
 
 pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        fs::File::open(path)?.sync_all()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
+    backend_platform::durability::open_directory(path)?.sync_all()
 }
 
 #[allow(

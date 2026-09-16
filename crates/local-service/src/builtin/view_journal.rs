@@ -321,7 +321,7 @@ impl ViewJournal {
             .trip(Boundary::Rename)
             .map_err(|error| error.to_string())?;
         if let Some(parent) = self.path.parent() {
-            File::open(parent)
+            backend_platform::durability::open_directory(parent)
                 .and_then(|directory| directory.sync_all())
                 .map_err(io_error)?;
         }
@@ -333,7 +333,7 @@ impl ViewJournal {
 
     fn sync_parent_dir(&self) -> Result<(), String> {
         if let Some(parent) = self.path.parent() {
-            File::open(parent)
+            backend_platform::durability::open_directory(parent)
                 .and_then(|directory| directory.sync_all())
                 .map_err(io_error)?;
         }
@@ -477,7 +477,7 @@ impl ViewJournal {
         // make the next startup take a different journal history.
         file.sync_all().map_err(io_error)?;
         if let Some(parent) = self.path.parent() {
-            File::open(parent)
+            backend_platform::durability::open_directory(parent)
                 .and_then(|directory| directory.sync_all())
                 .map_err(io_error)?;
         }

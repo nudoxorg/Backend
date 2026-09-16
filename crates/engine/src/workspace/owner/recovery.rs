@@ -1,9 +1,8 @@
 //! Diagnostic sidecar and exact store-head observation helpers.
 
 use super::{
-    Boundary, DIAGNOSTIC_FILE, DIAGNOSTIC_MAGIC, Faults, File, FileStore, MAX_STORE_BYTES,
-    OpenOptions, Path, PreparedTransition, WorkspaceError, WorkspaceHead, fs,
-    verify_workspace_pack,
+    Boundary, DIAGNOSTIC_FILE, DIAGNOSTIC_MAGIC, Faults, FileStore, MAX_STORE_BYTES, OpenOptions,
+    Path, PreparedTransition, WorkspaceError, WorkspaceHead, fs, verify_workspace_pack,
 };
 use std::io::Write;
 
@@ -87,7 +86,7 @@ fn atomic_write(path: &Path, bytes: &[u8], faults: &Faults) -> Result<(), Worksp
 }
 
 pub(crate) fn sync_directory(path: &Path) -> Result<(), WorkspaceError> {
-    File::open(path)
+    backend_platform::durability::open_directory(path)
         .and_then(|directory| directory.sync_all())
         .map_err(WorkspaceError::io)
 }

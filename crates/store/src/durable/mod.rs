@@ -20,7 +20,7 @@ use super::{
 };
 use backend_version::WorkspaceRoot;
 use std::{
-    fs::{self, File},
+    fs,
     path::{Path, PathBuf},
     sync::atomic::AtomicU64,
     sync::{Arc, Mutex},
@@ -170,7 +170,7 @@ fn hex(bytes: &Hash) -> String {
 }
 
 fn sync_directory(path: &Path) -> Result<(), StoreError> {
-    File::open(path)
+    backend_platform::durability::open_directory(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| io_error(&error))
 }
