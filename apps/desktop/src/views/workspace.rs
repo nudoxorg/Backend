@@ -805,18 +805,7 @@ impl Workspace {
 
     fn submit_add(&mut self, cx: &mut Context<Self>) {
         let text = self.coordinate.read(cx).as_str().trim().to_owned();
-        match super::library::validate(&text) {
-            Err(message) => {
-                self.add_fault = Some(message);
-                cx.notify();
-            }
-            Ok(coordinate) => {
-                self.add_fault = None;
-                self.adding = false;
-                self.coordinate.update(cx, |field, cx| field.emplace("", cx));
-                self.index_project(coordinate, cx);
-            }
-        }
+        self.submit_project(&text, cx);
     }
 }
 

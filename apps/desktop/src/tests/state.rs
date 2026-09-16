@@ -37,8 +37,8 @@ use backend_library::{
     COMMANDS, CommandFailure, DeclarationKind, ViewRevision, view_state_root,
 };
 use backend_present::{
-    Coordinate, Fault, GRAMMARS, Identity, IdentityShape, Language, Operand, Readiness, RowCount,
-    ShelfEntry, domain_name, domains, registry_size,
+    Coordinate, Fault, GRAMMARS, Identity, IdentityShape, KeyTag, Language, Operand, Readiness,
+    RowCount, Shelf, ShelfEntry, domain_name, domains, registry_size,
 };
 use backend_replication::ReplicationError;
 
@@ -751,8 +751,198 @@ fn a_dropped_feed_and_an_incoherent_root_keep_their_own_slugs() {
 
 // ------------------------------------------------------------ add-a-project --
 
-// `crate::views::library::validate` is not reachable from here: `views/mod.rs`
-// declares `mod library;` privately, so the `pub(super)` function is visible
-// only inside `crate::views`. The "add a project" sentences are therefore not
-// asserted in this suite. Making them testable is a one-word visibility change
-// in `views/mod.rs`, which is production code and not this file's to make.
+// `crate::views` only exists on a platform with a window, so the add-flow
+// proofs below are gated the same way the module is. `validate` is
+// `pub(crate)` for exactly this reason: every sentence a reader sees under the
+// add field is decided by a pure function, and a pure function is asserted
+// here rather than clicked through by hand on two operating systems.
+
+/// An absolute directory that certainly exists, spelled the way this platform
+/// spells one: a drive letter and backslashes on Windows, a leading slash on
+/// Unix. Hard-coding either spelling would make this suite pass on one host
+/// and lie on the other.
+#[cfg(any(unix, windows))]
+fn a_real_directory() -> &'static str {
+    env!("CARGO_MANIFEST_DIR")
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn an_absolute_folder_validates_whether_or_not_it_arrives_quoted() {
+    use crate::views::library::validate;
+
+    let bare = a_real_directory();
+    assert_eq!(validate(bare).as_deref(), Ok(bare));
+    assert_eq!(
+        validate(&format!("\"{bare}\"")).as_deref(),
+        Ok(bare),
+        "Windows Explorer's \"Copy as path\" quotes what it copies"
+    );
+    assert_eq!(
+        validate(&format!("'{bare}'")).as_deref(),
+        Ok(bare),
+        "a shell copy quotes it the other way"
+    );
+    assert_eq!(
+        validate(&format!("  \"{bare}\"  ")).as_deref(),
+        Ok(bare),
+        "surrounding whitespace is the reader's, not the path's"
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn a_quoted_path_is_no_longer_refused_for_not_being_absolute() {
+    use crate::views::library::validate;
+
+    let quoted = format!("\"{}\"", a_real_directory());
+    assert_ne!(
+        validate(&quoted).err().as_deref(),
+        Some("A local project needs an absolute path."),
+        "the path inside the quotes is absolute; saying otherwise is a false statement"
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn every_refusal_under_the_add_field_says_which_thing_is_wrong() {
+    use crate::views::library::validate;
+
+    assert_eq!(
+        validate("   ").err().as_deref(),
+        Some("Type a package coordinate, or choose a folder.")
+    );
+    assert_eq!(
+        validate("\"\"").err().as_deref(),
+        Some("Type a package coordinate, or choose a folder."),
+        "an empty pair of quotes carries no path"
+    );
+    assert_eq!(
+        validate("some/relative/folder").err().as_deref(),
+        Some("A local project needs an absolute path.")
+    );
+    let missing = std::path::Path::new(a_real_directory())
+        .join("no-such-folder-8f21c3")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        validate(&missing).err().as_deref(),
+        Some("No folder exists at that path."),
+        "an absolute path that does not exist is a different failure from a relative one"
+    );
+    assert_eq!(
+        validate(&format!("\"{missing}\"")).err().as_deref(),
+        Some("No folder exists at that path."),
+        "unquoting must not disguise a missing folder as a relative path"
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn a_package_coordinate_still_parses_beside_the_folder_path() {
+    use crate::views::library::validate;
+
+    assert_eq!(
+        validate("pkg:cargo/memchr@2.7.4").as_deref(),
+        Ok("pkg:cargo/memchr@2.7.4")
+    );
+    assert_eq!(
+        validate("\"pkg:cargo/memchr@2.7.4\"").as_deref(),
+        Ok("pkg:cargo/memchr@2.7.4"),
+        "a quoted coordinate is the same coordinate"
+    );
+    assert_eq!(
+        validate("pkg:cargo/memchr").err().as_deref(),
+        Some("A package coordinate needs a pinned @version.")
+    );
+    assert_eq!(
+        validate("pkg:memchr@2.7.4").err().as_deref(),
+        Some("A package coordinate looks like pkg:cargo/name@version.")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn every_windows_spelling_of_one_folder_reaches_the_same_answer() {
+    use crate::views::library::validate;
+
+    let native = a_real_directory();
+    let forward = native.replace('\\', "/");
+    let trailing = format!("{native}\\");
+    for spelling in [native, forward.as_str(), trailing.as_str()] {
+        assert!(
+            validate(spelling).is_ok(),
+            "{spelling} names the same existing folder"
+        );
+        assert!(
+            validate(&format!("\"{spelling}\"")).is_ok(),
+            "{spelling} is still that folder when Explorer quotes it"
+        );
+    }
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn a_cancelled_folder_picker_is_silent_and_a_broken_one_is_not() {
+    use crate::views::library::{FolderChoice, PICKER_DROPPED, folder_choice};
+    use std::path::PathBuf;
+
+    assert_eq!(
+        folder_choice(Ok(Some(vec![PathBuf::from(a_real_directory())]))),
+        FolderChoice::Chosen(PathBuf::from(a_real_directory()))
+    );
+    assert_eq!(folder_choice(Ok(None)), FolderChoice::Cancelled);
+    assert_eq!(
+        folder_choice(Ok(Some(Vec::new()))),
+        FolderChoice::Cancelled,
+        "a dialog that returned no path chose nothing"
+    );
+    assert_eq!(
+        folder_choice(Err(PICKER_DROPPED.to_owned())),
+        FolderChoice::Failed(PICKER_DROPPED.to_owned()),
+        "a dialog that could not answer must not look like a cancel"
+    );
+}
+
+#[test]
+fn an_index_that_failed_on_a_project_never_seen_before_still_gets_a_row() {
+    use crate::presentation::fault::project_missing;
+    use crate::store::jobs::{Job, JobKind, JobState, JobsStore};
+
+    let coordinate = "/abs/GymBroApp";
+    let published = Shelf::new(KeyTag::from_key(&[0_u8; 32]), Vec::new());
+    let store = JobsStore::fixture(vec![Job::fixture(
+        JobKind::Index,
+        coordinate,
+        JobState::Failed(Box::new(project_missing(coordinate))),
+    )]);
+
+    let merged = store.merge(&published);
+    let entry = merged
+        .entries()
+        .first()
+        .expect("a failed index must leave something on the shelf to explain it");
+    assert_eq!(entry.identity().coordinate().as_str(), coordinate);
+    assert!(
+        matches!(entry.readiness(), Readiness::Failed { .. }),
+        "the row exists to carry the failure, so it must say failed"
+    );
+    assert_eq!(entry.identity().name(), "GymBroApp");
+}
+
+#[test]
+fn an_index_still_in_flight_shows_as_requested_rather_than_failed() {
+    use crate::store::jobs::{Job, JobKind, JobState, JobsStore};
+
+    let coordinate = "/abs/GymBroApp";
+    let published = Shelf::new(KeyTag::from_key(&[0_u8; 32]), Vec::new());
+    let store = JobsStore::fixture(vec![Job::fixture(
+        JobKind::Index,
+        coordinate,
+        JobState::Submitted,
+    )]);
+
+    let merged = store.merge(&published);
+    let entry = merged.entries().first().expect("a requested row");
+    assert_eq!(entry.readiness(), &Readiness::Requested);
+}

@@ -70,6 +70,35 @@ pub(crate) fn is_local(identity: &Identity) -> bool {
     !identity.coordinate().as_str().starts_with("pkg:")
 }
 
+/// Returns what this platform calls the machine the reader is sitting at.
+///
+/// "Choose a folder on this Mac…" is the right sentence on exactly one of the
+/// three platforms this application builds for, and it is the first sentence a
+/// Windows reader meets in the add form. The noun is read off the build target
+/// rather than written into each string.
+pub(crate) const fn this_machine() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "this Mac"
+    } else if cfg!(target_os = "windows") {
+        "this PC"
+    } else {
+        "this computer"
+    }
+}
+
+/// Returns an example absolute project path in this platform's spelling.
+///
+/// The add field's placeholder is the only statement of what a local project
+/// looks like, and `/path/to/project` is not a shape a Windows reader can
+/// copy.
+pub(crate) const fn example_path() -> &'static str {
+    if cfg!(target_os = "windows") {
+        r"C:\path\to\project"
+    } else {
+        "/path/to/project"
+    }
+}
+
 /// Returns the provenance badge: `local`, or the pinned package version.
 pub(crate) fn badge(identity: &Identity) -> String {
     if is_local(identity) {
