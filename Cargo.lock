@@ -921,6 +921,7 @@ dependencies = [
 name = "backend-extension-tantivy"
 version = "0.1.0"
 dependencies = [
+ "backend-platform",
  "backend-semantic",
  "backend-version",
  "blake3",
@@ -1295,6 +1296,7 @@ dependencies = [
  "backend-engine",
  "backend-extension-tantivy",
  "backend-extension-trustfall",
+ "backend-platform",
  "backend-semantic",
  "backend-version",
  "blake3",

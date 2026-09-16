@@ -284,7 +284,7 @@ fn read_error(path: &Path, source: io::Error) -> IndexPackStoreError {
 }
 
 fn sync_directory(directory: &Path) -> io::Result<()> {
-    File::open(directory).and_then(|file| file.sync_all())
+    backend_platform::durability::open_directory(directory).and_then(|file| file.sync_all())
 }
 
 fn cleanup_visible_temporary(path: PathBuf) -> IndexPackCleanup {

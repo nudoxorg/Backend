@@ -2,7 +2,7 @@
 //! This module owns the publication format invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{self, Read, Write},
     mem::size_of,
     path::Path,
@@ -453,9 +453,11 @@ fn sync_parent_directory(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let directory = File::open(parent).map_err(|source| PublicationFailure::Io {
-        step: open_step,
-        source,
+    let directory = backend_platform::durability::open_directory(parent).map_err(|source| {
+        PublicationFailure::Io {
+            step: open_step,
+            source,
+        }
     })?;
     directory
         .sync_all()

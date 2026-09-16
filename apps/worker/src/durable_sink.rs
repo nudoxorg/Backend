@@ -199,7 +199,7 @@ impl<T: Schema> DurableSink<T> {
                         .ok_or(ReplicationError::CorruptFrame)?;
                 }
             }
-            File::open(&root)
+            backend_platform::durability::open_directory(&root)
                 .and_then(|directory| directory.sync_all())
                 .map_err(|_| ReplicationError::Disconnected)?;
         }
@@ -477,7 +477,7 @@ impl<T: Schema> ReceivingCasSink<T> for DurableSink<T> {
                     fs::rename(path, &destination).map_err(|_| ReplicationError::Disconnected)?;
                 }
                 if let Some(root) = &self.root {
-                    File::open(root)
+                    backend_platform::durability::open_directory(root)
                         .and_then(|directory| directory.sync_all())
                         .map_err(|_| ReplicationError::Disconnected)?;
                 }

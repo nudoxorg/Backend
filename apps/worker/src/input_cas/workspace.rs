@@ -23,7 +23,8 @@ impl<T: Schema> InputCas<T> {
             .and_then(|()| file.sync_all())
             .map_err(|_| ReplicationError::Disconnected)?;
         fs::rename(&temporary, &target).map_err(|_| ReplicationError::Disconnected)?;
-        let directory = File::open(root).map_err(|_| ReplicationError::Disconnected)?;
+        let directory = backend_platform::durability::open_directory(root)
+            .map_err(|_| ReplicationError::Disconnected)?;
         directory
             .sync_all()
             .map_err(|_| ReplicationError::Disconnected)?;
@@ -73,7 +74,7 @@ impl<T: Schema> InputCas<T> {
             .and_then(|()| file.sync_all())
             .map_err(|_| ReplicationError::Disconnected)?;
         fs::rename(&temporary, &target).map_err(|_| ReplicationError::Disconnected)?;
-        File::open(root)
+        backend_platform::durability::open_directory(root)
             .and_then(|directory| directory.sync_all())
             .map_err(|_| ReplicationError::Disconnected)?;
         self.admitted_workspace_claim = Some(workspace);

@@ -323,7 +323,7 @@ fn memory_limit_argument(command: &SupervisedCommand) -> String {
         command.limits().memory_bytes_limit().map_or_else(
             || "-".to_owned(),
             |bytes| {
-                let kib = bytes.checked_add(1023).unwrap_or(u64::MAX) / 1024;
+                let kib = bytes.checked_add(1023).unwrap_or(usize::MAX) / 1024;
                 kib.max(1).to_string()
             },
         )

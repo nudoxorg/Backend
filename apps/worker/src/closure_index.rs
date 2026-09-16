@@ -10,7 +10,7 @@ use crate::input_cas::BoundedFileImage;
 use backend_engine::ReplicationError;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -69,7 +69,7 @@ impl DurableNodeIndex {
             .and_then(|()| file.sync_all())
             .map_err(|_| ReplicationError::Disconnected)?;
         fs::rename(&temporary, &target).map_err(|_| ReplicationError::Disconnected)?;
-        File::open(root)
+        backend_platform::durability::open_directory(root)
             .and_then(|directory| directory.sync_all())
             .map_err(|_| ReplicationError::Disconnected)?;
         Ok(())

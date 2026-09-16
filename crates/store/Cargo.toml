@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 arrayvec.workspace = true
+backend-platform = { path = "../platform" }
 backend-version = { path = "../version" }
 blake3.workspace = true
 derive_more.workspace = true

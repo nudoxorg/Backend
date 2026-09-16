@@ -10,6 +10,7 @@ publish = false
 default = []
 
 [dependencies]
+backend-platform = { path = "../../crates/platform" }
 backend-version = { path = "../../crates/version" }
 backend-semantic = { path = "../../crates/semantic" }
 blake3.workspace = true

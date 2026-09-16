@@ -343,26 +343,9 @@ fn sync_parent_directory(path: &Path) -> Result<(), JournalError> {
         .map_err(|source| JournalError::io(JournalIoStep::SyncParentDirectory, source))
 }
 
-#[cfg(unix)]
 fn parent_directory(path: &Path) -> Result<File, JournalError> {
-    File::open(path).map_err(|source| JournalError::io(JournalIoStep::OpenParentDirectory, source))
-}
-
-#[cfg(windows)]
-fn parent_directory(path: &Path) -> Result<File, JournalError> {
-    use std::os::windows::fs::OpenOptionsExt;
-
-    const BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(BACKUP_SEMANTICS)
-        .open(path)
+    backend_platform::durability::open_directory(path)
         .map_err(|source| JournalError::io(JournalIoStep::OpenParentDirectory, source))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn parent_directory(path: &Path) -> Result<File, JournalError> {
-    File::open(path).map_err(|source| JournalError::io(JournalIoStep::OpenParentDirectory, source))
 }
 
 fn persist_header(file: &mut File, header: &HeaderRecord) -> Result<(), JournalError> {

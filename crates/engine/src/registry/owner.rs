@@ -664,7 +664,7 @@ fn write_immutable(
     file.write_all(bytes)?;
     file.sync_all()?;
     fs::rename(&temporary, &target)?;
-    File::open(directory)?.sync_all()?;
+    backend_platform::durability::open_directory(directory)?.sync_all()?;
     Ok(())
 }
 fn verify_receipt_objects(

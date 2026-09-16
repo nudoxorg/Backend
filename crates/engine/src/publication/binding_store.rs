@@ -385,7 +385,8 @@ impl GenerationBindingStore {
 }
 
 fn sync_directory(directory: &Path) -> Result<(), (BindingIoPhase, io::Error)> {
-    let file = File::open(directory).map_err(|source| (BindingIoPhase::OpenDirectory, source))?;
+    let file = backend_platform::durability::open_directory(directory)
+        .map_err(|source| (BindingIoPhase::OpenDirectory, source))?;
     file.sync_all()
         .map_err(|source| (BindingIoPhase::SyncDirectory, source))
 }
