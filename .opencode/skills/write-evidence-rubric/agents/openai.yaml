@@ -1,4 +1,0 @@
-interface:
-  display_name: "Write Evidence Rubric"
-  short_description: "Calibrate a plan-complete-at-eight rubric"
-  default_prompt: "Use $write-evidence-rubric only after reviewer calibration and stable architecture contracts exist."

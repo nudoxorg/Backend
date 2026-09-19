@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "domain": "version-node-object-identity",
+      "owner": "crates/version/src/tree/mod.rs",
+      "literal": "V2NODE\\0"
+    },
+    {
+      "domain": "version-node-object-identity",
+      "owner": "crates/version/src/tree/build.rs",
+      "encoder": "node_prefix"
+    },
+    {
+      "domain": "version-node-object-identity",
+      "owner": "crates/version/src/ids/mod.rs",
+      "literal": "backend.version.v2\\0"
+    },
+    {
+      "domain": "version-node-object-identity",
+      "owner": "crates/version/src/ids/hash.rs",
+      "encoder": "ObjectVersionHasher"
+    },
+    {
+      "domain": "version-node-object-identity",
+      "owner": "crates/version/src/ids/hash.rs",
+      "encoder": "object_version_digest"
+    },
+    {
+      "domain": "version-node-object-identity",
+      "owner": "crates/version/src/ids/hash.rs",
+      "encoder": "admit_object_version_bytes"
+    },
+    {
+      "domain": "product-closure-manifest-row-object",
+      "owner": "crates/engine/src/builtin/manifest.rs",
+      "literal": "backend.product.closure.manifest.v1\\0"
+    },
+    {
+      "domain": "product-closure-manifest-row-object",
+      "owner": "crates/engine/src/builtin/output.rs",
+      "encoder": "canonical_relation_row"
+    },
+    {
+      "domain": "product-closure-manifest-row-object",
+      "owner": "crates/engine/src/builtin/manifest.rs",
+      "encoder": "product_closure_manifest"
+    },
+    {
+      "domain": "product-closure-manifest-row-object",
+      "owner": "crates/engine/src/builtin/manifest.rs",
+      "encoder": "admit_product_closure_manifest"
+    },
+    {
+      "domain": "local-ldc2",
+      "owner": "crates/replication/src/transport/local_frame.rs",
+      "literal": "LDC2"
+    },
+    {
+      "domain": "local-ldc2",
+      "owner": "crates/replication/src/transport/local_subscription_codec.rs",
+      "encoder": "encode_subscription_request"
+    },
+    {
+      "domain": "local-ldc2",
+      "owner": "crates/replication/src/transport/local_subscription_codec.rs",
+      "encoder": "decode_subscription_request"
+    },
+    {
+      "domain": "local-ldc2",
+      "owner": "crates/replication/src/transport/local_subscription_codec.rs",
+      "encoder": "encode_subscription_response"
+    },
+    {
+      "domain": "local-ldc2",
+      "owner": "crates/replication/src/transport/local_subscription_codec.rs",
+      "encoder": "decode_subscription_response"
+    },
+    {
+      "domain": "replication-frame",
+      "owner": "crates/replication/src/codec/messages.rs",
+      "literal": "RPL2"
+    },
+    {
+      "domain": "replication-frame",
+      "owner": "crates/replication/src/codec/messages.rs",
+      "encoder": "encode_message"
+    },
+    {
+      "domain": "replication-frame",
+      "owner": "crates/replication/src/codec/messages.rs",
+      "encoder": "decode_message"
+    },
+    {
+      "domain": "replication-payload-codec",
+      "owner": "crates/replication/src/codec/message_payload.rs",
+      "encoder": "encode_payload"
+    },
+    {
+      "domain": "control-work-spec-wire",
+      "owner": "tools/control/src/spec.rs",
+      "encoder": "append_canonical"
+    },
+    {
+      "domain": "control-record-wire",
+      "owner": "tools/control/src/record_codec.rs",
+      "encoder": "append_receipt_unchecked"
+    },
+    {
+      "domain": "dispatch-authority-statement",
+      "owner": "crates/replication/src/execution/attestation.rs",
+      "encoder": "keyed_authority_statement"
+    },
+    {
+      "domain": "store-manifest-descriptor-node-envelope",
+      "owner": "crates/store/src/durable/nodes/mod.rs",
+      "literal": "LUNA_MANIFEST_INDEX_V2\\0"
+    },
+    {
+      "domain": "store-manifest-descriptor-node-envelope",
+      "owner": "crates/store/src/durable/nodes/wire.rs",
+      "encoder": "encode_manifest_descriptor"
+    },
+    {
+      "domain": "store-manifest-descriptor-node-envelope",
+      "owner": "crates/store/src/durable/nodes/manifest.rs",
+      "encoder": "read_manifest_node_checked"
+    },
+    {
+      "domain": "flow-checkpoint-manifest",
+      "owner": "crates/flow/src/arrangement/checkpoint/mod.rs",
+      "literal": "flow.trace.checkpoint.v2\\0"
+    },
+    {
+      "domain": "flow-checkpoint-manifest",
+      "owner": "crates/flow/src/arrangement/checkpoint/codec.rs",
+      "encoder": "encode_manifest"
+    }
+  ]
+}

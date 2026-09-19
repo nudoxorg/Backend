@@ -4,8 +4,7 @@ use crate::contracts::{GraphRow, canonical_reads};
 use crate::delta::normalize_row;
 use crate::{Authority, Limits, Read, Recipe, Root};
 use backend_version::{
-    AuthorityScopeEvidence, Coverage, CoverageWitness, DeltaError, ObservedScopeEvidence,
-    ScopeRoot, admit_complete_coverage, partial_coverage,
+    ClosedRelationScope, Coverage, CoverageWitness, DeltaError, ScopeRoot, partial_coverage,
 };
 use std::fmt;
 
@@ -67,6 +66,8 @@ pub enum Error {
     InvalidLimits,
     /// A bounded input/output limit was exceeded.
     SizeLimit,
+    /// Incremental maintenance exceeded its declared overlay budget.
+    RebuildRequired,
     /// A row deletion named no visible row.
     MissingRow,
     /// The lower relation state rejected the rows.
@@ -88,6 +89,7 @@ impl fmt::Display for Error {
             Self::MalformedInput => "malformed graph adapter input",
             Self::InvalidLimits => "invalid graph adapter limits",
             Self::SizeLimit => "graph adapter size limit exceeded",
+            Self::RebuildRequired => "graph arrangement requires a bounded rebuild",
             Self::MissingRow => "graph row deletion named no visible row",
             Self::State(_) => "invalid graph relation state",
             Self::Delta(_) => "invalid graph relation delta",
@@ -152,30 +154,15 @@ pub fn execute(input: &QueryInput) -> Result<Projection, Error> {
     })
 }
 
-/// Creates a complete coverage witness for deterministic fakes.
-///
-/// # Errors
-///
-/// Returns [`Error::IncompleteCoverage`] if lower admission rejects the scope.
-pub fn complete_coverage(scope: ScopeRoot) -> Result<CoverageWitness, Error> {
-    let declaration =
-        AuthorityScopeEvidence::from_object_version(Authority::from_value(scope.as_bytes()));
-    let observed = ObservedScopeEvidence::from_object_version(
-        declaration.observation_permit(),
-        Authority::from_value(scope.as_bytes()),
-    );
-    admit_complete_coverage(declaration, observed)
-        .map(CoverageWitness::Complete)
-        .map_err(|_| Error::IncompleteCoverage)
-}
-
 /// Creates an incomplete witness for rejection tests.
 #[must_use]
 pub fn incomplete_coverage(scope: u64, state: Coverage) -> CoverageWitness {
     match state {
-        Coverage::Partial => CoverageWitness::Partial(partial_coverage(scope, state)),
-        Coverage::Unavailable => CoverageWitness::Unavailable(partial_coverage(scope, state)),
-        Coverage::Unsupported => CoverageWitness::Unsupported(partial_coverage(scope, state)),
-        Coverage::Complete => CoverageWitness::Partial(partial_coverage(scope, Coverage::Partial)),
+        Coverage::Partial | Coverage::Complete => CoverageWitness::Partial(partial_coverage(scope)),
+        Coverage::Unavailable => CoverageWitness::Unavailable(partial_coverage(scope)),
+        Coverage::Unsupported => CoverageWitness::Unsupported(partial_coverage(scope)),
+        Coverage::Closed => CoverageWitness::closed_relation(ClosedRelationScope::from_scope_root(
+            ScopeRoot::from_u64(scope),
+        )),
     }
 }

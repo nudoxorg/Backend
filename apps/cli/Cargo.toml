@@ -1,0 +1,26 @@
+[package]
+name = "backend-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "backend-cli"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+backend-client = { path = "../../crates/client" }
+backend-library = { path = "../../crates/library" }
+backend-present = { path = "../../crates/present" }
+backend-replication = { path = "../../crates/replication" }
+backend-runtime = { path = "../../crates/runtime" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

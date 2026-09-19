@@ -1,18 +1,17 @@
-# Defines the complete four-boundary Rust workspace.
-# Keeps product code inside four explicit architectural boundaries.
-# Centralizes dependency, lint, and release policy for every crate.
+# Backend v2 is one acyclic versioned engine. Proven compiler semantics are
+# retained as first-class workspace crates and adapted at product boundaries.
 [workspace]
 resolver = "3"
 members = [
-    "compiler/*",
-    "compiler/languages/*",
-    "heart/*",
-    "interface/*",
-    "server/journal",
-    "server/operation",
-    "server/runtime",
-    "server/workflow",
-    "server/index/*",
+    "crates/*",
+    "frontends/*",
+    "extensions/*",
+    "apps/*",
+    "tests/*",
+    "tools/*",
+]
+exclude = [
+    ".config/dylint",
 ]
 
 [workspace.package]
@@ -26,37 +25,51 @@ publish = false
 allocation-counter = "0.8.1"
 arrayvec = { version = "0.7.6", default-features = false }
 atomic-waker = { version = "1.1.2", default-features = false }
+axum = { version = "0.8.4", default-features = false, features = ["http1", "json", "tokio"] }
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 async-channel = "2.5.0"
 blake3 = { version = "1.8.2", default-features = false }
 bolero = "0.13.4"
+bytes = { version = "1.10.1", default-features = false }
 derive_more = { version = "2.1.1", default-features = false, features = ["debug"] }
 fearless_simd = { version = "0.7.0", default-features = false }
-flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 futures-core = { version = "0.3.31", default-features = false }
+futures-executor = "0.3.31"
 futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
+flate2 = "1.1.10"
 gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false }
-gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false, features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
+gpui_elements = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e" }
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false }
 loom = "0.7.2"
 opentelemetry = { version = "=0.32.0", features = ["logs", "metrics", "trace"] }
 opentelemetry-appender-tracing = "=0.32.0"
 opentelemetry_sdk = { version = "=0.32.1", features = ["logs", "metrics", "trace"] }
+parking_lot = "0.12.4"
+proptest = "1.7.0"
 rstest = { version = "0.26.1", default-features = false }
-serde = { version = "=1.0.229", features = ["derive"] }
+serde = { version = "=1.0.229", default-features = false, features = ["alloc", "derive"] }
 serde_json = "=1.0.151"
+sha2 = { version = "0.10.9", default-features = false }
+smallvec = { version = "1.15.1", features = ["const_generics", "serde"] }
 strum = { version = "0.28.0", default-features = false, features = ["derive"] }
 tantivy = "0.26.1"
 thiserror = { version = "2", default-features = false }
-turso = { version = "=0.8.0-pre.7", default-features = false }
+trybuild = "1.0.118"
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+toml = "0.8.23"
 tracing = "=0.1.44"
 tracing-opentelemetry = "=0.33.0"
 tracing-subscriber = { version = "=0.3.23", features = ["registry"] }
-trybuild = "1.0.118"
-trustfall = { git = "https://github.com/philocalyst/trustfall", rev = "a1c7c3a07fe58ea3a5312d7972f9bd297d036c73", features = ["async"] }
-trustfall_core = { git = "https://github.com/philocalyst/trustfall", rev = "a1c7c3a07fe58ea3a5312d7972f9bd297d036c73", features = ["async"] }
-ureq = "=3.4.0"
+tree-sitter = "=0.27.0"
+trustfall = { git = "https://github.com/philocalyst/trustfall", rev = "5a0a8607fc5d972380437289b9a4ad1aa5150b09", features = ["async"] }
+trustfall_core = { git = "https://github.com/philocalyst/trustfall", rev = "5a0a8607fc5d972380437289b9a4ad1aa5150b09", features = ["async"] }
+turso = { version = "=0.8.0-pre.10", default-features = false }
+ureq = { version = "=3.4.0", default-features = false, features = ["gzip", "json"] }
 zerocopy = { version = "0.8.56", default-features = false, features = ["derive"] }
 
 [workspace.lints.rust]
+# Audited low-level storage modules may opt into narrowly scoped unsafe code;
+# all other workspace code inherits this denial.
 unsafe_code = "deny"
 missing_docs = "warn"
 unreachable_pub = "warn"
@@ -66,33 +79,13 @@ unused_qualifications = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-alloc_instead_of_core = "warn"
-allow_attributes_without_reason = "warn"
-as_conversions = "warn"
-clone_on_ref_ptr = "warn"
-cognitive_complexity = "warn"
 dbg_macro = "deny"
-empty_drop = "warn"
 expect_used = "warn"
-exit = "deny"
-if_then_some_else_none = "warn"
-indexing_slicing = "warn"
 mem_forget = "deny"
-missing_const_for_fn = "warn"
-multiple_unsafe_ops_per_block = "deny"
 panic = "warn"
-rc_buffer = "warn"
-rest_pat_in_fully_bound_structs = "warn"
-same_name_method = "warn"
-semicolon_if_nothing_returned = "warn"
-str_to_string = "warn"
 todo = "deny"
-too_many_arguments = "allow"
-too_many_lines = "allow"
 unimplemented = "deny"
-unreachable = "warn"
 unwrap_used = "deny"
-verbose_file_reads = "warn"
 
 [profile.dev]
 debug = 1
@@ -103,9 +96,3 @@ codegen-units = 1
 lto = "thin"
 panic = "abort"
 strip = "symbols"
-
-[profile.fuzz]
-inherits = "dev"
-opt-level = 3
-incremental = false
-codegen-units = 1

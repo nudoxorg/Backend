@@ -1,9 +1,82 @@
 # Constructs every flake output for each supported host architecture.
 # Keeps toolchain, command, shell, and check assembly in separate modules.
 # Makes the same pinned control plane available to developers and automation.
-{ inputs }:
+{ inputs, workspaceRoot }:
 let
   helpers = import ./lib.nix { inherit inputs; };
+  policyRoot = import ./policy/contracts.nix;
+  readPolicyTree =
+    directory:
+    let
+      entries = builtins.readDir directory;
+      names = builtins.attrNames entries;
+    in
+    builtins.concatLists (
+      map (
+        name:
+        let
+          path = builtins.toPath "${toString directory}/${name}";
+        in
+        if entries.${name} == "regular" then
+          [ path ]
+        else if entries.${name} == "directory" then
+          readPolicyTree path
+        else
+          [ ]
+      ) names
+    );
+  workspacePolicyFiles = if builtins.pathExists (workspaceRoot + "/Cargo.toml") then [
+    (workspaceRoot + "/flake.nix")
+    (workspaceRoot + "/flake.lock")
+  ] else [ ];
+  policyFiles = workspacePolicyFiles ++ [
+    ../flake.nix
+    ../flake.lock
+  ]
+  ++ readPolicyTree ./.
+  ++ readPolicyTree ../nu/core
+  ++ readPolicyTree ../nu/scope
+  ++ readPolicyTree ../nu/cutover
+  ++ readPolicyTree ../contracts
+  ++ readPolicyTree ../fixtures;
+  policyRootDigest = builtins.hashString "sha256" (
+    builtins.concatStringsSep "\n" (
+      map (path: "${toString path}:" + builtins.readFile path) policyFiles
+    )
+  );
+  canonicalSchema = builtins.fromJSON (builtins.readFile ../contracts/schema.json);
+  projectedSchemas = map (path: builtins.fromJSON (builtins.readFile path)) (
+    readPolicyTree ../contracts/schemas
+  );
+  projectedNames = map (
+    schema: builtins.replaceStrings [ "backend.control-plane.v1/" ] [ "" ] schema."$id"
+  ) projectedSchemas;
+  definitionNames = builtins.attrNames canonicalSchema.definitions;
+  projectionFor =
+    name:
+    builtins.filter (
+      schema: builtins.replaceStrings [ "backend.control-plane.v1/" ] [ "" ] schema."$id" == name
+    ) projectedSchemas;
+  projectionFields = schema: builtins.sort builtins.lessThan schema.required;
+  definitionFields = name: builtins.sort builtins.lessThan canonicalSchema.definitions.${name};
+  validatedPolicyRoot =
+    assert policyRoot.schemaVersion == 1;
+    assert policyRoot.unknownFields == "reject";
+    assert builtins.pathExists ../contracts/schema.json;
+    assert builtins.pathExists ../fixtures/control-plane/scope-exactly-one.json;
+    assert
+      builtins.sort builtins.lessThan projectedNames == builtins.sort builtins.lessThan definitionNames;
+    assert builtins.all (
+      schema: schema.x-backend-schema-version == canonicalSchema.schema_version
+    ) projectedSchemas;
+    assert builtins.all (
+      name:
+      let
+        matches = projectionFor name;
+      in
+      builtins.length matches == 1 && projectionFields (builtins.head matches) == definitionFields name
+    ) definitionNames;
+    policyRoot;
   declaredControl = import ./control.nix;
   roleRuntimeDigest = builtins.hashString "sha256" (
     builtins.concatStringsSep "\n" (
@@ -16,13 +89,15 @@ let
     )
   );
   control = declaredControl // {
+    inherit policyRootDigest;
+    policyRoot = validatedPolicyRoot;
     roles = builtins.mapAttrs (
       _: role:
       role
       // {
         contractDigest = builtins.hashString "sha256" (
           builtins.toJSON {
-            inherit roleRuntimeDigest;
+            inherit roleRuntimeDigest policyRootDigest;
             contract = role;
           }
         );
@@ -44,7 +119,7 @@ let
         rules = control.lint.syntax;
       };
       toolchains = import ./toolchains.nix { inherit inputs pkgs system; };
-      tools = import ./tools.nix { inherit pkgs toolchains; };
+      tools = import ./tools.nix { inherit pkgs toolchains workspaceRoot; };
       commands = import ./commands.nix {
         inherit
           astGrepSuite
@@ -55,6 +130,7 @@ let
           pkgs
           toolchains
           tools
+          workspaceRoot
           ;
       };
       shells = import ./shells.nix {
@@ -63,6 +139,8 @@ let
           tools
           toolchains
           commands
+          control
+          controlFile
           ;
       };
       checks = import ./checks.nix {
@@ -114,6 +192,9 @@ in
       ast-grep-suite = value.astGrepSuite;
       formatter = value.formatting.wrapper;
       telemetry = value.commands.telemetry;
+    }
+    // value.pkgs.lib.optionalAttrs (value.tools.backendControl != null) {
+      backend-control = value.tools.backendControl;
     }
   );
 

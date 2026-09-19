@@ -4,6 +4,9 @@
 {
   description = "Backend reproducible development control plane";
 
+  # Flake inputs must remain a literal set for pure evaluation. The workspace
+  # root wrapper repeats these pins so Cargo sources beside this configuration
+  # are visible to pure derivation evaluation.
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/0bb7ec54c8483066ec9d7720e780a5caa71f8612";
     fenix = {
@@ -20,5 +23,10 @@
     };
   };
 
-  outputs = inputs: import ./nix { inherit inputs; };
+  outputs =
+    inputs:
+    import ./nix {
+      inherit inputs;
+      workspaceRoot = ./.;
+    };
 }

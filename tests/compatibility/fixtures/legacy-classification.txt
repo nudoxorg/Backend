@@ -1,0 +1,3 @@
+required|manifest roots, authority identity, negative dependencies, coverage state
+intentionally_changed|cold subprocess boundary, typed session reset key, normalized fact ordering
+incidental|legacy module names, adapter-local helper layout, native tool availability in CI

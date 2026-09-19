@@ -39,7 +39,10 @@ impl CandidateState {
         limits: Limits,
     ) -> Result<Self, Error> {
         let limits = limits.validate()?;
-        if !coverage.state().is_complete() {
+        if !matches!(
+            coverage,
+            CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
+        ) {
             return Err(Error::IncompleteCoverage);
         }
         if candidates.len() > limits.max_candidates {
@@ -92,6 +95,12 @@ impl CandidateState {
         self.state
             .iter()
             .map(|(id, payload)| (CandidateId(*id), payload.as_slice()))
+    }
+
+    /// Returns one canonical payload without cloning it.
+    #[must_use]
+    pub fn payload(&self, id: CandidateId) -> Option<&[u8]> {
+        self.state.get(&id.0).map(Vec::as_slice)
     }
 
     /// Prepares a checked delta against this exact state root.
@@ -175,10 +184,16 @@ impl CandidateState {
             || change.binding.read_manifest != self.binding.read_manifest
             || change.binding.frontier != self.binding.frontier
             || change.delta.base() != self.binding.root
+            || !change.delta.is_canonical()
         {
             return Err(Error::StaleRoot);
         }
-        if change.coverage != self.coverage || !change.coverage.state().is_complete() {
+        if change.coverage != self.coverage
+            || !matches!(
+                change.coverage,
+                CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
+            )
+        {
             return Err(Error::IncompleteCoverage);
         }
         if change.binding.root != change.delta.target() {

@@ -12,13 +12,18 @@
 #![forbid(unsafe_code)]
 
 mod admission;
+mod arrangement;
 mod contracts;
 mod delta;
 mod identity;
 mod provider;
+mod query;
+pub mod server;
 
-pub use admission::{
-    AdapterError, Error, Projection, QueryInput, complete_coverage, execute, incomplete_coverage,
+pub use admission::{AdapterError, Error, Projection, QueryInput, execute, incomplete_coverage};
+pub use arrangement::{
+    ArrangementLimits, ArrangementPlan, GraphArrangement, GraphBase, GraphOverlay, QueryPlan,
+    RefreshKind, RefreshOutcome,
 };
 pub use contracts::{Cursor, GraphChange, GraphRow, Query, Read};
 pub use delta::{GraphDelta, GraphState};
@@ -27,6 +32,15 @@ pub use identity::{
     ReadManifest, ReadManifestSchema, Recipe, RecipeSchema, Root, SchemaVersion, SemanticRelation,
 };
 pub use provider::{Adapter, GraphPage, GraphSource, MemorySource, QueryRequest, QueryResult};
+pub use query::{
+    BoundSemanticQueryRow, CompilerExternalTargetEvidence, CompilerSemanticEvidence,
+    PackageScopeEvidence, QueryError as SemanticQueryError, SemanticQueryCancelHandle,
+    SemanticQueryCancellation, SemanticQueryCorpus, SemanticQueryEvent, SemanticQueryEvidence,
+    SemanticQueryFact, SemanticQueryIdentity, SemanticQueryPresentation, SemanticQueryRequest,
+    SemanticQueryStream, SemanticQueryTerminal, StructuralFallbackEvidence, execute_semantic_query,
+    schema as semantic_query_schema,
+};
+pub use trustfall::{FieldValue, QueryResult as SemanticQueryRow, TransparentValue};
 
 #[cfg(test)]
 mod tests;

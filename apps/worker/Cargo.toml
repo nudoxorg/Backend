@@ -1,0 +1,17 @@
+[package]
+name = "backend-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+[dependencies]
+backend-engine = { path = "../../crates/engine" }
+backend-platform = { path = "../../crates/platform" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }
+[lints]
+workspace = true
+[lib]
+path = "src/lib.rs"

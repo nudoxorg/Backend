@@ -5,6 +5,8 @@ direnv_layout_dir() {
   printf '%s\n' "$PWD/.local/direnv"
 }
 
+watch_file flake.nix
+watch_file flake.lock
 watch_file .config/flake.nix
 watch_file .config/flake.lock
 nix_direnv_disallow_fallback
@@ -18,4 +20,4 @@ watch_file .config/dylint/*.rs
 watch_file .config/dylint/ui/*.rs
 watch_file .config/dylint/ui/*.stderr
 watch_file .config/rustfmt.toml
-use flake path:.config#development
+use flake path:.#development

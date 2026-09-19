@@ -135,7 +135,7 @@ def "main observe build" [target: string = "changed-debug-build", --base: string
     require-command "observe-build"
     let declaration = (measurement-target $target "cargo-build")
     if ($env.BACKEND_NIGHTLY_CARGO? | is-empty) {
-        tooling-fail "verification-environment-required" "nightly Cargo is absent from the verifier shell" "enter nix develop path:.config#verification"
+        tooling-fail "verification-environment-required" "nightly Cargo is absent from the verifier shell" "enter nix develop path:.#verification"
     }
     let run = (measurement-run $declaration)
     let packages = (required-changed-package-names --base $base)

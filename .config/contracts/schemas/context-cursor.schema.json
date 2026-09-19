@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "backend.control-plane.v1/ContextCursor",
+  "x-backend-schema-version": 1,
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["consumer", "context_root", "acknowledged_evidence", "at"],
+  "properties": {
+    "consumer": { "type": "string", "minLength": 1 },
+    "context_root": { "type": "string", "minLength": 1 },
+    "acknowledged_evidence": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "at": { "type": "integer", "minimum": 0 }
+  }
+}

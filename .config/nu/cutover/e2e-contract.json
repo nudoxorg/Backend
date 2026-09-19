@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "suite": "versioned-engine-cutover-e2e",
+  "build_timeout_seconds": 900,
+  "timeout_seconds": 45,
+  "work_counters": {
+    "worker_started": "BACKEND_JOURNEY_STARTED",
+    "worker_cancelled": "BACKEND_JOURNEY_CANCELLED",
+    "remote_pending_capacity": "daemon.replication.count",
+    "retained_output_bytes": "ReusableOutput.canonical_bytes",
+    "cutover_publication_status": "append-event.publication_status"
+  },
+  "process_remote_contract": {
+    "locald_profile": "builtin",
+    "worker_profile": "builtin",
+    "worker_endpoint_option": "--worker-endpoint",
+    "request_envelope": "EngineRequest::Replicate(WireRecipeRequest)",
+    "required_observations": [
+      "same_uid",
+      "capability_negotiation",
+      "daemon_owned_ticket",
+      "out_of_order_correlation",
+      "mid_execution_cancel",
+      "late_result_rejection",
+      "local_fallback",
+      "retained_output_reuse",
+      "restart_recovery"
+    ]
+  },
+  "failure_injections": [
+    "out_of_order_remote_result",
+    "late_remote_result",
+    "mid_execution_cancel_attempt",
+    "remote_pending_backpressure"
+  ],
+  "regression_test_target": "backend-laws::cutover_regressions",
+  "regression_cases": [
+    "randomized_multi_leaf_orderings_match_full_rebuild_oracle",
+    "large_payload_is_rejected_before_a_budgeted_page_clones_it",
+    "one_row_delta_delivery_does_not_hydrate_the_growing_view",
+    "disjoint_hundred_thousand_row_join_is_bounded_and_matches_full_oracle",
+    "stalled_observer_gets_bounded_compaction_debt_then_releases_it",
+    "full_recompute_shadow_and_delta_transition_have_the_same_state",
+    "large_payload_map_budget_fails_without_claiming_a_completed_update"
+  ],
+  "publication_fault_points": [
+    "event-temp-sync",
+    "event-rename",
+    "events-dir-sync",
+    "head-temp-sync",
+    "head-rename",
+    "root-sync"
+  ],
+  "journeys": [
+    "echo_fixture_worker_negotiates_same_uid_and_returns_an_attested_result",
+    "cancellation_fixture_is_admitted_mid_execution_and_worker_accepts_followup_control",
+    "real_locald_restart_reopens_checked_workspace_and_rejects_unadmitted_completion",
+    "real_locald_socket_dispatches_to_worker_then_reuses_fallback_bytes",
+    "daemon_owns_remote_ticket_correlation_backpressure_fallback_and_reusable_bytes",
+    "checkpoint_compaction_retains_effect_audit_and_rejects_forged_selection",
+    "cli_mcp_and_desktop_share_one_process_root_and_proof_bearing_reply"
+  ]
+}

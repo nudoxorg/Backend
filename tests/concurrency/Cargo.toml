@@ -1,0 +1,15 @@
+[package]
+name = "backend-concurrency-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+backend-execution = { path = "../../crates/execution" }
+backend-version = { path = "../../crates/version" }
+backend-replication = { path = "../../crates/replication" }
+
+[lints]
+workspace = true

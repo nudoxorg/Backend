@@ -1,12 +1,25 @@
-# Discovers and validates the repository's runtime ownership boundaries.
+# Discovers and validates the workspace's runtime ownership boundaries.
 # Keeps generated state under `.local` and configuration under `.config`.
-# Rejects commands launched outside the Git worktree they intend to mutate.
+# An explicit Nix workspace snapshot remains usable when Git metadata is
+# detached or absent, but only from within that exact Cargo workspace.
 
-# Returns the canonical repository root containing the current working directory.
+# Returns the canonical repository root containing the current working
+# directory, or the explicitly bound Cargo workspace supplied by Nix.
 def repository-root []: nothing -> string {
     let result = (^git rev-parse --show-toplevel | complete)
     if $result.exit_code != 0 {
-        tooling-fail "outside-repository" "the current directory is not inside a Git worktree" "change into the backend repository"
+        let declared = $env.BACKEND_WORKSPACE_SNAPSHOT? | default ""
+        if ($declared | is-empty) {
+            tooling-fail "outside-repository" "the current directory is not inside a Git worktree and no Cargo workspace was declared" "change into the backend workspace or enter through its Nix shell"
+        }
+        let root = $declared | path expand
+        let current = $env.PWD | path expand
+        let manifest = $root | path join "Cargo.toml"
+        let contains_current = $current == $root or ($current | str starts-with $"($root)/")
+        if not $contains_current or not ($manifest | path exists) {
+            tooling-fail "outside-repository" "the current directory is outside its declared Cargo workspace" "change into the backend workspace or enter through its Nix shell"
+        }
+        return $root
     }
     $result.stdout | str trim | path expand
 }

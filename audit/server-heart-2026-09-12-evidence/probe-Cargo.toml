@@ -1,0 +1,17 @@
+[package]
+name = "audit-probes"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+compiler-ir = {path="../compiler/ir"}
+server-runtime = {path="../server/runtime"}
+server-journal = {path="../server/journal"}
+heart-identity = {path="../heart/identity"}
+heart-object = {path="../heart/object"}
+heart-schema = {path="../heart/schema"}
+heart-memory = {path="../heart/memory"}
+server-index-core = {path="../server/index/core"}
+server-index-qdrant = {path="../server/index/qdrant"}
+server-index-graph-vector = {path="../server/index/graph-vector"}
+server-index-routing = {path="../server/index/routing"}
+interface-core = {path="../interface/core"}

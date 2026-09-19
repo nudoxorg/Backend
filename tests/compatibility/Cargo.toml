@@ -1,0 +1,22 @@
+[package]
+name = "backend-compatibility-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+backend-compile = { path = "../../crates/compile" }
+backend-frontend-clang = { path = "../../frontends/clang" }
+backend-frontend-csharp = { path = "../../frontends/csharp" }
+backend-frontend-go = { path = "../../frontends/go" }
+backend-frontend-java = { path = "../../frontends/java" }
+backend-frontend-python = { path = "../../frontends/python" }
+backend-frontend-rust = { path = "../../frontends/rust" }
+backend-frontend-typescript = { path = "../../frontends/typescript" }
+
+[lib]
+path = "lib.rs"

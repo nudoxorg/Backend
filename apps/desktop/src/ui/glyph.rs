@@ -1,0 +1,144 @@
+//! Glyph tiles: declaration kinds, source languages, and readiness marks.
+//! A tile is a small rounded square holding one letter on the chromatic plane.
+//! Its hue is the only colour a dense list carries, and it means exactly one thing.
+//!
+//! Letters rather than pictograms, because eighteen distinguishable pictograms
+//! do not exist at fourteen pixels, while eighteen letters at eighteen hues on
+//! one luminance plane are read preattentively and still say something true in
+//! greyscale. The tile is washed rather than filled so a column of them reads
+//! as texture, and the letter carries the contrast.
+//!
+//! One glyph deliberately differs from the shared model's. `backend packages`
+//! prints `●` for a ready project because a terminal cannot draw weight; this
+//! window draws `✓`, which is what the same state looks like beside a `◐` and
+//! an `✗` in colour. The *state* is [`backend_present::Readiness`] in both
+//! places; only the mark is a drawing decision.
+
+use crate::theme::kind::{kind_glyph, package_glyph, untyped_glyph};
+use crate::theme::language::{hue as language_hue, tag as language_tag_text};
+use crate::theme::palette::Paint;
+use crate::theme::tokens::{Radius, TypeScale, radius, type_size};
+use crate::theme::{Theme, ramp::Hue};
+use backend_library::DeclarationKind;
+use crate::presentation::project::Standing;
+use backend_present::{Language, LanguageCount};
+use gpui::{Div, FontWeight, ParentElement, Styled, div, px};
+
+/// Side length of a glyph tile, in pixels.
+const TILE: f32 = 16.0;
+
+/// Side length of the larger tile used in page headers.
+const TILE_LARGE: f32 = 22.0;
+
+/// Returns the tile for one declaration kind.
+pub(crate) fn kind_tile(theme: &Theme, kind: Option<DeclarationKind>, large: bool) -> Div {
+    let glyph = kind.map_or_else(untyped_glyph, kind_glyph);
+    tile(theme, glyph.hue(), &glyph.letter().to_string(), large)
+}
+
+/// Returns the tile for a package or project row.
+pub(crate) fn package_tile(theme: &Theme, large: bool) -> Div {
+    let glyph = package_glyph();
+    tile(theme, glyph.hue(), &glyph.letter().to_string(), large)
+}
+
+/// Returns the two-letter tag for one source language.
+pub(crate) fn language_tag(theme: &Theme, language: Language) -> Div {
+    tile(theme, language_hue(language), language_tag_text(language), false)
+}
+
+/// Returns the readable name of one declaration kind.
+pub(crate) fn kind_label(kind: Option<DeclarationKind>) -> &'static str {
+    kind.map_or_else(|| untyped_glyph().label(), |kind| kind_glyph(kind).label())
+}
+
+fn tile(theme: &Theme, hue: Hue, letter: &str, large: bool) -> Div {
+    let side = if large { TILE_LARGE } else { TILE };
+    let scale = if large {
+        TypeScale::Small
+    } else {
+        TypeScale::Micro
+    };
+    div()
+        .flex_none()
+        .w(px(side))
+        .h(px(side))
+        .rounded(radius(Radius::Hair))
+        .bg(theme.plane_wash(hue, 0.16))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(type_size(scale))
+        .font_weight(FontWeight::SEMIBOLD)
+        .font_family(theme.specimen())
+        .text_color(theme.on_plane(hue))
+        .child(letter.to_owned())
+}
+
+/// Returns the mark this window draws for one standing.
+pub(crate) const fn standing_glyph(standing: Standing) -> &'static str {
+    match standing {
+        Standing::Readable => "✓",
+        Standing::Indexing => "◐",
+        Standing::Failed => "✗",
+        Standing::Requested | Standing::Empty => "○",
+    }
+}
+
+/// Returns the paint role one standing is drawn in.
+pub(crate) const fn standing_paint(standing: Standing) -> Paint {
+    match standing {
+        Standing::Readable => Paint::Ok,
+        Standing::Indexing => Paint::Caution,
+        Standing::Failed => Paint::Fault,
+        Standing::Requested | Standing::Empty => Paint::Info,
+    }
+}
+
+/// Returns the standing mark drawn on a shelf row.
+pub(crate) fn standing_mark(theme: &Theme, standing: Standing) -> Div {
+    div()
+        .flex_none()
+        .w(px(TILE))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(type_size(TypeScale::Small))
+        .text_color(theme.paint(standing_paint(standing)))
+        .child(standing_glyph(standing))
+}
+
+/// Returns a hue-coded bar showing one project's language mix.
+///
+/// A bar rather than a sentence: the mix is a proportion, and a proportion is
+/// a length. The bar is the width of the row, so two projects can be compared
+/// at a glance without reading a single number.
+pub(crate) fn language_bar(theme: &Theme, counts: &[LanguageCount], total: u64) -> Div {
+    let total = total.max(1);
+    div()
+        .h(px(3.0))
+        .w_full()
+        .flex()
+        .gap(px(1.0))
+        .children(counts.iter().map(|count| {
+            let share = ratio(count.declarations().get(), total);
+            div()
+                .h_full()
+                .rounded_full()
+                .bg(theme.on_plane(language_hue(count.language())))
+                .flex_basis(px(0.0))
+                .flex_grow(share)
+                .flex_shrink(1.0)
+        }))
+}
+
+fn ratio(part: u64, total: u64) -> f32 {
+    let part = u32::try_from(part).unwrap_or(u32::MAX);
+    let total = u32::try_from(total).unwrap_or(u32::MAX).max(1);
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a declaration count above sixteen million cannot change a bar's width"
+    )]
+    let share = part as f32 / total as f32;
+    share.clamp(0.0, 1.0)
+}

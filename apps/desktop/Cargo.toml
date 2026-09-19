@@ -1,0 +1,48 @@
+[package]
+name = "backend-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "backend-desktop"
+path = "src/main.rs"
+
+[dependencies]
+backend-client = { path = "../../crates/client" }
+backend-library = { path = "../../crates/library" }
+backend-local-service = { path = "../../crates/local-service" }
+backend-present = { path = "../../crates/present" }
+backend-replication = { path = "../../crates/replication" }
+backend-runtime = { path = "../../crates/runtime" }
+gpui.workspace = true
+gpui_elements.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_platform = { workspace = true, features = ["font-kit", "runtime_shaders"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_platform = { workspace = true, features = ["x11", "wayland"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui_platform = { workspace = true, features = ["wgpu"] }
+
+[features]
+# Rich design fixtures for screenshots and layout work without a live service.
+preview = []
+
+[dev-dependencies]
+blake3.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
+gpui_platform = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

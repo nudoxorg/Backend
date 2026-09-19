@@ -3,11 +3,15 @@
 # Generated artifacts are ignored by their conventional root-local names.
 
 /.local/
+**/.backend/
 /.DS_Store
 /result
 /result-*
 **/.DS_Store
 **/target/
+**/*.rmeta
 **/*.log
+**/__pycache__/
+**/*.py[cod]
 compiler/languages/csharp/helper/bin/
 compiler/languages/csharp/helper/obj/

@@ -1,0 +1,9 @@
+{
+  "objects": 10000,
+  "nodes": 332,
+  "leaves": 291,
+  "diff_node_probes": 26,
+  "unequal_leaves": 1,
+  "constructor": "O(N) rebuild, not efficient point update",
+  "hash": "SHA-256 reference encoding, not production format"
+}

@@ -1,6 +1,7 @@
 //! Stable relation, schema, and input identities for the lexical extension.
 
 use crate::Error;
+use backend_semantic::EntityId;
 use backend_version::{ObjectVersion, Relation, Schema, StateRoot, WorkspaceRoot};
 
 /// Canonical relation represented by the lexical materialization.
@@ -10,11 +11,11 @@ pub struct IndexRelation;
 impl Relation for IndexRelation {
     const DOMAIN: u8 = 0x74;
     const TYPE: u16 = 1;
-    type Key = u64;
+    type Key = EntityId;
     type Value = Vec<(String, String)>;
 
     fn encode_key(key: &Self::Key, out: &mut Vec<u8>) {
-        out.extend_from_slice(&key.to_be_bytes());
+        out.extend_from_slice(key.as_bytes());
     }
 
     fn encode_value(value: &Self::Value, out: &mut Vec<u8>) {
@@ -145,13 +146,13 @@ impl SchemaVersion {
 /// Bounded lexical materialization and query limits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
-    /// Maximum visible documents in one materialization.
-    pub max_documents: usize,
+    /// Maximum documents admitted by one delta or rebuild work batch.
+    pub max_delta_documents: usize,
     /// Maximum fields in one document.
     pub max_fields_per_document: usize,
     /// Maximum UTF-8 bytes in one field name or value.
     pub max_field_bytes: usize,
-    /// Maximum total indexed text bytes.
+    /// Maximum text bytes admitted by one document or delta batch.
     pub max_total_text_bytes: usize,
     /// Maximum terms in one query.
     pub max_terms: usize,
@@ -162,7 +163,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_documents: 4096,
+            max_delta_documents: 4096,
             max_fields_per_document: 128,
             max_field_bytes: 16 * 1024,
             max_total_text_bytes: 16 * 1024 * 1024,
@@ -179,13 +180,12 @@ impl Limits {
     ///
     /// Returns [`Error::InvalidLimits`] for zero or inconsistent limits.
     pub const fn validate(self) -> Result<Self, Error> {
-        if self.max_documents == 0
+        if self.max_delta_documents == 0
             || self.max_fields_per_document == 0
             || self.max_field_bytes == 0
             || self.max_total_text_bytes == 0
             || self.max_terms == 0
             || self.max_page == 0
-            || self.max_page > self.max_documents
         {
             Err(Error::InvalidLimits)
         } else {

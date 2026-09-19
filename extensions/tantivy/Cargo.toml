@@ -10,12 +10,25 @@ publish = false
 default = []
 
 [dependencies]
+backend-platform = { path = "../../crates/platform" }
 backend-version = { path = "../../crates/version" }
 backend-semantic = { path = "../../crates/semantic" }
-backend-flow = { path = "../../crates/flow" }
+blake3.workspace = true
+tantivy = "0.26.1"
+thiserror.workspace = true
 
 [lints]
 workspace = true
 
 [lib]
 path = "src/lib.rs"
+
+[[bench]]
+name = "shadow-resolution"
+path = "benches/shadow_resolution.rs"
+harness = false
+
+[[bench]]
+name = "durable_projection"
+path = "benches/durable_projection.rs"
+harness = false

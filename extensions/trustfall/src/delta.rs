@@ -40,7 +40,10 @@ impl GraphState {
         limits: Limits,
     ) -> Result<Self, Error> {
         let limits = limits.validate()?;
-        if !coverage.state().is_complete() {
+        if !matches!(
+            coverage,
+            CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
+        ) {
             return Err(Error::IncompleteCoverage);
         }
         if rows.len() > limits.max_rows {
@@ -166,10 +169,16 @@ impl GraphState {
             || change.binding.read_manifest != self.binding.read_manifest
             || change.binding.frontier != self.binding.frontier
             || change.delta.base() != self.binding.root
+            || !change.delta.is_canonical()
         {
             return Err(Error::StaleRoot);
         }
-        if change.coverage != self.coverage || !change.coverage.state().is_complete() {
+        if change.coverage != self.coverage
+            || !matches!(
+                change.coverage,
+                CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
+            )
+        {
             return Err(Error::IncompleteCoverage);
         }
         if change.binding.root != change.delta.target() {

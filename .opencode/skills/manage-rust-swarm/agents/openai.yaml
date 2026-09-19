@@ -1,4 +1,0 @@
-interface:
-  display_name: "Manage Rust Swarm"
-  short_description: "Orchestrate scoped Rust workers through hostile review"
-  default_prompt: "Manage a bounded worker swarm to deliver one reviewed workspace2 capability."

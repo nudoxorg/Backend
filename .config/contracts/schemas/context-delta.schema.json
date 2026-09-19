@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "backend.control-plane.v1/ContextDelta",
+  "x-backend-schema-version": 1,
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["cursor", "cell", "facts", "new_context_root", "omitted_artifacts"],
+  "properties": {
+    "cursor": { "$ref": "backend.control-plane.v1/ContextCursor" },
+    "cell": { "type": "string", "minLength": 1 },
+    "facts": { "type": "array", "items": { "$ref": "backend.control-plane.v1/EvidenceRecord" } },
+    "new_context_root": { "type": "string", "minLength": 1 },
+    "omitted_artifacts": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+  }
+}

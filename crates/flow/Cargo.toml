@@ -1,0 +1,30 @@
+[package]
+name = "backend-flow"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+backend-version = { path = "../version" }
+backend-store = { path = "../store" }
+blake3.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+backend-engine = { path = "../engine" }
+backend-semantic = { path = "../semantic" }
+backend-frontend-csharp = { path = "../../frontends/csharp" }
+backend-frontend-go = { path = "../../frontends/go" }
+backend-frontend-java = { path = "../../frontends/java" }
+backend-frontend-rust = { path = "../../frontends/rust" }
+backend-frontend-typescript = { path = "../../frontends/typescript" }
+backend-frontend-python = { path = "../../frontends/python" }
+sha2 = "=0.10.9"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"

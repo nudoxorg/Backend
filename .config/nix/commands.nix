@@ -10,8 +10,10 @@
   artifacts,
   formatting,
   control,
+  workspaceRoot,
 }:
 let
+  backendControlRuntime = pkgs.lib.optional (tools.backendControl != null) tools.backendControl;
   sourceParts = [
     ../nu/core/failure.nu
     ../nu/core/control.nu
@@ -30,6 +32,7 @@ let
     ../nu/quality/commit.nu
     ../nu/agents/catalog.nu
     ../nu/agents/generate.nu
+    ../nu/cutover/main.nu
     ../nu/main.nu
   ];
   source = builtins.concatStringsSep "\n\n" (map builtins.readFile sourceParts);
@@ -43,7 +46,8 @@ let
     pkgs.nuenv.writeShellApplication {
       name = "backend";
       text = source;
-      runtimeInputs = tools.qualityTools ++ tools.serviceTools ++ runtimeInputs;
+      runtimeInputs =
+        tools.qualityTools ++ tools.serviceTools ++ backendControlRuntime ++ runtimeInputs;
       runtimeEnv = {
         CARGO_TARGET_DIR = ".local/target";
         BACKEND_CONFIG_SNAPSHOT = toString ../.;
@@ -53,8 +57,11 @@ let
         BACKEND_OTEL_COLLECTOR = artifacts.otelCollector;
         BACKEND_TREEFMT = "${formatting.wrapper}/bin/treefmt";
         BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
+        BACKEND_POLICY_ROOT_DIGEST = control.policyRootDigest;
         BACKEND_COMMAND_CATALOG_DIGEST = builtins.hashString "sha256" source;
         BACKEND_STABLE_CARGO = toolchains.stableCargo;
+        BACKEND_CONTROL_SOURCE = toString workspaceRoot;
+        BACKEND_CONTROL_BIN = if tools.backendControl == null then "" else "${tools.backendControl}/bin/backend-control";
         BACKEND_DYLINT_TOOLCHAIN = toolchains.dylintToolchain;
         BACKEND_RUSTFMT = toolchains.rustfmt;
       }

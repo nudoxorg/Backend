@@ -1,0 +1,20 @@
+[package]
+name = "backend-replication"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+[dependencies]
+backend-version = { path = "../version" }
+backend-store = { path = "../store" }
+backend-platform = { path = "../platform" }
+blake3.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["std", "net", "process"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "dragonfly", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
+nix = { version = "0.30.1", default-features = false, features = ["socket", "user"] }
+[lints]
+workspace = true

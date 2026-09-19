@@ -112,6 +112,8 @@
       pkgs.nix
       pkgs.nushell
       pkgs.coreutils
+      pkgs.b3sum
+      pkgs.bash
       pkgs.stdenv.cc
       toolchains.stable
     ];
@@ -125,6 +127,9 @@
     };
     build = ''
       nu --no-config-file ${../tests/control-plane.nu}
+      mkdir nu
+      ^cp -R ${../nu}/. nu/
+      nu --no-config-file nu/cutover/tests.nu
       mkdir ($env.out | path join "share")
       "validated" | save ($env.out | path join "share" "control-plane")
     '';

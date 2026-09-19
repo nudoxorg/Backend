@@ -31,7 +31,7 @@ impl MemorySource {
         limits: Limits,
     ) -> Result<Self, Error> {
         limits.validate()?;
-        if !coverage.state().is_complete() {
+        if !matches!(coverage, CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage);
         }
         let mut ids = ids;
@@ -146,7 +146,7 @@ impl<S: CandidateSource> Adapter<S> {
         if !page.quality.validate(request.binding.recipe) {
             return Err(AdapterError::Extension(Error::ApproximationMismatch));
         }
-        if !page.coverage.state().is_complete() {
+        if !matches!(page.coverage, CoverageWitness::Complete(_)) {
             return Err(AdapterError::Extension(Error::IncompleteCoverage));
         }
         if page.ids.len() > request.limit || page.ids.len() > self.limits.max_candidates {

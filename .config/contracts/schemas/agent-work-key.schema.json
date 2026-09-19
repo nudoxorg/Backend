@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "backend.control-plane.v1/AgentWorkKey",
+  "x-backend-schema-version": 1,
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["cell", "model_class", "effort", "toolchain_root", "input_digest"],
+  "properties": {
+    "cell": { "type": "string", "minLength": 1 },
+    "model_class": { "type": "string", "minLength": 1 },
+    "effort": { "enum": ["low", "medium", "high", "xhigh", "max", "ultra"] },
+    "toolchain_root": { "type": "string", "minLength": 1 },
+    "input_digest": { "type": "string", "minLength": 1 }
+  }
+}

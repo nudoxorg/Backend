@@ -33,7 +33,7 @@ pub struct RecipeSchema;
 impl Schema for RecipeSchema {
     const DOMAIN: u8 = 0x71;
     const TYPE: u16 = 2;
-    type Value = [u8; 32];
+    type Value = [u8];
 
     fn encode(value: &Self::Value, out: &mut Vec<u8>) {
         out.extend_from_slice(value);
@@ -108,6 +108,57 @@ impl Schema for ModelSchema {
 
 /// Immutable model/provider revision used to build an ANN materialization.
 pub type ModelVersion = ObjectVersion<ModelSchema>;
+
+/// Schema marker for the tokenizer artifact and configuration.
+#[derive(Debug, Eq, PartialEq)]
+pub struct TokenizerSchema;
+
+impl Schema for TokenizerSchema {
+    const DOMAIN: u8 = 0x71;
+    const TYPE: u16 = 7;
+    type Value = [u8; 32];
+
+    fn encode(value: &Self::Value, out: &mut Vec<u8>) {
+        out.extend_from_slice(value);
+    }
+}
+
+/// Immutable tokenizer artifact revision.
+pub type TokenizerVersion = ObjectVersion<TokenizerSchema>;
+
+/// Schema marker for canonical query or document task treatment.
+#[derive(Debug, Eq, PartialEq)]
+pub struct TreatmentSchema;
+
+impl Schema for TreatmentSchema {
+    const DOMAIN: u8 = 0x71;
+    const TYPE: u16 = 8;
+    type Value = [u8];
+
+    fn encode(value: &Self::Value, out: &mut Vec<u8>) {
+        out.extend_from_slice(value);
+    }
+}
+
+/// Immutable query/document task-treatment revision.
+pub type TreatmentVersion = ObjectVersion<TreatmentSchema>;
+
+/// Schema marker for an exact vector query, including its base authority.
+#[derive(Debug, Eq, PartialEq)]
+pub struct QuerySchema;
+
+impl Schema for QuerySchema {
+    const DOMAIN: u8 = 0x71;
+    const TYPE: u16 = 9;
+    type Value = [u8];
+
+    fn encode(value: &Self::Value, out: &mut Vec<u8>) {
+        out.extend_from_slice(value);
+    }
+}
+
+/// Immutable identity of exact query coordinates and their selected base.
+pub type QueryVersion = ObjectVersion<QuerySchema>;
 
 /// The schema tag expected at this adapter boundary.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

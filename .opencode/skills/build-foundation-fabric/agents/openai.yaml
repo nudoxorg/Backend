@@ -1,4 +1,0 @@
-interface:
-  display_name: "Foundation Fabric Scope"
-  short_description: "Typed wire, view, and pack scope laws"
-  default_prompt: "Use $build-foundation-fabric with the shared reviewed Rust skill for this foundation slice."

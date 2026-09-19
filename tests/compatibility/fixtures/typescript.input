@@ -1,0 +1,5 @@
+source=export const x=1
+toolchain=node-v2
+config=ts-profile:ts
+negative=node_modules/optional
+fact=typescript-checker-authority

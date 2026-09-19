@@ -1,7 +1,7 @@
 //! Deterministic lexical provider and page admission.
 
 use crate::identity::{QueryVersion, SchemaVersion};
-use crate::{AdapterError, Binding, Cursor, Error, Limits, Query};
+use crate::{AdapterError, Binding, Cursor, Error, Limits, Query, RankedHit};
 use backend_version::CoverageWitness;
 
 /// A request sent to a lexical source.
@@ -30,7 +30,7 @@ impl QueryRequest {
         limit: usize,
         limits: Limits,
     ) -> Result<Self, Error> {
-        let limits = limits.validate()?;
+        limits.validate()?;
         if limit == 0 || limit > limits.max_page {
             return Err(Error::SizeLimit);
         }
@@ -52,8 +52,8 @@ pub struct LexicalPage {
     pub binding: Binding,
     /// Exact query identity.
     pub query: QueryVersion,
-    /// Document IDs in source order.
-    pub ids: Vec<u64>,
+    /// Ranked semantic hits in source order.
+    pub hits: Vec<RankedHit>,
     /// Next page cursor.
     pub next: Option<Cursor>,
     /// Authority coverage.
@@ -82,8 +82,8 @@ pub struct QueryResult {
     pub query: QueryVersion,
     /// Complete coverage of the selected source scope.
     pub coverage: CoverageWitness,
-    /// Canonically ordered matching IDs.
-    pub ids: Vec<u64>,
+    /// Globally ranked semantic hits with relevance retained.
+    pub hits: Vec<RankedHit>,
     /// Cursor for the next page.
     pub next: Option<Cursor>,
 }
@@ -93,7 +93,7 @@ pub struct QueryResult {
 pub struct MemorySource {
     binding: Binding,
     query: QueryVersion,
-    ids: Vec<u64>,
+    hits: Vec<RankedHit>,
     coverage: CoverageWitness,
 }
 
@@ -108,27 +108,32 @@ impl MemorySource {
         binding: Binding,
         query: QueryVersion,
         coverage: CoverageWitness,
-        mut ids: Vec<u64>,
+        mut hits: Vec<RankedHit>,
         limits: Limits,
     ) -> Result<Self, Error> {
-        let limits = limits.validate()?;
-        if !coverage.state().is_complete() {
+        limits.validate()?;
+        if !matches!(coverage, CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage);
         }
-        if ids.contains(&0) {
+        hits.sort_unstable_by(|left, right| {
+            right
+                .relevance
+                .cmp(&left.relevance)
+                .then_with(|| left.document.cmp(&right.document))
+        });
+        if hits
+            .iter()
+            .map(|hit| hit.document)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != hits.len()
+        {
             return Err(Error::MalformedInput);
-        }
-        ids.sort_unstable();
-        if ids.windows(2).any(|window| window[0] == window[1]) {
-            return Err(Error::MalformedInput);
-        }
-        if ids.len() > limits.max_documents {
-            return Err(Error::SizeLimit);
         }
         Ok(Self {
             binding,
             query,
-            ids,
+            hits,
             coverage,
         })
     }
@@ -150,7 +155,7 @@ impl LexicalSource for MemorySource {
         if let Some(cursor) = request.cursor
             && (cursor.binding() != request.binding
                 || cursor.query() != request.query.version
-                || cursor.offset() > self.ids.len())
+                || cursor.offset() > self.hits.len())
         {
             return Err(Error::InvalidCursor);
         }
@@ -158,13 +163,13 @@ impl LexicalSource for MemorySource {
         let end = offset
             .checked_add(request.limit)
             .ok_or(Error::SizeLimit)?
-            .min(self.ids.len());
-        let next = (end < self.ids.len()).then(|| Cursor::new(self.binding, self.query, end));
+            .min(self.hits.len());
+        let next = (end < self.hits.len()).then(|| Cursor::new(self.binding, self.query, end));
         Ok(LexicalPage {
             schema: SchemaVersion::CURRENT,
             binding: self.binding,
             query: self.query,
-            ids: self.ids[offset..end].to_vec(),
+            hits: self.hits[offset..end].to_vec(),
             next,
             coverage: self.coverage,
         })
@@ -209,13 +214,10 @@ impl<S: LexicalSource> Adapter<S> {
             .query
             .validate(self.limits)
             .map_err(AdapterError::Extension)?;
-        if let Some(cursor) = request.cursor {
-            if cursor.binding() != request.binding || cursor.query() != request.query.version {
-                return Err(AdapterError::Extension(Error::StaleCursor));
-            }
-            if cursor.offset() > self.limits.max_documents {
-                return Err(AdapterError::Extension(Error::InvalidCursor));
-            }
+        if let Some(cursor) = request.cursor
+            && (cursor.binding() != request.binding || cursor.query() != request.query.version)
+        {
+            return Err(AdapterError::Extension(Error::StaleCursor));
         }
         let page = self.source.fetch(request).map_err(AdapterError::Provider)?;
         if page.schema != SchemaVersion::CURRENT {
@@ -224,18 +226,24 @@ impl<S: LexicalSource> Adapter<S> {
         if page.binding != request.binding || page.query != request.query.version {
             return Err(AdapterError::Extension(Error::StaleRoot));
         }
-        if !page.coverage.state().is_complete() {
+        if !matches!(page.coverage, CoverageWitness::Complete(_)) {
             return Err(AdapterError::Extension(Error::IncompleteCoverage));
         }
-        if page.ids.len() > request.limit || page.ids.len() > self.limits.max_page {
+        if page.hits.len() > request.limit || page.hits.len() > self.limits.max_page {
             return Err(AdapterError::Extension(Error::SizeLimit));
         }
-        if page.ids.contains(&0) {
-            return Err(AdapterError::Extension(Error::MalformedInput));
-        }
-        let mut ids = page.ids;
-        ids.sort_unstable();
-        if ids.windows(2).any(|window| window[0] == window[1]) {
+        let hits = page.hits;
+        if hits.windows(2).any(|window| {
+            window[0].relevance < window[1].relevance
+                || (window[0].relevance == window[1].relevance
+                    && window[0].document >= window[1].document)
+        }) || hits
+            .iter()
+            .map(|hit| hit.document)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != hits.len()
+        {
             return Err(AdapterError::Extension(Error::MalformedInput));
         }
         let current_offset = request.cursor.map_or(0, Cursor::offset);
@@ -245,9 +253,8 @@ impl<S: LexicalSource> Adapter<S> {
                 || next.offset() <= current_offset
                 || next.offset()
                     != current_offset
-                        .checked_add(ids.len())
-                        .ok_or(AdapterError::Extension(Error::SizeLimit))?
-                || next.offset() > self.limits.max_documents)
+                        .checked_add(hits.len())
+                        .ok_or(AdapterError::Extension(Error::SizeLimit))?)
         {
             return Err(AdapterError::Extension(Error::InvalidCursor));
         }
@@ -255,7 +262,7 @@ impl<S: LexicalSource> Adapter<S> {
             binding: request.binding,
             query: request.query.version,
             coverage: page.coverage,
-            ids,
+            hits,
             next: page.next,
         })
     }

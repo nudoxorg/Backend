@@ -2,9 +2,9 @@
 
 use crate::delta::DocumentChange;
 use crate::{Authority, Limits, Query, Recipe, Root};
+use backend_semantic::EntityId;
 use backend_version::{
-    AuthorityScopeEvidence, Coverage, CoverageWitness, DeltaError, ObservedScopeEvidence,
-    ScopeRoot, admit_complete_coverage, partial_coverage,
+    ClosedRelationScope, Coverage, CoverageWitness, DeltaError, ScopeRoot, partial_coverage,
 };
 use std::fmt;
 
@@ -46,6 +46,8 @@ pub enum Error {
     InvalidLimits,
     /// A bounded input/output limit was exceeded.
     SizeLimit,
+    /// Incremental maintenance exceeded its declared overlay budget.
+    RebuildRequired,
     /// A deletion named no visible document.
     MissingDocument,
     /// A document state rejected duplicate or malformed keys.
@@ -65,6 +67,7 @@ impl fmt::Display for Error {
             Self::MalformedInput => "malformed lexical adapter input",
             Self::InvalidLimits => "invalid lexical adapter limits",
             Self::SizeLimit => "lexical adapter size limit exceeded",
+            Self::RebuildRequired => "lexical overlay requires a bounded rebuild",
             Self::MissingDocument => "document deletion named no visible document",
             Self::State(_) => "invalid lexical relation state",
             Self::Delta(_) => "invalid lexical relation delta",
@@ -132,10 +135,10 @@ pub fn materialize_with_limits(
     limits: Limits,
 ) -> Result<Materialization, Error> {
     let limits = limits.validate()?;
-    if !coverage.state().is_complete() {
+    if !matches!(coverage, CoverageWitness::Complete(_)) {
         return Err(Error::IncompleteCoverage);
     }
-    if changes.len() > limits.max_documents {
+    if changes.len() > limits.max_delta_documents {
         return Err(Error::SizeLimit);
     }
     changes.sort_by_key(DocumentChange::id);
@@ -147,9 +150,6 @@ pub fn materialize_with_limits(
     }
     let mut total = 0usize;
     for change in &mut changes {
-        if change.id() == 0 {
-            return Err(Error::MalformedInput);
-        }
         if let DocumentChange::Add { fields, .. } = change {
             *fields = crate::delta::normalize_fields(std::mem::take(fields), limits, &mut total)?;
         }
@@ -173,7 +173,7 @@ pub fn query(
     materialization: &Materialization,
     root: Root,
     terms: &[&str],
-) -> Result<Vec<u64>, Error> {
+) -> Result<Vec<EntityId>, Error> {
     if materialization.root != root {
         return Err(Error::StaleRoot);
     }
@@ -203,45 +203,30 @@ pub fn query(
     Ok(docs
         .into_iter()
         .filter_map(|(id, fields)| {
-            let hay = fields
-                .iter()
-                .map(|(_, value)| value.as_str())
-                .collect::<Vec<_>>()
-                .join(" ")
-                .to_ascii_lowercase();
             query
                 .terms
                 .iter()
-                .all(|term| hay.contains(term))
+                .all(|term| {
+                    fields.iter().any(|(_, value)| {
+                        value
+                            .split_ascii_whitespace()
+                            .any(|token| token.eq_ignore_ascii_case(term))
+                    })
+                })
                 .then_some(id)
         })
         .collect())
-}
-
-/// Creates a complete coverage witness for deterministic fakes.
-///
-/// # Errors
-///
-/// Returns [`Error::IncompleteCoverage`] if lower admission rejects the scope.
-pub fn complete_coverage(scope: ScopeRoot) -> Result<CoverageWitness, Error> {
-    let declaration =
-        AuthorityScopeEvidence::from_object_version(Authority::from_value(scope.as_bytes()));
-    let observed = ObservedScopeEvidence::from_object_version(
-        declaration.observation_permit(),
-        Authority::from_value(scope.as_bytes()),
-    );
-    admit_complete_coverage(declaration, observed)
-        .map(CoverageWitness::Complete)
-        .map_err(|_| Error::IncompleteCoverage)
 }
 
 /// Creates an incomplete witness for rejection tests.
 #[must_use]
 pub fn incomplete_coverage(scope: u64, state: Coverage) -> CoverageWitness {
     match state {
-        Coverage::Partial => CoverageWitness::Partial(partial_coverage(scope, state)),
-        Coverage::Unavailable => CoverageWitness::Unavailable(partial_coverage(scope, state)),
-        Coverage::Unsupported => CoverageWitness::Unsupported(partial_coverage(scope, state)),
-        Coverage::Complete => CoverageWitness::Partial(partial_coverage(scope, Coverage::Partial)),
+        Coverage::Partial | Coverage::Complete => CoverageWitness::Partial(partial_coverage(scope)),
+        Coverage::Unavailable => CoverageWitness::Unavailable(partial_coverage(scope)),
+        Coverage::Unsupported => CoverageWitness::Unsupported(partial_coverage(scope)),
+        Coverage::Closed => CoverageWitness::closed_relation(ClosedRelationScope::from_scope_root(
+            ScopeRoot::from_u64(scope),
+        )),
     }
 }

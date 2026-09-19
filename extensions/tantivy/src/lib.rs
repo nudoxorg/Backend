@@ -14,18 +14,28 @@
 mod admission;
 mod contracts;
 mod delta;
+mod engine;
 mod identity;
+mod incremental;
 mod provider;
+pub mod server;
 
 pub use admission::{
-    AdapterError, Error, Materialization, complete_coverage, incomplete_coverage, materialize,
+    AdapterError, Error, Materialization, incomplete_coverage, materialize,
     materialize_with_limits, query,
 };
-pub use contracts::{Cursor, Query};
+pub use contracts::{
+    CaseSensitivity, Cursor, FieldSelection, MatchMode, Query, RankedHit, Relevance,
+};
 pub use delta::{DocumentChange, DocumentDelta, DocumentState};
+pub use engine::{TantivyAdapter, TantivySource, TantivySourceError};
 pub use identity::{
     Authority, AuthoritySchema, Binding, Frontier, FrontierSchema, IndexRelation, Limits,
     QueryVersion, ReadManifest, ReadManifestSchema, Recipe, RecipeSchema, Root, SchemaVersion,
+};
+pub use incremental::{
+    LexicalBase, LexicalOverlay, LexicalView, OverlayLimits, RefreshKind, RefreshOutcome,
+    RefreshPlan,
 };
 pub use provider::{Adapter, LexicalPage, LexicalSource, MemorySource, QueryRequest, QueryResult};
 

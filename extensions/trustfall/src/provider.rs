@@ -120,7 +120,7 @@ impl MemorySource {
         limits: Limits,
     ) -> Result<Self, Error> {
         let limits = limits.validate()?;
-        if !coverage.state().is_complete() {
+        if !matches!(coverage, CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage);
         }
         if rows.len() > limits.max_rows {
@@ -233,7 +233,7 @@ impl<S: GraphSource> Adapter<S> {
         if page.binding != request.binding || page.query != request.query.version {
             return Err(AdapterError::Extension(Error::StaleRoot));
         }
-        if !page.coverage.state().is_complete() {
+        if !matches!(page.coverage, CoverageWitness::Complete(_)) {
             return Err(AdapterError::Extension(Error::IncompleteCoverage));
         }
         if page.rows.len() > request.limit || page.rows.len() > self.limits.max_page {

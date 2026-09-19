@@ -1,6 +1,7 @@
 //! Exact lexical relation state and delta admission.
 
 use crate::{Binding, Error, IndexRelation, Limits};
+use backend_semantic::EntityId;
 use backend_version::{CoverageWitness, Delta as VersionDelta, MapChange, RelationState};
 use std::collections::BTreeSet;
 
@@ -10,19 +11,19 @@ pub enum DocumentChange {
     /// Inserts or replaces a complete document.
     Add {
         /// Stable logical document key.
-        id: u64,
+        id: EntityId,
         /// Field/value pairs.
         fields: Vec<(String, String)>,
     },
     /// Removes an existing document.
     Delete {
         /// Stable logical document key.
-        id: u64,
+        id: EntityId,
     },
 }
 
 impl DocumentChange {
-    pub(crate) fn id(&self) -> u64 {
+    pub(crate) fn id(&self) -> EntityId {
         match self {
             Self::Add { id, .. } | Self::Delete { id } => *id,
         }
@@ -59,24 +60,23 @@ impl DocumentState {
     pub fn new(
         binding: Binding,
         coverage: CoverageWitness,
-        documents: Vec<(u64, Vec<(String, String)>)>,
+        documents: Vec<(EntityId, Vec<(String, String)>)>,
         limits: Limits,
     ) -> Result<Self, Error> {
         let limits = limits.validate()?;
-        if !coverage.state().is_complete() {
+        if !matches!(
+            coverage,
+            CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
+        ) {
             return Err(Error::IncompleteCoverage);
-        }
-        if documents.len() > limits.max_documents {
-            return Err(Error::SizeLimit);
         }
         let mut seen = BTreeSet::new();
         let mut entries = Vec::with_capacity(documents.len());
-        let mut total = 0usize;
         for (id, fields) in documents {
-            if id == 0 || !seen.insert(id) {
+            if !seen.insert(id) {
                 return Err(Error::MalformedInput);
             }
-            let fields = normalize_fields(fields, limits, &mut total)?;
+            let fields = normalize_fields(fields, limits, &mut 0)?;
             entries.push((id, fields));
         }
         entries.sort_by_key(|(id, _)| *id);
@@ -106,7 +106,7 @@ impl DocumentState {
     }
 
     /// Returns visible documents in canonical key order.
-    pub fn iter(&self) -> impl Iterator<Item = (u64, &[(String, String)])> {
+    pub fn iter(&self) -> impl Iterator<Item = (EntityId, &[(String, String)])> {
         self.state
             .iter()
             .map(|(id, fields)| (*id, fields.as_slice()))
@@ -120,11 +120,8 @@ impl DocumentState {
     /// size violations, or stale before-values.
     pub fn prepare_delta(&self, changes: Vec<DocumentChange>) -> Result<DocumentDelta, Error> {
         let mut changes = changes;
-        if changes.len() > self.limits.max_documents {
+        if changes.len() > self.limits.max_delta_documents {
             return Err(Error::SizeLimit);
-        }
-        if changes.iter().any(|change| change.id() == 0) {
-            return Err(Error::MalformedInput);
         }
         changes.sort_by_key(DocumentChange::id);
         if changes
@@ -187,10 +184,16 @@ impl DocumentState {
             || change.binding.read_manifest != self.binding.read_manifest
             || change.binding.frontier != self.binding.frontier
             || change.delta.base() != self.binding.root
+            || !change.delta.is_canonical()
         {
             return Err(Error::StaleRoot);
         }
-        if change.coverage != self.coverage || !change.coverage.state().is_complete() {
+        if change.coverage != self.coverage
+            || !matches!(
+                change.coverage,
+                CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
+            )
+        {
             return Err(Error::IncompleteCoverage);
         }
         if change.binding.root != change.delta.target() {
@@ -214,17 +217,8 @@ fn validate_document_state(
     state: &RelationState<IndexRelation>,
     limits: Limits,
 ) -> Result<(), Error> {
-    let mut count = 0usize;
-    let mut total = 0usize;
-    for (id, fields) in state.iter() {
-        if *id == 0 {
-            return Err(Error::MalformedInput);
-        }
-        let _ = normalize_fields(fields.clone(), limits, &mut total)?;
-        count = count.checked_add(1).ok_or(Error::SizeLimit)?;
-    }
-    if count > limits.max_documents {
-        return Err(Error::SizeLimit);
+    for (_, fields) in state.iter() {
+        let _ = normalize_fields(fields.clone(), limits, &mut 0)?;
     }
     Ok(())
 }

@@ -1,7 +1,7 @@
 //! Bounded vector-search extension contracts.
 //!
-//! This crate deliberately contains no Qdrant client. A provider implements
-//! [`CandidateSource`] and the adapter validates each page against the exact
+//! The built-in bounded HTTP provider and custom [`CandidateSource`] implementations feed an
+//! adapter that validates each page against the exact
 //! workspace, input root, recipe, read manifest, and coverage selected by the
 //! caller. Provider IDs never cross this boundary; only logical candidate
 //! identities are admitted.
@@ -16,23 +16,37 @@
 mod admission;
 mod contracts;
 mod delta;
+mod http;
 mod identity;
+mod incremental;
 mod provider;
+pub mod server;
 
 pub use admission::{
     AdapterError, Candidates, Error, Reranked, accept_remote, accept_remote_approximate,
-    accept_remote_with_limits, accept_remote_with_quality, complete_coverage, incomplete_coverage,
-    rerank,
+    accept_remote_with_limits, accept_remote_with_quality, incomplete_coverage, rerank,
 };
 pub use contracts::{
     ApproximationMetadata, CandidatePage, CandidateSource, Cursor, RecallMetadata, SearchQuality,
     SearchRequest, SearchResult,
 };
 pub use delta::{CandidateChange, CandidateDelta, CandidateState};
+pub use http::{
+    ApiKey, HttpProviderError, QdrantHttpClient, QdrantHttpConfig, QdrantHttpSource,
+    QdrantMutationReceipt,
+};
 pub use identity::{
     Authority, AuthoritySchema, Binding, CandidateId, CandidateRelation, Frontier, FrontierSchema,
-    Limits, ModelSchema, ModelVersion, ReadManifest, ReadManifestSchema, Recipe, RecipeSchema,
-    Root, SchemaVersion, Tombstones,
+    Limits, ModelSchema, ModelVersion, QuerySchema, QueryVersion, ReadManifest, ReadManifestSchema,
+    Recipe, RecipeSchema, Root, SchemaVersion, TokenizerSchema, TokenizerVersion, Tombstones,
+    TreatmentSchema, TreatmentVersion,
+};
+pub use incremental::{
+    AnnBase, AnnCursor, AnnPage, AnnSource, DocumentVector, EmbeddingEncoding,
+    EmbeddingNormalization, EmbeddingPooling, EmbeddingRecipe, ExactOverlay, Metric, OverlayLimits,
+    QueryVector, RefreshKind, RefreshOutcome, RefreshPlan, ScoredCandidate, VectorFacts,
+    VectorIndex, VectorPoint, VectorQuery, VectorQueryBinding, VectorSearchRequest,
+    VectorSearchResult,
 };
 pub use provider::{Adapter, MemorySource};
 

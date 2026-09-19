@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e0ca73ee68505497160735a0903c1f59b5125a3370936343f79c96ac2971a3c8 # shrinks to raw = [RawOp { kind: 3, key: 0, other: 0, value: 0 }]

@@ -1,0 +1,5 @@
+source=int main(){}
+toolchain=clang-v2
+config=-std=c++20
+negative=missing/optional-header
+fact=translation-unit

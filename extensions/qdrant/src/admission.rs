@@ -3,8 +3,7 @@
 use crate::contracts::{ApproximationMetadata, SearchQuality};
 use crate::{Authority, CandidateId, Limits, Recipe, Root, Tombstones};
 use backend_version::{
-    AuthorityScopeEvidence, Coverage, CoverageWitness, DeltaError, ObservedScopeEvidence,
-    ScopeRoot, admit_complete_coverage, partial_coverage,
+    ClosedRelationScope, Coverage, CoverageWitness, DeltaError, ScopeRoot, partial_coverage,
 };
 use std::collections::BTreeSet;
 use std::fmt;
@@ -75,6 +74,11 @@ pub enum Error {
     InvalidLimits,
     /// A configured size bound was exceeded.
     SizeLimit,
+    /// Incremental maintenance exceeded its exact overlay budget.
+    RebuildRequired,
+    /// A vector dimension or coordinate shape was inconsistent with its
+    /// immutable model recipe.
+    DimensionMismatch,
     /// A deletion named no visible candidate.
     MissingCandidate,
     /// The lower relation state rejected the transition.
@@ -95,6 +99,8 @@ impl fmt::Display for Error {
             Self::MalformedInput => "malformed vector adapter input",
             Self::InvalidLimits => "invalid vector adapter limits",
             Self::SizeLimit => "vector adapter size limit exceeded",
+            Self::RebuildRequired => "vector ANN overlay requires a bounded rebuild",
+            Self::DimensionMismatch => "vector dimension does not match the bound recipe",
             Self::MissingCandidate => "candidate deletion named no visible candidate",
             Self::State(_) => "invalid vector relation state",
             Self::Delta(_) => "invalid vector relation delta",
@@ -255,7 +261,7 @@ fn admit_remote(
     if !policy.quality.validate(recipe) {
         return Err(Error::ApproximationMismatch);
     }
-    if !coverage.state().is_complete() {
+    if !matches!(coverage, CoverageWitness::Complete(_)) {
         return Err(Error::IncompleteCoverage);
     }
     let tombstones = Tombstones::new(tombstones.0, limits)?;
@@ -297,7 +303,7 @@ pub fn rerank(
         return Err(Error::ApproximationMismatch);
     }
     let limits = Limits::default();
-    if !candidates.coverage.state().is_complete() {
+    if !matches!(candidates.coverage, CoverageWitness::Complete(_)) {
         return Err(Error::IncompleteCoverage);
     }
     if candidates.ids.len() > limits.max_candidates {
@@ -331,32 +337,15 @@ pub fn rerank(
     })
 }
 
-/// Creates a complete coverage witness for deterministic tests and local
-/// fakes after comparing the declared and observed scope roots.
-///
-/// # Errors
-///
-/// Returns [`Error::IncompleteCoverage`] if the lower coverage admission
-/// rejects the scope pair.
-pub fn complete_coverage(scope: ScopeRoot) -> Result<CoverageWitness, Error> {
-    let declaration =
-        AuthorityScopeEvidence::from_object_version(Authority::from_value(scope.as_bytes()));
-    let observed = ObservedScopeEvidence::from_object_version(
-        declaration.observation_permit(),
-        Authority::from_value(scope.as_bytes()),
-    );
-    admit_complete_coverage(declaration, observed)
-        .map(CoverageWitness::Complete)
-        .map_err(|_| Error::IncompleteCoverage)
-}
-
 /// Creates a non-authoritative witness for tests that exercise rejection.
 #[must_use]
 pub fn incomplete_coverage(scope: u64, state: Coverage) -> CoverageWitness {
     match state {
-        Coverage::Partial => CoverageWitness::Partial(partial_coverage(scope, state)),
-        Coverage::Unavailable => CoverageWitness::Unavailable(partial_coverage(scope, state)),
-        Coverage::Unsupported => CoverageWitness::Unsupported(partial_coverage(scope, state)),
-        Coverage::Complete => CoverageWitness::Partial(partial_coverage(scope, Coverage::Partial)),
+        Coverage::Partial | Coverage::Complete => CoverageWitness::Partial(partial_coverage(scope)),
+        Coverage::Unavailable => CoverageWitness::Unavailable(partial_coverage(scope)),
+        Coverage::Unsupported => CoverageWitness::Unsupported(partial_coverage(scope)),
+        Coverage::Closed => CoverageWitness::closed_relation(ClosedRelationScope::from_scope_root(
+            ScopeRoot::from_u64(scope),
+        )),
     }
 }

@@ -1,0 +1,18 @@
+[package]
+name = "backend-extension-turso"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+backend-library = { path = "../../crates/library" }
+blake3.workspace = true
+turso.workspace = true
+
+[dev-dependencies]
+futures-executor.workspace = true
+
+[lints]
+workspace = true

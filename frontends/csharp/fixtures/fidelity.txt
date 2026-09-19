@@ -1,0 +1,12 @@
+mod Fidelity
+trait IProperties
+type: IProperties
+trait IContract
+docs: Documented contract with a[Widget.Run](Widget.Run).
+type: IContract
+struct Widget
+type: Widget
+struct Widget
+type: Widget
+enum Color
+type: Color

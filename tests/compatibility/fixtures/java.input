@@ -1,0 +1,5 @@
+source=class Main{}
+toolchain=jdk-v2
+config=release:21
+negative=classpath/optional
+fact=javac-authority-image
