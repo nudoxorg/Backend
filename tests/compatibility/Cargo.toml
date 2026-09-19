@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 backend-compile = { path = "../../crates/compile" }
+backend-semantic = { path = "../../crates/semantic" }
 backend-frontend-clang = { path = "../../frontends/clang" }
 backend-frontend-csharp = { path = "../../frontends/csharp" }
 backend-frontend-go = { path = "../../frontends/go" }

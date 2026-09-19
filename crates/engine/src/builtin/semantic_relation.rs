@@ -8,13 +8,6 @@
 use std::{mem::size_of, num::NonZeroU32, sync::Arc};
 
 use super::complete_coverage;
-use crate::workspace::{WorkspaceRelationHandle, WorkspaceSnapshot};
-use backend_execution::AuthorityVersion;
-use backend_library::{PackageKey, PackageReference, package_key};
-use backend_version::{
-    CanonicalRelation, Relation, RelationDecodeError, RelationState, StateRoot, WorkspaceRoot,
-};
-use backend_semantic::ir::{ImageProvenance, PackageLineage, SemanticCoreReader, SemanticImageAuthority};
 use crate::publication::{
     OpenedSemanticArtifactCursor, OpenedSemanticGeneration,
     binding::{
@@ -23,8 +16,17 @@ use crate::publication::{
     },
     manifest::{CompilationManifestFacts, CompilationManifestFormat, CompilationManifestIdentity},
 };
+use crate::workspace::{WorkspaceRelationHandle, WorkspaceSnapshot};
+use backend_execution::AuthorityVersion;
+use backend_library::{PackageKey, PackageReference, package_key};
+use backend_semantic::ir::{
+    ImageProvenance, PackageLineage, SemanticCoreReader, SemanticImageAuthority,
+};
 use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, Stage};
 use backend_store::hydration::VerifiedGenerationFacts;
+use backend_version::{
+    CanonicalRelation, Relation, RelationDecodeError, RelationState, StateRoot, WorkspaceRoot,
+};
 use backend_version::{ContentId, DependencySetDomain, GenerationId};
 
 const MAGIC: &[u8; 4] = b"PSP1";
@@ -915,19 +917,21 @@ fn take_u32(bytes: &[u8]) -> Result<(u32, &[u8]), RelationDecodeError> {
 mod tests {
     use super::*;
     use crate::driver::{CompiledFragment, CompiledSemantic};
-    use backend_semantic::ir::{
-        AtomId, AtomInput, EntityKind, EntityRecord, FragmentView, IrBuilder, PreparedFragment,
-        PrimitiveType, SourceIdentity, TypeId, TypeNode,
-    };
     use crate::publication::{
         OpenSemanticPublicationScratch, PublishControl, SemanticPublicationScratch,
         manifest::SemanticImageRegion, open_published_semantic, publish_semantic,
     };
+    use backend_semantic::ir::{
+        AtomId, AtomInput, EntityKind, EntityRecord, FragmentView, IrBuilder, PreparedFragment,
+        PrimitiveType, SourceIdentity, TypeId, TypeNode,
+    };
     use backend_semantic::vocabulary::{
         CStandard, CompileRecipeFact, CxxStandard, LanguageProfile, NativeTool, RustEdition, Stage,
     };
-    use backend_version::{IrManifestDomain, IrManifestEncoding, SourceFactDomain, ToolchainDomain};
     use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+    use backend_version::{
+        IrManifestDomain, IrManifestEncoding, SourceFactDomain, ToolchainDomain,
+    };
     use std::{fs, num::NonZeroUsize};
 
     fn test_error(error: impl std::fmt::Display) -> std::io::Error {
@@ -1020,7 +1024,9 @@ mod tests {
             ProductSemanticPublicationKey::new(
                 product,
                 coordinate,
-                LanguageProfile::TypeScript(backend_semantic::vocabulary::TypeScriptSource::TypeScript),
+                LanguageProfile::TypeScript(
+                    backend_semantic::vocabulary::TypeScriptSource::TypeScript
+                ),
             )
             .is_err()
         );

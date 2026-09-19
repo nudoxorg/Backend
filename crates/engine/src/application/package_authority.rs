@@ -135,6 +135,9 @@ pub enum PackageAuthorityOwner<'config> {
     Clang {
         /// Exact C-family profile admitted by the caller.
         profile: LanguageProfile,
+        /// Checked project root and entry translation unit retained for the
+        /// driver's whole-project cross-file reference plane.
+        project: backend_frontend_clang::ClangProject,
     },
     /// Package-aware TypeScript report bound to the exact source bytes.
     TypeScript {
@@ -193,7 +196,7 @@ impl PackageAuthorityOwner<'_> {
     #[must_use]
     pub fn input(&self) -> SemanticAuthorityInput<'_> {
         match self {
-            Self::Clang { .. } => SemanticAuthorityInput::None,
+            Self::Clang { project, .. } => SemanticAuthorityInput::Clang { project },
             Self::TypeScript { report, .. } => SemanticAuthorityInput::TypeScript { report },
             Self::Python { report, .. } => SemanticAuthorityInput::Python { report },
             Self::Rust {
@@ -216,7 +219,7 @@ impl PackageAuthorityOwner<'_> {
     #[must_use]
     pub const fn profile(&self) -> LanguageProfile {
         match self {
-            Self::Clang { profile }
+            Self::Clang { profile, .. }
             | Self::Python { profile, .. }
             | Self::Rust { profile, .. }
             | Self::Go { profile, .. }
@@ -255,7 +258,12 @@ pub fn enter_package_authority<'request, 'config>(
     let owner =
         match request.profile {
             profile @ (LanguageProfile::C(_) | LanguageProfile::Cxx(_)) => {
-                PackageAuthorityOwner::Clang { profile }
+                let project = backend_frontend_clang::ClangProject::open(
+                    request.package_root,
+                    request.source_path,
+                )
+                .map_err(PackageAuthorityError::ClangProject)?;
+                PackageAuthorityOwner::Clang { profile, project }
             }
             LanguageProfile::TypeScript(profile) => {
                 let checker = request.configuration.typescript.ok_or(
@@ -390,7 +398,7 @@ pub fn enter_package_authority<'request, 'config>(
                         HarnessRequest {
                             sources: &source,
                             classpath: configuration.classpath,
-                            release: java_authority_release(profile),
+                            release: profile,
                         },
                         &mut image,
                     )
@@ -458,18 +466,6 @@ pub fn enter_package_authority<'request, 'config>(
         PackageAuthorityStage::Admission,
     )?;
     Ok(owner)
-}
-
-const fn java_authority_release(
-    release: backend_semantic::vocabulary::JavaRelease,
-) -> backend_frontend_java::legacy::JavaRelease {
-    match release {
-        backend_semantic::vocabulary::JavaRelease::Java8 => backend_frontend_java::legacy::JavaRelease::Java8,
-        backend_semantic::vocabulary::JavaRelease::Java11 => backend_frontend_java::legacy::JavaRelease::Java11,
-        backend_semantic::vocabulary::JavaRelease::Java17 => backend_frontend_java::legacy::JavaRelease::Java17,
-        backend_semantic::vocabulary::JavaRelease::Java21 => backend_frontend_java::legacy::JavaRelease::Java21,
-        backend_semantic::vocabulary::JavaRelease::Java25 => backend_frontend_java::legacy::JavaRelease::Java25,
-    }
 }
 
 fn checkpoint(
@@ -655,6 +651,9 @@ pub enum PackageAuthorityError {
     /// Rust project admission returned its exact terminal.
     #[error(transparent)]
     RustProject(#[from] RustAuthorityError),
+    /// Clang project admission returned its exact terminal.
+    #[error(transparent)]
+    ClangProject(#[from] backend_frontend_clang::ClangAuthorityError),
     /// Go authority-image production returned its exact terminal.
     #[error(transparent)]
     GoOracle(#[from] OracleError),
@@ -736,11 +735,17 @@ mod tests {
     }
 
     #[test]
-    fn clang_is_the_only_direct_none_authority() {
+    fn clang_is_the_only_project_carrying_authority() {
+        let root =
+            std::env::temp_dir().join(format!("nudox-package-authority-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp package root is creatable");
+        let entry = root.join("main.c");
+        std::fs::write(&entry, b"int main(void) { return 0; }").expect("entry is writable");
         let cancelled = AtomicBool::new(false);
         let owner = enter_package_authority(PackageAuthorityRequest {
-            package_root: Path::new("/packages/example"),
-            source_path: Path::new("/packages/example/main.c"),
+            package_root: &root,
+            source_path: &entry,
             source: b"int main(void) { return 0; }",
             profile: LanguageProfile::C(CStandard::C11),
             toolchain: ToolchainSelection::ResolvedNative(clang_toolchain()),
@@ -753,7 +758,17 @@ mod tests {
         .expect("direct libclang authority needs no borrowed sidecar");
 
         assert_eq!(owner.profile(), LanguageProfile::C(CStandard::C11));
-        assert!(matches!(owner.input(), SemanticAuthorityInput::None));
+        assert!(matches!(
+            owner.input(),
+            SemanticAuthorityInput::Clang { .. }
+        ));
+        if let PackageAuthorityOwner::Clang { project, .. } = &owner {
+            assert_eq!(
+                project.entry(),
+                entry.canonicalize().expect("entry canonicalizes")
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

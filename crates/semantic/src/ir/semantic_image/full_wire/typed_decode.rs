@@ -9,8 +9,9 @@ use core::num::NonZeroU16;
 
 use crate::ir::{
     AnnotationKind, ArrayShape, AtomId, AtomListId, BuiltinType, ChannelDirection, ComputedType,
-    ConcreteType, CvQualifiers, CxxReferenceCategory, EntityId, ExternalId, LiteralType,
-    MappedModifier, Mutability, NativeCharacterRole, ObjectMember, ObjectMemberListId, PropertyKey,
+    ConcreteType, CvQualifiers, CxxReferenceCategory, EntityId, ExternalId, FreePredicate,
+    FreePredicateListId, LiteralType, MappedModifier, Mutability, NativeCharacterRole, ObjectMember,
+    ObjectMemberListId, PropertyKey,
     QualifiedSegments, TemplatePart, TemplatePartListId, TupleElement, TupleElementKind,
     TupleElementListId, TypeExpr, TypeId, TypeListId, TypeParameter, TypeParameterBound,
     TypeParameterBoundListId, TypeParameterInference, TypeParameterKind, TypeParameterListId,
@@ -35,6 +36,7 @@ const TEMPLATE_PARTS: u8 = 4;
 const ATOM_LIST: u8 = 5;
 const TYPE_PARAMETERS: u8 = 6;
 const TYPE_PARAMETER_BOUNDS: u8 = 7;
+const FREE_PREDICATES: u8 = 8;
 
 /// Proves every type/list node has exactly one closed semantic
 /// interpretation.  It intentionally performs no recursive descent: all
@@ -67,6 +69,9 @@ pub(crate) fn validate_semantic_nodes(
     }
     for id in 0..count(typed, TYPE_PARAMETER_BOUNDS)? {
         validate_type_parameter_bounds(bytes, layout, typed, TypeParameterBoundListId::new(id))?;
+    }
+    for id in 0..count(typed, FREE_PREDICATES)? {
+        validate_free_predicates(bytes, layout, typed, FreePredicateListId::new(id))?;
     }
     Ok(())
 }
@@ -266,33 +271,23 @@ pub(crate) fn ty(
 }
 
 pub(crate) fn type_list_item(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: TypeListId,
+    edges: &mut Edges<'_>,
     index: u32,
 ) -> Result<TypeId, FullSemanticImageFault> {
-    Edges::for_node(bytes, layout, typed, TYPE_LIST, id.raw)?.node_at(2, index, TYPE)
+    edges.node_at(2, index, TYPE)
 }
 
 pub(crate) fn atom_list_item(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: AtomListId,
+    edges: &mut Edges<'_>,
     index: u32,
 ) -> Result<AtomId, FullSemanticImageFault> {
-    Edges::for_node(bytes, layout, typed, ATOM_LIST, id.raw)?.atom_at(2, index)
+    edges.atom_at(2, index)
 }
 
 pub(crate) fn tuple_element(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: TupleElementListId,
+    edges: &mut Edges<'_>,
     index: u32,
 ) -> Result<TupleElement, FullSemanticImageFault> {
-    let edges = Edges::for_node(bytes, layout, typed, TUPLE_ELEMENTS, id.raw)?;
     let label_present = boolean(edges.scalar_at(3, index)?, edges.node)?;
     let label = if label_present {
         Some(edges.atom_at_n(3, index, 1)?)
@@ -305,23 +300,19 @@ pub(crate) fn tuple_element(
 }
 
 pub(crate) fn object_member(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: ObjectMemberListId,
+    edges: &mut Edges<'_>,
     index: u32,
 ) -> Result<ObjectMember, FullSemanticImageFault> {
-    let mut edges = Edges::for_node(bytes, layout, typed, OBJECT_MEMBERS, id.raw)?;
     let kind = edges.scalar_at(6, index)?;
     let value = match kind {
         0 => ObjectMember::Property {
-            key: property_key(&mut edges, index)?,
+            key: property_key(edges, index)?,
             ty: edges.node_at(8, index, TYPE)?,
             optional: boolean(edges.scalar_at(9, index)?, edges.node)?,
             readonly: boolean(edges.scalar_at(10, index)?, edges.node)?,
         },
         1 => ObjectMember::Method {
-            key: property_key(&mut edges, index)?,
+            key: property_key(edges, index)?,
             signature: edges.node_at(8, index, TYPE)?,
             optional: boolean(edges.scalar_at(9, index)?, edges.node)?,
         },
@@ -339,34 +330,26 @@ pub(crate) fn object_member(
 }
 
 pub(crate) fn template_part(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: TemplatePartListId,
+    edges: &mut Edges<'_>,
     index: u32,
 ) -> Result<TemplatePart, FullSemanticImageFault> {
-    let edges = Edges::for_node(bytes, layout, typed, TEMPLATE_PARTS, id.raw)?;
     match edges.scalar_at(13, index)? {
         0 => Ok(TemplatePart::Bytes(edges.atom_at_n(13, index, 1)?)),
-        1 => Ok(TemplatePart::Placeholder(
-            edges.node_at_n(13, index, 1, TYPE)?,
-        )),
+        1 => Ok(TemplatePart::Placeholder(edges.node_at_n(
+            13, index, 1, TYPE,
+        )?)),
         _ => Err(shape(edges.node)),
     }
 }
 
 pub(crate) fn type_parameter(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: TypeParameterListId,
+    edges: &mut Edges<'_>,
     index: u32,
 ) -> Result<TypeParameter, FullSemanticImageFault> {
-    let mut edges = Edges::for_node(bytes, layout, typed, TYPE_PARAMETERS, id.raw)?;
     let name = edges.atom_at(14, index)?;
     let bounds =
         TypeParameterBoundListId::new(edges.node_at(15, index, TYPE_PARAMETER_BOUNDS)?.raw);
-    let default = option_type_at(&mut edges, 16, index)?;
+    let default = option_type_at(edges, 16, index)?;
     let variance = variance(edges.scalar_at(17, index)?, edges.node)?;
     let kind_tag = edges.scalar_at(18, index)?;
     let kind = match kind_tag {
@@ -401,13 +384,9 @@ pub(crate) fn type_parameter(
 }
 
 pub(crate) fn type_parameter_bound(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: TypeParameterBoundListId,
+    edges: &mut Edges<'_>,
     index: u32,
 ) -> Result<TypeParameterBound, FullSemanticImageFault> {
-    let edges = Edges::for_node(bytes, layout, typed, TYPE_PARAMETER_BOUNDS, id.raw)?;
     match edges.scalar_at(22, index)? {
         0 => Ok(TypeParameterBound::Type(edges.node_at(23, index, TYPE)?)),
         1 => Ok(TypeParameterBound::Lifetime(edges.atom_at(23, index)?)),
@@ -415,46 +394,59 @@ pub(crate) fn type_parameter_bound(
     }
 }
 
-pub(crate) fn list_count(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    domain: u8,
-    coordinate: u32,
-) -> Result<u32, FullSemanticImageFault> {
-    Edges::for_node(bytes, layout, typed, domain, coordinate).map(|edges| edges.count)
+pub(crate) fn free_predicate(
+    edges: &mut Edges<'_>,
+    index: u32,
+) -> Result<FreePredicate, FullSemanticImageFault> {
+    Ok(FreePredicate {
+        subject: edges.node_at(24, index, TYPE)?,
+        bounds: TypeParameterBoundListId::new(
+            edges.node_at(25, index, TYPE_PARAMETER_BOUNDS)?.raw,
+        ),
+    })
 }
 
-/// Returns the logical item count for one typed list node.  Tuple, object,
-/// template, parameter, and bound lists have several role-bearing edges per
-/// logical item, so their raw edge counts are deliberately not exposed as
-/// cursor lengths.
-pub(crate) fn logical_list_count(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
+/// Logical item count for the already-opened node cursor.  Tuple, object,
+/// template, parameter, and bound lists carry several role-bearing edges per
+/// logical item, so their raw edge counts are never cursor lengths.  The
+/// grouped adjacency answers this from the last group of the role (its keys
+/// are sorted, so one role occupies contiguous groups) instead of rescanning
+/// the whole run.
+pub(crate) fn logical_count(
+    edges: &mut Edges<'_>,
     domain: u8,
-    coordinate: u32,
 ) -> Result<u32, FullSemanticImageFault> {
-    match domain {
-        TYPE_LIST | ATOM_LIST => list_count(bytes, layout, typed, domain, coordinate),
-        TUPLE_ELEMENTS => tuple_count(bytes, layout, typed, TupleElementListId::new(coordinate)),
-        OBJECT_MEMBERS => object_count(bytes, layout, typed, ObjectMemberListId::new(coordinate)),
-        TEMPLATE_PARTS => template_count(bytes, layout, typed, TemplatePartListId::new(coordinate)),
-        TYPE_PARAMETERS => {
-            parameter_count(bytes, layout, typed, TypeParameterListId::new(coordinate))
+    let role: u8 = match domain {
+        TYPE_LIST | ATOM_LIST => 2,
+        TUPLE_ELEMENTS => 3,
+        OBJECT_MEMBERS => 6,
+        TEMPLATE_PARTS => 13,
+        TYPE_PARAMETERS => 14,
+        TYPE_PARAMETER_BOUNDS => 22,
+        FREE_PREDICATES => 24,
+        _ => {
+            return Err(FullSemanticImageFault::TypedDomain {
+                node: edges.node,
+                domain,
+            })
         }
-        TYPE_PARAMETER_BOUNDS => bound_count(
-            bytes,
-            layout,
-            typed,
-            TypeParameterBoundListId::new(coordinate),
-        ),
-        _ => Err(FullSemanticImageFault::TypedDomain {
-            node: coordinate,
-            domain,
-        }),
+    };
+    if edges.grouped.is_none() {
+        edges.grouped = Some(GroupedEdges::build(edges)?);
     }
+    let grouped = edges.grouped.as_ref().expect("grouped index was built");
+    let after = grouped
+        .keys
+        .partition_point(|key| (*key >> 32) <= u64::from(role));
+    if after == 0 || (grouped.keys[after - 1] >> 32) != u64::from(role) {
+        return Ok(0);
+    }
+    let maximum = (grouped.keys[after - 1] & 0xffff_ffff) as u32;
+    maximum
+        .checked_add(1)
+        .ok_or(FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::TypedEdges,
+        })
 }
 
 fn validate_type_list(
@@ -650,78 +642,35 @@ fn validate_type_parameter_bounds(
     edges.finish()
 }
 
-fn tuple_count(
+/// Raw edge-run count for one typed list node; used by structural admission.
+pub(crate) fn list_count(
     bytes: &[u8],
     layout: FullImageLayout,
     typed: TypedLayout,
-    id: TupleElementListId,
+    domain: u8,
+    coordinate: u32,
 ) -> Result<u32, FullSemanticImageFault> {
-    indexed_count(
-        Edges::for_node(bytes, layout, typed, TUPLE_ELEMENTS, id.raw)?,
-        3,
-    )
-}
-fn object_count(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: ObjectMemberListId,
-) -> Result<u32, FullSemanticImageFault> {
-    indexed_count(
-        Edges::for_node(bytes, layout, typed, OBJECT_MEMBERS, id.raw)?,
-        6,
-    )
-}
-fn template_count(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: TemplatePartListId,
-) -> Result<u32, FullSemanticImageFault> {
-    indexed_count(
-        Edges::for_node(bytes, layout, typed, TEMPLATE_PARTS, id.raw)?,
-        13,
-    )
-}
-fn parameter_count(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: TypeParameterListId,
-) -> Result<u32, FullSemanticImageFault> {
-    indexed_count(
-        Edges::for_node(bytes, layout, typed, TYPE_PARAMETERS, id.raw)?,
-        14,
-    )
-}
-fn bound_count(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: TypeParameterBoundListId,
-) -> Result<u32, FullSemanticImageFault> {
-    indexed_count(
-        Edges::for_node(bytes, layout, typed, TYPE_PARAMETER_BOUNDS, id.raw)?,
-        22,
-    )
+    Edges::for_node(bytes, layout, typed, domain, coordinate).map(|edges| edges.count)
 }
 
-fn indexed_count(edges: Edges<'_>, role: u8) -> Result<u32, FullSemanticImageFault> {
-    let mut maximum = None;
-    for ordinal in 0..edges.count {
-        let edge = edges.edge(ordinal)?;
-        if edge.role_tag == role {
-            maximum = Some(maximum.map_or(edge.role_index, |old: u32| old.max(edge.role_index)));
-        }
-    }
-    match maximum {
-        None => Ok(0),
-        Some(last) => last
+fn validate_free_predicates(
+    bytes: &[u8],
+    layout: FullImageLayout,
+    typed: TypedLayout,
+    id: FreePredicateListId,
+) -> Result<(), FullSemanticImageFault> {
+    let mut edges = Edges::for_node(bytes, layout, typed, FREE_PREDICATES, id.raw)?;
+    let mut index = 0_u32;
+    while edges.next < edges.count {
+        let _ = edges.type_node(24, index)?;
+        let _ = node(edges.take(25, index)?, TYPE_PARAMETER_BOUNDS, edges.node)?;
+        index = index
             .checked_add(1)
             .ok_or(FullSemanticImageFault::LengthOverflow {
                 field: FullSemanticImageField::TypedEdges,
-            }),
+            })?;
     }
+    edges.finish()
 }
 
 fn property_key(edges: &mut Edges<'_>, index: u32) -> Result<PropertyKey, FullSemanticImageFault> {
@@ -797,13 +746,82 @@ fn option_type_at(
     }
 }
 
-struct Edges<'a> {
+pub(super) struct Edges<'a> {
     bytes: &'a [u8],
     layout: FullImageLayout,
     node: u32,
     start: u32,
     count: u32,
     next: u32,
+    /// Grouped `(role, index)` adjacency, built once on the first random
+    /// access.  The wire keeps edges in per-item emission order, so a random
+    /// field lookup otherwise rescans every edge of the node; decoding a
+    /// length-`n` list row by row would then cost `O(n^2)` edge parses for
+    /// one node (the observation digests iterate whole lists).  The index is
+    /// allocation-bounded by the already-admitted edge run of this node
+    /// (`<= 16` bytes per edge row, one small vector triple per node), the
+    /// decoded bytes stay immutable, and sequential `take` decoding never
+    /// builds it at all.
+    grouped: Option<GroupedEdges>,
+}
+
+/// Sorted `(role, index)` groups over one node's edge run.  `order` holds the
+/// edge ordinals grouped by key with each group in stored (emission) order, so
+/// the k-th entry of a group is exactly the k-th match of the former linear
+/// scan.
+struct GroupedEdges {
+    keys: Vec<u64>,
+    starts: Vec<u32>,
+    order: Vec<u32>,
+}
+
+impl GroupedEdges {
+    fn key(role_tag: u8, role_index: u32) -> u64 {
+        (u64::from(role_tag) << 32) | u64::from(role_index)
+    }
+
+    fn build(edges: &Edges<'_>) -> Result<Self, FullSemanticImageFault> {
+        let mut ordinals: Vec<(u64, u32)> = Vec::with_capacity(edges.count as usize);
+        for ordinal in 0..edges.count {
+            let edge = edges.edge(ordinal)?;
+            ordinals.push((Self::key(edge.role_tag, edge.role_index), ordinal));
+        }
+        // A stable sort keeps each `(role, index)` group in stored edge
+        // order, preserving the linear scan's occurrence semantics.
+        ordinals.sort_by_key(|(key, _)| *key);
+        let mut keys = Vec::with_capacity(ordinals.len());
+        let mut starts = Vec::new();
+        let mut order = Vec::with_capacity(ordinals.len());
+        for (position, (key, ordinal)) in ordinals.into_iter().enumerate() {
+            if keys.last().map_or(true, |previous| *previous != key) {
+                starts.push(u32::try_from(position).map_err(|_| {
+                    FullSemanticImageFault::LengthOverflow {
+                        field: FullSemanticImageField::TypedEdges,
+                    }
+                })?);
+                keys.push(key);
+            }
+            order.push(ordinal);
+        }
+        starts.push(u32::try_from(order.len()).map_err(|_| {
+            FullSemanticImageFault::LengthOverflow {
+                field: FullSemanticImageField::TypedEdges,
+            }
+        })?);
+        Ok(Self {
+            keys,
+            starts,
+            order,
+        })
+    }
+
+    fn find(&self, role: u8, index: u32) -> Option<(u32, u32)> {
+        let key = Self::key(role, index);
+        let group = self.keys.binary_search(&key).ok()?;
+        let start = *self.starts.get(group)?;
+        let end = *self.starts.get(group.checked_add(1)?)?;
+        Some((start, end))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -817,7 +835,7 @@ struct Edge {
 }
 
 impl<'a> Edges<'a> {
-    fn for_node(
+    pub(super) fn for_node(
         bytes: &'a [u8],
         layout: FullImageLayout,
         typed: TypedLayout,
@@ -857,6 +875,7 @@ impl<'a> Edges<'a> {
             start: get_u32(bytes, offset + 8, FullSemanticImageField::TypedNodes)?,
             count: get_u32(bytes, offset + 12, FullSemanticImageField::TypedNodes)?,
             next: 0,
+            grouped: None,
         })
     }
 
@@ -963,55 +982,66 @@ impl<'a> Edges<'a> {
         ))
     }
 
+    /// Returns the `occurrence`-th stored edge whose role is exactly
+    /// `(role, index)`.  The grouped adjacency turns the former full-run
+    /// scan into one binary search; the returned edge and every fault are
+    /// identical to the linear interpretation.
     fn matching(
-        &self,
+        &mut self,
         role: u8,
         index: u32,
         occurrence: u32,
     ) -> Result<Edge, FullSemanticImageFault> {
-        let mut found = 0_u32;
-        for ordinal in 0..self.count {
-            let edge = self.edge(ordinal)?;
-            if edge.role_tag == role && edge.role_index == index {
-                if found == occurrence {
-                    return Ok(edge);
-                }
-                found = found
-                    .checked_add(1)
-                    .ok_or(FullSemanticImageFault::LengthOverflow {
-                        field: FullSemanticImageField::TypedEdges,
-                    })?;
-            }
+        if self.grouped.is_none() {
+            self.grouped = Some(GroupedEdges::build(self)?);
         }
-        Err(shape(self.node))
+        let grouped = self.grouped.as_ref().expect("grouped index was built");
+        let Some((start, end)) = grouped.find(role, index) else {
+            return Err(shape(self.node));
+        };
+        let position = start.checked_add(occurrence).ok_or(shape(self.node))?;
+        if position >= end {
+            return Err(shape(self.node));
+        }
+        let ordinal = grouped
+            .order
+            .get(position as usize)
+            .copied()
+            .ok_or_else(|| shape(self.node))?;
+        self.edge(ordinal)
     }
-    fn scalar_at(&self, role: u8, index: u32) -> Result<u64, FullSemanticImageFault> {
+    fn scalar_at(&mut self, role: u8, index: u32) -> Result<u64, FullSemanticImageFault> {
         scalar(self.matching(role, index, 0)?, self.node)
     }
     fn scalar_at_n(
-        &self,
+        &mut self,
         role: u8,
         index: u32,
         occurrence: u32,
     ) -> Result<u64, FullSemanticImageFault> {
         scalar(self.matching(role, index, occurrence)?, self.node)
     }
-    fn atom_at(&self, role: u8, index: u32) -> Result<AtomId, FullSemanticImageFault> {
+    fn atom_at(&mut self, role: u8, index: u32) -> Result<AtomId, FullSemanticImageFault> {
         atom(self.matching(role, index, 0)?, self.node)
     }
     fn atom_at_n(
-        &self,
+        &mut self,
         role: u8,
         index: u32,
         occurrence: u32,
     ) -> Result<AtomId, FullSemanticImageFault> {
         atom(self.matching(role, index, occurrence)?, self.node)
     }
-    fn node_at(&self, role: u8, index: u32, domain: u8) -> Result<TypeId, FullSemanticImageFault> {
+    fn node_at(
+        &mut self,
+        role: u8,
+        index: u32,
+        domain: u8,
+    ) -> Result<TypeId, FullSemanticImageFault> {
         node(self.matching(role, index, 0)?, domain, self.node)
     }
     fn node_at_n(
-        &self,
+        &mut self,
         role: u8,
         index: u32,
         occurrence: u32,

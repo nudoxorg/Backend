@@ -6,9 +6,9 @@
 
 use core::ops::Deref;
 
-use backend_version::ObjectDomain;
 use backend_semantic::index_core::IndexSnapshot;
 use backend_store::journal::{PublicationFacts, PublishedGeneration};
+use backend_version::ObjectDomain;
 
 mod compiler;
 mod pack;

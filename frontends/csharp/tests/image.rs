@@ -14,7 +14,7 @@ const DIRECTORY_OFFSET: usize = 48;
 const DIRECTORY_ENTRY_BYTES: usize = 16;
 const IMAGE_DIGEST_OFFSET: usize = 224;
 const ABSENT: u32 = u32::MAX;
-const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v3\0";
+const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v4\0";
 
 #[derive(Debug, thiserror::Error)]
 enum ImageTestError {
@@ -71,6 +71,7 @@ struct DeclarationRow {
     owner: Option<u32>,
     declared_type: Option<u32>,
     decl_start: u32,
+    decl_end: u32,
     name_start: u32,
     name_end: u32,
     params: Vec<ParamRow>,
@@ -124,7 +125,7 @@ impl Fixture {
     }
 
     /// One empty class declaration whose spans name the given source range.
-    fn class(&mut self, qualified: &[u8], name_start: u32, name_end: u32) -> u32 {
+    fn class(&mut self, qualified: &[u8], name_start: u32, name_end: u32, decl_end: u32) -> u32 {
         let (_namespace, simple) = match qualified.iter().rposition(|byte| *byte == b'.') {
             Some(at) => (&qualified[..at], &qualified[at + 1..]),
             None => (&[][..], qualified),
@@ -150,6 +151,7 @@ impl Fixture {
             owner: None,
             declared_type: Some(ty),
             decl_start,
+            decl_end,
             name_start,
             name_end,
             params: Vec::new(),
@@ -243,6 +245,7 @@ impl Fixture {
                     .map_or(ABSENT, |d| cell(d).unwrap_or(ABSENT))
                     .to_le_bytes(),
             );
+            declarations.extend_from_slice(&row.decl_end.to_le_bytes());
         }
         let mut types = Vec::new();
         let mut type_children = Vec::new();
@@ -304,10 +307,10 @@ impl Fixture {
             doc_rows,
             reference_rows,
         ];
-        let row_bytes = [8_u16, 1, 48, 24, 12, 4, 16, 8, 8, 20, 28];
+        let row_bytes = [8_u16, 1, 52, 24, 12, 4, 16, 8, 8, 20, 28];
         let mut image = vec![0_u8; HEADER_BYTES];
         image[..4].copy_from_slice(b"NCAI");
-        image[4..6].copy_from_slice(&3_u16.to_le_bytes());
+        image[4..6].copy_from_slice(&4_u16.to_le_bytes());
         image[6..8].copy_from_slice(
             &u16::try_from(HEADER_BYTES)
                 .map_err(|_| ImageTestError::FixtureOverflow {
@@ -400,7 +403,7 @@ fn image_borrows_declaration_types_and_doc_provenance_without_dto_reconstruction
     let file = fix.atom(file_text);
     let xml = fix.atom(xml_text);
     let attribute = fix.atom(attribute_text);
-    let widget = fix.class(b"Demo.Widget", 6, 12);
+    let widget = fix.class(b"Demo.Widget", 6, 12, 15);
     fix.docs.push(DocRow {
         declaration: widget,
         file,
@@ -489,7 +492,7 @@ fn image_borrows_declaration_types_and_doc_provenance_without_dto_reconstruction
 #[test]
 fn image_rejects_checksum_and_post_checksum_structural_mutations() -> Result<(), ImageTestError> {
     let mut fix = Fixture::default();
-    let _ = fix.class(b"Demo.Widget", 6, 12);
+    let _ = fix.class(b"Demo.Widget", 6, 12, 15);
     let source = b"class Widget {}";
     let valid = fix.encode(source)?;
 
@@ -566,7 +569,7 @@ fn image_rejects_checksum_and_post_checksum_structural_mutations() -> Result<(),
 #[test]
 fn image_rejects_every_signature_and_type_vocabulary_mutation() -> Result<(), ImageTestError> {
     let mut fix = Fixture::default();
-    let class = fix.class(b"Demo.Widget", 6, 12);
+    let class = fix.class(b"Demo.Widget", 6, 12, 37);
     let method_name = fix.atom(b"M");
     let parameter_name = fix.atom(b"value");
     let type_name = fix.atom(b"System.Int32");
@@ -594,6 +597,7 @@ fn image_rejects_every_signature_and_type_vocabulary_mutation() -> Result<(), Im
         owner: Some(class),
         declared_type: Some(type_row),
         decl_start: 15,
+        decl_end: 37,
         name_start: 15,
         name_end: 16,
         params: vec![ParamRow {
@@ -667,7 +671,7 @@ fn image_rejects_every_signature_and_type_vocabulary_mutation() -> Result<(), Im
 #[test]
 fn image_carries_signatures_partial_roles_and_flags() -> Result<(), ImageTestError> {
     let mut fix = Fixture::default();
-    let widget = fix.class(b"Demo.Widget", 6, 12);
+    let widget = fix.class(b"Demo.Widget", 6, 12, 63);
     let method_name = fix.atom(b"brew");
     let param_name = fix.atom(b"count");
     let int_spelling = fix.atom(b"System.Int32");
@@ -691,6 +695,7 @@ fn image_carries_signatures_partial_roles_and_flags() -> Result<(), ImageTestErr
         owner: Some(widget),
         declared_type: None,
         decl_start: 15,
+        decl_end: 63,
         name_start: 21,
         name_end: 25,
         params: vec![ParamRow {
@@ -740,7 +745,7 @@ fn image_carries_signatures_partial_roles_and_flags() -> Result<(), ImageTestErr
 #[test]
 fn image_carries_generic_constraints_and_tuple_children() -> Result<(), ImageTestError> {
     let mut fix = Fixture::default();
-    let _ = fix.class(b"Demo.Widget", 6, 12);
+    let _ = fix.class(b"Demo.Widget", 6, 12, 44);
     let generic_name = fix.atom(b"T");
     let variance = 0;
     let flag_bits = 0x1 | 0x10;
@@ -772,6 +777,7 @@ fn image_carries_generic_constraints_and_tuple_children() -> Result<(), ImageTes
         owner: Some(0),
         declared_type: Some(tuple_row),
         decl_start: 15,
+        decl_end: 49,
         name_start: 45,
         name_end: 49,
         params: Vec::new(),
@@ -879,7 +885,7 @@ fn image_carries_generic_constraints_and_tuple_children() -> Result<(), ImageTes
 #[test]
 fn image_carries_references_with_closed_kinds_and_foreign_targets() -> Result<(), ImageTestError> {
     let mut fix = Fixture::default();
-    let widget = fix.class(b"Demo.Widget", 6, 12);
+    let widget = fix.class(b"Demo.Widget", 6, 12, 57);
     let spelling = fix.atom(b"System.Console.WriteLine");
     let file = fix.atom(b"Widget.cs");
     fix.references.push(ReferenceRow {

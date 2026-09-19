@@ -201,6 +201,8 @@ pub(crate) fn wire_role(role: TypedEdgeRole) -> (u8, u32) {
         TypedEdgeRole::ParameterAllowsRefLike(index) => (21, index),
         TypedEdgeRole::BoundKind(index) => (22, index),
         TypedEdgeRole::BoundValue(index) => (23, index),
+        TypedEdgeRole::PredicateSubject(index) => (24, index),
+        TypedEdgeRole::PredicateBound(index) => (25, index),
     }
 }
 
@@ -233,6 +235,8 @@ pub(crate) fn role_from_wire(tag: u8, index: u32) -> Option<TypedEdgeRole> {
         21 => TypedEdgeRole::ParameterAllowsRefLike(index),
         22 => TypedEdgeRole::BoundKind(index),
         23 => TypedEdgeRole::BoundValue(index),
+        24 => TypedEdgeRole::PredicateSubject(index),
+        25 => TypedEdgeRole::PredicateBound(index),
         _ => return None,
     })
 }
@@ -244,7 +248,7 @@ fn validate_node_order(nodes: &[FullTypedPlanNode]) -> Result<(), FullSemanticIm
         let row = u32::try_from(index).map_err(|_| FullSemanticImageFault::LengthOverflow {
             field: FullSemanticImageField::TypedNodes,
         })?;
-        if node.domain > 7 {
+        if node.domain > 8 {
             return Err(FullSemanticImageFault::TypedDomain {
                 node: row,
                 domain: node.domain,

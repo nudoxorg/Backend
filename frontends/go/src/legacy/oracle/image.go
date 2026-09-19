@@ -10,8 +10,9 @@
 // (declared and promoted); generic type parameters; struct fields, interface
 // method signatures, and the complete post-embedding interface method set;
 // documentation rows (declarations, methods, members, and whole packages);
-// resolved call references; build-constraint exclusions; and interface
-// satisfaction edges.
+// resolved named-object references (every go/types use of a keyable object,
+// with its closed use kind, the used object's class, and its receiver type
+// name); build-constraint exclusions; and interface satisfaction edges.
 //
 // The binary layout is the single semantic transport: JSON is not an IR
 // boundary. The Rust reader in compiler/languages/go/image.rs owns the
@@ -30,26 +31,42 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
 
 // Image format constants. Keep in lockstep with compiler/languages/go/image.rs.
+//
+// Version 6 widens three rows additively over version 5; every other row
+// width, plane order, and header cell is unchanged, and the reader accepts
+// both versions:
+//
+//   - declaration rows grow 56 → 72 bytes: the declared identifier's exact
+//     byte extent (`nameStart`/`nameEnd`, both NONE or both present and
+//     contained in the row's span) plus the one-byte `bound` flag marking
+//     that the declaration declares in the authority-bound source file;
+//   - method rows grow 64 → 72 bytes: the same one-byte `bound` flag;
+//   - reference rows grow 48 → 56 bytes: the closed use-kind byte
+//     (0 call, 1 read, 2 typeref, 3 import), the closed target-class byte
+//     (0 func, 1 method, 2 field, 3 var, 4 const, 5 type, 6 pkg), and the
+//     target receiver type-name atom (empty for every class but method and
+//     field).
 const (
-	authorityVersion     = 5
+	authorityVersion     = 6
 	authorityHeaderBytes = 136
 
 	authorityModuleBytes    = 32
 	authorityPackageBytes   = 28
-	authorityDeclBytes      = 56
+	authorityDeclBytes      = 72
 	authorityTypeBytes      = 52
 	authoritySigParamBytes  = 28
-	authorityMethodBytes    = 64
+	authorityMethodBytes    = 72
 	authorityParamBytes     = 16
 	authorityMemberBytes    = 40
 	authorityMethodSetBytes = 24
 	authorityDocBytes       = 16
-	authorityRefBytes       = 48
+	authorityRefBytes       = 56
 	authorityConBytes       = 28
 	authoritySatBytes       = 20
 	authorityChildBytes     = 8
@@ -58,7 +75,7 @@ const (
 	authorityMax  = uint64(^uint32(0))
 )
 
-var authorityDigestDomain = []byte("nudox.go.authority.image.sha256.v5\x00")
+var authorityDigestDomain = []byte("nudox.go.authority.image.sha256.v6\x00")
 
 // atomCell locates one byte run in the shared atom plane.
 type atomCell struct {
@@ -106,11 +123,14 @@ type declPlan struct {
 	kind       byte
 	exported   bool
 	iota       bool
+	bound      bool
 	name       atomCell
 	pkg        atomCell
 	typeRoot   uint32
 	spanStart  uint32
 	spanEnd    uint32
+	nameStart  uint32
+	nameEnd    uint32
 	file       atomCell
 	value      atomCell
 	constGroup int64
@@ -143,6 +163,7 @@ type methodPlan struct {
 	exported       bool
 	pointerRecv    bool
 	promoted       bool
+	bound          bool
 	name           atomCell
 	typeRoot       uint32
 	receiver       atomCell
@@ -188,15 +209,20 @@ type docPlan struct {
 	text      atomCell
 }
 
-// refPlan is one resolved call reference.
+// refPlan is one resolved reference row: a use of a named object with its
+// closed use kind, the used object's closed class, and the receiver type
+// name for method and field targets.
 type refPlan struct {
-	owner     uint32
-	target    atomCell
-	targetPkg atomCell
-	start     uint32
-	end       uint32
-	file      atomCell
-	receiver  atomCell
+	owner       uint32
+	target      atomCell
+	targetPkg   atomCell
+	useKind     byte
+	targetClass byte
+	start       uint32
+	end         uint32
+	file        atomCell
+	receiver    atomCell
+	recvType    atomCell
 }
 
 // conPlan is one build-constraint exclusion row.
@@ -742,14 +768,14 @@ func imageDeclarationKind(kind string) (byte, error) {
 
 // emitMethods lowers one type declaration's declared and promoted methods,
 // owner-ordered by construction.
-func (p *imagePlan) emitMethods(declaration *Decl, owner uint32) error {
+func (p *imagePlan) emitMethods(declaration *Decl, owner uint32, boundSource string) error {
 	for _, method := range declaration.Methods {
-		if err := p.emitMethod(method, owner, false); err != nil {
+		if err := p.emitMethod(method, owner, false, boundSource); err != nil {
 			return err
 		}
 	}
 	for _, method := range declaration.PromotedMethods {
-		if err := p.emitMethod(method, owner, true); err != nil {
+		if err := p.emitMethod(method, owner, true, boundSource); err != nil {
 			return err
 		}
 	}
@@ -757,7 +783,7 @@ func (p *imagePlan) emitMethods(declaration *Decl, owner uint32) error {
 }
 
 // emitMethod lowers one method row and its documentation.
-func (p *imagePlan) emitMethod(method *Method, owner uint32, promoted bool) error {
+func (p *imagePlan) emitMethod(method *Method, owner uint32, promoted bool, boundSource string) error {
 	if method == nil || method.Name == "" {
 		return fmt.Errorf("go/types emitted a missing method name")
 	}
@@ -821,6 +847,7 @@ func (p *imagePlan) emitMethod(method *Method, owner uint32, promoted bool) erro
 		exported:       method.Exported,
 		pointerRecv:    method.PointerRecv,
 		promoted:       promoted,
+		bound:          method.Pos != nil && sameFile(method.Pos.File, boundSource),
 		name:           name,
 		typeRoot:       root,
 		receiver:       receiver,
@@ -845,12 +872,61 @@ func (p *imagePlan) emitMethod(method *Method, owner uint32, promoted bool) erro
 	return nil
 }
 
+// imageReferenceKind maps one Reference kind spelling onto its closed byte
+// tag. The empty spelling is the v3 call row, kept byte-compatible.
+func imageReferenceKind(kind string) (byte, error) {
+	switch kind {
+	case "", "call":
+		return 0, nil
+	case "read":
+		return 1, nil
+	case "typeref":
+		return 2, nil
+	case "import":
+		return 3, nil
+	default:
+		return 0, fmt.Errorf("go/types emitted unknown reference kind %q", kind)
+	}
+}
+
+// imageReferenceClass maps one Reference class spelling onto its closed
+// byte tag. The empty spelling is a free function, the v3 row shape.
+func imageReferenceClass(class string) (byte, error) {
+	switch class {
+	case "", "func":
+		return 0, nil
+	case "method":
+		return 1, nil
+	case "field":
+		return 2, nil
+	case "var":
+		return 3, nil
+	case "const":
+		return 4, nil
+	case "type":
+		return 5, nil
+	case "pkg":
+		return 6, nil
+	default:
+		return 0, fmt.Errorf("go/types emitted unknown reference class %q", class)
+	}
+}
+
+// sameFile reports whether two path spellings name one file.
+func sameFile(left, right string) bool {
+	return filepath.Clean(left) == filepath.Clean(right)
+}
+
 // buildAuthorityPlan flattens the complete Output into ordered planes. Every
 // plane emerges in the canonical order the Rust reader validates: methods and
 // type parameters sorted by owner declaration, documentation rows sorted by
 // (owner kind, owner), references sorted by (file, start), constraints sorted
-// by file, satisfaction rows sorted by subject.
-func buildAuthorityPlan(output *Output) (*imagePlan, error) {
+// by file, satisfaction rows sorted by subject. boundSource is the
+// authority-bound source file's path: every declaration and method row
+// carries the bound flag recording whether it declares in that exact file,
+// so the lowerer can attach primary-source spans without comparing path
+// spellings across processes.
+func buildAuthorityPlan(output *Output, boundSource string) (*imagePlan, error) {
 	p := &imagePlan{}
 	// The single module-metadata row; every cell stays empty when the
 	// oracle resolved no module (e.g. GOPATH-mode analysis).
@@ -929,6 +1005,26 @@ func buildAuthorityPlan(output *Output) (*imagePlan, error) {
 				return nil, err
 			}
 			plan.name = name
+			plan.bound = declaration.Pos != nil && sameFile(declaration.Pos.File, boundSource)
+			if declaration.NameSpan != nil {
+				if declaration.NameSpan.Start < 0 ||
+					uint64(declaration.NameSpan.Start) > authorityMax ||
+					declaration.NameSpan.End < 0 ||
+					uint64(declaration.NameSpan.End) > authorityMax {
+					return nil, fmt.Errorf(
+						"go/types emitted out-of-range name span %d..%d for %s",
+						declaration.NameSpan.Start, declaration.NameSpan.End, declaration.Name)
+				}
+				if declaration.NameSpan.Start > declaration.NameSpan.End {
+					return nil, fmt.Errorf(
+						"go/types emitted inverted name span %d..%d for %s",
+						declaration.NameSpan.Start, declaration.NameSpan.End, declaration.Name)
+				}
+				plan.nameStart = uint32(declaration.NameSpan.Start)
+				plan.nameEnd = uint32(declaration.NameSpan.End)
+			} else {
+				plan.nameStart, plan.nameEnd = authorityNone, authorityNone
+			}
 			pkgCell, err := p.atom(pkg.ImportPath)
 			if err != nil {
 				return nil, err
@@ -1007,7 +1103,7 @@ func buildAuthorityPlan(output *Output) (*imagePlan, error) {
 				})
 			}
 			// Methods: declared first, then promoted.
-			if err := p.emitMethods(declaration, owner); err != nil {
+			if err := p.emitMethods(declaration, owner, boundSource); err != nil {
 				return nil, err
 			}
 			// Documentation: the declaration's own comment.
@@ -1079,7 +1175,8 @@ func buildAuthorityPlan(output *Output) (*imagePlan, error) {
 				text:      text,
 			})
 		}
-		// Resolved call references, owner-resolved within this package.
+		// Resolved named-object references, owner-resolved within this
+		// package.
 		for _, reference := range pkg.References {
 			if reference == nil {
 				return nil, fmt.Errorf("go/types emitted a missing reference")
@@ -1114,6 +1211,18 @@ func buildAuthorityPlan(output *Output) (*imagePlan, error) {
 			if err != nil {
 				return nil, err
 			}
+			recvType, err := p.atom(reference.Recv)
+			if err != nil {
+				return nil, err
+			}
+			useKind, err := imageReferenceKind(reference.Kind)
+			if err != nil {
+				return nil, err
+			}
+			targetClass, err := imageReferenceClass(reference.Class)
+			if err != nil {
+				return nil, err
+			}
 			start, err := u32(reference.Start, "reference span")
 			if err != nil {
 				return nil, err
@@ -1123,13 +1232,16 @@ func buildAuthorityPlan(output *Output) (*imagePlan, error) {
 				return nil, err
 			}
 			p.refs = append(p.refs, refPlan{
-				owner:     owner,
-				target:    target,
-				targetPkg: targetPkg,
-				start:     start,
-				end:       end,
-				file:      file,
-				receiver:  receiver,
+				owner:       owner,
+				target:      target,
+				targetPkg:   targetPkg,
+				useKind:     useKind,
+				targetClass: targetClass,
+				start:       start,
+				end:         end,
+				file:        file,
+				receiver:    receiver,
+				recvType:    recvType,
 			})
 		}
 		// Build-constraint exclusions with their exported-declaration blob.
@@ -1311,6 +1423,13 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 		binary.LittleEndian.PutUint32(rowBytes[40:44], row.value.offset)
 		binary.LittleEndian.PutUint32(rowBytes[44:48], row.value.length)
 		binary.LittleEndian.PutUint64(rowBytes[48:56], uint64(row.constGroup))
+		// Version 6: the declared identifier's exact byte extent and the
+		// authority-bound-source flag.
+		binary.LittleEndian.PutUint32(rowBytes[56:60], row.nameStart)
+		binary.LittleEndian.PutUint32(rowBytes[60:64], row.nameEnd)
+		if row.bound {
+			rowBytes[64] = 1
+		}
 		decls = append(decls, rowBytes...)
 	}
 	types := make([]byte, 0, len(p.types)*authorityTypeBytes)
@@ -1372,6 +1491,10 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 		binary.LittleEndian.PutUint32(rowBytes[52:56], row.spanEnd)
 		binary.LittleEndian.PutUint32(rowBytes[56:60], row.file.offset)
 		binary.LittleEndian.PutUint32(rowBytes[60:64], row.file.length)
+		// Version 6: the authority-bound-source flag.
+		if row.bound {
+			rowBytes[64] = 1
+		}
 		methods = append(methods, rowBytes...)
 	}
 	params := make([]byte, 0, len(p.params)*authorityParamBytes)
@@ -1437,6 +1560,12 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 		binary.LittleEndian.PutUint32(rowBytes[32:36], row.file.length)
 		binary.LittleEndian.PutUint32(rowBytes[36:40], row.receiver.offset)
 		binary.LittleEndian.PutUint32(rowBytes[40:44], row.receiver.length)
+		// Version 6: the closed use kind, the used object's closed class,
+		// and the target receiver type-name atom.
+		rowBytes[44] = row.useKind
+		rowBytes[45] = row.targetClass
+		binary.LittleEndian.PutUint32(rowBytes[48:52], row.recvType.offset)
+		binary.LittleEndian.PutUint32(rowBytes[52:56], row.recvType.length)
 		refs = append(refs, rowBytes...)
 	}
 	cons := make([]byte, 0, len(p.cons)*authorityConBytes)
@@ -1532,7 +1661,7 @@ func writeAuthorityImage(destination io.Writer, sourcePath string, output *Outpu
 	if err != nil {
 		return fmt.Errorf("read authority source %s: %w", sourcePath, err)
 	}
-	plan, err := buildAuthorityPlan(output)
+	plan, err := buildAuthorityPlan(output, sourcePath)
 	if err != nil {
 		return err
 	}

@@ -281,6 +281,17 @@ pub struct ReopenedExtensionPools<'payload> {
     atom_lists: (usize, u32),
     type_lists: (usize, u32),
     entity_lists: (usize, u32),
+    free_predicates: (usize, u32),
+    free_predicate_lists: (usize, u32),
+}
+
+/// One decoded Rust free predicate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DecodedFreePredicate {
+    /// Subject type-fact coordinate.
+    pub subject: u32,
+    /// Ordered bound run in the shared bound lane.
+    pub bounds: ExtensionTypeParameterBoundRange,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -506,6 +517,104 @@ impl<'payload> ReopenedExtensionPools<'payload> {
     ) -> Result<DecodedRefList<'payload>, ExtensionPoolFault> {
         self.list(ExtensionPoolListLane::Entities, ordinal)
     }
+
+    /// Number of Rust free-predicate list rows available in this schema.
+    #[must_use]
+    pub fn free_predicate_list_count(&self) -> u32 {
+        self.free_predicate_lists.1
+    }
+
+    /// Reopens one Rust free-predicate list's exact `(start, length)` run.
+    pub fn free_predicate_list(
+        &self,
+        list: crate::ir::FreePredicateListId,
+    ) -> Result<ExtensionTypeParameterRange, ExtensionPoolFault> {
+        let (start, count) = self.free_predicate_lists;
+        if list.raw >= count {
+            return Err(ExtensionPoolFault::FreePredicateList {
+                list: list.raw,
+                start: 0,
+                length: 0,
+                predicate_count: count,
+            });
+        }
+        let offset = usize::try_from(list.raw)
+            .ok()
+            .and_then(|ordinal| ordinal.checked_mul(8))
+            .and_then(|width| start.checked_add(width))
+            .ok_or(ExtensionPoolFault::StructuralOverflow { at: start })?;
+        Ok(ExtensionTypeParameterRange {
+            start: read_u32(self.bytes, offset)?,
+            length: read_u32(
+                self.bytes,
+                offset
+                    .checked_add(4)
+                    .ok_or(ExtensionPoolFault::StructuralOverflow { at: offset })?,
+            )?,
+        })
+    }
+
+    /// Decodes one Rust free predicate from the row table.
+    pub fn free_predicate(
+        &self,
+        ordinal: u32,
+    ) -> Result<DecodedFreePredicate, ExtensionPoolFault> {
+        let (start, count) = self.free_predicates;
+        if ordinal >= count {
+            return Err(ExtensionPoolFault::FreePredicateList {
+                list: ordinal,
+                start: 0,
+                length: 0,
+                predicate_count: count,
+            });
+        }
+        let mut cursor = start;
+        for _ in 0..ordinal {
+            cursor = advance(cursor, 12)?;
+        }
+        Ok(DecodedFreePredicate {
+            subject: read_u32(self.bytes, cursor)?,
+            bounds: ExtensionTypeParameterBoundRange {
+                start: read_u32(self.bytes, advance(cursor, 4)?)?,
+                length: read_u32(self.bytes, advance(cursor, 8)?)?,
+            },
+        })
+    }
+
+    /// Reopens the ordered bounds owned by one free predicate.
+    pub fn free_predicate_bounds(
+        &self,
+        predicate: DecodedFreePredicate,
+    ) -> Result<DecodedTypeParameterBoundList<'payload>, ExtensionPoolFault> {
+        let Some((start, count)) = self.type_parameter_bounds else {
+            return Err(ExtensionPoolFault::StructuralOverflow {
+                at: self.type_parameters.0,
+            });
+        };
+        let range = predicate.bounds;
+        let end = range.start.checked_add(range.length).ok_or(
+            ExtensionPoolFault::FreePredicateBounds {
+                predicate: 0,
+                start: range.start,
+                length: range.length,
+                bound_count: count,
+            },
+        )?;
+        if end > count {
+            return Err(ExtensionPoolFault::FreePredicateBounds {
+                predicate: 0,
+                start: range.start,
+                length: range.length,
+                bound_count: count,
+            });
+        }
+        Ok(DecodedTypeParameterBoundList {
+            bytes: self.bytes,
+            bounds_start: start,
+            bound_count: count,
+            range,
+        })
+    }
 }
 
 /// Reopens the shared extension pools after proving every byte and reference
@@ -573,6 +682,28 @@ pub(crate) fn reopen_validated_extension_pools(
     let entity_count = read_u32(payload, cursor)?;
     cursor = advance(cursor, 4)?;
     let entity_lists = (cursor, entity_count);
+    let (free_predicates, free_predicate_lists) = if schema >= 7 {
+        let count = read_u32(payload, cursor)?;
+        cursor = advance(cursor, 4)?;
+        let start = cursor;
+        let bytes = usize::try_from(count)
+            .ok()
+            .and_then(|count| count.checked_mul(12))
+            .ok_or(ExtensionPoolFault::StructuralOverflow { at: cursor })?;
+        cursor = advance(cursor, bytes)?;
+        let free_predicates = (start, count);
+        let count = read_u32(payload, cursor)?;
+        cursor = advance(cursor, 4)?;
+        let start = cursor;
+        let bytes = usize::try_from(count)
+            .ok()
+            .and_then(|count| count.checked_mul(8))
+            .ok_or(ExtensionPoolFault::StructuralOverflow { at: cursor })?;
+        cursor = advance(cursor, bytes)?;
+        (free_predicates, (start, count))
+    } else {
+        ((0, 0), (0, 0))
+    };
     Ok(ReopenedExtensionPools {
         schema,
         bytes: payload,
@@ -582,6 +713,8 @@ pub(crate) fn reopen_validated_extension_pools(
         atom_lists,
         type_lists,
         entity_lists,
+        free_predicates,
+        free_predicate_lists,
     })
 }
 
@@ -708,8 +841,10 @@ pub(crate) fn validate_extension_pool_payload(
         }
         cursor = at;
     }
+    let mut bound_total = 0_u32;
     if schema >= 5 {
         let bound_count = read_u32(payload, cursor)?;
+        bound_total = bound_count;
         cursor = advance(cursor, 4)?;
         for position in 0..bound_count {
             let (bound, next) = decode_type_parameter_bound_at(payload, cursor)?;
@@ -824,6 +959,63 @@ pub(crate) fn validate_extension_pool_payload(
                 .checked_mul(4)
                 .ok_or(ExtensionPoolFault::StructuralOverflow { at: cursor })?;
             cursor = advance(advance(cursor, 4)?, words)?;
+        }
+    }
+    if schema >= 7 {
+        let count = read_u32(payload, cursor)?;
+        cursor = advance(cursor, 4)?;
+        for predicate in 0..count {
+            let subject = read_u32(payload, cursor)?;
+            if subject >= type_count {
+                return Err(ExtensionPoolFault::FreePredicateSubject {
+                    predicate,
+                    raw: subject,
+                    limit: type_count,
+                });
+            }
+            let start = read_u32(payload, advance(cursor, 4)?)?;
+            let length = read_u32(payload, advance(cursor, 8)?)?;
+            cursor = advance(cursor, 12)?;
+            let end =
+                start
+                    .checked_add(length)
+                    .ok_or(ExtensionPoolFault::FreePredicateBounds {
+                        predicate,
+                        start,
+                        length,
+                        bound_count: bound_total,
+                    })?;
+            if end > bound_total {
+                return Err(ExtensionPoolFault::FreePredicateBounds {
+                    predicate,
+                    start,
+                    length,
+                    bound_count: bound_total,
+                });
+            }
+        }
+        let list_count = read_u32(payload, cursor)?;
+        cursor = advance(cursor, 4)?;
+        for list in 0..list_count {
+            let start = read_u32(payload, cursor)?;
+            let length = read_u32(payload, advance(cursor, 4)?)?;
+            let end = start.checked_add(length).ok_or(
+                ExtensionPoolFault::FreePredicateList {
+                    list,
+                    start,
+                    length,
+                    predicate_count: count,
+                },
+            )?;
+            if end > count {
+                return Err(ExtensionPoolFault::FreePredicateList {
+                    list,
+                    start,
+                    length,
+                    predicate_count: count,
+                });
+            }
+            cursor = advance(cursor, 8)?;
         }
     }
     if cursor != payload.len() {

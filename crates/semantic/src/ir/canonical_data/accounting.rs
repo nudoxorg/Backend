@@ -165,22 +165,22 @@ pub(super) fn reserve_budget(
     // Each refinement hash pass visits the pooled child lane once.  Key
     // comparisons can inspect the complete lane, so multiply the conservative
     // comparison/probe bound by the lane length for a physical work reserve.
-    let refinement_child_visits = checked_mul(
-        checked_mul(children, refinement_rounds, DataResource::Work)?,
-        2,
-        DataResource::Work,
-    )?;
+    //
+    // The Work product of the two largest coupled lanes (children × the
+    // cubic product-comparison bound) exceeds `u64` once the shared emission
+    // geometry reaches 32,768 facts at 64 children each. The reservation is
+    // a conservative upper bound, so the multiply saturates instead of
+    // failing: a saturated reserve admits only callers whose own budget is
+    // at least as conservative, and the real counters still answer to
+    // `enforce_budget` at runtime.
+    let refinement_child_visits = children.saturating_mul(refinement_rounds).saturating_mul(2);
     let keyed_comparisons = checked_add(
         checked_mul(product_sort_round, refinement_rounds, DataResource::Work)?,
         intern_upper,
         DataResource::Work,
     )?;
-    let keyed_child_visits = checked_mul(children, keyed_comparisons, DataResource::Work)?;
-    let child_visits = checked_add(
-        refinement_child_visits,
-        keyed_child_visits,
-        DataResource::Work,
-    )?;
+    let keyed_child_visits = children.saturating_mul(keyed_comparisons);
+    let child_visits = refinement_child_visits.saturating_add(keyed_child_visits);
     let lane_work = checked_add(
         checked_add(
             checked_add(atoms, products, DataResource::Work)?,
@@ -190,15 +190,11 @@ pub(super) fn reserve_budget(
         checked_add(lists, children, DataResource::Work)?,
         DataResource::Work,
     )?;
-    let work_upper = checked_add(
-        checked_add(
-            checked_add(hash_upper, sort_upper, DataResource::Work)?,
-            intern_upper,
-            DataResource::Work,
-        )?,
-        checked_add(child_visits, lane_work, DataResource::Work)?,
-        DataResource::Work,
-    )?;
+    let work_upper = hash_upper
+        .saturating_add(sort_upper)
+        .saturating_add(intern_upper)
+        .saturating_add(child_visits)
+        .saturating_add(lane_work);
     if budget.max_work < work_upper {
         return Err(CanonicalDataError::BudgetAdmission {
             resource: DataResource::Work,

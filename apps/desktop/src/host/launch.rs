@@ -131,7 +131,10 @@ fn window_options(cx: &mut App) -> WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
             title: Some("Nudox".into()),
-            appears_transparent: true,
+            // macOS and Windows draw the window's own chrome inside this
+            // titlebar; Linux keeps the server's decorations, so its titlebar
+            // stays opaque and the desktop draws the caption.
+            appears_transparent: !cfg!(any(target_os = "linux", target_os = "freebsd")),
             traffic_light_position: Some(point(px(14.0), px(14.0))),
         }),
         window_min_size: Some(size(px(MINIMUM.0), px(MINIMUM.1))),

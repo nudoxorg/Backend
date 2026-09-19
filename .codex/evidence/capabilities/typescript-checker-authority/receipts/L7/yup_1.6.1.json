@@ -1,8 +1,8 @@
 {
   "class": "SingleShipped",
-  "defect_class": "checker-authority",
+  "defect_class": "entry-resolution",
   "purl": "npm:yup@1.6.1",
-  "raw_error": "TypeScript checker exited with exit status: 1; stderr tail: /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122\n  if (type.isThisType === true || type.flags & flags.ThisType) return { kind: 'this' };\n           ^\n\nTypeError: Cannot read properties of undefined (reading 'isThisType')\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122:12)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:134:17)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:132:14)\n    at emitVariableLike (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:309:13)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:359:5)\n    at visitNodes (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32457:22)\n    at forEachChildInClassDeclarationOrExpression (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32933:195)\n    at forEachChild (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32970:35)\n    at NodeObject.forEachChild (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:151891:12)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:380:8)\n\nNode.js v26.8.1\n",
+  "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
   "schema": 1,
   "stage": "full-lifecycle",
   "verdict": "FAILED"

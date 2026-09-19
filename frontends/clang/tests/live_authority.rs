@@ -6,9 +6,11 @@
 
 use backend_frontend_clang::legacy::{
     BuiltinClass, ClangInput, ClangScratch, CollectError, DeclarationFact, DeclarationId,
-    DeclarationKind, DefinitionState, DiagnosticFact, IncludeFact, MethodVirtuality, OverrideFact,
-    ReferenceFact, ReferenceKind, ReferenceTarget, SourceDependencyKind, SourceSpan, StorageClass,
-    SymbolIdentity, TypeEdge, TypeFact, TypeId, collect,
+    DeclarationKind, DefinitionState, DiagnosticFact, IncludeFact, MAX_CLANG_DECLARATIONS,
+    MAX_CLANG_DIAGNOSTICS, MAX_CLANG_INCLUDES, MAX_CLANG_OVERRIDES, MAX_CLANG_REFERENCES,
+    MAX_CLANG_TYPE_EDGES, MAX_CLANG_TYPES, MethodVirtuality, OverrideFact, ReferenceFact,
+    ReferenceKind, ReferenceTarget, SourceDependencyKind, SourceSpan, StorageClass, SymbolIdentity,
+    TypeEdge, TypeFact, TypeId, collect,
     facts::{TypeKind, TypeQualifiers},
 };
 use backend_semantic::vocabulary::{CStandard, CxxStandard};
@@ -47,6 +49,12 @@ enum RequiredFact {
     /// A local call target was not resolved by libclang.
     #[error("local call")]
     LocalCall,
+    /// A reference site did not slice to the exact required written name.
+    #[error("reference site not slicing to {required:?}")]
+    ReferenceName {
+        /// The exact identifier bytes the site must carry.
+        required: &'static [u8],
+    },
     /// A declaration documentation span was not emitted.
     #[error("documentation")]
     Documentation,
@@ -103,6 +111,485 @@ int caller(int *value) { return SCALE(add(*value, 2)); }
             Err(TestError::Missing(RequiredFact::Documentation))
         }
     })
+}
+
+/// Reference sites carry the written name token of the referenced entity,
+/// never the whole expression extent.
+///
+/// The regression this pins: a call site once carried the entire
+/// `measure(buffer)` extent and a member read the entire `buffer->content`
+/// extent, so every downstream occurrence site read as full expressions.
+/// Each emitted span is proven against the exact source bytes, and every
+/// local-target site's bytes equal its target declaration's own name bytes.
+#[test]
+fn reference_spans_slice_to_the_referenced_name_tokens() -> Result<(), TestError> {
+    let source = br#"
+struct Buffer { int content; };
+static int total;
+int measure(struct Buffer *buffer) {
+    total = total + buffer->content;
+    return measure(buffer) + total;
+}
+"#;
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::C {
+                file_name: c"reference-names.c",
+                source,
+                standard: CStandard::C23,
+            },
+            scratch,
+        )?;
+        assert!(!facts.references.is_empty());
+        for reference in facts.references {
+            println!(
+                "probe kind={:?} span={:?} bytes={:?} target={:?}",
+                reference.kind,
+                reference.span,
+                String::from_utf8_lossy(source_at(source, reference.span)),
+                match reference.target {
+                    ReferenceTarget::Local(identity) => identity
+                        .bytes
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>(),
+                    ReferenceTarget::Foreign { identity, .. } => identity
+                        .bytes
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>(),
+                    ReferenceTarget::Unresolved => "unresolved".to_owned(),
+                },
+            );
+        }
+        // Every reference site slices to exactly one source identifier.
+        for reference in facts.references {
+            let bytes = source_at(source, reference.span);
+            assert!(
+                !bytes.is_empty()
+                    && !bytes[0].is_ascii_digit()
+                    && bytes
+                        .iter()
+                        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_'),
+                "reference at {:?} must slice to one identifier, got {bytes:?}",
+                reference.span,
+            );
+        }
+        // A member read slices to the member name, never `buffer->content`.
+        let member = facts
+            .references
+            .iter()
+            .find(|reference| {
+                reference.kind == ReferenceKind::Member
+                    && source_at(source, reference.span) == b"content"
+            })
+            .ok_or(TestError::Missing(RequiredFact::ReferenceName {
+                required: b"content",
+            }))?;
+        // A call site slices to the callee name, never `measure(buffer)`.
+        facts
+            .references
+            .iter()
+            .find(|reference| {
+                reference.kind == ReferenceKind::Call
+                    && source_at(source, reference.span) == b"measure"
+            })
+            .ok_or(TestError::Missing(RequiredFact::ReferenceName {
+                required: b"measure",
+            }))?;
+        // A plain declaration reference slices to the variable name.
+        facts
+            .references
+            .iter()
+            .find(|reference| {
+                reference.kind == ReferenceKind::Value
+                    && source_at(source, reference.span) == b"total"
+            })
+            .ok_or(TestError::Missing(RequiredFact::ReferenceName {
+                required: b"total",
+            }))?;
+        // The narrowing keeps the site inside the written expression: the
+        // member token is strictly narrower than the whole extent gate.
+        let expression_start = source
+            .windows(15)
+            .position(|window| window == b"buffer->content")
+            .expect("member expression present");
+        assert!(
+            usize::try_from(member.span.start)
+                .is_ok_and(|start| start > expression_start),
+            "member site must start at the member token, not the expression"
+        );
+        // Every local-target site's bytes equal its target's declared name bytes.
+        for reference in facts.references {
+            let ReferenceTarget::Local(identity) = reference.target else {
+                continue;
+            };
+            let Some(declaration) = facts
+                .declarations
+                .iter()
+                .find(|declaration| declaration.identity == Some(identity))
+            else {
+                continue;
+            };
+            let Some(name) = declaration.name else {
+                continue;
+            };
+            assert_eq!(
+                source_at(source, reference.span),
+                source_at(source, name),
+                "site at {:?} must read exactly its target's declared name",
+                reference.span,
+            );
+        }
+        Ok(())
+    })
+}
+
+/// A flag-first database argument vector must survive intact.
+///
+/// This is the exact shape `ClangProject::arguments` supplies to the engine's
+/// project lane: system include arguments first, per-extension defaults last,
+/// no compiler executable. The former unconditional argv[0] strip ate the
+/// leading `-isystem` flag, so the vendor directory became a stray positional
+/// input and `<pkg/vendored.hpp>` lost its only search path.
+#[test]
+fn flag_first_database_arguments_keep_the_first_include_flag() -> Result<(), TestError> {
+    let root = std::env::temp_dir().join("nudox-clang-flag-first-args");
+    let vendor = root.join("vendor/include/pkg");
+    fs::create_dir_all(&vendor).map_err(|_| {
+        TestError::Missing(RequiredFact::Dependency {
+            kind: SourceDependencyKind::Include,
+        })
+    })?;
+    let source = b"#include <pkg/vendored.hpp>\nint main(void) { return VENDORED; }\n";
+    fs::write(vendor.join("vendored.hpp"), b"#define VENDORED 42\n").map_err(|_| {
+        TestError::Missing(RequiredFact::Dependency {
+            kind: SourceDependencyKind::Include,
+        })
+    })?;
+    let source_path = root.join("src/main.cpp");
+    fs::create_dir_all(source_path.parent().expect("parent exists")).map_err(|_| {
+        TestError::Missing(RequiredFact::Dependency {
+            kind: SourceDependencyKind::Include,
+        })
+    })?;
+    fs::write(&source_path, source).map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Function,
+        })
+    })?;
+    let arguments = vec![
+        "-isystem".to_owned(),
+        root.join("vendor/include").to_string_lossy().into_owned(),
+        "-std=c++17".to_owned(),
+        "-x".to_owned(),
+        "c++".to_owned(),
+    ];
+    let owned = arguments
+        .iter()
+        .map(|argument| std::ffi::CString::new(argument.as_bytes()).expect("no interior NUL"))
+        .collect::<Vec<_>>();
+    let borrowed = owned
+        .iter()
+        .map(std::ffi::CString::as_c_str)
+        .collect::<Vec<_>>();
+    let result = with_scratch(|scratch| {
+        let file_name = std::ffi::CString::new(source_path.to_string_lossy().as_bytes())
+            .expect("no interior NUL");
+        let directory =
+            std::ffi::CString::new(root.to_string_lossy().as_bytes()).expect("no interior NUL");
+        let input =
+            ClangInput::from_database(&file_name, source, &borrowed, &directory).map_err(|_| {
+                TestError::Missing(RequiredFact::Dependency {
+                    kind: SourceDependencyKind::Include,
+                })
+            })?;
+        let facts = collect(input, scratch)?;
+        if facts
+            .includes
+            .iter()
+            .any(|dependency| dependency.resolved.is_some())
+        {
+            require_declaration(&facts, DeclarationKind::Function)
+        } else {
+            Err(TestError::Missing(RequiredFact::Dependency {
+                kind: SourceDependencyKind::Include,
+            }))
+        }
+    });
+    let cleanup = fs::remove_dir_all(&root);
+    result.and(cleanup.map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Function,
+        })
+    }))
+}
+
+/// A `.hpp` single-header entry parses end to end through
+/// `ClangProject::arguments`, the exact call shape the engine's project lane
+/// uses. Both corpus regressions are anchored here: the C++ header defaults
+/// (`-x c++`, never `-std=c11`) and the intact flag-first argument vector.
+#[test]
+fn hpp_single_header_entry_parses_through_project_arguments() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Namespace,
+        })
+    })?;
+    let root = dir.path().join("single_include/demo");
+    fs::create_dir_all(&root).map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Namespace,
+        })
+    })?;
+    let header = root.join("demo.hpp");
+    let source = b"namespace demo {\nstruct Widget { int value; };\n}\n";
+    fs::write(&header, source).map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Namespace,
+        })
+    })?;
+    let project =
+        backend_frontend_clang::ClangProject::open(dir.path(), &header).map_err(|_| {
+            TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Namespace,
+            })
+        })?;
+    let arguments = project.arguments();
+    let owned = arguments
+        .iter()
+        .map(|argument| std::ffi::CString::new(argument.as_bytes()).expect("no interior NUL"))
+        .collect::<Vec<_>>();
+    let borrowed = owned
+        .iter()
+        .map(std::ffi::CString::as_c_str)
+        .collect::<Vec<_>>();
+    with_scratch(|scratch| {
+        let file_name = std::ffi::CString::new(project.entry().to_string_lossy().as_bytes())
+            .expect("no interior NUL");
+        let directory = std::ffi::CString::new(project.root().to_string_lossy().as_bytes())
+            .expect("no interior NUL");
+        let input =
+            ClangInput::from_database(&file_name, source, &borrowed, &directory).map_err(|_| {
+                TestError::Missing(RequiredFact::Declaration {
+                    kind: DeclarationKind::Namespace,
+                })
+            })?;
+        let facts = collect(input, scratch)?;
+        let namespace = facts
+            .declarations
+            .iter()
+            .find(|declaration| declaration.kind == DeclarationKind::Namespace)
+            .ok_or(TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Namespace,
+            }))?;
+        assert_eq!(
+            namespace.name.map(|span| source_at(source, span)),
+            Some(&b"demo"[..])
+        );
+        let record = facts
+            .declarations
+            .iter()
+            .find(|declaration| declaration.kind == DeclarationKind::Record)
+            .ok_or(TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Record,
+            }))?;
+        assert_eq!(
+            record.name.map(|span| source_at(source, span)),
+            Some(&b"Widget"[..])
+        );
+        Ok(())
+    })
+}
+
+/// A concrete member pointer admits both operands: the owning class edge and
+/// the pointee edge, straight from the direct libclang queries.
+#[test]
+fn cxx_authority_concrete_member_pointer_keeps_owner_and_pointee_edges() -> Result<(), TestError> {
+    let source = br"
+struct Widget { void run(); };
+void (Widget::*slot)() = &Widget::run;
+";
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::Cxx {
+                file_name: c"member-pointer.cc",
+                source,
+                standard: CxxStandard::Cxx23,
+            },
+            scratch,
+        )?;
+        let member_pointer = facts
+            .types
+            .iter()
+            .find(|type_fact| type_fact.kind == TypeKind::MemberPointer)
+            .ok_or(TestError::Missing(RequiredFact::Type {
+                kind: TypeKind::MemberPointer,
+            }))?;
+        assert!(
+            facts.type_edges.iter().any(|edge| {
+                edge.source == member_pointer.id
+                    && edge.relation == backend_frontend_clang::legacy::TypeRelation::MemberOwner
+            }),
+            "a concrete member pointer must retain its owning-class edge"
+        );
+        assert!(
+            facts.type_edges.iter().any(|edge| {
+                edge.source == member_pointer.id
+                    && edge.relation == backend_frontend_clang::legacy::TypeRelation::Pointee
+            }),
+            "a member pointer must retain its pointee edge"
+        );
+        Ok(())
+    })
+}
+
+/// A dependent member pointer (`T::*` under a template parameter) must not
+/// crash the native authority and must keep the member-pointer fact with its
+/// pointee while omitting the class edge.
+///
+/// This is the catch2 corpus regression: the first member pointer visited in
+/// `catch2/single_include/catch2/catch.hpp` is the dependent
+/// `void (C::*)()`, and the loaded libclang crashes inside
+/// `clang_Type_getClassType` on exactly that form (the dependent class
+/// operand is stored as a nested-name-specifier, not a type), which the
+/// corpus audit observed as an immediate SIGSEGV row crash.
+#[test]
+fn cxx_authority_dependent_member_pointer_survives_without_owner_edge() -> Result<(), TestError> {
+    let source = br"
+template <typename C> struct Probe { void (C::*slot)(); };
+";
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::Cxx {
+                file_name: c"dependent-member-pointer.cc",
+                source,
+                standard: CxxStandard::Cxx23,
+            },
+            scratch,
+        )?;
+        let member_pointer = facts
+            .types
+            .iter()
+            .find(|type_fact| type_fact.kind == TypeKind::MemberPointer)
+            .ok_or(TestError::Missing(RequiredFact::Type {
+                kind: TypeKind::MemberPointer,
+            }))?;
+        assert!(
+            !facts
+                .type_edges
+                .iter()
+                .any(|edge| edge.relation
+                    == backend_frontend_clang::legacy::TypeRelation::MemberOwner),
+            "a dependent member pointer has no concrete owning-class operand"
+        );
+        assert!(
+            facts.type_edges.iter().any(|edge| {
+                edge.source == member_pointer.id
+                    && edge.relation == backend_frontend_clang::legacy::TypeRelation::Pointee
+            }),
+            "a dependent member pointer keeps its pointee edge"
+        );
+        Ok(())
+    })
+}
+
+/// Runs the exact largest-source entry of each real corpus package through
+/// the project lane and asserts a successful authority.
+///
+/// Guarded: skips when `NUDOX_CLANG_CORPUS_DIR` is unset or a package root is
+/// absent. The entry selection mirrors the flow resolver: largest source file
+/// by bytes among the C-family extensions.
+#[test]
+fn real_corpus_selected_entries_reach_a_successful_authority() -> Result<(), TestError> {
+    let Ok(corpus) = std::env::var("NUDOX_CLANG_CORPUS_DIR") else {
+        return Ok(());
+    };
+    for package in ["nlohmann-json", "catch2"] {
+        let root = std::path::PathBuf::from(&corpus).join(package);
+        if !root.is_dir() {
+            continue;
+        }
+        let mut files: Vec<(std::path::PathBuf, u64)> = Vec::new();
+        collect_sources(&root, &mut files)?;
+        files.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        let Some((entry, bytes)) = files.first().cloned() else {
+            continue;
+        };
+        let source = fs::read(&entry).map_err(|_| {
+            TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Namespace,
+            })
+        })?;
+        assert_eq!(source.len() as u64, bytes, "selected entry bytes");
+        let project = backend_frontend_clang::ClangProject::open(&root, &entry).map_err(|_| {
+            TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Namespace,
+            })
+        })?;
+        let arguments = project.arguments();
+        assert!(
+            arguments.ends_with(&["-std=c++17".to_owned(), "-x".to_owned(), "c++".to_owned()]),
+            "{package} selects a C++ header entry and must parse as C++: {arguments:?}"
+        );
+        let owned = arguments
+            .iter()
+            .map(|argument| std::ffi::CString::new(argument.as_bytes()).expect("no interior NUL"))
+            .collect::<Vec<_>>();
+        let file_name = std::ffi::CString::new(project.entry().to_string_lossy().as_bytes())
+            .expect("no interior NUL");
+        let directory = std::ffi::CString::new(project.root().to_string_lossy().as_bytes())
+            .expect("no interior NUL");
+        let collected = std::thread::Builder::new()
+            .name(format!("real-corpus-{package}"))
+            .stack_size(512 * 1024 * 1024)
+            .spawn(move || {
+                let borrowed = owned
+                    .iter()
+                    .map(std::ffi::CString::as_c_str)
+                    .collect::<Vec<_>>();
+                let mut declarations = vec![empty_declaration(); MAX_CLANG_DECLARATIONS];
+                let mut types = vec![empty_type(); MAX_CLANG_TYPES];
+                let mut type_edges = vec![empty_type_edge(); MAX_CLANG_TYPE_EDGES];
+                let mut references = vec![empty_reference(); MAX_CLANG_REFERENCES];
+                let mut diagnostics = vec![empty_diagnostic(); MAX_CLANG_DIAGNOSTICS];
+                let mut includes = vec![empty_include(); MAX_CLANG_INCLUDES];
+                let mut overrides = vec![empty_override(); MAX_CLANG_OVERRIDES];
+                let input = ClangInput::from_database(&file_name, &source, &borrowed, &directory)
+                    .expect("corpus entry admits a database input");
+                collect(
+                    input,
+                    ClangScratch {
+                        declarations: &mut declarations,
+                        types: &mut types,
+                        type_edges: &mut type_edges,
+                        references: &mut references,
+                        diagnostics: &mut diagnostics,
+                        includes: &mut includes,
+                        overrides: &mut overrides,
+                    },
+                )
+                .map(|facts| {
+                    (
+                        facts.declarations.len(),
+                        facts.types.len(),
+                        facts.references.len(),
+                        facts.includes.len(),
+                    )
+                })
+            })
+            .expect("corpus worker thread")
+            .join()
+            .expect("corpus worker finished without a native crash");
+        let (declarations, types, references, includes) =
+            collected.map_err(|error| TestError::Collection(error))?;
+        println!(
+            "real-corpus-authority package={package} entry={} bytes={bytes} declarations={declarations} types={types} references={references} includes={includes}",
+            entry.display(),
+        );
+        assert!(declarations > 0, "{package} entry must yield declarations");
+    }
+    Ok(())
 }
 
 #[test]
@@ -247,7 +734,8 @@ void Derived::run() {}
             facts.overrides[0],
             OverrideFact {
                 source: derived,
-                target: base
+                target: base,
+                target_file: None,
             }
         );
 
@@ -581,6 +1069,7 @@ const fn empty_override() -> OverrideFact {
     OverrideFact {
         source: SymbolIdentity { bytes: [0; 16] },
         target: SymbolIdentity { bytes: [0; 16] },
+        target_file: None,
     }
 }
 
@@ -689,7 +1178,9 @@ fn require_dependency(
 }
 
 /// Requires one call expression whose direct libclang target resolves inside the main source.
-fn require_local_call(facts: &backend_frontend_clang::legacy::ClangFacts<'_>) -> Result<(), TestError> {
+fn require_local_call(
+    facts: &backend_frontend_clang::legacy::ClangFacts<'_>,
+) -> Result<(), TestError> {
     facts
         .references
         .iter()
@@ -699,6 +1190,128 @@ fn require_local_call(facts: &backend_frontend_clang::legacy::ClangFacts<'_>) ->
         })
         .then_some(())
         .ok_or(TestError::Missing(RequiredFact::LocalCall))
+}
+
+/// Diagnostic: drive the exact engine project lane over a real corpus package
+/// and print parse/collect timing and fact counts. Skipped unless
+/// `NUDOX_CLANG_CORPUS_DIR` and `NUDOX_CLANG_DIAG_PACKAGE` are both set.
+#[test]
+fn diagnostic_corpus_project_lane() -> Result<(), TestError> {
+    let Ok(corpus) = std::env::var("NUDOX_CLANG_CORPUS_DIR") else {
+        return Ok(());
+    };
+    let Ok(package) = std::env::var("NUDOX_CLANG_DIAG_PACKAGE") else {
+        return Ok(());
+    };
+    let root = std::path::PathBuf::from(corpus).join(&package);
+    let mut files: Vec<(std::path::PathBuf, u64)> = Vec::new();
+    collect_sources(&root, &mut files)?;
+    files.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    let entry = files
+        .first()
+        .map(|(path, _)| path.clone())
+        .ok_or(TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Function,
+        }))?;
+    let source = fs::read(&entry).map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Function,
+        })
+    })?;
+    let project = backend_frontend_clang::ClangProject::open(&root, &entry).map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Function,
+        })
+    })?;
+    println!("diagnostic entry={entry:?} bytes={}", source.len());
+    let arguments = project.arguments();
+    let owned = arguments
+        .iter()
+        .map(|argument| std::ffi::CString::new(argument.as_bytes()).expect("no interior NUL"))
+        .collect::<Vec<_>>();
+    let borrowed = owned
+        .iter()
+        .map(std::ffi::CString::as_c_str)
+        .collect::<Vec<_>>();
+    let file_name = std::ffi::CString::new(project.entry().to_string_lossy().as_bytes())
+        .expect("no interior NUL");
+    let directory = std::ffi::CString::new(project.root().to_string_lossy().as_bytes())
+        .expect("no interior NUL");
+    let mut declarations = vec![empty_declaration(); MAX_CLANG_DECLARATIONS];
+    let mut types = vec![empty_type(); MAX_CLANG_TYPES];
+    let mut type_edges = vec![empty_type_edge(); MAX_CLANG_TYPE_EDGES];
+    let mut references = vec![empty_reference(); MAX_CLANG_REFERENCES];
+    let mut diagnostics = vec![empty_diagnostic(); MAX_CLANG_DIAGNOSTICS];
+    let mut includes = vec![empty_include(); MAX_CLANG_INCLUDES];
+    let mut overrides = vec![empty_override(); MAX_CLANG_OVERRIDES];
+    let started = std::time::Instant::now();
+    let outcome = collect(
+        ClangInput::from_database(&file_name, &source, &borrowed, &directory).map_err(|_| {
+            TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Function,
+            })
+        })?,
+        ClangScratch {
+            declarations: &mut declarations,
+            types: &mut types,
+            type_edges: &mut type_edges,
+            references: &mut references,
+            diagnostics: &mut diagnostics,
+            includes: &mut includes,
+            overrides: &mut overrides,
+        },
+    );
+    println!("diagnostic elapsed={:?}", started.elapsed());
+    match outcome {
+        Ok(facts) => println!(
+            "diagnostic ok declarations={} types={} edges={} references={} includes={} diagnostics={} overrides={}",
+            facts.declarations.len(),
+            facts.types.len(),
+            facts.type_edges.len(),
+            facts.references.len(),
+            facts.includes.len(),
+            facts.diagnostics.len(),
+            facts.overrides.len(),
+        ),
+        Err(error) => println!("diagnostic error={error:?}"),
+    }
+    Ok(())
+}
+
+fn collect_sources(
+    root: &std::path::Path,
+    files: &mut Vec<(std::path::PathBuf, u64)>,
+) -> Result<(), TestError> {
+    for entry in fs::read_dir(root).map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Function,
+        })
+    })? {
+        let entry = entry.map_err(|_| {
+            TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Function,
+            })
+        })?;
+        let path = entry.path();
+        let metadata = entry.metadata().map_err(|_| {
+            TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Function,
+            })
+        })?;
+        if metadata.is_dir() {
+            collect_sources(&path, files)?;
+        } else if metadata.is_file()
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(extension, "c" | "cc" | "cpp" | "cxx" | "C" | "hpp" | "h")
+                })
+        {
+            files.push((path, metadata.len()));
+        }
+    }
+    Ok(())
 }
 
 /// Borrows one proven source span without permitting invalid native coordinates to panic a test.

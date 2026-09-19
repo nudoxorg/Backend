@@ -12,9 +12,10 @@ pub(super) struct PassPublisher {
     paths: PublicationPaths,
     limits: PublicationLimits,
     artifacts: PathBuf,
+    fragment_bytes: usize,
 }
 impl PassPublisher {
-    pub(super) fn new(pass: Pass) -> Result<Self, CorpusAuditError> {
+    pub(super) fn new(pass: Pass, fragment_bytes: usize) -> Result<Self, CorpusAuditError> {
         let label = match pass {
             Pass::Original => "original",
             Pass::Reverse => "reverse",
@@ -35,6 +36,7 @@ impl PassPublisher {
             paths,
             limits,
             artifacts,
+            fragment_bytes,
         })
     }
 
@@ -56,7 +58,8 @@ impl PassPublisher {
         let mut semantic_image_plan = [SemanticImageRegion::EMPTY; 1];
         let mut semantic_image_output = vec![0_u8; SEMANTIC_IMAGE_BYTES];
         let mut locality = vec![0_u8; LOCALITY_BYTES];
-        let mut binding = vec![0_u8; backend_engine::publication::binding::COMPILATION_BINDING_BYTES];
+        let mut binding =
+            vec![0_u8; backend_engine::publication::binding::COMPILATION_BINDING_BYTES];
         let publisher = self.publisher.as_ref().ok_or(CorpusAuditError::Invariant {
             key: None,
             cause: CorpusInvariant::PublisherClosed,
@@ -89,7 +92,7 @@ impl PassPublisher {
 
         let mut reopened_manifest = vec![0_u8; MANIFEST_BYTES];
         let mut reopened_facts = [None; 1];
-        let mut reopened_fragments = vec![0_u8; FRAGMENT_BYTES];
+        let mut reopened_fragments = vec![0_u8; self.fragment_bytes];
         let mut reopened_semantic_images = vec![0_u8; SEMANTIC_IMAGE_BYTES];
         let mut reopened_locality = vec![0_u8; LOCALITY_BYTES];
         let opened = open_published_semantic(

@@ -15,13 +15,24 @@ use super::{GraphPlan, GraphPlanFault};
 struct RelationFastKey {
     from: [u8; 32],
     target_tag: u8,
-    target: [u8; 32],
+    target: TargetFastKey,
     kind: u8,
     confidence: u8,
     source_present: u8,
     source_file: u32,
     source_start: u32,
     source_end: u32,
+}
+
+/// Staging-only link-target order. Local endpoints order by exact
+/// declaration identity; external endpoints order by their canonical
+/// external row, which is the external-key order the wire validator
+/// enforces. A fingerprint hash must never order externals: hash order
+/// is unrelated to key order and emits links the validator rejects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum TargetFastKey {
+    Local([u8; 32]),
+    External(u32),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -154,11 +165,13 @@ fn relation_fast_key(
     let (target_tag, target) = match relation.target {
         LinkTarget::Local(entity) => (
             local_target_tag(),
-            declaration_identity_bytes(canonical.entity_identity(entity)?),
+            TargetFastKey::Local(declaration_identity_bytes(
+                canonical.entity_identity(entity)?,
+            )),
         ),
         LinkTarget::External(external) => (
             external_target_tag(),
-            canonical.external_fingerprint(external)?,
+            TargetFastKey::External(canonical.external(external)?),
         ),
     };
     let (source_present, source_file, source_start, source_end) =

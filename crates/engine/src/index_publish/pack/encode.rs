@@ -5,13 +5,15 @@
 
 use core::ops::Deref;
 
-use backend_version::{ArtifactHasher, GenerationId, HASH_BYTES};
 use crate::index_build::PreparedIndex;
 use backend_semantic::index_core::{
     ENTITY_DOCUMENT_ID_BYTES, ExactRow, ExactSegment, LexicalRow, LexicalRowValue, LexicalSegment,
     MAX_EXACT_ROWS, MAX_LEXICAL_ROWS,
 };
-use backend_semantic::index_vocabulary::{ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId};
+use backend_semantic::index_vocabulary::{
+    ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId,
+};
+use backend_version::{ArtifactHasher, GenerationId, HASH_BYTES};
 use zerocopy::IntoBytes;
 
 use crate::index_publish::pack::error::{IndexPackEncodeError, IndexPackLane};

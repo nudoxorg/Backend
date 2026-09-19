@@ -296,11 +296,50 @@ fn every_language_plane_round_trips_through_its_typed_column() {
         .set_language_profile(LanguageProfile::Rust(backend_semantic::ir::RustEdition::Rust2024))
         .expect("Rust profile");
     let empty_atoms = builder.intern_attributes(&[]).expect("atoms");
+    let const_default = builder.intern_atom(b"0").expect("const default atom");
+    let const_defaults = builder
+        .intern_attributes(&[const_default])
+        .expect("const defaults");
+    let named_subject = builder
+        .intern_type(backend_semantic::ir::TypeExpr::Concrete(
+            backend_semantic::ir::ConcreteType::Builtin(backend_semantic::ir::BuiltinType::I32),
+        ))
+        .expect("named subject");
+    let associated_subject = builder
+        .intern_type(backend_semantic::ir::TypeExpr::Concrete(
+            backend_semantic::ir::ConcreteType::Builtin(backend_semantic::ir::BuiltinType::String),
+        ))
+        .expect("associated subject");
+    let bound_type = builder
+        .intern_type(backend_semantic::ir::TypeExpr::Concrete(
+            backend_semantic::ir::ConcreteType::Builtin(backend_semantic::ir::BuiltinType::Bool),
+        ))
+        .expect("bound type");
+    let bound_lifetime = builder.intern_atom(b"'scope").expect("bound lifetime");
+    let predicate_bounds = builder
+        .intern_type_parameter_bounds(&[
+            backend_semantic::ir::TypeParameterBound::Type(bound_type),
+            backend_semantic::ir::TypeParameterBound::Lifetime(bound_lifetime),
+        ])
+        .expect("predicate bounds");
     let rust = RustFacts {
         ownership: RustOwnership::MutableBorrow,
         lifetimes: empty_atoms,
         where_clauses: builder.intern_type_parameters(&[]).expect("where clauses"),
         macros: empty_atoms,
+        const_defaults,
+        free_predicates: builder
+            .intern_free_predicates(&[
+                backend_semantic::ir::FreePredicate {
+                    subject: named_subject,
+                    bounds: predicate_bounds,
+                },
+                backend_semantic::ir::FreePredicate {
+                    subject: associated_subject,
+                    bounds: predicate_bounds,
+                },
+            ])
+            .expect("free predicates"),
     };
     add_extension(&mut builder, LanguageExtensionInput::Rust(&rust));
     assert_typed_round_trip!(builder.finish().expect("Rust IR"), rust, rust);

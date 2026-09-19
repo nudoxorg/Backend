@@ -3,11 +3,13 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Qdrant authority, exact vector-coverage, and terminal classification.
 
+use backend_extension_qdrant::server::{
+    QdrantBlockingAdapter, QdrantCandidate, QueryCandidateCount,
+};
 use backend_semantic::graph_vector::{
     MAX_PARTITIONS, MissingPartitions, MissingPartitionsError, PartitionId, VectorAuthority,
     VectorSegmentDescriptor,
 };
-use backend_extension_qdrant::server::{QdrantBlockingAdapter, QdrantCandidate, QueryCandidateCount};
 
 use crate::retrieval::{
     CancellationCause, RetrievalAbsence, RetrievalBoundary, RetrievalCoverage,

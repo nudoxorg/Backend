@@ -49,7 +49,10 @@ struct ScannedFile {
     record: ProductSourceRecord,
     source_bytes: usize,
     encoded_record_bytes: usize,
-    compiler_source: CompilerSource,
+    /// `None` when the claiming frontend has no semantic profile for this
+    /// extension: the file is still a project row, it simply carries nothing
+    /// a compiler could be asked to analyse.
+    compiler_source: Option<CompilerSource>,
 }
 
 /// An opened project directory capability. Source reads resolve every path
@@ -555,7 +558,7 @@ pub(super) fn scan_project(
         source.update(&file.content_version);
         source.update(&file.analysis_version);
         files.push((key, record));
-        compiler_sources.push(compiler_source);
+        compiler_sources.extend(compiler_source);
     }
     files.sort_by_key(|(key, _)| *key);
     Ok(IndexSnapshot {
@@ -631,19 +634,34 @@ fn preflight_source_bytes(paths: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
+/// Directory names never walked by discovery.
+///
+/// Build output, dependency caches, and tool state only.  Every name here is
+/// a directory whose contents are generated: walking one costs the whole
+/// budget and indexes nothing a reader would search for.  This is deliberately
+/// not a heuristic list — no "tests", no "examples" — because guessing which
+/// directories are the project is how half of it goes missing.
+///
+/// `bin`, `obj`, `.git`, `.vs`, and `node_modules` are also excluded by the
+/// C# oracle's own loader (`frontends/csharp/helper/SourceLoader.cs:73`).
+/// The two lists must agree on those five names, or a `.cs` file the oracle
+/// refuses to load is still discovered here and waits for semantics that
+/// never arrive; keep them in sync.
 fn ignored_directory(name: &str) -> bool {
     matches!(
         name,
-        ".git"
-            | ".backend"
-            | "target"
-            | "node_modules"
-            | ".venv"
-            | "venv"
-            | "dist"
-            | "build"
-            | ".idea"
-            | ".vscode"
+        // Version control and this product's own state.
+        ".git" | ".backend"
+            // Rust, C#, and Java build output.
+            | "target" | "bin" | "obj" | "out" | ".gradle"
+            // JavaScript dependency and framework caches.
+            | "node_modules" | "dist" | "build" | ".angular" | ".next" | ".nuxt"
+            | ".svelte-kit" | ".turbo" | ".cache" | "coverage" | "Library"
+            // Python environments and tool caches.
+            | ".venv" | "venv" | "__pycache__" | ".mypy_cache" | ".pytest_cache"
+            | ".tox" | ".ruff_cache"
+            // Editor and IDE state.
+            | ".idea" | ".vscode" | ".vs"
     )
 }
 
@@ -694,11 +712,11 @@ fn unavailable_file(
     let mut encoded = Vec::new();
     ProductSourceRelation::encode_value(&record, &mut encoded);
     Ok(ScannedFile {
-        compiler_source: CompilerSource {
-            profile: source_profile(path)?,
+        compiler_source: profile_of(frontends, path).map(|profile| CompilerSource {
+            profile,
             relative_path: relative.clone(),
             source: String::new(),
-        },
+        }),
         relative,
         key,
         record,
@@ -736,6 +754,7 @@ fn scan_one(
     let frontend = frontends
         .for_path(path)
         .ok_or_else(|| SourceFault::Fatal("unsupported source language".to_owned()))?;
+    let profile = profile_fault(frontends, path)?;
     let key = product_source_file_key(project, &relative);
     let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
     let analysis = frontend.analysis_version();
@@ -749,7 +768,7 @@ fn scan_one(
                 && fields.analysis_version == analysis
         })
     {
-        return scanned_file(relative, key, record.clone(), source, bytes.len(), path)
+        return scanned_file(relative, key, record.clone(), source, bytes.len(), path, profile)
             .map_err(SourceFault::Fatal);
     }
 
@@ -775,8 +794,16 @@ fn scan_one(
         analysis,
         analyzed.declarations().clone(),
     )
+    .map_err(SourceFault::Fatal)?
+    // Persist the exact `SourceFactDomain` identity the semantic compiler
+    // derives from these bytes, so the view can detect an in-place edit by
+    // comparing content identity instead of path sets.
+    .with_source_identity(backend_version::ContentId::<
+        backend_version::SourceFactDomain,
+    >::from_canonical_bytes(&bytes))
     .map_err(SourceFault::Fatal)?;
-    scanned_file(relative, key, record, source, bytes.len(), path).map_err(SourceFault::Fatal)
+    scanned_file(relative, key, record, source, bytes.len(), path, profile)
+        .map_err(SourceFault::Fatal)
 }
 
 fn scanned_file(
@@ -786,6 +813,7 @@ fn scanned_file(
     source: String,
     source_bytes: usize,
     path: &Path,
+    profile: LanguageProfile,
 ) -> Result<ScannedFile, String> {
     let mut encoded = Vec::new();
     ProductSourceRelation::encode_value(&record, &mut encoded);
@@ -798,11 +826,11 @@ fn scanned_file(
         ));
     }
     Ok(ScannedFile {
-        compiler_source: CompilerSource {
-            profile: source_profile(path)?,
+        compiler_source: Some(CompilerSource {
+            profile,
             relative_path: relative.clone(),
             source,
-        },
+        }),
         relative,
         key,
         record,
@@ -811,23 +839,69 @@ fn scanned_file(
     })
 }
 
-pub(super) fn source_profile(path: &Path) -> Result<LanguageProfile, String> {
+/// Derives one file's semantic profile from the frontend that claimed it.
+///
+/// Discovery admits a file because some frontend claims its extension, so the
+/// claimed set is the only table that decides which extensions exist.  This
+/// function therefore never repeats that list: it asks the frontend set which
+/// language owns the path and then picks a dialect, which is the one question
+/// the extension still answers for the two languages that have two.
+///
+/// `None` means the path has no profile — either no frontend claims it, or the
+/// language's dialects do not cover this extension.  Callers treat that as one
+/// unavailable file, never as a broken project.
+///
+/// # Errors
+/// Returns an error only when the frontend registry itself cannot be built.
+pub(super) fn source_profile(path: &Path) -> Result<Option<LanguageProfile>, String> {
+    Ok(profile_of(frontends()?, path))
+}
+
+/// Resolves a discovered path's profile, or the typed fault its absence is.
+///
+/// A claimed extension with no semantic profile is one odd file, not a broken
+/// project: it is reported per file as
+/// [`SourceUnavailableReason::Unparsed`] — nothing could be extracted — and
+/// the scan continues.  Returning [`SourceFault::Fatal`] here is what made a
+/// single `postcss.config.js` sink an entire checkout.
+fn profile_fault(frontends: &FrontendSet, path: &Path) -> Result<LanguageProfile, SourceFault> {
+    profile_of(frontends, path)
+        .ok_or(SourceFault::Unavailable(SourceUnavailableReason::Unparsed))
+}
+
+/// Resolves a path's profile against an explicit frontend set.
+fn profile_of(frontends: &FrontendSet, path: &Path) -> Option<LanguageProfile> {
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
-        .unwrap_or("");
-    match extension {
-        "rs" => Ok(LanguageProfile::Rust(RustEdition::Rust2024)),
-        "ts" => Ok(LanguageProfile::TypeScript(TypeScriptSource::TypeScript)),
-        "tsx" => Ok(LanguageProfile::TypeScript(TypeScriptSource::Tsx)),
-        "py" => Ok(LanguageProfile::Python(PythonVersion::Python314)),
-        "go" => Ok(LanguageProfile::Go(GoVersion::Go125)),
-        "java" => Ok(LanguageProfile::Java(JavaRelease::Java25)),
-        "cs" => Ok(LanguageProfile::CSharp(CSharpVersion::CSharp14)),
-        "c" | "h" => Ok(LanguageProfile::C(CStandard::C23)),
-        "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Ok(LanguageProfile::Cxx(CxxStandard::Cxx23)),
-        _ => Err(format!("source {} has no semantic profile", path.display())),
-    }
+        .map(str::to_ascii_lowercase)?;
+    let language = frontends.for_path(path)?.language();
+    dialect(language, &extension)
+}
+
+/// Selects the dialect a claimed extension names inside one language.
+///
+/// Only TypeScript and Clang carry two dialects; every other language has a
+/// single profile, so its extensions cannot disagree.
+fn dialect(language: SourceLanguage, extension: &str) -> Option<LanguageProfile> {
+    Some(match language {
+        SourceLanguage::Rust => LanguageProfile::Rust(RustEdition::Rust2024),
+        SourceLanguage::Python => LanguageProfile::Python(PythonVersion::Python314),
+        SourceLanguage::Go => LanguageProfile::Go(GoVersion::Go125),
+        SourceLanguage::Java => LanguageProfile::Java(JavaRelease::Java25),
+        SourceLanguage::CSharp => LanguageProfile::CSharp(CSharpVersion::CSharp14),
+        SourceLanguage::TypeScript => LanguageProfile::TypeScript(match extension {
+            "tsx" | "jsx" => TypeScriptSource::Tsx,
+            _ => TypeScriptSource::TypeScript,
+        }),
+        SourceLanguage::Clang => match extension {
+            "c" | "h" | "m" => LanguageProfile::C(CStandard::C23),
+            "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" | "mm" => {
+                LanguageProfile::Cxx(CxxStandard::Cxx23)
+            }
+            _ => return None,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -955,6 +1029,51 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn scanned_files_persist_the_semantic_source_content_identity() -> Result<(), String> {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let unique = format!(
+            "backend-source-identity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos()
+        );
+        let scratch = Scratch(std::env::temp_dir().join(unique));
+        fs::create_dir_all(&scratch.0).map_err(|error| error.to_string())?;
+        let source = b"pub fn ferris() {}";
+        fs::write(scratch.0.join("lib.rs"), source).map_err(|error| error.to_string())?;
+        let scan = scan_project(
+            scratch.0.to_str().ok_or("non-UTF-8 scratch path")?,
+            [9; 32],
+            &BTreeMap::new(),
+        )?;
+        let fields = scan.files[0]
+            .1
+            .file_fields()
+            .ok_or("expected a source file record")?;
+        // The persisted identity must be exactly the construction the engine's
+        // semantic compiler derives from the same bytes, so a view comparing
+        // image provenance against file records compares like with like.
+        let expected = backend_version::ContentId::<backend_version::SourceFactDomain>
+            ::from_canonical_bytes(source);
+        assert_eq!(fields.source_identity, Some(expected));
+        assert_ne!(
+            fields.source_identity,
+            Some(backend_version::ContentId::<
+                backend_version::SourceFactDomain,
+            >::from_canonical_bytes(b"edited in place")),
+            "a distinct byte stream must not share the file's identity"
+        );
         Ok(())
     }
 
@@ -1476,5 +1595,270 @@ mod robustness_tests {
         );
         assert!(names_of(&repaired, "blob.rs").iter().any(|n| n == "ferris"));
         Ok(())
+    }
+}
+
+/// Discovery and semantic-profile agreement laws.
+///
+/// Discovery admits a file because a frontend claims its extension, and the
+/// file then needs a semantic profile.  When those two tables were written
+/// separately they disagreed: the TypeScript frontend claimed `js`, `jsx`,
+/// `mjs` and `cjs`, the profile table knew none of them, and the mismatch was
+/// classified as fatal — so any checkout containing a single `postcss.config.js`
+/// could not be indexed at all.
+///
+/// The assertions are on rendered content — the profile each extension
+/// resolves to, the declaration names a scanned config file contributes, and
+/// the typed reason an unprofiled file records — because a scan that admitted
+/// the files and dropped every declaration inside them would keep the same
+/// file count.
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+    use backend_engine::DeclarationRetention;
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(label: &str) -> Result<Scratch, String> {
+        let unique = format!(
+            "backend-profile-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos()
+        );
+        let directory = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        Ok(Scratch(directory))
+    }
+
+    fn scan(scratch: &Scratch) -> Result<IndexSnapshot, String> {
+        let root = scratch.0.to_str().ok_or("non-UTF-8 scratch path")?;
+        scan_project(root, [11; 32], &BTreeMap::new())
+    }
+
+    fn retention_of(scan: &IndexSnapshot, path: &str) -> Option<DeclarationRetention> {
+        scan.files.iter().find_map(|(_, record)| {
+            let fields = record.file_fields()?;
+            (fields.path == path).then_some(fields.retention)
+        })
+    }
+
+    fn names_of(scan: &IndexSnapshot, path: &str) -> Vec<String> {
+        scan.files
+            .iter()
+            .find_map(|(_, record)| {
+                let fields = record.file_fields()?;
+                (fields.path == path).then(|| {
+                    fields
+                        .declarations
+                        .iter()
+                        .map(|declaration| declaration.name().to_owned())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    fn paths_of(scan: &IndexSnapshot) -> Vec<String> {
+        scan.files
+            .iter()
+            .filter_map(|(_, record)| record.file_fields().map(|fields| fields.path.to_owned()))
+            .collect()
+    }
+
+    /// Every extension any frontend claims resolves to a profile of that
+    /// frontend's own language.
+    ///
+    /// This is the law the two tables broke.  It fails the moment a frontend
+    /// gains an extension whose dialect nobody chose, which is exactly how
+    /// `js` arrived without a profile.
+    #[test]
+    fn every_claimed_extension_resolves_to_its_own_language_profile() -> Result<(), String> {
+        let frontends = FrontendSet::build()?;
+        let mut checked = 0_usize;
+        for frontend in &frontends.values {
+            let language = frontend.language();
+            for extension in frontend.baseline.extensions() {
+                let path = PathBuf::from(format!("claimed.{extension}"));
+                let profile = profile_of(&frontends, &path).ok_or_else(|| {
+                    format!(
+                        "{language:?} claims .{extension} but no semantic profile \
+                         covers it, so every project containing one fails"
+                    )
+                })?;
+                if profile.language() != language {
+                    return Err(format!(
+                        ".{extension} is claimed by {language:?} but resolves to \
+                         {:?}",
+                        profile.language()
+                    ));
+                }
+                checked = checked.checked_add(1).ok_or("extension count overflow")?;
+            }
+        }
+        if checked < 20 {
+            return Err(format!(
+                "only {checked} claimed extensions were inspected; the frontend \
+                 inventory cannot have shrunk this far"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The extensions the QA report named resolve to the dialect they are.
+    #[test]
+    fn javascript_and_python_stub_extensions_carry_their_dialect() -> Result<(), String> {
+        let frontends = FrontendSet::build()?;
+        let expected = [
+            ("app.js", LanguageProfile::TypeScript(TypeScriptSource::TypeScript)),
+            ("app.mjs", LanguageProfile::TypeScript(TypeScriptSource::TypeScript)),
+            ("app.cjs", LanguageProfile::TypeScript(TypeScriptSource::TypeScript)),
+            ("app.mts", LanguageProfile::TypeScript(TypeScriptSource::TypeScript)),
+            ("app.cts", LanguageProfile::TypeScript(TypeScriptSource::TypeScript)),
+            ("app.ts", LanguageProfile::TypeScript(TypeScriptSource::TypeScript)),
+            ("app.jsx", LanguageProfile::TypeScript(TypeScriptSource::Tsx)),
+            ("app.tsx", LanguageProfile::TypeScript(TypeScriptSource::Tsx)),
+            ("stub.pyi", LanguageProfile::Python(PythonVersion::Python314)),
+            ("app.pyw", LanguageProfile::Python(PythonVersion::Python314)),
+            ("lib.m", LanguageProfile::C(CStandard::C23)),
+            ("lib.mm", LanguageProfile::Cxx(CxxStandard::Cxx23)),
+        ];
+        for (name, want) in expected {
+            let got = profile_of(&frontends, Path::new(name))
+                .ok_or_else(|| format!("{name} has no semantic profile"))?;
+            if got != want {
+                return Err(format!("{name} resolved to {got:?}, expected {want:?}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// An extension with no profile is one unavailable file, never a fatal
+    /// scan.
+    ///
+    /// The distinction is the whole defect: `Fatal` propagates out of
+    /// `scan_file` and fails `scan_project`, so the project cannot be indexed,
+    /// while `Unavailable` becomes a row and the rest of the project survives.
+    #[test]
+    fn an_unprofiled_extension_is_unavailable_and_not_fatal() -> Result<(), String> {
+        let frontends = FrontendSet::build()?;
+        let fault = profile_fault(&frontends, Path::new("weird.qq")).err();
+        if fault
+            != Some(SourceFault::Unavailable(
+                SourceUnavailableReason::Unparsed,
+            ))
+        {
+            return Err(format!(
+                "an unprofiled extension produced {fault:?}; anything fatal here \
+                 sinks the whole project"
+            ));
+        }
+        profile_fault(&frontends, Path::new("postcss.config.js"))
+            .map_err(|fault| format!("a claimed .js file still faults: {fault:?}"))?;
+        Ok(())
+    }
+
+    /// A front-end checkout with a root config script and a framework cache
+    /// indexes: the cache is never walked, the config file is scanned.
+    #[test]
+    fn a_javascript_project_indexes_its_config_and_skips_framework_caches()
+    -> Result<(), String> {
+        let scratch = scratch("javascript")?;
+        fs::write(
+            scratch.0.join("postcss.config.js"),
+            b"function tailwindPlugin(options) { return options; }\n",
+        )
+        .map_err(|error| error.to_string())?;
+        fs::create_dir_all(scratch.0.join("src")).map_err(|error| error.to_string())?;
+        fs::write(
+            scratch.0.join("src/app.ts"),
+            b"export function renderShell(depth: number): number { return depth; }\n",
+        )
+        .map_err(|error| error.to_string())?;
+        fs::create_dir_all(scratch.0.join(".angular/cache")).map_err(|e| e.to_string())?;
+        fs::write(
+            scratch.0.join(".angular/cache/x.js"),
+            b"function cachedChunk() { return 1; }\n",
+        )
+        .map_err(|error| error.to_string())?;
+
+        let scan = scan(&scratch)?;
+
+        assert_eq!(
+            retention_of(&scan, "postcss.config.js"),
+            Some(DeclarationRetention::Complete),
+            "a root config script must be scanned, not refused"
+        );
+        assert!(
+            names_of(&scan, "postcss.config.js")
+                .iter()
+                .any(|name| name == "tailwindPlugin"),
+            "the config file must contribute its declarations, got {:?}",
+            names_of(&scan, "postcss.config.js")
+        );
+        assert!(
+            names_of(&scan, "src/app.ts")
+                .iter()
+                .any(|name| name == "renderShell"),
+            "the TypeScript source must still index alongside it, got {:?}",
+            names_of(&scan, "src/app.ts")
+        );
+        let paths = paths_of(&scan);
+        assert!(
+            !paths.iter().any(|path| path.starts_with(".angular")),
+            "a framework cache must never be walked, found {paths:?}"
+        );
+        Ok(())
+    }
+
+    /// Every build-output directory the C# oracle refuses to load is also
+    /// refused by discovery, so no `.cs` file waits for semantics that the
+    /// oracle will never produce.
+    ///
+    /// Mirrors `frontends/csharp/helper/SourceLoader.cs:73`.
+    #[test]
+    fn discovery_skips_every_directory_the_csharp_oracle_skips() {
+        for name in ["bin", "obj", ".git", ".vs", "node_modules"] {
+            assert!(
+                ignored_directory(name),
+                "{name} is excluded by the C# source loader but still walked here"
+            );
+        }
+    }
+
+    /// The tool and cache directories a real checkout carries are not walked.
+    #[test]
+    fn discovery_skips_framework_and_tool_caches() {
+        for name in [
+            ".angular",
+            ".next",
+            ".nuxt",
+            ".svelte-kit",
+            ".turbo",
+            ".cache",
+            "out",
+            "coverage",
+            "Library",
+            ".gradle",
+            ".mypy_cache",
+            ".pytest_cache",
+            "__pycache__",
+            ".tox",
+            ".ruff_cache",
+        ] {
+            assert!(ignored_directory(name), "{name} is still walked");
+        }
+        assert!(
+            !ignored_directory("src"),
+            "discovery must not start guessing which directories are the project"
+        );
     }
 }

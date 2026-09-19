@@ -2,14 +2,12 @@
 
 use core::mem::MaybeUninit;
 
-use backend_semantic::ir::{SemanticCoreReader, SemanticReader};
-use crate::publication::{
-    OpenedSemanticArtifact, semantic_immutable::SemanticImageArtifactFacts,
-};
+use crate::publication::{OpenedSemanticArtifact, semantic_immutable::SemanticImageArtifactFacts};
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactRow, ExactSegment, LexicalOrderKey, LexicalRow,
     LexicalScore, LexicalSegment,
 };
+use backend_semantic::ir::{SemanticCoreReader, SemanticReader};
 
 use super::{
     BuildAdmissionError, BuildDerivationError, BuildError, BuildRegion, DerivationResult,

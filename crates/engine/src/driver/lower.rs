@@ -54,8 +54,8 @@ use provenance::{MemberSetCapture, Provenance, local_parent};
 /// a source with more declarations is a typed lane rejection, never a
 /// truncated emission. The bound also fixes every canonicalization scratch,
 /// output, and resource reservation below.
-/// 16,384 slots × 4-byte `u32` coordinate = 64 KiB; measured high-water 6,882 facts. Roll back to 8,192 if every target package stays below 4,096 facts.
-pub(super) const MAX_EMISSION_FACTS: usize = 16384;
+/// 32,768 slots × 4-byte `u32` coordinate = 128 KiB; measured high-water 6,882 facts, and the clang authority mirror measures 32,768 declaration-lane rows for fmt's deferred-parameter traversal, so the coupled protocol geometry moves with it. Roll back to 16,384 if every target package stays below 8,192 facts.
+pub(super) const MAX_EMISSION_FACTS: usize = 32768;
 /// Dense bound of one fact's ordered product children.
 /// 64 slots × 8-byte child = 512 bytes per fact; measured target high-water 244 pooled children. Roll back to 32 if it stays below 16 per fact.
 pub(super) const MAX_FACT_CHILDREN: usize = 64;
@@ -98,6 +98,10 @@ pub(super) const MAX_TYPE_PARAMETERS: usize = 4096;
 /// Each bound has written source evidence, so the request geometry scales
 /// with entered bytes rather than allocating a language-wide maximum.
 pub(super) const MAX_TYPE_PARAMETER_BOUNDS: usize = MAX_TYPE_PARAMETERS * MAX_REF_LIST_ELEMENTS;
+/// Dense bound of pooled Rust free generic predicates across one request.
+/// Each predicate carries written source evidence, so real usage scales with
+/// entered bytes like type parameters do.
+pub(super) const MAX_FREE_PREDICATES: usize = 4096;
 /// Dense bound of pooled reference lists per lane kind.
 ///
 /// The request reservation is `min(facts, MAX_REF_LISTS)`, so this ceiling
@@ -106,11 +110,12 @@ pub(super) const MAX_TYPE_PARAMETER_BOUNDS: usize = MAX_TYPE_PARAMETERS * MAX_RE
 /// a hard `RefListCapacity` wall.
 pub(super) const MAX_REF_LISTS: usize = 4096;
 /// Dense bound of one pooled reference list.
-/// The measured corpus maximum is 46 (`ToStringBuilder.append`).
-/// Raised from 64 to 128 to admit larger real import/signature lists while
-/// preserving the dense geometry; a list beyond this is still a typed
-/// `RefListElements` rejection, never a truncated emission.
-pub(super) const MAX_REF_LIST_ELEMENTS: usize = 128;
+/// The measured corpus maximum is 220 (`pflag.FlagSet` method set; testify's
+/// `Assertions` reaches 146). Raised from 128 to 255 — the exact `u8` list
+/// length ceiling — to admit real wide method sets while preserving the dense
+/// geometry; a list beyond this is still a typed `RefListElements` rejection,
+/// never a truncated emission.
+pub(super) const MAX_REF_LIST_ELEMENTS: usize = 255;
 /// Total atom budget: one name per fact plus every extension atom.
 pub(super) const MAX_EMISSION_ATOMS: usize = MAX_EMISSION_FACTS + MAX_EXTENSION_ATOMS;
 /// Dense bound of anonymous type rows interned beside the fact rows.
@@ -158,6 +163,7 @@ pub(crate) struct ResourcePlan {
     extension_atoms: usize,
     type_parameters: usize,
     type_parameter_bounds: usize,
+    free_predicates: usize,
     ref_lists: usize,
     anonymous_rows: usize,
     anonymous_type_children: usize,
@@ -177,6 +183,7 @@ impl ResourcePlan {
             extension_atoms: MAX_EXTENSION_ATOMS,
             type_parameters: MAX_TYPE_PARAMETERS,
             type_parameter_bounds: MAX_TYPE_PARAMETER_BOUNDS,
+            free_predicates: MAX_FREE_PREDICATES,
             ref_lists: MAX_REF_LISTS,
             anonymous_rows: MAX_ANONYMOUS_TYPE_ROWS,
             anonymous_type_children: MAX_ANONYMOUS_TYPE_CHILDREN,
@@ -222,6 +229,7 @@ impl ResourcePlan {
             extension_atoms: bounded(units / 2 + 8, MAX_EXTENSION_ATOMS),
             type_parameters: bounded(units / 2 + 8, MAX_TYPE_PARAMETERS),
             type_parameter_bounds: bounded(units, MAX_TYPE_PARAMETER_BOUNDS),
+            free_predicates: bounded(units / 2 + 8, MAX_FREE_PREDICATES),
             ref_lists: bounded(facts, MAX_REF_LISTS),
             anonymous_rows: bounded(
                 units.saturating_mul(multiplier).saturating_add(8),
@@ -295,6 +303,17 @@ pub(super) struct SemanticFact<'source> {
     /// visibility value can be authority truth, so value inspection cannot
     /// establish this bit after admission.
     visibility_captured: bool,
+    /// Whether this declaration is a static class member. A static and an
+    /// instance member can share kind, name, owner, and structure yet remain
+    /// two distinct source declarations, so this bit is an identity
+    /// discriminator, never a payload cell.
+    static_member: bool,
+    /// An authority-proven 16-byte distinction for two declarations whose
+    /// structural identity is otherwise byte-identical — for example two C++
+    /// class template specializations whose non-type arguments are erased from
+    /// the type graph. It enters declaration identity only when present, so
+    /// every other declaration's frames remain byte-identical.
+    identity_discriminator: Option<[u8; 16]>,
 }
 
 /// One per-language extension fact committed beside a declaration.
@@ -426,7 +445,26 @@ impl<'source> SemanticFact<'source> {
             extension: None,
             visibility: Visibility::Unknown,
             visibility_captured: false,
+            static_member: false,
+            identity_discriminator: None,
         }
+    }
+
+    /// Marks this declaration as a static class member so its identity cannot
+    /// collide with an identically named instance member of the same owner.
+    #[must_use]
+    pub(super) const fn static_member(mut self) -> Self {
+        self.static_member = true;
+        self
+    }
+
+    /// Commits an authority-proven identity discriminator for this declaration.
+    /// It is framed into the declaration variant exactly when the source
+    /// authority proves two declarations cannot be separated structurally.
+    #[must_use]
+    pub(super) const fn with_identity_discriminator(mut self, discriminator: [u8; 16]) -> Self {
+        self.identity_discriminator = Some(discriminator);
+        self
     }
 
     /// Commits the declared-type record and its borrowed children.
@@ -566,6 +604,11 @@ pub(super) struct FactSet<'source> {
     key_digests: Box<[CorePayloadHash]>,
     visibility: Box<[Visibility]>,
     visibility_captured: Box<[bool]>,
+    /// Static-class-member discriminator carried into declaration identity.
+    static_members: Box<[bool]>,
+    /// Authority-proven identity discriminators carried into the declaration
+    /// variant exactly when the declaring frontend supplies one.
+    identity_discriminators: Box<[Option<[u8; 16]>]>,
     documentation_captured: Box<[bool]>,
     provenance: Provenance,
     occurrence_owners: Box<[u32]>,
@@ -580,6 +623,10 @@ pub(super) struct FactSet<'source> {
     type_parameter_bounds: Box<[backend_semantic::ir::ExtensionTypeParameterBound<'source>]>,
     type_parameter_bound_len: usize,
     type_parameter_ranges: Box<[Option<StagedTypeParameterRange>]>,
+    impl_traits: Box<[Option<StagedImplTrait<'source>>]>,
+    free_predicates: Box<[backend_semantic::ir::ExtensionFreePredicate]>,
+    free_predicate_len: usize,
+    free_predicate_ranges: Box<[Option<StagedFreePredicateRange>]>,
     atom_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]]>,
     atom_list_lengths: Box<[u8]>,
     atom_list_len: usize,
@@ -616,6 +663,34 @@ pub(super) struct FactSet<'source> {
 /// an empty declaration precedes the first generic declaration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct StagedTypeParameterRange {
+    start: u32,
+    length: u32,
+}
+
+/// One Rust implementation's trait reference for identity framing. The
+/// coordinate never enters a hash directly: a local trait frames through its
+/// already-minted coordinate-free locator plus its exact written spelling
+/// (which carries the trait's generic arguments, the only content separating
+/// several legal impls of one local trait for one self type), a foreign trait
+/// through its exact written spelling, and an inherent implementation through
+/// its distinct tag.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StagedImplTrait<'source> {
+    /// An inherent implementation with no trait reference.
+    Inherent,
+    /// A lane-local trait by fact ordinal and exact written spelling.
+    Local {
+        target: u32,
+        spelling: &'source [u8],
+    },
+    /// A trait outside this fragment by exact written spelling.
+    Foreign(&'source [u8]),
+}
+
+/// An explicit transaction-local free-predicate range. Like its type-parameter
+/// counterpart, the public list ID stays dense only after admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct StagedFreePredicateRange {
     start: u32,
     length: u32,
 }
@@ -839,17 +914,21 @@ impl<'source> FactSet<'source> {
             key_digests: vec![CorePayloadHash::from_raw([0; 16]); plan.facts].into_boxed_slice(),
             visibility: vec![Visibility::Unknown; plan.facts].into_boxed_slice(),
             visibility_captured: vec![false; plan.facts].into_boxed_slice(),
+            static_members: vec![false; plan.facts].into_boxed_slice(),
+            identity_discriminators: vec![None; plan.facts].into_boxed_slice(),
             documentation_captured: vec![false; plan.facts].into_boxed_slice(),
             provenance: Provenance::new(plan.facts),
             occurrence_owners: vec![0; plan.occurrences].into_boxed_slice(),
             occurrences: vec![
                 Occurrence {
-                    target: backend_semantic::ir::OccurrenceTarget::Foreign(backend_semantic::ir::ForeignKey {
-                        origin: backend_semantic::ir::ForeignOrigin::Universe { ecosystem: "" },
-                        path: "",
-                        display: "",
-                        kind: None,
-                    }),
+                    target: backend_semantic::ir::OccurrenceTarget::Foreign(
+                        backend_semantic::ir::ForeignKey {
+                            origin: backend_semantic::ir::ForeignOrigin::Universe { ecosystem: "" },
+                            path: "",
+                            display: "",
+                            kind: None,
+                        }
+                    ),
                     kind: backend_semantic::ir::ReferenceKind::FunctionCall,
                     confidence: backend_semantic::ir::OccurrenceConfidence::Syntactic,
                     span: backend_semantic::ir::RelSpan { start: 0, end: 0 },
@@ -894,6 +973,20 @@ impl<'source> FactSet<'source> {
             .into_boxed_slice(),
             type_parameter_bound_len: 0,
             type_parameter_ranges: vec![None; plan.facts].into_boxed_slice(),
+            impl_traits: vec![None; plan.facts].into_boxed_slice(),
+            free_predicates: vec![
+                backend_semantic::ir::ExtensionFreePredicate {
+                    subject: 0,
+                    bounds: backend_semantic::ir::ExtensionTypeParameterBoundRange {
+                        start: 0,
+                        length: 0,
+                    },
+                };
+                plan.free_predicates
+            ]
+            .into_boxed_slice(),
+            free_predicate_len: 0,
+            free_predicate_ranges: vec![None; plan.facts].into_boxed_slice(),
             atom_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; plan.ref_lists].into_boxed_slice(),
             atom_list_lengths: vec![0; plan.ref_lists].into_boxed_slice(),
             atom_list_len: 0,
@@ -1211,9 +1304,9 @@ impl<'source> FactSet<'source> {
             let target = if self.computed_child_targets[pooled] == STAGED_TEXT_CHILD {
                 TypeChildTarget::Text
             } else {
-                TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(backend_semantic::ir::TypeId::new(
-                    self.computed_child_targets[pooled],
-                )))
+                TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
+                    backend_semantic::ir::TypeId::new(self.computed_child_targets[pooled]),
+                ))
             };
             if let Err(fault) = record
                 .validate_child_in_row(
@@ -1317,13 +1410,17 @@ impl<'source> FactSet<'source> {
             && extension_type_parameter_start(&extension).is_some()
         {
             return Err(FactFault::RefTarget {
-                lane: backend_semantic::vocabulary::ProjectionFactLane::ReplacementTypeParameterRange,
+                lane:
+                    backend_semantic::vocabulary::ProjectionFactLane::ReplacementTypeParameterRange,
                 raw: ordinal as u32,
                 fact_count: self.type_parameter_len,
             });
         }
         if self.type_parameter_ranges[ordinal].is_none() {
             self.type_parameter_ranges[ordinal] = self.capture_type_parameter_range(&extension)?;
+        }
+        if self.free_predicate_ranges[ordinal].is_none() {
+            self.free_predicate_ranges[ordinal] = self.capture_free_predicate_range(&extension)?;
         }
         self.extensions[ordinal] = Some(extension);
         Ok(())
@@ -1420,12 +1517,56 @@ impl<'source> FactSet<'source> {
         }))
     }
 
+    /// Captures one Rust free-predicate range ambiently at push time. Only
+    /// Rust extensions carry a free list; every other lane keeps its absent
+    /// state.
+    fn capture_free_predicate_range(
+        &self,
+        extension: &EmissionExtension,
+    ) -> Result<Option<StagedFreePredicateRange>, FactFault> {
+        let Some(start) = extension_free_predicate_start(extension) else {
+            return Ok(None);
+        };
+        let start = start.raw as usize;
+        if start > self.free_predicate_len {
+            return Err(FactFault::RefTarget {
+                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
+                raw: start as u32,
+                fact_count: self.free_predicate_len,
+            });
+        }
+        Ok(Some(StagedFreePredicateRange {
+            start: start as u32,
+            length: (self.free_predicate_len - start) as u32,
+        }))
+    }
+
     /// Binds a child declaration to an already admitted parent.  Parentage
     /// stays in the transaction staging lane, so the compact and owned views
     /// derive their relation from one authority fact rather than a renderer
     /// side channel.
     pub(super) fn attach_parent(&mut self, child: u32, parent: u32) -> Result<(), FactFault> {
         self.provenance.attach_parent(self.len, child, parent)
+    }
+
+    /// Records one Rust implementation's trait reference for identity
+    /// framing. Only `Implementation` rows carry a trait; every other row
+    /// keeps its absent state.
+    pub(super) fn set_impl_trait(
+        &mut self,
+        ordinal: u32,
+        trait_ref: StagedImplTrait<'source>,
+    ) -> Result<(), FactFault> {
+        let slot = self
+            .impl_traits
+            .get_mut(ordinal as usize)
+            .ok_or(FactFault::RefTarget {
+                lane: backend_semantic::vocabulary::ProjectionFactLane::Extensions,
+                raw: ordinal,
+                fact_count: self.len,
+            })?;
+        *slot = Some(trait_ref);
+        Ok(())
     }
 
     /// Marks that an authority considered parentage for this row even when it
@@ -1563,6 +1704,66 @@ impl<'source> FactSet<'source> {
         }
         self.is_computed_type_row(row)
             .then(|| usize::from(self.computed_child_counts[(row - COMPUTED_ROW_BASE) as usize]))
+    }
+
+    /// Reports whether the committed row at `row` carries exactly the staged
+    /// record cells of `record`. The pooled child span is staging geometry and
+    /// compares through the targets instead.
+    pub(super) fn staged_record_matches(
+        &self,
+        row: u32,
+        record: &SemanticTypeRecord<'source>,
+    ) -> bool {
+        self.staged_type_slot(row)
+            .is_some_and(|_| self.type_record_for_demand(row) == *record)
+    }
+
+    /// Reports whether two committed row coordinates carry structurally
+    /// identical type frames: the record cells, the ordered staged children
+    /// (names and flags), and every recursive target. Anonymous and computed
+    /// staging mints fresh coordinates for genuinely identical graphs, so
+    /// the comparison is structural, never ordinal-exact, below the roots.
+    pub(super) fn staged_rows_structurally_equal(&self, left: u32, right: u32, depth: u8) -> bool {
+        if left == right {
+            return true;
+        }
+        if depth == 0 {
+            return false;
+        }
+        if self.staged_type_slot(left).is_none() || self.staged_type_slot(right).is_none() {
+            return left == right;
+        }
+        if !self.staged_record_matches(left, &self.type_record_for_demand(right)) {
+            return false;
+        }
+        let Some(left_count) = self.staged_type_child_count(left) else {
+            return left == right;
+        };
+        let Some(right_count) = self.staged_type_child_count(right) else {
+            return left == right;
+        };
+        if left_count != right_count {
+            return false;
+        }
+        for position in 0..left_count {
+            let (
+                Some((left_target, left_name, left_flags)),
+                Some((right_target, right_name, right_flags)),
+            ) = (
+                self.staged_type_child(left, position),
+                self.staged_type_child(right, position),
+            )
+            else {
+                return false;
+            };
+            if left_name != right_name || left_flags != right_flags {
+                return false;
+            }
+            if !self.staged_rows_structurally_equal(left_target, right_target, depth - 1) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Interns one extension atom spelling, returning its provisional
@@ -1779,6 +1980,145 @@ impl<'source> FactSet<'source> {
         self.type_parameter_len += 1;
         self.type_parameter_bound_len = end;
         Ok((self.type_parameter_len - 1) as u32)
+    }
+
+    /// Appends one Rust free predicate with its exact ordered bound run. The
+    /// subject names an already-hosted staged type row and the bounds reuse
+    /// the shared type-parameter bound lane, so admission rewrites both
+    /// through its one staged-type remapping.
+    pub(super) fn push_free_predicate(
+        &mut self,
+        subject: u32,
+        bounds: &[backend_semantic::ir::ExtensionTypeParameterBound<'source>],
+    ) -> Result<u32, FactFault> {
+        if subject >= self.len as u32
+            && !self.is_anonymous_type_row(subject)
+            && !self.is_computed_type_row(subject)
+        {
+            return Err(FactFault::RefTarget {
+                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameters,
+                raw: subject,
+                fact_count: self.len,
+            });
+        }
+        for raw in bounds.iter().filter_map(|bound| match bound {
+            backend_semantic::ir::ExtensionTypeParameterBound::Type(raw) => Some(*raw),
+            backend_semantic::ir::ExtensionTypeParameterBound::Lifetime(_) => None,
+        }) {
+            if raw >= self.len as u32
+                && !self.is_anonymous_type_row(raw)
+                && !self.is_computed_type_row(raw)
+            {
+                return Err(FactFault::RefTarget {
+                    lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameters,
+                    raw,
+                    fact_count: self.len,
+                });
+            }
+        }
+        if self.free_predicate_len == self.plan.free_predicates {
+            return Err(FactFault::TypeParameterCapacity);
+        }
+        let start = self.type_parameter_bound_len;
+        let end = start
+            .checked_add(bounds.len())
+            .ok_or(FactFault::TypeParameterBoundCapacity {
+                requested: usize::MAX,
+                available: self.plan.type_parameter_bounds,
+            })?;
+        if end > self.plan.type_parameter_bounds {
+            return Err(FactFault::TypeParameterBoundCapacity {
+                requested: end,
+                available: self.plan.type_parameter_bounds,
+            });
+        }
+        self.type_parameter_bounds[start..end].copy_from_slice(bounds);
+        self.free_predicates[self.free_predicate_len] =
+            backend_semantic::ir::ExtensionFreePredicate {
+                subject,
+                bounds: backend_semantic::ir::ExtensionTypeParameterBoundRange {
+                    start: u32::try_from(start).map_err(|_| FactFault::TypeParameterCapacity)?,
+                    length: u32::try_from(bounds.len())
+                        .map_err(|_| FactFault::TypeParameterCapacity)?,
+                },
+            };
+        self.free_predicate_len += 1;
+        self.type_parameter_bound_len = end;
+        Ok((self.free_predicate_len - 1) as u32)
+    }
+
+    /// Captures an explicit free-predicate list range at the producer's close
+    /// point. Attachment time is not a list boundary.
+    pub(super) fn free_predicate_range(
+        &self,
+        start: u32,
+    ) -> Result<StagedFreePredicateRange, FactFault> {
+        let start = start as usize;
+        if start > self.free_predicate_len {
+            return Err(FactFault::RefTarget {
+                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
+                raw: start as u32,
+                fact_count: self.free_predicate_len,
+            });
+        }
+        Ok(StagedFreePredicateRange {
+            start: start as u32,
+            length: (self.free_predicate_len - start) as u32,
+        })
+    }
+
+    /// Retrieves the immutable close-time free-predicate handle of an
+    /// admitted generic declaration.
+    pub(super) fn captured_free_predicate_range(
+        &self,
+        ordinal: usize,
+    ) -> Result<StagedFreePredicateRange, FactFault> {
+        self.free_predicate_ranges
+            .get(ordinal)
+            .copied()
+            .flatten()
+            .ok_or(FactFault::RefTarget {
+                lane: backend_semantic::vocabulary::ProjectionFactLane::CapturedTypeParameterRange,
+                raw: ordinal as u32,
+                fact_count: self.len,
+            })
+    }
+
+    /// Binds an already-closed free-predicate range to one fact's extension
+    /// replacement, validating the staged start against the replacement row.
+    pub(super) fn set_free_predicate_range(
+        &mut self,
+        ordinal: usize,
+        extension: &EmissionExtension,
+        range: StagedFreePredicateRange,
+    ) -> Result<(), FactFault> {
+        if ordinal >= self.len {
+            return Err(FactFault::RefTarget {
+                lane: backend_semantic::vocabulary::ProjectionFactLane::Extensions,
+                raw: ordinal as u32,
+                fact_count: self.len,
+            });
+        }
+        let Some(start) = extension_free_predicate_start(extension) else {
+            return Err(FactFault::RefTarget {
+                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
+                raw: range.start,
+                fact_count: self.free_predicate_len,
+            });
+        };
+        let range_end = range.start.checked_add(range.length);
+        if start.raw != range.start
+            || !matches!(range_end, Some(end) if end as usize <= self.free_predicate_len)
+            || matches!(self.free_predicate_ranges[ordinal], Some(existing) if existing != range)
+        {
+            return Err(FactFault::RefTarget {
+                lane: backend_semantic::vocabulary::ProjectionFactLane::TypeParameterRanges,
+                raw: range.start,
+                fact_count: self.free_predicate_len,
+            });
+        }
+        self.free_predicate_ranges[ordinal] = Some(range);
+        Ok(())
     }
 
     /// Appends one occurrence fact owned by an already-pushed fact ordinal.
@@ -2081,6 +2421,21 @@ impl<'source> FactSet<'source> {
                             &mut projection_scratch,
                         )?,
                         macros: live_atom_list(&mut tree, self, value.macros)?,
+                        const_defaults: live_atom_list(&mut tree, self, value.const_defaults)?,
+                        free_predicates: live_free_predicates(
+                            &mut tree,
+                            self,
+                            value.free_predicates,
+                            self.free_predicate_ranges[ordinal].ok_or(
+                                backend_semantic::ir::BuildError::Dangling {
+                                    space: backend_semantic::ir::SemanticSpace::FreePredicates,
+                                    raw: value.free_predicates.raw,
+                                },
+                            )?,
+                            &mut type_ids,
+                            &mut type_seen,
+                            &mut projection_scratch,
+                        )?,
                         ..*value
                     });
                     extension_bindings[ordinal] = Some(RewrittenExtension::Rust(pool_index));
@@ -2248,28 +2603,24 @@ impl<'source> FactSet<'source> {
                         raw: *provisional,
                     }
                 })?;
-                let attribute =
-                    *self
-                        .extension_atoms
-                        .get(offset)
-                        .ok_or(backend_semantic::ir::BuildError::Dangling {
-                            space: backend_semantic::ir::SemanticSpace::Atom,
-                            raw: *provisional,
-                        })?;
-                let position =
-                    start
-                        .checked_add(relative)
-                        .ok_or(backend_semantic::ir::BuildError::Dangling {
-                            space: backend_semantic::ir::SemanticSpace::AtomList,
-                            raw: list as u32,
-                        })?;
-                let slot =
-                    item_attributes
-                        .get_mut(position)
-                        .ok_or(backend_semantic::ir::BuildError::Dangling {
-                            space: backend_semantic::ir::SemanticSpace::AtomList,
-                            raw: list as u32,
-                        })?;
+                let attribute = *self.extension_atoms.get(offset).ok_or(
+                    backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::Atom,
+                        raw: *provisional,
+                    },
+                )?;
+                let position = start.checked_add(relative).ok_or(
+                    backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::AtomList,
+                        raw: list as u32,
+                    },
+                )?;
+                let slot = item_attributes.get_mut(position).ok_or(
+                    backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::AtomList,
+                        raw: list as u32,
+                    },
+                )?;
                 *slot = attribute;
             }
         }
@@ -2361,8 +2712,9 @@ impl<'source> FactSet<'source> {
                 attributes: &item_attributes[item_attribute_ranges[ordinal].0
                     ..item_attribute_ranges[ordinal].0 + item_attribute_ranges[ordinal].1],
                 source: self.provenance.source_spans()[ordinal].and_then(|span| {
-                    source_file
-                        .and_then(|file| backend_semantic::ir::SourceSpan::new(file, span.start, span.end))
+                    source_file.and_then(|file| {
+                        backend_semantic::ir::SourceSpan::new(file, span.start, span.end)
+                    })
                 }),
                 extension,
             };
@@ -2440,9 +2792,9 @@ impl<'source> FactSet<'source> {
             let target = if child.target == u32::MAX {
                 TypeChildTarget::Text
             } else {
-                TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(backend_semantic::ir::TypeId::new(
-                    child.target,
-                )))
+                TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
+                    backend_semantic::ir::TypeId::new(child.target),
+                ))
             };
             let wire_child = SemanticTypeChild {
                 target,
@@ -2516,6 +2868,12 @@ impl<'source> FactSet<'source> {
                 .map_err(rejected)?,
             None => None,
         };
+        let free_predicate_range = match fact.extension.as_ref() {
+            Some(extension) => self
+                .capture_free_predicate_range(extension)
+                .map_err(rejected)?,
+            None => None,
+        };
         let type_pooled_start = self.total_type_children;
         let requested_type_children = usize::from(fact.type_child_count);
         let type_pooled_end = type_pooled_start
@@ -2563,9 +2921,12 @@ impl<'source> FactSet<'source> {
         self.constructors[fact_ordinal] = fact.constructor;
         self.child_counts[fact_ordinal] = fact.child_count;
         self.type_parameter_ranges[fact_ordinal] = type_parameter_range;
+        self.free_predicate_ranges[fact_ordinal] = free_predicate_range;
         self.extensions[fact_ordinal] = fact.extension;
         self.visibility[fact_ordinal] = fact.visibility;
         self.visibility_captured[fact_ordinal] = fact.visibility_captured;
+        self.static_members[fact_ordinal] = fact.static_member;
+        self.identity_discriminators[fact_ordinal] = fact.identity_discriminator;
         self.key_digests[fact_ordinal] = identity::fact_payload_basis(&fact);
         for (offset, child) in fact
             .children
@@ -2623,8 +2984,9 @@ fn doc_input<'source>(
     fragment: DocFragmentInput<'source>,
 ) -> Result<DocInput<'source>, backend_semantic::ir::BuildError> {
     let text = |bytes: &'source [u8]| {
-        core::str::from_utf8(bytes)
-            .map_err(|_| backend_semantic::ir::BuildError::InvalidDocumentationUtf8 { bytes: bytes.len() })
+        core::str::from_utf8(bytes).map_err(|_| {
+            backend_semantic::ir::BuildError::InvalidDocumentationUtf8 { bytes: bytes.len() }
+        })
     };
     match fragment {
         DocFragmentInput::Text(bytes) => Ok(DocInput::Text(text(bytes)?)),
@@ -2682,10 +3044,23 @@ fn extension_type_parameter_start(
     }
 }
 
+/// Staging start of one Rust free-predicate list. Only Rust carries free
+/// predicates; every other lane keeps its absent state.
+fn extension_free_predicate_start(
+    extension: &EmissionExtension,
+) -> Option<backend_semantic::ir::FreePredicateListId> {
+    match extension {
+        EmissionExtension::Rust(facts) => Some(facts.free_predicates),
+        _ => None,
+    }
+}
+
 /// Attributes that belong to the generic tree item as well as their language
 /// extension row.  The bytes are staged once and borrowed into both views;
 /// this is not a renderer-side reconstruction.
-fn extension_item_attributes(extension: &EmissionExtension) -> Option<backend_semantic::ir::AtomListId> {
+fn extension_item_attributes(
+    extension: &EmissionExtension,
+) -> Option<backend_semantic::ir::AtomListId> {
     match extension {
         EmissionExtension::CSharp(facts) => Some(facts.attributes),
         EmissionExtension::Python(facts) => Some(facts.decorators),
@@ -2716,21 +3091,18 @@ fn live_type_parameters<'source>(
     if range.length == 0 {
         return tree.intern_type_parameters(&[]);
     }
-    let end =
-        start
-            .checked_add(range.length as usize)
-            .ok_or(backend_semantic::ir::BuildError::Dangling {
-                space: backend_semantic::ir::SemanticSpace::TypeParameters,
-                raw: start as u32,
-            })?;
-    let parameters =
-        facts
-            .type_parameters
-            .get(start..end)
-            .ok_or(backend_semantic::ir::BuildError::Dangling {
-                space: backend_semantic::ir::SemanticSpace::TypeParameters,
-                raw: start as u32,
-            })?;
+    let end = start.checked_add(range.length as usize).ok_or(
+        backend_semantic::ir::BuildError::Dangling {
+            space: backend_semantic::ir::SemanticSpace::TypeParameters,
+            raw: start as u32,
+        },
+    )?;
+    let parameters = facts.type_parameters.get(start..end).ok_or(
+        backend_semantic::ir::BuildError::Dangling {
+            space: backend_semantic::ir::SemanticSpace::TypeParameters,
+            raw: start as u32,
+        },
+    )?;
     let mut materialized = Vec::with_capacity(parameters.len());
     for parameter in parameters {
         let bound_end = parameter
@@ -2798,15 +3170,12 @@ fn live_atom_list<'source>(
     if facts.atom_list_len == 0 && index == 0 {
         return tree.intern_attributes(&[]);
     }
-    let length =
-        facts
-            .atom_list_lengths
-            .get(index)
-            .copied()
-            .ok_or(backend_semantic::ir::BuildError::Dangling {
-                space: backend_semantic::ir::SemanticSpace::AtomList,
-                raw: id.raw,
-            })?;
+    let length = facts.atom_list_lengths.get(index).copied().ok_or(
+        backend_semantic::ir::BuildError::Dangling {
+            space: backend_semantic::ir::SemanticSpace::AtomList,
+            raw: id.raw,
+        },
+    )?;
     if index >= facts.atom_list_len {
         return Err(backend_semantic::ir::BuildError::Dangling {
             space: backend_semantic::ir::SemanticSpace::AtomList,
@@ -2826,6 +3195,79 @@ fn live_atom_list<'source>(
         atoms.push(tree.intern_atom(bytes)?);
     }
     tree.intern_attributes(&atoms)
+}
+
+/// Materializes one Rust free-predicate list into the carrying builder. The
+/// staging handle names the declaration's pooled run start and the captured
+/// range bounds its length; subjects and type bounds project through the one
+/// staged-type mapping while lifetime bounds keep their exact spelling.
+fn live_free_predicates<'source>(
+    tree: &mut backend_semantic::ir::TreeBuilder<'_, '_>,
+    facts: &FactSet<'source>,
+    start: backend_semantic::ir::FreePredicateListId,
+    range: StagedFreePredicateRange,
+    ids: &mut [Option<TypeId>],
+    seen: &mut [u8],
+    scratch: &mut ProjectionScratch,
+) -> Result<backend_semantic::ir::FreePredicateListId, backend_semantic::ir::BuildError> {
+    let start = start.raw as usize;
+    if range.start != start as u32 {
+        return Err(backend_semantic::ir::BuildError::Dangling {
+            space: backend_semantic::ir::SemanticSpace::FreePredicates,
+            raw: start as u32,
+        });
+    }
+    if range.length == 0 {
+        return tree.intern_free_predicates(&[]);
+    }
+    let end = start.checked_add(range.length as usize).ok_or(
+        backend_semantic::ir::BuildError::Dangling {
+            space: backend_semantic::ir::SemanticSpace::FreePredicates,
+            raw: start as u32,
+        },
+    )?;
+    let predicates = facts.free_predicates.get(start..end).ok_or(
+        backend_semantic::ir::BuildError::Dangling {
+            space: backend_semantic::ir::SemanticSpace::FreePredicates,
+            raw: start as u32,
+        },
+    )?;
+    let mut materialized = Vec::with_capacity(predicates.len());
+    for predicate in predicates {
+        let bound_end = predicate
+            .bounds
+            .start
+            .checked_add(predicate.bounds.length)
+            .ok_or(backend_semantic::ir::BuildError::Dangling {
+                space: backend_semantic::ir::SemanticSpace::TypeParameterBounds,
+                raw: predicate.bounds.start,
+            })? as usize;
+        let bounds = facts
+            .type_parameter_bounds
+            .get(predicate.bounds.start as usize..bound_end)
+            .ok_or(backend_semantic::ir::BuildError::Dangling {
+                space: backend_semantic::ir::SemanticSpace::TypeParameterBounds,
+                raw: predicate.bounds.start,
+            })?;
+        let mut live_bounds = Vec::with_capacity(bounds.len());
+        for bound in bounds {
+            live_bounds.push(match bound {
+                backend_semantic::ir::ExtensionTypeParameterBound::Type(row) => {
+                    backend_semantic::ir::TypeParameterBound::Type(live_type(
+                        tree, facts, *row, ids, seen, scratch,
+                    )?)
+                }
+                backend_semantic::ir::ExtensionTypeParameterBound::Lifetime(name) => {
+                    backend_semantic::ir::TypeParameterBound::Lifetime(tree.intern_atom(name)?)
+                }
+            });
+        }
+        materialized.push(backend_semantic::ir::FreePredicate {
+            subject: live_type(tree, facts, predicate.subject, ids, seen, scratch)?,
+            bounds: tree.intern_type_parameter_bounds(&live_bounds)?,
+        });
+    }
+    tree.intern_free_predicates(&materialized)
 }
 
 fn live_type_list<'source>(
@@ -2904,13 +3346,21 @@ fn live_extension_span<'source>(
     )
 }
 
-const fn occurrence_link_kind(kind: backend_semantic::ir::ReferenceKind) -> backend_semantic::ir::LinkKind {
+const fn occurrence_link_kind(
+    kind: backend_semantic::ir::ReferenceKind,
+) -> backend_semantic::ir::LinkKind {
     match kind {
         backend_semantic::ir::ReferenceKind::FunctionCall => backend_semantic::ir::LinkKind::Calls,
-        backend_semantic::ir::ReferenceKind::MethodCall => backend_semantic::ir::LinkKind::MethodCall,
-        backend_semantic::ir::ReferenceKind::TypeReference => backend_semantic::ir::LinkKind::TypeReference,
+        backend_semantic::ir::ReferenceKind::MethodCall => {
+            backend_semantic::ir::LinkKind::MethodCall
+        }
+        backend_semantic::ir::ReferenceKind::TypeReference => {
+            backend_semantic::ir::LinkKind::TypeReference
+        }
         backend_semantic::ir::ReferenceKind::VariableUse => backend_semantic::ir::LinkKind::Reads,
-        backend_semantic::ir::ReferenceKind::MacroInvocation => backend_semantic::ir::LinkKind::Calls,
+        backend_semantic::ir::ReferenceKind::MacroInvocation => {
+            backend_semantic::ir::LinkKind::Calls
+        }
         backend_semantic::ir::ReferenceKind::FieldAccess => backend_semantic::ir::LinkKind::Reads,
         backend_semantic::ir::ReferenceKind::Import => backend_semantic::ir::LinkKind::Imports,
         backend_semantic::ir::ReferenceKind::Overrides => backend_semantic::ir::LinkKind::Overrides,
@@ -2921,11 +3371,21 @@ const fn occurrence_link_confidence(
     confidence: backend_semantic::ir::OccurrenceConfidence,
 ) -> backend_semantic::ir::Confidence {
     match confidence {
-        backend_semantic::ir::OccurrenceConfidence::Syntactic => backend_semantic::ir::Confidence::Syntactic,
-        backend_semantic::ir::OccurrenceConfidence::Suffix => backend_semantic::ir::Confidence::Heuristic,
-        backend_semantic::ir::OccurrenceConfidence::Index => backend_semantic::ir::Confidence::Indexed,
-        backend_semantic::ir::OccurrenceConfidence::Import => backend_semantic::ir::Confidence::Imported,
-        backend_semantic::ir::OccurrenceConfidence::Oracle => backend_semantic::ir::Confidence::Compiler,
+        backend_semantic::ir::OccurrenceConfidence::Syntactic => {
+            backend_semantic::ir::Confidence::Syntactic
+        }
+        backend_semantic::ir::OccurrenceConfidence::Suffix => {
+            backend_semantic::ir::Confidence::Heuristic
+        }
+        backend_semantic::ir::OccurrenceConfidence::Index => {
+            backend_semantic::ir::Confidence::Indexed
+        }
+        backend_semantic::ir::OccurrenceConfidence::Import => {
+            backend_semantic::ir::Confidence::Imported
+        }
+        backend_semantic::ir::OccurrenceConfidence::Oracle => {
+            backend_semantic::ir::Confidence::Compiler
+        }
     }
 }
 
@@ -3004,10 +3464,12 @@ fn external_from_occurrence<'source>(
                 }
             })?;
             let origin = match foreign.origin {
-                backend_semantic::ir::ForeignOrigin::Package(lineage) => ForeignTargetOrigin::Package {
-                    ecosystem: tree.intern_atom(lineage.ecosystem.as_bytes())?,
-                    package: tree.intern_atom(lineage.name.as_bytes())?,
-                },
+                backend_semantic::ir::ForeignOrigin::Package(lineage) => {
+                    ForeignTargetOrigin::Package {
+                        ecosystem: tree.intern_atom(lineage.ecosystem.as_bytes())?,
+                        package: tree.intern_atom(lineage.name.as_bytes())?,
+                    }
+                }
                 backend_semantic::ir::ForeignOrigin::Namespace {
                     ecosystem,
                     namespace,
@@ -3172,12 +3634,12 @@ impl ProjectionScratch {
         capacity: usize,
         row: u32,
     ) -> Result<usize, backend_semantic::ir::BuildError> {
-        let required = used
-            .checked_add(additional)
-            .ok_or(backend_semantic::ir::BuildError::Dangling {
-                space: backend_semantic::ir::SemanticSpace::Type,
-                raw: row,
-            })?;
+        let required =
+            used.checked_add(additional)
+                .ok_or(backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Type,
+                    raw: row,
+                })?;
         if required > capacity {
             return Err(backend_semantic::ir::BuildError::Dangling {
                 space: backend_semantic::ir::SemanticSpace::Type,
@@ -3198,25 +3660,25 @@ fn resolved_type_child(
     ids: &[Option<TypeId>],
     seen: &[u8],
 ) -> Result<TypeId, backend_semantic::ir::BuildError> {
-    let (target, _, _) =
-        facts
-            .staged_type_child(row, position)
-            .ok_or(backend_semantic::ir::BuildError::Dangling {
-                space: backend_semantic::ir::SemanticSpace::Type,
-                raw: row,
-            })?;
+    let (target, _, _) = facts.staged_type_child(row, position).ok_or(
+        backend_semantic::ir::BuildError::Dangling {
+            space: backend_semantic::ir::SemanticSpace::Type,
+            raw: row,
+        },
+    )?;
     if target == STAGED_TEXT_CHILD {
         return Err(backend_semantic::ir::BuildError::Dangling {
             space: backend_semantic::ir::SemanticSpace::Type,
             raw: row,
         });
     }
-    let index = facts
-        .staged_type_slot(target)
-        .ok_or(backend_semantic::ir::BuildError::Dangling {
-            space: backend_semantic::ir::SemanticSpace::Type,
-            raw: target,
-        })?;
+    let index =
+        facts
+            .staged_type_slot(target)
+            .ok_or(backend_semantic::ir::BuildError::Dangling {
+                space: backend_semantic::ir::SemanticSpace::Type,
+                raw: target,
+            })?;
     if seen.get(index).copied() != Some(2) {
         return Err(backend_semantic::ir::BuildError::Dangling {
             space: backend_semantic::ir::SemanticSpace::Type,
@@ -3278,12 +3740,12 @@ fn live_type<'source>(
         live_type(
             tree,
             facts,
-            child(position)
-                .map(|item| item.0)
-                .ok_or(backend_semantic::ir::BuildError::Dangling {
+            child(position).map(|item| item.0).ok_or(
+                backend_semantic::ir::BuildError::Dangling {
                     space: backend_semantic::ir::SemanticSpace::Type,
                     raw: row,
-                })?,
+                },
+            )?,
             ids,
             seen,
             scratch,
@@ -3429,7 +3891,10 @@ fn live_type<'source>(
                         ))?
                         .erase(),
                 },
-                Ok(PrimitiveShape::Builtin) => match record.text.and_then(builtin_from_spelling) {
+                Ok(PrimitiveShape::Builtin) => match record
+                    .text
+                    .and_then(|spelling| builtin_from_spelling(spelling, record.payload1))
+                {
                     Some(builtin) => tree
                         .intern_concrete(ConcreteType::Builtin(builtin))?
                         .erase(),
@@ -3601,15 +4066,22 @@ fn live_type<'source>(
         SemanticTypeTag::Nominal => match record.nominal {
             Some(NominalRef::Local(id)) => tree.intern_concrete(ConcreteType::Nominal(id))?.erase(),
             Some(NominalRef::External(external)) => {
-                let spelling = record.text.ok_or(backend_semantic::ir::BuildError::Dangling {
-                    space: backend_semantic::ir::SemanticSpace::Atom,
-                    raw: external.ordinal,
-                })?;
+                let spelling = record
+                    .text
+                    .ok_or(backend_semantic::ir::BuildError::Dangling {
+                        space: backend_semantic::ir::SemanticSpace::Atom,
+                        raw: external.ordinal,
+                    })?;
                 let path = tree.intern_atom(spelling)?;
                 let target = tree.intern_external(ExternalTarget::FragmentEntity {
                     target: external,
                     display: path,
                 })?;
+                tree.intern_concrete(ConcreteType::External(target))?
+                    .erase()
+            }
+            Some(NominalRef::Stable(stable)) => {
+                let target = tree.intern_external(ExternalTarget::Stable { target: stable })?;
                 tree.intern_concrete(ConcreteType::External(target))?
                     .erase()
             }
@@ -3693,10 +4165,12 @@ fn live_type<'source>(
             })?
             .erase(),
         SemanticTypeTag::ArrayConstExpression if child_count == 1 => {
-            let expression = record.text.ok_or(backend_semantic::ir::BuildError::Dangling {
-                space: backend_semantic::ir::SemanticSpace::Atom,
-                raw: row,
-            })?;
+            let expression = record
+                .text
+                .ok_or(backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Atom,
+                    raw: row,
+                })?;
             let expression = tree.intern_atom(expression)?;
             tree.intern_concrete(ConcreteType::Array {
                 element: child_type(0)?,
@@ -3758,10 +4232,12 @@ fn live_type<'source>(
                 .erase()
         }
         SemanticTypeTag::QualifiedPath if child_count >= 1 => {
-            let spelling = record.text.ok_or(backend_semantic::ir::BuildError::Dangling {
-                space: backend_semantic::ir::SemanticSpace::Atom,
-                raw: row,
-            })?;
+            let spelling = record
+                .text
+                .ok_or(backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Atom,
+                    raw: row,
+                })?;
             // Legacy rows retain only source spelling. Their source authority
             // did not capture parsed components, so traversal remains typed
             // unavailable rather than fabricating one whole-spelling segment.
@@ -3864,13 +4340,12 @@ fn live_type<'source>(
                 space: backend_semantic::ir::SemanticSpace::Type,
                 raw: row,
             })?;
-            let parameter_count =
-                child_count
-                    .checked_sub(result_count)
-                    .ok_or(backend_semantic::ir::BuildError::Dangling {
-                        space: backend_semantic::ir::SemanticSpace::Type,
-                        raw: row,
-                    })?;
+            let parameter_count = child_count.checked_sub(result_count).ok_or(
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Type,
+                    raw: row,
+                },
+            )?;
             let parameter_start = scratch.begin_tuple_elements(parameter_count, row)?;
             for position in 0..parameter_count {
                 let (target, child_name, flags) =
@@ -3936,7 +4411,9 @@ fn live_type<'source>(
         }
         SemanticTypeTag::Unknown => {
             let reason = match backend_semantic::ir::TypeReason::try_from(record.payload0) {
-                Ok(backend_semantic::ir::TypeReason::Unannotated) => backend_semantic::ir::UnknownReason::Unannotated,
+                Ok(backend_semantic::ir::TypeReason::Unannotated) => {
+                    backend_semantic::ir::UnknownReason::Unannotated
+                }
                 Ok(backend_semantic::ir::TypeReason::DynamicallyTyped) => {
                     backend_semantic::ir::UnknownReason::DynamicallyTyped
                 }
@@ -3949,7 +4426,9 @@ fn live_type<'source>(
                 Ok(backend_semantic::ir::TypeReason::TruncatedAtDepthLimit) => {
                     backend_semantic::ir::UnknownReason::TruncatedAtDepthLimit
                 }
-                Ok(backend_semantic::ir::TypeReason::OracleGap) => backend_semantic::ir::UnknownReason::OracleGap,
+                Ok(backend_semantic::ir::TypeReason::OracleGap) => {
+                    backend_semantic::ir::UnknownReason::OracleGap
+                }
                 Ok(backend_semantic::ir::TypeReason::NoIrRepresentation) | Err(_) => {
                     backend_semantic::ir::UnknownReason::NoIrRepresentation
                 }
@@ -3985,7 +4464,17 @@ fn live_type<'source>(
 /// the closed cross-language builtin vocabulary.  Width-bearing primitives
 /// remain payload-driven above; an unrecognized spelling stays an explicit
 /// `NoIrRepresentation` unknown with its atom, never a false `String`.
-const fn builtin_from_spelling(spelling: &[u8]) -> Option<BuiltinType> {
+///
+/// `width` is the measured bit width carried in the row's free payload cell.
+/// It is authoritative only for the canonical C integer ranks `long` and
+/// `long long` (and their unsigned forms), whose exact C rank is not
+/// recoverable from a width cell and whose spelling is therefore the identity
+/// cell.  Using the measured width keeps the result correct on every ABI
+/// instead of hardcoding LP64.  Every other spelling ignores `width`.
+const fn builtin_from_spelling(spelling: &[u8], width: u32) -> Option<BuiltinType> {
+    if let Some(builtin) = c_integer_from_spelling(spelling, width) {
+        return Some(builtin);
+    }
     match spelling {
         b"void" | b"System.Void" | b"java.lang.Void" => Some(BuiltinType::Void),
         b"bigint" => Some(BuiltinType::BigInt),
@@ -4010,6 +4499,32 @@ const fn builtin_from_spelling(spelling: &[u8]) -> Option<BuiltinType> {
         b"isize" | b"nint" => Some(BuiltinType::NativeSignedInteger),
         b"usize" | b"uint" => Some(BuiltinType::NativeUnsignedInteger),
         b"uintptr" | b"nuint" => Some(BuiltinType::PointerAddressInteger),
+        _ => None,
+    }
+}
+
+/// Maps the canonical C rank spellings `long`/`long long` and their unsigned
+/// forms, together with the measured width, to the closed width-bearing
+/// builtin vocabulary.  This is deliberately narrower than "every C integer
+/// spelling": `int` is already a live spelling for Python's arbitrary-precision
+/// integer, so only the ranks that need spelling identity are claimed here.
+const fn c_integer_from_spelling(spelling: &[u8], width: u32) -> Option<BuiltinType> {
+    let signed = match spelling {
+        b"long" | b"long long" => true,
+        b"unsigned long" | b"unsigned long long" => false,
+        _ => return None,
+    };
+    match (width, signed) {
+        (8, false) => Some(BuiltinType::U8),
+        (8, true) => Some(BuiltinType::I8),
+        (16, false) => Some(BuiltinType::U16),
+        (16, true) => Some(BuiltinType::I16),
+        (32, false) => Some(BuiltinType::U32),
+        (32, true) => Some(BuiltinType::I32),
+        (64, false) => Some(BuiltinType::U64),
+        (64, true) => Some(BuiltinType::I64),
+        (128, false) => Some(BuiltinType::U128),
+        (128, true) => Some(BuiltinType::I128),
         _ => None,
     }
 }
@@ -4349,9 +4864,11 @@ pub(super) fn admit<'source, 'output>(
     .into_boxed_slice();
     type_parameters[..facts.type_parameter_len]
         .copy_from_slice(&facts.type_parameters[..facts.type_parameter_len]);
-    let mut type_parameter_bounds =
-        vec![backend_semantic::ir::ExtensionTypeParameterBound::Type(0); facts.type_parameter_bound_len]
-            .into_boxed_slice();
+    let mut type_parameter_bounds = vec![
+        backend_semantic::ir::ExtensionTypeParameterBound::Type(0);
+        facts.type_parameter_bound_len
+    ]
+    .into_boxed_slice();
     for (index, bound) in facts.type_parameter_bounds[..facts.type_parameter_bound_len]
         .iter()
         .enumerate()
@@ -4367,7 +4884,9 @@ pub(super) fn admit<'source, 'output>(
     }
     for parameter in type_parameters[..facts.type_parameter_len].iter_mut() {
         parameter.default = parameter.default.map(remap);
-        if let backend_semantic::ir::ExtensionTypeParameterKind::ConstValue { value_type } = parameter.kind {
+        if let backend_semantic::ir::ExtensionTypeParameterKind::ConstValue { value_type } =
+            parameter.kind
+        {
             parameter.kind = backend_semantic::ir::ExtensionTypeParameterKind::ConstValue {
                 value_type: remap(value_type),
             };
@@ -4388,9 +4907,9 @@ pub(super) fn admit<'source, 'output>(
                 target: if raw == STAGED_TEXT_CHILD {
                     TypeChildTarget::Text
                 } else {
-                    TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(backend_semantic::ir::TypeId::new(
-                        remap(raw),
-                    )))
+                    TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
+                        backend_semantic::ir::TypeId::new(remap(raw)),
+                    ))
                 },
                 name: facts.anonymous_child_names[base + offset],
                 flags: facts.anonymous_child_flags[base + offset],
@@ -4415,9 +4934,9 @@ pub(super) fn admit<'source, 'output>(
                 target: if source.0 == STAGED_TEXT_CHILD {
                     TypeChildTarget::Text
                 } else {
-                    TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(backend_semantic::ir::TypeId::new(
-                        remap(source.0),
-                    )))
+                    TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
+                        backend_semantic::ir::TypeId::new(remap(source.0)),
+                    ))
                 },
                 name: source.1,
                 flags: source.2,
@@ -4452,9 +4971,9 @@ pub(super) fn admit<'source, 'output>(
                 target: if raw == STAGED_TEXT_CHILD {
                     TypeChildTarget::Text
                 } else {
-                    TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(backend_semantic::ir::TypeId::new(
-                        remap(raw),
-                    )))
+                    TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
+                        backend_semantic::ir::TypeId::new(remap(raw)),
+                    ))
                 },
                 name: facts.computed_child_names[base + offset],
                 flags: facts.computed_child_flags[base + offset],
@@ -4535,8 +5054,92 @@ pub(super) fn admit<'source, 'output>(
                 element_count: facts.type_parameter_len,
             }
         })?;
-        durable_type_parameter_ids[ordinal] = Some(backend_semantic::ir::TypeParameterListId::new(list));
+        durable_type_parameter_ids[ordinal] =
+            Some(backend_semantic::ir::TypeParameterListId::new(list));
         durable_type_parameter_range_len += 1;
+    }
+
+    // Rust-only free-predicate rows and their per-declaration list table.
+    // Staging subjects are rewritten through the one staged-type remapping;
+    // bound runs reuse the shared remapped bound lane, so their ranges carry
+    // over unchanged. Like type-parameter lists, every Rust extension keeps
+    // its own list row, even when empty.
+    let mut durable_free_predicates = vec![
+        backend_semantic::ir::ExtensionFreePredicate {
+            subject: 0,
+            bounds: backend_semantic::ir::ExtensionTypeParameterBoundRange {
+                start: 0,
+                length: 0
+            },
+        };
+        facts.free_predicate_len
+    ]
+    .into_boxed_slice();
+    for (index, predicate) in facts.free_predicates[..facts.free_predicate_len]
+        .iter()
+        .enumerate()
+    {
+        durable_free_predicates[index] = backend_semantic::ir::ExtensionFreePredicate {
+            subject: remap_staged_type(predicate.subject),
+            bounds: predicate.bounds,
+        };
+    }
+    let mut durable_free_predicate_ranges = vec![
+        ExtensionTypeParameterRange {
+            start: 0,
+            length: 0,
+        };
+        fact_count
+    ]
+    .into_boxed_slice();
+    let mut durable_free_predicate_ids = vec![None; fact_count].into_boxed_slice();
+    let mut durable_free_predicate_range_len = 0_usize;
+    for (ordinal, extension) in facts.extensions[..fact_count].iter().enumerate() {
+        let Some(start) = extension.as_ref().and_then(extension_free_predicate_start) else {
+            continue;
+        };
+        let Some(range) = facts.free_predicate_ranges[ordinal] else {
+            return Err(AdmissionFault::ExtensionTypeParameters {
+                row: ordinal,
+                start: start.raw,
+                length: 0,
+                element_count: facts.free_predicate_len,
+            });
+        };
+        let Some(end) = range.start.checked_add(range.length) else {
+            return Err(AdmissionFault::ExtensionTypeParameters {
+                row: ordinal,
+                start: range.start,
+                length: range.length,
+                element_count: facts.free_predicate_len,
+            });
+        };
+        if range.start != start.raw
+            || usize::try_from(end).map_or(true, |end| end > facts.free_predicate_len)
+        {
+            return Err(AdmissionFault::ExtensionTypeParameters {
+                row: ordinal,
+                start: range.start,
+                length: range.length,
+                element_count: facts.free_predicate_len,
+            });
+        }
+        durable_free_predicate_ranges[durable_free_predicate_range_len] =
+            ExtensionTypeParameterRange {
+                start: range.start,
+                length: range.length,
+            };
+        let list = u32::try_from(durable_free_predicate_range_len).map_err(|_| {
+            AdmissionFault::ExtensionTypeParameters {
+                row: ordinal,
+                start: range.start,
+                length: range.length,
+                element_count: facts.free_predicate_len,
+            }
+        })?;
+        durable_free_predicate_ids[ordinal] =
+            Some(backend_semantic::ir::FreePredicateListId::new(list));
+        durable_free_predicate_range_len += 1;
     }
 
     // Language-extension section: dense per-plane fact pools plus their row
@@ -4626,6 +5229,14 @@ pub(super) fn admit<'source, 'output>(
                         element_count: facts.type_parameter_len,
                     },
                 )?;
+                rewritten.free_predicates = durable_free_predicate_ids[ordinal].ok_or(
+                    AdmissionFault::ExtensionTypeParameters {
+                        row: ordinal,
+                        start: value.free_predicates.raw,
+                        length: 0,
+                        element_count: facts.free_predicate_len,
+                    },
+                )?;
                 extension_rows[ordinal] = next_extension_ordinal(&rust_pool);
                 rust_pool.push(rewritten);
             }
@@ -4660,7 +5271,9 @@ pub(super) fn admit<'source, 'output>(
         OccurrenceInput {
             owner: backend_semantic::ir::EntityId::new(0),
             occurrence: Occurrence {
-                target: backend_semantic::ir::OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(0)),
+                target: backend_semantic::ir::OccurrenceTarget::Local(
+                    backend_semantic::ir::EntityId::new(0)
+                ),
                 kind: backend_semantic::ir::ReferenceKind::FunctionCall,
                 confidence: backend_semantic::ir::OccurrenceConfidence::Syntactic,
                 span: backend_semantic::ir::RelSpan { start: 0, end: 0 },
@@ -4749,10 +5362,28 @@ pub(super) fn admit<'source, 'output>(
             elements: &facts.entity_lists[index][..usize::from(*length)],
         };
     }
+    const EMPTY_FREE_PREDICATE_LISTS: [ExtensionTypeParameterRange; 1] =
+        [ExtensionTypeParameterRange {
+            start: 0,
+            length: 0,
+        }];
+    let (durable_free_predicates, durable_free_predicate_lists): (
+        &[backend_semantic::ir::ExtensionFreePredicate],
+        &[ExtensionTypeParameterRange],
+    ) = if durable_free_predicate_range_len == 0 {
+        (&[], &EMPTY_FREE_PREDICATE_LISTS)
+    } else {
+        (
+            &durable_free_predicates[..facts.free_predicate_len],
+            &durable_free_predicate_ranges[..durable_free_predicate_range_len],
+        )
+    };
     let extension_pools = ExtensionPoolsLane {
         type_parameters: &type_parameters[..facts.type_parameter_len],
         type_parameter_bounds: &type_parameter_bounds[..facts.type_parameter_bound_len],
         type_parameter_lists: &durable_type_parameter_ranges[..durable_type_parameter_range_len],
+        free_predicates: durable_free_predicates,
+        free_predicate_lists: durable_free_predicate_lists,
         atom_lists: &pooled_atom_lists[..facts.atom_list_len],
         type_lists: &pooled_type_lists[..facts.type_list_len],
         entity_lists: &pooled_entity_lists[..facts.entity_list_len],
@@ -4848,9 +5479,18 @@ pub(super) fn admit<'source, 'output>(
 /// coercion; callers that need widths inspect that lane instead of this index.
 fn compact_primitive_node(record: SemanticTypeRecord<'_>) -> Option<(usize, TypeNode)> {
     match builtin_type(record)? {
-        BuiltinType::Bool => Some((0, TypeNode::Primitive(backend_semantic::ir::PrimitiveType::Bool))),
-        BuiltinType::I32 => Some((1, TypeNode::Primitive(backend_semantic::ir::PrimitiveType::I32))),
-        BuiltinType::String => Some((2, TypeNode::Primitive(backend_semantic::ir::PrimitiveType::String))),
+        BuiltinType::Bool => Some((
+            0,
+            TypeNode::Primitive(backend_semantic::ir::PrimitiveType::Bool),
+        )),
+        BuiltinType::I32 => Some((
+            1,
+            TypeNode::Primitive(backend_semantic::ir::PrimitiveType::I32),
+        )),
+        BuiltinType::String => Some((
+            2,
+            TypeNode::Primitive(backend_semantic::ir::PrimitiveType::String),
+        )),
         _ => None,
     }
 }

@@ -6,7 +6,10 @@ use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 /// Remote serde definition for the closed non-cancellation publication phase.
 #[derive(Serialize)]
-#[serde(remote = "crate::interface::PublicationPhase", rename_all = "snake_case")]
+#[serde(
+    remote = "crate::interface::PublicationPhase",
+    rename_all = "snake_case"
+)]
 pub(crate) enum PublicationPhaseWire {
     Canonical,
     Manifest,

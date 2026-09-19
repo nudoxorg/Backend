@@ -138,3 +138,17 @@ fn sorted(shelf: &Shelf, mut entries: Vec<ShelfEntry>) -> Shelf {
     entries.sort_by(|left, right| left.identity().name().cmp(right.identity().name()));
     Shelf::new(shelf.revision(), entries)
 }
+
+/// Returns the name a row draws for one identity of one kind.
+///
+/// A file module's identity has no symbol trail, so its shared name is the
+/// file name; the row it draws is the module, spelled by stem.
+pub(crate) fn display_name(identity: &Identity, kind: Option<backend_library::DeclarationKind>) -> String {
+    if kind == Some(backend_library::DeclarationKind::Module)
+        && identity.trail().is_empty()
+        && let Some(path) = identity.path()
+    {
+        return path.stem().to_owned();
+    }
+    identity.name().to_owned()
+}

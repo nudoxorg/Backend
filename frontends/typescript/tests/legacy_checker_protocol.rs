@@ -13,6 +13,12 @@ use backend_frontend_typescript::legacy::{
 const GOLDEN: &str = include_str!("transcripts/golden.json");
 const GOLDEN_SOURCE: &[u8] = include_bytes!("fixtures/source.ts");
 const UNDEFINED_TYPE_SOURCE: &[u8] = include_bytes!("fixtures/l7_r2_old_crash.ts");
+const AS_CONST: &str = include_str!("transcripts/as-const.json");
+const AS_CONST_SOURCE: &[u8] = include_bytes!("fixtures/as-const.ts");
+const SIGNATURE_PARAMETERS: &str = include_str!("transcripts/signature-parameters.json");
+const SIGNATURE_PARAMETERS_SOURCE: &[u8] = include_bytes!("fixtures/signature-parameters.ts");
+const TYPE_ALIAS: &str = include_str!("transcripts/type-alias.json");
+const TYPE_ALIAS_SOURCE: &[u8] = include_bytes!("fixtures/type-alias.ts");
 
 static ENVIRONMENT: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
@@ -170,6 +176,218 @@ fn golden_transcript_binds_this_type_and_foreign_base() -> Result<(), CheckerErr
 }
 
 #[test]
+fn as_const_golden_seals_members_readonly() -> Result<(), CheckerError> {
+    let report = adapter().decode(AS_CONST.as_bytes())?;
+    assert_eq!(report.source_digest, hex_of(AS_CONST_SOURCE));
+    let source = core::str::from_utf8(AS_CONST_SOURCE).expect("as-const fixture is UTF-8");
+    let index = CheckerIndex::bind(&report, source)?;
+    // `export const readonlyValue = { a: 1 } as const;` writes no `readonly`
+    // token, yet the `as const` assertion seals every member readonly.
+    let sealed = *index.declarations().next().ok_or(CheckerError::Decode {
+        message: "as-const declaration missing".to_owned(),
+        transcript: String::new(),
+    })?;
+    let Some(TypeTree::Object { members }) = sealed.r#type else {
+        panic!("as-const declaration must be an object literal type");
+    };
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].name, "a");
+    assert!(members[0].readonly, "as const must seal members readonly");
+    Ok(())
+}
+
+#[test]
+fn as_const_authority_reports_sealed_members_readonly() -> Result<(), CheckerError> {
+    let _guard = ENVIRONMENT
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .expect("environment mutex");
+    let report = Checker::default().run(
+        backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+        AS_CONST_SOURCE,
+    )?;
+    let sealed = report
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration.r#type.as_ref() {
+            Some(tree @ TypeTree::Object { .. }) => Some(tree),
+            _ => None,
+        })
+        .ok_or(CheckerError::Decode {
+            message: "as-const object type missing".to_owned(),
+            transcript: String::new(),
+        })?;
+    let TypeTree::Object { members } = sealed else {
+        panic!("sealed object type missing");
+    };
+    assert!(
+        members.iter().any(|member| member.name == "a" && member.readonly),
+        "the live authority must seal `as const` members readonly: {members:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn structured_parameter_golden_preserves_names_and_flags() -> Result<(), CheckerError> {
+    let report = adapter().decode(SIGNATURE_PARAMETERS.as_bytes())?;
+    assert_eq!(report.source_digest, hex_of(SIGNATURE_PARAMETERS_SOURCE));
+    let Some(TypeTree::Function { parameters, .. }) = report.declarations[0].r#type.as_ref()
+    else {
+        return Err(CheckerError::Decode {
+            message: "signature missing".to_owned(),
+            transcript: String::new(),
+        });
+    };
+    assert_eq!(parameters[0].name.as_deref(), Some("value"));
+    assert!(!parameters[0].optional && !parameters[0].rest);
+    assert_eq!(parameters[1].name.as_deref(), Some("optional"));
+    assert!(parameters[1].optional && !parameters[1].rest);
+    assert_eq!(parameters[2].name.as_deref(), Some("rest"));
+    assert!(parameters[2].rest && !parameters[2].optional);
+    // Each structured cell still carries the bare checker type.
+    assert_eq!(
+        parameters[0].r#type,
+        TypeTree::Primitive {
+            name: "string".to_owned()
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn legacy_parameter_cells_still_decode_as_bare_types() -> Result<(), CheckerError> {
+    // golden.json predates the structured parameter lane: every signature
+    // parameter is a bare type tree and must keep decoding with name `None`
+    // and both flags `false`, so persisted reports never change meaning.
+    let report = adapter().decode(GOLDEN.as_bytes())?;
+    let function = report
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration.r#type.as_ref() {
+            Some(tree @ TypeTree::Function { parameters, .. }) if !parameters.is_empty() => {
+                Some(tree)
+            }
+            _ => None,
+        })
+        .ok_or(CheckerError::Decode {
+            message: "golden signature missing".to_owned(),
+            transcript: String::new(),
+        })?;
+    let TypeTree::Function { parameters, .. } = function else {
+        panic!("golden signature missing");
+    };
+    assert_eq!(parameters[0].name, None);
+    assert!(!parameters[0].optional);
+    assert!(!parameters[0].rest);
+    assert_eq!(
+        parameters[0].r#type,
+        TypeTree::Primitive {
+            name: "number".to_owned()
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn signature_authority_preserves_parameter_names_and_flags() -> Result<(), CheckerError> {
+    let _guard = ENVIRONMENT
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .expect("environment mutex");
+    let report = Checker::default().run(
+        backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+        SIGNATURE_PARAMETERS_SOURCE,
+    )?;
+    let signature = report
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration.r#type.as_ref() {
+            Some(tree @ TypeTree::Function { .. }) => Some(tree),
+            _ => None,
+        })
+        .ok_or(CheckerError::Decode {
+            message: "live signature missing".to_owned(),
+            transcript: String::new(),
+        })?;
+    let TypeTree::Function { parameters, .. } = signature else {
+        panic!("live signature missing");
+    };
+    assert_eq!(parameters[0].name.as_deref(), Some("value"));
+    assert_eq!(parameters[1].name.as_deref(), Some("optional"));
+    assert!(parameters[1].optional);
+    assert_eq!(parameters[2].name.as_deref(), Some("rest"));
+    assert!(parameters[2].rest);
+    Ok(())
+}
+
+#[test]
+fn type_alias_golden_decodes_declared_cells() -> Result<(), CheckerError> {
+    let report = adapter().decode(TYPE_ALIAS.as_bytes())?;
+    assert_eq!(report.source_digest, hex_of(TYPE_ALIAS_SOURCE));
+    let source = core::str::from_utf8(TYPE_ALIAS_SOURCE).expect("type-alias fixture is UTF-8");
+    let index = CheckerIndex::bind(&report, source)?;
+    let named = index.declarations().find(|declaration| {
+        &source[declaration.name.start as usize..declaration.name.end as usize] == "Identifier"
+    });
+    let identifier = named.ok_or(CheckerError::Decode {
+        message: "type-alias declaration missing".to_owned(),
+        transcript: String::new(),
+    })?;
+    assert_eq!(identifier.origin, Origin::Declared);
+    assert_eq!(
+        identifier.r#type,
+        Some(&TypeTree::Primitive {
+            name: "string".to_owned()
+        })
+    );
+    let pair = index
+        .declarations()
+        .find(|declaration| {
+            &source[declaration.name.start as usize..declaration.name.end as usize] == "Pair"
+        })
+        .ok_or(CheckerError::Decode {
+            message: "object-alias declaration missing".to_owned(),
+            transcript: String::new(),
+        })?;
+    assert_eq!(pair.origin, Origin::Declared);
+    let Some(TypeTree::Object { members }) = pair.r#type else {
+        panic!("object alias must carry its literal members");
+    };
+    assert_eq!(
+        members.iter().map(|member| member.name.as_str()).collect::<Vec<_>>(),
+        vec!["first", "second"]
+    );
+    Ok(())
+}
+
+#[test]
+fn type_alias_authority_emits_declared_cells() -> Result<(), CheckerError> {
+    let _guard = ENVIRONMENT
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .expect("environment mutex");
+    let report = Checker::default().run(
+        backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+        TYPE_ALIAS_SOURCE,
+    )?;
+    let alias = report
+        .declarations
+        .iter()
+        .find(|declaration| declaration.origin == Origin::Declared)
+        .ok_or(CheckerError::Decode {
+            message: "declared type-alias cell missing".to_owned(),
+            transcript: String::new(),
+        })?;
+    assert_eq!(
+        alias.r#type,
+        Some(TypeTree::Primitive {
+            name: "string".to_owned()
+        })
+    );
+    Ok(())
+}
+
+#[test]
 fn mapped_report_decodes_modifiers_and_the_optional_as_remap() -> Result<(), CheckerError> {
     let report = adapter().decode(
         br#"{
@@ -293,6 +511,7 @@ fn surrogate_splitting_span_is_a_typed_binding_fault() {
     let clean = Report {
         schema_version: 1,
         source_digest: hex_of(source.as_bytes()),
+        declaration_file: false,
         diagnostics: Box::default(),
         declarations: Box::default(),
         references: Box::default(),
@@ -303,6 +522,7 @@ fn surrogate_splitting_span_is_a_typed_binding_fault() {
     let faulted = Report {
         schema_version: 1,
         source_digest: hex_of(source.as_bytes()),
+        declaration_file: false,
         diagnostics: Box::default(),
         declarations: Box::new([Declaration {
             name_start: 1,
@@ -330,6 +550,7 @@ fn narrowing_binds_both_spans_and_tolerates_an_absent_type() -> Result<(), Check
     let report = Report {
         schema_version: 1,
         source_digest: hex_of(source.as_bytes()),
+        declaration_file: false,
         diagnostics: Box::default(),
         declarations: Box::default(),
         references: Box::default(),
@@ -364,6 +585,7 @@ fn narrowing_span_outside_the_source_is_a_typed_binding_fault() {
     let report = Report {
         schema_version: 1,
         source_digest: hex_of(source.as_bytes()),
+        declaration_file: false,
         diagnostics: Box::default(),
         declarations: Box::default(),
         references: Box::default(),

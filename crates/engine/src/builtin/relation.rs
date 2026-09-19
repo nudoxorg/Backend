@@ -2,16 +2,90 @@
 
 use super::complete_coverage;
 use crate::workspace::{TransitionWork, WorkspaceRelationHandle, WorkspaceSnapshot};
-pub use backend_compile::{DeclarationKind, SourceDeclaration, SourceLanguage, SourceLocation};
+pub use backend_compile::{
+    Container, DeclarationKind, SourceDeclaration, SourceLanguage, SourceLocation,
+};
 use backend_compile::{SourceExcerpt, SourceExcerptExtent};
 use backend_execution::AuthorityVersion;
 use backend_replication::ImmutableObjectSchema;
 use backend_version::{
-    CanonicalRelation, CoverageWitness, DEFAULT_CUT_POLICY, Relation, RelationState, StateRoot,
-    WorkspaceRoot,
+    CanonicalRelation, ContentId, CoverageWitness, DEFAULT_CUT_POLICY, Relation, RelationState,
+    SourceFactDomain, StateRoot, WorkspaceRoot,
 };
 use std::fmt;
+use std::num::NonZeroU32;
 use std::sync::Arc;
+
+/// Canonical format tag for a record that states no containment.
+const SOURCE_RECORD_FORMAT_PLAIN: &[u8; 4] = b"PSR8";
+
+/// Canonical format tag for a record that carries declaration containment.
+const SOURCE_RECORD_FORMAT_CONTAINED: &[u8; 4] = b"PSR9";
+
+/// Canonical format tag for a record that also states its semantic source
+/// content identity.
+const SOURCE_RECORD_FORMAT_IDENTIFIED: &[u8; 4] = b"PSRA";
+
+/// Newest source-record format version, as the tags above name it.
+const SOURCE_RECORD_VERSION: u8 = 10;
+
+/// Returns the lowest format tag that can carry this record.
+///
+/// A persisted intent embeds these exact bytes, and restart admission
+/// decodes and re-encodes them and refuses anything not byte-identical. A
+/// record with nothing new to say must therefore still encode exactly the
+/// way it always did, or every workspace written before containment existed
+/// would stop opening. The tag is minimal for that reason, the way a
+/// canonical integer takes the shortest form: `PSR9` means precisely "at
+/// least one declaration states where it sits", and `PSRA` means "the row
+/// also states which `SourceFactDomain` content identity its exact bytes
+/// hash to".
+///
+/// Decoding stays liberal - it admits a `PSR9` record that states no
+/// containment and normalizes it to `PSR8` on the way out - because refusing
+/// a record whose bytes are perfectly readable would make a whole workspace
+/// unopenable over a tag.
+fn source_record_format(value: &ProductSourceRecord) -> &'static [u8; 4] {
+    match value {
+        ProductSourceRecord::Project { .. } => SOURCE_RECORD_FORMAT_PLAIN,
+        ProductSourceRecord::File {
+            declarations,
+            source_identity,
+            ..
+        } => {
+            if source_identity.is_some() {
+                SOURCE_RECORD_FORMAT_IDENTIFIED
+            } else if states_containment(declarations) {
+                SOURCE_RECORD_FORMAT_CONTAINED
+            } else {
+                SOURCE_RECORD_FORMAT_PLAIN
+            }
+        }
+    }
+}
+
+/// Returns whether any declaration sits anywhere but its file module.
+fn states_containment(declarations: &[SourceDeclaration]) -> bool {
+    declarations
+        .iter()
+        .any(|declaration| !matches!(declaration.container(), Container::Module))
+}
+
+/// Returns the version of an admitted `PSR*` format tag.
+fn format_version(format: &[u8]) -> Option<u8> {
+    let [b'P', b'S', b'R', tag] = format else {
+        return None;
+    };
+    // `PSRA` is the identified format: the eleventh shape, named by a letter
+    // because a tenth digit would read as "1" followed by nothing.
+    let version = match tag {
+        b'A' => 10,
+        digit => digit.checked_sub(b'0')?,
+    };
+    (2..=SOURCE_RECORD_VERSION)
+        .contains(&version)
+        .then_some(version)
+}
 
 /// Authoritative package/source coordinates retained by the product
 /// workspace. Product input identities are always rooted in this relation;
@@ -47,6 +121,14 @@ pub enum ProductSourceRecord {
         content_version: [u8; 32],
         /// Identity of the parser, grammar, and extraction contract.
         analysis_version: [u8; 32],
+        /// The `SourceFactDomain` content identity the semantic compiler
+        /// derives from the same bytes, when it is known to the producer.
+        ///
+        /// Semantic images commit this identity in their provenance, so the
+        /// view can compare content against content: an in-place edit under
+        /// an unchanged path set is visible as an identity mismatch, which
+        /// the `ObjectVersion`-domain `content_version` above cannot prove.
+        source_identity: Option<ContentId<SourceFactDomain>>,
         /// Ordered declarations extracted from this file.
         declarations: Arc<[SourceDeclaration]>,
         /// How much extracted detail this row was able to retain.
@@ -185,6 +267,8 @@ pub struct ProductFileRef<'a> {
     pub content_version: [u8; 32],
     /// Parser, grammar, and extraction contract identity.
     pub analysis_version: [u8; 32],
+    /// The semantic source content identity, when the producer stated it.
+    pub source_identity: Option<ContentId<SourceFactDomain>>,
     /// Shared declaration storage.
     pub declarations: &'a Arc<[SourceDeclaration]>,
     /// How much extracted detail this row was able to retain.
@@ -207,11 +291,12 @@ impl ProductSourceRecord {
     /// a record that exceeds it has no representable row: the failure would
     /// otherwise surface only when the relation delta was prepared, as an
     /// opaque rejection naming neither the file nor the reason.
-    pub const ROW_VALUE_CAPACITY: usize =
-        match DEFAULT_CUT_POLICY.max_row_value_bytes(size_of::<<ProductSourceRelation as Relation>::Key>()) {
-            Some(capacity) => capacity,
-            None => 0,
-        };
+    pub const ROW_VALUE_CAPACITY: usize = match DEFAULT_CUT_POLICY
+        .max_row_value_bytes(size_of::<<ProductSourceRelation as Relation>::Key>())
+    {
+        Some(capacity) => capacity,
+        None => 0,
+    };
     /// File frontier every project row can name, whatever its label.
     ///
     /// A project row is its label plus 32 bytes for every selected file, so
@@ -272,7 +357,9 @@ impl ProductSourceRecord {
         };
         let encoded = record.encoded_value_bytes();
         if encoded > Self::ROW_VALUE_CAPACITY {
-            let named = record.project_fields().map_or(0, |fields| fields.files.len());
+            let named = record
+                .project_fields()
+                .map_or(0, |fields| fields.files.len());
             let overhead = encoded.saturating_sub(named.saturating_mul(32));
             let admitted = Self::ROW_VALUE_CAPACITY.saturating_sub(overhead) / 32;
             return Err(format!(
@@ -338,6 +425,7 @@ impl ProductSourceRecord {
             language,
             content_version,
             analysis_version,
+            source_identity: None,
             declarations,
             retention,
         };
@@ -497,6 +585,7 @@ impl ProductSourceRecord {
                 language,
                 content_version,
                 analysis_version,
+                source_identity,
                 declarations,
                 retention,
             } => Some(ProductFileRef {
@@ -505,10 +594,40 @@ impl ProductSourceRecord {
                 language: *language,
                 content_version: *content_version,
                 analysis_version: *analysis_version,
+                source_identity: *source_identity,
                 declarations,
                 retention: *retention,
             }),
             Self::Project { .. } => None,
+        }
+    }
+
+    /// Binds the semantic source content identity to this file record.
+    ///
+    /// The identity is the exact `ContentId<SourceFactDomain>` the semantic
+    /// compiler derives from the same source bytes, so a view that persisted
+    /// it per file can prove an in-place edit with a content-to-content
+    /// comparison instead of a path-set diff.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this record is a project frontier, which names
+    /// no source bytes at all.
+    pub fn with_source_identity(
+        mut self,
+        identity: ContentId<SourceFactDomain>,
+    ) -> Result<Self, String> {
+        match &mut self {
+            Self::File {
+                source_identity, ..
+            } => {
+                *source_identity = Some(identity);
+                Ok(self)
+            }
+            Self::Project { .. } => Err(
+                "a project record names no source bytes, so it carries no content identity"
+                    .to_owned(),
+            ),
         }
     }
 }
@@ -538,7 +657,14 @@ fn shed_prose(declarations: &[SourceDeclaration]) -> Result<Arc<[SourceDeclarati
                 "",
                 "",
             )
-            .map(|reduced| reduced.with_source_excerpt(SourceExcerpt::NotHydrated))
+            // Containment is structure, not prose: a field that lost its
+            // parent here would be reparented to its file module and the
+            // shedding ladder would silently flatten a large file's outline.
+            .map(|reduced| {
+                reduced
+                    .with_source_excerpt(SourceExcerpt::NotHydrated)
+                    .with_container(declaration.container().clone())
+            })
         })
         .collect::<Result<Vec<_>, _>>()
         .map(Into::into)
@@ -584,7 +710,7 @@ impl Relation for ProductSourceRelation {
     }
 
     fn encode_value(value: &Self::Value, output: &mut Vec<u8>) {
-        output.extend_from_slice(b"PSR8");
+        output.extend_from_slice(source_record_format(value));
         match value {
             ProductSourceRecord::Project {
                 label,
@@ -604,7 +730,7 @@ impl Relation for ProductSourceRelation {
     }
 }
 
-/// Encodes one file record body after the `PSR8` format tag.
+/// Encodes one file record body after the format tag.
 fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
     let ProductSourceRecord::File {
         project,
@@ -612,18 +738,29 @@ fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
         language,
         content_version,
         analysis_version,
+        source_identity,
         declarations,
         retention,
     } = value
     else {
         return;
     };
+    let identified = source_identity.is_some();
+    debug_assert_eq!(
+        identified,
+        source_record_format(value) == SOURCE_RECORD_FORMAT_IDENTIFIED,
+        "the minimal format tag must name the identity exactly when one is stated"
+    );
+    let contained = source_record_format(value) == SOURCE_RECORD_FORMAT_CONTAINED;
     output.push(2);
     output.extend_from_slice(project);
     push_text(output, path);
     output.push(language.wire_tag());
     output.extend_from_slice(content_version);
     output.extend_from_slice(analysis_version);
+    if identified {
+        output.extend_from_slice(source_identity.as_ref().expect("checked above").as_ref());
+    }
     push_retention(output, *retention);
     push_count(output, declarations.len());
     for declaration in declarations.iter() {
@@ -637,6 +774,30 @@ fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
         push_text(output, declaration.signature());
         push_text(output, declaration.documentation());
         push_excerpt(output, declaration.source_excerpt());
+        if identified {
+            // The identified format carries containment unconditionally: its
+            // tag already spends the format discriminant on the identity, so
+            // containment cannot also select the tag.
+            push_container(output, declaration.container());
+        } else if contained {
+            push_container(output, declaration.container());
+        }
+    }
+}
+
+/// Encodes one declaration's extracted containment.
+fn push_container(output: &mut Vec<u8>, container: &Container) {
+    match container {
+        Container::Module => output.push(0),
+        Container::Enclosing { name, line } => {
+            output.push(1);
+            push_text(output, name);
+            output.extend_from_slice(&line.get().to_be_bytes());
+        }
+        Container::Attached { type_name } => {
+            output.push(2);
+            push_text(output, type_name);
+        }
     }
 }
 
@@ -719,13 +880,7 @@ fn push_text(output: &mut Vec<u8>, value: &str) {
 
 fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
     let mut reader = SourceReader::new(bytes);
-    let format = reader.take(4)?;
-    if !matches!(
-        format,
-        b"PSR2" | b"PSR3" | b"PSR4" | b"PSR5" | b"PSR6" | b"PSR7" | b"PSR8"
-    ) {
-        return Err(());
-    }
+    let version = format_version(reader.take(4)?).ok_or(())?;
     let record = match reader.byte()? {
         1 => {
             let label = reader.text(ProductSourceRecord::MAX_LABEL_BYTES)?;
@@ -737,7 +892,7 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
             }
             ProductSourceRecord::project(label, source_version, files).map_err(|_| ())?
         }
-        2 => decode_file_record(&mut reader, format)?,
+        2 => decode_file_record(&mut reader, version)?,
         _ => return Err(()),
     };
     reader.finish()?;
@@ -747,34 +902,39 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
 /// Decodes one file record body for any admitted `PSR*` format.
 fn decode_file_record(
     reader: &mut SourceReader<'_>,
-    format: &[u8],
+    version: u8,
 ) -> Result<ProductSourceRecord, ()> {
     let project = reader.array()?;
     let path = reader.text(ProductSourceRecord::MAX_LABEL_BYTES)?;
     let language = SourceLanguage::from_wire_tag(reader.byte()?).ok_or(())?;
     let content_version = reader.array()?;
-    let analysis_version = if matches!(
-        format,
-        b"PSR3" | b"PSR4" | b"PSR5" | b"PSR6" | b"PSR7" | b"PSR8"
-    ) {
+    let analysis_version = if version >= 3 {
         reader.array()?
     } else {
         [0; 32]
     };
-    let retention = if format == b"PSR8" {
+    let source_identity = if version >= 10 {
+        Some(ContentId::<SourceFactDomain>::try_from(reader.array()?).map_err(|_| ())?)
+    } else {
+        None
+    };
+    let retention = if version >= 8 {
         decode_retention(reader)?
     } else {
         DeclarationRetention::Complete
     };
     let count = reader.count(ProductSourceRecord::MAX_FILE_DECLARATIONS)?;
+    // Containment is tag-selected: `PSR9` and `PSRA` both carry it, one per
+    // declaration, while every earlier format implies the file module.
+    let contained = version >= 9;
     let mut declarations = Vec::with_capacity(count);
     for _ in 0..count {
-        declarations.push(decode_declaration(reader, format, &path)?);
+        declarations.push(decode_declaration(reader, version, &path, contained)?);
     }
-    if format == b"PSR6" {
+    if version == 6 {
         skip_legacy_semantics(reader)?;
     }
-    ProductSourceRecord::file_with_retention(
+    let record = ProductSourceRecord::file_with_retention(
         project,
         path,
         language,
@@ -783,17 +943,24 @@ fn decode_file_record(
         declarations,
         retention,
     )
-    .map_err(|_| ())
+    .map_err(|_| ())?;
+    match source_identity {
+        Some(identity) if matches!(record, ProductSourceRecord::File { .. }) => {
+            record.with_source_identity(identity).map_err(|_| ())
+        }
+        _ => Ok(record),
+    }
 }
 
 /// Decodes one declaration, tolerating the older pre-`PSR4` field shapes.
 fn decode_declaration(
     reader: &mut SourceReader<'_>,
-    format: &[u8],
+    version: u8,
     path: &str,
+    contained: bool,
 ) -> Result<SourceDeclaration, ()> {
     let line = reader.u32()?;
-    let declaration_path = if matches!(format, b"PSR4" | b"PSR5" | b"PSR6" | b"PSR7" | b"PSR8") {
+    let declaration_path = if version >= 4 {
         reader.text(SourceLocation::MAX_PATH_BYTES)?
     } else {
         path.to_owned()
@@ -802,17 +969,22 @@ fn decode_declaration(
         return Err(());
     }
     let name = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
-    let kind = if matches!(format, b"PSR4" | b"PSR5" | b"PSR6" | b"PSR7" | b"PSR8") {
+    let kind = if version >= 4 {
         DeclarationKind::from_wire_tag(reader.byte()?).ok_or(())?
     } else {
         DeclarationKind::from_name(&reader.text(SourceDeclaration::MAX_TEXT_BYTES)?)
     };
     let signature = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
     let documentation = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
-    let source_excerpt = if matches!(format, b"PSR5" | b"PSR6" | b"PSR7" | b"PSR8") {
+    let source_excerpt = if version >= 5 {
         decode_source_excerpt(reader)?
     } else {
         SourceExcerpt::NotCaptured
+    };
+    let decoded_container = if contained {
+        decode_container(reader)?
+    } else {
+        Container::Module
     };
     Ok(SourceDeclaration::with_location(
         SourceLocation::new(declaration_path, line).map_err(|_| ())?,
@@ -822,7 +994,23 @@ fn decode_declaration(
         documentation,
     )
     .map_err(|_| ())?
-    .with_source_excerpt(source_excerpt))
+    .with_source_excerpt(source_excerpt)
+    .with_container(decoded_container))
+}
+/// Decodes one declaration's containment, rejecting an unknown discriminant.
+fn decode_container(reader: &mut SourceReader<'_>) -> Result<Container, ()> {
+    match reader.byte()? {
+        0 => Ok(Container::Module),
+        1 => {
+            let name = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
+            let line = NonZeroU32::new(reader.u32()?).ok_or(())?;
+            Ok(Container::enclosing(&name, line))
+        }
+        2 => Ok(Container::attached(
+            &reader.text(SourceDeclaration::MAX_TEXT_BYTES)?,
+        )),
+        _ => Err(()),
+    }
 }
 
 fn skip_legacy_semantics(reader: &mut SourceReader<'_>) -> Result<(), ()> {
@@ -1202,7 +1390,7 @@ mod tests {
         Relation, RetainedDeclarations, SourceDeclaration, SourceExcerpt, SourceExcerptExtent,
         SourceLocation, SourceUnavailableReason,
     };
-    use backend_version::CanonicalRelation;
+    use backend_version::{CanonicalRelation, ContentId, SourceFactDomain};
     use std::sync::Arc;
 
     #[test]
@@ -1231,7 +1419,10 @@ mod tests {
         .expect("file");
         let mut encoded = Vec::new();
         ProductSourceRelation::encode_value(&record, &mut encoded);
-        assert_eq!(&encoded[..4], b"PSR8");
+        assert_eq!(
+            encoded.get(..4),
+            Some(super::SOURCE_RECORD_FORMAT_PLAIN.as_slice())
+        );
         let decoded = ProductSourceRelation::decode_value(&encoded).expect("decode");
         let fields = decoded.file_fields().expect("file fields");
         let declaration = &fields.declarations[0];
@@ -1250,6 +1441,212 @@ mod tests {
             declaration.source_excerpt().extent(),
             Some(SourceExcerptExtent::Complete)
         );
+    }
+
+    /// Writes the exact bytes the pre-containment encoder produced.
+    ///
+    /// The layout is spelled out rather than produced by the encoder under
+    /// test, because a persisted intent embeds these bytes and restart
+    /// admission compares them byte for byte: an encoder that silently starts
+    /// writing one byte more stops every existing workspace from opening.
+    fn legacy_file_record_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"PSR8");
+        bytes.push(2);
+        bytes.extend_from_slice(&[3; 32]);
+        super::push_text(&mut bytes, "src/lib.rs");
+        bytes.push(super::SourceLanguage::Rust.wire_tag());
+        bytes.extend_from_slice(&[4; 32]);
+        bytes.extend_from_slice(&[5; 32]);
+        bytes.push(0);
+        bytes.extend_from_slice(&1_u32.to_be_bytes());
+        bytes.extend_from_slice(&7_u32.to_be_bytes());
+        super::push_text(&mut bytes, "src/lib.rs");
+        super::push_text(&mut bytes, "answer");
+        bytes.push(DeclarationKind::Function.wire_tag());
+        super::push_text(&mut bytes, "fn answer() -> u32");
+        super::push_text(&mut bytes, "the answer");
+        bytes.push(0);
+        bytes
+    }
+
+    fn legacy_file_record() -> ProductSourceRecord {
+        let declaration = SourceDeclaration::at_path(
+            "src/lib.rs",
+            "answer",
+            "function",
+            7,
+            "fn answer() -> u32",
+            "the answer",
+        )
+        .expect("declaration");
+        ProductSourceRecord::file(
+            [3; 32],
+            "src/lib.rs",
+            super::SourceLanguage::Rust,
+            [4; 32],
+            [5; 32],
+            Arc::from([declaration]),
+        )
+        .expect("file")
+    }
+
+    #[test]
+    fn a_record_stating_no_containment_encodes_exactly_as_it_did_before() {
+        let record = legacy_file_record();
+        let mut encoded = Vec::new();
+        ProductSourceRelation::encode_value(&record, &mut encoded);
+        assert_eq!(encoded, legacy_file_record_bytes());
+        let decoded =
+            ProductSourceRelation::decode_value(&legacy_file_record_bytes()).expect("decode");
+        assert_eq!(decoded, record);
+        assert_eq!(
+            decoded
+                .file_fields()
+                .and_then(|fields| fields.declarations.first())
+                .map(SourceDeclaration::container),
+            Some(&super::Container::Module)
+        );
+    }
+
+    /// The semantic source content identity of a record whose bytes the
+    /// semantic compiler would hash the same way.
+    fn fixture_source_identity() -> ContentId<SourceFactDomain> {
+        ContentId::<SourceFactDomain>::from_canonical_bytes(b"fixture source bytes")
+    }
+
+    #[test]
+    fn a_stated_source_identity_round_trips_and_earns_its_tag() {
+        let record = legacy_file_record()
+            .with_source_identity(fixture_source_identity())
+            .expect("file record accepts an identity");
+        let mut encoded = Vec::new();
+        ProductSourceRelation::encode_value(&record, &mut encoded);
+        assert_eq!(
+            encoded.get(..4),
+            Some(super::SOURCE_RECORD_FORMAT_IDENTIFIED.as_slice()),
+            "stating an identity is exactly what the PSRA tag means"
+        );
+        let decoded = ProductSourceRelation::decode_value(&encoded).expect("decode");
+        let fields = decoded.file_fields().expect("file fields");
+        assert_eq!(fields.source_identity, Some(fixture_source_identity()));
+        // Re-encoding is byte-identical, as restart admission requires.
+        let mut again = Vec::new();
+        ProductSourceRelation::encode_value(&decoded, &mut again);
+        assert_eq!(again, encoded);
+        // A project record has no bytes to name.
+        let files = ProductSourceRecord::project("project", [1; 32], Vec::new()).expect("project");
+        assert!(
+            files
+                .with_source_identity(fixture_source_identity())
+                .is_err()
+        );
+        // A record without an identity still encodes exactly as before.
+        let untagged = legacy_file_record();
+        let mut plain = Vec::new();
+        ProductSourceRelation::encode_value(&untagged, &mut plain);
+        assert_eq!(plain, legacy_file_record_bytes());
+    }
+
+    #[test]
+    fn containment_round_trips_and_a_redundant_contained_record_is_refused() {
+        let declaration =
+            SourceDeclaration::at_path("src/lib.rs", "run", "method", 11, "fn run(&self)", "")
+                .expect("declaration")
+                .with_container(super::Container::attached("Worker"));
+        let record = ProductSourceRecord::file(
+            [3; 32],
+            "src/lib.rs",
+            super::SourceLanguage::Rust,
+            [4; 32],
+            [5; 32],
+            Arc::from([declaration]),
+        )
+        .expect("file");
+        let mut encoded = Vec::new();
+        ProductSourceRelation::encode_value(&record, &mut encoded);
+        assert_eq!(encoded.get(..4), Some(b"PSR9".as_slice()));
+        let decoded = ProductSourceRelation::decode_value(&encoded).expect("decode");
+        assert_eq!(decoded, record);
+        let mut round_tripped = Vec::new();
+        ProductSourceRelation::encode_value(&decoded, &mut round_tripped);
+        assert_eq!(round_tripped, encoded);
+
+        // A record written by an encoder that always tagged `PSR9` is still
+        // readable; it simply normalizes to the minimal tag when re-encoded.
+        let mut redundant = legacy_file_record_bytes();
+        redundant.splice(..4, b"PSR9".iter().copied());
+        redundant.push(0);
+        let normalized = ProductSourceRelation::decode_value(&redundant).expect("decode");
+        assert_eq!(normalized, legacy_file_record());
+        let mut re_encoded = Vec::new();
+        ProductSourceRelation::encode_value(&normalized, &mut re_encoded);
+        assert_eq!(re_encoded, legacy_file_record_bytes());
+    }
+
+    /// Writes one file record in an exact historical format.
+    ///
+    /// Each earlier tag differs in which fields are present, and a workspace
+    /// indexed by any of them must keep opening, so every shape is decoded
+    /// here rather than trusted to a `matches!` list nobody exercises.
+    fn file_record_bytes_for_version(version: u8) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[b'P', b'S', b'R', b'0'.saturating_add(version)]);
+        bytes.push(2);
+        bytes.extend_from_slice(&[3; 32]);
+        super::push_text(&mut bytes, "src/lib.rs");
+        bytes.push(super::SourceLanguage::Rust.wire_tag());
+        bytes.extend_from_slice(&[4; 32]);
+        if version >= 3 {
+            bytes.extend_from_slice(&[5; 32]);
+        }
+        if version >= 8 {
+            bytes.push(0);
+        }
+        bytes.extend_from_slice(&1_u32.to_be_bytes());
+        bytes.extend_from_slice(&7_u32.to_be_bytes());
+        if version >= 4 {
+            super::push_text(&mut bytes, "src/lib.rs");
+        }
+        super::push_text(&mut bytes, "answer");
+        if version >= 4 {
+            bytes.push(DeclarationKind::Function.wire_tag());
+        } else {
+            super::push_text(&mut bytes, "function");
+        }
+        super::push_text(&mut bytes, "fn answer() -> u32");
+        super::push_text(&mut bytes, "the answer");
+        if version >= 5 {
+            bytes.push(0);
+        }
+        if version == 6 {
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    #[test]
+    fn every_earlier_record_format_decodes_with_no_containment() {
+        for version in 2..=8_u8 {
+            let bytes = file_record_bytes_for_version(version);
+            let decoded = ProductSourceRelation::decode_value(&bytes)
+                .unwrap_or_else(|error| panic!("decode PSR{version}: {error:?}"));
+            let fields = decoded
+                .file_fields()
+                .unwrap_or_else(|| panic!("PSR{version} file fields"));
+            let declaration = fields
+                .declarations
+                .first()
+                .unwrap_or_else(|| panic!("PSR{version} declaration"));
+            assert_eq!(declaration.name(), "answer");
+            assert_eq!(declaration.kind(), DeclarationKind::Function);
+            assert_eq!(declaration.line(), 7);
+            assert_eq!(declaration.container(), &super::Container::Module);
+            assert_eq!(
+                fields.analysis_version,
+                if version >= 3 { [5; 32] } else { [0; 32] }
+            );
+        }
     }
 
     fn wide_declaration(index: usize) -> SourceDeclaration {

@@ -78,6 +78,7 @@ fn admit_package(
             row,
             "provenance",
         )?)?),
+        facts: super::ReleaseFacts::default(),
         archive_url: Arc::from(admit_archive_url(endpoint, text(row, "archive")?)?),
     })
 }

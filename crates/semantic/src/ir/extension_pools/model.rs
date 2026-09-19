@@ -41,6 +41,19 @@ pub struct ExtensionTypeParameterRange {
     pub length: u32,
 }
 
+/// One free generic predicate whose subject is not a declared parameter.
+///
+/// The subject is a type-fact coordinate and the ordered bounds reuse the
+/// shared [`ExtensionTypeParameterBound`] lane.  Free predicates are a
+/// Rust-only lane: only [`crate::ir::RustFacts`] carries a handle to them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExtensionFreePredicate {
+    /// Type-fact coordinate of the predicate subject.
+    pub subject: u32,
+    /// Ordered bound run in the shared `type_parameter_bounds` lane.
+    pub bounds: ExtensionTypeParameterBoundRange,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExtensionRefList<'bytes> {
     pub elements: &'bytes [u32],
@@ -59,6 +72,10 @@ pub struct ExtensionPoolsLane<'bytes> {
     pub type_parameters: &'bytes [ExtensionTypeParameter<'bytes>],
     pub type_parameter_bounds: &'bytes [ExtensionTypeParameterBound<'bytes>],
     pub type_parameter_lists: &'bytes [ExtensionTypeParameterRange],
+    /// Rust-only free-predicate row table: `(subject, ordered bounds)`.
+    pub free_predicates: &'bytes [ExtensionFreePredicate],
+    /// Exact `(start, length)` runs over [`Self::free_predicates`].
+    pub free_predicate_lists: &'bytes [ExtensionTypeParameterRange],
     pub atom_lists: &'bytes [ExtensionRefList<'bytes>],
     pub type_lists: &'bytes [ExtensionRefList<'bytes>],
     pub entity_lists: &'bytes [ExtensionRefList<'bytes>],
@@ -90,6 +107,30 @@ pub enum ExtensionPoolFault {
     EmptyLifetime { bound: u32 },
     #[error("type-parameter bound-list position {position} is outside length {length}")]
     TypeParameterBoundPosition { position: u32, length: u32 },
+    #[error("free predicate {predicate} references subject type fact {raw} outside {limit}")]
+    FreePredicateSubject {
+        predicate: u32,
+        raw: u32,
+        limit: u32,
+    },
+    #[error(
+        "free predicate {predicate} has bound range start {start} length {length} outside {bound_count}"
+    )]
+    FreePredicateBounds {
+        predicate: u32,
+        start: u32,
+        length: u32,
+        bound_count: u32,
+    },
+    #[error(
+        "free-predicate list {list} range start {start} length {length} exceeds {predicate_count} rows"
+    )]
+    FreePredicateList {
+        list: u32,
+        start: u32,
+        length: u32,
+        predicate_count: u32,
+    },
     #[error(
         "type parameter {ordinal} has illegal primary requirement {primary:?} with constructor={constructor} allows_ref_like={allows_ref_like}"
     )]

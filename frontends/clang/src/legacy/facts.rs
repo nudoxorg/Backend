@@ -2,7 +2,7 @@
 //! All locations are exact half-open byte spans into the caller's input source slice.
 //! Recursive type structure is represented by fact and edge rows, never serialized strings.
 //!
-//! Authority lane geometry is 16,384 rows: declarations and references feed the trunk's
+//! Authority lane geometry is 32,768 rows: declarations and references feed the trunk's
 //! `MAX_EMISSION_FACTS` and `MAX_EMISSION_OCCURRENCES` lanes respectively. Types and type edges
 //! feed the trunk fact/type-child lanes; diagnostics feed doc fragments; includes and overrides
 //! feed the extension/occurrence lanes. A filled lane retains only its typed slots on the caller's
@@ -15,10 +15,13 @@ use core::mem::size_of;
 /// Shared trunk-class row geometry for every bounded Clang authority lane.
 ///
 /// This matches the compiler driver's measured declaration ceiling: the
-/// target corpus reached 6,882 declarations in one translation unit, so the
-/// former 1,024-row authority boundary rejected valid source before the
-/// shared typed admission lane could apply its own capacity contract.
-pub const MAX_CLANG_FACTS: usize = 16_384;
+/// target corpus reaches 24,924 declarations in one translation unit
+/// (`sqlite3.c`), and fmt's `gmock-gtest-all.cc` defers more than 16,384
+/// parameter cursors through the declaration lane's deferred-parameter
+/// stash while committing only 2,553 rows, so the former 16,384-row
+/// authority boundary rejected valid source before the shared typed
+/// admission lane could apply its own capacity contract.
+pub const MAX_CLANG_FACTS: usize = 32_768;
 /// Declaration rows feed trunk `MAX_EMISSION_FACTS`.
 pub const MAX_CLANG_DECLARATIONS: usize = MAX_CLANG_FACTS;
 /// Recursive type rows feed trunk type facts; one declaration may own a
@@ -145,6 +148,26 @@ pub enum StorageClass {
     ThreadLocal,
 }
 
+/// The closed C integer conversion rank of one native integer scalar.
+///
+/// Rank is independent of measured width: on LP64 `long` and `long long` are
+/// both 64 bits, and on LLP64 `int` and `long` are both 32 bits. A width cell
+/// alone therefore cannot distinguish the declaration families, so the rank
+/// travels with the fact exactly as libclang reports it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IntegerRank {
+    /// `short` / `unsigned short`.
+    Short,
+    /// `int` / `unsigned int`.
+    Int,
+    /// `long` / `unsigned long`.
+    Long,
+    /// `long long` / `unsigned long long`.
+    LongLong,
+    /// `__int128` / `unsigned __int128`.
+    Int128,
+}
+
 /// The closed scalar classification of one native builtin type fact.
 ///
 /// The collector classifies directly from libclang's type kind, so a C `int`
@@ -173,10 +196,12 @@ pub enum BuiltinClass {
     WideCharUnsigned,
     /// `wchar_t` where the native surface supplies no signedness proof.
     WideCharSignednessUnavailable,
-    /// A signed or unsigned integer scalar.
+    /// A signed or unsigned integer scalar with its exact C conversion rank.
     Integer {
         /// The type excludes negative values.
         signed: bool,
+        /// The exact C integer conversion rank, independent of measured width.
+        rank: IntegerRank,
     },
     /// A floating-point scalar (`float`, `double`, `long double`).
     Float,
@@ -242,6 +267,15 @@ pub struct OverrideFact {
     pub source: SymbolIdentity,
     /// The declaration identity overridden by `source`.
     pub target: SymbolIdentity,
+    /// Compilation-directory-relative identity of the file declaring
+    /// `target`, when the native path lives under the compilation root.
+    ///
+    /// The relative tail is hashed here, not at cross-fragment resolution:
+    /// owners mint declaration identities from `DeclarationKey`, while these
+    /// stable references are keyed from the native USR. Bridging the two
+    /// (resolving a `StableRef` against a loaded fragment's declarations) is
+    /// future work and must not silently treat one identity as the other.
+    pub target_file: Option<SymbolIdentity>,
 }
 
 /// A compact fact describing C/C++ type qualifiers.
@@ -315,7 +349,9 @@ pub struct TypeFact {
     pub declaration: Option<SymbolIdentity>,
     /// Exact native array cardinality when known and non-negative.
     pub array_len: Option<u64>,
-    /// Closed scalar classification when this type is a native builtin.
+    /// Closed scalar classification when this type is a native builtin, or
+    /// when a named alias canonicalizes to one. The declaration identity still
+    /// records the alias; this class is the measured underlying form.
     pub builtin: Option<BuiltinClass>,
     /// Exact bit size measured by libclang, or `None` when the type is
     /// incomplete, dependent, or otherwise unmeasured.
@@ -372,7 +408,20 @@ pub enum ReferenceTarget {
     /// The target declaration belongs to this translation unit's main source file.
     Local(SymbolIdentity),
     /// The target declaration belongs to an included or otherwise external authority.
-    Foreign(SymbolIdentity),
+    Foreign {
+        /// Domain-separated USR identity of the target declaration.
+        identity: SymbolIdentity,
+        /// Compilation-directory-relative identity of the file declaring the
+        /// target, when the native path lives under the compilation root. An
+        /// absolute system or store path never enters this cell; those targets
+        /// are keyed opaquely on the USR against a fixed system fragment.
+        ///
+        /// The USR→declaration-identity bridge is an explicit follow-up: owners
+        /// mint from `DeclarationKey` while stable references carry the USR, so
+        /// cross-fragment resolution must validate the two rather than assume
+        /// they agree.
+        file: Option<SymbolIdentity>,
+    },
     /// libclang did not resolve the target cursor to a USR identity.
     Unresolved,
 }

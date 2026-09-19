@@ -32,8 +32,8 @@ use super::{
 /// O(1) without an owned index or a raw global-node coordinate.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TypedLayout {
-    pub(crate) starts: [u32; 8],
-    pub(crate) counts: [u32; 8],
+    pub(crate) starts: [u32; 9],
+    pub(crate) counts: [u32; 9],
 }
 
 impl TypedLayout {
@@ -47,6 +47,7 @@ impl TypedLayout {
             5 => Some(self.counts[5]),
             6 => Some(self.counts[6]),
             7 => Some(self.counts[7]),
+            8 => Some(self.counts[8]),
             _ => None,
         }
     }
@@ -61,6 +62,7 @@ impl TypedLayout {
             5 => Some(self.starts[5]),
             6 => Some(self.starts[6]),
             7 => Some(self.starts[7]),
+            8 => Some(self.starts[8]),
             _ => None,
         }
     }

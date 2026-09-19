@@ -317,7 +317,7 @@ pub(super) fn run_grouped_audit(
             mismatches: result.mismatches.len(),
             elapsed: language_started.elapsed(),
         };
-        let first_mismatch = result.mismatches.first().copied();
+        let first_mismatch = result.mismatches.first().cloned();
         eprintln!(
             "grouped-corpus language={:?} declarations={} output={} unavailable={} terminals={} mismatches={} elapsed_ms={} first={:?}",
             language_summary.language,
@@ -357,7 +357,7 @@ pub(super) fn run_grouped_audit(
         summary.mismatches.len(),
         started.elapsed().as_millis(),
     );
-    if let Some(first) = summary.mismatches.first().copied() {
+    if let Some(first) = summary.mismatches.first().cloned() {
         return Err(CorpusAuditError::Mismatches {
             count: summary.mismatches.len(),
             first: Some(first),
@@ -512,9 +512,18 @@ fn run_language(
                 };
                 return Ok(unavailable_result(&batch, *cause));
             };
-            let image = provider
-                .image(batch.source())
-                .map_err(|cause| CorpusAuditError::AuthoritySetup { key, cause })?;
+            let image = match provider.image(batch.source()) {
+                Ok(image) => image,
+                Err(error) if java_row_is_unavailable(&error) => {
+                    return Ok(unavailable_result(
+                        &batch,
+                        AuthorityUnavailableCause::JavaHarness,
+                    ));
+                }
+                Err(cause) => {
+                    return Err(CorpusAuditError::AuthoritySetup { key, cause });
+                }
+            };
             let compiled = compile_with_authority_until(
                 profile,
                 batch.source(),
@@ -536,9 +545,18 @@ fn run_language(
                 };
                 return Ok(unavailable_result(&batch, *cause));
             };
-            let image = provider
-                .image_for_source(0, batch.source())
-                .map_err(|cause| CorpusAuditError::AuthoritySetup { key, cause })?;
+            let image = match provider.image_for_source(0, batch.source()) {
+                Ok(image) => image,
+                Err(error) if csharp_row_is_unavailable(&error) => {
+                    return Ok(unavailable_result(
+                        &batch,
+                        AuthorityUnavailableCause::CSharpHelper,
+                    ));
+                }
+                Err(cause) => {
+                    return Err(CorpusAuditError::AuthoritySetup { key, cause });
+                }
+            };
             let compiled = compile_with_authority_until(
                 profile,
                 batch.source(),
@@ -686,7 +704,7 @@ fn finish_language<'diagnostic, 'output>(
     };
     work.assert_empty()
         .map_err(|cause| CorpusAuditError::NativeWork { key, cause })?;
-    let mut publisher = PassPublisher::new(Pass::Original)?;
+    let mut publisher = PassPublisher::new(Pass::Original, BATCH_FRAGMENT_LIMIT)?;
     let result = inspect_batch(
         &batch,
         expected_source,
@@ -792,38 +810,40 @@ fn inspect_batch(
         );
     }
     let owned_semantic = observe_owned_semantic(&compiled.ir, None);
-    let owned_provenance = owned_semantic.image.map(|image| image.provenance);
+    let owned_provenance = owned_semantic.image.as_ref().map(|image| &image.provenance);
     if !matches!(
         owned_provenance,
-        Some(ImageProvenance::Captured { source, recipe, .. })
-            if source == expected_source && recipe == expected_recipe
+        Some(observation::ObservedImageProvenance::Captured { source, recipe, .. })
+            if *source == expected_source && *recipe == expected_recipe
     ) {
         push_batch_mismatch(
             batch,
             GroupedField::Reopened,
             observation::digest_source(expected_source),
-            observation::digest_image_provenance(
-                owned_provenance.unwrap_or(ImageProvenance::Unavailable),
+            observation::digest_observed_provenance(
+                owned_provenance.unwrap_or(&observation::ObservedImageProvenance::Unavailable),
             ),
             &mut mismatches,
         );
     }
     let owned_identity = owned_semantic.identity;
-    let owned_census = owned_semantic.census;
+    let owned_census = owned_semantic.census.clone();
     let owned_spans = owned_semantic.source_spans;
 
     publisher.publish_with_reader(compiled, |fragment, image| {
         let reopened_semantic = observe_reopened_semantic(image, None);
+        let reopened_identity = reopened_semantic.identity;
+        let reopened_spans = reopened_semantic.source_spans;
         if owned_semantic != reopened_semantic {
             push_batch_mismatch(
                 batch,
                 GroupedField::Reopened,
-                observation::digest_semantic(owned_semantic),
-                observation::digest_semantic(reopened_semantic),
+                observation::digest_semantic(&owned_semantic),
+                observation::digest_semantic(&reopened_semantic),
                 &mut mismatches,
             );
         }
-        if owned_identity != reopened_semantic.identity {
+        if owned_identity != reopened_identity {
             push_batch_mismatch(
                 batch,
                 GroupedField::Reopened,
@@ -836,25 +856,25 @@ fn inspect_batch(
             push_batch_mismatch(
                 batch,
                 GroupedField::Reopened,
-                observation::digest_semantic_census(owned_census),
-                observation::digest_semantic_census(reopened_semantic.census),
+                observation::digest_semantic_census(owned_census.as_ref()),
+                observation::digest_semantic_census(reopened_semantic.census.as_ref()),
                 &mut mismatches,
             );
         } else if owned_census != reopened_semantic.census {
             push_batch_mismatch(
                 batch,
                 GroupedField::Reopened,
-                observation::digest_semantic_census(owned_census),
-                observation::digest_semantic_census(reopened_semantic.census),
+                observation::digest_semantic_census(owned_census.as_ref()),
+                observation::digest_semantic_census(reopened_semantic.census.as_ref()),
                 &mut mismatches,
             );
         }
-        if owned_spans != reopened_semantic.source_spans {
+        if owned_spans != reopened_spans {
             push_batch_mismatch(
                 batch,
                 GroupedField::SourceSpan,
                 owned_spans,
-                reopened_semantic.source_spans,
+                reopened_spans,
                 &mut mismatches,
             );
         }
@@ -943,7 +963,7 @@ fn inspect_batch(
                 &mut mismatches,
             );
             if let (Some(owned), Some(reopened)) = (owned, reopened) {
-                if owned != reopened {
+                if !observation::entity_observations_equal(&compiled.ir, &owned, image, &reopened) {
                     mismatches.push(CorpusMismatch::Grouped {
                         key,
                         field: GroupedField::Reopened,
@@ -953,6 +973,12 @@ fn inspect_batch(
                 }
                 let owned_render = render_neutral(&compiled.ir, Some(owned));
                 let reopened_render = observation::render_neutral_reader(image, Some(reopened.id));
+                if batch.language == CorpusLanguage::Python {
+                    eprintln!(
+                        "DEBUG render case={} owned={:?} reopened={:?}",
+                        case.package.ordinal, owned_render, reopened_render
+                    );
+                }
                 if !matches!(expected.neutral_render, RenderAvailability::NeutralRequired)
                     || !matches!(owned_render, RenderVerdict::Rendered(_))
                     || !matches!(reopened_render, RenderVerdict::Rendered(_))

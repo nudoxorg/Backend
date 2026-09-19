@@ -14,7 +14,7 @@ use super::service::Endpoint;
 use crate::host::lease::HostMode;
 use crate::presentation::chips::{self, CapabilityChip, LaneChip};
 use crate::presentation::fault;
-use backend_present::{Coordinate, Fault, Identity, IdentityKey, KeyTag, Operand, Shelf};
+use backend_present::{Coordinate, Fault, KeyTag, Operand, Shelf};
 use crate::reducer::model::Model;
 use crate::transport::unix::UnixSubscriptionTransport;
 use backend_library::{HealthReport, Row, RowId, SymbolKey, ViewRoot, encode_id};
@@ -188,11 +188,6 @@ impl WorkspaceStore {
         &self.project
     }
 
-    /// Returns the row with one stable identity.
-    pub(crate) fn row(&self, id: RowId) -> Option<&Row> {
-        self.root.row_ref(id)
-    }
-
     /// Returns the rows a page assembly needs: the declaration and its members.
     ///
     /// [`backend_present::page_from_document`] reads the declaration's own kind
@@ -206,44 +201,6 @@ impl WorkspaceStore {
             .filter(|row| row.id == RowId::Symbol(symbol) || row.parent == Some(symbol))
             .cloned()
             .collect()
-    }
-
-    /// Returns the declaration one exact coordinate names.
-    pub(crate) fn symbol_for(&self, coordinate: &str) -> Option<SymbolKey> {
-        self.root.rows().iter().find_map(|row| match row.id {
-            RowId::Symbol(symbol) if row.label == coordinate => Some(symbol),
-            _ => None,
-        })
-    }
-
-    /// Returns the typed kind one declaration row carries, when it has one.
-    pub(crate) fn kind_of(&self, symbol: SymbolKey) -> Option<backend_library::DeclarationKind> {
-        self.root.row_ref(RowId::Symbol(symbol)).and_then(|row| row.kind)
-    }
-
-    /// Returns the declarations belonging to one project coordinate.
-    pub(crate) fn declarations_in(&self, project: &str) -> Vec<&Row> {
-        self.root
-            .rows()
-            .iter()
-            .filter(|row| matches!(row.id, RowId::Symbol(_)))
-            .filter(|row| row.label.starts_with(project))
-            .collect()
-    }
-
-    /// Resolves a declaration name to a coordinate and key, for signature links.
-    ///
-    /// The match is by spelled name and nothing else, which is exactly what
-    /// [`backend_present::Resolved::ByName`] claims: a name that happens to
-    /// match a declaration on this shelf, never a proven semantic edge.
-    pub(crate) fn resolve_name(&self, name: &str) -> Option<(Coordinate, IdentityKey)> {
-        self.root.rows().iter().find_map(|row| match row.id {
-            RowId::Symbol(symbol) if Identity::parse(&row.label).name() == name => Some((
-                Coordinate::new(row.label.clone()),
-                IdentityKey::Symbol(symbol),
-            )),
-            _ => None,
-        })
     }
 
     /// Re-reads bounded health so the capability chips stay honest.

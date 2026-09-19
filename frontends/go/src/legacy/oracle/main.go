@@ -71,7 +71,22 @@ import (
 // serialize.go. A pre-v3 binary silently reports an empty same-package,
 // free-function-only call graph, indistinguishable from a package that
 // genuinely makes no such calls.
-const SchemaVersion = 3
+//
+// v4: `references` now covers the full go/types Uses map — every use of a
+// keyable named object (package-scope var/const/func/type, method, struct
+// field, imported package) with the use's closed `kind`
+// (call/read/typeref/import), the used object's closed `class`, the
+// receiver type name `recv` for method and field targets, and the
+// NAME-TOKEN extent as `start`/`end`. Pre-v4 rows are exactly the v3 rows:
+// every pre-existing call row carries an empty `kind`/`class`/`recv` and is
+// byte-identical to its v3 spelling (see `Reference.Kind` in serialize.go
+// for the additive protocol law). Uses that name no keyable object —
+// builtins, universe names, function-local variables, parameters, labels —
+// are deliberately absent: they have no package-scoped identity to key a
+// reference target with. `Decl.NameSpan` (serialize.go) now also carries
+// the declaration's own identifier extent. See `extractReferences` for the
+// walk, and `Reference.Class`/`Reference.Kind` for the closed vocabularies.
+const SchemaVersion = 4
 
 // Output is the root of the emitted JSON document.
 type Output struct {
@@ -154,6 +169,24 @@ func main() {
 		}
 		return
 	}
+	// The package-selected authority image serializes exactly the package that
+	// owns `source` while resolving that package's imports (same-module siblings
+	// and replaced external modules) from the module rooted at `module`. This is
+	// the real-package analogue of a single-package working directory: sibling
+	// packages are import context, never serialized declarations, so two
+	// packages that share a declaration spelling cannot collide in the image.
+	if len(os.Args) == 4 && os.Args[1] == "--authority-image-package" {
+		out, err := extractSelectedPackage(os.Args[3], os.Args[2])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oracle: %v\n", err)
+			os.Exit(1)
+		}
+		if err := writeAuthorityImage(os.Stdout, os.Args[2], out); err != nil {
+			fmt.Fprintf(os.Stderr, "oracle: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	dir := "."
 	if len(os.Args) > 1 {
 		dir = os.Args[1]
@@ -174,6 +207,24 @@ func main() {
 
 // extract loads every package under dir and serializes it.
 func extract(dir string) (*Output, error) {
+	return extractWithPattern(dir, "./...")
+}
+
+// extractSelectedPackage loads exactly the package that owns sourcePath and
+// serializes only that package. moduleDir roots go.mod/go.work discovery so the
+// package's imports resolve, but subpackages are loaded as dependencies and are
+// never serialized. A source outside moduleDir falls back to the module root.
+func extractSelectedPackage(moduleDir, sourcePath string) (*Output, error) {
+	pattern := "."
+	if relative, err := filepath.Rel(moduleDir, filepath.Dir(sourcePath)); err == nil &&
+		relative != "." && relative != "" {
+		pattern = "./" + filepath.ToSlash(relative)
+	}
+	return extractWithPattern(moduleDir, pattern)
+}
+
+// extractWithPattern loads one go/packages pattern under dir and serializes it.
+func extractWithPattern(dir, pattern string) (*Output, error) {
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
 			packages.NeedImports | packages.NeedDeps | packages.NeedTypes |
@@ -185,7 +236,7 @@ func extract(dir string) (*Output, error) {
 		Tests: true,
 	}
 
-	pkgs, err := packages.Load(cfg, "./...")
+	pkgs, err := packages.Load(cfg, pattern)
 	if err != nil {
 		return nil, fmt.Errorf("loading packages under %s: %w", dir, err)
 	}
@@ -342,7 +393,7 @@ func extractPackage(pkg *packages.Package, candidates []interfaceCandidate) *Pac
 		Files:      pkg.GoFiles,
 	}
 	p.BuildConstraints = scanBuildConstraints(pkg)
-	p.References = extractReferences(pkg)
+	p.References = extractReferences(pkg, docs)
 
 	scope := pkg.Types.Scope()
 	names := scope.Names() // already sorted
@@ -358,70 +409,79 @@ func extractPackage(pkg *packages.Package, candidates []interfaceCandidate) *Pac
 	return p
 }
 
-// extractReferences walks function AND method bodies with go/types' Uses
-// table, recording calls to free (non-method) package-level functions —
-// same-package or cross-package alike. This is deliberately not a spelling
-// scan: Uses excludes strings, comments, and shadowed locals.
+// extractReferences walks every package file and records the go/types Uses
+// table — one row per identifier the type checker resolved to a KEYABLE
+// named object: a package-scope variable, constant, function, or named
+// type; a method; a struct field; or an imported package binding. Each row
+// carries the enclosing declaration (function/method for body uses, the
+// declaring spec for uses inside package-level type/const/var declarations,
+// including initializers and signatures), the closed use `kind`, the used
+// object's closed `class`, the receiver type name for method and field
+// targets, and the identifier token's exact byte extent.
 //
-// Two gaps this closes relative to the previous version:
-//   - Method bodies were skipped entirely (`fn.Recv != nil` returned false
-//     before ever inspecting the body), so a call from inside a method —
-//     `func (s *Server) Handle() { validate() }` — was never recorded, even
-//     though `validate` is an ordinary same-package function call.
-//   - A call target in a different package (`target.Pkg() != pkg.Types`) was
-//     discarded outright, so the cross-package call graph was empty by
-//     construction. `TargetPkg` now carries that package's import path
-//     instead; see `Reference.TargetPkg`'s doc for why the routing decision
-//     belongs on the Rust side, not here.
-func extractReferences(pkg *packages.Package) []*Reference {
+// This is deliberately not a spelling scan: Uses excludes strings,
+// comments, and shadowed identifiers, and resolution is go/types' own.
+//
+// Two classes of identifier are deliberately NOT recorded, because neither
+// has an identity the reference-target keying can express:
+//   - universe and builtin names (`len`, `error`, `nil`, `iota`, …), whose
+//     package is the universe rather than any import path;
+//   - function-local objects (parameters, local variables, local type and
+//     const declarations, labels), which declare in no package scope.
+//
+// Self-edges are not recorded (an object's use inside its own declaration
+// resolves to the declaration itself, which the entity plane already
+// carries) — the same law the v3 call graph applied.
+//
+// One bounded gap remains by construction: a use inside a multi-name value
+// spec (`var a, b = f(), g()`) is owned by a declaration whose recorded
+// span covers only its own identifier, so the row could not prove
+// owner containment and is skipped. Single-name specs, function and method
+// bodies, signatures, and receivers all contain their uses fully.
+func extractReferences(pkg *packages.Package, docs *docCatalog) []*Reference {
 	var refs []*Reference
 	for _, file := range pkg.Syntax {
-		ast.Inspect(file, func(node ast.Node) bool {
-			fn, ok := node.(*ast.FuncDecl)
-			if !ok || fn.Body == nil || fn.Name == nil {
-				return true
-			}
-			if fn.Recv == nil && fn.Name.Name == "init" {
-				// Implicit functions have no declaration row; their call edges are
-				// not representable as reference rows and are deliberately not recorded.
-				return false
-			}
-			owner, ownerRecv, ok := referenceOwner(pkg, fn)
-			if !ok {
-				return true
-			}
-			ast.Inspect(fn.Body, func(child ast.Node) bool {
-				ident, ok := child.(*ast.Ident)
+		for _, decl := range file.Decls {
+			switch decl := decl.(type) {
+			case *ast.FuncDecl:
+				if decl.Body == nil || decl.Name == nil {
+					continue
+				}
+				if decl.Recv == nil && (decl.Name.Name == "init" || decl.Name.Name == "_") {
+					// Implicit and blank functions have no declaration row;
+					// their use edges are not representable as reference rows
+					// and are deliberately not recorded.
+					continue
+				}
+				owner, ownerRecv, ok := referenceOwner(pkg, decl)
 				if !ok {
-					return true
+					continue
 				}
-				target, ok := pkg.TypesInfo.Uses[ident].(*types.Func)
-				if !ok || target == owner {
-					return true
+				span, ok := declarationSpan(docs, decl)
+				if !ok {
+					continue
 				}
-				// Only free functions are tracked as targets; a selector
-				// call through a method (`x.Foo()`) resolves to a *types.Func
-				// whose signature carries a receiver — skip it (see
-				// Reference.Target's doc).
-				if sig, ok := target.Type().(*types.Signature); ok && sig.Recv() != nil {
-					return true
+				refs = append(refs, usesIn(pkg, owner, ownerRecv, span, decl)...)
+			case *ast.GenDecl:
+				for _, spec := range decl.Specs {
+					name, ok := specOwnerName(spec)
+					if !ok || name.Name == "_" {
+						// Blank declarations carry no declaration row, so no
+						// use can be attributed to one.
+						continue
+					}
+					owner := pkg.TypesInfo.Defs[name]
+					if owner == nil {
+						continue
+					}
+					span, ok := docs.declSpan[name.Name]
+					if !ok {
+						continue
+					}
+					refs = append(refs, usesIn(pkg, owner, "", span, spec)...)
 				}
-				targetPkg := ""
-				if p := target.Pkg(); p != nil && p != pkg.Types {
-					targetPkg = p.Path()
-				}
-				start := pkg.Fset.PositionFor(ident.Pos(), false).Offset
-				end := pkg.Fset.PositionFor(ident.End(), false).Offset
-				file := pkg.Fset.PositionFor(ident.Pos(), false).Filename
-				refs = append(refs, &Reference{
-					Owner: owner.Name(), OwnerRecv: ownerRecv,
-					Target: target.Name(), TargetPkg: targetPkg,
-					File: file, Start: start, End: end,
-				})
-				return true
-			})
-			return false
-		})
+			}
+		}
 	}
 	sort.Slice(refs, func(i, j int) bool {
 		if refs[i].File != refs[j].File {
@@ -436,6 +496,264 @@ func extractReferences(pkg *packages.Package) []*Reference {
 		return refs[i].Target < refs[j].Target
 	})
 	return refs
+}
+
+// specOwnerName resolves the first declared identifier of a package-level
+// spec: a TypeSpec's name, or a ValueSpec's first name.
+func specOwnerName(spec ast.Spec) (*ast.Ident, bool) {
+	switch spec := spec.(type) {
+	case *ast.TypeSpec:
+		return spec.Name, spec.Name != nil
+	case *ast.ValueSpec:
+		if len(spec.Names) == 0 || spec.Names[0] == nil {
+			return nil, false
+		}
+		return spec.Names[0], true
+	default:
+		return nil, false
+	}
+}
+
+// declarationSpan resolves the recorded AST range of a function or method
+// declaration (see docCatalog.declSpan / docCatalog.methodSpan): the same
+// range the declaration's own Span row carries, so a use the oracle records
+// is always contained in its owner's span.
+func declarationSpan(docs *docCatalog, decl *ast.FuncDecl) (posRange, bool) {
+	if decl.Recv != nil && len(decl.Recv.List) > 0 {
+		recvType := receiverTypeName(decl.Recv.List[0].Type)
+		if recvType == "" {
+			return posRange{}, false
+		}
+		span, ok := docs.methodSpan[recvType+"."+decl.Name.Name]
+		return span, ok
+	}
+	span, ok := docs.declSpan[decl.Name.Name]
+	return span, ok
+}
+
+// usesIn records one reference row per identifier under node that the type
+// checker resolved to a keyable object. owner is the declaring object the
+// rows are attributed to; ownerRecv is its bare receiver type name for
+// methods; ownerSpan is the owner's recorded source range, which every
+// emitted row must be contained in.
+func usesIn(pkg *packages.Package, owner types.Object, ownerRecv string, ownerSpan posRange, node ast.Node) []*Reference {
+	// One pre-pass collects the call positions (a call's Fun ident, or the
+	// Sel ident of a selector Fun) and the selector parent of every Sel
+	// ident, so the main walk can classify each use exactly once.
+	callFuns := map[*ast.Ident]bool{}
+	selectors := map[*ast.Ident]*ast.SelectorExpr{}
+	ast.Inspect(node, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.CallExpr:
+			switch fun := n.Fun.(type) {
+			case *ast.Ident:
+				callFuns[fun] = true
+			case *ast.SelectorExpr:
+				callFuns[fun.Sel] = true
+			}
+		case *ast.SelectorExpr:
+			selectors[n.Sel] = n
+		}
+		return true
+	})
+
+	ownerStart := pkg.Fset.PositionFor(ownerSpan.start, false).Offset
+	ownerEnd := pkg.Fset.PositionFor(ownerSpan.end, false).Offset
+	file := pkg.Fset.PositionFor(ownerSpan.start, false).Filename
+
+	var refs []*Reference
+	ast.Inspect(node, func(child ast.Node) bool {
+		ident, ok := child.(*ast.Ident)
+		if !ok || ident.Name == "_" {
+			return true
+		}
+		row, ok := classifyUse(pkg, owner, ident, callFuns, selectors)
+		if !ok {
+			return true
+		}
+		start := pkg.Fset.PositionFor(ident.Pos(), false).Offset
+		end := pkg.Fset.PositionFor(ident.End(), false).Offset
+		if start < ownerStart || end > ownerEnd {
+			// The use escapes its owner's recorded span (the multi-name
+			// value-spec gap documented on extractReferences); the authority
+			// image proves owner containment per row, so an uncontainable
+			// row is never emitted.
+			return true
+		}
+		row.Owner = owner.Name()
+		row.OwnerRecv = ownerRecv
+		row.File = file
+		row.Start = start
+		row.End = end
+		refs = append(refs, row)
+		return true
+	})
+	return refs
+}
+
+// classifyUse resolves one identifier through the Uses table and renders
+// its reference row payload: the used object's identity in the
+// reference-target keying (bare name plus foreign package path), the
+// object's closed class, the use's closed kind, and the receiver type name
+// for method and field targets. ok is false for every identifier the
+// reference plane deliberately does not record (see extractReferences).
+func classifyUse(pkg *packages.Package, owner types.Object, ident *ast.Ident, callFuns map[*ast.Ident]bool, selectors map[*ast.Ident]*ast.SelectorExpr) (*Reference, bool) {
+	obj := pkg.TypesInfo.Uses[ident]
+	if obj == nil || obj == owner {
+		return nil, false
+	}
+	row := &Reference{}
+	switch obj := obj.(type) {
+	case *types.PkgName:
+		row.Class = "pkg"
+		row.Kind = "import"
+		row.Target = obj.Name()
+		if imported := obj.Imported(); imported != nil && imported != pkg.Types {
+			row.TargetPkg = imported.Path()
+		}
+		return row, true
+
+	case *types.TypeName:
+		// A use of a named type (or alias) is a type use. Type parameters
+		// and function-local types declare in no package scope and are
+		// excluded by the parent check.
+		if obj.Parent() != pkg.Types.Scope() {
+			return nil, false
+		}
+		row.Class = "type"
+		row.Kind = "typeref"
+		row.Target = obj.Name()
+		row.TargetPkg = foreignPackage(pkg, obj)
+		return row, true
+
+	case *types.Func:
+		row.Target = obj.Name()
+		row.TargetPkg = foreignPackage(pkg, obj)
+		sig, _ := obj.Type().(*types.Signature)
+		method := sig != nil && sig.Recv() != nil
+		if method {
+			row.Class = "method"
+		}
+		// A free function keeps the empty class: the v3 call-row spelling,
+		// which every pre-existing row must retain byte for byte.
+		row.Recv = selectionReceiver(pkg, selectors[ident])
+		if method && row.Recv == "" && sig != nil {
+			row.Recv = signatureReceiverName(sig)
+		}
+		if callFuns[ident] {
+			// The empty kind is the v3 call spelling.
+			row.Kind = ""
+		} else {
+			// A method value (`f := x.Close`) or a func value use: the
+			// object is read, not called.
+			row.Kind = "read"
+		}
+		return row, true
+
+	case *types.Var:
+		row.Target = obj.Name()
+		row.TargetPkg = foreignPackage(pkg, obj)
+		if selection := selectionOf(pkg, selectors[ident]); selection != nil {
+			// A field selected through a value: `x.f`, `x.f = v`, `x.f()`.
+			row.Class = "field"
+			row.Recv = typeReceiverName(selection.Recv())
+		} else if obj.Parent() == pkg.Types.Scope() {
+			// A package-level variable.
+			row.Class = "var"
+		} else if obj.Parent() == nil {
+			// A struct field with no selection: the struct-literal key
+			// shape (`T{Field: v}`), the only field use that is not a
+			// selector. The receiver spelling is not recoverable here, so
+			// the row keys the field by package and name alone.
+			row.Class = "field"
+		} else {
+			// Parameters and function-local variables declare in no
+			// package scope.
+			return nil, false
+		}
+		if callFuns[ident] {
+			// A call through a func-typed field or variable keeps the
+			// empty v3 call spelling.
+			row.Kind = ""
+		} else {
+			// Reads and writes both use the object; go/types records no
+			// lvalue distinction in the Uses table, so both carry the read
+			// kind.
+			row.Kind = "read"
+		}
+		return row, true
+
+	case *types.Const:
+		if obj.Parent() != pkg.Types.Scope() {
+			// Local constants (and the universe `iota`) declare in no
+			// package scope.
+			return nil, false
+		}
+		row.Class = "const"
+		row.Kind = "read"
+		row.Target = obj.Name()
+		row.TargetPkg = foreignPackage(pkg, obj)
+		return row, true
+
+	default:
+		// Builtins, nil, and labels carry no keyable identity.
+		return nil, false
+	}
+}
+
+// selectionOf resolves the type-checker selection for a selector ident,
+// or nil when the ident is not a selector's Sel (or the selector resolved
+// to a plain qualified identifier, which carries no selection).
+func selectionOf(pkg *packages.Package, sel *ast.SelectorExpr) *types.Selection {
+	if sel == nil {
+		return nil
+	}
+	return pkg.TypesInfo.Selections[sel]
+}
+
+// selectionReceiver resolves the bare named type a selector's receiver is
+// written as: `x.Close` on a *Server yields "Server", on a named interface
+// the interface's name. Empty when the receiver is not a named type spelling.
+func selectionReceiver(pkg *packages.Package, sel *ast.SelectorExpr) string {
+	selection := selectionOf(pkg, sel)
+	if selection == nil {
+		return ""
+	}
+	return typeReceiverName(selection.Recv())
+}
+
+// typeReceiverName dereferences one receiver type down to its named
+// spelling (`*T`, `T[P]`, and `*T[P, Q]` all yield "T").
+func typeReceiverName(t types.Type) string {
+	if t == nil {
+		return ""
+	}
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	if named, ok := t.(*types.Named); ok {
+		return named.Obj().Name()
+	}
+	return ""
+}
+
+// signatureReceiverName resolves a method's bare receiver type name from
+// its signature — the fallback for method uses with no selection recorded.
+func signatureReceiverName(sig *types.Signature) string {
+	if sig.Recv() == nil {
+		return ""
+	}
+	return typeReceiverName(sig.Recv().Type())
+}
+
+// foreignPackage renders the defining package's import path for a
+// same-keying foreign target: present only when the object declares outside
+// the package this Reference was extracted from.
+func foreignPackage(pkg *packages.Package, obj types.Object) string {
+	if p := obj.Pkg(); p != nil && p != pkg.Types {
+		return p.Path()
+	}
+	return ""
 }
 
 // referenceOwner resolves the *types.Func for a FuncDecl — a package-level
@@ -583,6 +901,12 @@ func extractObject(pkg *packages.Package, obj types.Object, docs *docCatalog, ca
 		Doc:      docs.declDoc[obj.Name()],
 		Pos:      s.position(obj.Pos()),
 		Span:     s.declSpan(docs, obj.Name()),
+	}
+	// The declared identifier token is exactly the UTF-8 encoding of the
+	// object's name, so its byte extent is the position offset plus the
+	// name's byte length (go/types carries no end position on objects).
+	if pos := s.position(obj.Pos()); pos != nil {
+		base.NameSpan = &Span{Start: pos.Offset, End: pos.Offset + len(obj.Name())}
 	}
 
 	switch obj := obj.(type) {

@@ -152,7 +152,7 @@ fn compile_body(root: &PathBuf, body: &str) -> Result<Vec<u8>, TestError> {
     .map_err(|_| TestError::MissingRustc)?;
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0; 0];
-    let mut fragment_output = vec![0_u8; 262_144];
+    let mut fragment_output = vec![0_u8; 524_288];
     let request = CompileRequest {
         profile: LanguageProfile::Rust(RustEdition::Rust2024),
         stage: Stage::LowerIr,
@@ -363,7 +363,7 @@ fn rust_extension(lane: &Lane<'_>, ordinal: usize) -> Result<backend_semantic::i
         return Err(TestError::Falsified("rust extension row absent"));
     }
     let at =
-        offset + rows * 4 + usize::try_from(fact_ordinal).map_err(|_| TestError::Coordinate)? * 16;
+        offset + rows * 4 + usize::try_from(fact_ordinal).map_err(|_| TestError::Coordinate)? * 24;
     backend_semantic::ir::RustFacts::decode(payload, at).ok_or(TestError::Falsified("rust row decode"))
 }
 
@@ -483,39 +483,21 @@ fn type_child_entry(payload: &[u8], cursor: &mut usize) -> Result<Option<u32>, T
     Ok(target)
 }
 
-/// Reads one pooled atom list from the extension-pool payload.
-fn pooled_atom_list(pool: &[u8], index: usize) -> Result<Vec<u32>, TestError> {
-    let parameter_count = usize::try_from(word(pool, 0)?).map_err(|_| TestError::Coordinate)?;
-    let mut cursor = 4usize;
-    for _ in 0..parameter_count {
-        type_name_cell(pool, &mut cursor)?;
-        for _ in 0..2 {
-            let present = pool
-                .get(cursor)
-                .copied()
-                .ok_or(TestError::Falsified("truncated type parameter cell"))?;
-            cursor = cursor.checked_add(1).ok_or(TestError::Coordinate)?;
-            if present != 0 {
-                word(pool, cursor)?;
-                cursor = cursor.checked_add(4).ok_or(TestError::Coordinate)?;
-            }
-        }
-    }
-    let list_count = usize::try_from(word(pool, cursor)?).map_err(|_| TestError::Coordinate)?;
-    cursor += 4;
-    for list in 0..list_count {
-        let length = usize::try_from(word(pool, cursor)?).map_err(|_| TestError::Coordinate)?;
-        cursor += 4;
-        if list == index {
-            let mut words = Vec::new();
-            for offset in 0..length {
-                words.push(word(pool, cursor + offset * 4)?);
-            }
-            return Ok(words);
-        }
-        cursor += length * 4;
-    }
-    Err(TestError::Falsified("atom list absent"))
+/// Reads one pooled atom list from the validated extension pools. The
+/// schema-aware reopen owns the exact schema-5+ cell widths; this helper never
+/// infers a list boundary from a hand-rolled parameter cursor.
+fn pooled_atom_list(lane: &Lane<'_>, index: usize) -> Result<Vec<u32>, TestError> {
+    let ordinal = u32::try_from(index).map_err(|_| TestError::Coordinate)?;
+    let pools = lane
+        .view
+        .discover()
+        .extension_pools()
+        .map_err(|_| TestError::Falsified("extension pools failed to reopen"))?
+        .ok_or(TestError::Falsified("no extension pool"))?;
+    let list = pools
+        .atom_list(ordinal)
+        .map_err(|_| TestError::Falsified("atom list decode"))?;
+    Ok(list.iter().collect())
 }
 
 /// Finds the ordinal of one entity by exact name and kind.
@@ -635,12 +617,8 @@ fn generic_bounds_and_macro_spellings_reach_the_extension_rows() -> Result<(), T
     let sweep = entity_ordinal(&lane, b"sweep", EntityKind::Function)?;
     let extension = rust_extension(&lane, sweep)?;
     // The macro spelling `once` is interned and pooled on the owning row.
-    let pool = lane
-        .view
-        .extension_pool_payload()
-        .ok_or(TestError::Falsified("no extension pool"))?;
     let list = pooled_atom_list(
-        pool,
+        &lane,
         usize::try_from(extension.macros.raw).map_err(|_| TestError::Coordinate)?,
     )?;
     if list.len() != 1 {

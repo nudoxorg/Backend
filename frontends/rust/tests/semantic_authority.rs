@@ -38,7 +38,7 @@ fn project_root() -> Result<PathBuf, TestFailure> {
     )?;
     write_fixture(
         root.join("src/lib.rs"),
-        "//! Démonstrates borrowed Rust semantic authority.\n\nmod sibling;\n\n/// Describes a generic service.\npub trait Service<T: Clone> {\n    type Output: Clone;\n\n    /// Computes an output.\n    fn run(&self, input: T) -> Option<Self::Output>;\n}\n\npub struct Capsule {\n    pub payload: Vec<Option<String>>,\n}\n\npub enum Event { Message(String) }\n\npub struct Worker;\n\nimpl Service<String> for Worker {\n    type Output = String;\n\n    fn run(&self, input: String) -> Option<String> {\n        Some(input)\n    }\n}\n\nmacro_rules! invoke_once { ($value:expr) => { $value }; }\n\npub fn echo<T: Clone>(value: T) -> T { value }\n\npub fn direct(worker: &Worker, value: String) -> Option<String> {\n    worker.run(value)\n}\n\npub fn foreign(value: Option<String>) -> Option<String> {\n    sibling::assist(value)\n}\n\npub fn generic(value: String) -> String { echo::<String>(value) }\n\npub fn invoke(worker: &Worker, value: String) -> Option<String> {\n    invoke_once!(sibling::assist(worker.run(value)))\n}\n\n@\n",
+        "//! Démonstrates borrowed Rust semantic authority.\n\nmod sibling;\n\n/// Describes a generic service.\npub trait Service<T: Clone> {\n    type Output: Clone;\n\n    /// Computes an output.\n    fn run(&self, input: T) -> Option<Self::Output>;\n}\n\npub struct Capsule {\n    pub payload: Vec<Option<String>>,\n}\n\npub enum Event { Message(String) }\n\npub struct Worker;\n\nimpl Service<String> for Worker {\n    type Output = String;\n\n    fn run(&self, input: String) -> Option<String> {\n        Some(input)\n    }\n}\n\nmacro_rules! invoke_once { ($value:expr) => { $value }; }\n\npub fn echo<T: Clone>(value: T) -> T { value }\n\npub fn sweep<T: Clone>(x: T) -> T { x }\n\npub fn direct(worker: &Worker, value: String) -> Option<String> {\n    worker.run(value)\n}\n\npub fn foreign(value: Option<String>) -> Option<String> {\n    sibling::assist(value)\n}\n\npub fn generic(value: String) -> String { echo::<String>(value) }\n\npub fn invoke(worker: &Worker, value: String) -> Option<String> {\n    invoke_once!(sibling::assist(worker.run(value)))\n}\n\n@\n",
         "write crate root",
     )?;
     write_fixture(
@@ -278,6 +278,73 @@ fn borrowed_authority_preserves_hir_types_resolution_macros_and_exact_spans()
             }) => Ok(()),
             Ok(()) | Err(_) => Err(TestFailure::ProfileAuthority),
         }
+    })();
+    fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
+        operation: "remove fixture",
+        source,
+    })?;
+    outcome
+}
+
+/// Proves generic parameters are exposed through HIR with their trait bounds.
+#[test]
+fn generic_parameters_expose_ordered_bounds_through_hir() -> Result<(), TestFailure> {
+    let root = project_root()?;
+    let outcome = (|| {
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)?;
+        let running = AtomicBool::new(false);
+        let control = RustAnalysisControl {
+            cancelled: &running,
+            maximum_source_bytes: SourceByteLimit::from(8_192),
+            deadline: Instant::now() + std::time::Duration::from_secs(180),
+        };
+        project.analyze(control, |authority| {
+            let sweep = authority
+                .declarations()
+                .find(|declaration| {
+                    authority
+                        .span(&declaration.syntax)
+                        .ok()
+                        .and_then(|span| authority.source_at(span).ok())
+                        .is_some_and(|source| {
+                            source
+                                .windows(b"fn sweep".len())
+                                .any(|window| window == b"fn sweep")
+                        })
+                })
+                .ok_or(RustAuthorityError::MissingSemanticFact {
+                    fact: SemanticKind::Function,
+                })?;
+            let parameters = sweep.definition.generic_params(authority.database);
+            if parameters.len() != 1 {
+                return Err(RustAuthorityError::MissingSemanticFact {
+                    fact: SemanticKind::GenericParameter,
+                });
+            }
+            let parameter = parameters[0];
+            if parameter.name(authority.database).as_str() != "T" {
+                return Err(RustAuthorityError::MissingSemanticFact {
+                    fact: SemanticKind::GenericParameter,
+                });
+            }
+            let ra_ap_hir::GenericParam::TypeParam(type_parameter) = parameter else {
+                return Err(RustAuthorityError::MissingSemanticFact {
+                    fact: SemanticKind::GenericParameter,
+                });
+            };
+            let bounded = type_parameter
+                .trait_bounds(authority.database)
+                .into_iter()
+                .any(|bound| bound.name(authority.database).as_str() == "Clone");
+            if !bounded {
+                return Err(RustAuthorityError::MissingSemanticFact {
+                    fact: SemanticKind::GenericParameter,
+                });
+            }
+            Ok(())
+        })?;
+        Ok(())
     })();
     fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
         operation: "remove fixture",

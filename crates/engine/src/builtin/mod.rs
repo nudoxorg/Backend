@@ -39,12 +39,11 @@ pub use profile::{
     execution_manifest, execution_resources, profile_descriptor, profile_ids, profile_output_len,
 };
 pub use relation::{
-    BuiltinInputSchema, DeclarationKind, DeclarationRetention, ProductFileRef, ProductInput,
-    ProductProjectRef,
-    ProductSourceDeltaFacts, ProductSourceRecord, ProductSourceRelation,
-    ProductSourceRetentionFacts, ProductSourceSnapshot, ProductSourceTransition,
-    RetainedDeclarations, SourceDeclaration, SourceLanguage, SourceLocation,
-    SourceUnavailableReason, product_source_file_key,
+    BuiltinInputSchema, Container, DeclarationKind, DeclarationRetention, ProductFileRef,
+    ProductInput, ProductProjectRef, ProductSourceDeltaFacts, ProductSourceRecord,
+    ProductSourceRelation, ProductSourceRetentionFacts, ProductSourceSnapshot,
+    ProductSourceTransition, RetainedDeclarations, SourceDeclaration, SourceLanguage,
+    SourceLocation, SourceUnavailableReason, product_source_file_key,
 };
 pub use semantic_relation::{
     ActivatedSemanticPublication, PartialSemanticCoverage, ProductSemanticPublicationKey,

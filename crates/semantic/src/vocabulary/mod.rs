@@ -2015,6 +2015,13 @@ pub enum PythonProjectionFault {
         /// Exact grammar cause.
         cause: ProjectionPackageLineageFault,
     },
+    /// A declaration row could not be bound to its computed lexical owner.
+    Containment {
+        /// Inclusive source start of the child row.
+        start: u32,
+        /// Exclusive source end of the child row.
+        end: u32,
+    },
 }
 
 /// Closed C# authority projection terminal portable across the application

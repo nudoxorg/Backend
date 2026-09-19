@@ -10,21 +10,6 @@
 use super::ramp::Hue;
 use backend_present::Language;
 
-/// Returns the two-character tag drawn in a language tile.
-pub(crate) const fn tag(language: Language) -> &'static str {
-    match language {
-        Language::Rust => "rs",
-        Language::Python => "py",
-        Language::TypeScript => "ts",
-        Language::Go => "go",
-        Language::Java => "jv",
-        Language::CSharp => "c#",
-        Language::C => "c",
-        Language::Cxx => "c+",
-        Language::Unknown => "··",
-    }
-}
-
 /// Returns the spelled language name used in tooltips and legends.
 pub(crate) const fn label(language: Language) -> &'static str {
     match language {

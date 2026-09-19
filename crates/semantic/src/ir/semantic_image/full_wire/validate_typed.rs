@@ -15,8 +15,8 @@ pub(super) fn validate_typed(
 ) -> Result<TypedLayout, FullSemanticImageFault> {
     let nodes = layout.entry(FullDirectoryKind::TypedNodes);
     let edges = layout.entry(FullDirectoryKind::TypedEdges);
-    let mut starts = [0_u32; 8];
-    let mut counts = [0_u32; 8];
+    let mut starts = [0_u32; 9];
+    let mut counts = [0_u32; 9];
     let mut expected_domain = 0_u8;
     let mut expected_coordinate = 0_u32;
     let mut expected_edge = 0_u32;
@@ -26,7 +26,7 @@ pub(super) fn validate_typed(
                 field: FullSemanticImageField::TypedNodes,
             })? * TYPED_NODE_ROW_BYTES;
         let domain = bytes[offset];
-        if domain > 7 {
+        if domain > 8 {
             return Err(FullSemanticImageFault::TypedDomain { node: row, domain });
         }
         for value in &bytes[offset + 1..offset + 4] {

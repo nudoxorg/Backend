@@ -86,6 +86,9 @@ use product_state::ProductState;
 #[path = "builtin/coverage.rs"]
 mod coverage;
 use coverage::{SemanticDeployment, reconcile_semantic_lane, view_coverage};
+#[path = "builtin/lanes.rs"]
+mod lanes;
+use lanes::{FileLane, ProjectionLedger, SemanticFreshness, StructuralCause};
 #[path = "builtin/progress.rs"]
 mod progress;
 use progress::ingest_progress;
@@ -366,7 +369,15 @@ fn admit_manifest(
 }
 
 pub(crate) fn genesis() -> Result<WorkspaceHead, BuiltinModelError> {
-    let relation = workspace_relation(None)?;
+    head_for_intent(None)
+}
+
+/// Builds the checked head a workspace holding exactly `intent` would have.
+///
+/// The manifest root is a pure function of the selected relations, so this is
+/// also how two heads that share a root under different commits are built.
+fn head_for_intent(intent: Option<&BuiltinIntent>) -> Result<WorkspaceHead, BuiltinModelError> {
+    let relation = workspace_relation(intent)?;
     let semantic = semantic_relation()?;
     let manifest = workspace_manifest(&relation, &semantic)?;
     // `WorkspaceHead::genesis` derives this same deterministic transaction and
@@ -484,6 +495,37 @@ pub(crate) fn test_builtin_view_capability()
     builtin_view_capability_for_workspace(&snapshot)
 }
 
+/// Builds the checked head of a workspace that holds exactly one project.
+///
+/// Its manifest root differs from genesis while its commit is derived the
+/// same way, which is what a durable journal sees across a project being
+/// added and then removed again.
+#[cfg(test)]
+pub(crate) fn test_head_for_intent(
+    intent: &BuiltinIntent,
+) -> Result<WorkspaceHead, BuiltinModelError> {
+    head_for_intent(Some(intent))
+}
+
+/// Returns the initial view, cursor, and coverage capability one workspace
+/// head publishes.
+#[cfg(test)]
+pub(crate) fn test_view_generation(
+    head: &WorkspaceHead,
+) -> Result<
+    (
+        ViewRoot,
+        backend_engine::Cursor,
+        backend_engine::CoverageCapability,
+    ),
+    BuiltinModelError,
+> {
+    let snapshot = head.snapshot();
+    let capability = builtin_view_capability_for_workspace(&snapshot)?;
+    let (view, cursor) = initial_view_for_workspace(&snapshot)?;
+    Ok((view, cursor, capability))
+}
+
 struct IndexedProject {
     package: backend_engine::PackageKey,
     label: String,
@@ -581,7 +623,7 @@ fn view_for_workspace(
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_indexed_sources(&snapshot)?;
     let (initial, _) = initial_view_for_workspace(&snapshot)?;
-    let projected = rows_for_indexed_sources(&initial, sources, &snapshot, compiler)?;
+    let projected = rows_for_indexed_sources(&initial, &sources, &snapshot, compiler)?;
     let coverage = view_coverage(&snapshot, &projected.activated, deployment)?;
     let _admitted_bytes = admitted_view_bytes(&projected.rows)?;
     ViewRoot::new_checked(

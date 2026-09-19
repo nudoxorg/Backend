@@ -279,7 +279,9 @@ const fn fragment_terminal(
     compile_from_driver(source, recipe, CompilerCause::Fragment(cause))
 }
 
-const fn configured_tool(fact: ToolchainSelectionFact) -> Option<backend_semantic::vocabulary::NativeTool> {
+const fn configured_tool(
+    fact: ToolchainSelectionFact,
+) -> Option<backend_semantic::vocabulary::NativeTool> {
     match fact {
         ToolchainSelectionFact::ResolvedNative { tool } => Some(tool),
         ToolchainSelectionFact::ExplicitlyUnavailable { .. } => None,
@@ -290,12 +292,12 @@ const fn configured_tool(fact: ToolchainSelectionFact) -> Option<backend_semanti
 mod tests {
     use crate::driver::{AuthorityDiagnostic, AuthorityFailure};
     use backend_frontend_typescript::legacy::{AuthorityError, with_analysis};
+    use backend_library::interface::{CompilerCause, CompilerTerminal};
     use backend_semantic::vocabulary::{
         AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, LanguageProfile, NativeTool,
         PythonVersion, Stage, TypeScriptSource,
     };
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
-    use backend_library::interface::{CompilerCause, CompilerTerminal};
 
     use super::authority_terminal;
 

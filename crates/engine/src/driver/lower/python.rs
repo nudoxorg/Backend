@@ -25,6 +25,12 @@
 //!   fresh buffer (slashed foreign paths, module-level owners, the module
 //!   docstring) are documented limitations, never synthesized data.
 
+use backend_frontend_python::legacy::{
+    Annotation, AnnotationFact, AnnotationPosition, CheckerError, CheckerReport, ClassForm,
+    DeclarationFact, DeclarationKind, ExtractionError, InferredType, LiteralValue, ModuleFacts,
+    OccurrenceFact, OccurrenceReceiver, ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome,
+    TypeReason as ExtractedReason, extract,
+};
 use backend_semantic::ir::{
     AnonRecordForm, Confidence, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey,
     ForeignOrigin, ListSpan, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
@@ -32,19 +38,16 @@ use backend_semantic::ir::{
     ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeChild, SemanticTypeRecord,
     SemanticTypeTag, TypeReason, TypeWidth,
 };
-use backend_frontend_python::legacy::{
-    Annotation, AnnotationFact, AnnotationPosition, CheckerError, CheckerReport, ClassForm,
-    DeclarationFact, DeclarationKind, ExtractionError, InferredType, LiteralValue, ModuleFacts,
-    OccurrenceFact, ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome,
-    TypeReason as ExtractedReason, extract,
-};
 use backend_semantic::vocabulary::{
     ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
     PythonProjectionFault, PythonVersion,
 };
 
 use crate::driver::{
-    lower::{EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, SemanticFact, push_fact},
+    lower::{
+        EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, SemanticFact,
+        StagedSourceSpan, push_fact,
+    },
     types::{FactRejection, LoweringUnsupported},
 };
 
@@ -116,6 +119,7 @@ pub(crate) fn collect_with_checker<'a, 'source>(
     let mut emitter = Emitter::new(source, module, facts, checker);
     emitter.emit_classes()?;
     emitter.emit_non_class_declarations()?;
+    emitter.emit_parentage()?;
     emitter.emit_occurrences()?;
     emitter.emit_docs()?;
     Ok(())
@@ -204,8 +208,16 @@ struct Emitter<'a, 'source> {
     /// Lane ordinal per extracted declaration index; `None` for the module
     /// row, which the frozen driver fact set does not carry.
     ordinals: Vec<Option<u32>>,
+    /// Live bindings after Python shadowing collapse: `false` for a prior
+    /// same `(owner, kind, name)` binding shadowed by a later byte-identical
+    /// twin (later wins) and for the dead subtree it owns. Distinct overloads
+    /// keep distinct fingerprints, so every live signature survives.
+    live: Vec<bool>,
     /// Pushed declaration rows in lane order, built while emitting.
     pushed: Vec<Pushed<'source>>,
+    /// Parameter and result-slot ordinals with their owning declaration
+    /// index and source span, bound to their function by the parentage pass.
+    child_rows: Vec<(u32, usize, Span)>,
     /// The pyrefly authority report, when the checker answered.
     checker: Option<CheckerIndex<'a>>,
     /// Reserved owner while the first structural class is being lowered.
@@ -237,12 +249,15 @@ impl<'a, 'source> Emitter<'a, 'source> {
         checker: Option<&'a CheckerReport>,
     ) -> Self {
         let ordinals = vec![None; module.declarations.len()];
+        let live = compute_live_set(module);
         Self {
             source,
             module,
             facts,
             ordinals,
+            live,
             pushed: Vec::new(),
+            child_rows: Vec::new(),
             checker: checker.map(CheckerIndex::build),
             reserved_anchor: None,
         }
@@ -281,7 +296,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .declarations
             .iter()
             .enumerate()
-            .filter(|(_, declaration)| declaration.kind == DeclarationKind::Class)
+            .filter(|(index, declaration)| {
+                declaration.kind == DeclarationKind::Class && self.live[*index]
+            })
             .map(|(index, _)| index)
             .collect();
         let mut tables = TypeTables {
@@ -400,8 +417,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .declarations
             .iter()
             .enumerate()
-            .filter(|(_, candidate)| {
-                candidate.kind == wanted_kind
+            .filter(|(index, candidate)| {
+                self.live[*index]
+                    && candidate.kind == wanted_kind
                     && span_contains(class.span, candidate.span)
                     && self.module.declarations.iter().all(|other| {
                         other.kind != DeclarationKind::Class
@@ -539,10 +557,14 @@ impl<'a, 'source> Emitter<'a, 'source> {
     }
 
     /// The module-level `TypeVar(...)` binding names annotations resolve
-    /// against, independent of any pushed row.
+    /// against, independent of any pushed row. Shadowed bindings are dead,
+    /// so only live rows contribute names.
     fn module_typevar_names(&self) -> Result<Vec<&'source [u8]>, PythonCollectError> {
         let mut typevars = Vec::new();
-        for declaration in &self.module.declarations {
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if !self.live[index] {
+                continue;
+            }
             let is_typevar = declaration.kind == DeclarationKind::Constant
                 && declaration
                     .value_source
@@ -556,10 +578,15 @@ impl<'a, 'source> Emitter<'a, 'source> {
     }
 
     /// Pass two: functions (parameters and result slots first), then
-    /// variables and aliases, all in source order.
+    /// variables and aliases, all in source order. Shadowed bindings are
+    /// skipped: Python rebinds the name in place and the later binding wins,
+    /// so only the live row reaches the lane.
     fn emit_non_class_declarations(&mut self) -> Result<(), PythonCollectError> {
         let tables = self.type_tables()?;
         for index in 0..self.module.declarations.len() {
+            if !self.live[index] {
+                continue;
+            }
             let declaration = &self.module.declarations[index];
             match declaration.kind {
                 DeclarationKind::Module | DeclarationKind::Class => {}
@@ -571,6 +598,89 @@ impl<'a, 'source> Emitter<'a, 'source> {
             }
         }
         Ok(())
+    }
+
+    /// Pass three: binds every pushed row to its lexical owner. Parameters
+    /// and result slots join their function; every other declaration joins
+    /// its innermost enclosing class or function, or the module root when
+    /// nothing encloses it. Real modules reuse parameter and attribute
+    /// names across siblings, so without this pass two same-named rows
+    /// share one parentage-unavailable family and the image build rejects
+    /// the honest duplicate. An owner that was never pushed leaves its
+    /// child parentage-unavailable rather than fabricated as a root.
+    /// Shadowed owners are dead, so the search skips them: live rows only
+    /// ever bind to live parents.
+    ///
+    /// The same pass attaches every row's authority-backed source span, so
+    /// a real module keeps exact name extents instead of spanless rows.
+    fn emit_parentage(&mut self) -> Result<(), PythonCollectError> {
+        let module = self.module;
+        for index in 0..module.declarations.len() {
+            let Some(ordinal) = self.ordinals[index] else {
+                continue;
+            };
+            let span = module.declarations[index].span;
+            self.attach_span(ordinal, span)?;
+            let mut owner: Option<usize> = None;
+            let mut owner_area = u64::MAX;
+            for (candidate, declaration) in module.declarations.iter().enumerate() {
+                if candidate == index || !self.live[candidate] {
+                    continue;
+                }
+                if !matches!(
+                    declaration.kind,
+                    DeclarationKind::Class | DeclarationKind::Function
+                ) {
+                    continue;
+                }
+                if !span_contains(declaration.span, span) {
+                    continue;
+                }
+                if declaration.span.start == span.start && declaration.span.end == span.end {
+                    continue;
+                }
+                let area = u64::from(declaration.span.end.saturating_sub(declaration.span.start));
+                if area < owner_area {
+                    owner_area = area;
+                    owner = Some(candidate);
+                }
+            }
+            match owner {
+                None => self
+                    .facts
+                    .mark_parentage_root(ordinal)
+                    .map_err(|fault| parentage_fault(span.start, span.end, fault))?,
+                Some(candidate) => {
+                    if let Some(parent) = self.ordinals[candidate] {
+                        self.facts
+                            .attach_parent(ordinal, parent)
+                            .map_err(|fault| parentage_fault(span.start, span.end, fault))?;
+                    }
+                }
+            }
+        }
+        for (child, candidate, span) in core::mem::take(&mut self.child_rows) {
+            self.attach_span(child, span)?;
+            if let Some(parent) = self.ordinals[candidate] {
+                self.facts
+                    .attach_parent(child, parent)
+                    .map_err(|fault| parentage_fault(span.start, span.end, fault))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Attaches one authority-backed source span to an admitted row.
+    fn attach_span(&mut self, ordinal: u32, span: Span) -> Result<(), PythonCollectError> {
+        let Some(staged) = StagedSourceSpan::new(span.start, span.end) else {
+            return Err(PythonCollectError::Span {
+                start: span.start,
+                end: span.end,
+            });
+        };
+        self.facts
+            .attach_source_span(ordinal, staged)
+            .map_err(|fault| parentage_fault(span.start, span.end, fault))
     }
 
     /// Interns the class and `TypeVar` name tables annotations resolve
@@ -594,7 +704,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
             classes.push((name, ordinal));
         }
         let mut typevars = self.module_typevar_names()?;
-        for declaration in &self.module.declarations {
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if !self.live[index] {
+                continue;
+            }
             for parameter in &declaration.type_parameters {
                 typevars.push(self.slice(*parameter)?);
             }
@@ -613,6 +726,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let declaration = &self.module.declarations[index];
         let name = self.slice(declaration.name_span)?;
         let mut parameter_ordinals = Vec::new();
+        // The shape each minted parameter fact carries, kept so the result
+        // slot below can prove identity reuse instead of minting a duplicate
+        // declaration.
+        let mut parameter_shapes: Vec<(SemanticTypeRecord<'source>, Vec<u32>)> = Vec::new();
         let mut any_resolved = false;
         let mut any_checked = false;
         for parameter in &declaration.parameters {
@@ -651,12 +768,16 @@ impl<'a, 'source> Emitter<'a, 'source> {
             let extension = self.python_extension(&[], Some(parameter.kind), tier)?;
             let mut fact = SemanticFact::new(EntityKind::Parameter, parameter_name, LEAF_PRODUCT)
                 .typed(lowered_record);
-            for ordinal in children {
-                fact = fact.type_child(ordinal, None, 0);
+            for ordinal in &children {
+                fact = fact.type_child(*ordinal, None, 0);
             }
             let fact = fact.with_extension(EmissionExtension::Python(extension));
             let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
-            parameter_ordinals.push(Self::coordinate(parameter.name_span, ordinal)?);
+            let coordinate = Self::coordinate(parameter.name_span, ordinal)?;
+            parameter_ordinals.push(coordinate);
+            parameter_shapes.push((lowered_record, children));
+            self.child_rows
+                .push((coordinate, index, parameter.name_span));
         }
         let returns = self.return_annotation(declaration);
         let mut result_ordinal = None;
@@ -665,19 +786,38 @@ impl<'a, 'source> Emitter<'a, 'source> {
             let lowered =
                 self.lower_annotation(&annotation.annotation, Some(annotation.span), tables)?;
             return_resolved = lowered.resolved;
-            let extension = self.python_extension(&[], None, lowered_tier(lowered.resolved))?;
             // The result slot belongs to the function's key family: it is a
             // `Parameter` fact named by the function, carrying the return
             // annotation's record and its ordered type children exactly like
-            // every other annotation fact.
-            let mut fact =
-                SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT).typed(lowered.record);
-            for ordinal in lowered.children {
-                fact = fact.type_child(ordinal, None, 0);
+            // every other annotation fact. A parameter that shares the
+            // function's name and proves the identical shape is that same
+            // declaration under the identity model — minting a second fact
+            // would collide byte-for-byte in family and variant, so the slot
+            // reuses the parameter's row and the function's result child
+            // points there.
+            let reused = parameter_ordinals
+                .iter()
+                .zip(&parameter_shapes)
+                .find(|(_, (record, children))| {
+                    *record == lowered.record && *children == lowered.children
+                })
+                .map(|(ordinal, _)| *ordinal);
+            if let Some(ordinal) = reused {
+                result_ordinal = Some(ordinal);
+            } else {
+                let extension = self.python_extension(&[], None, lowered_tier(lowered.resolved))?;
+                let mut fact = SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT)
+                    .typed(lowered.record);
+                for ordinal in lowered.children {
+                    fact = fact.type_child(ordinal, None, 0);
+                }
+                let fact = fact.with_extension(EmissionExtension::Python(extension));
+                let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
+                let coordinate = Self::coordinate(declaration.name_span, ordinal)?;
+                self.child_rows
+                    .push((coordinate, index, declaration.name_span));
+                result_ordinal = Some(coordinate);
             }
-            let fact = fact.with_extension(EmissionExtension::Python(extension));
-            let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
-            result_ordinal = Some(Self::coordinate(declaration.name_span, ordinal)?);
         }
         let arity =
             u32::try_from(parameter_ordinals.len()).map_err(|_| PythonCollectError::Span {
@@ -1392,11 +1532,18 @@ impl<'a, 'source> Emitter<'a, 'source> {
         })
     }
 
-    /// True when the name is an import binding of this module.
+    /// True when the name is a live import binding of this module.
+    /// Shadowed bindings are dead, so they never mark a name as imported.
     fn is_imported_name(&self, name: &str) -> bool {
-        self.module.declarations.iter().any(|declaration| {
-            declaration.kind == DeclarationKind::Alias && declaration.name == name
-        })
+        self.module
+            .declarations
+            .iter()
+            .enumerate()
+            .any(|(index, declaration)| {
+                self.live[index]
+                    && declaration.kind == DeclarationKind::Alias
+                    && declaration.name == name
+            })
     }
 
     /// Lowers a union: expressible exactly when every member lowers to a
@@ -1463,10 +1610,15 @@ impl<'a, 'source> Emitter<'a, 'source> {
         Ok(())
     }
 
-    /// Resolves one occurrence target with its evidence tier: the earliest
-    /// pushed row with the same name. Import bindings become foreign `pypi`
-    /// package keys, since the referenced declaration lives outside this
-    /// fragment; the checker's resolution decides the tier.
+    /// Resolves one occurrence target with its evidence tier. Bare-name and
+    /// module-gated rows resolve through the module's own names: the
+    /// earliest pushed row with the same name. Import bindings become
+    /// foreign `pypi` package keys, since the referenced declaration lives
+    /// outside this fragment; the checker's resolution decides the tier.
+    /// Widened attribute rows key by receiver: a `self`/`cls` call resolves
+    /// to the method its enclosing class declares, and every other receiver
+    /// stays honestly foreign (an imported module receiver still resolves
+    /// through its own package key) — never a fabricated local.
     fn occurrence_target(
         &self,
         rows: &[Pushed<'source>],
@@ -1476,41 +1628,147 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .checker
             .as_ref()
             .and_then(|report| report.symbol_at(occurrence.span));
-        let matched = rows
-            .iter()
-            .find(|row| row.name == occurrence.target.as_bytes());
-        let Some(row) = matched else {
-            // The extractor only records targets matched against module
-            // names; an unmatched row still carries its written spelling.
-            let written = self.slice(occurrence.span)?;
-            return Ok(Some((
-                foreign_universe(written, occurrence.span)?,
-                OccurrenceConfidence::Index,
-            )));
-        };
-        if let Some(imported) = row.imported {
-            let module_spelling = self.slice(imported)?;
-            let binding = core::str::from_utf8(row.name).map_err(|_| {
-                PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
-                    start: occurrence.span.start,
-                    end: occurrence.span.end,
-                })
-            })?;
-            let target = foreign_package(module_spelling, binding, imported)?;
-            let confidence = match checked {
-                Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
-                _ => OccurrenceConfidence::Index,
-            };
-            return Ok(Some((target, confidence)));
+        match &occurrence.receiver {
+            OccurrenceReceiver::None | OccurrenceReceiver::Module => {
+                let matched = rows
+                    .iter()
+                    .find(|row| row.name == occurrence.target.as_bytes());
+                let Some(row) = matched else {
+                    // The extractor only records targets matched against module
+                    // names; an unmatched row keeps its written target spelling:
+                    // a bare call's own name, or — for a module-gated attribute
+                    // call — the attribute token at the callee's tail, because
+                    // the receiver is a namespace qualifier the target key never
+                    // carries (`pp.Word` keys `Word`, exactly like the matched
+                    // import path below).
+                    let written = self.slice(target_spelling_span(occurrence))?;
+                    return Ok(Some((
+                        foreign_universe(written, occurrence.span)?,
+                        OccurrenceConfidence::Index,
+                    )));
+                };
+                if let Some(imported) = row.imported {
+                    let module_spelling = self.slice(imported)?;
+                    let binding = core::str::from_utf8(row.name).map_err(|_| {
+                        PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+                            start: occurrence.span.start,
+                            end: occurrence.span.end,
+                        })
+                    })?;
+                    let target = foreign_package(module_spelling, binding, imported)?;
+                    let confidence = match checked {
+                        Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
+                        _ => OccurrenceConfidence::Index,
+                    };
+                    return Ok(Some((target, confidence)));
+                }
+                let confidence = match checked {
+                    Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                    _ => OccurrenceConfidence::Index,
+                };
+                Ok(Some((
+                    OccurrenceTarget::Local(EntityId::new(row.ordinal)),
+                    confidence,
+                )))
+            }
+            OccurrenceReceiver::EnclosingClass { class } => {
+                match self.enclosing_method(occurrence, class) {
+                    Some(ordinal) => {
+                        let confidence = match checked {
+                            Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                            _ => OccurrenceConfidence::Index,
+                        };
+                        Ok(Some((
+                            OccurrenceTarget::Local(EntityId::new(ordinal)),
+                            confidence,
+                        )))
+                    }
+                    // The attribute resolves to no live method of the class
+                    // (an inherited or unknown method): an honest typed
+                    // foreign method key, never a fabricated local.
+                    None => Ok(Some((
+                        foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
+                        OccurrenceConfidence::Index,
+                    ))),
+                }
+            }
+            OccurrenceReceiver::Foreign { receiver } => {
+                // A receiver that names an import binding resolves through
+                // that binding's own package key; any other receiver stays
+                // an honest typed foreign method key.
+                if let Some(receiver) = receiver {
+                    if let Some(row) = rows
+                        .iter()
+                        .find(|row| row.name == receiver.as_bytes() && row.imported.is_some())
+                    {
+                        let imported = row.imported.expect("imported span proven non-None above");
+                        let module_spelling = self.slice(imported)?;
+                        let binding = self.slice(occurrence.span)?;
+                        let binding = core::str::from_utf8(binding).map_err(|_| {
+                            PythonCollectError::Projection(
+                                PythonProjectionFault::ForeignSpellingUtf8 {
+                                    start: occurrence.span.start,
+                                    end: occurrence.span.end,
+                                },
+                            )
+                        })?;
+                        let target = foreign_package(module_spelling, binding, imported)?;
+                        let confidence = match checked {
+                            Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
+                            _ => OccurrenceConfidence::Index,
+                        };
+                        return Ok(Some((target, confidence)));
+                    }
+                }
+                Ok(Some((
+                    foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
+                    OccurrenceConfidence::Index,
+                )))
+            }
         }
-        let confidence = match checked {
-            Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
-            _ => OccurrenceConfidence::Index,
-        };
-        Ok(Some((
-            OccurrenceTarget::Local(EntityId::new(row.ordinal)),
-            confidence,
-        )))
+    }
+
+    /// The lane ordinal of the live method one widened `self`/`cls` call
+    /// resolves to: the innermost live function declaration with the
+    /// attribute's spelling inside the innermost live class declaration
+    /// with the recorded class's name whose extent contains the call site.
+    /// The same live and innermost laws the parentage pass applies pick
+    /// exactly one row; anything else has no honest local target.
+    fn enclosing_method(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
+        let class_bytes = class.as_bytes();
+        let attribute_bytes = occurrence.target.as_bytes();
+        let mut class_span: Option<Span> = None;
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Class
+                || declaration.name.as_bytes() != class_bytes
+                || !self.live[index]
+                || !span_contains(declaration.span, occurrence.span)
+            {
+                continue;
+            }
+            let area = declaration.span.end - declaration.span.start;
+            let occupied = class_span.map_or(true, |span| area < span.end - span.start);
+            if occupied {
+                class_span = Some(declaration.span);
+            }
+        }
+        let class_span = class_span?;
+        let mut method: Option<(Span, u32)> = None;
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Function
+                || declaration.name.as_bytes() != attribute_bytes
+                || !self.live[index]
+                || !span_contains(class_span, declaration.span)
+            {
+                continue;
+            }
+            let area = declaration.span.end - declaration.span.start;
+            let occupied = method.map_or(true, |(span, _)| area < span.end - span.start);
+            if occupied && let Some(ordinal) = self.ordinals[index] {
+                method = Some((declaration.span, ordinal));
+            }
+        }
+        method.map(|(_, ordinal)| ordinal)
     }
 
     /// Lowers one checker-inferred type to its root record and the ordered
@@ -1518,7 +1776,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// the owning fact; nested compounds consume pooled anonymous rows.
     /// A `Named` spelling that resolves to a module class becomes that
     /// class's nominal row; any other named spelling has no borrowed bytes
-    /// to own, so the honest gap names the oracle.
+    /// to own, so the honest gap names the oracle. A member run wider than
+    /// the bounded fact child lane cannot be hosted either, so it answers
+    /// `None` — the caller's honest oracle gap — instead of truncating a
+    /// proven shape.
     fn inferred_root(
         &mut self,
         inferred: &InferredType,
@@ -1563,6 +1824,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 Ok(Some((apply_record(), children)))
             }
             InferredType::Tuple(elements) => {
+                if elements.len() > MAX_TYPE_CHILDREN {
+                    return Ok(None);
+                }
                 let mut children = Vec::new();
                 for element in elements.as_ref() {
                     match self.inferred_row(element, tables, anchor)? {
@@ -1573,6 +1837,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 Ok(Some((tuple_record(), children)))
             }
             InferredType::Union(members) => {
+                if members.len() > MAX_TYPE_CHILDREN {
+                    return Ok(None);
+                }
                 let mut children = Vec::new();
                 for member in members.as_ref() {
                     match self.inferred_row(member, tables, anchor)? {
@@ -1583,6 +1850,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 Ok(Some((union_record(), children)))
             }
             InferredType::Callable { params, result } => {
+                if params.len().saturating_add(usize::from(result.is_some())) > MAX_TYPE_CHILDREN {
+                    return Ok(None);
+                }
                 let mut children = Vec::new();
                 for parameter in params.as_ref() {
                     match self.inferred_row(parameter, tables, anchor)? {
@@ -1722,16 +1992,25 @@ fn lane_rejected<F>(_fault: F) -> PythonCollectError {
     PythonCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
 }
 
+/// Maps a lexical-containment binding failure onto its exact closed terminal.
+fn parentage_fault<F>(start: u32, end: u32, _fault: F) -> PythonCollectError {
+    PythonCollectError::Projection(PythonProjectionFault::Containment { start, end })
+}
+
 /// Picks the innermost pushed row that owns an occurrence: the name must
-/// match and the declaration must start no later than the reference, so the
-/// owner-relative span is always ordered.
+/// match and the live declaration must fully contain the reference, so the
+/// owner-relative span always lands inside its owner. Start-only matching
+/// could re-home a reference from a shadowed (dropped) scope onto an earlier
+/// same-name row that does not contain it, which the image build honestly
+/// rejects as an escaping occurrence span; without a containing live owner
+/// the reference has no honest lane owner and is skipped, never synthesized.
 fn owner_row<'rows, 'source>(
     rows: &'rows [Pushed<'source>],
     occurrence: &OccurrenceFact,
 ) -> Option<&'rows Pushed<'source>> {
     let owner_bytes = occurrence.owner.as_bytes();
     rows.iter()
-        .filter(|row| row.name == owner_bytes && row.span.start <= occurrence.span.start)
+        .filter(|row| row.name == owner_bytes && span_contains(row.span, occurrence.span))
         .max_by_key(|row| row.span.start)
 }
 
@@ -1744,12 +2023,31 @@ fn owner_relative_span(owner: &Pushed<'_>, occurrence: &OccurrenceFact) -> RelSp
     RelSpan::new_trusted(start, end)
 }
 
+/// The source span carrying one occurrence's written target key. A bare-name
+/// call spans exactly its name; a module-gated attribute call spans the whole
+/// receiver-qualified callee (`pp.Word`), so its key spelling is the tail of
+/// that span. When the tail cannot be proven inside the span, the whole span
+/// is kept — the documented borrowed-spelling limitation — never a guessed
+/// slice.
+fn target_spelling_span(occurrence: &OccurrenceFact) -> Span {
+    let target_width = u32::try_from(occurrence.target.len()).unwrap_or(u32::MAX);
+    match occurrence.span.end.checked_sub(target_width) {
+        Some(start) if start >= occurrence.span.start => Span {
+            start,
+            end: occurrence.span.end,
+        },
+        _ => occurrence.span,
+    }
+}
+
 /// The total, name-preserving reference-kind mapping. The extractor's closed
 /// call lattice and the lane's reference lattice share both categories, so
 /// no two extractor kinds collapse and no lane kind is unreachable.
 fn reference_kind(kind: backend_frontend_python::legacy::OccurrenceKind) -> ReferenceKind {
     match kind {
-        backend_frontend_python::legacy::OccurrenceKind::FunctionCall => ReferenceKind::FunctionCall,
+        backend_frontend_python::legacy::OccurrenceKind::FunctionCall => {
+            ReferenceKind::FunctionCall
+        }
         backend_frontend_python::legacy::OccurrenceKind::MethodCall => ReferenceKind::MethodCall,
     }
 }
@@ -1791,6 +2089,406 @@ const fn combined_tier(any_checked: bool, any_resolved: bool) -> Confidence {
 /// True when `outer` fully contains `inner`.
 const fn span_contains(outer: Span, inner: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
+}
+
+/// Python legally rebinds a name in the same scope: the later binding wins
+/// and the earlier one is dead at runtime. The identity model is
+/// coordinate-free, so two byte-identical twins in one scope share one
+/// family and one structural variant and the image build rejects the honest
+/// duplicate as `DuplicateDeclarationIdentity`. This pass keeps the live
+/// binding per `(owner, kind, name)` signature group instead of minting
+/// coordinates into identity.
+///
+/// Grouping is by lexical owner (the innermost enclosing class or function,
+/// or the module root), declaration kind, and name, so two different scopes
+/// reusing one name never merge. Within a group, bindings split by a
+/// span-erased signature fingerprint that mirrors the variant inputs: arity,
+/// parameter conventions, and normalized annotations for functions; the
+/// normalized annotation for variables and type aliases; the structural
+/// members for `TypedDict`/`Protocol` classes and nothing else for plain
+/// classes (whose variant is the bare self-nominal). Distinct overloads keep
+/// distinct fingerprints and all survive; byte-identical twins share one
+/// fingerprint and only the later (larger `span.start`, ties by index) stays
+/// live. A dead binding's whole subtree is dead too: inner declarations
+/// owned by a shadowed class or function are dropped with it, as is every
+/// parameter and result slot of a dropped function (those rows are only
+/// emitted for live functions).
+///
+/// References resolve through the pushed (live-only) rows by name, so after
+/// the collapse every occurrence points at the live binding. For identical
+/// twins that redirection is type-identical; an earlier call that textually
+/// precedes the shadowing definition therefore keeps its meaning while
+/// naming the surviving row.
+fn compute_live_set(module: &ModuleFacts) -> Vec<bool> {
+    let count = module.declarations.len();
+    let owners: Vec<Option<usize>> = (0..count)
+        .map(|index| innermost_owner(module, index))
+        .collect();
+    let mut live = vec![true; count];
+    // One group per (owner, kind, name): later bindings shadow earlier ones
+    // only inside the same lexical scope.
+    let mut groups: std::collections::HashMap<(Option<usize>, u8, &str), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (index, declaration) in module.declarations.iter().enumerate() {
+        if declaration.kind == DeclarationKind::Module {
+            continue;
+        }
+        groups
+            .entry((
+                owners[index],
+                declaration_kind_discriminant(declaration.kind),
+                declaration.name.as_str(),
+            ))
+            .or_default()
+            .push(index);
+    }
+    for indices in groups.values() {
+        if indices.len() < 2 {
+            continue;
+        }
+        // Subgroup by the span-erased signature: distinct overloads never
+        // share a fingerprint, identical twins always do.
+        let mut fingerprints: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        for index in indices {
+            fingerprints
+                .entry(shadowing_fingerprint(module, *index))
+                .or_default()
+                .push(*index);
+        }
+        for twins in fingerprints.values() {
+            if twins.len() < 2 {
+                continue;
+            }
+            let mut ordered = twins.clone();
+            ordered.sort_by_key(|index| (module.declarations[*index].span.start, *index));
+            // Keep the last (live) binding; earlier twins are shadowed.
+            for shadowed in &ordered[..ordered.len() - 1] {
+                live[*shadowed] = false;
+            }
+        }
+    }
+    // A shadowed class or function takes its whole subtree with it: any
+    // declaration owned (transitively) by a dead row is dead. Parents always
+    // own strictly larger spans than their children, so one pass from the
+    // largest span down propagates the full closure.
+    let mut by_area: Vec<usize> = (0..count).collect();
+    by_area.sort_by_key(|index| {
+        let span = module.declarations[*index].span;
+        u64::from(span.end.saturating_sub(span.start))
+    });
+    for index in by_area.into_iter().rev() {
+        if live[index]
+            && let Some(owner) = owners[index]
+            && !live[owner]
+        {
+            live[index] = false;
+        }
+    }
+    live
+}
+
+/// The innermost enclosing class or function of one declaration, by smallest
+/// strictly containing span. `None` is the module root. This mirrors the
+/// parentage pass exactly (strict containment, smallest area wins) so the
+/// shadowing groups and the emitted parentage agree on every scope.
+fn innermost_owner(module: &ModuleFacts, index: usize) -> Option<usize> {
+    let span = module.declarations[index].span;
+    let mut owner: Option<usize> = None;
+    let mut owner_area = u64::MAX;
+    for (candidate, declaration) in module.declarations.iter().enumerate() {
+        if candidate == index {
+            continue;
+        }
+        if !matches!(
+            declaration.kind,
+            DeclarationKind::Class | DeclarationKind::Function
+        ) {
+            continue;
+        }
+        if !span_contains(declaration.span, span) {
+            continue;
+        }
+        if declaration.span.start == span.start && declaration.span.end == span.end {
+            continue;
+        }
+        let area = u64::from(declaration.span.end.saturating_sub(declaration.span.start));
+        if area < owner_area {
+            owner_area = area;
+            owner = Some(candidate);
+        }
+    }
+    owner
+}
+
+/// Closed kind discriminant for the shadowing groups. `Field` and `Constant`
+/// stay distinct kinds (they already map to distinct entity kinds), so a
+/// field and a constant sharing one name never merge.
+fn declaration_kind_discriminant(kind: DeclarationKind) -> u8 {
+    match kind {
+        DeclarationKind::Module => 0,
+        DeclarationKind::Class => 1,
+        DeclarationKind::Function => 2,
+        DeclarationKind::Field => 3,
+        DeclarationKind::Constant => 4,
+        DeclarationKind::Alias => 5,
+    }
+}
+
+/// The span-erased signature fingerprint of one declaration: equal
+/// fingerprints imply equal structural variants, so only true twins collapse.
+/// Spans never enter the key (twins live at different coordinates by
+/// definition); parameter names, defaults, decorators, receivers, async
+/// markers, and docstrings never enter either, exactly like the variant frame
+/// ignores them.
+fn shadowing_fingerprint(module: &ModuleFacts, index: usize) -> String {
+    let declaration = &module.declarations[index];
+    match declaration.kind {
+        DeclarationKind::Function => function_fingerprint(module, index),
+        DeclarationKind::Field | DeclarationKind::Constant => {
+            match field_annotation_for(module, declaration) {
+                Some(found) => format!("var:{:?}", normalized_annotation(&found.annotation)),
+                None => "var:unannotated".to_string(),
+            }
+        }
+        DeclarationKind::Alias => {
+            let is_type_alias =
+                declaration.value_span.is_none() && declaration.value_source.is_some();
+            if is_type_alias && let Some(found) = alias_value_annotation_for(module, declaration) {
+                format!("alias:{:?}", normalized_annotation(&found.annotation))
+            } else {
+                // Import bindings all lower to the same honest unknown row
+                // regardless of the imported module spelling, so every same
+                // name import shares one fingerprint and the later wins.
+                "alias:import".to_string()
+            }
+        }
+        DeclarationKind::Class => class_fingerprint(module, index),
+        DeclarationKind::Module => "module".to_string(),
+    }
+}
+
+/// Span-erased function signature: parameter conventions plus normalized
+/// parameter and return annotations, in order. This mirrors the function
+/// variant (parameter conventions plus type children) while ignoring the
+/// parameter names the variant never frames.
+fn function_fingerprint(module: &ModuleFacts, index: usize) -> String {
+    let declaration = &module.declarations[index];
+    let mut parts = Vec::with_capacity(declaration.parameters.len());
+    for parameter in &declaration.parameters {
+        parts.push(format!(
+            "{:?}:{:?}",
+            parameter.kind,
+            normalized_annotation(&parameter.annotation)
+        ));
+    }
+    let returns = return_annotation_for(module, declaration)
+        .map(|found| format!("{:?}", normalized_annotation(&found.annotation)))
+        .unwrap_or_else(|| "none".to_string());
+    format!("fn:[{}] ret({})", parts.join(","), returns)
+}
+
+/// Span-erased class fingerprint. Plain classes lower to the bare
+/// self-nominal, so every same-name plain class shares one fingerprint and
+/// the later wins regardless of bases or decorators (which the variant never
+/// frames). Structural classes carry their members as type children, so their
+/// member signatures join the key and distinctly-shaped records survive.
+fn class_fingerprint(module: &ModuleFacts, index: usize) -> String {
+    let declaration = &module.declarations[index];
+    match declaration.class_form {
+        Some(ClassForm::TypedDict) | Some(ClassForm::Protocol) => {
+            let mut bases = Vec::new();
+            for base in &declaration.bases {
+                bases.push(format!("{:?}", normalized_annotation(base)));
+            }
+            let mut members = Vec::new();
+            for member_index in structural_member_indices_for(module, declaration) {
+                let member = &module.declarations[member_index];
+                let key = match member.kind {
+                    DeclarationKind::Function => function_fingerprint(module, member_index),
+                    DeclarationKind::Field | DeclarationKind::Constant => {
+                        match field_annotation_for(module, member) {
+                            Some(found) => {
+                                format!("{:?}", normalized_annotation(&found.annotation))
+                            }
+                            None => "unannotated".to_string(),
+                        }
+                    }
+                    _ => format!("{:?}:{}", member.kind, member.name),
+                };
+                members.push(format!("{}:{}", member.name, key));
+            }
+            format!(
+                "structural:{:?}|bases:[{}]|total:{:?}|members:[{}]",
+                declaration.class_form,
+                bases.join(","),
+                declaration.total,
+                members.join(",")
+            )
+        }
+        _ => "plain-class".to_string(),
+    }
+}
+
+/// The direct structural members of one class, in declaration order, ignoring
+/// nested classes: fields for a `TypedDict`, functions otherwise. Mirrors the
+/// emitter's member walk so fingerprints and emitted records agree.
+fn structural_member_indices_for(module: &ModuleFacts, class: &DeclarationFact) -> Vec<usize> {
+    let wanted_kind = match class.class_form {
+        Some(ClassForm::TypedDict) => DeclarationKind::Field,
+        _ => DeclarationKind::Function,
+    };
+    module
+        .declarations
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| {
+            candidate.kind == wanted_kind
+                && span_contains(class.span, candidate.span)
+                && module.declarations.iter().all(|other| {
+                    other.kind != DeclarationKind::Class
+                        || other.span == class.span
+                        || !span_contains(other.span, candidate.span)
+                })
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// One annotation with every source coordinate erased: leaf name spans become
+/// `None` and unsupported-syntax reasons keep only their syntax kind. Twins
+/// at different file offsets therefore fingerprint identically, while
+/// structurally different annotations never do. A `Literal[...]` member
+/// widens exactly like the lane lowers it (one literal to its base
+/// primitive, several to their union), because the lane frames the widened
+/// row: `Literal[True]` and a bare `bool` are one fingerprint, as they are
+/// one variant. An unwidenable literal keeps its erased form.
+fn normalized_annotation(annotation: &Annotation) -> Annotation {
+    match annotation {
+        Annotation::Name { name, .. } => {
+            // The lane lowers each `typing.X` spelling exactly like its bare
+            // `X` twin (`Any`, `Callable`, `Optional`, `Union`, `list`,
+            // `dict`, `set`, `frozenset`, `tuple`, `NotRequired`,
+            // `Required`), so fingerprints strip the prefix to mirror the
+            // variant. Import aliases (`t.Any`) stay distinct spellings with
+            // distinct variants, exactly like the lane treats them.
+            let canonical = name.strip_prefix("typing.").unwrap_or(name);
+            Annotation::Name {
+                name: canonical.to_string(),
+                span: None,
+            }
+        }
+        Annotation::Generic { base, args } => Annotation::Generic {
+            base: Box::new(normalized_annotation(base)),
+            args: args.iter().map(normalized_annotation).collect(),
+        },
+        Annotation::List(items) => {
+            Annotation::List(items.iter().map(normalized_annotation).collect())
+        }
+        Annotation::StringLiteral(value) => Annotation::StringLiteral(value.clone()),
+        Annotation::Union(members) => {
+            Annotation::Union(members.iter().map(normalized_annotation).collect())
+        }
+        Annotation::Literal(values) => widened_literal_fingerprint(values),
+        Annotation::None => Annotation::None,
+        Annotation::Unknown(reason) => Annotation::Unknown(normalized_reason(reason)),
+    }
+}
+
+/// One `Literal[...]` annotation widened to its fingerprint form, mirroring
+/// the lane's frozen widening law: every widenable member becomes its base
+/// primitive (`str`, `int`, `float`, `complex`, `bool`, or `None`), distinct
+/// members deduplicate, one member stays a leaf, and several become a union.
+/// Ellipsis or unsupported members cannot widen, so the literal keeps its
+/// span-erased form and only byte-identical twins merge.
+fn widened_literal_fingerprint(values: &[LiteralValue]) -> Annotation {
+    let mut widened: Vec<Annotation> = Vec::new();
+    for value in values {
+        let Some(mapped) = widened_literal_member(value) else {
+            return Annotation::Literal(values.to_vec());
+        };
+        if !widened.contains(&mapped) {
+            widened.push(mapped);
+        }
+    }
+    match widened.as_slice() {
+        [] => Annotation::Literal(values.to_vec()),
+        [single] => single.clone(),
+        _ => Annotation::Union(widened),
+    }
+}
+
+/// One literal member widened to its base-primitive fingerprint, or `None`
+/// when the widening law cannot name it.
+fn widened_literal_member(value: &LiteralValue) -> Option<Annotation> {
+    let name = match value {
+        LiteralValue::String(_) => "str",
+        LiteralValue::Integer(_) => "int",
+        LiteralValue::Float { .. } => "float",
+        LiteralValue::Complex { .. } => "complex",
+        LiteralValue::Boolean(_) => "bool",
+        LiteralValue::None => return Some(Annotation::None),
+        LiteralValue::Ellipsis | LiteralValue::Unsupported(_) => return None,
+    };
+    Some(Annotation::Name {
+        name: name.to_string(),
+        span: None,
+    })
+}
+
+/// One extractor reason with its span erased. `Unannotated` keeps its
+/// position (a parameter and a field are never confused); unsupported syntax
+/// keeps only its syntax kind.
+fn normalized_reason(reason: &ExtractedReason) -> ExtractedReason {
+    match reason {
+        ExtractedReason::Unannotated { position } => ExtractedReason::Unannotated {
+            position: *position,
+        },
+        ExtractedReason::UnsupportedSyntax { kind, .. } => ExtractedReason::UnsupportedSyntax {
+            kind: *kind,
+            span: Span { start: 0, end: 0 },
+        },
+        ExtractedReason::TruncatedAtDepthLimit => ExtractedReason::TruncatedAtDepthLimit,
+    }
+}
+
+/// The return annotation of one function, by exact owner name and span
+/// containment, so overloaded names never swap annotations. Free function
+/// twin of the emitter method for use before the emitter exists.
+fn return_annotation_for<'m>(
+    module: &'m ModuleFacts,
+    declaration: &DeclarationFact,
+) -> Option<&'m AnnotationFact> {
+    module.annotations.iter().find(|candidate| {
+        candidate.position == AnnotationPosition::Return
+            && candidate.owner == declaration.name
+            && span_contains(declaration.span, candidate.span)
+    })
+}
+
+/// The annotation of one field or constant, matched the same way.
+fn field_annotation_for<'m>(
+    module: &'m ModuleFacts,
+    declaration: &DeclarationFact,
+) -> Option<&'m AnnotationFact> {
+    module.annotations.iter().find(|candidate| {
+        candidate.position == AnnotationPosition::Field
+            && candidate.owner == declaration.name
+            && span_contains(declaration.span, candidate.span)
+    })
+}
+
+/// The written value annotation of one PEP 695 `type` alias, matched by exact
+/// owner name and span containment.
+fn alias_value_annotation_for<'m>(
+    module: &'m ModuleFacts,
+    declaration: &DeclarationFact,
+) -> Option<&'m AnnotationFact> {
+    module.annotations.iter().find(|candidate| {
+        candidate.position == AnnotationPosition::AliasValue
+            && candidate.owner == declaration.name
+            && span_contains(declaration.span, candidate.span)
+    })
 }
 
 /// The integer row for a bare `int`: arbitrary precision, not a platform
@@ -2007,14 +2705,42 @@ fn foreign_universe<'source>(
     Ok(OccurrenceTarget::Foreign(key))
 }
 
+/// The honest typed foreign key for one unresolved method call: the exact
+/// written attribute spelling as a `pypi`-universe method target, never a
+/// fabricated local.
+fn foreign_method<'source>(
+    written: &'source [u8],
+    spelling_span: Span,
+) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
+    let path = core::str::from_utf8(written).map_err(|_| {
+        PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+            start: spelling_span.start,
+            end: spelling_span.end,
+        })
+    })?;
+    let key = ForeignKey::new(
+        ForeignOrigin::Universe { ecosystem: "pypi" },
+        path,
+        path,
+        Some(EntityKind::Function),
+    )
+    .map_err(|cause| foreign_key_fault(cause, spelling_span))?;
+    Ok(OccurrenceTarget::Foreign(key))
+}
+
 /// Projects one validated foreign-key grammar rejection without replacing the
 /// written package spelling by a universe fallback.
-fn foreign_key_fault(cause: backend_semantic::ir::ForeignKeyFault, span: Span) -> PythonCollectError {
+fn foreign_key_fault(
+    cause: backend_semantic::ir::ForeignKeyFault,
+    span: Span,
+) -> PythonCollectError {
     PythonCollectError::Projection(PythonProjectionFault::ForeignKey {
         start: span.start,
         end: span.end,
         cause: match cause {
-            backend_semantic::ir::ForeignKeyFault::EmptyPath => ProjectionForeignKeyFault::EmptyPath,
+            backend_semantic::ir::ForeignKeyFault::EmptyPath => {
+                ProjectionForeignKeyFault::EmptyPath
+            }
             backend_semantic::ir::ForeignKeyFault::BackslashInPath => {
                 ProjectionForeignKeyFault::BackslashInPath
             }
@@ -2023,7 +2749,10 @@ fn foreign_key_fault(cause: backend_semantic::ir::ForeignKeyFault, span: Span) -
 }
 
 /// Projects one exact package-lineage grammar rejection.
-fn lineage_fault(cause: backend_semantic::ir::PackageLineageFault, span: Span) -> PythonCollectError {
+fn lineage_fault(
+    cause: backend_semantic::ir::PackageLineageFault,
+    span: Span,
+) -> PythonCollectError {
     PythonCollectError::Projection(PythonProjectionFault::PackageLineage {
         start: span.start,
         end: span.end,
@@ -2245,8 +2974,8 @@ fn span_bounds(span: Span) -> Result<(usize, usize), PythonCollectError> {
 #[cfg(test)]
 mod tests {
     use super::{PythonCollectError, foreign_key_fault, foreign_universe, lineage_fault};
-    use backend_semantic::ir::{ForeignKeyFault, PackageLineageFault};
     use backend_frontend_python::legacy::Span;
+    use backend_semantic::ir::{ForeignKeyFault, PackageLineageFault};
     use backend_semantic::vocabulary::{
         ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
         PythonProjectionFault,

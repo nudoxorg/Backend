@@ -43,6 +43,14 @@ use std::time::{Duration, Instant};
 /// is gone before the user notices it.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_mins(10);
 
+/// Default window the single owner loop may take to answer one request.
+///
+/// Indexing a project runs on the owner thread and is bounded by the engine's
+/// ten-minute per-package compile deadline, so a client that gives up sooner
+/// always gives up on work that is still succeeding. This is deliberately
+/// longer than that deadline rather than equal to it.
+pub const DEFAULT_OWNER_REPLY_TIMEOUT: Duration = Duration::from_mins(15);
+
 #[cfg(unix)]
 #[path = "listener/transport.rs"]
 mod transport;
@@ -61,7 +69,34 @@ pub struct ListenerConfig {
     /// Frame and replication limits.
     pub limits: FrameLimits,
     /// Read/write timeout for one client operation.
+    ///
+    /// This is charged only once a frame has started arriving. A connection
+    /// sitting between requests is idle, not slow, and is bounded by
+    /// [`Self::request_idle_timeout`] instead.
     pub io_timeout: Duration,
+    /// How long a connected client may sit between requests before its
+    /// connection is closed.
+    ///
+    /// Charging [`Self::io_timeout`] for this wait closed every connection
+    /// that went 30 seconds without a request, which is what an agent does
+    /// while it thinks — so a long-lived client's next call always failed
+    /// with a reset. The wait is still bounded, by the same window the
+    /// daemon uses to retire itself, so an abandoned connection never pins a
+    /// client slot forever.
+    pub request_idle_timeout: Duration,
+    /// How long the single owner loop may take to answer one admitted
+    /// request before the connection gives up on it.
+    ///
+    /// This is not an I/O deadline: the request has already been handed to
+    /// the owner, which indexes a project on the calling thread. Charging
+    /// [`Self::io_timeout`] for that wait made every index or removal of a
+    /// real project report `Timeout` and close the connection after 30
+    /// seconds — while the owner went on to run the intent anyway, so the
+    /// surface reported a failure for work that then happened. The window
+    /// must outlast the engine's own per-package compile deadline, which is
+    /// ten minutes (`crates/engine/src/application/host.rs`,
+    /// `COMPILER_TIMEOUT`), or the client always gives up first.
+    pub owner_reply_timeout: Duration,
     /// Maximum concurrently connected clients.
     pub max_clients: usize,
     /// Poll interval used while waiting for a client or owner request.
@@ -80,6 +115,8 @@ impl ListenerConfig {
             path: path.into(),
             limits: FrameLimits::default(),
             io_timeout: Duration::from_secs(30),
+            request_idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            owner_reply_timeout: DEFAULT_OWNER_REPLY_TIMEOUT,
             max_clients: 64,
             poll_interval: Duration::from_millis(5),
             idle_timeout: Some(DEFAULT_IDLE_TIMEOUT),
@@ -95,6 +132,10 @@ impl ListenerConfig {
         self.limits.validate().map_err(ListenerError::Protocol)?;
         if backend_engine::UnixEndpointRef::new(&self.path).is_err()
             || self.io_timeout.is_zero()
+            // A zero window would close a connection before it could send
+            // its first request.
+            || self.request_idle_timeout.is_zero()
+            || self.owner_reply_timeout.is_zero()
             || self.max_clients == 0
             || self.poll_interval.is_zero()
             // A zero idle window would retire the daemon before its first
@@ -453,41 +494,50 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
                         drop(stream);
                         continue;
                     }
-                    let sender = self.inbound_sender.clone();
-                    let stop = Arc::clone(&self.stop);
-                    let active = Arc::clone(&self.active);
-                    let streams = Arc::clone(&self.streams);
-                    let limits = self.config.limits;
-                    let timeout = self.config.io_timeout;
-                    let connection_id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
-                    if let Ok(mut active_streams) = self.streams.lock()
-                        && let Ok(clone) = stream.try_clone()
-                    {
-                        active_streams.insert(connection_id, clone);
-                    }
-                    self.active.fetch_add(1, Ordering::AcqRel);
-                    self.report.connections = self.report.connections.saturating_add(1);
-                    let worker = thread::spawn(move || {
-                        connection_worker(
-                            stream,
-                            ConnectionContext {
-                                sender,
-                                stop,
-                                active,
-                                streams,
-                                connection_id,
-                                limits,
-                                timeout,
-                            },
-                        );
-                    });
-                    self.workers.push(worker);
+                    self.spawn_connection_worker(stream);
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(ListenerError::Io(error.kind())),
             }
         }
         Ok(())
+    }
+
+    /// Hands one authorized stream to its own bounded worker thread.
+    fn spawn_connection_worker(&mut self, stream: std::os::unix::net::UnixStream) {
+        let sender = self.inbound_sender.clone();
+        let stop = Arc::clone(&self.stop);
+        let active = Arc::clone(&self.active);
+        let streams = Arc::clone(&self.streams);
+        let limits = self.config.limits;
+        let timeout = self.config.io_timeout;
+        let request_idle = self.config.request_idle_timeout;
+        let owner_reply = self.config.owner_reply_timeout;
+        let connection_id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut active_streams) = self.streams.lock()
+            && let Ok(clone) = stream.try_clone()
+        {
+            active_streams.insert(connection_id, clone);
+        }
+        self.active.fetch_add(1, Ordering::AcqRel);
+        self.report.connections = self.report.connections.saturating_add(1);
+        let worker = thread::spawn(move || {
+            connection_worker(
+                stream,
+                ConnectionContext {
+                    sender,
+                    stop,
+                    active,
+                    streams,
+                    connection_id,
+                    limits,
+                    timeout,
+                    request_idle,
+                    owner_reply,
+                },
+            );
+        });
+        self.workers.push(worker);
     }
 
     fn drain_owner_once(&mut self) -> bool {
@@ -662,6 +712,31 @@ mod tests {
         fn close(&mut self) {}
     }
 
+    /// An owner that takes longer than any per-frame deadline to answer.
+    #[derive(Debug)]
+    struct SlowOwner(Duration);
+
+    impl OwnerService for SlowOwner {
+        fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+            thread::sleep(self.0);
+            Ok(body.to_vec())
+        }
+
+        fn engine(
+            &mut self,
+            _request_id: u64,
+            _request: EngineRequest,
+        ) -> Result<EngineStatus, ProtocolError> {
+            Ok(EngineStatus::Accepted)
+        }
+
+        fn serve_one(&mut self) -> bool {
+            false
+        }
+
+        fn close(&mut self) {}
+    }
+
     #[derive(Debug)]
     struct RejectPeers;
 
@@ -721,6 +796,8 @@ mod tests {
             path: path.clone(),
             limits: limits(),
             io_timeout: Duration::from_millis(250),
+            request_idle_timeout: Duration::from_secs(5),
+            owner_reply_timeout: Duration::from_secs(5),
             max_clients: 2,
             poll_interval: Duration::from_millis(1),
             idle_timeout: None,
@@ -769,6 +846,133 @@ mod tests {
         assert!(!path.exists());
     }
 
+    /// A client that is idle between requests keeps its connection.
+    ///
+    /// The per-frame read deadline used to be charged for this wait, so a
+    /// connection that went one `io_timeout` without sending anything was
+    /// closed. A long-lived client — the MCP server, which holds one session
+    /// while an agent thinks — then failed on every call after the first with
+    /// a connection reset. The wait is bounded separately, by
+    /// `request_idle_timeout`.
+    ///
+    /// The assertion is on the reply body, not on a connection count: a
+    /// listener that accepted the connection and then dropped it would report
+    /// the same one connection.
+    #[test]
+    fn a_client_idle_longer_than_the_frame_deadline_is_still_served() {
+        let path = socket_path("idle-between-requests");
+        let io_timeout = Duration::from_millis(80);
+        let config = ListenerConfig {
+            path: path.clone(),
+            limits: limits(),
+            io_timeout,
+            request_idle_timeout: Duration::from_secs(5),
+            owner_reply_timeout: Duration::from_secs(5),
+            max_clients: 2,
+            poll_interval: Duration::from_millis(1),
+            idle_timeout: None,
+        };
+        let service = LocaldService::new(FakeOwner, config.limits)
+            .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener = UnixListenerService::bind(service, config)
+            .unwrap_or_else(|error| panic!("bind: {error}"));
+        let client_path = path.clone();
+        let client = thread::spawn(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+                .unwrap_or_else(|error| panic!("connect: {error}"));
+            // Longer than the per-frame deadline: this is a client thinking,
+            // not a client trickling a frame.
+            thread::sleep(io_timeout * 5);
+            let request = crate::protocol::frame(b"late", limits())
+                .unwrap_or_else(|error| panic!("frame: {error}"));
+            stream
+                .write_all(&request)
+                .unwrap_or_else(|error| panic!("write: {error}"));
+            read_frame(&mut stream, limits())
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline && !client.is_finished() {
+            let _ = listener
+                .run_once()
+                .unwrap_or_else(|error| panic!("run once: {error}"));
+            thread::sleep(Duration::from_millis(1));
+        }
+        let response = client
+            .join()
+            .unwrap_or_else(|_| panic!("client thread panicked"))
+            .unwrap_or_else(|error| {
+                panic!("an idle connection was closed before its request: {error}")
+            });
+        listener.shutdown();
+        assert_eq!(
+            response, b"late",
+            "the request sent after the idle gap must be served on the same \
+             connection"
+        );
+        drop(listener);
+    }
+
+    /// A request the owner is still working on is not a timed-out request.
+    ///
+    /// The per-frame read deadline used to bound this wait too, so any index
+    /// or removal that took longer than `io_timeout` got a `Timeout` reply
+    /// and a closed connection — while the owner went on to finish the work.
+    /// The surface then reported a failure for something that succeeded.
+    ///
+    /// The assertion is on the reply body, not on whether a reply arrived: a
+    /// `Timeout` error frame is also a reply.
+    #[test]
+    fn a_slow_owner_reply_outlasts_the_frame_deadline() {
+        let path = socket_path("slow-owner");
+        let io_timeout = Duration::from_millis(60);
+        let config = ListenerConfig {
+            path: path.clone(),
+            limits: limits(),
+            io_timeout,
+            request_idle_timeout: Duration::from_secs(5),
+            owner_reply_timeout: Duration::from_secs(5),
+            max_clients: 2,
+            poll_interval: Duration::from_millis(1),
+            idle_timeout: None,
+        };
+        let service = LocaldService::new(SlowOwner(io_timeout * 5), config.limits)
+            .unwrap_or_else(|error| panic!("service: {error}"));
+        let mut listener = UnixListenerService::bind(service, config)
+            .unwrap_or_else(|error| panic!("bind: {error}"));
+        let client_path = path.clone();
+        let client = thread::spawn(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(client_path)
+                .unwrap_or_else(|error| panic!("connect: {error}"));
+            let request = crate::protocol::frame(b"slow", limits())
+                .unwrap_or_else(|error| panic!("frame: {error}"));
+            stream
+                .write_all(&request)
+                .unwrap_or_else(|error| panic!("write: {error}"));
+            read_frame(&mut stream, limits())
+        });
+        // Drive the listener until the client has its answer. Shutting down
+        // as soon as the owner replied would race the worker's write and
+        // prove nothing about the window under test.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline && !client.is_finished() {
+            let _ = listener
+                .run_once()
+                .unwrap_or_else(|error| panic!("run once: {error}"));
+            thread::sleep(Duration::from_millis(1));
+        }
+        let response = client
+            .join()
+            .unwrap_or_else(|_| panic!("client thread panicked"))
+            .unwrap_or_else(|error| panic!("the slow reply never arrived: {error}"));
+        listener.shutdown();
+        assert_eq!(
+            response, b"slow",
+            "a request the owner completed must be answered with its own \
+             reply, never with a timeout the owner's work outlived"
+        );
+        drop(listener);
+    }
+
     #[test]
     fn an_idle_listener_retires_itself_and_removes_its_socket() {
         let path = socket_path("idle-retire");
@@ -776,6 +980,8 @@ mod tests {
             path: path.clone(),
             limits: limits(),
             io_timeout: Duration::from_millis(250),
+            request_idle_timeout: Duration::from_secs(5),
+            owner_reply_timeout: Duration::from_secs(5),
             max_clients: 2,
             poll_interval: Duration::from_millis(1),
             idle_timeout: Some(Duration::from_millis(150)),
@@ -811,6 +1017,8 @@ mod tests {
             // otherwise the worker would retire the connection itself and the
             // assertion below would prove nothing.
             io_timeout: Duration::from_secs(10),
+            request_idle_timeout: Duration::from_secs(10),
+            owner_reply_timeout: Duration::from_secs(10),
             max_clients: 2,
             poll_interval: Duration::from_millis(1),
             idle_timeout: Some(Duration::from_millis(100)),
@@ -867,6 +1075,8 @@ mod tests {
             path: path.clone(),
             limits: limits(),
             io_timeout: Duration::from_secs(10),
+            request_idle_timeout: Duration::from_secs(10),
+            owner_reply_timeout: Duration::from_secs(10),
             max_clients: 2,
             poll_interval: Duration::from_millis(1),
             idle_timeout: None,
@@ -917,6 +1127,8 @@ mod tests {
             path: path.clone(),
             limits: limits(),
             io_timeout: Duration::from_millis(100),
+            request_idle_timeout: Duration::from_millis(100),
+            owner_reply_timeout: Duration::from_millis(100),
             max_clients: 1,
             poll_interval: Duration::from_millis(1),
             idle_timeout: None,

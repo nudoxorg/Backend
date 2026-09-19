@@ -8,6 +8,8 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use std::collections::HashMap;
+
 use clang_sys::{
     CXChildVisitResult, CXCursor, CXCursorKind as NativeCursorKind, CXDiagnostic,
     CXDiagnosticSeverity as NativeDiagnosticSeverity, CXType, CXTypeKind,
@@ -17,12 +19,54 @@ use crate::legacy::{
     ClangInput, ClangScratch, CollectError, ScratchLane,
     facts::{
         BuiltinClass, ClangFacts, DeclarationFact, DeclarationId, DeclarationKind, DefinitionState,
-        DiagnosticFact, DiagnosticSeverity, IncludeFact, MethodVirtuality, OverrideFact,
-        ReferenceFact, ReferenceKind, ReferenceTarget, SourceDependencyKind, StorageClass,
-        SymbolIdentity, TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers, TypeRelation,
+        DiagnosticFact, DiagnosticSeverity, IncludeFact, IntegerRank, MethodVirtuality,
+        OverrideFact, ReferenceFact, ReferenceKind, ReferenceTarget, SourceDependencyKind,
+        SourceSpan, StorageClass, SymbolIdentity, TypeEdge, TypeFact, TypeId, TypeKind,
+        TypeQualifiers, TypeRelation,
     },
     ffi::{self, TranslationUnit},
 };
+
+/// Maximum number of parameter cursors deferred until the owner walk completes.
+///
+/// The stash receives one entry per visited parameter cursor — prototypes and
+/// definitions both defer, and a macro-generated header can declare more
+/// parameter cursors than declaration slots (measured: `eigen`'s
+/// `Eigen/src/misc/lapacke.h` alone visits 32,769+ parameter cursors). The
+/// bound therefore uses the same historical four-times ratio as the recursive
+/// type, type-edge, and reference lanes, so the transient deferral never
+/// fires before the committed declaration lane it feeds.
+const PARAMETER_STASH_CAPACITY: usize = 4 * crate::legacy::facts::MAX_CLANG_FACTS;
+
+/// One parameter cursor deferred until its owner's committed definition state is final.
+#[derive(Clone, Copy)]
+struct StashedParameter {
+    /// The semantic-parent identity shared by a prototype and its definition.
+    owner: Option<SymbolIdentity>,
+    /// Whether the visiting declaration is a definition. A prototype's
+    /// parameters stash `false` even when a definition committed earlier.
+    owner_is_definition: bool,
+    /// The visiting declaration's extent. Distinct declarations never share
+    /// one, so this separates duplicate-prototype sets that share an owner
+    /// identity and flag.
+    parent_span: Option<SourceSpan>,
+    /// The native cursor replayed after the walk to emit the selected run only.
+    cursor: CXCursor,
+}
+
+/// One maximal, owner-homogeneous run of stashed parameter cursors in visit order.
+struct ParameterRun {
+    /// The semantic-parent identity shared by every parameter in the run.
+    owner: Option<SymbolIdentity>,
+    /// The visiting declaration's extent shared by every parameter in the run.
+    parent_span: Option<SourceSpan>,
+    /// Inclusive first stashed index.
+    start: usize,
+    /// Exclusive last stashed index.
+    end: usize,
+    /// Whether the visiting declaration is a definition.
+    is_definition: bool,
+}
 
 /// Collects complete direct libclang facts into the caller-provided typed scratch arrays.
 ///
@@ -96,6 +140,7 @@ struct Collector<'unit, 'scratch> {
     diagnostics: usize,
     includes: usize,
     overrides: usize,
+    parameters: Vec<StashedParameter>,
     cancellation: Option<&'unit AtomicBool>,
     failure: Option<CollectError>,
 }
@@ -117,6 +162,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             diagnostics: 0,
             includes: 0,
             overrides: 0,
+            parameters: Vec::new(),
             cancellation,
             failure: None,
         }
@@ -165,8 +211,47 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         Ok(())
     }
 
-    /// Retains one declaration and its complete direct recursive type graph when it is local.
+    /// Defers one parameter cursor, or commits one declaration fact with its direct type graph.
     fn record_declaration(
+        &mut self,
+        cursor: CXCursor,
+        kind: DeclarationKind,
+    ) -> Result<(), CollectError> {
+        if kind == DeclarationKind::Parameter {
+            return self.stash_parameter(cursor);
+        }
+        self.commit_declaration(cursor, kind)
+    }
+
+    /// Defers one parameter cursor until the walk completes, recording
+    /// whether its visiting declaration is a definition.
+    ///
+    /// The flag comes from the lexical parent — the prototype or
+    /// definition actually being walked — never from the committed owner
+    /// state, so definition-before-prototype and duplicate-prototype
+    /// orders attribute identically.
+    fn stash_parameter(&mut self, cursor: CXCursor) -> Result<(), CollectError> {
+        let owner = TranslationUnit::semantic_parent(cursor);
+        let owner_is_definition = TranslationUnit::lexical_parent_is_definition(cursor);
+        let parent_span = self.unit.lexical_parent_span(cursor)?;
+        if self.parameters.len() >= PARAMETER_STASH_CAPACITY {
+            return Err(CollectError::ScratchCapacity {
+                lane: ScratchLane::Declarations,
+                capacity: PARAMETER_STASH_CAPACITY,
+                required: self.parameters.len().saturating_add(1),
+            });
+        }
+        self.parameters.push(StashedParameter {
+            owner,
+            owner_is_definition,
+            parent_span,
+            cursor,
+        });
+        Ok(())
+    }
+
+    /// Retains one declaration and its complete direct recursive type graph when it is local.
+    fn commit_declaration(
         &mut self,
         cursor: CXCursor,
         kind: DeclarationKind,
@@ -227,7 +312,12 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             .then(|| self.unit.name_span(cursor))
             .transpose()?
             .flatten();
-        let name = (kind != DeclarationKind::Record
+        // An anonymous record or enumeration reports its own keyword (`struct`,
+        // `union`, `class`, `enum`) as the spelling range at the declaration
+        // start. That keyword is not a declared name: admitting it would mint
+        // one shared `enum` identity for every anonymous enumeration in the
+        // translation unit. Only a name strictly inside the extent counts.
+        let name = (!matches!(kind, DeclarationKind::Record | DeclarationKind::Enumeration)
             || name.is_none_or(|name| name.start > span.start))
         .then_some(name)
         .flatten();
@@ -269,19 +359,49 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             {
                 continue;
             }
-            self.push_override(OverrideFact { source, target })?;
+            self.push_override(OverrideFact {
+                source,
+                target,
+                target_file: self.unit.cursor_file_identity(*target_cursor),
+            })?;
         }
         Ok(())
     }
 
     /// Retains a direct native reference with a local, foreign, or unresolved target identity.
+    ///
+    /// The retained span is the written spelling of the referenced entity at
+    /// the use site — the callee token of a call, the member token of a
+    /// member access, the identifier of a declaration reference — so a
+    /// site's bytes are exactly the name it resolves. The reference-name
+    /// range carries that token for every site class with a written name,
+    /// except a call expression: there libclang degenerates to the whole
+    /// expression extent (probe: `measure(buffer)` returned verbatim), so a
+    /// degenerate range — empty or identical to the extent — falls back to
+    /// the cursor's spelling-name range, which for a call is exactly the
+    /// callee token. Only a site with neither range — the written name is
+    /// produced inside a macro definition and maps outside the main source,
+    /// a class with no name token at all — keeps the whole use extent; a
+    /// reference is never dropped or truncated by the narrowing.
     fn record_reference(
         &mut self,
         cursor: CXCursor,
         kind: ReferenceKind,
     ) -> Result<(), CollectError> {
-        let Some(span) = self.unit.cursor_span(cursor)? else {
+        let Some(extent) = self.unit.cursor_span(cursor)? else {
             return Ok(());
+        };
+        let span = match self
+            .unit
+            .reference_name_span(cursor)?
+            .filter(|name| name.end > name.start && *name != extent)
+        {
+            Some(name) => name,
+            None => self
+                .unit
+                .name_span(cursor)?
+                .filter(|name| name.end > name.start)
+                .unwrap_or(extent),
         };
         let target = self.reference_target(TranslationUnit::referenced(cursor))?;
         self.push_reference(ReferenceFact {
@@ -353,7 +473,16 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             array_len: matches!(kind, TypeKind::Array)
                 .then(|| TranslationUnit::array_len(type_))
                 .flatten(),
-            builtin: builtin_class(native_kind, canonical_kind),
+            // A named type that canonicalizes to a builtin (a `uint16_t`
+            // typedef, say) retains that closed underlying class. The
+            // declaration identity still records the alias, but the measured
+            // canonical form is what distinguishes two overloads whose only
+            // difference is such a typedef.
+            builtin: builtin_class(native_kind, canonical_kind).or_else(|| {
+                matches!(kind, TypeKind::Named)
+                    .then(|| builtin_class(canonical_kind, canonical_kind))
+                    .flatten()
+            }),
             size_bits: measured_bits(TranslationUnit::type_size_of(type_)),
             align_bits: measured_bits(TranslationUnit::type_align_of(type_)),
             is_variadic: kind == TypeKind::Function && TranslationUnit::function_is_variadic(type_),
@@ -376,11 +505,21 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
                 TranslationUnit::pointee_type(type_),
             )?,
             TypeKind::MemberPointer => {
-                self.collect_type_child(
-                    parent,
-                    TypeRelation::MemberOwner,
-                    TranslationUnit::member_pointer_class_type(type_),
-                )?;
+                // A dependent member pointer (`T::*` under a template
+                // parameter) has no concrete class operand to admit: the
+                // direct libclang query crashes on exactly those types in
+                // the loaded libclang, and the dependence signal is the
+                // documented negative layout error. The MemberOwner edge is
+                // omitted for the dependent form; the Pointee edge stays
+                // because `clang_getPointeeType` reads the stored pointee
+                // without touching the class operand.
+                if !TranslationUnit::member_pointer_class_is_dependent(type_) {
+                    self.collect_type_child(
+                        parent,
+                        TypeRelation::MemberOwner,
+                        TranslationUnit::member_pointer_class_type(type_),
+                    )?;
+                }
                 self.collect_type_child(
                     parent,
                     TypeRelation::Pointee,
@@ -459,7 +598,10 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         if self.unit.is_local(cursor)? {
             Ok(ReferenceTarget::Local(identity))
         } else {
-            Ok(ReferenceTarget::Foreign(identity))
+            Ok(ReferenceTarget::Foreign {
+                identity,
+                file: self.unit.cursor_file_identity(cursor),
+            })
         }
     }
 
@@ -532,11 +674,71 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         )
     }
 
-    /// Returns only the initialized prefixes after preserving any traversal failure exactly.
-    fn finish(self) -> Result<ClangFacts<'scratch>, CollectError> {
+    /// Emits only the parameter run owned by each declaration's definition.
+    ///
+    /// Each owner's stashed parameters are split into maximal contiguous runs
+    /// keyed by owner and visiting-declaration definition flag, so a
+    /// prototype and its definition never merge into one run however they
+    /// order. The definition run wins when present; otherwise the first run
+    /// survives. Owner-less runs (function-pointer typedef parameters) never
+    /// compete: without an identity there is nothing to supersede against,
+    /// so every such run is emitted.
+    fn emit_parameters(&mut self) -> Result<(), CollectError> {
+        let parameters = core::mem::take(&mut self.parameters);
+        let mut runs: Vec<ParameterRun> = Vec::new();
+        for (index, parameter) in parameters.iter().enumerate() {
+            match runs.last_mut() {
+                Some(run)
+                    if run.owner == parameter.owner
+                        && run.parent_span == parameter.parent_span
+                        && run.is_definition == parameter.owner_is_definition =>
+                {
+                    run.end = index + 1
+                }
+                _ => runs.push(ParameterRun {
+                    owner: parameter.owner,
+                    parent_span: parameter.parent_span,
+                    start: index,
+                    end: index + 1,
+                    is_definition: parameter.owner_is_definition,
+                }),
+            }
+        }
+        let mut chosen: HashMap<Option<SymbolIdentity>, usize> = HashMap::new();
+        for (index, run) in runs.iter().enumerate() {
+            if run.owner.is_none() {
+                continue;
+            }
+            match chosen.get_mut(&run.owner) {
+                Some(selected) => {
+                    if run.is_definition && !runs[*selected].is_definition {
+                        *selected = index;
+                    }
+                }
+                None => {
+                    chosen.insert(run.owner, index);
+                }
+            }
+        }
+        for (index, run) in runs.iter().enumerate() {
+            // Owner-less runs never compete; every one is emitted.
+            if run.owner.is_some() && chosen.get(&run.owner) != Some(&index) {
+                continue;
+            }
+            for parameter in &parameters[run.start..run.end] {
+                self.commit_declaration(parameter.cursor, DeclarationKind::Parameter)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns only the initialized prefixes after emitting deferred parameters and preserving
+    /// any traversal failure exactly.
+    fn finish(mut self) -> Result<ClangFacts<'scratch>, CollectError> {
         if let Some(failure) = self.failure {
             return Err(failure);
         }
+        self.emit_parameters()?;
         Ok(ClangFacts {
             declarations: prefix(
                 self.scratch.declarations,
@@ -748,6 +950,11 @@ const fn storage_class(class: clang_sys::CX_StorageClass) -> StorageClass {
     }
 }
 
+/// Wraps one native integer scalar with its exact signedness and C rank.
+const fn integer_class(signed: bool, rank: IntegerRank) -> Option<BuiltinClass> {
+    Some(BuiltinClass::Integer { signed, rank })
+}
+
 /// Classifies libclang's closed builtin type kinds without name or spelling
 /// inspection, retaining exotic builtins as `Other`.
 const fn builtin_class(kind: CXTypeKind, canonical_kind: CXTypeKind) -> Option<BuiltinClass> {
@@ -775,16 +982,16 @@ const fn builtin_class(kind: CXTypeKind, canonical_kind: CXTypeKind) -> Option<B
             | clang_sys::CXType_UInt128 => Some(BuiltinClass::WideCharUnsigned),
             _ => Some(BuiltinClass::WideCharSignednessUnavailable),
         },
-        clang_sys::CXType_Short
-        | clang_sys::CXType_Int
-        | clang_sys::CXType_Long
-        | clang_sys::CXType_LongLong
-        | clang_sys::CXType_Int128 => Some(BuiltinClass::Integer { signed: true }),
-        clang_sys::CXType_UShort
-        | clang_sys::CXType_UInt
-        | clang_sys::CXType_ULong
-        | clang_sys::CXType_ULongLong
-        | clang_sys::CXType_UInt128 => Some(BuiltinClass::Integer { signed: false }),
+        clang_sys::CXType_Short => integer_class(true, IntegerRank::Short),
+        clang_sys::CXType_UShort => integer_class(false, IntegerRank::Short),
+        clang_sys::CXType_Int => integer_class(true, IntegerRank::Int),
+        clang_sys::CXType_UInt => integer_class(false, IntegerRank::Int),
+        clang_sys::CXType_Long => integer_class(true, IntegerRank::Long),
+        clang_sys::CXType_ULong => integer_class(false, IntegerRank::Long),
+        clang_sys::CXType_LongLong => integer_class(true, IntegerRank::LongLong),
+        clang_sys::CXType_ULongLong => integer_class(false, IntegerRank::LongLong),
+        clang_sys::CXType_Int128 => integer_class(true, IntegerRank::Int128),
+        clang_sys::CXType_UInt128 => integer_class(false, IntegerRank::Int128),
         clang_sys::CXType_Float | clang_sys::CXType_Double | clang_sys::CXType_LongDouble => {
             Some(BuiltinClass::Float)
         }

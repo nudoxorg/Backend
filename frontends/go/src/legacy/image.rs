@@ -55,6 +55,32 @@
 //! const-group identity, and iota flag on the declaration row,
 //! interface-satisfaction edges own the satisfaction plane, and
 //! package-level doc comments own the `Package` documentation kind.
+//!
+//! ## Format version 6 (additive widenings over version 5)
+//!
+//! Version 6 keeps the header shape (version cell `6`), the plane order, and
+//! every untouched row width, and widens three rows additively. The reader
+//! accepts BOTH versions; a version-5 image yields the version-6 facts as
+//! their absent defaults (no name extent, not bound, call-kind free-func
+//! references with no receiver type), so every v5 producer stays readable
+//! while v6 producers carry:
+//!
+//!   - declaration rows 56 → 72 bytes: the declared identifier's exact byte
+//!     extent (`nameStart`/`nameEnd` at [56..64) — both NONE or both
+//!     present, ordered, and contained in the row's span when one exists)
+//!     plus the one-byte authority-bound flag at [64] (`0`/`1`; `1` marks a
+//!     declaration that declares in the exact source file the image is
+//!     digest-bound to, so the lowerer can attach primary-source spans
+//!     without comparing path spellings across processes). Bytes [65..72)
+//!     stay reserved and must be zero.
+//!   - method rows 64 → 72 bytes: the same one-byte bound flag at [64];
+//!     bytes [65..72) stay reserved and must be zero.
+//!   - reference rows 48 → 56 bytes: the closed use-kind byte at [44]
+//!     (0 call, 1 read, 2 typeref, 3 import), the closed used-object class
+//!     byte at [45] (0 func, 1 method, 2 field, 3 var, 4 const, 5 type,
+//!     6 pkg), bytes [46..48) reserved and zero, and the target receiver
+//!     type-name atom at [48..56) — empty for every class but method and
+//!     field, whose same-package targets the lowerer keys through it.
 
 use core::str;
 
@@ -62,23 +88,40 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const MAGIC: [u8; 4] = *b"NGAI";
-const VERSION: u16 = 5;
+/// The image versions this reader admits: version 5, the complete
+/// zero-copy layout, and version 6, which widens three rows additively
+/// (declaration name extents and bound flags; typed reference rows).
+const VERSION: u16 = 6;
+const SUPPORTED_VERSIONS: [u16; 2] = [5, 6];
 const HEADER_BYTES: usize = 136;
 const MODULE_BYTES: usize = 32;
 const PACKAGE_BYTES: usize = 28;
-const DECLARATION_BYTES: usize = 56;
+/// Declaration row width by image version: version 6 appends the declared
+/// identifier's byte extent (8 bytes) and the one-byte bound flag (+7
+/// reserved).
+const DECLARATION_BYTES_V5: usize = 56;
+const DECLARATION_BYTES_V6: usize = 72;
 const TYPE_ROW_BYTES: usize = 52;
 const SIGNATURE_PARAMETER_BYTES: usize = 28;
-const METHOD_BYTES: usize = 64;
+/// Method row width by image version: version 6 appends the one-byte bound
+/// flag (+7 reserved).
+const METHOD_BYTES_V5: usize = 64;
+const METHOD_BYTES_V6: usize = 72;
 const TYPE_PARAMETER_BYTES: usize = 16;
 const MEMBER_BYTES: usize = 40;
 const METHOD_SET_BYTES: usize = 24;
 const DOC_BYTES: usize = 16;
-const REFERENCE_BYTES: usize = 48;
+/// Reference row width by image version: version 6 reuses the reserved tail
+/// for the closed use-kind and class bytes and appends the receiver type
+/// atom.
+const REFERENCE_BYTES_V5: usize = 48;
+const REFERENCE_BYTES_V6: usize = 56;
 const CONSTRAINT_BYTES: usize = 28;
 const SATISFACTION_BYTES: usize = 20;
 const CHILD_BYTES: usize = 8;
-const DIGEST_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v5\0";
+/// The domain-separated checksum input by image version.
+const DIGEST_DOMAIN_V5: &[u8] = b"nudox.go.authority.image.sha256.v5\0";
+const DIGEST_DOMAIN_V6: &[u8] = b"nudox.go.authority.image.sha256.v6\0";
 
 /// The `u32::MAX` sentinel shared by every optional coordinate cell.
 pub const NONE: u32 = u32::MAX;
@@ -236,6 +279,14 @@ pub struct Declaration<'image> {
     /// The absolute file byte range of the declaration's full source text,
     /// when the authority resolved one.
     pub span: Option<(u32, u32)>,
+    /// The absolute file byte range of the declaration's own identifier
+    /// token (version 6; `None` on version-5 images). Contained in `span`
+    /// whenever both are present.
+    pub name_span: Option<(u32, u32)>,
+    /// Whether the declaration declares in the exact source file the image
+    /// is digest-bound to (version 6; `false` on version-5 images). Only
+    /// bound rows may contribute primary-source spans.
+    pub bound: bool,
     /// The span's source file spelling.
     pub file: &'image [u8],
     /// The exact constant value (`constant.Value.ExactString`; constants
@@ -292,6 +343,9 @@ pub struct MethodRow<'image> {
     pub origin: &'image [u8],
     /// Absolute file byte range of the declaring `func` decl, when resolved.
     pub span: Option<(u32, u32)>,
+    /// Whether the method declares in the exact source file the image is
+    /// digest-bound to (version 6; `false` on version-5 images).
+    pub bound: bool,
     /// The declaring source file spelling.
     pub file: &'image [u8],
 }
@@ -416,30 +470,103 @@ pub struct DocRow<'image> {
     pub text: &'image [u8],
 }
 
-/// One borrowed reference row: a resolved free-function call edge with its
-/// owner-relative span proven at validation.
+/// One borrowed reference row: a compiler-resolved use of one named object
+/// with its owner-relative span proven at validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReferenceRow<'image> {
-    /// Owning declaration index (the caller's owning declaration).
+    /// Owning declaration index (the enclosing declaration).
     pub owner: u32,
-    /// Called function's bare name.
+    /// Used object's bare name.
     pub target: &'image [u8],
-    /// Target package import path; empty for a same-package call.
+    /// Target package import path; empty for a same-package target.
     pub target_package: &'image [u8],
-    /// Bare receiver type name; empty when the caller is a package-level
-    /// function.
+    /// Bare receiver type name; empty when the enclosing declaration is a
+    /// package-level function.
     pub receiver: &'image [u8],
-    /// Absolute `[start, end)` byte span of the call site.
+    /// Absolute `[start, end)` byte span of the used identifier token — the
+    /// NAME-TOKEN extent.
     pub span: (u32, u32),
-    /// Source file spelling of the call site.
+    /// Source file spelling of the use.
     pub file: &'image [u8],
-    /// `true` when the caller is the declaration itself; `false` when it is
-    /// the method row at `owner_row`.
+    /// `true` when the enclosing declaration is the declaration itself;
+    /// `false` when it is the method row at `owner_row`.
     pub owner_is_declaration: bool,
-    /// Resolved caller row: the declaration index, or the method row index.
+    /// Resolved enclosing row: the declaration index, or the method row
+    /// index.
     pub owner_row: u32,
-    /// The call span relative to the resolved owner's span start.
+    /// The use span relative to the resolved owner's span start.
     pub relative: (u32, u32),
+    /// The use's closed kind (version 6; [`ReferenceUseKind::Call`] on
+    /// version-5 images, which record only calls).
+    pub use_kind: ReferenceUseKind,
+    /// The used object's closed class (version 6;
+    /// [`ReferenceTargetClass::Func`] on version-5 images).
+    pub target_class: ReferenceTargetClass,
+    /// The target's receiver type name for method and field targets;
+    /// empty otherwise (version 6; empty on version-5 images).
+    pub recv_type: &'image [u8],
+}
+
+/// The closed use-kind vocabulary of a reference row.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReferenceUseKind {
+    /// A call: the identifier is the called position of a call expression.
+    Call = 0,
+    /// A value use — reads and writes alike; go/types' Uses table records
+    /// no lvalue distinction.
+    Read = 1,
+    /// A use of a named type in type position.
+    TypeRef = 2,
+    /// A use of an imported package binding.
+    Import = 3,
+}
+
+impl ReferenceUseKind {
+    const fn decode(raw: u8) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Call),
+            1 => Some(Self::Read),
+            2 => Some(Self::TypeRef),
+            3 => Some(Self::Import),
+            _ => None,
+        }
+    }
+}
+
+/// The closed used-object class vocabulary of a reference row.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReferenceTargetClass {
+    /// A free (receiver-less) package-level function.
+    Func = 0,
+    /// A method.
+    Method = 1,
+    /// A struct field.
+    Field = 2,
+    /// A package-level variable.
+    Var = 3,
+    /// A package-level constant.
+    Const = 4,
+    /// A named type or alias.
+    Type = 5,
+    /// An imported package binding.
+    Pkg = 6,
+}
+
+impl ReferenceTargetClass {
+    const fn decode(raw: u8) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Func),
+            1 => Some(Self::Method),
+            2 => Some(Self::Field),
+            3 => Some(Self::Var),
+            4 => Some(Self::Const),
+            5 => Some(Self::Type),
+            6 => Some(Self::Pkg),
+            _ => None,
+        }
+    }
 }
 
 /// One borrowed build-constraint row: one excluded source file.
@@ -468,6 +595,11 @@ pub struct ConstrainedDecl<'image> {
 #[derive(Clone, Copy, Debug)]
 pub struct GoImage<'image> {
     bytes: &'image [u8],
+    version: u16,
+    declaration_bytes: usize,
+    method_bytes: usize,
+    reference_bytes: usize,
+    digest_domain: &'static [u8],
     module_count: usize,
     package_count: usize,
     declaration_count: usize,
@@ -517,9 +649,24 @@ impl<'image> GoImage<'image> {
             }));
         }
         let version = u16_at(bytes, 4);
-        if version != VERSION {
+        if !SUPPORTED_VERSIONS.contains(&version) {
             return Err(ImageError::Header(HeaderError::Version { found: version }));
         }
+        let (declaration_bytes, method_bytes, reference_bytes, digest_domain) = if version == 6 {
+            (
+                DECLARATION_BYTES_V6,
+                METHOD_BYTES_V6,
+                REFERENCE_BYTES_V6,
+                DIGEST_DOMAIN_V6,
+            )
+        } else {
+            (
+                DECLARATION_BYTES_V5,
+                METHOD_BYTES_V5,
+                REFERENCE_BYTES_V5,
+                DIGEST_DOMAIN_V5,
+            )
+        };
         let header_bytes = usize::from(u16_at(bytes, 6));
         if header_bytes != HEADER_BYTES {
             return Err(ImageError::Header(HeaderError::Length {
@@ -559,13 +706,13 @@ impl<'image> GoImage<'image> {
         // module, packages, signature parameters, interface method sets,
         // pooled children, atoms.
         let declarations_offset = HEADER_BYTES;
-        let types_offset = declarations_offset + declaration_count * DECLARATION_BYTES;
+        let types_offset = declarations_offset + declaration_count * declaration_bytes;
         let methods_offset = types_offset + type_count * TYPE_ROW_BYTES;
-        let type_parameters_offset = methods_offset + method_count * METHOD_BYTES;
+        let type_parameters_offset = methods_offset + method_count * method_bytes;
         let members_offset = type_parameters_offset + type_parameter_count * TYPE_PARAMETER_BYTES;
         let docs_offset = members_offset + member_count * MEMBER_BYTES;
         let references_offset = docs_offset + doc_count * DOC_BYTES;
-        let constraints_offset = references_offset + reference_count * REFERENCE_BYTES;
+        let constraints_offset = references_offset + reference_count * reference_bytes;
         let satisfactions_offset = constraints_offset + constraint_count * CONSTRAINT_BYTES;
         let module_offset = satisfactions_offset + satisfaction_count * SATISFACTION_BYTES;
         let packages_offset = module_offset + module_count * MODULE_BYTES;
@@ -626,6 +773,11 @@ impl<'image> GoImage<'image> {
 
         let image = Self {
             bytes,
+            version,
+            declaration_bytes,
+            method_bytes,
+            reference_bytes,
+            digest_domain,
             module_count,
             package_count,
             declaration_count,
@@ -743,7 +895,7 @@ impl<'image> GoImage<'image> {
                 count: self.declaration_count,
             });
         }
-        let row = self.plane_row(self.declarations_offset, index, DECLARATION_BYTES);
+        let row = self.plane_row(self.declarations_offset, index, self.declaration_bytes);
         let kind = DeclarationKind::decode(row[0]).ok_or(ImageError::DeclarationKind {
             index,
             found: row[0],
@@ -781,6 +933,31 @@ impl<'image> GoImage<'image> {
         let const_group = i64::from_le_bytes([
             row[48], row[49], row[50], row[51], row[52], row[53], row[54], row[55],
         ]);
+        // Version 6 tail: the declared identifier's byte extent and the
+        // authority-bound flag. Version 5 rows carry neither fact.
+        let (name_span, bound) = if self.version == 6 {
+            let name_span = span_at(row, 56, 60, index)?;
+            if let (Some((span_start, span_end)), Some((name_start, name_end))) = (span, name_span)
+                && (name_start < span_start || name_end > span_end)
+            {
+                // The identifier must sit inside its own declaration: a
+                // name extent escaping the span could never anchor an
+                // owner-relative occurrence inside the owner.
+                return Err(ImageError::DeclarationSpan {
+                    index,
+                    start: name_start,
+                    end: name_end,
+                });
+            }
+            let bound = flag_at(row, 64).ok_or(ImageError::DeclarationReserved { index })?;
+            if row[65..72] != [0; 7] {
+                return Err(ImageError::DeclarationReserved { index });
+            }
+            (name_span, bound)
+        } else {
+            // Version 5 rows end at the const-group cell: no v6 facts exist.
+            (None, false)
+        };
         Ok(Declaration {
             kind,
             exported,
@@ -789,6 +966,8 @@ impl<'image> GoImage<'image> {
             package,
             type_root,
             span,
+            name_span,
+            bound,
             file,
             value,
             const_group,
@@ -879,7 +1058,7 @@ impl<'image> GoImage<'image> {
                 count: self.method_count,
             });
         }
-        let row = self.plane_row(self.methods_offset, index, METHOD_BYTES);
+        let row = self.plane_row(self.methods_offset, index, self.method_bytes);
         let owner = u32_at(row, 0);
         if usize::try_from(owner).is_ok_and(|owner| owner >= self.declaration_count) {
             return Err(ImageError::MethodOwner {
@@ -935,6 +1114,18 @@ impl<'image> GoImage<'image> {
         let origin = self.atom("method", index, u32_at(row, 40), u32_at(row, 44))?;
         let span = span_at(row, 48, 52, index)?;
         let file = self.atom("method", index, u32_at(row, 56), u32_at(row, 60))?;
+        // Version 6 tail: the authority-bound flag. Version 5 rows carry no
+        // such fact.
+        let bound = if self.version == 6 {
+            let bound = flag_at(row, 64).ok_or(ImageError::MethodReserved { index })?;
+            if row[65..72] != [0; 7] {
+                return Err(ImageError::MethodReserved { index });
+            }
+            bound
+        } else {
+            // Version 5 rows end at the file cell: no bound fact exists.
+            false
+        };
         Ok(MethodRow {
             owner,
             exported,
@@ -946,6 +1137,7 @@ impl<'image> GoImage<'image> {
             receiver_type_params,
             origin,
             span,
+            bound,
             file,
         })
     }
@@ -1118,7 +1310,7 @@ impl<'image> GoImage<'image> {
                 count: self.reference_count,
             });
         }
-        let row = self.plane_row(self.references_offset, index, REFERENCE_BYTES);
+        let row = self.plane_row(self.references_offset, index, self.reference_bytes);
         let owner = u32_at(row, 0);
         let Ok(owner_index) = usize::try_from(owner) else {
             return Err(ImageError::ReferenceOwner {
@@ -1149,9 +1341,29 @@ impl<'image> GoImage<'image> {
         }
         let file = self.atom("reference", index, u32_at(row, 28), u32_at(row, 32))?;
         let receiver = self.atom("reference", index, u32_at(row, 36), u32_at(row, 40))?;
-        if row[44..48] != [0; 4] {
-            return Err(ImageError::ReferenceReserved { index });
-        }
+        // Version 6: the closed use kind, the used object's closed class,
+        // and the target receiver type-name atom. Version 5 rows carry a
+        // four-byte reserved tail and only ever record free-function calls.
+        let (use_kind, target_class, recv_type) = if self.version == 6 {
+            let use_kind =
+                ReferenceUseKind::decode(row[44]).ok_or(ImageError::ReferenceReserved { index })?;
+            let target_class = ReferenceTargetClass::decode(row[45])
+                .ok_or(ImageError::ReferenceReserved { index })?;
+            if row[46..48] != [0; 2] {
+                return Err(ImageError::ReferenceReserved { index });
+            }
+            let recv_type = self.atom("reference", index, u32_at(row, 48), u32_at(row, 52))?;
+            (use_kind, target_class, recv_type)
+        } else {
+            if row[44..48] != [0; 4] {
+                return Err(ImageError::ReferenceReserved { index });
+            }
+            (
+                ReferenceUseKind::Call,
+                ReferenceTargetClass::Func,
+                &self.bytes[0..0],
+            )
+        };
         let (owner_is_declaration, owner_row, owner_span, owner_file) = if receiver.is_empty() {
             let declaration = self.declaration(owner_index)?;
             (true, owner, declaration.span, declaration.file)
@@ -1195,6 +1407,9 @@ impl<'image> GoImage<'image> {
             owner_is_declaration,
             owner_row,
             relative: (start - owner_start, end - owner_start),
+            use_kind,
+            target_class,
+            recv_type,
         })
     }
 
@@ -1568,7 +1783,7 @@ impl<'image> GoImage<'image> {
 
     fn validate_digest(self) -> Result<(), ImageError> {
         let mut digest = Sha256::new();
-        digest.update(DIGEST_DOMAIN);
+        digest.update(self.digest_domain);
         digest.update(&self.bytes[..52]);
         digest.update(&self.bytes[84..HEADER_BYTES]);
         digest.update(&self.bytes[HEADER_BYTES..]);

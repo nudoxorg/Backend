@@ -1,33 +1,38 @@
 //! Projects source-bound javac authority facts through the shared canonical fact lane.
 //!
 //! The projection covers every plane the validated image carries: declaration
-//! facts, the recursive type graph, executable signatures with parameter and
-//! result carrier facts, resolved call occurrences, Javadoc fragments, and
-//! overload sibling lists. Emission is two-pass: every module, package, and
-//! type declaration is committed first, so every nominal, type-child, and
-//! product target is a strictly backward fact ordinal.
+//! facts with their binding-unit source extents, the recursive type graph,
+//! executable signatures with parameter and result carrier facts, resolved
+//! call occurrences and resolved non-invocation uses (field reads and
+//! assignment-target writes, type uses, enum-constant reads, and constructor
+//! calls), Javadoc fragments, and overload sibling lists. Emission is
+//! two-pass: every module, package, and type declaration is committed first,
+//! so every nominal, type-child, and product target is a strictly backward
+//! fact ordinal.
 //!
 //! Declared types are projected row-by-row from the image's own type plane.
 //! Positions the lane cannot carry — foreign nominals, composites without a
 //! carrier row — fold to typed `Unknown` rows that retain the image spelling
-//! instead of fabricating a shape. Parameter and result carrier facts are named
-//! by their javac-provided type spelling because image version 1 carries no
-//! parameter-name plane. Modifiers stay out of the lane: visibility is not a
-//! lane cell and is never fabricated. Never recovers Java facts by scanning
-//! source text or a native parser fallback.
+//! instead of fabricating a shape. Parameter carrier facts are named by their
+//! javac-declared parameter name (image v3), falling back to the type spelling
+//! only when the name is genuinely absent; result carriers keep their type
+//! spelling because there is one per executable. Modifiers stay out of the
+//! lane: visibility is not a lane cell and is never fabricated. Never recovers
+//! Java facts by scanning source text or a native parser fallback.
 
 use core::{iter::ExactSizeIterator, str};
 
-use backend_semantic::ir::{
-    AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, EntityListId, ForeignKey,
-    ForeignKeyFault, ForeignOrigin, JavaFacts, NominalRef, Occurrence, OccurrenceConfidence,
-    OccurrenceTarget, ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor,
-    SemanticTypeRecord, SemanticTypeTag, TypeListId, TypeReason, TypeWidth,
-};
 use backend_frontend_java::legacy::{
     AtomError, BoundImageError, Declaration, DeclarationKind, DocFlavor, HeaderError, ImageError,
-    ImagePlane, JavaAuthorityImage, JavaImage, JavaRelease, Reference, SectionError, SymbolRef,
-    TypeFact, TypeKind, TypeRef,
+    ImagePlane, JavaAuthorityImage, JavaImage, JavaRelease, Reference, ResolvedUse, SectionError,
+    SymbolRef, TypeFact, TypeKind, TypeRef, UseTag,
+};
+use backend_semantic::ir::{
+    AtomListId, DocFactInput, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, EntityListId,
+    ForeignKey, ForeignKeyFault, ForeignOrigin, JavaFacts, NominalRef, Occurrence,
+    OccurrenceConfidence, OccurrenceTarget, ProductChildRole, ReferenceKind, RelSpan,
+    SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, TypeListId, TypeReason,
+    TypeWidth,
 };
 use backend_semantic::vocabulary::{
     JavaForeignKeyFault, JavaImageAtomFault, JavaImageFault, JavaImageHeaderFault, JavaImagePlane,
@@ -38,7 +43,7 @@ use sha2::Digest;
 
 use crate::driver::lower::{
     EmissionExtension, FactSet, LEAF_PRODUCT, MAX_EMISSION_FACTS, MAX_FACT_CHILDREN,
-    MAX_REF_LIST_ELEMENTS, MAX_TYPE_CHILDREN, SemanticFact, push_fact,
+    MAX_REF_LIST_ELEMENTS, MAX_TYPE_CHILDREN, SemanticFact, StagedSourceSpan, push_fact,
 };
 use crate::driver::types::{FactFault, FactRejection};
 
@@ -124,6 +129,11 @@ enum ProjectionFault {
         /// The unresolved owner symbol coordinate.
         owner: SymbolRef,
     },
+    /// A resolved use names no declaration admitted by this image.
+    OrphanUseOwner {
+        /// The unresolved owner declaration coordinate.
+        owner: u32,
+    },
     /// A foreign key could not be built for a resolved external target.
     ForeignKey(
         /// The exact foreign-key rejection.
@@ -169,6 +179,7 @@ fn terminal(fault: ProjectionFault) -> JavaCollectError {
         ProjectionFault::OrphanOwner { owner } => JavaProjectionFault::OrphanOwner {
             owner: owner.ordinal,
         },
+        ProjectionFault::OrphanUseOwner { owner } => JavaProjectionFault::OrphanOwner { owner },
         ProjectionFault::ForeignKey(cause) => JavaProjectionFault::ForeignKey {
             cause: java_foreign_key_fault(cause),
         },
@@ -181,6 +192,9 @@ fn terminal(fault: ProjectionFault) -> JavaCollectError {
 }
 
 /// Converts one validated Java image plane into the portable plane vocabulary.
+/// Image v4's resolved-use and declaration-extent planes have no portable
+/// counterpart; their faults fold onto the nearest portable plane so the
+/// closed terminal stays closed without losing the fault kind.
 fn java_image_plane(plane: ImagePlane) -> JavaImagePlane {
     match plane {
         ImagePlane::Atoms => JavaImagePlane::Atoms,
@@ -193,6 +207,8 @@ fn java_image_plane(plane: ImagePlane) -> JavaImagePlane {
         ImagePlane::References => JavaImagePlane::References,
         ImagePlane::DeclarationExtensions => JavaImagePlane::DeclarationExtensions,
         ImagePlane::ExtensionEntries => JavaImagePlane::ExtensionEntries,
+        ImagePlane::ResolvedUses => JavaImagePlane::References,
+        ImagePlane::DeclarationExtents => JavaImagePlane::Declarations,
     }
 }
 
@@ -434,10 +450,26 @@ pub(crate) fn collect<'source>(
     let source_text = str::from_utf8(source).map_err(|_| terminal(ProjectionFault::SourceUtf8))?;
     let utf16_len = utf16_length(source_text).map_err(terminal)?;
 
+    // The issuer's byte-derived reservation assumes one selected file. A
+    // whole-package image carries every declaration, parameter carrier, and
+    // resolved occurrence of the attributed package, so the shared fact and
+    // occurrence lanes are pre-sized to the exact count this image will project
+    // rather than truncating at the selected source's small fixed cap.
+    let demand = projection_demand(image)?;
+    reserve_projection(facts, demand);
+
+    // The issuer's byte-derived reservation assumes one selected file. A
+    // whole-package image carries every declaration's documentation, so the
+    // lane is pre-sized to the exact fragment count this image will project
+    // rather than truncating at the selected source's small fixed cap.
+    let documentation = documentation_fragments(image)?;
+    reserve_documentation(facts, documentation);
+
     let mut names = NameIndex::new();
+    let mut ordinals = DeclarationOrdinals::new();
     // Pass one: module, package, and type declarations. Type declarations
     // carry the recursive terminal — a nominal row naming their own ordinal.
-    for declared in image.declarations() {
+    for (coordinate, declared) in image.declarations().enumerate() {
         let declared =
             declared.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
         match declared.kind {
@@ -452,10 +484,12 @@ pub(crate) fn collect<'source>(
                         phase: JavaProjectionIndexPhase::NameIndex,
                     })
                 })?;
+                ordinals.record(coordinate, ordinal).map_err(terminal)?;
                 push_docs(facts, &names, ordinal, &declared)?;
             }
             DeclarationKind::Module | DeclarationKind::Package => {
-                push_root(facts, &names, &declared)?
+                let ordinal = push_root(facts, &names, &declared)?;
+                ordinals.record(coordinate, ordinal).map_err(terminal)?;
             }
             DeclarationKind::Field
             | DeclarationKind::EnumConstant
@@ -467,15 +501,22 @@ pub(crate) fn collect<'source>(
     // Pass two: members with projected rows, signature facts, and overloads.
     let mut executables = Executables::new();
     let mut symbols = SymbolIndex::new();
-    for declared in image.declarations() {
+    let mut members = MemberIndex::new();
+    for (coordinate, declared) in image.declarations().enumerate() {
         let declared =
             declared.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
         match declared.kind {
             DeclarationKind::Field | DeclarationKind::EnumConstant => {
-                push_member(facts, image, &names, &declared)?;
+                let ordinal = push_member(facts, image, &names, &declared)?;
+                ordinals.record(coordinate, ordinal).map_err(terminal)?;
+                if let Some(owner) = declared.owner {
+                    members
+                        .record(owner.bytes, declared.name.bytes, ordinal)
+                        .map_err(terminal)?;
+                }
             }
             DeclarationKind::Constructor | DeclarationKind::Method => {
-                push_executable(
+                let ordinal = push_executable(
                     facts,
                     image,
                     &names,
@@ -483,6 +524,7 @@ pub(crate) fn collect<'source>(
                     &mut symbols,
                     &declared,
                 )?;
+                ordinals.record(coordinate, ordinal).map_err(terminal)?;
             }
             DeclarationKind::Module
             | DeclarationKind::Package
@@ -494,12 +536,102 @@ pub(crate) fn collect<'source>(
         }
     }
 
-    // Pass three: compiler-resolved call occurrences in image order.
+    // Pass three: lexical parentage from the image-owned enclosing owner.
+    // Only relationships whose owner survived emission are bound: an owner
+    // atom naming no admitted row leaves the child explicitly unavailable,
+    // never fabricated as a root.
+    for (coordinate, declared) in image.declarations().enumerate() {
+        let declared =
+            declared.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
+        let Some(ordinal) = ordinals.lookup(coordinate) else {
+            continue;
+        };
+        match declared.owner {
+            None => facts.mark_parentage_root(ordinal).map_err(|fault| {
+                lane_rejection(ordinal as usize, declared.name.bytes.len(), fault)
+            })?,
+            Some(owner) => {
+                if let Some(parent) = names.lookup(owner.bytes) {
+                    facts.attach_parent(ordinal, parent).map_err(|fault| {
+                        lane_rejection(ordinal as usize, declared.name.bytes.len(), fault)
+                    })?;
+                }
+            }
+        }
+    }
+
+    // Pass four: authority source extents. The image carries each
+    // binding-unit declaration's own UTF-16 extent; extents are projected
+    // onto the bound source's byte domain and attached as captured spans.
+    // A captured owner span is the owner's whole declaration extent, so the
+    // owner-relative occurrence spans pushed below satisfy the lane's
+    // containment law exactly. Extentless rows (non-binding units, packages
+    // and modules without a tree) stay explicitly source-less.
+    let mut bases = OwnerBases::new();
+    let mut symbol_bases = SymbolBases::new();
+    for (coordinate, declared) in image.declarations().enumerate() {
+        let declared =
+            declared.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
+        let Some(ordinal) = ordinals.lookup(coordinate) else {
+            continue;
+        };
+        let extent = image
+            .declaration_extent(coordinate)
+            .map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
+        let Some(start16) = extent.start else {
+            continue;
+        };
+        let Some(end16) = extent.end else {
+            continue;
+        };
+        let start = utf16_byte_offset(source_text, start16, utf16_len).map_err(terminal)?;
+        let end = utf16_byte_offset(source_text, end16, utf16_len).map_err(terminal)?;
+        let span = StagedSourceSpan::new(start, end).ok_or_else(|| {
+            terminal(ProjectionFault::Utf16Range {
+                start: start16,
+                end: end16,
+            })
+        })?;
+        facts
+            .attach_source_span(ordinal, span)
+            .map_err(|fault| lane_rejection(ordinal as usize, declared.name.bytes.len(), fault))?;
+        bases.record(coordinate, start).map_err(terminal)?;
+        if let Some(symbol) = declared.symbol {
+            symbol_bases.record(symbol, start).map_err(terminal)?;
+        }
+    }
+
+    // Pass five: compiler-resolved occurrences in image order.
     for reference in image.references() {
         let reference =
             reference.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
-        push_occurrence(facts, image, &symbols, source_text, utf16_len, &reference)
-            .map_err(terminal)?;
+        push_occurrence(
+            facts,
+            image,
+            &symbols,
+            &symbol_bases,
+            source_text,
+            utf16_len,
+            &reference,
+        )
+        .map_err(terminal)?;
+    }
+    for resolved in image.uses() {
+        let resolved =
+            resolved.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
+        push_use(
+            facts,
+            image,
+            &names,
+            &ordinals,
+            &symbols,
+            &members,
+            &bases,
+            source_text,
+            utf16_len,
+            &resolved,
+        )
+        .map_err(terminal)?;
     }
     Ok(())
 }
@@ -1045,14 +1177,14 @@ fn required_spelling<'image>(
 
 /// Bounded qualified-name index of the image's type declarations.
 struct NameIndex<'image> {
-    entries: [(&'image [u8], u32); MAX_EMISSION_FACTS],
+    entries: Box<[(&'image [u8], u32); MAX_EMISSION_FACTS]>,
     len: usize,
 }
 
 impl<'image> NameIndex<'image> {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
-            entries: [(&[], 0); MAX_EMISSION_FACTS],
+            entries: Box::new([(&[], 0); MAX_EMISSION_FACTS]),
             len: 0,
         }
     }
@@ -1096,14 +1228,14 @@ impl<'image> NameIndex<'image> {
 
 /// Bounded index from executable symbol coordinates to declaration ordinals.
 struct SymbolIndex {
-    entries: [(Option<SymbolRef>, u32); MAX_EMISSION_FACTS],
+    entries: Box<[(Option<SymbolRef>, u32); MAX_EMISSION_FACTS]>,
     len: usize,
 }
 
 impl SymbolIndex {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
-            entries: [(None, 0); MAX_EMISSION_FACTS],
+            entries: Box::new([(None, 0); MAX_EMISSION_FACTS]),
             len: 0,
         }
     }
@@ -1128,20 +1260,169 @@ impl SymbolIndex {
     }
 }
 
+/// Bounded index from image declaration coordinates to emitted fact ordinals.
+///
+/// The javap image owns containment: every declaration row names its
+/// qualified enclosing owner, but emission order diverges from image order
+/// (types first, then members, then executables). The relation pass resolves
+/// ownership through this coordinate bridge after every target exists.
+struct DeclarationOrdinals {
+    entries: Box<[(usize, u32); MAX_EMISSION_FACTS]>,
+    len: usize,
+}
+impl DeclarationOrdinals {
+    fn new() -> Self {
+        Self {
+            entries: Box::new([(usize::MAX, 0); MAX_EMISSION_FACTS]),
+            len: 0,
+        }
+    }
+
+    fn record(&mut self, coordinate: usize, ordinal: u32) -> Result<(), ProjectionFault> {
+        if self.len == self.entries.len() {
+            return Err(ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::FactOrdinal,
+            });
+        }
+        self.entries[self.len] = (coordinate, ordinal);
+        self.len += 1;
+        Ok(())
+    }
+
+    fn lookup(&self, coordinate: usize) -> Option<u32> {
+        self.entries
+            .iter()
+            .take(self.len)
+            .find(|(known, _)| *known == coordinate)
+            .map(|(_, ordinal)| *ordinal)
+    }
+}
+
 /// One overload registry entry: executable class, declaring type, simple
 /// name, and the pushed fact ordinal.
 type ExecutableEntry<'image> = (bool, Option<&'image [u8]>, &'image [u8], u32);
 
+/// Bounded index from image declaration coordinates to their captured
+/// declaration-start byte. A present entry is the owner-relative span basis
+/// for every resolved use the declaration lexically owns.
+struct OwnerBases {
+    entries: Box<[(usize, u32); MAX_EMISSION_FACTS]>,
+    len: usize,
+}
+
+impl OwnerBases {
+    fn new() -> Self {
+        Self {
+            entries: Box::new([(usize::MAX, 0); MAX_EMISSION_FACTS]),
+            len: 0,
+        }
+    }
+
+    fn record(&mut self, coordinate: usize, start: u32) -> Result<(), ProjectionFault> {
+        if self.len == self.entries.len() {
+            return Err(ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::NameIndex,
+            });
+        }
+        self.entries[self.len] = (coordinate, start);
+        self.len += 1;
+        Ok(())
+    }
+
+    fn lookup(&self, coordinate: u32) -> Option<u32> {
+        self.entries
+            .iter()
+            .take(self.len)
+            .find(|(known, _)| usize::try_from(coordinate) == Ok(*known))
+            .map(|(_, start)| *start)
+    }
+}
+
+/// Bounded index from executable symbol coordinates to their captured
+/// declaration-start byte, the span basis for the invocation plane's rows.
+struct SymbolBases {
+    entries: Box<[(Option<SymbolRef>, u32); MAX_EMISSION_FACTS]>,
+    len: usize,
+}
+
+impl SymbolBases {
+    fn new() -> Self {
+        Self {
+            entries: Box::new([(None, 0); MAX_EMISSION_FACTS]),
+            len: 0,
+        }
+    }
+
+    fn record(&mut self, symbol: SymbolRef, start: u32) -> Result<(), ProjectionFault> {
+        if self.len == self.entries.len() {
+            return Err(ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::SymbolIndex,
+            });
+        }
+        self.entries[self.len] = (Some(symbol), start);
+        self.len += 1;
+        Ok(())
+    }
+
+    fn lookup(&self, symbol: SymbolRef) -> Option<u32> {
+        self.entries
+            .iter()
+            .take(self.len)
+            .find(|(known, _)| *known == Some(symbol))
+            .map(|(_, start)| *start)
+    }
+}
+
+/// Bounded index from a member's declaring qualified type and simple name to
+/// its pushed fact ordinal, resolving field and enum-constant uses locally.
+struct MemberIndex<'image> {
+    entries: Box<[(&'image [u8], &'image [u8], u32); MAX_EMISSION_FACTS]>,
+    len: usize,
+}
+
+impl<'image> MemberIndex<'image> {
+    fn new() -> Self {
+        Self {
+            entries: Box::new([(&[], &[], 0); MAX_EMISSION_FACTS]),
+            len: 0,
+        }
+    }
+
+    fn record(
+        &mut self,
+        owner: &'image [u8],
+        name: &'image [u8],
+        ordinal: u32,
+    ) -> Result<(), ProjectionFault> {
+        if self.len == self.entries.len() {
+            return Err(ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::NameIndex,
+            });
+        }
+        self.entries[self.len] = (owner, name, ordinal);
+        self.len += 1;
+        Ok(())
+    }
+
+    fn lookup(&self, owner: &[u8], name: &[u8]) -> Option<u32> {
+        self.entries
+            .iter()
+            .take(self.len)
+            .find(|(known_owner, known_name, _)| *known_owner == owner && *known_name == name)
+            .map(|(_, _, ordinal)| *ordinal)
+    }
+}
+
 /// Bounded registry of pushed executables for overload sibling discovery.
 struct Executables<'image> {
-    entries: [ExecutableEntry<'image>; MAX_EMISSION_FACTS],
+    entries: Box<[ExecutableEntry<'image>; MAX_EMISSION_FACTS]>,
     len: usize,
 }
 
 impl<'image> Executables<'image> {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
-            entries: [(false, None, &[], 0); MAX_EMISSION_FACTS],
+            entries: Box::new([(false, None, &[], 0); MAX_EMISSION_FACTS]),
             len: 0,
         }
     }
@@ -1195,11 +1476,12 @@ fn push_root<'source>(
     facts: &mut FactSet<'source>,
     names: &NameIndex<'source>,
     declared: &Declaration<'source>,
-) -> Result<(), JavaCollectError> {
+) -> Result<u32, JavaCollectError> {
     let kind = entity_kind(declared.kind);
     let fact = SemanticFact::new(kind, declared.name.bytes, constructor(kind));
     let ordinal = push(facts, fact)?;
-    push_docs(facts, names, ordinal, declared)
+    push_docs(facts, names, ordinal, declared)?;
+    Ok(ordinal)
 }
 
 /// Pushes one type declaration with the recursive terminal: a nominal row
@@ -1243,7 +1525,7 @@ fn push_member<'source>(
     image: JavaImage<'source>,
     names: &NameIndex<'source>,
     declared: &Declaration<'source>,
-) -> Result<(), JavaCollectError> {
+) -> Result<u32, JavaCollectError> {
     let kind = entity_kind(declared.kind);
     let anchor = type_anchor(facts, names, declared).map_err(terminal)?;
     let projected = match declared.semantic_type {
@@ -1258,7 +1540,8 @@ fn push_member<'source>(
         constructor(kind),
     ));
     let ordinal = push(facts, fact)?;
-    push_docs(facts, names, ordinal, declared)
+    push_docs(facts, names, ordinal, declared)?;
+    Ok(ordinal)
 }
 
 /// Pushes one constructor or method: its parameter and result carrier facts
@@ -1271,7 +1554,7 @@ fn push_executable<'source>(
     executables: &mut Executables<'source>,
     symbols: &mut SymbolIndex,
     declared: &Declaration<'source>,
-) -> Result<(), JavaCollectError> {
+) -> Result<u32, JavaCollectError> {
     let symbol_reference = match declared.symbol {
         Some(reference) => reference,
         None => {
@@ -1297,15 +1580,26 @@ fn push_executable<'source>(
     let mut signature_children = [0_u32; MAX_TYPE_CHILDREN];
     let mut parameter_count = 0usize;
     let mut signature_count = 0usize;
+    let mut parameter_names = symbol.parameter_names;
     for parameter in symbol.parameters {
         let projected =
             project(facts, image, names, anchor, parameter, DEPTH_LIMIT).map_err(terminal)?;
-        let name = projected.spelling.ok_or_else(|| {
+        let spelling = projected.spelling.ok_or_else(|| {
             terminal(ProjectionFault::Malformed {
                 type_row: parameter.ordinal,
                 kind: TypeKind::None,
             })
         })?;
+        // Image v3 carries the declared parameter name beside its type
+        // coordinate; name the carrier by that source name so two parameters
+        // of the same type stay distinct. A genuinely absent name (v1/v2
+        // images, or a compiler-synthesized parameter) falls back to the type
+        // spelling, so identity never invents a name.
+        let name = match parameter_names.next() {
+            Some(Ok(Some(atom))) => atom.bytes,
+            Some(Ok(None)) | None => spelling,
+            Some(Err(cause)) => return Err(terminal(ProjectionFault::Image(cause))),
+        };
         let carrier =
             projected.attach(SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT));
         let ordinal = push(facts, carrier)?;
@@ -1391,6 +1685,18 @@ fn push_executable<'source>(
         fact = fact.type_child(*ordinal, None, 0);
     }
     let ordinal = push(facts, fact)?;
+    // Signature carriers share names and types across executables; bind
+    // each to its executable so identical carriers stay distinct.
+    for carrier in parameter_ordinals
+        .iter()
+        .take(parameter_count)
+        .copied()
+        .chain(result_ordinal)
+    {
+        facts
+            .attach_parent(carrier, ordinal)
+            .map_err(|fault| lane_rejection(carrier as usize, declared.name.bytes.len(), fault))?;
+    }
     symbols.record(symbol_reference, ordinal).map_err(|_| {
         terminal(ProjectionFault::IndexCapacity {
             phase: JavaProjectionIndexPhase::SymbolIndex,
@@ -1408,7 +1714,8 @@ fn push_executable<'source>(
                 phase: JavaProjectionIndexPhase::ExecutableIndex,
             })
         })?;
-    push_docs(facts, names, ordinal, declared)
+    push_docs(facts, names, ordinal, declared)?;
+    Ok(ordinal)
 }
 
 /// Builds one Java extension row. Throws, annotations, and record components
@@ -1430,15 +1737,18 @@ fn java_facts<'source>(
     })
 }
 
-/// Pushes one resolved call occurrence: an in-image target folds to a local
+/// Pushes one resolved method invocation: an in-image target folds to a local
 /// ordinal, every other javac-resolved target to a maven-namespaced foreign
 /// key, both at oracle confidence. javac's UTF-16 source coordinates are
-/// projected onto the bound source's byte domain; the image carries no
-/// declaration spans, so the file start is the only provable shared basis.
+/// projected onto the bound source's byte domain and stored relative to the
+/// owner executable's captured declaration extent, so the lane's containment
+/// law holds for every occurrence whose owner carries a span; an owner with
+/// no captured extent carries the explicit zero-width span instead.
 fn push_occurrence<'source>(
     facts: &mut FactSet<'source>,
     image: JavaImage<'source>,
     symbols: &SymbolIndex,
+    symbol_bases: &SymbolBases,
     source_text: &'source str,
     utf16_len: u32,
     reference: &Reference<'source>,
@@ -1480,16 +1790,16 @@ fn push_occurrence<'source>(
     };
     let start = utf16_byte_offset(source_text, reference.start, utf16_len)?;
     let end = utf16_byte_offset(source_text, reference.end, utf16_len)?;
-    let span = RelSpan::new(start, end).map_err(|_| ProjectionFault::Utf16Range {
-        start: reference.start,
-        end: reference.end,
-    })?;
+    let span = owner_relative_span(symbol_bases.lookup(reference.owner), start, end)?;
     facts
         .push_occurrence(
             owner,
             Occurrence {
                 target,
-                kind: ReferenceKind::FunctionCall,
+                // Every row in the invocation plane is a resolved
+                // `MethodInvocationTree`, and Java has no free functions:
+                // an invocation is a method call through a receiver.
+                kind: ReferenceKind::MethodCall,
                 confidence: OccurrenceConfidence::Oracle,
                 span,
             },
@@ -1498,6 +1808,188 @@ fn push_occurrence<'source>(
             phase: JavaProjectionIndexPhase::FactOrdinal,
         })?;
     Ok(())
+}
+
+/// Pushes one resolved non-invocation use: field reads and assignment-target
+/// writes, declared types in type position, enum-constant reads, and `new`
+/// expressions targeting their constructor. Each closed image tag maps onto
+/// the one honest lane kind; targets fold locally or to maven-namespaced
+/// foreign keys, and spans are owner-relative exactly like the invocation
+/// plane's.
+fn push_use<'source>(
+    facts: &mut FactSet<'source>,
+    image: JavaImage<'source>,
+    names: &NameIndex<'source>,
+    ordinals: &DeclarationOrdinals,
+    symbols: &SymbolIndex,
+    members: &MemberIndex<'source>,
+    bases: &OwnerBases,
+    source_text: &'source str,
+    utf16_len: u32,
+    resolved: &ResolvedUse<'source>,
+) -> Result<(), ProjectionFault> {
+    let coordinate =
+        usize::try_from(resolved.owner).map_err(|_| ProjectionFault::IndexCapacity {
+            phase: JavaProjectionIndexPhase::FactOrdinal,
+        })?;
+    let owner = ordinals
+        .lookup(coordinate)
+        .ok_or(ProjectionFault::OrphanUseOwner {
+            owner: resolved.owner,
+        })?;
+    let declaring = resolved.declaring.bytes;
+    let kind = use_kind(resolved.kind);
+    let target = match resolved.kind {
+        UseTag::ConstructorCall => {
+            let symbol = resolved.target.ok_or(ProjectionFault::OrphanUseOwner {
+                owner: resolved.owner,
+            })?;
+            match symbols.lookup(symbol) {
+                Some(ordinal) => OccurrenceTarget::Local(EntityId::new(ordinal)),
+                None => {
+                    let name = resolved
+                        .name
+                        .ok_or(ProjectionFault::OrphanUseOwner {
+                            owner: resolved.owner,
+                        })?
+                        .bytes;
+                    foreign_member_key(image, symbol, declaring, name, Some(EntityKind::Function))?
+                }
+            }
+        }
+        UseTag::FieldRead | UseTag::FieldWrite | UseTag::EnumConstantUse => {
+            let name = resolved
+                .name
+                .ok_or(ProjectionFault::OrphanUseOwner {
+                    owner: resolved.owner,
+                })?
+                .bytes;
+            match members.lookup(declaring, name) {
+                Some(ordinal) => OccurrenceTarget::Local(EntityId::new(ordinal)),
+                None => {
+                    let kind = match resolved.kind {
+                        UseTag::EnumConstantUse => EntityKind::Variant,
+                        _ => EntityKind::Field,
+                    };
+                    foreign_member_key_kind(declaring, name, Some(kind))?
+                }
+            }
+        }
+        UseTag::TypeUse => match names.lookup(declaring) {
+            Some(ordinal) => OccurrenceTarget::Local(EntityId::new(ordinal)),
+            // A foreign type's qualified spelling is its own identity; no
+            // namespace is fabricated around it. Image atoms are UTF-8
+            // validated at open, so the spelling conversions are total.
+            None => {
+                let spelling = atom_str(declaring);
+                OccurrenceTarget::Foreign(
+                    ForeignKey::new(
+                        ForeignOrigin::Universe { ecosystem: "maven" },
+                        spelling,
+                        spelling,
+                        Some(EntityKind::Record),
+                    )
+                    .map_err(ProjectionFault::ForeignKey)?,
+                )
+            }
+        },
+    };
+    let start = utf16_byte_offset(source_text, resolved.start, utf16_len)?;
+    let end = utf16_byte_offset(source_text, resolved.end, utf16_len)?;
+    let span = owner_relative_span(bases.lookup(resolved.owner), start, end)?;
+    facts
+        .push_occurrence(
+            owner,
+            Occurrence {
+                target,
+                kind,
+                confidence: OccurrenceConfidence::Oracle,
+                span,
+            },
+        )
+        .map_err(|_| ProjectionFault::IndexCapacity {
+            phase: JavaProjectionIndexPhase::FactOrdinal,
+        })?;
+    Ok(())
+}
+
+/// Builds the maven-namespaced foreign key for one non-local use whose
+/// target is keyed by the image's own symbol pool (resolved constructors).
+fn foreign_member_key<'source>(
+    image: JavaImage<'source>,
+    symbol: SymbolRef,
+    declaring: &'source [u8],
+    name: &'source [u8],
+    kind: Option<EntityKind>,
+) -> Result<OccurrenceTarget<'source>, ProjectionFault> {
+    image.symbol(symbol).map_err(ProjectionFault::Image)?;
+    foreign_member_key_kind(declaring, name, kind)
+}
+
+/// Builds the maven-namespaced foreign key for one non-local member use: the
+/// declaring qualified type travels as the namespace and the member name as
+/// the canonical path, matching the invocation plane's keying.
+fn foreign_member_key_kind<'source>(
+    declaring: &'source [u8],
+    name: &'source [u8],
+    kind: Option<EntityKind>,
+) -> Result<OccurrenceTarget<'source>, ProjectionFault> {
+    Ok(OccurrenceTarget::Foreign(
+        ForeignKey::new(
+            ForeignOrigin::Namespace {
+                ecosystem: "maven",
+                namespace: atom_str(declaring),
+            },
+            atom_str(name),
+            atom_str(name),
+            kind,
+        )
+        .map_err(ProjectionFault::ForeignKey)?,
+    ))
+}
+
+/// Borrows an image atom as UTF-8. The reader validates every atom's UTF-8
+/// at open, so this conversion is total for a validated image.
+fn atom_str(bytes: &[u8]) -> &str {
+    core::str::from_utf8(bytes).unwrap_or("")
+}
+
+/// The honest lane kind for one closed image use tag. A field read and its
+/// assignment-target write are both field accesses in the lane's closed
+/// lattice (there is no write kind), an enum-constant read is a value use, a
+/// declared type in type position is a type reference, and a `new`
+/// expression is a call to its resolved constructor.
+const fn use_kind(tag: UseTag) -> ReferenceKind {
+    match tag {
+        UseTag::ConstructorCall => ReferenceKind::FunctionCall,
+        UseTag::FieldRead | UseTag::FieldWrite => ReferenceKind::FieldAccess,
+        UseTag::TypeUse => ReferenceKind::TypeReference,
+        UseTag::EnumConstantUse => ReferenceKind::VariableUse,
+    }
+}
+
+/// Converts one absolute occurrence span into the owner-relative cell: the
+/// basis is the owner's captured declaration-start byte, so the lane's
+/// `owner_span.start + relative` reconstruction reproduces the exact source
+/// site. An owner without a captured extent carries the explicit zero-width
+/// span (its RelSpan is never interpreted); a use preceding its owner's
+/// start is a writer fault and fails the closed terminal.
+fn owner_relative_span(
+    basis: Option<u32>,
+    start: u32,
+    end: u32,
+) -> Result<RelSpan, ProjectionFault> {
+    let Some(basis) = basis else {
+        return RelSpan::new(0, 0).map_err(|_| ProjectionFault::Utf16Range { start, end });
+    };
+    let Some(relative_start) = start.checked_sub(basis) else {
+        return Err(ProjectionFault::Utf16Range { start, end });
+    };
+    let Some(relative_end) = end.checked_sub(basis) else {
+        return Err(ProjectionFault::Utf16Range { start, end });
+    };
+    RelSpan::new(relative_start, relative_end)
+        .map_err(|_| ProjectionFault::Utf16Range { start, end })
 }
 
 /// Projects one javac UTF-16 coordinate onto the bound source's byte domain.
@@ -1538,6 +2030,230 @@ fn utf16_length(source: &str) -> Result<u32, ProjectionFault> {
             })?;
     }
     Ok(total)
+}
+
+/// Closed capacity terminal for the fact-ordinal phase.
+fn demand_capacity() -> JavaCollectError {
+    terminal(ProjectionFault::IndexCapacity {
+        phase: JavaProjectionIndexPhase::FactOrdinal,
+    })
+}
+
+/// Exact projection demand derived from the validated authority image: one
+/// fact per declaration, one carrier fact per executable parameter, one result
+/// carrier per non-void method, and one occurrence per resolved reference or
+/// resolved use.
+struct ProjectionDemand {
+    /// Declaration, parameter-carrier, and result-carrier facts.
+    facts: usize,
+    /// Compiler-resolved call occurrences and non-invocation uses.
+    occurrences: usize,
+}
+
+/// Counts the exact fact and occurrence demand this image will project.
+///
+/// The byte-derived reservation in [`ResourcePlan::for_source`] is calibrated
+/// for a single selected source file. A whole-package image legitimately
+/// carries every declaration and resolved occurrence of the attributed
+/// package, so the shared lanes are sized to what this image projects instead
+/// of rejecting the package at the selected file's small fixed cap.
+fn projection_demand(image: JavaImage<'_>) -> Result<ProjectionDemand, JavaCollectError> {
+    let mut declarations = 0usize;
+    let mut parameters = 0usize;
+    let mut results = 0usize;
+    for declared in image.declarations() {
+        let declared =
+            declared.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
+        declarations = declarations.checked_add(1).ok_or_else(demand_capacity)?;
+        if !matches!(
+            declared.kind,
+            DeclarationKind::Constructor | DeclarationKind::Method
+        ) {
+            continue;
+        }
+        let Some(symbol_reference) = declared.symbol else {
+            continue;
+        };
+        let symbol = image
+            .symbol(symbol_reference)
+            .map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
+        parameters = parameters
+            .checked_add(symbol.parameters.len())
+            .ok_or_else(demand_capacity)?;
+        if declared.kind == DeclarationKind::Method
+            && let Some(reference) = declared.semantic_type
+        {
+            let row = image
+                .type_fact(reference)
+                .map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
+            if row.kind != TypeKind::Void {
+                results = results.checked_add(1).ok_or_else(demand_capacity)?;
+            }
+        }
+    }
+    let facts = declarations
+        .checked_add(parameters)
+        .and_then(|total| total.checked_add(results))
+        .ok_or_else(demand_capacity)?;
+    let occurrences = image
+        .references()
+        .len()
+        .checked_add(image.uses().len())
+        .ok_or_else(demand_capacity)?;
+    Ok(ProjectionDemand { facts, occurrences })
+}
+
+/// Grows the shared fact and occurrence lanes to the validated image's exact
+/// projected demand. The transaction lanes are empty at this point, so the
+/// whole set is rebuilt at the larger geometry with no prefix to preserve.
+///
+/// Sizing is gated on an entered primary source: only an authority image bound
+/// to the compile request's exact bytes may exceed the protocol ceiling. A
+/// bare unit `FactSet` with no source binding keeps that ceiling, so the
+/// capacity falsifier still proves the closed lane rejection.
+fn reserve_projection<'source>(facts: &mut FactSet<'source>, demand: ProjectionDemand) {
+    let Some(source_len) = facts.primary_source_len else {
+        return;
+    };
+    if demand.facts <= facts.plan.facts && demand.occurrences <= facts.plan.occurrences {
+        return;
+    }
+    let mut plan = facts.plan;
+    plan.facts = plan.facts.max(demand.facts);
+    plan.occurrences = plan.occurrences.max(demand.occurrences);
+    plan.ref_lists = plan
+        .ref_lists
+        .max(demand.facts.min(crate::driver::lower::MAX_REF_LISTS));
+    *facts = FactSet::with_primary_source(plan, source_len);
+}
+
+/// Counts the exact documentation fragments the projection will push for this
+/// image. The count mirrors [`push_docs`], [`push_doc_line`], and [`push_link`]
+/// so the shared lane can be pre-sized without a fixed cap and without ever
+/// truncating a fragment.
+fn documentation_fragments(image: JavaImage<'_>) -> Result<usize, JavaCollectError> {
+    let mut total = 0usize;
+    for declared in image.declarations() {
+        let declared =
+            declared.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
+        total = total
+            .checked_add(declaration_documentation_fragments(&declared))
+            .ok_or_else(|| {
+                terminal(ProjectionFault::IndexCapacity {
+                    phase: JavaProjectionIndexPhase::Documentation,
+                })
+            })?;
+    }
+    Ok(total)
+}
+
+/// Grows the shared documentation lane to hold at least `minimum` fragments.
+/// The lane is transaction-local and starts empty, so only the recorded prefix
+/// is preserved across the reallocation.
+fn reserve_documentation<'source>(facts: &mut FactSet<'source>, minimum: usize) {
+    if facts.plan.docs >= minimum {
+        return;
+    }
+    let placeholder = DocFactInput {
+        owner: EntityId::new(0),
+        fragment: DocFragmentInput::SoftBreak,
+    };
+    let mut grown = vec![placeholder; minimum].into_boxed_slice();
+    grown[..facts.doc_len].copy_from_slice(&facts.doc_facts[..facts.doc_len]);
+    facts.doc_facts = grown;
+    facts.plan.docs = minimum;
+}
+
+/// Counts one declaration's documentation fragments exactly as [`push_docs`]
+/// emits them: non-empty prose/code/link tokens and one soft break per interior
+/// newline.
+fn declaration_documentation_fragments(declared: &Declaration<'_>) -> usize {
+    let Some(documentation) = declared.documentation else {
+        return 0;
+    };
+    let doc = documentation.bytes;
+    let mut total = 0usize;
+    let mut line_start = 0usize;
+    while line_start < doc.len() {
+        let line_end = doc
+            .get(line_start..)
+            .unwrap_or(&[])
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(doc.len(), |at| line_start + at);
+        let line = doc.get(line_start..line_end).unwrap_or(&[]);
+        match declared.documentation_flavor {
+            DocFlavor::Traditional => total += traditional_line_fragments(line),
+            DocFlavor::Markdown | DocFlavor::Absent => {
+                total += usize::from(!line.is_empty());
+            }
+        }
+        if line_end == doc.len() {
+            break;
+        }
+        total += 1;
+        line_start = line_end + 1;
+    }
+    total
+}
+
+/// Counts the fragments one traditional doc line emits: each inline tag splits
+/// the line, non-empty prose becomes one text fragment, and code/link interiors
+/// contribute their own fragments.
+fn traditional_line_fragments(line: &[u8]) -> usize {
+    let mut total = 0usize;
+    let mut cursor = 0usize;
+    while cursor < line.len() {
+        let rest = line.get(cursor..).unwrap_or(&[]);
+        match inline_tag(rest) {
+            None => {
+                total += usize::from(!rest.is_empty());
+                break;
+            }
+            Some(tag) => {
+                total += usize::from(!rest.get(..tag.at).unwrap_or(&[]).is_empty());
+                if tag.link {
+                    total += link_fragments(tag.interior);
+                } else {
+                    total += usize::from(!tag.interior.is_empty());
+                }
+                cursor += tag.after;
+            }
+        }
+    }
+    total
+}
+
+/// Counts the fragments one `{@link …}` interior emits, mirroring
+/// [`push_link`]'s local/foreign split and empty-label/text folds.
+fn link_fragments(interior: &[u8]) -> usize {
+    let split = interior
+        .iter()
+        .position(|byte| *byte == b' ' || *byte == b'\t');
+    let (spelling, label) = match split {
+        Some(at) => {
+            let target = interior.get(..at).unwrap_or(&[]);
+            let trimmed = trim(interior.get(at + 1..).unwrap_or(&[]));
+            if trimmed.is_empty() {
+                (target, target)
+            } else {
+                (target, trimmed)
+            }
+        }
+        None => (interior, interior),
+    };
+    if label.is_empty() {
+        return 0;
+    }
+    let declaration = spelling
+        .iter()
+        .position(|byte| *byte == b'#')
+        .and_then(|at| spelling.get(..at))
+        .unwrap_or(spelling);
+    if declaration.is_empty() {
+        return usize::from(!trim(interior).is_empty());
+    }
+    1
 }
 
 /// Streams one declaration's Javadoc atom into the documentation lane as text
@@ -1759,16 +2475,17 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use backend_semantic::ir::TypeFactFault;
     use backend_semantic::ir::{DocFactFault, OccurrenceFault};
-    use backend_semantic::ir::{FragmentView, SourceIdentity, TypeFactFault};
+    use backend_semantic::ir::{FragmentView, SemanticCoreReader, SemanticReader, SourceIdentity};
     use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use sha2::Sha256;
 
-    const HEADER_BYTES: usize = 176;
+    const HEADER_BYTES: usize = 240;
     const DIRECTORY_OFFSET: usize = 48;
     const DIRECTORY_ENTRY_BYTES: usize = 16;
-    const IMAGE_DOMAIN: &[u8] = b"nudox.java.authority.image.sha256.v1\0";
+    const IMAGE_DOMAIN: &[u8] = b"nudox.java.authority.image.sha256.v4\0";
     const BOUND_DOMAIN: &[u8] = b"nudox.java.bound.authority.image.sha256.v1\0";
     const ABSENT: u32 = u32::MAX;
 
@@ -1778,6 +2495,8 @@ mod tests {
         Collect(JavaCollectError),
         #[error("lane admission rejected the fact set: {0:?}")]
         Admission(crate::driver::lower::AdmissionFault),
+        #[error("owned image build rejected the fact set: {0:?}")]
+        Build(backend_semantic::ir::BuildError),
         #[error("fragment validation rejected the bytes: {0:?}")]
         Validate(backend_semantic::ir::FragmentError),
         #[error("type fact cursor rejected: {0:?}")]
@@ -1859,6 +2578,9 @@ mod tests {
         documentation: Option<usize>,
         semantic_type: Option<u32>,
         symbol: Option<u32>,
+        /// The declaration's whole source extent in UTF-16 units, as the v4
+        /// writer records it for the binding unit.
+        span: Option<(u32, u32)>,
     }
 
     #[derive(Clone)]
@@ -1870,6 +2592,28 @@ mod tests {
         end: u32,
     }
 
+    /// One v4 resolved-use row: owner declaration coordinate, optional
+    /// executable symbol target, closed tag, atom-keyed target identity, and
+    /// the written name token's UTF-16 extent.
+    #[derive(Clone)]
+    struct UseRow {
+        owner: u32,
+        target: Option<u32>,
+        tag: u8,
+        declaring: usize,
+        name: Option<usize>,
+        file: usize,
+        start: u32,
+        end: u32,
+    }
+
+    /// Closed v4 use tags, mirroring the doclet's writer constants.
+    const TAG_CONSTRUCTOR_CALL: u8 = 1;
+    const TAG_FIELD_READ: u8 = 2;
+    const TAG_FIELD_WRITE: u8 = 3;
+    const TAG_TYPE_USE: u8 = 4;
+    const TAG_ENUM_CONSTANT_USE: u8 = 5;
+
     /// One javac authority image under construction, encoded exactly like the
     /// vendored doclet writer: canonical planes, fixed directory, domain
     /// separated checksums, and the source-bound outer envelope.
@@ -1880,6 +2624,7 @@ mod tests {
         symbols: Vec<SymbolRow>,
         declarations: Vec<DeclarationRow>,
         references: Vec<ReferenceRow>,
+        uses: Vec<UseRow>,
     }
 
     impl Fixture {
@@ -1909,6 +2654,7 @@ mod tests {
                 documentation: None,
                 semantic_type: Some(semantic_type),
                 symbol: None,
+                span: None,
             });
             u32::try_from(self.declarations.len() - 1).unwrap_or(u32::MAX)
         }
@@ -1961,9 +2707,10 @@ mod tests {
             let mut symbols = Vec::new();
             let mut symbol_parameters = Vec::new();
             for row in &self.symbols {
-                let start = cell(symbol_parameters.len() / 4)?;
+                let start = cell(symbol_parameters.len() / 8)?;
                 for parameter in &row.parameters {
                     symbol_parameters.extend_from_slice(&parameter.to_le_bytes());
+                    symbol_parameters.extend_from_slice(&ABSENT.to_le_bytes());
                 }
                 symbols.extend_from_slice(&cell(row.owner)?.to_le_bytes());
                 symbols.extend_from_slice(&cell(row.name)?.to_le_bytes());
@@ -2001,6 +2748,30 @@ mod tests {
                 references.extend_from_slice(&row.start.to_le_bytes());
                 references.extend_from_slice(&row.end.to_le_bytes());
             }
+            let mut uses = Vec::new();
+            for row in &self.uses {
+                uses.extend_from_slice(&row.owner.to_le_bytes());
+                uses.extend_from_slice(&row.target.unwrap_or(ABSENT).to_le_bytes());
+                uses.push(row.tag);
+                uses.extend_from_slice(&[0; 3]);
+                uses.extend_from_slice(&cell(row.declaring)?.to_le_bytes());
+                uses.extend_from_slice(
+                    &row.name
+                        .map_or(ABSENT, |name| u32::try_from(name).unwrap_or(ABSENT))
+                        .to_le_bytes(),
+                );
+                uses.extend_from_slice(&cell(row.file)?.to_le_bytes());
+                uses.extend_from_slice(&row.start.to_le_bytes());
+                uses.extend_from_slice(&row.end.to_le_bytes());
+            }
+            let mut spans = Vec::new();
+            for row in &self.declarations {
+                let (start, end) = row.span.unwrap_or((ABSENT, ABSENT));
+                spans.extend_from_slice(&start.to_le_bytes());
+                spans.extend_from_slice(&end.to_le_bytes());
+            }
+            let declaration_extensions = vec![0_u8; 8 * self.declarations.len()];
+            let extension_entries: Vec<u8> = Vec::new();
             let sections = [
                 atoms,
                 atom_bytes,
@@ -2010,14 +2781,18 @@ mod tests {
                 symbol_parameters,
                 declarations,
                 references,
+                declaration_extensions,
+                extension_entries,
+                uses,
+                spans,
             ];
-            let row_bytes = [8_u16, 1, 16, 4, 16, 4, 32, 20];
+            let row_bytes = [8_u16, 1, 16, 4, 16, 8, 32, 20, 8, 8, 32, 8];
             let mut image = vec![0_u8; HEADER_BYTES];
             image[..4].copy_from_slice(b"NJAI");
-            image[4..6].copy_from_slice(&1_u16.to_le_bytes());
+            image[4..6].copy_from_slice(&4_u16.to_le_bytes());
             image[6..8].copy_from_slice(&u16::try_from(HEADER_BYTES)?.to_le_bytes());
             image[8..10].copy_from_slice(&21_u16.to_le_bytes());
-            image[10..12].copy_from_slice(&8_u16.to_le_bytes());
+            image[10..12].copy_from_slice(&12_u16.to_le_bytes());
             let body = sections.iter().map(Vec::len).sum::<usize>();
             image[12..16].copy_from_slice(&u32::try_from(body)?.to_le_bytes());
             let mut offset = HEADER_BYTES;
@@ -2066,14 +2841,43 @@ mod tests {
             ContentId::<ToolchainDomain>::from_canonical_bytes(b"java-authority-toolchain"),
         );
         let mut output = vec![0xa5_u8; 65_536];
-        let length = crate::driver::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
-            .map_err(TestError::from)?
-            .len();
+        let length =
+            crate::driver::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
+                .map_err(TestError::from)?
+                .len();
         if !output[length..].iter().all(|byte| *byte == 0xa5) {
             return Err(TestError::Tail);
         }
         output.truncate(length);
         Ok(output)
+    }
+
+    /// Builds the owned semantic image for one fixture, so assertions can
+    /// read the authority planes the compact fragment does not carry:
+    /// entity provenance spans and absolute link-occurrence sites.
+    fn owned(fix: &Fixture, source: &[u8]) -> Result<backend_semantic::ir::Ir, TestError> {
+        let image = fix.bind(source)?;
+        let mut facts = FactSet::new();
+        collect(ProfileRelease::Java21, source, &image, &mut facts)?;
+        let identity = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            byte_len: u32::try_from(source.len())?,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Java(backend_semantic::vocabulary::JavaRelease::Java21),
+            Stage::LowerIr,
+            NativeTool::JavaCompiler,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"java-authority-toolchain"),
+        );
+        facts
+            .build_ir(
+                LanguageProfile::Java(backend_semantic::vocabulary::JavaRelease::Java21),
+                identity,
+                recipe,
+                crate::driver::types::DeclarationScope::fixture(),
+            )
+            .map_err(TestError::Build)
     }
 
     fn row<'fragment>(
@@ -2130,6 +2934,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(node),
             symbol: None,
+            span: None,
         });
         let bytes = lower(&fix, b"class Node { Node next; }")?;
         let view = FragmentView::validate(&bytes)?;
@@ -2170,6 +2975,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(b),
             symbol: None,
+            span: None,
         });
         fix.declarations.push(DeclarationRow {
             kind: 8,
@@ -2178,6 +2984,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(a),
             symbol: None,
+            span: None,
         });
         let bytes = lower(&fix, b"class A { B b; } class B { A a; }")?;
         let view = FragmentView::validate(&bytes)?;
@@ -2218,6 +3025,7 @@ mod tests {
                 documentation: None,
                 semantic_type: Some(reference),
                 symbol: None,
+                span: None,
             });
         }
         let brew = fix.atom(b"brew");
@@ -2246,6 +3054,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(void_row),
             symbol: Some(0),
+            span: None,
         });
         fix.declarations.push(DeclarationRow {
             kind: 11,
@@ -2254,6 +3063,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(3),
             symbol: Some(1),
+            span: None,
         });
         let source = b"class P { byte byte; int sip() { return 0; } void brew() {} }";
         let bytes = lower(&fix, source)?;
@@ -2332,6 +3142,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(1),
             symbol: Some(0),
+            span: None,
         });
         fix.declarations.push(DeclarationRow {
             kind: 11,
@@ -2340,6 +3151,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(string_row),
             symbol: Some(1),
+            span: None,
         });
         let source = b"class C { int brew() { return 0; } String brew() { return null; } }";
         let bytes = lower(&fix, source)?;
@@ -2432,6 +3244,13 @@ mod tests {
             documentation: None,
             semantic_type: Some(void_row),
             symbol: Some(0),
+            // The whole binding-unit extent, so the owner-relative span
+            // basis is the file start and the relative span equals the
+            // absolute projected byte span.
+            span: {
+                let units: usize = source_text.chars().map(char::len_utf16).sum();
+                Some((0, u32::try_from(units)?))
+            },
         });
         fix.references.push(ReferenceRow {
             owner: 0,
@@ -2458,7 +3277,7 @@ mod tests {
         if key.path != "intern"
             || key.kind != Some(EntityKind::Function)
             || occurrence.occurrence.confidence != OccurrenceConfidence::Oracle
-            || occurrence.occurrence.kind != ReferenceKind::FunctionCall
+            || occurrence.occurrence.kind != ReferenceKind::MethodCall
         {
             return Err(TestError::Missing("maven namespace foreign key"));
         }
@@ -2519,6 +3338,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(void_row),
             symbol: Some(0),
+            span: None,
         });
         fix.declarations.push(DeclarationRow {
             kind: 11,
@@ -2527,6 +3347,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(void_row),
             symbol: Some(1),
+            span: None,
         });
         fix.references.push(ReferenceRow {
             owner: 0,
@@ -2552,6 +3373,388 @@ mod tests {
         Ok(())
     }
 
+    /// One v4 resolved use per closed class commits its honest lane kind,
+    /// local or foreign target identity, and an owner-relative span whose
+    /// reconstructed absolute site is exactly the written name token inside
+    /// the owning executable's provenance span.
+    #[test]
+    fn uses_project_honest_kinds_local_targets_and_source_verified_spans() -> Result<(), TestError>
+    {
+        let source_text = "class Counter {\n  int count;\n  Color mode;\n  void bump() {\n    count = count + 1;\n    mode = Color.RED;\n    Counter twin = new Counter();\n  }\n}\n";
+        let source = source_text.as_bytes();
+        let bump_at = source_text
+            .find("void bump()")
+            .ok_or(TestError::Missing("bump"))?;
+        let bump_end = source_text
+            .find("}\n}\n")
+            .ok_or(TestError::Missing("bump end"))?;
+        let fix = {
+            let mut fix = Fixture::default();
+            let class_name = fix.atom(b"demo.Counter");
+            let semantic_type = fix.declared(b"demo.Counter");
+            let count_name = fix.atom(b"count");
+            let mode_name = fix.atom(b"mode");
+            let counter_atom = fix.atom(b"Counter");
+            let bump_name = fix.atom(b"bump");
+            let file = fix.atom(b"Counter.java");
+            let color_atom = fix.atom(b"Color");
+            let red_atom = fix.atom(b"RED");
+            let void_row = u32::try_from(fix.types.len())?;
+            fix.types.push(TypeRow {
+                kind: 2,
+                flags: 0,
+                atom: None,
+                children: Vec::new(),
+            });
+            let units: usize = source_text.chars().map(char::len_utf16).sum();
+            let units = u32::try_from(units)?;
+            fix.symbols.push(SymbolRow {
+                owner: 0,
+                name: bump_name,
+                parameters: Vec::new(),
+            });
+            fix.symbols.push(SymbolRow {
+                owner: 0,
+                name: counter_atom,
+                parameters: Vec::new(),
+            });
+            // 0: the class; 1: count; 2: mode; 3: the constructor; 4: bump.
+            fix.declarations.push(DeclarationRow {
+                kind: 3,
+                name: class_name,
+                owner: None,
+                documentation: None,
+                semantic_type: Some(semantic_type),
+                symbol: None,
+                span: Some((0, units)),
+            });
+            fix.declarations.push(DeclarationRow {
+                kind: 8,
+                name: count_name,
+                owner: Some(0),
+                documentation: None,
+                semantic_type: Some(void_row),
+                symbol: None,
+                span: None,
+            });
+            fix.declarations.push(DeclarationRow {
+                kind: 8,
+                name: mode_name,
+                owner: Some(0),
+                documentation: None,
+                semantic_type: Some(void_row),
+                symbol: None,
+                span: None,
+            });
+            fix.declarations.push(DeclarationRow {
+                kind: 10,
+                name: counter_atom,
+                owner: Some(0),
+                documentation: None,
+                semantic_type: None,
+                symbol: Some(1),
+                span: None,
+            });
+            fix.declarations.push(DeclarationRow {
+                kind: 11,
+                name: bump_name,
+                owner: Some(0),
+                documentation: None,
+                semantic_type: Some(void_row),
+                symbol: Some(0),
+                span: {
+                    let start: usize = source_text[..bump_at].chars().map(char::len_utf16).sum();
+                    let end: usize = source_text[..bump_end].chars().map(char::len_utf16).sum();
+                    Some((u32::try_from(start)?, u32::try_from(end)?))
+                },
+            });
+            let at = |needle: &[u8]| -> Result<(u32, u32), TestError> {
+                let at = source
+                    .windows(needle.len())
+                    .position(|window| window == needle)
+                    .ok_or(TestError::Missing("use site"))?;
+                let start = u32::try_from(at)?;
+                let end = u32::try_from(at + needle.len())?;
+                Ok((start, end))
+            };
+            let (count_write, _) = at(b"count =")?;
+            let (count_read, _) = at(b"count +")?;
+            let (mode_write, _) = at(b"mode =")?;
+            let (color_at, _) = at(b"Color.RED")?;
+            let (red_at, red_end) = at(b"RED")?;
+            let (twin_at, _) = at(b"Counter twin")?;
+            let (new_at, _) = at(b"new Counter()")?;
+            // Uses in the image's own order, all owned by bump (coordinate 4).
+            fix.uses.push(UseRow {
+                owner: 4,
+                target: None,
+                tag: TAG_FIELD_WRITE,
+                declaring: class_name,
+                name: Some(count_name),
+                file,
+                start: count_write,
+                end: count_write + u32::try_from("count".len())?,
+            });
+            fix.uses.push(UseRow {
+                owner: 4,
+                target: None,
+                tag: TAG_FIELD_READ,
+                declaring: class_name,
+                name: Some(count_name),
+                file,
+                start: count_read,
+                end: count_read + u32::try_from("count".len())?,
+            });
+            fix.uses.push(UseRow {
+                owner: 4,
+                target: None,
+                tag: TAG_FIELD_WRITE,
+                declaring: class_name,
+                name: Some(mode_name),
+                file,
+                start: mode_write,
+                end: mode_write + u32::try_from("mode".len())?,
+            });
+            fix.uses.push(UseRow {
+                owner: 4,
+                target: None,
+                tag: TAG_TYPE_USE,
+                declaring: color_atom,
+                name: None,
+                file,
+                start: color_at,
+                end: color_at + u32::try_from("Color".len())?,
+            });
+            fix.uses.push(UseRow {
+                owner: 4,
+                target: None,
+                tag: TAG_ENUM_CONSTANT_USE,
+                declaring: color_atom,
+                name: Some(red_atom),
+                file,
+                start: red_at,
+                end: red_end,
+            });
+            fix.uses.push(UseRow {
+                owner: 4,
+                target: None,
+                tag: TAG_TYPE_USE,
+                declaring: class_name,
+                name: None,
+                file,
+                start: twin_at,
+                end: twin_at + u32::try_from("Counter".len())?,
+            });
+            fix.uses.push(UseRow {
+                owner: 4,
+                target: Some(1),
+                tag: TAG_CONSTRUCTOR_CALL,
+                declaring: class_name,
+                name: Some(counter_atom),
+                file,
+                start: new_at + u32::try_from("new ".len())?,
+                end: new_at + u32::try_from("new Counter".len())?,
+            });
+            fix
+        };
+        let ir = owned(&fix, source)?;
+        // The owner's provenance span is its whole declaration extent.
+        let mut owner_span = None;
+        for entity in ir.canonical_entities() {
+            if ir.atom(entity.name) == Some(&b"bump"[..])
+                && let Some(span) = entity.source
+            {
+                owner_span = Some((usize::try_from(span.start())?, usize::try_from(span.end())?));
+            }
+        }
+        let Some((owner_start, owner_end)) = owner_span else {
+            return Err(TestError::Missing("bump provenance span"));
+        };
+        if owner_end != bump_end {
+            return Err(TestError::Missing("bump span end"));
+        }
+        // Every link site reconstructs to the exact written name token and
+        // resolves to its honest target: fields locally by their member
+        // identity, the class type locally, the constructor locally through
+        // its symbol, and the foreign type and enum constant through
+        // maven-namespaced external keys.
+        let mut field_reads = 0_usize;
+        let mut type_references = 0_usize;
+        let mut constructor_calls = 0_usize;
+        let mut variable_uses = 0_usize;
+        for (_, occurrence) in ir.link_occurrences() {
+            let Some(link) = ir.link(occurrence.link) else {
+                return Err(TestError::Missing("occurrence link"));
+            };
+            let Some(site) = occurrence.source else {
+                return Err(TestError::Missing("absolute link site"));
+            };
+            let start = usize::try_from(site.start())?;
+            let end = usize::try_from(site.end())?;
+            let bytes = source
+                .get(start..end)
+                .ok_or(TestError::Missing("site bytes"))?;
+            // The containment law: the site lies inside the owner's span.
+            if !(owner_start <= start && end <= owner_end) {
+                return Err(TestError::Missing("site inside owner span"));
+            }
+            match bytes {
+                b"count" | b"mode" => {
+                    if link.kind != backend_semantic::ir::LinkKind::Reads {
+                        return Err(TestError::Missing("field link kind"));
+                    }
+                    let backend_semantic::ir::LinkTarget::Local(target) = link.target else {
+                        return Err(TestError::Missing("local field target"));
+                    };
+                    let Some(entity) = ir.entity(target) else {
+                        return Err(TestError::Missing("target entity"));
+                    };
+                    if ir.atom(entity.name) != Some(bytes) {
+                        return Err(TestError::Missing("local field name"));
+                    }
+                    if bytes == b"count" {
+                        field_reads += 1;
+                    }
+                }
+                b"Color" => {
+                    type_references += 1;
+                    let backend_semantic::ir::LinkTarget::External(_) = link.target else {
+                        return Err(TestError::Missing("foreign type target"));
+                    };
+                }
+                b"RED" => {
+                    variable_uses += 1;
+                    let backend_semantic::ir::LinkTarget::External(_) = link.target else {
+                        return Err(TestError::Missing("foreign enum constant target"));
+                    };
+                }
+                b"Counter" => {
+                    let backend_semantic::ir::LinkTarget::Local(target) = link.target else {
+                        return Err(TestError::Missing("local Counter target"));
+                    };
+                    let Some(entity) = ir.entity(target) else {
+                        return Err(TestError::Missing("target entity"));
+                    };
+                    // The class fact keeps its qualified name; the
+                    // constructor fact keeps the written simple name.
+                    if ir.atom(entity.name) != Some(&b"demo.Counter"[..])
+                        && ir.atom(entity.name) != Some(&b"Counter"[..])
+                    {
+                        return Err(TestError::Missing("Counter target name"));
+                    }
+                    if target.raw == 0 {
+                        type_references += 1;
+                    } else if target.raw == 3 {
+                        constructor_calls += 1;
+                    } else {
+                        return Err(TestError::Missing("Counter target ordinal"));
+                    }
+                }
+                _ => return Err(TestError::Missing("expected site bytes")),
+            }
+        }
+        // count write + count read resolve locally; the two Counter sites
+        // split by kind; Color and RED stay foreign but present.
+        if field_reads != 2 || type_references != 2 || constructor_calls != 1 || variable_uses != 1
+        {
+            return Err(TestError::Missing("exact use mix"));
+        }
+        // The fragment plane carries the same rows owner-relative: the first
+        // write's relative span is its absolute site minus the owner start.
+        let view_bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&view_bytes)?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("fragment occurrences"))?;
+        let first = occurrences
+            .next()
+            .ok_or(TestError::Missing("fragment occurrence"))??;
+        if first.occurrence.kind != ReferenceKind::FieldAccess {
+            return Err(TestError::Missing("field write kind"));
+        }
+        let write_at = usize::try_from(first.occurrence.span.start)? + owner_start;
+        let write_end = usize::try_from(first.occurrence.span.end)? + owner_start;
+        if source.get(write_at..write_end) != Some(&b"count"[..]) {
+            return Err(TestError::Missing("owner-relative reconstruction"));
+        }
+        Ok(())
+    }
+
+    /// A use whose written site escapes its owner's captured extent trips
+    /// the lane's containment law at image build; the same fixture with an
+    /// in-extent owner builds cleanly.
+    #[test]
+    fn use_outside_its_owner_extent_trips_the_containment_law() -> Result<(), TestError> {
+        let source_text = "class Counter {\n  void bump() {\n    count();\n  }\n}\n";
+        let source = source_text.as_bytes();
+        let bump_at = source_text
+            .find("void bump()")
+            .ok_or(TestError::Missing("bump"))?;
+        let fix = {
+            let mut fix = Fixture::default();
+            let class_name = fix.atom(b"demo.Counter");
+            let semantic_type = fix.declared(b"demo.Counter");
+            let bump_name = fix.atom(b"bump");
+            let file = fix.atom(b"Counter.java");
+            let void_row = u32::try_from(fix.types.len())?;
+            fix.types.push(TypeRow {
+                kind: 2,
+                flags: 0,
+                atom: None,
+                children: Vec::new(),
+            });
+            let units: usize = source_text.chars().map(char::len_utf16).sum();
+            fix.symbols.push(SymbolRow {
+                owner: 0,
+                name: bump_name,
+                parameters: Vec::new(),
+            });
+            fix.declarations.push(DeclarationRow {
+                kind: 3,
+                name: class_name,
+                owner: None,
+                documentation: None,
+                semantic_type: Some(semantic_type),
+                symbol: None,
+                span: None,
+            });
+            fix.declarations.push(DeclarationRow {
+                kind: 11,
+                name: bump_name,
+                owner: Some(0),
+                documentation: None,
+                semantic_type: Some(void_row),
+                symbol: Some(0),
+                // The captured extent ends before the use site, so the
+                // owner-relative span cannot reconstruct lawfully.
+                span: Some((u32::try_from(bump_at)?, u32::try_from(bump_at + 4)?)),
+            });
+            let call_at = source
+                .windows(b"count()".len())
+                .position(|window| window == b"count()")
+                .ok_or(TestError::Missing("call site"))?;
+            let call_at = u32::try_from(call_at)?;
+            fix.uses.push(UseRow {
+                owner: 1,
+                target: None,
+                tag: TAG_FIELD_READ,
+                declaring: class_name,
+                name: Some(bump_name),
+                file,
+                start: call_at,
+                end: call_at + u32::try_from("count".len())?,
+            });
+            fix
+        };
+        match owned(&fix, source) {
+            Err(TestError::Build(backend_semantic::ir::BuildError::InvalidOccurrenceSpan {
+                ..
+            })) => Ok(()),
+            Err(other) => Err(other),
+            Ok(_) => Err(TestError::Missing("containment law rejection")),
+        }
+    }
+
     #[test]
     fn javadoc_splits_into_text_softbreak_code_and_local_foreign_links() -> Result<(), TestError> {
         let mut fix = Fixture::default();
@@ -2567,6 +3770,7 @@ mod tests {
             documentation: Some(doc),
             semantic_type: Some(0),
             symbol: None,
+            span: None,
         });
         let bytes = lower(&fix, b"class Cafe {}")?;
         let view = FragmentView::validate(&bytes)?;
@@ -2634,6 +3838,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(applied),
             symbol: None,
+            span: None,
         });
         fix.declarations.push(DeclarationRow {
             kind: 8,
@@ -2642,6 +3847,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(array_row),
             symbol: None,
+            span: None,
         });
         let foreign = fix.declared(b"java.lang.String");
         fix.declarations.push(DeclarationRow {
@@ -2651,6 +3857,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(foreign),
             symbol: None,
+            span: None,
         });
         let bytes = lower(
             &fix,
@@ -2704,6 +3911,7 @@ mod tests {
             documentation: None,
             semantic_type: Some(nested),
             symbol: None,
+            span: None,
         });
 
         let bytes = lower(&fix, source)?;
@@ -2739,6 +3947,7 @@ mod tests {
                 documentation: None,
                 semantic_type: None,
                 symbol: None,
+                span: None,
             });
         }
         let image = fix.bind(b"")?;
@@ -2782,7 +3991,8 @@ mod tests {
         else {
             return Err(TestError::Missing("primitive projection terminal"));
         };
-        if fault != (backend_semantic::vocabulary::JavaProjectionFault::Primitive { type_row: 17 }) {
+        if fault != (backend_semantic::vocabulary::JavaProjectionFault::Primitive { type_row: 17 })
+        {
             return Err(TestError::Missing("primitive type row"));
         }
 
@@ -2827,6 +4037,7 @@ mod tests {
             documentation: None,
             semantic_type: None,
             symbol: Some(0),
+            span: None,
         });
         let bytes = fix.bind(b"")?;
         let owner = backend_frontend_java::legacy::JavaAuthorityImage::open(&bytes)

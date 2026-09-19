@@ -9,9 +9,13 @@
 
 pub(crate) mod catalog;
 pub(crate) mod document;
+pub(crate) mod dossier;
 pub(crate) mod events;
+pub(crate) mod index;
 pub(crate) mod jobs;
+pub(crate) mod marks;
 pub(crate) mod prefs;
+pub(crate) mod registry;
 pub(crate) mod search;
 pub(crate) mod service;
 pub(crate) mod shell;

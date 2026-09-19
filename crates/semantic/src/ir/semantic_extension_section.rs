@@ -52,7 +52,7 @@ impl LanguageExtensionDirectoryKind {
             Self::TypeScript => 12,
             Self::CSharp => 36,
             Self::Go => 44,
-            Self::Rust => 16,
+            Self::Rust => 24,
             Self::Python => 12,
             Self::Java => 16,
             Self::Clang => 24,
@@ -64,7 +64,8 @@ impl LanguageExtensionDirectoryKind {
             Self::TypeScript | Self::Python => 12,
             Self::CSharp => 36,
             Self::Go => 44,
-            Self::Rust | Self::Java => 16,
+            Self::Rust => 24,
+            Self::Java => 16,
             Self::Clang => 24,
         }
     }
@@ -91,6 +92,8 @@ pub struct LanguageExtensionCommonBounds {
     pub type_lists: u32,
     pub entity_lists: u32,
     pub atom_lists: u32,
+    /// Number of Rust free-predicate list rows.
+    pub free_predicates: u32,
     /// Schema-aware bounds for `TypeParameterListId`: fresh fragments name
     /// exact range-table rows while legacy fragments retain start-only
     /// coordinates without fabricated list membership.
@@ -1218,7 +1221,7 @@ impl LanguageExtensionWireFact for crate::ir::GoFacts {
 }
 impl wire_fact_sealed::Sealed for crate::ir::GoFacts {}
 impl LanguageExtensionWireFact for crate::ir::RustFacts {
-    const WIDTH: usize = 16;
+    const WIDTH: usize = 24;
     fn decode(bytes: &[u8], offset: usize) -> Option<Self> {
         let ownership = match read_word(bytes, offset)? {
             0 => crate::ir::RustOwnership::Value,
@@ -1232,6 +1235,8 @@ impl LanguageExtensionWireFact for crate::ir::RustFacts {
             lifetimes: crate::ir::AtomListId::new(read_word(bytes, offset + 4)?),
             where_clauses: crate::ir::TypeParameterListId::new(read_word(bytes, offset + 8)?),
             macros: crate::ir::AtomListId::new(read_word(bytes, offset + 12)?),
+            const_defaults: crate::ir::AtomListId::new(read_word(bytes, offset + 16)?),
+            free_predicates: crate::ir::FreePredicateListId::new(read_word(bytes, offset + 20)?),
         })
     }
 }
@@ -1632,7 +1637,9 @@ fn encode_rust(
     )?;
     word(output, base, 1, facts.lifetimes.raw)?;
     word(output, base, 2, facts.where_clauses.raw)?;
-    word(output, base, 3, facts.macros.raw)
+    word(output, base, 3, facts.macros.raw)?;
+    word(output, base, 4, facts.const_defaults.raw)?;
+    word(output, base, 5, facts.free_predicates.raw)
 }
 fn encode_python(
     output: &mut [u8],
@@ -1787,6 +1794,8 @@ fn validate_fact(
             check(w(1)?, n.atom_lists)?;
             check_type_parameters(w(2)?)?;
             check(w(3)?, n.atom_lists)?;
+            check(w(4)?, n.atom_lists)?;
+            check(w(5)?, n.free_predicates)?;
         }
         LanguageExtensionDirectoryKind::Python => check(w(0)?, n.atom_lists)?,
         LanguageExtensionDirectoryKind::Java => {

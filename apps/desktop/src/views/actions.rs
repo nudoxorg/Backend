@@ -2,6 +2,10 @@
 //! The text field's editing keys are bound separately, under its own context.
 //! Nothing is bound twice, so no keystroke has an ambiguous owner.
 //!
+//! Every key comes from [`super::keys`], so the binding that fires and the
+//! hint a view draws are one value: `⌘K` on a Mac is `Ctrl+K` on Windows in
+//! both places or in neither.
+//!
 //! The editable-text element ships a default binding set that claims Enter,
 //! Tab, Escape, and the arrow keys. Those four are exactly the keys an omnibar
 //! needs, so this module declines the default set and rebuilds it without
@@ -9,6 +13,7 @@
 //! and command keys belong to the window. The result is that typing into the
 //! omnibar and driving it from the keyboard are the same activity.
 
+use super::keys::{self, Chord};
 use gpui::{ActionBindingCollection, KeyBinding, actions};
 use gpui_elements::editable_text::actions as editing;
 
@@ -37,11 +42,13 @@ actions!(
         GoBack,
         /// Walk the active tab's history forward one step.
         GoForward,
+        /// Open the browse page.
+        GoHome,
         /// Close the active tab.
         CloseTab,
-        /// Activate the tab to the left.
+        /// Activate the tab before this one in tree order.
         PreviousTab,
-        /// Activate the tab to the right.
+        /// Activate the tab after this one in tree order.
         NextTab,
         /// Copy the active page's readable coordinate.
         CopyIdentity,
@@ -55,6 +62,10 @@ actions!(
         ShrinkInterface,
         /// Re-read whatever the reader is showing.
         Reload,
+        /// Show the source of the page being read, over the page.
+        OpenSource,
+        /// Open the source of the page being read in the external editor.
+        OpenEditor,
         /// Close the topmost transient surface.
         Dismiss,
         /// Move the omnibar selection up one row.
@@ -105,50 +116,57 @@ pub(crate) fn window_bindings() -> Vec<KeyBinding> {
     bindings
 }
 
+fn bind<A: gpui::Action>(chord: Chord, action: A, context: Option<&str>) -> KeyBinding {
+    KeyBinding::new(&chord.binding(), action, context)
+}
+
 fn command_bindings() -> Vec<KeyBinding> {
     vec![
-        KeyBinding::new("cmd-k", FocusOmnibar, None),
-        KeyBinding::new("cmd-l", OpenPalette, None),
-        KeyBinding::new("cmd-shift-a", AddProject, None),
-        KeyBinding::new("cmd-b", ToggleLibrary, None),
-        KeyBinding::new("cmd-\\", ToggleContext, None),
-        KeyBinding::new("cmd-,", OpenSettings, None),
-        KeyBinding::new("cmd-[", GoBack, None),
-        KeyBinding::new("cmd-]", GoForward, None),
-        KeyBinding::new("cmd-w", CloseTab, None),
-        KeyBinding::new("cmd-shift-[", PreviousTab, None),
-        KeyBinding::new("cmd-shift-]", NextTab, None),
-        KeyBinding::new("cmd-c", CopyIdentity, Some(WINDOW_CONTEXT)),
-        KeyBinding::new("cmd-shift-c", CopyKey, Some(WINDOW_CONTEXT)),
-        KeyBinding::new("cmd-0", ResetInterface, None),
-        KeyBinding::new("cmd-=", GrowInterface, None),
-        KeyBinding::new("cmd--", ShrinkInterface, None),
-        KeyBinding::new("cmd-r", Reload, None),
-        KeyBinding::new("cmd-shift-d", ToggleAppearance, None),
-        KeyBinding::new("cmd-shift-m", ToggleMotion, None),
+        bind(keys::FOCUS_OMNIBAR, FocusOmnibar, None),
+        bind(keys::OPEN_PALETTE, OpenPalette, None),
+        bind(keys::ADD_PROJECT, AddProject, None),
+        bind(keys::TOGGLE_LIBRARY, ToggleLibrary, None),
+        bind(keys::TOGGLE_CONTEXT, ToggleContext, None),
+        bind(keys::OPEN_SETTINGS, OpenSettings, None),
+        bind(keys::GO_BACK, GoBack, None),
+        bind(keys::GO_FORWARD, GoForward, None),
+        bind(keys::GO_HOME, GoHome, None),
+        bind(keys::CLOSE_TAB, CloseTab, None),
+        bind(keys::PREVIOUS_TAB, PreviousTab, None),
+        bind(keys::NEXT_TAB, NextTab, None),
+        bind(keys::COPY_IDENTITY, CopyIdentity, Some(WINDOW_CONTEXT)),
+        bind(keys::COPY_KEY, CopyKey, Some(WINDOW_CONTEXT)),
+        bind(keys::RESET_INTERFACE, ResetInterface, None),
+        bind(keys::GROW_INTERFACE, GrowInterface, None),
+        bind(keys::SHRINK_INTERFACE, ShrinkInterface, None),
+        bind(keys::RELOAD, Reload, None),
+        bind(keys::OPEN_SOURCE, OpenSource, None),
+        bind(keys::OPEN_EDITOR, OpenEditor, None),
+        bind(keys::TOGGLE_APPEARANCE, ToggleAppearance, None),
+        bind(keys::TOGGLE_MOTION, ToggleMotion, None),
     ]
 }
 
 fn navigation_bindings() -> Vec<KeyBinding> {
     vec![
-        KeyBinding::new("escape", Dismiss, None),
-        KeyBinding::new("up", MoveUp, None),
-        KeyBinding::new("down", MoveDown, None),
-        KeyBinding::new("pageup", PageUp, None),
-        KeyBinding::new("pagedown", PageDown, None),
-        KeyBinding::new("home", SelectFirst, None),
-        KeyBinding::new("end", SelectLast, None),
-        KeyBinding::new("enter", Accept, None),
-        KeyBinding::new("tab", Complete, None),
-        KeyBinding::new("cmd-1", Tab1, None),
-        KeyBinding::new("cmd-2", Tab2, None),
-        KeyBinding::new("cmd-3", Tab3, None),
-        KeyBinding::new("cmd-4", Tab4, None),
-        KeyBinding::new("cmd-5", Tab5, None),
-        KeyBinding::new("cmd-6", Tab6, None),
-        KeyBinding::new("cmd-7", Tab7, None),
-        KeyBinding::new("cmd-8", Tab8, None),
-        KeyBinding::new("cmd-9", Tab9, None),
+        bind(keys::DISMISS, Dismiss, None),
+        bind(Chord::plain("up"), MoveUp, None),
+        bind(Chord::plain("down"), MoveDown, None),
+        bind(Chord::plain("pageup"), PageUp, None),
+        bind(Chord::plain("pagedown"), PageDown, None),
+        bind(Chord::plain("home"), SelectFirst, None),
+        bind(Chord::plain("end"), SelectLast, None),
+        bind(keys::ACCEPT, Accept, None),
+        bind(keys::COMPLETE, Complete, None),
+        bind(keys::tab_chord(1), Tab1, None),
+        bind(keys::tab_chord(2), Tab2, None),
+        bind(keys::tab_chord(3), Tab3, None),
+        bind(keys::tab_chord(4), Tab4, None),
+        bind(keys::tab_chord(5), Tab5, None),
+        bind(keys::tab_chord(6), Tab6, None),
+        bind(keys::tab_chord(7), Tab7, None),
+        bind(keys::tab_chord(8), Tab8, None),
+        bind(keys::tab_chord(9), Tab9, None),
     ]
 }
 
@@ -164,19 +182,19 @@ pub(crate) fn editing_bindings() -> ActionBindingCollection {
         .with::<editing::DeleteRight>("delete")
         .with::<editing::NavLeft>("left")
         .with::<editing::NavRight>("right")
-        .with::<editing::SelectAll>("cmd-a")
         .with::<editing::SelectLeft>("shift-left")
         .with::<editing::SelectRight>("shift-right")
-        .with::<editing::Copy>("cmd-c")
-        .with::<editing::Cut>("cmd-x")
-        .with::<editing::Paste>("cmd-v")
-        .with::<editing::Undo>("cmd-z")
-        .with::<editing::Redo>("cmd-shift-z");
-    macos_editing(bindings)
+        .with::<editing::SelectAll>(&Chord::primary("a").binding())
+        .with::<editing::Copy>(&Chord::primary("c").binding())
+        .with::<editing::Cut>(&Chord::primary("x").binding())
+        .with::<editing::Paste>(&Chord::primary("v").binding())
+        .with::<editing::Undo>(&Chord::primary("z").binding())
+        .with::<editing::Redo>(&Chord::primary("z").shift().binding());
+    platform_editing(bindings)
 }
 
 #[cfg(target_os = "macos")]
-fn macos_editing(bindings: ActionBindingCollection) -> ActionBindingCollection {
+fn platform_editing(bindings: ActionBindingCollection) -> ActionBindingCollection {
     bindings
         .with::<editing::DeleteWordLeft>("alt-backspace")
         .with::<editing::DeleteWordRight>("alt-delete")
@@ -190,7 +208,7 @@ fn macos_editing(bindings: ActionBindingCollection) -> ActionBindingCollection {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn macos_editing(bindings: ActionBindingCollection) -> ActionBindingCollection {
+fn platform_editing(bindings: ActionBindingCollection) -> ActionBindingCollection {
     bindings
         .with::<editing::DeleteWordLeft>("ctrl-backspace")
         .with::<editing::DeleteWordRight>("ctrl-delete")

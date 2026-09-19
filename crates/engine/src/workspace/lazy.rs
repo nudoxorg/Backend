@@ -176,11 +176,7 @@ impl WorkspaceRelationFault {
 impl fmt::Display for WorkspaceRelationFault {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.key {
-            Some(key) => write!(
-                formatter,
-                "{} key {key}: {}",
-                self.relation, self.rejection
-            ),
+            Some(key) => write!(formatter, "{} key {key}: {}", self.relation, self.rejection),
             None => write!(formatter, "{}: {}", self.relation, self.rejection),
         }
     }
@@ -440,8 +436,8 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
         let claim: UntrustedId<R> = UntrustedId::from_wire(&root, IdContext::relation::<R>())
             .map_err(|_| WorkspaceRelationError::InvalidRoot)?;
         let root = {
-            let tree =
-                LazyTree::open(store.as_ref(), claim).map_err(|error| map_tree_error::<R>(error, None))?;
+            let tree = LazyTree::open(store.as_ref(), claim)
+                .map_err(|error| map_tree_error::<R>(error, None))?;
             tree.root_handle()
         };
         Ok(Self { store, root })
@@ -577,9 +573,10 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
     ) -> Result<WorkspaceRelationNodePage<R>, WorkspaceRelationError> {
         let proof = Arc::from(read.node().bytes().to_vec().into_boxed_slice());
         if read.node().node().level() == 0 {
-            let entries = read.node().leaf_entries().map_err(|error| {
-                map_tree_error::<R>(LazyTreeError::Node(error), None)
-            })?;
+            let entries = read
+                .node()
+                .leaf_entries()
+                .map_err(|error| map_tree_error::<R>(LazyTreeError::Node(error), None))?;
             if offset > entries.len() {
                 return Err(WorkspaceRelationError::InvalidRoot);
             }
@@ -732,8 +729,8 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
         &self,
         changes: &[TreeChange<R>],
     ) -> Result<LazyPreparedUpdate<R>, WorkspaceRelationError> {
-        self.tree().prepare_update(changes).map_err(|error| {
-            refine_rejection::<R>(map_tree_error::<R>(error, None), changes)
-        })
+        self.tree()
+            .prepare_update(changes)
+            .map_err(|error| refine_rejection::<R>(map_tree_error::<R>(error, None), changes))
     }
 }

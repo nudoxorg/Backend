@@ -1,133 +1,58 @@
-//! The reader: a tab strip and whatever the active tab is showing.
+//! The reader: whatever the active tab is showing, in one reading column.
 //! The previous page stays until the next one has arrived; nothing flashes.
 //! A failure renders here, in place, with the same weight a page would have.
 //!
-//! The tab strip disappears when there is one tab, because a single tab is not
-//! a choice and a control that offers no choice is noise. Middle-click closes,
-//! option-click opens behind — the two gestures a reader brings from every
-//! other document surface they use.
+//! Tabs live in the projects panel as a tree, not here as a strip. With no
+//! tab at all the column shows the home page, so the window never opens on
+//! nothing and the first click a reader makes is the same click they will
+//! make every day.
 //!
-//! The scrolling element is the reading column itself rather than a full-width
-//! box wrapped around one, and that is load-bearing rather than cosmetic: it
-//! makes each region of the page a direct child of the scroll container, which
-//! is what lets the outline panel's jump list scroll to a section by index
-//! instead of guessing at an offset.
+//! The column has two measures. A declaration page is prose and a signature,
+//! and reads best at a book's width; the home page holds a grid of package
+//! cards and a search field that should feel large, and takes the wider one.
 
 use super::workspace::Workspace;
 use crate::motion::{Beat, entering_opacity, once};
-use crate::store::document::{Content, Tab, Target};
+use crate::store::document::Content;
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Chrome, Radius, Space, TypeScale, hairline, radius, space};
-use crate::ui::{button, fault as fault_ui, surface, text};
+use crate::theme::tokens::{Radius, Space, TypeScale, radius, space};
+use crate::ui::{fault as fault_ui, surface, text};
 use backend_present::Identity;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnimationExt as _, AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement,
+    AnimationExt as _, AnyElement, Context, Div, ElementId, InteractiveElement,
     IntoElement, ParentElement, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     div, px,
 };
 
-/// Widest the reading column ever grows, in pixels.
+/// Widest a declaration page grows, in pixels.
 const MEASURE: f32 = 880.0;
+
+/// Widest the home page grows, in pixels: room for three package cards.
+const HOME_MEASURE: f32 = 1220.0;
 
 impl Workspace {
     /// Returns the centre column.
     pub(super) fn reader(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let tabs = self.document.read(cx).tabs().len();
         div()
             .flex_1()
             .min_w(px(0.0))
             .h_full()
             .flex()
             .flex_col()
-            .when(tabs > 1, |column| column.child(self.tab_strip(theme, cx)))
             .child(self.reader_body(theme, cx))
     }
 
-    fn tab_strip(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.document.read(cx).active();
-        let titles: Vec<String> = self
-            .document
-            .read(cx)
-            .tabs()
-            .iter()
-            .map(Tab::title)
-            .collect();
-        div()
-            .id("tab-strip")
-            .flex_none()
-            .h(px(Chrome::TABS))
-            .w_full()
-            .overflow_x_scroll()
-            .flex()
-            .items_stretch()
-            .border_b(hairline())
-            .border_color(theme.paint(Paint::Hairline))
-            .children(
-                titles
-                    .into_iter()
-                    .enumerate()
-                    .map(|(at, title)| Self::tab(theme, at, &title, at == active, cx)),
-            )
-    }
-
-    fn tab(
-                theme: &Theme,
-        at: usize,
-        title: &str,
-        active: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .id(ElementId::Name(SharedString::from(format!("tab-{at}"))))
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(space(Space::Tight))
-            .px(space(Space::Base))
-            .max_w(px(200.0))
-            .when(active, |tab| {
-                tab.bg(theme.paint(Paint::Panel))
-                    .border_b(px(2.0))
-                    .border_color(theme.paint(Paint::Gilt))
-            })
-            .hover(|style| style.bg(theme.paint(Paint::Hover)))
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| this.select_tab(at, cx)))
-            .on_aux_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
-                if event.is_middle_click() {
-                    this.document
-                        .update(cx, |document, cx| document.close(at, cx));
-                }
-            }))
-            .child(
-                text::single_line(if active {
-                    text::label(theme).font_weight(FontWeight::MEDIUM)
-                } else {
-                    text::dim(theme)
-                })
-                .child(title.to_owned()),
-            )
-            .child(
-                button::icon_button(theme, format!("tab-close-{at}"), crate::ui::icon::Icon::Close)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.document
-                            .update(cx, |document, cx| document.close(at, cx));
-                    })),
-            )
-            .into_any_element()
-    }
-
     fn reader_body(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.document.read(cx).is_empty() {
-            return self.first_run(theme, cx).into_any_element();
-        }
         let tab = self.document.read(cx).tab();
         let pending = tab.and_then(|tab| tab.pending().cloned());
         let scroll = tab.map_or_else(ScrollHandle::new, |tab| tab.scroll().clone());
-        let content = tab
-            .map_or(Content::Blank, |tab| tab.content().clone());
+        let content = tab.map_or(Content::Home, |tab| tab.content().clone());
+        let measure = match content {
+            Content::Home => HOME_MEASURE,
+            _ => MEASURE,
+        };
         let regions = self.content(theme, &content, cx);
         let reduced = theme.reduced_motion();
         let generation = self.document.read(cx).generation();
@@ -136,7 +61,7 @@ impl Workspace {
             .flex_1()
             .min_h(px(0.0))
             .w_full()
-            .max_w(px(MEASURE))
+            .max_w(px(measure))
             .mx_auto()
             .px(space(Space::Margin))
             .py(space(Space::Gutter))
@@ -165,10 +90,12 @@ impl Workspace {
     ) -> Vec<AnyElement> {
         match content {
             Content::Blank => vec![reserved(theme).into_any_element()],
+            Content::Home => vec![self.home_page(theme, cx)],
             Content::Page(page) => self.declaration_page(theme, page, cx),
             Content::Project { coordinate } => {
                 vec![self.project_page(theme, coordinate, cx).into_any_element()]
             }
+            Content::Package { coordinate } => vec![self.package_page(theme, coordinate, cx)],
             Content::Faulted(fault) => {
                 let actions = Self::affordances(theme, "reader", fault, "", cx);
                 vec![fault_ui::block(theme, fault, actions).into_any_element()]
@@ -218,11 +145,3 @@ fn loading_bar(theme: &Theme, identity: &Identity) -> Div {
         )
 }
 
-/// Returns where an option-click should open a link.
-pub(super) const fn modifier_target(alternate: bool) -> Target {
-    if alternate {
-        Target::Background
-    } else {
-        Target::Here
-    }
-}

@@ -84,6 +84,9 @@ impl ProductState {
                 let _ = (from, to);
                 return Err("semantic diff requires compiler publication authority".to_owned());
             }
+            SurfaceCommand::References { .. } => {
+                return Err("references require compiler publication authority".to_owned());
+            }
             SurfaceCommand::Explore { query, limit } => (
                 SurfaceReply::Explored(catalog_page(catalog, query.as_ref(), limit)),
                 false,

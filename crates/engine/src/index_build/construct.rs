@@ -8,14 +8,14 @@ use crate::index_build::{
     fact::{EntityFact, EntityProjection},
     initialized::{InitializationError, Initialized, try_initialize},
 };
-use backend_semantic::ir::{Atom, FragmentView, TypeNode};
-use backend_semantic::ir::{AtomId, EntityId, TypeId};
 use crate::publication::OpenedFragment;
 use crate::publication::manifest::StoredFragmentFacts;
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactRow, ExactSegment, LexicalRow, LexicalScore,
     LexicalSegment, MAX_EXACT_ROWS, MAX_LEXICAL_ROWS,
 };
+use backend_semantic::ir::{Atom, FragmentView, TypeNode};
+use backend_semantic::ir::{AtomId, EntityId, TypeId};
 
 mod semantic;
 

@@ -1,29 +1,34 @@
-//! The context panel: the current project's outline and a jump list.
-//! The declaration being read is highlighted and revealed, never hunted for.
-//! Ten thousand rows cost one screen of work, because the list is virtualized.
+//! The context panel: where the open declaration sits, and what sits around it.
+//! It appears only when a page is open, because with nothing open it has
+//! nothing true to say, and a panel that fills itself with a whole project
+//! to avoid being empty is answering a question nobody asked.
 //!
-//! This panel answers "where am I?" and nothing else. It is the only place in
-//! the window that shows the whole project at once, so it is a flat, dense,
-//! file-ordered list rather than a tree that must be unfolded — a reader
-//! scanning for a name should not have to guess which branch it is under.
+//! For a declaration the panel answers three questions in order: *where* is
+//! this (project, module, containing declarations), *what does it contain*,
+//! and *what sits beside it*. Modules are the spine — a file is a module, and
+//! it is named as one, `glyph` rather than `glyph.rs` — and the path itself
+//! lives on the page header and in the source sheet, where a path belongs.
+//! For a project the panel lists its modules, each with what it holds.
 //!
-//! Two things make it usable at ten thousand rows. The list is a
-//! `uniform_list`, so only the visible rows are built. And the row for the
-//! declaration being read is scrolled into view whenever it changes, so
-//! following a link from a signature moves the panel with the reader instead
-//! of leaving them to scroll for their own position.
+//! There is no "on this page" list. The page's own section heads are the
+//! table of contents, a screen away at most, and a second copy of them in a
+//! side panel was a list nobody used.
+//!
+//! Every list here is a `uniform_list`, so ten thousand siblings cost one
+//! screen of work, and the row for the declaration being read is scrolled
+//! into view whenever it changes.
 
 use super::workspace::Workspace;
-use crate::store::document::{Content, Target};
-use crate::store::shell::Side;
+use crate::store::document::{Subject, Target};
+use crate::store::index::{Entry, ProjectIndex, kind_rank};
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{
     Chrome, PanelWidth, Radius, Space, TypeScale, hairline, radius, space, type_size,
 };
+use crate::ui::tip::{Card, Tipped as _};
 use crate::ui::{button, glyph, surface, text};
-use backend_library::{DeclarationKind, RowId, SymbolKey};
-use backend_present::{Identity, IdentityKey};
+use backend_library::{DeclarationKind, SymbolKey};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, Context, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement,
@@ -31,13 +36,29 @@ use gpui::{
     uniform_list,
 };
 
-/// One row of the outline list.
-#[derive(Clone)]
-struct OutlineRow {
-    symbol: Option<SymbolKey>,
-    label: String,
-    kind: Option<DeclarationKind>,
-    file: bool,
+/// What one row of the panel is.
+#[derive(Clone, Debug)]
+enum Row {
+    /// A section head with its count.
+    Section {
+        title: &'static str,
+        count: usize,
+    },
+    /// The project the declaration lives in.
+    Project {
+        name: String,
+        coordinate: String,
+    },
+    /// One declaration: a module, an ancestor, a child, a sibling, or the current one.
+    Declaration {
+        symbol: SymbolKey,
+        name: String,
+        kind: Option<DeclarationKind>,
+        signature: Option<String>,
+        held: usize,
+        depth: usize,
+        current: bool,
+    },
 }
 
 impl Workspace {
@@ -48,12 +69,14 @@ impl Workspace {
         width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if width < 1.0 {
+            return div().into_any_element();
+        }
         if width < PanelWidth::MIN_CONTEXT {
             return Self::context_rail(theme, width, cx);
         }
-        let rows = self.outline_rows(cx);
-        let current = self.current_symbol(cx);
-        self.reveal_current(&rows, current);
+        let rows = self.context_rows(cx);
+        self.reveal_current(&rows);
         surface::panel(theme)
             .flex_none()
             .w(px(width))
@@ -63,16 +86,11 @@ impl Workspace {
             .border_color(theme.paint(Paint::Hairline))
             .flex()
             .flex_col()
-            .child(Self::context_head(theme, rows.len(), cx))
-            .child(self.outline_list(theme, rows, current, cx))
-            .child(self.jump_list(theme, cx))
+            .child(self.context_list(theme, rows, cx))
             .into_any_element()
     }
 
     fn context_rail(theme: &Theme, width: f32, cx: &mut Context<Self>) -> AnyElement {
-        if width < 1.0 {
-            return div().into_any_element();
-        }
         surface::panel(theme)
             .flex_none()
             .w(px(width))
@@ -87,73 +105,50 @@ impl Workspace {
             .child(
                 button::icon_button(theme, "expand-context", crate::ui::icon::Icon::ChevronLeft)
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.shell
-                            .update(cx, |shell, cx| shell.toggle_panel(Side::Context, cx));
+                        this.shell.update(cx, |shell, cx| {
+                            shell.toggle_panel(crate::store::shell::Side::Context, cx);
+                        });
                     })),
             )
             .into_any_element()
     }
 
-    fn context_head(
-                theme: &Theme,
-        count: usize,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(space(Space::Snug))
-            .px(space(Space::Base))
-            .py(space(Space::Snug))
-            .border_b(hairline())
-            .border_color(theme.paint(Paint::Hairline))
-            .child(
-                button::icon_button(theme, "collapse-context", crate::ui::icon::Icon::ChevronRight)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.shell
-                            .update(cx, |shell, cx| shell.toggle_panel(Side::Context, cx));
-                    })),
-            )
-            .child(
-                text::faint(theme)
-                    .flex_1()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("OUTLINE"),
-            )
-            .child(text::faint(theme).child(count.to_string()))
-    }
-
     /// Scrolls the row for the declaration being read into view.
-    fn reveal_current(&mut self, rows: &[OutlineRow], current: Option<SymbolKey>) {
-        let Some(current) = current else {
+    fn reveal_current(&mut self, rows: &[Row]) {
+        let current = rows.iter().position(|row| {
+            matches!(
+                row,
+                Row::Declaration {
+                    current: true,
+                    ..
+                }
+            )
+        });
+        let Some(at) = current else {
             return;
         };
-        if self.revealed == Some(current) {
+        let symbol = match rows.get(at) {
+            Some(Row::Declaration { symbol, .. }) => Some(*symbol),
+            _ => None,
+        };
+        if self.revealed == symbol {
             return;
         }
-        let Some(at) = rows
-            .iter()
-            .position(|row| !row.file && row.symbol == Some(current))
-        else {
-            return;
-        };
         self.outline_scroll.scroll_to_item(at, ScrollStrategy::Center);
-        self.revealed = Some(current);
+        self.revealed = symbol;
     }
 
-    fn outline_list(
+    fn context_list(
         &mut self,
         theme: &Theme,
-        rows: Vec<OutlineRow>,
-        current: Option<SymbolKey>,
+        rows: Vec<Row>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = theme.clone();
         let entity = cx.entity();
         let count = rows.len();
         div().flex_1().min_h(px(0.0)).child(
-            uniform_list("outline-rows", count, move |range, _window, _cx| {
+            uniform_list("context-rows", count, move |range, _window, _cx| {
                 let theme = theme.clone();
                 let entity = entity.clone();
                 rows.get(range.clone())
@@ -162,7 +157,7 @@ impl Workspace {
                     .enumerate()
                     .map(|(offset, row)| {
                         let at = range.start.saturating_add(offset);
-                        outline_row(&theme, &entity, at, row, current == row.symbol && !row.file)
+                        draw_row(&theme, &entity, at, row)
                     })
                     .collect()
             })
@@ -171,199 +166,223 @@ impl Workspace {
         )
     }
 
-    fn jump_list(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let sections = self.page_sections(cx);
-        div()
-            .flex_none()
-            .border_t(hairline())
-            .border_color(theme.paint(Paint::Hairline))
-            .px(space(Space::Base))
-            .py(space(Space::Snug))
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .child(
-                text::faint(theme)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("ON THIS PAGE"),
-            )
-            .when(sections.is_empty(), |list| {
-                list.child(text::faint(theme).child("Nothing open."))
-            })
-            .children(sections.into_iter().map(|(label, index)| {
-                div()
-                    .id(ElementId::Name(SharedString::from(format!(
-                        "jump-{index}"
-                    ))))
-                    .py(px(1.0))
-                    .px(space(Space::Tight))
-                    .rounded(radius(Radius::Hair))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme.paint(Paint::Hover)))
-                    .child(text::single_line(text::dim(theme)).child(label))
-                    .on_click(cx.listener(move |this, _, _, cx| this.jump_to(index, cx)))
-            }))
+    /// Returns whether the open page gives this panel anything to say.
+    pub(super) fn context_available(&self, cx: &Context<Self>) -> bool {
+        matches!(
+            self.document.read(cx).tab().and_then(super::super::store::document::Tab::subject),
+            Some(Subject::Declaration { .. } | Subject::Project { .. })
+        )
     }
 
-    /// Scrolls the reader to one region of the page it is showing.
-    fn jump_to(&mut self, index: usize, cx: &mut Context<Self>) {
-        let handle = self
+    fn context_rows(&self, cx: &Context<Self>) -> Vec<Row> {
+        let subject = self
             .document
             .read(cx)
             .tab()
-            .map(|tab| tab.scroll().clone());
-        if let Some(handle) = handle {
-            handle.scroll_to_item(index);
-            cx.notify();
+            .and_then(|tab| tab.subject().cloned());
+        let index = self.index.read(cx);
+        match subject {
+            Some(Subject::Declaration { symbol, .. }) => index
+                .project_of(symbol)
+                .map(|project| declaration_rows(project, symbol))
+                .unwrap_or_default(),
+            Some(Subject::Project { coordinate }) => index
+                .project(&coordinate)
+                .map(project_rows)
+                .unwrap_or_default(),
+            Some(Subject::Home | Subject::Package { .. }) | None => Vec::new(),
         }
-    }
-
-    /// Returns each listable region of the open page, with its child index.
-    ///
-    /// The indices come from [`super::page::regions`], which is the same list
-    /// the reader renders, so a jump can never land on the wrong section.
-    fn page_sections(&self, cx: &Context<Self>) -> Vec<(String, usize)> {
-        let Some(Content::Page(page)) = self.document.read(cx).tab().map(super::super::store::document::Tab::content)
-        else {
-            return Vec::new();
-        };
-        let offset = usize::from(
-            self.document
-                .read(cx)
-                .tab()
-                .is_some_and(|tab| tab.pending().is_some()),
-        );
-        super::page::regions(page)
-            .into_iter()
-            .enumerate()
-            .filter_map(|(at, region)| {
-                super::page::region_label(page, &region)
-                    .map(|label| (label, at.saturating_add(offset)))
-            })
-            .collect()
-    }
-
-    fn current_symbol(&self, cx: &Context<Self>) -> Option<SymbolKey> {
-        match self.document.read(cx).tab()?.subject()? {
-            crate::store::document::Subject::Declaration { symbol, .. } => Some(*symbol),
-            crate::store::document::Subject::Project { .. } => None,
-        }
-    }
-
-    fn outline_rows(&self, cx: &Context<Self>) -> Vec<OutlineRow> {
-        let Some(identity) = self.active_identity(cx) else {
-            return self.all_rows(cx);
-        };
-        let Some(project) = identity.project().map(|project| project.root().to_owned()) else {
-            return self.all_rows(cx);
-        };
-        let mut rows = Vec::new();
-        let mut file = String::new();
-        for row in self.engine.read(cx).declarations_in(&project) {
-            let RowId::Symbol(symbol) = row.id else {
-                continue;
-            };
-            let identity = Identity::parse_with_key(&row.label, IdentityKey::Symbol(symbol));
-            let path = identity
-                .path()
-                .map_or_else(String::new, |path| path.as_str().to_owned());
-            if path != file {
-                file.clone_from(&path);
-                rows.push(OutlineRow {
-                    symbol: None,
-                    label: path.clone(),
-                    kind: None,
-                    file: true,
-                });
-            }
-            rows.push(OutlineRow {
-                symbol: Some(symbol),
-                label: identity.name().to_owned(),
-                kind: row.kind,
-                file: false,
-            });
-        }
-        rows
-    }
-
-    fn all_rows(&self, cx: &Context<Self>) -> Vec<OutlineRow> {
-        self.engine
-            .read(cx)
-            .root()
-            .rows()
-            .iter()
-            .filter_map(|row| match row.id {
-                RowId::Symbol(symbol) => Some(OutlineRow {
-                    symbol: Some(symbol),
-                    label: Identity::parse(&row.label).name().to_owned(),
-                    kind: row.kind,
-                    file: false,
-                }),
-                RowId::Package(_) | RowId::Object(_) => None,
-            })
-            .collect()
     }
 }
 
-fn outline_row(
-    theme: &Theme,
-    entity: &gpui::Entity<Workspace>,
-    at: usize,
-    row: &OutlineRow,
-    current: bool,
-) -> AnyElement {
-    if row.file {
-        return file_header(theme, at, &row.label);
-    }
-    let Some(symbol) = row.symbol else {
-        return div().h(px(Chrome::OUTLINE_ROW)).into_any_element();
+/// Rows for one open declaration: where, contains, around.
+fn declaration_rows(project: &ProjectIndex, symbol: SymbolKey) -> Vec<Row> {
+    let Some(entry) = project.entry(symbol) else {
+        return Vec::new();
     };
-    let entity = entity.clone();
-    div()
-        .id(ElementId::Name(SharedString::from(format!("outline-{at}"))))
-        .h(px(Chrome::OUTLINE_ROW))
-        .flex()
-        .items_center()
-        .gap(space(Space::Tight))
-        .pl(space(Space::Loose))
-        .pr(space(Space::Snug))
-        .rounded(radius(Radius::Hair))
-        .when(current, |row| row.bg(theme.paint(Paint::Selected)))
-        .hover(|style| style.bg(theme.paint(Paint::Hover)))
-        .cursor_pointer()
-        .on_click(move |_, _window: &mut Window, cx| {
-            entity.update(cx, |workspace, cx| {
-                workspace.open_symbol(symbol, Target::Here, cx);
-            });
-        })
-        .child(glyph::kind_tile(theme, row.kind, false))
-        .child(
-            text::single_line(if current {
-                text::label(theme).font_weight(FontWeight::MEDIUM)
-            } else {
-                text::dim(theme)
-            })
-            .flex_1()
-            .min_w(px(0.0))
-            .child(row.label.clone()),
-        )
-        .into_any_element()
+    let ancestors = project.ancestors(symbol);
+    let mut rows = Vec::with_capacity(ancestors.len().saturating_add(8));
+    rows.push(Row::Section {
+        title: "WHERE",
+        count: 0,
+    });
+    rows.push(Row::Project {
+        name: project_name(project.root()),
+        coordinate: project.root().to_owned(),
+    });
+    for (depth, ancestor) in ancestors.iter().enumerate() {
+        rows.push(declaration_row(project, ancestor, depth.saturating_add(1), false));
+    }
+    rows.push(declaration_row(project, entry, ancestors.len().saturating_add(1), true));
+    push_group(project, &mut rows, "CONTAINS", &sorted(project.children_of(symbol).collect()));
+    push_group(project, &mut rows, "AROUND", &sorted(project.around(symbol)));
+    rows
 }
 
-fn file_header(theme: &Theme, at: usize, path: &str) -> AnyElement {
+/// Rows for one open project: its modules, each with what it holds.
+fn project_rows(project: &ProjectIndex) -> Vec<Row> {
+    let modules: Vec<&Entry> = project.modules().collect();
+    let mut rows = Vec::with_capacity(modules.len().saturating_add(1));
+    rows.push(Row::Section {
+        title: "MODULES",
+        count: modules.len(),
+    });
+    rows.extend(
+        modules
+            .iter()
+            .map(|module| declaration_row(project, module, 0, false)),
+    );
+    rows
+}
+
+fn push_group(project: &ProjectIndex, rows: &mut Vec<Row>, title: &'static str, entries: &[&Entry]) {
+    if entries.is_empty() {
+        return;
+    }
+    rows.push(Row::Section {
+        title,
+        count: entries.len(),
+    });
+    rows.extend(
+        entries
+            .iter()
+            .map(|entry| declaration_row(project, entry, 0, false)),
+    );
+}
+
+fn sorted(mut entries: Vec<&Entry>) -> Vec<&Entry> {
+    entries.sort_by(|left, right| {
+        kind_rank(left.kind())
+            .cmp(&kind_rank(right.kind()))
+            .then_with(|| left.name().cmp(right.name()))
+    });
+    entries
+}
+
+fn declaration_row(project: &ProjectIndex, entry: &Entry, depth: usize, current: bool) -> Row {
+    Row::Declaration {
+        symbol: entry.symbol(),
+        name: entry.name().to_owned(),
+        kind: entry.kind(),
+        signature: entry.signature().map(ToOwned::to_owned),
+        held: project.children_of(entry.symbol()).count(),
+        depth,
+        current,
+    }
+}
+
+fn project_name(root: &str) -> String {
+    backend_present::Identity::parse(root).name().to_owned()
+}
+
+fn draw_row(theme: &Theme, entity: &gpui::Entity<Workspace>, at: usize, row: &Row) -> AnyElement {
+    match row {
+        Row::Section { title, count } => div()
+            .h(px(Chrome::OUTLINE_ROW))
+            .px(space(Space::Snug))
+            .pt(space(Space::Tight))
+            .child(section_head(theme, title, (*count > 0).then_some(*count)))
+            .into_any_element(),
+        Row::Project { name, coordinate } => {
+            let opened = coordinate.clone();
+            let entity = entity.clone();
+            base_row(theme, at, 0, false)
+                .on_click(move |_, _window: &mut Window, cx| {
+                    entity.update(cx, |workspace, cx| workspace.open_project(opened.clone(), cx));
+                })
+                .card(Card::new(name.clone(), None).site(coordinate.clone()))
+                .child(glyph::package_tile(theme, false))
+                .child(name_text(theme, name, false))
+                .into_any_element()
+        }
+        Row::Declaration {
+            symbol,
+            name,
+            kind,
+            signature,
+            held,
+            depth,
+            current,
+        } => {
+            let symbol = *symbol;
+            let entity = entity.clone();
+            let card = Card::new(name.clone(), *kind)
+                .signature(signature.clone().unwrap_or_default());
+            base_row(theme, at, *depth, *current)
+                .when(!current, |row| {
+                    row.on_click(move |event: &gpui::ClickEvent, _window: &mut Window, cx| {
+                        let target = crate::store::document::modifier_target(event.modifiers());
+                        entity.update(cx, |workspace, cx| workspace.open_symbol(symbol, target, cx));
+                    })
+                    .card(card)
+                })
+                .child(glyph::kind_mark(theme, *kind, 12.0))
+                .child(name_text(theme, name, *current))
+                .when(*held > 0 && !current, |row| {
+                    row.child(text::faint(theme).flex_none().child(held.to_string()))
+                })
+                .into_any_element()
+        }
+    }
+}
+
+fn base_row(theme: &Theme, at: usize, depth: usize, current: bool) -> gpui::Stateful<gpui::Div> {
+    let indent = px(12.0 * u8::try_from(depth.min(8)).map_or(8.0, f32::from));
     div()
-        .id(ElementId::Name(SharedString::from(format!(
-            "outline-file-{at}"
-        ))))
+        .id(ElementId::Name(SharedString::from(format!("context-{at}"))))
         .h(px(Chrome::OUTLINE_ROW))
+        .mx(space(Space::Tight))
+        .pl(space(Space::Snug))
+        .pr(space(Space::Snug))
+        .ml(indent)
         .flex()
         .items_center()
-        .px(space(Space::Base))
+        .gap(space(Space::Snug))
+        .rounded(radius(Radius::Small))
+        .when(current, |row| row.bg(theme.paint(Paint::Selected)))
+        .when(!current, |row| {
+            row.cursor_pointer()
+                .hover(|style| style.bg(theme.paint(Paint::Hover)))
+        })
+}
+
+fn name_text(theme: &Theme, name: &str, current: bool) -> gpui::Div {
+    text::single_line(if current {
+        text::label(theme)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.paint(Paint::TextStrong))
+    } else {
+        text::dim(theme).text_size(type_size(TypeScale::Interface))
+    })
+    .flex_1()
+    .min_w(px(0.0))
+    .child(name.to_owned())
+}
+
+fn section_head(theme: &Theme, title: &str, count: Option<usize>) -> gpui::Div {
+    div()
+        .w_full()
+        .flex()
+        .items_center()
+        .gap(space(Space::Snug))
         .child(
-            text::single_line(text::faint(theme))
-                .font_family(theme.specimen())
-                .text_size(type_size(TypeScale::Micro))
-                .child(text::elide(path, 34).to_string()),
+            text::faint(theme)
+                .flex_none()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title.to_owned()),
         )
-        .into_any_element()
+        .when_some(count, |head, count| {
+            head.child(text::faint(theme).flex_none().child(count.to_string()))
+        })
+        .child(
+            div()
+                .flex_1()
+                .h(hairline())
+                .bg(theme.paint(Paint::Hairline)),
+        )
+}
+
+/// Returns where a click with these modifiers should open a link.
+pub(super) fn click_target(event: &gpui::ClickEvent) -> Target {
+    crate::store::document::modifier_target(event.modifiers())
 }

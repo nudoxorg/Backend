@@ -461,12 +461,14 @@ fn children<'a>(
     Ok(result)
 }
 
-/// The shared profile entry keeps trunk's typed terminal for a source with
-/// zero supported declarations; the lane's database entry admits empty
-/// translation units (asserted in clang_lifecycle.rs), which is the surface
-/// the whole-TU lifecycle publishes through.
+/// The shared profile entry lowers an empty translation unit to the same
+/// zero-declaration product its authority proves: libclang accepts an empty
+/// C source, so the empty fragment is the honest parity output. The lane's
+/// database entry admits empty translation units (asserted in
+/// clang_lifecycle.rs), which is the surface the whole-TU lifecycle
+/// publishes through.
 #[test]
-fn empty_source_is_a_typed_no_declaration_terminal() -> Result<(), TestError> {
+fn empty_source_lowers_to_the_authority_empty_product() -> Result<(), TestError> {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| TestError::Check("clock before epoch"))?
@@ -489,11 +491,14 @@ fn empty_source_is_a_typed_no_declaration_terminal() -> Result<(), TestError> {
     }
     removed.map_err(|_| TestError::Check("remove native work"))?;
     match outcome {
-        Err(TestError::Lowering(
-            backend_semantic::vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-        )) => Ok(()),
+        // An empty translation unit is legal C and the authority proves zero
+        // declarations for it, so the honest product is the empty fragment —
+        // the same zero-declaration package the authority saw. The old
+        // typed `NoSupportedDeclaration` rejection contradicted an authority
+        // that succeeded (the `jemalloc` audit row's feature-gated sibling
+        // shape).
+        Ok(_) => Ok(()),
         Err(other) => Err(other),
-        Ok(_) => Err(TestError::Check("empty source was admitted as a fragment")),
     }
 }
 
@@ -1479,3 +1484,4 @@ fn admission_fault_names_its_cause_on_the_database_path() -> Result<(), TestErro
     }
     std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))
 }
+

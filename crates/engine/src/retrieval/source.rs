@@ -1,13 +1,13 @@
 //! Source provenance for disposable Tantivy membership hits.
 
+use backend_extension_tantivy::server::{TantivyProvenance, TantivySegmentHit};
+use backend_extension_trustfall::server::{OccurrenceSourceEvidence, SemanticOccurrenceHit};
+use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId};
+use backend_semantic::index_vocabulary::{IndexSnapshotId, VerifiedSemanticPublication};
 use backend_semantic::ir::{
     LinkId, LinkOccurrenceId, SemanticCoreReader, SemanticImageIdentity, SemanticImageView,
     SemanticReader, SourceSpan,
 };
-use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId};
-use backend_extension_tantivy::server::{TantivyProvenance, TantivySegmentHit};
-use backend_extension_trustfall::server::{OccurrenceSourceEvidence, SemanticOccurrenceHit};
-use backend_semantic::index_vocabulary::{IndexSnapshotId, VerifiedSemanticPublication};
 
 /// A source location proved against one reopened canonical semantic image.
 ///

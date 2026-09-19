@@ -4,18 +4,22 @@
 //! Keeps TypeScript syntax and lexical authority in-process beside the configured checker.
 //! Contains no token reconstruction, fallback collector, or declaration guessing.
 
+use std::collections::HashMap;
+
+use sha2::{Digest, Sha256};
+
+use backend_frontend_typescript::legacy::{
+    AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan,
+    MappedModifier as CheckerMappedModifier, NodeId, Origin, OxcModule, ReferenceFlags, Semantic,
+    Span, SymbolFlags, SymbolId, SyntaxMappedModifier, TemplatePart, TypeTree, Utf8Span,
+    syntax_mapped_modifier, with_analysis, with_analysis_declaration,
+};
 use backend_semantic::ir::{
     AnnotationKind, AnonRecordForm, DocFragmentInput, DocLinkTarget, EntityId, EntityKind,
     ExternalEntityRef, ExternalFragmentId, ForeignKey, ForeignOrigin, LatticeMappedModifier,
     NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PackageLineage, PrimitiveShape,
     ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeChild,
     SemanticTypeRecord, SemanticTypeTag, TypeId, TypeParameterListId, TypeReason, TypeWidth,
-};
-use backend_frontend_typescript::legacy::{
-    AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan,
-    MappedModifier as CheckerMappedModifier, NodeId, Origin, ReferenceFlags, Semantic, Span,
-    SymbolFlags, SymbolId, SyntaxMappedModifier, TemplatePart, TypeTree, Utf8Span,
-    syntax_mapped_modifier, with_analysis,
 };
 use backend_semantic::vocabulary::{
     ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
@@ -25,14 +29,18 @@ use backend_semantic::vocabulary::{
 use crate::driver::{
     lower::{
         COMPUTED_ROW_BASE, EmissionExtension, FactSet, FactTypeChild, LEAF_PRODUCT,
-        MAX_EMISSION_FACTS, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN, SemanticFact, push_fact,
+        MAX_EMISSION_FACTS, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN, SemanticFact, StagedSourceSpan,
+        push_fact,
     },
     types::{FactFault, FactRejection, LoweringUnsupported},
 };
 
 /// Bound of one declaration's staged type-parameter rows; a source with more
-/// generic parameters on one declaration is a typed lane rejection.
-const MAX_DECL_TYPE_PARAMETERS: usize = 16;
+/// generic parameters on one declaration is a typed lane rejection. Real
+/// declaration files carry wide overload signatures (Hono's handler interface
+/// and Remeda's combinators exceed the former 16-row bound), so the staged
+/// bound must admit every declared generic the pooled lane can hold.
+const MAX_DECL_TYPE_PARAMETERS: usize = 64;
 /// Recursion bound for type-expression lowering; deeper expressions are
 /// honestly unknown with [`TypeReason::TruncatedAtDepthLimit`].
 const MAX_TYPE_DEPTH: u8 = 24;
@@ -79,12 +87,17 @@ fn fault(cause: FactFault) -> TypeScriptCollectError {
 }
 
 /// Retains one foreign-key grammar fault across the portable terminal.
-fn foreign_fault(cause: backend_semantic::ir::ForeignKeyFault, span: Span) -> TypeScriptCollectError {
+fn foreign_fault(
+    cause: backend_semantic::ir::ForeignKeyFault,
+    span: Span,
+) -> TypeScriptCollectError {
     TypeScriptCollectError::Projection(TypeScriptProjectionFault::ForeignKey {
         start: span.start,
         end: span.end,
         cause: match cause {
-            backend_semantic::ir::ForeignKeyFault::EmptyPath => ProjectionForeignKeyFault::EmptyPath,
+            backend_semantic::ir::ForeignKeyFault::EmptyPath => {
+                ProjectionForeignKeyFault::EmptyPath
+            }
             backend_semantic::ir::ForeignKeyFault::BackslashInPath => {
                 ProjectionForeignKeyFault::BackslashInPath
             }
@@ -93,7 +106,10 @@ fn foreign_fault(cause: backend_semantic::ir::ForeignKeyFault, span: Span) -> Ty
 }
 
 /// Retains the exact rejected component of an import-module package lineage.
-fn lineage_fault(cause: backend_semantic::ir::PackageLineageFault, span: Span) -> TypeScriptCollectError {
+fn lineage_fault(
+    cause: backend_semantic::ir::PackageLineageFault,
+    span: Span,
+) -> TypeScriptCollectError {
     TypeScriptCollectError::Projection(TypeScriptProjectionFault::PackageLineage {
         start: span.start,
         end: span.end,
@@ -121,6 +137,44 @@ fn lineage_fault(cause: backend_semantic::ir::PackageLineageFault, span: Span) -
             }
         },
     })
+}
+
+/// Validates one import-module specifier as a package lineage.
+///
+/// The lineage grammar reserves `:` as the `ecosystem:name` render separator,
+/// but Node builtins and other scheme-qualified specifiers (`node:stream`,
+/// `bun:test`) declare the scheme *inside* the specifier. Splitting the scheme
+/// into the ecosystem keeps the exact module spelling without erasing it, and a
+/// bare specifier stays an npm package.
+fn package_lineage_for_module(
+    module: &str,
+) -> Result<PackageLineage<'_>, backend_semantic::ir::PackageLineageFault> {
+    if let Some((scheme, rest)) = module.split_once(':')
+        && !scheme.is_empty()
+        && !rest.is_empty()
+    {
+        return PackageLineage::new(scheme, rest);
+    }
+    PackageLineage::new(NPM_ECOSYSTEM, module)
+}
+
+/// Whether one fact kind lexically owns nested declarations in TypeScript.
+/// Classes, interfaces, namespaces, enums, functions, aliases, and
+/// variable/field declarations all introduce a scope a nested name can live in.
+const fn ts_lexical_owner(kind: EntityKind) -> bool {
+    matches!(
+        kind,
+        EntityKind::Function
+            | EntityKind::Record
+            | EntityKind::Trait
+            | EntityKind::Enum
+            | EntityKind::Module
+            | EntityKind::Alias
+            | EntityKind::Field
+            | EntityKind::Constant
+            | EntityKind::Static
+            | EntityKind::Variant
+    )
 }
 
 fn computed_fault<'source>(
@@ -409,6 +463,33 @@ struct Projector<'x, 'report, 'source> {
     /// Pooled type-parameter start per pushed fact, retained so the checker
     /// pass can re-attach a completed extension with the computed cell.
     extension_type_parameters: Box<[u32]>,
+    /// Every object-literal member fact in push order. Lowering stages each
+    /// member before its embodying fact exists, so claim sites bind staged
+    /// suffixes to the embodiment they just pushed.
+    staged_members: Vec<u32>,
+    /// Claimed embodiment per member fact (`UNSET` when the span-containment
+    /// parent stands). Indexed by fact ordinal.
+    member_parents: Box<[u32]>,
+    /// Source span of every synthetic type-expression fact (`UNSET` otherwise).
+    /// Synthetic facts register no declaration span, but span containment still
+    /// binds them to the innermost enclosing declaration: identical anonymous
+    /// spellings under distinct owners must not share a parentless family.
+    synthetic_starts: Box<[u32]>,
+    synthetic_ends: Box<[u32]>,
+    /// Registered fact ordinals per exact binding-name bytes. Declaration
+    /// merge checks consult only same-name facts instead of rescanning the
+    /// whole lane, keeping the reducer linear in duplicate density.
+    facts_by_name: HashMap<&'source [u8], Vec<u32>>,
+    /// First registered fact ordinal per binding-name span start.
+    fact_at_name: HashMap<u32, u32>,
+    /// Synthetic (unregistered) type-expression facts per exact spelling,
+    /// consulted only for hash-consing an identical anonymous embodiment.
+    synthetic_by_name: HashMap<&'source [u8], Vec<u32>>,
+    /// Registered declaring facts sorted by `(start asc, end desc)` with each
+    /// entry's nearest enclosing entry, built once facts are stable so
+    /// position queries are logarithmic instead of a full rescan.
+    owner_index: Vec<(u32, u32, u32)>,
+    owner_ancestor: Vec<Option<usize>>,
 }
 
 /// The immutable registration view one computed lowering needs: the source
@@ -482,11 +563,28 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     }
 
     /// Registers one pushed fact's declaring span, binding-name span, and
-    /// kind so references and links can resolve to its ordinal.
-    fn register(&mut self, fact: u32, declaration: Span, name: Span, kind: EntityKind) {
+    /// kind so references and links can resolve to its ordinal, and binds
+    /// the declaring span as the fact's authority-backed provenance span:
+    /// it is the exact basis every later owner-relative occurrence span is
+    /// measured against, so the shared containment law holds by
+    /// construction.
+    fn register(
+        &mut self,
+        fact: u32,
+        declaration: Span,
+        name: Span,
+        kind: EntityKind,
+    ) -> Result<(), TypeScriptCollectError> {
         let Some(index) = usize::try_from(fact).ok() else {
-            return;
+            return Ok(());
         };
+        let staged = StagedSourceSpan::new(declaration.start, declaration.end).ok_or(
+            TypeScriptCollectError::Span {
+                start: declaration.start,
+                end: declaration.end,
+            },
+        )?;
+        self.facts.attach_source_span(fact, staged).map_err(fault)?;
         if let Some(slot) = self.name_starts.get_mut(index) {
             *slot = name.start;
         }
@@ -502,45 +600,65 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         if let Some(slot) = self.fact_kinds.get_mut(index) {
             *slot = kind;
         }
+        if let Some(bytes) = self.slice_span(name) {
+            self.facts_by_name.entry(bytes).or_default().push(fact);
+        }
+        self.fact_at_name.entry(name.start).or_insert(fact);
+        Ok(())
     }
 
     /// Resolves one source position to the fact whose binding name starts
     /// exactly there.
     fn fact_at_name_start(&self, start: u32) -> Option<u32> {
-        let length = coordinate(self.facts.len()).ok()?;
-        for ordinal in 0..length {
-            let index = usize::try_from(ordinal).ok()?;
-            if self.name_starts.get(index) == Some(&start) {
-                return Some(ordinal);
-            }
-        }
-        None
+        self.fact_at_name.get(&start).copied()
     }
 
     /// Resolves one source position to the innermost pushed fact whose
     /// declaring span contains it.
     fn owning_fact(&self, position: u32) -> Option<u32> {
-        let length = coordinate(self.facts.len()).ok()?;
-        let mut best: Option<(u32, u32)> = None;
-        for ordinal in 0..length {
-            let index = usize::try_from(ordinal).ok()?;
-            let start = *self.decl_starts.get(index)?;
-            let end = *self.decl_ends.get(index)?;
-            if start != UNSET
-                && end != UNSET
-                && start <= position
-                && position < end
-                && best.is_none_or(|(known, _)| start >= known)
-            {
-                best = Some((start, ordinal));
+        if self.owner_index.is_empty() {
+            let length = coordinate(self.facts.len()).ok()?;
+            let mut best: Option<(u32, u32)> = None;
+            for ordinal in 0..length {
+                let index = usize::try_from(ordinal).ok()?;
+                let start = *self.decl_starts.get(index)?;
+                let end = *self.decl_ends.get(index)?;
+                if start != UNSET
+                    && end != UNSET
+                    && start <= position
+                    && position < end
+                    && best.is_none_or(|(known, _)| start >= known)
+                {
+                    best = Some((start, ordinal));
+                }
+            }
+            return best.map(|(_, ordinal)| ordinal);
+        }
+        let idx = self
+            .owner_index
+            .partition_point(|(start, _, _)| *start <= position);
+        let mut cursor = idx.checked_sub(1)?;
+        loop {
+            let (start, end, ordinal) = *self.owner_index.get(cursor)?;
+            if start <= position && position < end {
+                return Some(ordinal);
+            }
+            match self.owner_ancestor.get(cursor).copied().flatten() {
+                Some(parent) if parent < cursor => cursor = parent,
+                _ => return None,
             }
         }
-        best.map(|(_, ordinal)| ordinal)
     }
 
     /// Resolves the first pushed fact whose declaring span starts at or after
     /// `position` — the natural owner of a JSDoc block ending there.
     fn next_fact_after(&self, position: u32) -> Option<u32> {
+        if !self.owner_index.is_empty() {
+            let idx = self
+                .owner_index
+                .partition_point(|(start, _, _)| *start < position);
+            return self.owner_index.get(idx).map(|(_, _, ordinal)| *ordinal);
+        }
         let length = coordinate(self.facts.len()).ok()?;
         let mut best: Option<(u32, u32)> = None;
         for ordinal in 0..length {
@@ -553,19 +671,69 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         best.map(|(_, ordinal)| ordinal)
     }
 
+    /// Builds the declaring-fact interval index once every declaration row is
+    /// final. Entries nest or stay disjoint, so a nearest-enclosing stack
+    /// gives each entry's ancestor and makes position queries logarithmic.
+    fn build_owner_index(&mut self) {
+        let length = self.facts.len;
+        let mut entries: Vec<(u32, u32, u32)> = Vec::with_capacity(length);
+        for index in 0..length {
+            let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+            if start != UNSET && end != UNSET {
+                entries.push((start, end, coordinate(index).unwrap_or(UNSET)));
+            }
+        }
+        entries.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(right.1.cmp(&left.1)));
+        let mut ancestor = vec![None; entries.len()];
+        let mut stack: Vec<usize> = Vec::new();
+        for index in 0..entries.len() {
+            let start = entries[index].0;
+            while let Some(&top) = stack.last() {
+                if entries[top].1 <= start {
+                    stack.pop();
+                } else {
+                    break;
+                }
+            }
+            ancestor[index] = stack.last().copied();
+            stack.push(index);
+        }
+        self.owner_index = entries;
+        self.owner_ancestor = ancestor;
+    }
+
+    /// Binds every still-unclaimed member staged since `base` to the
+    /// just-pushed embodiment `embodiment`. Members of nested literals were
+    /// already claimed to their own embodiments while their literal lowered,
+    /// so the skip keeps each member with its innermost embodiment and the
+    /// outer claim binds only the members this embodiment directly owns.
+    fn claim_staged_members(&mut self, base: usize, embodiment: u32) {
+        let staged = self.staged_members.len();
+        for position in base..staged {
+            let Some(member) = self.staged_members.get(position).copied() else {
+                continue;
+            };
+            if member == embodiment {
+                continue;
+            }
+            let Some(index) = usize::try_from(member).ok() else {
+                continue;
+            };
+            if let Some(slot) = self.member_parents.get_mut(index) {
+                if *slot == UNSET {
+                    *slot = embodiment;
+                }
+            }
+        }
+    }
+
     /// Resolves the first pushed fact whose exact binding-name bytes equal
     /// `name`.
     fn fact_by_name_bytes(&self, name: &[u8]) -> Option<u32> {
-        let length = coordinate(self.facts.len()).ok()?;
-        for ordinal in 0..length {
-            let index = usize::try_from(ordinal).ok()?;
-            let start = usize::try_from(*self.name_starts.get(index)?).ok()?;
-            let end = usize::try_from(*self.name_ends.get(index)?).ok()?;
-            if self.source.as_bytes().get(start..end) == Some(name) {
-                return Some(ordinal);
-            }
-        }
-        None
+        self.facts_by_name
+            .get(name)
+            .and_then(|facts| facts.first().copied())
     }
 
     /// Widens the leading identifier of the name starting at `start` and
@@ -591,12 +759,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     fn local_fact_at(&self, start: u32) -> Option<u32> {
         let scoping = self.semantic.scoping();
         let nodes = self.semantic.nodes();
-        for node in nodes.iter() {
-            let kind = node.kind();
-            if kind.span().start != start {
-                continue;
+        let first = self
+            .node_index
+            .partition_point(|(span, _)| span.start < start);
+        for (span, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if span.start != start {
+                break;
             }
-            let Some(identifier) = kind.as_identifier_reference() else {
+            let Some(identifier) = nodes.get_node(*node_id).kind().as_identifier_reference() else {
                 continue;
             };
             let Some(reference_id) = identifier.reference_id.get() else {
@@ -616,24 +786,30 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// enclosing call or construction expression.
     fn is_call_position(&self, span: Span) -> bool {
         let nodes = self.semantic.nodes();
-        let mut found = false;
-        for node in nodes.iter() {
-            let kind = node.kind();
-            if kind.span() != span || kind.as_identifier_reference().is_none() {
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) < (span.start, span.end));
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if (known.start, known.end) != (span.start, span.end) {
+                break;
+            }
+            let node = nodes.get_node(*node_id);
+            if node.kind().as_identifier_reference().is_none() {
                 continue;
             }
             let parent = nodes.get_node(nodes.parent_id(node.id())).kind();
             if let Some(call) = parent.as_call_expression()
                 && call.callee.span() == span
             {
-                found = true;
-            } else if let Some(construction) = parent.as_new_expression()
+                return true;
+            }
+            if let Some(construction) = parent.as_new_expression()
                 && construction.callee.span() == span
             {
-                found = true;
+                return true;
             }
         }
-        found
+        false
     }
 
     /// Pushes one fact per staged generic parameter so uses of the parameter
@@ -659,7 +835,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 .typed(record)
                 .with_extension(extension);
             let ordinal = self.push(fact)?;
-            self.register(ordinal, row.name, row.name, EntityKind::Parameter);
+            self.register(ordinal, row.name, row.name, EntityKind::Parameter)?;
         }
         Ok(())
     }
@@ -710,6 +886,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     end: row.name.end,
                 })?;
             let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+            let member_base = self.staged_members.len();
             let cells = match row.annotation {
                 Some(span) => self.owner_cells(span.start, span.end, 0)?,
                 None => TypeCells::unknown(TypeReason::Unannotated),
@@ -721,7 +898,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 cells,
             );
             let ordinal = self.push(fact)?;
-            self.register(ordinal, row.name, row.name, EntityKind::Parameter);
+            self.register(ordinal, row.name, row.name, EntityKind::Parameter)?;
+            self.claim_staged_members(member_base, ordinal);
             if let Some(slot) = ordinals.get_mut(index) {
                 *slot = ordinal;
             }
@@ -743,6 +921,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         rows: &TypeParamRows,
         params: &ParamRows,
         result: Option<Span>,
+        static_member: bool,
     ) -> Result<u32, TypeScriptCollectError> {
         self.push_type_parameter_facts(rows)?;
         let type_parameter_start = self.push_type_params(rows, 0)?;
@@ -761,6 +940,17 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         if result_target.is_some() {
             record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         }
+        // A trailing `...args` parameter is a typed variadic tail, never a
+        // fixed parameter. The lane's child grammar admits the rest marker
+        // only under the typed-last variadic form, so the record must declare
+        // it exactly when the final parameter carries it.
+        if params
+            .iter()
+            .last()
+            .is_some_and(|parameter| parameter.flags & SemanticTypeChild::FLAG_REST != 0)
+        {
+            record.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
+        }
         let extension = self.extension(type_parameter_start)?;
         let mut fact = SemanticFact::new(
             EntityKind::Function,
@@ -769,6 +959,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         )
         .typed(record)
         .with_extension(extension);
+        if static_member {
+            fact = fact.static_member();
+        }
         for (ordinal, parameter) in param_ordinals.iter().zip(params.iter()) {
             fact = fact.child(ProductChildRole::FunctionParameter, *ordinal);
             fact = fact.type_child(*ordinal, None, parameter.flags);
@@ -777,9 +970,292 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             fact = fact.child(ProductChildRole::FunctionResult, target);
             fact = fact.type_child(target, None, 0);
         }
+        // Real declaration files legally repeat one overload signature word
+        // for word (`es-toolkit`'s `partialRight.d.ts` does), and the checker
+        // reports every spelled declaration. Such twins share name, owner,
+        // record, and every child shape, so the flattened identity build would
+        // raise its duplicate terminal. The count of already-committed
+        // structurally identical siblings is authority-proven source order,
+        // so the twin count enters as the identity discriminator exactly when
+        // it is nonzero, and every non-twin overload frames no new bytes.
+        let twins = self.indistinguishable_signature_twins(declaration, &fact);
+        if twins > 0 {
+            let mut hash = Sha256::new();
+            hash.update(b"compiler.typescript.signature-twin.v1\0");
+            hash.update(twins.to_le_bytes());
+            let mut discriminator = [0_u8; 16];
+            discriminator.copy_from_slice(&hash.finalize()[..16]);
+            fact = fact.with_identity_discriminator(discriminator);
+        }
         let ordinal = self.push(fact)?;
-        self.register(ordinal, declaration, name, EntityKind::Function);
+        self.register(ordinal, declaration, name, EntityKind::Function)?;
         Ok(ordinal)
+    }
+
+    /// Counts already-committed same-kind, same-name, same-owner signatures
+    /// whose full structural frame is byte-identical to `fact`. Two overloads
+    /// that differ in any committed shape never match; two word-for-word
+    /// repeated overload declarations always do.
+    fn indistinguishable_signature_twins(
+        &self,
+        declaration: Span,
+        fact: &SemanticFact<'source>,
+    ) -> u32 {
+        let candidates = self
+            .facts_by_name
+            .get(fact.name)
+            .cloned()
+            .unwrap_or_default();
+        if candidates.is_empty() {
+            return 0;
+        }
+        let owner = self.enclosing_registered_owner(declaration.start, None);
+        let mut twins = 0_u32;
+        for ordinal in candidates {
+            let Some(index) = usize::try_from(ordinal).ok() else {
+                continue;
+            };
+            if self.fact_kinds.get(index).copied() != Some(fact.kind) {
+                continue;
+            }
+            if self.facts.static_members.get(index).copied() != Some(fact.static_member) {
+                continue;
+            }
+            let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            if decl_start == UNSET {
+                continue;
+            }
+            if self.enclosing_registered_owner(decl_start, Some(ordinal)) != owner {
+                continue;
+            }
+            if self.committed_frame_matches(index, fact, MAX_TYPE_DEPTH) {
+                twins += 1;
+            }
+        }
+        twins
+    }
+
+    /// Compares one committed row against a staged fact frame: the declared
+    /// record with its nominal cell compared by target, the ordered type
+    /// children, and the ordered role-bearing product children.
+    fn committed_frame_matches(
+        &self,
+        index: usize,
+        fact: &SemanticFact<'source>,
+        depth: u8,
+    ) -> bool {
+        if depth == 0 {
+            return false;
+        }
+        if self.facts.constructors.get(index).copied() != Some(fact.constructor) {
+            return false;
+        }
+        let Some(committed) = self.facts.type_records.get(index) else {
+            return false;
+        };
+        if !self.record_cells_match(committed, &fact.type_record) {
+            return false;
+        }
+        let nominal_match = match (committed.nominal, fact.type_record.nominal) {
+            (None, None) => true,
+            (Some(NominalRef::Local(left)), Some(NominalRef::Local(right))) => {
+                self.targets_match(left.raw, right.raw, depth - 1)
+            }
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        };
+        if !nominal_match {
+            return false;
+        }
+        let committed_count = usize::from(
+            self.facts
+                .type_child_counts
+                .get(index)
+                .copied()
+                .unwrap_or(0),
+        );
+        if committed_count != usize::from(fact.type_child_count) {
+            return false;
+        }
+        let committed_start = self
+            .facts
+            .type_child_starts
+            .get(index)
+            .copied()
+            .unwrap_or(0) as usize;
+        for position in 0..committed_count {
+            let at = committed_start + position;
+            if self.facts.type_child_names.get(at) != Some(&fact.type_children[position].name)
+                || self.facts.type_child_flags.get(at) != Some(&fact.type_children[position].flags)
+                || !self.targets_match(
+                    self.facts
+                        .type_child_targets
+                        .get(at)
+                        .copied()
+                        .unwrap_or(u32::MAX),
+                    fact.type_children[position].target,
+                    depth - 1,
+                )
+            {
+                return false;
+            }
+        }
+        let committed_children =
+            usize::from(self.facts.child_counts.get(index).copied().unwrap_or(0));
+        if committed_children != usize::from(fact.child_count) {
+            return false;
+        }
+        let child_start = self.facts.child_starts.get(index).copied().unwrap_or(0) as usize;
+        for position in 0..committed_children {
+            let at = child_start + position;
+            if self.facts.child_roles.get(at).copied() != Some(fact.children[position].role)
+                || !self.targets_match(
+                    self.facts
+                        .child_targets
+                        .get(at)
+                        .copied()
+                        .unwrap_or(u32::MAX),
+                    fact.children[position].target,
+                    depth - 1,
+                )
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Compares two committed rows structurally: the record cells, then the
+    /// recursive child frames. Distinct ordinals for genuinely identical
+    /// shapes (staging artifacts of repeated lowering) still compare equal.
+    fn committed_rows_match(&self, left: u32, right: u32, depth: u8) -> bool {
+        if left == right {
+            return true;
+        }
+        if depth == 0 {
+            return false;
+        }
+        let (left, right) = (left as usize, right as usize);
+        if self.facts.kinds.get(left) != self.facts.kinds.get(right)
+            || self.facts.names.get(left) != self.facts.names.get(right)
+            || self.facts.constructors.get(left) != self.facts.constructors.get(right)
+        {
+            return false;
+        }
+        let (Some(left_record), Some(right_record)) = (
+            self.facts.type_records.get(left),
+            self.facts.type_records.get(right),
+        ) else {
+            return false;
+        };
+        if !self.record_cells_match(left_record, right_record) {
+            return false;
+        }
+        let nominal_match = match (left_record.nominal, right_record.nominal) {
+            (None, None) => true,
+            (Some(NominalRef::Local(left)), Some(NominalRef::Local(right))) => {
+                self.targets_match(left.raw, right.raw, depth - 1)
+            }
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        };
+        if !nominal_match {
+            return false;
+        }
+        let left_count = usize::from(self.facts.type_child_counts.get(left).copied().unwrap_or(0));
+        if left_count
+            != usize::from(
+                self.facts
+                    .type_child_counts
+                    .get(right)
+                    .copied()
+                    .unwrap_or(0),
+            )
+        {
+            return false;
+        }
+        let left_start = self.facts.type_child_starts.get(left).copied().unwrap_or(0) as usize;
+        let right_start = self
+            .facts
+            .type_child_starts
+            .get(right)
+            .copied()
+            .unwrap_or(0) as usize;
+        for position in 0..left_count {
+            if self.facts.type_child_names.get(left_start + position)
+                != self.facts.type_child_names.get(right_start + position)
+                || self.facts.type_child_flags.get(left_start + position)
+                    != self.facts.type_child_flags.get(right_start + position)
+                || !self.targets_match(
+                    self.facts
+                        .type_child_targets
+                        .get(left_start + position)
+                        .copied()
+                        .unwrap_or(u32::MAX),
+                    self.facts
+                        .type_child_targets
+                        .get(right_start + position)
+                        .copied()
+                        .unwrap_or(u32::MAX),
+                    depth - 1,
+                )
+            {
+                return false;
+            }
+        }
+        let left_children = usize::from(self.facts.child_counts.get(left).copied().unwrap_or(0));
+        if left_children != usize::from(self.facts.child_counts.get(right).copied().unwrap_or(0)) {
+            return false;
+        }
+        let left_child_start = self.facts.child_starts.get(left).copied().unwrap_or(0) as usize;
+        let right_child_start = self.facts.child_starts.get(right).copied().unwrap_or(0) as usize;
+        for position in 0..left_children {
+            if self.facts.child_roles.get(left_child_start + position)
+                != self.facts.child_roles.get(right_child_start + position)
+                || !self.targets_match(
+                    self.facts
+                        .child_targets
+                        .get(left_child_start + position)
+                        .copied()
+                        .unwrap_or(u32::MAX),
+                    self.facts
+                        .child_targets
+                        .get(right_child_start + position)
+                        .copied()
+                        .unwrap_or(u32::MAX),
+                    depth - 1,
+                )
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Records compare by their closed cells; the pooled child range is
+    /// staging geometry compared through the targets instead.
+    fn record_cells_match(
+        &self,
+        left: &SemanticTypeRecord<'_>,
+        right: &SemanticTypeRecord<'_>,
+    ) -> bool {
+        left.tag == right.tag
+            && left.payload0 == right.payload0
+            && left.payload1 == right.payload1
+            && left.text == right.text
+            && left.text2 == right.text2
+    }
+
+    /// One target coordinate: out-of-range targets (foreign or anonymous
+    /// leaves that never became facts) compare by raw coordinate, committed
+    /// ordinals compare structurally.
+    fn targets_match(&self, left: u32, right: u32, depth: u8) -> bool {
+        let committed = u32::try_from(self.facts.len).unwrap_or(u32::MAX);
+        if left < committed && right < committed {
+            self.committed_rows_match(left, right, depth)
+        } else {
+            left == right
+        }
     }
 
     /// Pushes one self-nominal declaration fact: the diagonal reference to
@@ -797,6 +1273,24 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             start: name.start,
             end: name.end,
         })?;
+        // A legal TypeScript declaration merge (two `interface`s, `namespace`s,
+        // or `enum`s with one name in one scope) is one declaration instance,
+        // not two. Reuse the first fact and widen its declaration span so the
+        // merge part's members still resolve to that one owner.
+        if matches!(
+            kind,
+            EntityKind::Trait | EntityKind::Module | EntityKind::Enum
+        ) && self
+            .merged_self_nominal(kind, name_bytes, declaration)
+            .is_some()
+        {
+            return Ok(());
+        }
+        // Generic parameters own resolvable facts exactly as aliases and
+        // signatures stage them: without these, every use of an interface or
+        // class parameter (defaults, constraints, member annotations) misses
+        // its binding and mints a colliding honestly-external twin per site.
+        self.push_type_parameter_facts(rows)?;
         let type_parameter_start = self.push_type_params(rows, 0)?;
         let own = coordinate(self.facts.len())?;
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
@@ -806,8 +1300,228 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             .typed(record)
             .with_extension(extension);
         let ordinal = self.push(fact)?;
-        self.register(ordinal, declaration, name, kind);
+        self.register(ordinal, declaration, name, kind)?;
         Ok(())
+    }
+
+    /// Finds one registered fact of `kind` and exact `name` bytes already
+    /// declared in the same lexical scope as `declaration`, widening its
+    /// declaration span over the merge part. `None` proves this declaration
+    /// opens a new family and must be emitted.
+    fn merged_self_nominal(
+        &mut self,
+        kind: EntityKind,
+        name_bytes: &[u8],
+        declaration: Span,
+    ) -> Option<u32> {
+        let candidates = self
+            .facts_by_name
+            .get(name_bytes)
+            .cloned()
+            .unwrap_or_default();
+        if candidates.is_empty() {
+            return None;
+        }
+        let owner = self.enclosing_registered_owner(declaration.start, None);
+        for ordinal in candidates {
+            let Some(index) = usize::try_from(ordinal).ok() else {
+                continue;
+            };
+            if self.fact_kinds.get(index).copied() != Some(kind) {
+                continue;
+            }
+            let (decl_start, decl_end) = (
+                self.decl_starts.get(index).copied().unwrap_or(UNSET),
+                self.decl_ends.get(index).copied().unwrap_or(UNSET),
+            );
+            if decl_start == UNSET || decl_end == UNSET {
+                continue;
+            }
+            let candidate_owner = self.enclosing_registered_owner(decl_start, Some(ordinal));
+            if candidate_owner != owner {
+                continue;
+            }
+            if let Some(slot) = self.decl_starts.get_mut(index) {
+                *slot = (*slot).min(declaration.start);
+            }
+            if let Some(slot) = self.decl_ends.get_mut(index) {
+                *slot = (*slot).max(declaration.end);
+            }
+            return Some(ordinal);
+        }
+        None
+    }
+
+    /// Resolves the innermost registered declaring fact containing
+    /// `position`, optionally excluding one candidate. Synthetic rows carry
+    /// no declaration span and are never owners here.
+    fn enclosing_registered_owner(&self, position: u32, exclude: Option<u32>) -> Option<u32> {
+        let length = self.facts.len;
+        let mut best: Option<(u32, u32)> = None;
+        for index in 0..length {
+            let ordinal = coordinate(index).ok()?;
+            if exclude == Some(ordinal) {
+                continue;
+            }
+            let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+            if start != UNSET
+                && end != UNSET
+                && start <= position
+                && position < end
+                && best.is_none_or(|(known, _)| start >= known)
+            {
+                best = Some((start, ordinal));
+            }
+        }
+        best.map(|(_, ordinal)| ordinal)
+    }
+
+    /// Finds an earlier registered fact of `kind` and exact `name` bytes in
+    /// the same lexical scope whose row is byte-identical this bare row (same
+    /// record, no children). Such rows are indistinguishable in the flattened
+    /// lane, so the first is reused instead of minting a rejected twin.
+    /// Structurally distinct same-name declarations (overloads, differently
+    /// typed block variables) never match and stay distinct.
+    fn merged_simple_declaration(
+        &self,
+        kind: EntityKind,
+        name_bytes: &[u8],
+        declaration: Span,
+        record: SemanticTypeRecord<'source>,
+        _child_count: u8,
+    ) -> Option<u32> {
+        let candidates = self
+            .facts_by_name
+            .get(name_bytes)
+            .cloned()
+            .unwrap_or_default();
+        if candidates.is_empty() {
+            return None;
+        }
+        let owner = self.enclosing_registered_owner(declaration.start, None);
+        for ordinal in candidates {
+            let Some(index) = usize::try_from(ordinal).ok() else {
+                continue;
+            };
+            if self.fact_kinds.get(index).copied() != Some(kind) {
+                continue;
+            }
+            if self.facts.type_records.get(index) != Some(&record) {
+                continue;
+            }
+            if self.facts.type_child_counts.get(index).copied() != Some(0) {
+                continue;
+            }
+            let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            if decl_start == UNSET {
+                continue;
+            }
+            if self.enclosing_registered_owner(decl_start, Some(ordinal)) != owner {
+                continue;
+            }
+            return Some(ordinal);
+        }
+        None
+    }
+
+    /// Finds an earlier registered fact in the same lexical scope whose kind,
+    /// name, declared-type record, type children, and product children are
+    /// byte-identical to `fact`. Such rows are indistinguishable in the
+    /// flattened lane, so the first is reused instead of minting a rejected
+    /// twin; structurally distinct overloads and differently typed members
+    /// never match.
+    fn merged_fact(&self, declaration: Span, fact: &SemanticFact<'source>) -> Option<u32> {
+        let type_child_count = usize::from(fact.type_child_count);
+        let child_count = usize::from(fact.child_count);
+        let candidates = self
+            .facts_by_name
+            .get(fact.name)
+            .cloned()
+            .unwrap_or_default();
+        if candidates.is_empty() {
+            return None;
+        }
+        let owner = self.enclosing_registered_owner(declaration.start, None);
+        for ordinal in candidates {
+            let Some(index) = usize::try_from(ordinal).ok() else {
+                continue;
+            };
+            if self.fact_kinds.get(index).copied() != Some(fact.kind) {
+                continue;
+            }
+            if self.facts.type_records.get(index) != Some(&fact.type_record) {
+                continue;
+            }
+            if usize::from(
+                self.facts
+                    .type_child_counts
+                    .get(index)
+                    .copied()
+                    .unwrap_or(0),
+            ) != type_child_count
+            {
+                continue;
+            }
+            let child_start = self
+                .facts
+                .type_child_starts
+                .get(index)
+                .copied()
+                .unwrap_or(0) as usize;
+            let mut same = true;
+            for position in 0..type_child_count {
+                let candidate = child_start + position;
+                let known = (
+                    self.facts.type_child_targets.get(candidate).copied(),
+                    self.facts
+                        .type_child_names
+                        .get(candidate)
+                        .copied()
+                        .flatten(),
+                    self.facts.type_child_flags.get(candidate).copied(),
+                );
+                let asked = fact.type_children.get(position);
+                if known.0 != asked.map(|child| child.target)
+                    || known.1 != asked.and_then(|child| child.name)
+                    || known.2 != asked.map(|child| child.flags)
+                {
+                    same = false;
+                    break;
+                }
+            }
+            if !same {
+                continue;
+            }
+            if usize::from(self.facts.child_counts.get(index).copied().unwrap_or(0)) != child_count
+            {
+                continue;
+            }
+            let product_start = self.facts.child_starts.get(index).copied().unwrap_or(0) as usize;
+            for position in 0..child_count {
+                let product = product_start + position;
+                let known = self.facts.child_targets.get(product).copied();
+                let role = self.facts.child_roles.get(product).copied();
+                let asked = fact.children.get(position);
+                if known != asked.map(|child| child.target) || role != asked.map(|child| child.role)
+                {
+                    same = false;
+                    break;
+                }
+            }
+            if !same {
+                continue;
+            }
+            let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            if decl_start == UNSET {
+                continue;
+            }
+            if self.enclosing_registered_owner(decl_start, Some(ordinal)) != owner {
+                continue;
+            }
+            return Some(ordinal);
+        }
+        None
     }
 
     /// Pushes one import-binding fact with its module-origin foreign key and
@@ -836,7 +1550,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             .typed(record)
             .with_extension(extension);
         let ordinal = self.push(fact)?;
-        self.register(ordinal, declaration, local, EntityKind::Reexport);
+        self.register(ordinal, declaration, local, EntityKind::Reexport)?;
         if let Some(slot) = self.import_modules.get_mut(self.import_module_len) {
             *slot = ImportModule {
                 fact: ordinal,
@@ -899,9 +1613,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     end: row.display_end,
                 })?;
             let origin =
-                ForeignOrigin::Package(PackageLineage::new(NPM_ECOSYSTEM, module).map_err(
-                    |cause| lineage_fault(cause, Span::new(row.module_start, row.module_end)),
-                )?);
+                ForeignOrigin::Package(package_lineage_for_module(module).map_err(|cause| {
+                    lineage_fault(cause, Span::new(row.module_start, row.module_end))
+                })?);
             let key = ForeignKey::new(origin, display, display, Some(EntityKind::Reexport))
                 .map_err(|cause| {
                     foreign_fault(cause, Span::new(row.display_start, row.display_end))
@@ -915,6 +1629,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
 
     /// Pushes one synthetic fact embodying an anonymous type expression,
     /// named by its exact source spelling (kind [`EntityKind::Alias`]).
+    /// A byte-identical embodiment already pushed is reused: the image
+    /// identifies declarations by scope, kind, name, parentage, and
+    /// structure, so two separate rows for one structural spelling would
+    /// collide as twins. Reuse is hash-consing over content the lane
+    /// already staged, never a fabricated declaration.
     fn synthetic_cells_fact(
         &mut self,
         span: Span,
@@ -924,13 +1643,78 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             start: span.start,
             end: span.end,
         })?;
+        if !cells.truncated
+            && let Some(twin) = self.synthetic_twin(name, &cells)
+        {
+            return Ok(twin);
+        }
         let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
         let extension = self.extension(type_parameter_start)?;
         let fact = with_cells(
             SemanticFact::new(EntityKind::Alias, name, LEAF_PRODUCT).with_extension(extension),
             cells,
         );
-        self.push(fact)
+        let ordinal = self.push(fact)?;
+        if let Some(index) = usize::try_from(ordinal).ok() {
+            if let Some(slot) = self.synthetic_starts.get_mut(index) {
+                *slot = span.start;
+            }
+            if let Some(slot) = self.synthetic_ends.get_mut(index) {
+                *slot = span.end;
+            }
+        }
+        self.synthetic_by_name
+            .entry(name)
+            .or_default()
+            .push(ordinal);
+        Ok(ordinal)
+    }
+
+    /// Finds an already-pushed synthetic embodiment with byte-identical
+    /// name, lattice record, and child links. Only unregistered facts are
+    /// candidates: every declared fact registers its spans, so an
+    /// unregistered row is exactly one anonymous embodiment. (The kind lane
+    /// cannot filter here: it retains its default until registration, so an
+    /// unregistered row never carries its true kind.) Child targets compare
+    /// by ordinal because every child is either an earlier declared fact or
+    /// an already-consed embodiment, both canonical by induction.
+    fn synthetic_twin(&self, name: &[u8], cells: &TypeCells<'source>) -> Option<u32> {
+        let candidates = self.synthetic_by_name.get(name)?;
+        for &ordinal in candidates {
+            let index = usize::try_from(ordinal).ok()?;
+            if self.decl_starts.get(index) != Some(&UNSET) {
+                continue;
+            }
+            if self.facts.names.get(index) != Some(&name) {
+                continue;
+            }
+            if self.facts.type_records.get(index) != Some(&cells.record) {
+                continue;
+            }
+            let count = usize::from(*self.facts.type_child_counts.get(index)?);
+            if count != cells.len {
+                continue;
+            }
+            let start = usize::try_from(*self.facts.type_child_starts.get(index)?).ok()?;
+            let end = start.checked_add(count)?;
+            let targets = self.facts.type_child_targets.get(start..end)?;
+            let names = self.facts.type_child_names.get(start..end)?;
+            let flags = self.facts.type_child_flags.get(start..end)?;
+            let mut same = true;
+            for (position, child) in cells.children.iter().take(cells.len).enumerate() {
+                if targets.get(position) != Some(&child.target)
+                    || names.get(position) != Some(&child.name)
+                    || flags.get(position) != Some(&child.flags)
+                {
+                    same = false;
+                    break;
+                }
+            }
+            if same {
+                return Some(ordinal);
+            }
+        }
+        None
     }
 
     /// Pushes one synthetic honestly-unknown fact used where a structural
@@ -968,16 +1752,23 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// Lowers one type expression and guarantees a fact ordinal embodying it:
     /// declared entities and type parameters resolve to their existing
     /// ordinal; every anonymous expression is pushed as a synthetic
-    /// type-expression fact.
+    /// type-expression fact. Members staged while the expression lowered
+    /// belong to that embodiment and are claimed to it, including when an
+    /// identical embodiment already exists and is reused.
     fn child_target(
         &mut self,
         start: u32,
         end: u32,
         depth: u8,
     ) -> Result<u32, TypeScriptCollectError> {
+        let member_base = self.staged_members.len();
         match self.lower_type(start, end, depth)? {
             TypeOutcome::Existing(fact) => Ok(fact),
-            TypeOutcome::Cells(cells) => self.synthetic_cells_fact(Span::new(start, end), cells),
+            TypeOutcome::Cells(cells) => {
+                let embodiment = self.synthetic_cells_fact(Span::new(start, end), cells)?;
+                self.claim_staged_members(member_base, embodiment);
+                Ok(embodiment)
+            }
         }
     }
 
@@ -1189,6 +1980,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 let target = self.child_target(returned.start, returned.end, next_depth)?;
                 cells.record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
                 cells.push_child(target, None, 0)?;
+                // The rest element is pushed after every fixed parameter, so
+                // it is the final parameter exactly when present, and the
+                // record must declare the typed-last variadic form for it.
+                if function_type.params.rest.is_some() {
+                    cells.record.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
+                }
                 return Ok(TypeOutcome::Cells(cells));
             }
             if let Some(reference) = kind.as_ts_type_reference() {
@@ -1201,12 +1998,18 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     base = self.checker_local_target(name_span);
                 }
                 if let Some(fact) = base {
-                    let index = usize::try_from(fact).map_err(|_| lane_rejection())?;
-                    if self.fact_kinds.get(index) == Some(&EntityKind::Parameter) {
-                        // A use of a generic parameter is a TypeVar naming it.
-                        let mut cells = TypeCells::leaf(SemanticTypeTag::TypeVar);
-                        cells.record.text = self.slice_span(name_span);
-                        return Ok(TypeOutcome::Cells(cells));
+                    // A use of a generic parameter names its declared
+                    // parameter fact. Owner positions inline it as a `TypeVar`
+                    // in [`Projector::owner_cells`]; child positions link at
+                    // the fact itself, so one argument site never mints a
+                    // redundant per-use embodiment that collides with the next
+                    // spelled use.
+                    if self
+                        .fact_kinds
+                        .get(usize::try_from(fact).map_err(|_| lane_rejection())?)
+                        == Some(&EntityKind::Parameter)
+                    {
+                        return Ok(TypeOutcome::Existing(fact));
                     }
                     if reference.type_arguments.is_some() {
                         let mut cells = TypeCells::leaf(SemanticTypeTag::Apply);
@@ -1432,48 +2235,75 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
         cells.record.payload0 = u32::from(PrimitiveShape::Builtin);
         cells.record.text = Some(text);
-        cells.record.payload1 = u32::from(base as u8);
+        // The projected literal lane keys on the canonical base code, not the
+        // frontend's declaration order: string `0`, number `1`, bigint `2`,
+        // boolean `3`. Reusing `LiteralBase as u8` (number-first) silently
+        // widened every syntax-path literal to an unresolved unknown.
+        cells.record.payload1 = match base {
+            backend_frontend_typescript::legacy::LiteralBase::String => 0,
+            backend_frontend_typescript::legacy::LiteralBase::Number => 1,
+            backend_frontend_typescript::legacy::LiteralBase::Bigint => 2,
+            backend_frontend_typescript::legacy::LiteralBase::Boolean => 3,
+        };
         Some(cells)
     }
 
+    /// Folds an arbitrarily wide union or intersection into
+    /// [`MAX_TYPE_CHILDREN`]-wide rows. Every source member stays reachable in
+    /// source order, while nesting depth stays logarithmic in the member
+    /// count. The previous left-leaning pair fold grew depth linearly, so a
+    /// multi-thousand-member union produced a multi-thousand-deep type graph
+    /// that tripped every depth-bounded consumer.
     fn associative_cells(
         &mut self,
         spans: &[Span],
         depth: u8,
         tag: SemanticTypeTag,
     ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
-        let first = spans.first().ok_or_else(lane_rejection)?;
-        let second = spans.get(1).ok_or_else(lane_rejection)?;
-        let mut left = self.child_target(first.start, first.end, depth)?;
-        let right = self.child_target(second.start, second.end, depth)?;
-        let mut pair = TypeCells::leaf(tag);
-        pair.push_child(left, None, 0)?;
-        pair.push_child(right, None, 0)?;
-        left = self.synthetic_cells_fact(*second, pair)?;
-        for span in spans.iter().skip(2).take(spans.len().saturating_sub(3)) {
-            let right = self.child_target(span.start, span.end, depth)?;
-            let mut pair = TypeCells::leaf(tag);
-            pair.push_child(left, None, 0)?;
-            pair.push_child(right, None, 0)?;
-            left = self.synthetic_cells_fact(*span, pair)?;
+        let mut rows: Vec<(u32, Span)> = Vec::with_capacity(spans.len());
+        for span in spans {
+            let target = self.child_target(span.start, span.end, depth)?;
+            rows.push((target, *span));
         }
-        let last = spans.last().ok_or_else(lane_rejection)?;
-        let right = self.child_target(last.start, last.end, depth)?;
+        while rows.len() > MAX_TYPE_CHILDREN {
+            let mut next: Vec<(u32, Span)> =
+                Vec::with_capacity(rows.len().div_ceil(MAX_TYPE_CHILDREN));
+            for chunk in rows.chunks(MAX_TYPE_CHILDREN) {
+                let mut cells = TypeCells::leaf(tag);
+                for (target, _) in chunk {
+                    cells.push_child(*target, None, 0)?;
+                }
+                // Each folded row is named by the last member of its chunk,
+                // the rightmost-member naming the pair fold used.
+                let name = chunk
+                    .last()
+                    .map(|(_, span)| *span)
+                    .ok_or_else(lane_rejection)?;
+                next.push((self.synthetic_cells_fact(name, cells)?, name));
+            }
+            rows = next;
+        }
         let mut root = TypeCells::leaf(tag);
-        root.push_child(left, None, 0)?;
-        root.push_child(right, None, 0)?;
+        for (target, _) in &rows {
+            root.push_child(*target, None, 0)?;
+        }
         Ok(TypeOutcome::Cells(root))
     }
 
     /// Pushes one member fact of a type-position object literal and returns
-    /// its fact ordinal, member name bytes, and member flags. Unnamed
-    /// signature members (call and construct signatures) carry no linkable
-    /// name and are skipped.
+    /// its fact ordinal, member name bytes, and member flags. Anonymous call
+    /// and construct signatures embody as Function facts named by their full
+    /// source spelling, so the anonymous-record child keeps its required
+    /// name. The member ordinal is staged so the literal's
+    /// embodiment claims it: members of one anonymous object must share the
+    /// parentage of that object, not the nearest declared owner, or two
+    /// same-named members of sibling objects collide as twins.
     fn push_type_literal_member(
         &mut self,
         member_span: Span,
         depth: u8,
     ) -> Result<Option<MemberLink<'source>>, TypeScriptCollectError> {
+        let member_base = self.staged_members.len();
         let node_position = self
             .node_index
             .binary_search_by_key(&(member_span.start, member_span.end), |(known, _)| {
@@ -1518,8 +2348,43 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         .with_extension(extension),
                     cells,
                 );
+                if self.staged_members.len() == member_base
+                    && let Some(existing) = self.merged_fact(member_span, &fact)
+                {
+                    return Ok(Some((existing, name, flags)));
+                }
                 let ordinal = self.push(fact)?;
-                self.register(ordinal, member_span, key_span, EntityKind::Field);
+                self.register(ordinal, member_span, key_span, EntityKind::Field)?;
+                self.staged_members.push(ordinal);
+                self.claim_staged_members(member_base, ordinal);
+                return Ok(Some((ordinal, name, flags)));
+            }
+            if let Some(signature) = member_kind.as_ts_index_signature() {
+                let inner = signature.type_annotation.type_annotation.span();
+                let name_span = Span::new(member_span.start, inner.start);
+                let name = self
+                    .slice_span(name_span)
+                    .ok_or(TypeScriptCollectError::Span {
+                        start: name_span.start,
+                        end: name_span.end,
+                    })?;
+                let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+                let cells = self.owner_cells(inner.start, inner.end, depth)?;
+                let extension = self.extension(type_parameter_start)?;
+                let fact = with_cells(
+                    SemanticFact::new(EntityKind::Field, name, LEAF_PRODUCT)
+                        .with_extension(extension),
+                    cells,
+                );
+                let ordinal = self.push(fact)?;
+                self.register(ordinal, member_span, name_span, EntityKind::Field)?;
+                self.staged_members.push(ordinal);
+                self.claim_staged_members(member_base, ordinal);
+                let flags = if signature.readonly {
+                    SemanticTypeChild::FLAG_READONLY
+                } else {
+                    0
+                };
                 return Ok(Some((ordinal, name, flags)));
             }
             if let Some(method) = member_kind.as_ts_method_signature() {
@@ -1555,13 +2420,132 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     &TypeParamRows::new(),
                     &params,
                     result,
+                    false,
                 )?;
                 let flags = if method.optional {
                     SemanticTypeChild::FLAG_OPTIONAL
                 } else {
                     0
                 };
+                self.staged_members.push(ordinal);
+                self.claim_staged_members(member_base, ordinal);
                 return Ok(Some((ordinal, name, flags)));
+            }
+            if let Some(signature) = member_kind.as_ts_call_signature_declaration() {
+                // An anonymous call member embodies exactly as an interface
+                // call signature does, named by its full source spelling so
+                // the anonymous-record child keeps its required name. The
+                // staged ordinal lets the enclosing literal claim it.
+                let mut rows = TypeParamRows::new();
+                if let Some(declared) = signature.type_parameters.as_ref() {
+                    for parameter in declared.params.iter() {
+                        Self::stage_row(
+                            &mut rows,
+                            TypeParamRow {
+                                name: parameter.name.span,
+                                constraint: parameter.constraint.as_ref().map(|t| t.span()),
+                                default: parameter.default.as_ref().map(|t| t.span()),
+                            },
+                        )?;
+                    }
+                }
+                let mut params = ParamRows::new();
+                for parameter in signature.params.items.iter() {
+                    params.push(ParamRow {
+                        name: parameter.pattern.span(),
+                        annotation: parameter
+                            .type_annotation
+                            .as_ref()
+                            .map(|annotation| annotation.type_annotation.span()),
+                        flags: if parameter.optional {
+                            SemanticTypeChild::FLAG_OPTIONAL
+                        } else {
+                            0
+                        },
+                    })?;
+                }
+                if let Some(rest) = signature.params.rest.as_ref() {
+                    params.push(ParamRow {
+                        name: rest.rest.span(),
+                        annotation: rest
+                            .type_annotation
+                            .as_ref()
+                            .map(|annotation| annotation.type_annotation.span()),
+                        flags: SemanticTypeChild::FLAG_REST,
+                    })?;
+                }
+                let result = signature
+                    .return_type
+                    .as_ref()
+                    .map(|returned| returned.type_annotation.span());
+                let ordinal =
+                    self.push_signature(member_span, member_span, &rows, &params, result, false)?;
+                let name = self
+                    .slice_span(member_span)
+                    .ok_or(TypeScriptCollectError::Span {
+                        start: member_span.start,
+                        end: member_span.end,
+                    })?;
+                self.staged_members.push(ordinal);
+                self.claim_staged_members(member_base, ordinal);
+                return Ok(Some((ordinal, name, 0)));
+            }
+            if let Some(signature) = member_kind.as_ts_construct_signature_declaration() {
+                // An anonymous construct member embodies exactly as a call
+                // member does; only the signature node differs.
+                let mut rows = TypeParamRows::new();
+                if let Some(declared) = signature.type_parameters.as_ref() {
+                    for parameter in declared.params.iter() {
+                        Self::stage_row(
+                            &mut rows,
+                            TypeParamRow {
+                                name: parameter.name.span,
+                                constraint: parameter.constraint.as_ref().map(|t| t.span()),
+                                default: parameter.default.as_ref().map(|t| t.span()),
+                            },
+                        )?;
+                    }
+                }
+                let mut params = ParamRows::new();
+                for parameter in signature.params.items.iter() {
+                    params.push(ParamRow {
+                        name: parameter.pattern.span(),
+                        annotation: parameter
+                            .type_annotation
+                            .as_ref()
+                            .map(|annotation| annotation.type_annotation.span()),
+                        flags: if parameter.optional {
+                            SemanticTypeChild::FLAG_OPTIONAL
+                        } else {
+                            0
+                        },
+                    })?;
+                }
+                if let Some(rest) = signature.params.rest.as_ref() {
+                    params.push(ParamRow {
+                        name: rest.rest.span(),
+                        annotation: rest
+                            .type_annotation
+                            .as_ref()
+                            .map(|annotation| annotation.type_annotation.span()),
+                        flags: SemanticTypeChild::FLAG_REST,
+                    })?;
+                }
+                let result = signature
+                    .return_type
+                    .as_ref()
+                    .map(|returned| returned.type_annotation.span());
+                let ordinal =
+                    self.push_signature(member_span, member_span, &rows, &params, result, false)?;
+                let name = self
+                    .slice_span(member_span)
+                    .ok_or(TypeScriptCollectError::Span {
+                        start: member_span.start,
+                        end: member_span.end,
+                    })?;
+                self.staged_members.push(ordinal);
+                self.claim_staged_members(member_base, ordinal);
+                return Ok(Some((ordinal, name, 0)));
             }
         }
         Ok(None)
@@ -1603,13 +2587,14 @@ pub(crate) fn collect_with_checker<'source, 'report>(
     facts: &mut FactSet<'source>,
 ) -> Result<(), TypeScriptCollectError> {
     let source = std::str::from_utf8(source).map_err(TypeScriptCollectError::Utf8)?;
+    let declaration_file = checker.is_some_and(|report| report.declaration_file);
     let index = match checker {
         Some(report) => Some(CheckerIndex::bind(report, source).map_err(|cause| {
             TypeScriptCollectError::Authority(AuthorityError::Checker { cause })
         })?),
         None => None,
     };
-    with_analysis(profile, source, |module| {
+    let build = |module: OxcModule<'_>| {
         let mut projector = Projector {
             semantic: &module.semantic,
             node_index: {
@@ -1634,9 +2619,28 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             checker: index,
             pending_type_parameters: 0,
             extension_type_parameters: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
+            staged_members: Vec::new(),
+            member_parents: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            synthetic_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            synthetic_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            facts_by_name: HashMap::new(),
+            fact_at_name: HashMap::new(),
+            synthetic_by_name: HashMap::new(),
+            owner_index: Vec::new(),
+            owner_ancestor: Vec::new(),
         };
         projector.run()
-    })
+    };
+    // An ambient declaration file is parsed under the TypeScript definition
+    // grammar so OXC's implementation-presence checks do not fire on members
+    // that legitimately have no body. The checker report owns that
+    // classification; a report that never classified the source keeps the
+    // ordinary value grammar.
+    if declaration_file {
+        with_analysis_declaration(profile, source, true, build)
+    } else {
+        with_analysis(profile, source, build)
+    }
     .map_err(TypeScriptCollectError::Authority)?
 }
 
@@ -1653,6 +2657,111 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         self.pass_references()?;
         self.pass_checker_references()?;
         self.pass_docs()?;
+        self.pass_parentage()?;
+        Ok(())
+    }
+
+    /// Pass eight: binds every pushed fact to its innermost enclosing
+    /// declaration by strict span containment, exactly as the lexical scope it
+    /// lives in. TypeScript reuses member names across classes, interfaces,
+    /// namespaces, and nested functions, so without a bound parent two
+    /// same-name rows in different owners share one `Unavailable` family and
+    /// the image build rejects the honest duplicate with a
+    /// `DuplicateDeclarationIdentity`. A fact with no enclosing declaration is
+    /// an authority-proven root, never a fabricated parent.
+    ///
+    /// Members of anonymous object literals keep the embodiment their
+    /// literal lowering claimed instead: their declaring spans sit inside
+    /// the nearest declared owner, but they belong to distinct anonymous
+    /// objects that span containment cannot tell apart.
+    fn pass_parentage(&mut self) -> Result<(), TypeScriptCollectError> {
+        let length = self.facts.len;
+        // One sweep over source-ordered events: an owner opens its lexical
+        // range, and every other fact asks the innermost still-open owner for
+        // its parent. Declaration spans nest or stay disjoint, so a stack is
+        // exact, and the pass stays O(facts log facts) instead of rescanning
+        // every candidate for every fact.
+        let mut events: Vec<(u32, u32, u32, bool)> = Vec::with_capacity(length * 2);
+        for index in 0..length {
+            let ordinal = coordinate(index)?;
+            let is_member = self.member_parents.get(index).copied().unwrap_or(UNSET) != UNSET;
+            let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            let decl_end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+            let synthetic = decl_start == UNSET || decl_end == UNSET;
+            let (start, end) = if synthetic {
+                (
+                    self.synthetic_starts.get(index).copied().unwrap_or(UNSET),
+                    self.synthetic_ends.get(index).copied().unwrap_or(UNSET),
+                )
+            } else {
+                (decl_start, decl_end)
+            };
+            if !is_member && start != UNSET && end != UNSET {
+                events.push((start, end, ordinal, false));
+            }
+            if !synthetic
+                && ts_lexical_owner(
+                    self.fact_kinds
+                        .get(index)
+                        .copied()
+                        .unwrap_or(EntityKind::Parameter),
+                )
+            {
+                events.push((decl_start, decl_end, ordinal, true));
+            }
+        }
+        events.sort_unstable_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then(right.1.cmp(&left.1))
+                .then(left.3.cmp(&right.3))
+        });
+        let mut stack: Vec<(u32, u32, u32)> = Vec::new();
+        let mut owners: Vec<Option<u32>> = vec![None; length];
+        for (start, end, ordinal, is_owner) in events {
+            while stack
+                .last()
+                .is_some_and(|(top_end, _, _)| *top_end <= start)
+            {
+                stack.pop();
+            }
+            if is_owner {
+                stack.push((end, start, ordinal));
+                continue;
+            }
+            let mut found = None;
+            for &(top_end, top_start, top_ordinal) in stack.iter().rev() {
+                if top_ordinal == ordinal {
+                    continue;
+                }
+                if top_start == start && top_end == end {
+                    continue;
+                }
+                if top_end >= end {
+                    found = Some(top_ordinal);
+                    break;
+                }
+            }
+            owners[usize::try_from(ordinal).unwrap_or(0)] = found;
+        }
+        for index in 0..length {
+            let ordinal = coordinate(index)?;
+            if let Some(embodiment) = self
+                .member_parents
+                .get(index)
+                .copied()
+                .filter(|parent| *parent != UNSET)
+            {
+                self.facts
+                    .attach_parent(ordinal, embodiment)
+                    .map_err(fault)?;
+                continue;
+            }
+            match owners[index] {
+                Some(parent) => self.facts.attach_parent(ordinal, parent).map_err(fault)?,
+                None => self.facts.mark_parentage_root(ordinal).map_err(fault)?,
+            }
+        }
         Ok(())
     }
 
@@ -1802,6 +2911,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 self.push_type_parameter_facts(&rows)?;
                 let type_parameter_start = self.push_type_params(&rows, 0)?;
                 let annotation = alias.type_annotation.span();
+                let member_base = self.staged_members.len();
                 let cells = self.owner_cells(annotation.start, annotation.end, 0)?;
                 let name_bytes =
                     self.slice_span(alias.id.span)
@@ -1816,7 +2926,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     cells,
                 );
                 let ordinal = self.push(fact)?;
-                self.register(ordinal, declaration_span, alias.id.span, EntityKind::Alias);
+                self.register(ordinal, declaration_span, alias.id.span, EntityKind::Alias)?;
+                self.claim_staged_members(member_base, ordinal);
             } else if let Some(parameter) = kind.as_ts_type_parameter() {
                 // Generic parameters were pushed beside their owning
                 // declaration; only a parameter outside that path remains.
@@ -1831,6 +2942,22 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         })?;
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
                 record.text = Some(name);
+                // Two `infer X` parameters in mutually exclusive conditional
+                // branches are name-identical lone `TypeVar` rows in one
+                // owner; the image cannot tell them apart, so the first owns
+                // the one fact every occurrence of that name resolves to.
+                if self
+                    .merged_simple_declaration(
+                        EntityKind::Parameter,
+                        name,
+                        declaration_span,
+                        record,
+                        0,
+                    )
+                    .is_some()
+                {
+                    continue;
+                }
                 let extension = self.extension_without_type_parameters()?;
                 let fact = SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT)
                     .typed(record)
@@ -1841,7 +2968,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     declaration_span,
                     parameter.name.span,
                     EntityKind::Parameter,
-                );
+                )?;
             } else if let Some(function) = kind.as_function() {
                 let Some(id) = function.id.as_ref() else {
                     continue;
@@ -1888,7 +3015,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     .return_type
                     .as_ref()
                     .map(|returned| returned.type_annotation.span());
-                self.push_signature(id.span, declaration_span, &rows, &params, result)?;
+                self.push_signature(id.span, declaration_span, &rows, &params, result, false)?;
             } else if let Some(declarator) = kind.as_variable_declarator() {
                 if self
                     .fact_at_name_start(declarator.id.span().start)
@@ -1905,6 +3032,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         })?;
                 let entity_kind = self.declarator_kind(name_span.start);
                 let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+                let member_base = self.staged_members.len();
                 let cells = match declarator.type_annotation.as_ref() {
                     Some(annotation) => {
                         let inner = annotation.type_annotation.span();
@@ -1913,13 +3041,33 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     None => TypeCells::unknown(TypeReason::Unannotated),
                 };
                 let extension = self.extension(type_parameter_start)?;
+                let record = cells.record;
+                let child_count = cells.len;
                 let fact = with_cells(
                     SemanticFact::new(entity_kind, name_bytes, LEAF_PRODUCT)
                         .with_extension(extension),
                     cells,
                 );
+                // A block-scope redeclaration the flattened lane cannot
+                // distinguish from an earlier one (`const value` in two
+                // sibling blocks) is byte-identical at the row level. The
+                // first row owns the binding; occurrences resolve to it.
+                if child_count == 0
+                    && self
+                        .merged_simple_declaration(
+                            entity_kind,
+                            name_bytes,
+                            declaration_span,
+                            record,
+                            0,
+                        )
+                        .is_some()
+                {
+                    continue;
+                }
                 let ordinal = self.push(fact)?;
-                self.register(ordinal, declaration_span, name_span, entity_kind);
+                self.register(ordinal, declaration_span, name_span, entity_kind)?;
+                self.claim_staged_members(member_base, ordinal);
             } else if let Some(property) = kind.as_ts_property_signature() {
                 if self.fact_at_name_start(property.key.span().start).is_some() {
                     continue;
@@ -1932,6 +3080,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         end: key_span.end,
                     })?;
                 let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+                let member_base = self.staged_members.len();
                 let cells = match property.type_annotation.as_ref() {
                     Some(annotation) => {
                         let inner = annotation.type_annotation.span();
@@ -1945,8 +3094,18 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         .with_extension(extension),
                     cells,
                 );
+                // A member the type-lowering path could not reach (a truncated
+                // deeply nested conditional, say) still reaches this syntax
+                // pass. A structurally identical same-name member in the same
+                // owner is the same row, so the first is reused.
+                if self.staged_members.len() == member_base
+                    && self.merged_fact(declaration_span, &fact).is_some()
+                {
+                    continue;
+                }
                 let ordinal = self.push(fact)?;
-                self.register(ordinal, declaration_span, key_span, EntityKind::Field);
+                self.register(ordinal, declaration_span, key_span, EntityKind::Field)?;
+                self.claim_staged_members(member_base, ordinal);
             } else if let Some(method) = kind.as_ts_method_signature() {
                 let key_span = method.key.span();
                 if self.fact_at_name_start(key_span.start).is_some() {
@@ -1984,8 +3143,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     .return_type
                     .as_ref()
                     .map(|returned| returned.type_annotation.span());
-                self.push_signature(key_span, declaration_span, &rows, &params, result)?;
+                self.push_signature(key_span, declaration_span, &rows, &params, result, false)?;
             } else if let Some(index_signature) = kind.as_ts_index_signature() {
+                if self.fact_at_name_start(declaration_span.start).is_some() {
+                    continue;
+                }
                 let inner = index_signature.type_annotation.type_annotation.span();
                 let name_span = Span::new(declaration_span.start, inner.start);
                 let name_bytes =
@@ -1995,6 +3157,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             end: name_span.end,
                         })?;
                 let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+                let member_base = self.staged_members.len();
                 let cells = self.owner_cells(inner.start, inner.end, 0)?;
                 let extension = self.extension(type_parameter_start)?;
                 let fact = with_cells(
@@ -2003,7 +3166,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     cells,
                 );
                 let ordinal = self.push(fact)?;
-                self.register(ordinal, declaration_span, name_span, EntityKind::Field);
+                self.register(ordinal, declaration_span, name_span, EntityKind::Field)?;
+                self.claim_staged_members(member_base, ordinal);
             } else if let Some(definition) = kind.as_property_definition() {
                 let key_span = definition.key.span();
                 if self.fact_at_name_start(key_span.start).is_some() {
@@ -2016,6 +3180,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         end: key_span.end,
                     })?;
                 let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+                let member_base = self.staged_members.len();
                 let cells = match definition.type_annotation.as_ref() {
                     Some(annotation) => {
                         let inner = annotation.type_annotation.span();
@@ -2024,13 +3189,15 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     None => TypeCells::unknown(TypeReason::Unannotated),
                 };
                 let extension = self.extension(type_parameter_start)?;
-                let fact = with_cells(
-                    SemanticFact::new(EntityKind::Field, name_bytes, LEAF_PRODUCT)
-                        .with_extension(extension),
-                    cells,
-                );
+                let mut base = SemanticFact::new(EntityKind::Field, name_bytes, LEAF_PRODUCT)
+                    .with_extension(extension);
+                if definition.r#static {
+                    base = base.static_member();
+                }
+                let fact = with_cells(base, cells);
                 let ordinal = self.push(fact)?;
-                self.register(ordinal, declaration_span, key_span, EntityKind::Field);
+                self.register(ordinal, declaration_span, key_span, EntityKind::Field)?;
+                self.claim_staged_members(member_base, ordinal);
             } else if let Some(definition) = kind.as_method_definition() {
                 let key_span = definition.key.span();
                 if self.fact_at_name_start(key_span.start).is_some() {
@@ -2069,7 +3236,136 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     .return_type
                     .as_ref()
                     .map(|returned| returned.type_annotation.span());
-                self.push_signature(key_span, declaration_span, &rows, &params, result)?;
+                self.push_signature(
+                    key_span,
+                    declaration_span,
+                    &rows,
+                    &params,
+                    result,
+                    definition.r#static,
+                )?;
+            } else if let Some(signature) = kind.as_ts_call_signature_declaration() {
+                // A call signature inside an anonymous object literal was
+                // already embodied while that literal lowered (its member
+                // carries the record's required name). Re-lowering the same
+                // node here would mint a byte-identical twin and duplicate
+                // every parameter fact, so it is skipped exactly as the
+                // named member branches above skip their own claimed names.
+                if self.fact_at_name_start(declaration_span.start).is_some() {
+                    continue;
+                }
+                // Anonymous call overloads own their generic parameters
+                // exactly as named signatures do. Without an embodiment the
+                // parameters become orphaned lone facts that collide across
+                // overloads, so each signature is pushed as a Function fact
+                // named by its exact source spelling.
+                let mut rows = TypeParamRows::new();
+                if let Some(declared) = signature.type_parameters.as_ref() {
+                    for parameter in declared.params.iter() {
+                        Self::stage_row(
+                            &mut rows,
+                            TypeParamRow {
+                                name: parameter.name.span,
+                                constraint: parameter.constraint.as_ref().map(|t| t.span()),
+                                default: parameter.default.as_ref().map(|t| t.span()),
+                            },
+                        )?;
+                    }
+                }
+                let mut params = ParamRows::new();
+                for parameter in signature.params.items.iter() {
+                    params.push(ParamRow {
+                        name: parameter.pattern.span(),
+                        annotation: parameter
+                            .type_annotation
+                            .as_ref()
+                            .map(|annotation| annotation.type_annotation.span()),
+                        flags: if parameter.optional {
+                            SemanticTypeChild::FLAG_OPTIONAL
+                        } else {
+                            0
+                        },
+                    })?;
+                }
+                if let Some(rest) = signature.params.rest.as_ref() {
+                    params.push(ParamRow {
+                        name: rest.rest.span(),
+                        annotation: rest
+                            .type_annotation
+                            .as_ref()
+                            .map(|annotation| annotation.type_annotation.span()),
+                        flags: SemanticTypeChild::FLAG_REST,
+                    })?;
+                }
+                let result = signature
+                    .return_type
+                    .as_ref()
+                    .map(|returned| returned.type_annotation.span());
+                self.push_signature(
+                    declaration_span,
+                    declaration_span,
+                    &rows,
+                    &params,
+                    result,
+                    false,
+                )?;
+            } else if let Some(signature) = kind.as_ts_construct_signature_declaration() {
+                // Anonymous construct overloads embody exactly as call
+                // overloads do; only the signature node differs. A literal
+                // member was already embodied by its enclosing literal.
+                if self.fact_at_name_start(declaration_span.start).is_some() {
+                    continue;
+                }
+                let mut rows = TypeParamRows::new();
+                if let Some(declared) = signature.type_parameters.as_ref() {
+                    for parameter in declared.params.iter() {
+                        Self::stage_row(
+                            &mut rows,
+                            TypeParamRow {
+                                name: parameter.name.span,
+                                constraint: parameter.constraint.as_ref().map(|t| t.span()),
+                                default: parameter.default.as_ref().map(|t| t.span()),
+                            },
+                        )?;
+                    }
+                }
+                let mut params = ParamRows::new();
+                for parameter in signature.params.items.iter() {
+                    params.push(ParamRow {
+                        name: parameter.pattern.span(),
+                        annotation: parameter
+                            .type_annotation
+                            .as_ref()
+                            .map(|annotation| annotation.type_annotation.span()),
+                        flags: if parameter.optional {
+                            SemanticTypeChild::FLAG_OPTIONAL
+                        } else {
+                            0
+                        },
+                    })?;
+                }
+                if let Some(rest) = signature.params.rest.as_ref() {
+                    params.push(ParamRow {
+                        name: rest.rest.span(),
+                        annotation: rest
+                            .type_annotation
+                            .as_ref()
+                            .map(|annotation| annotation.type_annotation.span()),
+                        flags: SemanticTypeChild::FLAG_REST,
+                    })?;
+                }
+                let result = signature
+                    .return_type
+                    .as_ref()
+                    .map(|returned| returned.type_annotation.span());
+                self.push_signature(
+                    declaration_span,
+                    declaration_span,
+                    &rows,
+                    &params,
+                    result,
+                    false,
+                )?;
             } else if let Some(member) = kind.as_ts_enum_member() {
                 let name_span = member.id.span();
                 if self.fact_at_name_start(name_span.start).is_some() {
@@ -2091,7 +3387,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     .typed(record)
                     .with_extension(extension);
                 let ordinal = self.push(fact)?;
-                self.register(ordinal, declaration_span, name_span, EntityKind::Variant);
+                self.register(ordinal, declaration_span, name_span, EntityKind::Variant)?;
             }
         }
         Ok(())
@@ -2155,8 +3451,26 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 // Import bindings already carry their npm foreign origin.
                 continue;
             }
-            let row =
-                intern_computed_tree(&registry, self.facts, tree, owner, 0, SpellDomain::Owner)?;
+            // The computed type lane is a fixed bound. Once it is full, no
+            // later checker type has a representable row. The declaration
+            // keeps its declared type and stays published; only the observed
+            // cell is left absent rather than failing the whole projection or
+            // fabricating an unknown row the capacity cannot hold.
+            let row = match intern_computed_tree(
+                &registry,
+                self.facts,
+                tree,
+                owner,
+                0,
+                SpellDomain::Owner,
+            ) {
+                Ok(row) => row,
+                Err(TypeScriptCollectError::Rejected(FactRejection {
+                    cause: FactFault::ComputedRowCapacity,
+                    ..
+                })) => break,
+                Err(cause) => return Err(cause),
+            };
             let _ordinal = row
                 .checked_sub(COMPUTED_ROW_BASE)
                 .ok_or_else(lane_rejection)?;
@@ -2218,7 +3532,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 continue;
             }
             let site = SpellDomain::Range(narrowing.site.start, narrowing.site.end);
-            intern_computed_tree(&registry, self.facts, tree, owner, 0, site)?;
+            match intern_computed_tree(&registry, self.facts, tree, owner, 0, site) {
+                Ok(_) => {}
+                Err(TypeScriptCollectError::Rejected(FactRejection {
+                    cause: FactFault::ComputedRowCapacity,
+                    ..
+                })) => break,
+                Err(cause) => return Err(cause),
+            }
         }
         Ok(())
     }
@@ -2231,9 +3552,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// npm universe. When the checker authority ran, a checker-resolved
     /// same-file reference upgrades to [`OccurrenceConfidence::Oracle`] and
     /// targets the exact overload member the checker picked at a call site,
-    /// and a checker-resolved language-library base upgrades to an
-    /// npm-universe oracle key.
+    /// and a checker-resolved foreign base upgrades to an oracle-confident
+    /// foreign key naming the resolved package when this source spells it.
     fn pass_references(&mut self) -> Result<(), TypeScriptCollectError> {
+        self.build_owner_index();
         let scoping = self.semantic.scoping();
         let nodes = self.semantic.nodes();
         for symbol in scoping.symbol_ids() {
@@ -2335,7 +3657,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// Commits one occurrence fact owned by `owner`, projecting the
     /// absolute source span onto the owner-relative wire span. A span that
     /// does not sit inside its owner is silently absent rather than
-    /// misattributed.
+    /// misattributed: the shared containment law rejects a relative span
+    /// that escapes its owner's provenance span at build time, so an
+    /// escaping site never enters the lane.
     fn commit_occurrence(
         &mut self,
         owner: u32,
@@ -2348,12 +3672,21 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some(owner_start) = self.decl_starts.get(owner_index).copied() else {
             return Ok(());
         };
+        let Some(owner_end) = self.decl_ends.get(owner_index).copied() else {
+            return Ok(());
+        };
         let (Some(relative_start), Some(relative_end)) = (
             span.start.checked_sub(owner_start),
             span.end.checked_sub(owner_start),
         ) else {
             return Ok(());
         };
+        // The owner-relative span must stay inside the owner's provenance
+        // span, exactly the law the image build re-checks; a site that
+        // reaches past the owner's declaring span has no honest owner.
+        if relative_end > owner_end.saturating_sub(owner_start) {
+            return Ok(());
+        }
         let relative = RelSpan::new(relative_start, relative_end).map_err(|_| {
             TypeScriptCollectError::Span {
                 start: relative_start,
@@ -2376,12 +3709,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
 
     /// Upgrades one OXC-unresolved reference when the checker authority
     /// resolved it: a same-file target becomes a [`Local`] occurrence at
-    /// oracle confidence, and a language-library foreign base becomes an
-    /// npm-universe occurrence at oracle confidence whose path is the exact
-    /// use-site spelling. Foreign package modules stay at the honest
-    /// syntactic `TypeReason`: their module bytes are not spelled anywhere
-    /// in this source, and every borrowed wire cell must stay
-    /// source-backed.
+    /// oracle confidence, and a checker-resolved foreign module origin
+    /// becomes an oracle-confident foreign key naming the exact package and
+    /// display symbol. Every wire cell stays source-backed: the package
+    /// lineage and the display spelling are borrowed from this source's own
+    /// bytes (the module specifier and the checker-reported name must be
+    /// spelled here); a module this source never spells keeps the honest
+    /// npm-universe key, still at oracle confidence because the checker
+    /// proved the resolution.
     fn checker_resolved_unresolved(
         &self,
         span: Span,
@@ -2406,19 +3741,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
             return Ok(None);
         }
-        if resolved.module == Some("typescript")
-            && let Some(path) = self.text_span(span)
-            && !path.is_empty()
-        {
-            let key = ForeignKey::new(
-                ForeignOrigin::Universe {
-                    ecosystem: NPM_ECOSYSTEM,
-                },
-                path,
-                path,
-                None,
-            )
-            .map_err(|cause| foreign_fault(cause, span))?;
+        let Some(module) = resolved.module else {
+            return Ok(None);
+        };
+        if let Some(key) = self.checker_foreign_key(span, module, resolved.name)? {
             return Ok(Some((
                 OccurrenceTarget::Foreign(key),
                 OccurrenceConfidence::Oracle,
@@ -2427,13 +3753,61 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         Ok(None)
     }
 
+    /// Borrows the exact source bytes one checker-reported spelling names in
+    /// this source, when the source spells that text anywhere. A
+    /// checker-reported string can never enter a wire cell directly — every
+    /// borrowed cell stays source-backed — so this is the only lawful bridge.
+    fn spelled_in_source(&self, name: &[u8]) -> Option<&'source str> {
+        let bytes = self.source.as_bytes();
+        let at = find_sub(bytes, name, 0)?;
+        let end = at.checked_add(name.len())?;
+        core::str::from_utf8(bytes.get(at..end)?).ok()
+    }
+
+    /// Builds one source-backed foreign key for a checker-resolved foreign
+    /// reference: the module names the package lineage (through the shared
+    /// import-specifier grammar) and the use-site spelling names the path,
+    /// with the checker-reported foreign declaration name as the display
+    /// when this source spells it. `None` keeps the honest npm-universe key
+    /// when the module is not spelled here; the caller's fallback owns it.
+    fn checker_foreign_key(
+        &self,
+        span: Span,
+        module: &str,
+        name: Option<&str>,
+    ) -> Result<Option<ForeignKey<'source>>, TypeScriptCollectError> {
+        let spelled_module = self.spelled_in_source(module.as_bytes());
+        let site = self.text_span(span).ok_or(TypeScriptCollectError::Span {
+            start: span.start,
+            end: span.end,
+        })?;
+        if site.is_empty() {
+            return Ok(None);
+        }
+        let display = name
+            .and_then(|name| self.spelled_in_source(name.as_bytes()))
+            .unwrap_or(site);
+        let origin = match spelled_module {
+            Some(module) => ForeignOrigin::Package(
+                package_lineage_for_module(module).map_err(|cause| lineage_fault(cause, span))?,
+            ),
+            None => ForeignOrigin::Universe {
+                ecosystem: NPM_ECOSYSTEM,
+            },
+        };
+        ForeignKey::new(origin, site, display, None)
+            .map(Some)
+            .map_err(|cause| foreign_fault(cause, span))
+    }
+
     /// Pass six: the checker's references that OXC never visits — property
     /// accesses and other member sites OXC does not bind. Every published
     /// same-file target commits a Local occurrence at oracle confidence
     /// (a call site targets the exact overload member the checker picked);
-    /// a language-library foreign base commits its npm-universe oracle
-    /// key. Every other site stays absent rather than guessed, and a span
-    /// already covered by an OXC reference is never committed twice.
+    /// a checker-resolved foreign base commits its oracle-confident foreign
+    /// key naming the resolved package. Every other site stays absent rather
+    /// than guessed, and a span already covered by an OXC reference is never
+    /// committed twice.
     fn pass_checker_references(&mut self) -> Result<(), TypeScriptCollectError> {
         let Some(checker) = self.checker.as_ref() else {
             return Ok(());
@@ -2487,9 +3861,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
 
     /// Resolves the target, confidence, and kind of one checker-only
     /// reference site. Same-file targets resolve through the published fact
-    /// of the target's binding name; language-library bases resolve through
-    /// the use-site spelling against the npm universe; every other base is
-    /// left absent instead of guessed.
+    /// of the target's binding name; a checker-resolved foreign module
+    /// origin resolves through the shared source-backed package key; every
+    /// other base is left absent instead of guessed.
     fn checker_only_target(
         &self,
         reference: BoundReference<'report>,
@@ -2517,22 +3891,13 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 kind,
             )));
         }
-        if reference.module == Some("typescript")
-            && let Some(path) = self.slice_span(Span::new(reference.span.start, reference.span.end))
-            && let Ok(path) = core::str::from_utf8(path)
-            && !path.is_empty()
+        if let Some(module) = reference.module
+            && let Some(key) = self.checker_foreign_key(
+                Span::new(reference.span.start, reference.span.end),
+                module,
+                reference.name,
+            )?
         {
-            let key = ForeignKey::new(
-                ForeignOrigin::Universe {
-                    ecosystem: NPM_ECOSYSTEM,
-                },
-                path,
-                path,
-                None,
-            )
-            .map_err(|cause| {
-                foreign_fault(cause, Span::new(reference.span.start, reference.span.end))
-            })?;
             let kind = if call {
                 ReferenceKind::FunctionCall
             } else {
@@ -2898,7 +4263,7 @@ enum SpellDomain {
     Range(u32, u32),
 }
 
-/// Interns one checker-computed type as a computed type row owned by
+/// Interns one checker computed type as a computed type row owned by
 /// `owner`, interning every child row first so the pooled lane stays
 /// topologically backward. Returns the row's lane coordinate
 /// (`COMPUTED_ROW_BASE` plus its pool ordinal).
@@ -3150,14 +4515,7 @@ fn intern_computed_tree<'source>(
             // Members carry names and flags, so each member's row is
             // interned first and then linked with its spelling-domain
             // source spelling.
-            let mut rows = [0_u32; MAX_TYPE_CHILDREN];
-            if members.len() > MAX_TYPE_CHILDREN {
-                return Err(computed_fault(
-                    registry,
-                    owner,
-                    FactFault::TypeChildCapacity,
-                ));
-            }
+            let mut rows: Vec<(u32, Option<&'source [u8]>, u8)> = Vec::with_capacity(members.len());
             for (position, member) in members.iter().enumerate() {
                 let row = intern_computed_tree(
                     registry,
@@ -3167,17 +4525,6 @@ fn intern_computed_tree<'source>(
                     depth.saturating_add(1),
                     spell,
                 )?;
-                #[expect(
-                    clippy::indexing_slicing,
-                    reason = "the preceding member-count check proves every position fits the fixed row lane"
-                )]
-                {
-                    rows[position] = row;
-                }
-            }
-            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord);
-            record.payload0 = u32::from(AnonRecordForm::Interface);
-            for (position, member) in members.iter().enumerate() {
                 let mut flags = 0_u8;
                 if member.optional {
                     flags |= SemanticTypeChild::FLAG_OPTIONAL;
@@ -3185,28 +4532,67 @@ fn intern_computed_tree<'source>(
                 if member.readonly {
                     flags |= SemanticTypeChild::FLAG_READONLY;
                 }
-                let spelling = registry
-                    .source_spelling(spell, member.name.as_bytes(), owner)
-                    .ok_or_else(|| {
-                        computed_fault(
-                            registry,
-                            owner,
-                            FactFault::TypeChild {
-                                position,
-                                fault: backend_semantic::ir::SemanticTypeFault::ChildNameRequired {
-                                    tag: SemanticTypeTag::AnonymousRecord,
-                                    position: position as u32,
-                                },
+                // A checker-synthesized member whose name carries its internal
+                // `__@` marker (`__@UNDEFINED_VOID_ONLY@9`, `__@iterator`, ...)
+                // is not a source declaration. The anonymous-record grammar
+                // requires a source-backed name, and fabricating one would
+                // mint a member the source never wrote, so the synthetic
+                // member is omitted while every spelled member stays. Any
+                // other unspelled name stays the exact typed rejection.
+                let Some(spelling) = registry.source_spelling(spell, member.name.as_bytes(), owner)
+                else {
+                    if member.name.starts_with("__@") {
+                        continue;
+                    }
+                    return Err(computed_fault(
+                        registry,
+                        owner,
+                        FactFault::TypeChild {
+                            position,
+                            fault: backend_semantic::ir::SemanticTypeFault::ChildNameRequired {
+                                tag: SemanticTypeTag::AnonymousRecord,
+                                position: position as u32,
                             },
-                        )
-                    })?;
-                #[expect(
-                    clippy::indexing_slicing,
-                    reason = "the preceding member-count check proves every position fits the fixed row lane"
-                )]
-                let row = rows[position];
+                        },
+                    ));
+                };
+                rows.push((row, Some(spelling), flags));
+            }
+            // A checker-synthesized namespace type (`typeof Ns` for a module
+            // with more exported members than the lane holds per row) legally
+            // exceeds the per-row bound. The member run therefore folds into
+            // MAX_TYPE_CHILDREN-wide anonymous-record rows exactly as wide
+            // unions fold: no member is lost, none nests deeper than the fold
+            // requires, and every run at or under the bound stays unchanged.
+            while rows.len() > MAX_TYPE_CHILDREN {
+                let mut next: Vec<(u32, Option<&'source [u8]>, u8)> =
+                    Vec::with_capacity(rows.len().div_ceil(MAX_TYPE_CHILDREN));
+                for chunk in rows.chunks(MAX_TYPE_CHILDREN) {
+                    for (target, name, flags) in chunk {
+                        facts
+                            .computed_type_child(*target, *name, *flags)
+                            .map_err(|cause| computed_fault(registry, owner, cause))?;
+                    }
+                    let mut chunk_record =
+                        SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord);
+                    chunk_record.payload0 = u32::from(AnonRecordForm::Interface);
+                    let folded = facts
+                        .intern_computed_type_row(owner, chunk_record)
+                        .map_err(|cause| computed_fault(registry, owner, cause))?;
+                    // The anonymous-record child law names every member from
+                    // source, so each folded row is named by the exact member
+                    // that closes its chunk — the rightmost-member naming the
+                    // pair fold used elsewhere in the lane.
+                    let closes = chunk.last().and_then(|(_, name, _)| *name);
+                    next.push((folded, closes, 0));
+                }
+                rows = next;
+            }
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord);
+            record.payload0 = u32::from(AnonRecordForm::Interface);
+            for (target, name, flags) in &rows {
                 facts
-                    .computed_type_child(row, Some(spelling), flags)
+                    .computed_type_child(*target, *name, *flags)
                     .map_err(|cause| computed_fault(registry, owner, cause))?;
             }
             facts
@@ -3264,16 +4650,26 @@ fn intern_computed_reference<'source>(
     let base = match local_fact {
         Some(fact) => fact,
         None => {
+            // A checker name the declaration never spells (a synthesized
+            // `__type`, a printed tuple, or a lib-internal spelling) cannot
+            // back a spelling-bearing unknown row and cannot become a
+            // nominal-external row, whose owned-IR conversion rejects an
+            // absent text cell as a dangling atom. It stays an honest
+            // oracle-gap unknown, whose reason owns no text cell. The
+            // foreign occurrence link still retains the exact endpoint.
+            let Some(text) = registry.source_spelling(spell, name.as_bytes(), owner) else {
+                return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+            };
             if module.is_none() {
                 let mut record = unknown_record(TypeReason::UnresolvedExternal);
-                record.text = registry.source_spelling(spell, name.as_bytes(), owner);
+                record.text = Some(text);
                 return intern_computed_leaf(facts, record, owner);
             }
             let module_bytes = module.map_or(name.as_bytes(), str::as_bytes);
             let fragment = ExternalFragmentId::from_canonical_bytes(module_bytes);
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
             record.nominal = Some(NominalRef::External(ExternalEntityRef::bind(fragment, 0)));
-            record.text = registry.source_spelling(spell, name.as_bytes(), owner);
+            record.text = Some(text);
             intern_computed_leaf(facts, record, owner)?
         }
     };
@@ -3338,49 +4734,35 @@ fn intern_computed_associative<'source>(
             &children[..members.len()],
         );
     }
-    let first = members.first().ok_or_else(lane_rejection)?;
-    let second = members.get(1).ok_or_else(lane_rejection)?;
-    let mut left = intern_computed_tree(
-        registry,
-        facts,
-        first,
-        owner,
-        depth.saturating_add(1),
-        spell,
-    )?;
-    let right = intern_computed_tree(
-        registry,
-        facts,
-        second,
-        owner,
-        depth.saturating_add(1),
-        spell,
-    )?;
-    left = intern_computed_row(
-        registry,
-        facts,
-        SemanticTypeRecord::leaf(tag),
-        owner,
-        &[left, right],
-    )?;
-    for member in members.iter().skip(2) {
-        let right = intern_computed_tree(
+    // A wide union/intersection folds into MAX_TYPE_CHILDREN-wide rows rather
+    // than binary pairs: the tag's child law is unbounded, so a 3000-member
+    // union needs ~48 rows instead of 2999, staying inside the fixed computed
+    // row lane without losing any member or nesting it deeper than necessary.
+    let mut rows: Vec<u32> = Vec::with_capacity(members.len());
+    for member in members {
+        rows.push(intern_computed_tree(
             registry,
             facts,
             member,
             owner,
             depth.saturating_add(1),
             spell,
-        )?;
-        left = intern_computed_row(
-            registry,
-            facts,
-            SemanticTypeRecord::leaf(tag),
-            owner,
-            &[left, right],
-        )?;
+        )?);
     }
-    Ok(left)
+    while rows.len() > MAX_TYPE_CHILDREN {
+        let mut next: Vec<u32> = Vec::with_capacity(rows.len().div_ceil(MAX_TYPE_CHILDREN));
+        for chunk in rows.chunks(MAX_TYPE_CHILDREN) {
+            next.push(intern_computed_row(
+                registry,
+                facts,
+                SemanticTypeRecord::leaf(tag),
+                owner,
+                chunk,
+            )?);
+        }
+        rows = next;
+    }
+    intern_computed_row(registry, facts, SemanticTypeRecord::leaf(tag), owner, &rows)
 }
 
 fn intern_computed_children<'source>(
@@ -3488,8 +4870,8 @@ fn checker_primitive(name: &str) -> Result<SemanticTypeRecord<'static>, TypeScri
 #[cfg(test)]
 mod projection_tests {
     use super::{TypeScriptCollectError, foreign_fault, lineage_fault};
-    use backend_semantic::ir::{ForeignKeyFault, PackageLineageFault};
     use backend_frontend_typescript::legacy::Span;
+    use backend_semantic::ir::{ForeignKeyFault, PackageLineageFault};
     use backend_semantic::vocabulary::{
         ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
         TypeScriptProjectionFault,
@@ -3532,6 +4914,321 @@ mod projection_tests {
             panic!("package-lineage projection terminal was erased");
         };
         assert_eq!((start, end, segment), (11, 19, 7));
+    }
+}
+
+#[cfg(test)]
+mod lane_tests {
+    use super::{TypeScriptCollectError, collect_with_checker};
+    use crate::driver::lower::{AdmissionFault, FactSet, admit};
+    use backend_frontend_typescript::legacy::{Reference, Report, source_digest};
+    use backend_semantic::ir::{
+        EntityKind, FragmentError, FragmentView, OccurrenceFault, SemanticReader,
+    };
+    use backend_semantic::vocabulary::{
+        CompileRecipeFact, LanguageProfile, NativeTool, Stage, TypeScriptSource,
+    };
+    use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+    use thiserror::Error;
+
+    /// Typed fixture failure; every assertion failure names what was missing.
+    #[derive(Debug, Error)]
+    enum LaneError {
+        #[error("TypeScript lane collection failed: {0:?}")]
+        Collection(TypeScriptCollectError),
+        #[error("lane admission rejected the fact set: {0:?}")]
+        Admission(AdmissionFault),
+        #[error("fragment validation rejected the bytes: {0}")]
+        Validate(#[from] FragmentError),
+        #[error("occurrence cursor rejected: {0:?}")]
+        Occurrence(#[from] OccurrenceFault),
+        #[error("owned image build rejected the fact set: {0:?}")]
+        Build(#[from] backend_semantic::ir::BuildError),
+        #[error("fixture scalar conversion failed")]
+        Scalar,
+        #[error("expected {0}")]
+        Missing(&'static str),
+    }
+
+    impl From<std::num::TryFromIntError> for LaneError {
+        fn from(_: std::num::TryFromIntError) -> Self {
+            Self::Scalar
+        }
+    }
+
+    impl From<TypeScriptCollectError> for LaneError {
+        fn from(cause: TypeScriptCollectError) -> Self {
+            Self::Collection(cause)
+        }
+    }
+
+    impl From<AdmissionFault> for LaneError {
+        fn from(cause: AdmissionFault) -> Self {
+            Self::Admission(cause)
+        }
+    }
+
+    /// Lowers one fixture source with one caller-supplied checker report and
+    /// returns its validated compact fragment.
+    fn lower_fragment(
+        source: &str,
+        report: Option<&Report>,
+    ) -> Result<FragmentView<'static>, LaneError> {
+        let mut facts = FactSet::new();
+        collect_with_checker(
+            TypeScriptSource::TypeScript,
+            source.as_bytes(),
+            report,
+            &mut facts,
+        )
+        .map_err(LaneError::from)?;
+        let identity = backend_semantic::ir::SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+            byte_len: u32::try_from(source.len())?,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            Stage::LowerIr,
+            NativeTool::TypeScriptCompiler,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"typescript-oxc-lane-fixture"),
+        );
+        let mut output = vec![0xa5_u8; 65_536];
+        let length = admit(&facts, identity, recipe, recipe.profile, &mut output)?.len();
+        if !output[length..].iter().all(|byte| *byte == 0xa5) {
+            return Err(LaneError::Missing("untouched output tail"));
+        }
+        output.truncate(length);
+        let leaked: &'static [u8] = Box::leak(output.into_boxed_slice());
+        FragmentView::validate(leaked).map_err(LaneError::from)
+    }
+
+    /// Builds the owned semantic image for one fixture source, so assertions
+    /// can read entity provenance spans and absolute occurrence sites.
+    fn owned_ir(
+        source: &str,
+        report: Option<&Report>,
+    ) -> Result<backend_semantic::ir::Ir, LaneError> {
+        let mut facts = FactSet::new();
+        collect_with_checker(
+            TypeScriptSource::TypeScript,
+            source.as_bytes(),
+            report,
+            &mut facts,
+        )
+        .map_err(LaneError::from)?;
+        let identity = backend_semantic::ir::SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+            byte_len: u32::try_from(source.len())?,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            Stage::LowerIr,
+            NativeTool::TypeScriptCompiler,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"typescript-oxc-lane-fixture"),
+        );
+        facts
+            .build_ir(
+                LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                identity,
+                recipe,
+                crate::driver::types::DeclarationScope::fixture(),
+            )
+            .map_err(LaneError::from)
+    }
+
+    /// One validated report over the exact fixture source carrying the given
+    /// references (the TSZ checker's wire shape).
+    fn report(source: &str, references: Vec<Reference>) -> Report {
+        let digest = source_digest(source.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Report {
+            schema_version: 1,
+            source_digest: digest,
+            declaration_file: false,
+            diagnostics: Box::new([]),
+            declarations: Box::new([]),
+            references: references.into_boxed_slice(),
+            narrowings: Box::new([]),
+        }
+    }
+
+    /// A fixture whose checker authority resolved the OXC-unresolved
+    /// `HonoContext` annotation to the `hono` package. The import specifier
+    /// spells the module and the alias spells the foreign display name, so
+    /// every wire cell stays source-backed.
+    const HONO_SOURCE: &str = "import { Hono as Context } from \"hono\";\n\nexport function route(app: HonoContext): void {\n    return;\n}\n";
+
+    fn hono_report() -> Report {
+        let start = u32::try_from(HONO_SOURCE.find("HonoContext").expect("fixture site"))
+            .expect("fixture offset");
+        let end = start + u32::try_from("HonoContext".len()).expect("fixture length");
+        report(
+            HONO_SOURCE,
+            vec![Reference {
+                start,
+                end,
+                target_start: None,
+                target_end: None,
+                module: Some("hono".to_owned()),
+                name: Some("Context".to_owned()),
+                overload_index: None,
+            }],
+        )
+    }
+
+    /// A checker-resolved foreign reference carries an oracle-confident
+    /// foreign key naming the resolved package (ecosystem, package) and the
+    /// foreign display symbol, with the use-site spelling as the path.
+    #[test]
+    fn checker_resolved_foreign_references_carry_module_and_display() -> Result<(), LaneError> {
+        let report = hono_report();
+        let view = lower_fragment(HONO_SOURCE, Some(&report))?;
+        let mut found = false;
+        for row in view
+            .occurrences()
+            .ok_or(LaneError::Missing("occurrence plane"))?
+        {
+            let row = row.map_err(LaneError::from)?;
+            let occurrence = row.occurrence;
+            let backend_semantic::ir::OccurrenceTarget::Foreign(key) = occurrence.target else {
+                continue;
+            };
+            if key.path != "HonoContext" {
+                continue;
+            }
+            found = true;
+            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+                return Err(LaneError::Missing("hono package origin"));
+            };
+            if lineage.ecosystem != "npm" || lineage.name != "hono" {
+                return Err(LaneError::Missing("hono package lineage"));
+            }
+            if key.display != "Context" {
+                return Err(LaneError::Missing("foreign display symbol"));
+            }
+            if occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle {
+                return Err(LaneError::Missing("oracle confidence"));
+            }
+            if occurrence.kind != backend_semantic::ir::ReferenceKind::TypeReference {
+                return Err(LaneError::Missing("type-reference kind"));
+            }
+        }
+        if !found {
+            return Err(LaneError::Missing("checker-resolved foreign occurrence"));
+        }
+        Ok(())
+    }
+
+    /// An identifier the checker never resolved stays at syntactic
+    /// confidence against the npm universe, carrying its written spelling.
+    #[test]
+    fn genuinely_unresolved_references_stay_syntactic_universe() -> Result<(), LaneError> {
+        let source = "export function other(app: MysteryBox): void {\n    return;\n}\n";
+        let view = lower_fragment(source, Some(&report(source, Vec::new())))?;
+        let mut found = false;
+        for row in view
+            .occurrences()
+            .ok_or(LaneError::Missing("occurrence plane"))?
+        {
+            let row = row.map_err(LaneError::from)?;
+            let occurrence = row.occurrence;
+            let backend_semantic::ir::OccurrenceTarget::Foreign(key) = occurrence.target else {
+                continue;
+            };
+            if key.path != "MysteryBox" {
+                continue;
+            }
+            found = true;
+            if !matches!(
+                key.origin,
+                backend_semantic::ir::ForeignOrigin::Universe { ecosystem: "npm" }
+            ) {
+                return Err(LaneError::Missing("npm-universe origin"));
+            }
+            if key.display != "MysteryBox" {
+                return Err(LaneError::Missing("written display"));
+            }
+            if occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Syntactic {
+                return Err(LaneError::Missing("syntactic confidence"));
+            }
+        }
+        if !found {
+            return Err(LaneError::Missing("unresolved foreign occurrence"));
+        }
+        Ok(())
+    }
+
+    /// Every declared entity carries its declaration extent as a
+    /// source-backed provenance span (synthetic type-expression embodiments
+    /// carry none, honestly), and the occurrence site is the exact name
+    /// extent inside that span — the containment law the image build
+    /// re-checks against owner-relative spans.
+    #[test]
+    fn declared_entities_carry_source_verified_spans() -> Result<(), LaneError> {
+        let report = hono_report();
+        let ir = owned_ir(HONO_SOURCE, Some(&report))?;
+        let mut route_span = None;
+        let mut context_span = None;
+        for entity in ir.canonical_entities() {
+            if ir.atom(entity.name) == Some(b"route".as_slice())
+                && entity.kind == EntityKind::Function
+            {
+                route_span = entity.source;
+            }
+            if ir.atom(entity.name) == Some(b"Context".as_slice())
+                && entity.kind == EntityKind::Reexport
+            {
+                context_span = entity.source;
+            }
+        }
+        // The declared entity's provenance span is its declaration extent:
+        // source-backed and strictly covering the declaration name.
+        let Some(span) = route_span else {
+            return Err(LaneError::Missing("route declaration source span"));
+        };
+        let route_name_at = HONO_SOURCE
+            .find("route(")
+            .ok_or(LaneError::Missing("fixture declaration name"))?;
+        if span.start() as usize > route_name_at
+            || (span.end() as usize) < route_name_at + "route".len()
+            || span.end() as usize > HONO_SOURCE.len()
+        {
+            return Err(LaneError::Missing("route declaration extent span"));
+        }
+        // The import binding's provenance span is the import declaration.
+        if context_span.is_none() {
+            return Err(LaneError::Missing("import binding source span"));
+        }
+        // The occurrence site is the exact name extent of the reference,
+        // absolute in the entered source.
+        let site_at = HONO_SOURCE
+            .find("HonoContext")
+            .ok_or(LaneError::Missing("fixture site"))?;
+        let site_end = site_at + "HonoContext".len();
+        let mut verified = false;
+        for (_, occurrence) in ir.link_occurrences() {
+            let Some(site) = occurrence.source else {
+                continue;
+            };
+            let start = usize::try_from(site.start())?;
+            let end = usize::try_from(site.end())?;
+            // The span's file atom is the declaration-scope path, and its
+            // bounds are the exact name extent of the reference site.
+            if ir.atom(site.file()) == Some(b"fixture/source".as_slice())
+                && start == site_at
+                && end == site_end
+            {
+                verified = true;
+            }
+        }
+        if !verified {
+            return Err(LaneError::Missing("absolute name-extent site"));
+        }
+        Ok(())
     }
 }
 

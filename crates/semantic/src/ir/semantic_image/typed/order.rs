@@ -44,7 +44,7 @@ impl<'image> TypedDependencyPlan<'image> {
             start = end;
         }
 
-        let mut next = [0_u32; 8];
+        let mut next = [0_u32; 9];
         for node in self.scratch.canonical_nodes.iter().copied() {
             let slot = self.slot(node)?;
             let domain = node.domain().index();

@@ -3,7 +3,7 @@
 //! Uses no native compiler, fixture scanner, or canonical-IR serializer.
 
 use backend_frontend_typescript::legacy::{
-    AuthorityError, OxcDeclarationKind, Utf8Span, Utf16Span, analyze,
+    AuthorityError, OxcDeclarationKind, Utf8Span, Utf16Span, analyze, analyze_with_declaration,
 };
 use backend_semantic::vocabulary::TypeScriptSource;
 use oxc_allocator::Allocator;
@@ -81,6 +81,35 @@ fn declaration_stream_lends_exact_source_names_and_closed_symbol_kinds()
         .ok_or(AuthorityTestError::MissingResolvedUse {
             name: "typed declaration stream",
         })
+}
+
+#[test]
+fn declaration_grammar_admits_ambient_unimplemented_members() -> Result<(), AuthorityTestError> {
+    // A declaration-file class legitimately carries constructor and
+    // overload signatures with no implementation. The value grammar reports
+    // implementation-presence errors; the declaration grammar must not.
+    let source = "export class Headers {\n  constructor(headers?: string);\n  concat(...values: string[]): Headers;\n  static concat(...values: string[]): Headers;\n}\n";
+    let value_arena = Allocator::default();
+    match analyze(TypeScriptSource::TypeScript, source, &value_arena) {
+        Err(AuthorityError::Binding { diagnostics }) if !diagnostics.is_empty() => {}
+        Ok(_)
+        | Err(AuthorityError::Syntax { .. } | AuthorityError::Binding { .. })
+        | Err(AuthorityError::Checker { .. }) => {
+            return Err(AuthorityTestError::UnexpectedAdmission {
+                case: "ambient members under the value grammar",
+            });
+        }
+    }
+
+    let declaration_arena = Allocator::default();
+    analyze_with_declaration(
+        TypeScriptSource::TypeScript,
+        source,
+        true,
+        &declaration_arena,
+    )
+    .map(|_| ())
+    .map_err(AuthorityTestError::Authority)
 }
 
 #[test]

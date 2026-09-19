@@ -1,8 +1,8 @@
 use std::num::{NonZeroU16, NonZeroU32};
 
 use backend_compile::ToolchainId;
-use backend_version::ObjectVersion;
 use backend_semantic::vocabulary::{LanguageProfile, NativeTool};
+use backend_version::ObjectVersion;
 
 use super::{EmbeddingRecipeId, LanguageOracleTask, TokenizerId, TreatmentId};
 

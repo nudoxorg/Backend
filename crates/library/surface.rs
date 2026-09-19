@@ -237,7 +237,9 @@ impl SemanticLanguageProfile {
     ///
     /// # Errors
     /// Returns a product admission error for an unknown language/profile pair.
-    pub fn profile(self) -> Result<backend_semantic::vocabulary::LanguageProfile, ProductAdmissionError> {
+    pub fn profile(
+        self,
+    ) -> Result<backend_semantic::vocabulary::LanguageProfile, ProductAdmissionError> {
         backend_semantic::vocabulary::LanguageProfile::try_from(self.0)
             .map_err(|_| ProductAdmissionError::SemanticVersionShape)
     }
@@ -356,6 +358,11 @@ pub enum SurfaceCommand {
     Read {
         /// Canonical declaration labels.
         locators: Box<[ProductText]>,
+    },
+    /// Find the source-verified sites where one declaration is used.
+    References {
+        /// Exact declaration coordinate whose uses are requested.
+        target: ProductText,
     },
     /// Compare declaration sets between package versions.
     Diff {
@@ -499,6 +506,7 @@ impl SurfaceCommand {
     pub const fn id(&self) -> CommandId {
         match self {
             Self::Read { .. } => CommandId::Read,
+            Self::References { .. } => CommandId::References,
             Self::Diff { .. } => CommandId::Diff,
             Self::Explore { .. } => CommandId::Explore,
             Self::Package { .. } => CommandId::Package,
@@ -760,6 +768,26 @@ impl SemanticLinkDelta {
     }
 }
 
+/// One source-verified use of a declaration, as answered by a references
+/// query.
+///
+/// Every record is provenance-bearing by construction: the authority
+/// classification and the captured source site ride in `evidence`, the exact
+/// endpoint resolution rides in `target`, and `site` names the declaration
+/// whose source contains the use.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReferenceRecord {
+    /// Canonical coordinate of the declaration that uses the target.
+    pub site: ProductText,
+    /// Exact local or foreign endpoint this occurrence resolves to.
+    pub target: SemanticLinkTarget,
+    /// Compiler-defined relation that makes this site a use.
+    pub relation: SemanticLinkKind,
+    /// Authority classification and captured source span of the use.
+    pub evidence: SemanticLinkEvidence,
+}
+
 /// One declaration and graph difference between package generations.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -801,6 +829,61 @@ pub struct RegistryPackageRecord {
     pub version: ProductText,
     /// Verified archive byte count.
     pub bytes: u64,
+    /// Current registry selection policy for this immutable release.
+    pub standing: RegistryReleaseStanding,
+    /// Latest download observation, with missing data kept distinct from zero.
+    pub downloads: RegistryDownloadCount,
+    /// Security evaluation at the recorded advisory frontier.
+    pub security: RegistrySecurityStanding,
+    /// Content identity of the three mutable fact groups above.
+    pub facts_version: [u8; 32],
+}
+
+/// Registry policy applied to an immutable release.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RegistryReleaseStanding {
+    /// Offered to new resolutions.
+    Available,
+    /// Withdrawn by the publisher.
+    Yanked,
+    /// Retained with a publisher replacement recommendation.
+    Deprecated,
+    /// Addressable but hidden from normal listings.
+    Unlisted,
+    /// Excluded by ecosystem version policy.
+    Retracted,
+    /// Previously observed and now deleted upstream.
+    Removed,
+}
+
+/// Download telemetry without conflating absent data with zero downloads.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "kebab-case")]
+pub enum RegistryDownloadCount {
+    /// Exact cumulative release count.
+    Exact(u64),
+    /// Sampled or estimated count.
+    Approximate(u64),
+    /// Registry exposes no usable count, with a stable reason token.
+    NotReported(ProductText),
+}
+
+/// Advisory evaluation at a specific versioned frontier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum RegistrySecurityStanding {
+    /// No advisory authority has evaluated the release.
+    Unassessed,
+    /// No active advisory matches at the recorded frontier.
+    NoKnownAdvisory,
+    /// Active canonical advisories match this release.
+    Affected {
+        /// Alias-coalesced advisory count.
+        advisories: u32,
+        /// Highest normalized severity, 0 through 4.
+        maximum_severity: u8,
+    },
 }
 
 /// Availability of registry facts not present in every configured feed.
@@ -875,6 +958,13 @@ pub struct TreeNodeRecord {
 pub enum SurfaceReply {
     /// Per-locator declaration results.
     Read(Box<[DeclarationRecord]>),
+    /// Source-verified uses of one declaration.
+    References {
+        /// Requested target coordinate, verbatim.
+        target: ProductText,
+        /// Bounded use sites, ordered by source position.
+        references: Box<[ReferenceRecord]>,
+    },
     /// Declaration-level differences.
     Diff(Box<[DiffRecord]>),
     /// Bounded catalog page.
@@ -934,6 +1024,7 @@ impl SurfaceReply {
     pub const fn id(&self) -> CommandId {
         match self {
             Self::Read(_) => CommandId::Read,
+            Self::References { .. } => CommandId::References,
             Self::Diff(_) => CommandId::Diff,
             Self::Explored(_) => CommandId::Explore,
             Self::Package(_) => CommandId::Package,
@@ -975,6 +1066,7 @@ impl SurfaceReply {
         }
         let count = match self {
             Self::Read(v) => v.len(),
+            Self::References { references, .. } => references.len(),
             Self::Diff(rows) => rows.iter().try_fold(rows.len(), |count, row| {
                 if !row.has_valid_identity_shape()
                     || row
@@ -1031,6 +1123,15 @@ impl SurfaceReply {
             Self::Read(records) => records.iter().fold(0_usize, |bound, record| {
                 bound.saturating_add(declaration_record_bound(record))
             }),
+            Self::References { target, references } => references.iter().fold(
+                fixed_record_bound().saturating_add(text_bound(target)),
+                |bound, record| {
+                    bound
+                        .saturating_add(fixed_record_bound())
+                        .saturating_add(text_bound(&record.site))
+                        .saturating_add(semantic_link_evidence_bound(&record.evidence))
+                },
+            ),
             Self::Diff(records) => records.iter().fold(0_usize, |bound, record| {
                 bound.saturating_add(diff_record_bound(record))
             }),

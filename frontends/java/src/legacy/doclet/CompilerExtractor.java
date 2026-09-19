@@ -7,6 +7,7 @@ package nudox.oracle;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +27,27 @@ public final class CompilerExtractor {
 	private CompilerExtractor() {}
 
 	public static void main(String[] arguments) throws IOException {
+		try {
+			extract(arguments);
+		} catch (CompilationFailure failure) {
+			failure.printStackTrace(System.err);
+			// The retained stderr stream is not dependable on every host, so
+			// the exact diagnostic text is also persisted beside the image
+			// for the driver that preserves it.
+			if (arguments.length >= 4) {
+				Path output = Path.of(arguments[3]);
+				Path parent = output.getParent();
+				Path sidecar = (parent == null ? Path.of(".") : parent).resolve("authority.diagnostics");
+				Files.writeString(sidecar, failure.getMessage(), StandardCharsets.UTF_8);
+			}
+			System.exit(2);
+		} catch (RuntimeException failure) {
+			failure.printStackTrace(System.err);
+			System.exit(3);
+		}
+	}
+
+	private static void extract(String[] arguments) throws IOException {
 		Invocation invocation = Invocation.parse(arguments);
 		JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
 		if (compiler == null) {
@@ -38,12 +60,40 @@ public final class CompilerExtractor {
 			Iterable<? extends JavaFileObject> sources = files.getJavaFileObjectsFromStrings(
 				invocation.sources
 			);
+			List<String> options = new ArrayList<>(List.of(
+				"-proc:none", "-XDkeepComments", "--release", Integer.toString(invocation.release)
+			));
+			if (invocation.sourcepath != null) {
+				options.add("-sourcepath");
+				options.add(invocation.sourcepath);
+			}
+			if (!invocation.moduleSourcePaths.isEmpty()) {
+				// javac rejects a module source path without a class output
+				// directory. Analysis never generates class files, so the
+				// directory only has to exist beside the produced image.
+				Path parent = invocation.output.getParent();
+				Path classes = (parent == null ? Path.of(".") : parent).resolve("authority-classes");
+				Files.createDirectories(classes);
+				options.add("-d");
+				options.add(classes.toString());
+			}
+			for (String moduleSourcePath : invocation.moduleSourcePaths) {
+				options.add("--module-source-path");
+				options.add(moduleSourcePath);
+			}
 			JavacTask task = (JavacTask) compiler.getTask(
 				null, files, diagnostics,
-				List.of("-proc:none", "-XDkeepComments", "--release", Integer.toString(invocation.release)), null, sources
+				options, null, sources
 			);
 			Iterable<? extends CompilationUnitTree> units = task.parse();
-			task.analyze();
+			try {
+				task.analyze();
+			} catch (RuntimeException failure) {
+				for (Diagnostic<? extends JavaFileObject> diagnostic : diagnostics.getDiagnostics()) {
+					System.err.println(diagnostic);
+				}
+				throw failure;
+			}
 
 			throwIfCompilationFailed(diagnostics.getDiagnostics());
 			AuthorityImage.write(task, units, invocation.release, invocation.sourceBinding, invocation.output);
@@ -81,13 +131,24 @@ public final class CompilerExtractor {
 		private final Path output;
 		private final int release;
 		private final Path sourceBinding;
+		private final String sourcepath;
+		private final List<String> moduleSourcePaths;
 		private final List<String> sources;
 
-		private Invocation(Path output, int release, Path sourceBinding, List<String> sources) {
+		private Invocation(
+			Path output,
+			int release,
+			Path sourceBinding,
+			String sourcepath,
+			List<String> moduleSourcePaths,
+			List<String> sources
+		) {
 			this.output = output;
 			this.release = release;
 			this.sourceBinding = sourceBinding;
-			this.sources = sources;
+			this.sourcepath = sourcepath;
+			this.moduleSourcePaths = List.copyOf(moduleSourcePaths);
+			this.sources = List.copyOf(sources);
 		}
 
 		private static Invocation parse(String[] arguments) {
@@ -96,14 +157,36 @@ public final class CompilerExtractor {
 				|| !arguments[2].equals("--outfile")
 				|| !arguments[4].equals("--source-binding")) {
 				throw new IllegalArgumentException(
-					"usage: CompilerExtractor --release <release> --outfile <path> --source-binding <source> <source>..."
+					"usage: CompilerExtractor --release <release> --outfile <path> --source-binding <source>"
+						+ " [--sourcepath <path>] [--module-source-path <module>=<path>]... <source>..."
 				);
 			}
+			String sourcepath = null;
+			List<String> moduleSourcePaths = new ArrayList<>();
+			int index = 6;
+			while (index < arguments.length) {
+				if (arguments[index].equals("--sourcepath") && index + 1 < arguments.length) {
+					sourcepath = arguments[index + 1];
+					index += 2;
+				} else if (arguments[index].equals("--module-source-path") && index + 1 < arguments.length) {
+					moduleSourcePaths.add(arguments[index + 1]);
+					index += 2;
+				} else {
+					break;
+				}
+			}
 			List<String> sources = new ArrayList<>();
-			for (int index = 6; index < arguments.length; index++) {
+			for (; index < arguments.length; index++) {
 				sources.add(arguments[index]);
 			}
-			return new Invocation(Path.of(arguments[3]), release(arguments[1]), Path.of(arguments[5]), List.copyOf(sources));
+			return new Invocation(
+				Path.of(arguments[3]),
+				release(arguments[1]),
+				Path.of(arguments[5]),
+				sourcepath,
+				moduleSourcePaths,
+				sources
+			);
 		}
 
 		private static int release(String argument) {

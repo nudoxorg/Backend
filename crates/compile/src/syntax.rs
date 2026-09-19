@@ -1,12 +1,47 @@
 //! Shared, content-versioned syntax extraction for local language frontends.
+//!
+//! # Lane contract: the structural baseline is the zero-toolchain fallback
+//!
+//! Everything this module extracts comes from a per-frontend tree-sitter
+//! `TAGS_QUERY` — the lightest possible structural layer. It captures
+//! functions, methods, classes, structs, enums, traits, and modules, and
+//! deliberately nothing finer: fields, enum variants, properties, constants
+//! inside types, and trait-method signatures are NOT visible here.
+//!
+//! This baseline exists ONLY as the fallback lane:
+//!
+//! * discovery and local browsing before the first semantic compile,
+//! * files no semantic authority can answer (non-UTF-8 sources, parsing
+//!   failures, extensions with no semantic profile),
+//! * packages whose semantic publication is an explicit
+//!   `ProductSemanticPublicationRecord::Unavailable` terminal.
+//!
+//! Every MCP/GUI answer for a file that has a published, complete semantic
+//! image (`ProductSemanticPublicationRecord::Published` with complete
+//! coverage) MUST come from the semantic layer — the authority-driven
+//! compile lane — because only that lane sees members, variants, properties,
+//! and resolved signatures. The product projection
+//! (`backend-local-service` `view_build`) enforces this: it suppresses
+//! structural rows for any file whose semantic profile is complete, falls
+//! back semantic → structural (never the reverse), and tags a stale
+//! semantic answer as typed-stale instead of silently substituting
+//! structural rows. See `crates/local-service/src/builtin/lanes.rs` for the
+//! full contract and provenance vocabulary.
 
 use crate::{
     InputContentSchema, InputContentVersion, SyntaxProducerId, SyntaxProducerSchema, typed_of,
 };
 pub use backend_semantic::vocabulary::Language as SourceLanguage;
-use std::{collections::BTreeSet, fmt, num::NonZeroU32, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    num::NonZeroU32,
+    path::Path,
+    sync::Arc,
+};
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator};
 
+pub(crate) use crate::containment::{DefinitionIndex, container_of};
 pub(crate) use crate::syntax_kind::declaration_kind;
 
 const MAX_DECLARATIONS: usize = 16_384;
@@ -56,6 +91,8 @@ pub enum DeclarationKind {
     Variable = 16,
     /// An import/use declaration.
     Import = 17,
+    /// One case of an enum declaration.
+    Variant = 18,
     /// A bounded future or frontend-specific tag not yet understood here.
     Unknown = 255,
 }
@@ -82,6 +119,7 @@ impl DeclarationKind {
             Self::Union => "union",
             Self::Variable => "variable",
             Self::Import => "import",
+            Self::Variant => "variant",
             Self::Unknown => "unknown",
         }
     }
@@ -113,6 +151,7 @@ impl DeclarationKind {
             15 => Some(Self::Union),
             16 => Some(Self::Variable),
             17 => Some(Self::Import),
+            18 => Some(Self::Variant),
             255 => Some(Self::Unknown),
             _ => None,
         }
@@ -139,6 +178,9 @@ impl DeclarationKind {
             "union" => Self::Union,
             "variable" | "var" => Self::Variable,
             "import" | "use" => Self::Import,
+            "variant" | "enum_variant" | "enum-variant" | "enum_member" | "enum-member" => {
+                Self::Variant
+            }
             _ => Self::Unknown,
         }
     }
@@ -153,6 +195,60 @@ impl From<&str> for DeclarationKind {
 impl From<String> for DeclarationKind {
     fn from(value: String) -> Self {
         Self::from_name(&value)
+    }
+}
+
+/// Where a declaration sits relative to the others in its file.
+///
+/// A tags query selects declarations one at a time and says nothing about
+/// nesting, so a product that only had the selected declarations could do no
+/// better than parent all of them to their file.  This is the extracted
+/// containment itself, kept structural on purpose: it names what to resolve
+/// rather than a resolved identity, because the parent's row identity belongs
+/// to whoever projects rows and must not be guessed at extraction time.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum Container {
+    /// Directly in the file module.
+    #[default]
+    Module,
+    /// Lexically inside the captured definition that starts at this line and
+    /// has this name.
+    Enclosing {
+        /// Name of the enclosing captured definition.
+        name: String,
+        /// One-based start line of the enclosing captured definition.
+        line: NonZeroU32,
+    },
+    /// Attached to a named type by an impl block, a method receiver, or an
+    /// out-of-line scoped definition (`Foo::bar`), to be resolved by name.
+    Attached {
+        /// Name of the type this declaration is attached to.
+        type_name: String,
+    },
+}
+
+impl Container {
+    /// Returns the lexical container, or [`Self::Module`] for an empty name.
+    #[must_use]
+    pub fn enclosing(name: &str, line: NonZeroU32) -> Self {
+        if name.is_empty() {
+            return Self::Module;
+        }
+        Self::Enclosing {
+            name: bounded(name),
+            line,
+        }
+    }
+
+    /// Returns the named attachment, or [`Self::Module`] for an empty name.
+    #[must_use]
+    pub fn attached(type_name: &str) -> Self {
+        if type_name.is_empty() {
+            return Self::Module;
+        }
+        Self::Attached {
+            type_name: bounded(type_name),
+        }
     }
 }
 
@@ -308,6 +404,7 @@ pub struct SourceDeclaration {
     signature: String,
     documentation: String,
     source_excerpt: SourceExcerpt,
+    container: Container,
 }
 
 impl SourceDeclaration {
@@ -375,6 +472,7 @@ impl SourceDeclaration {
             signature: signature.into(),
             documentation: documentation.into(),
             source_excerpt: SourceExcerpt::NotCaptured,
+            container: Container::Module,
         };
         if value.name.is_empty()
             || [
@@ -432,6 +530,19 @@ impl SourceDeclaration {
     #[must_use]
     pub const fn source_excerpt(&self) -> &SourceExcerpt {
         &self.source_excerpt
+    }
+
+    /// Attaches the extracted containment of this declaration.
+    #[must_use]
+    pub fn with_container(mut self, container: Container) -> Self {
+        self.container = container;
+        self
+    }
+
+    /// Returns where this declaration sits among its file's declarations.
+    #[must_use]
+    pub const fn container(&self) -> &Container {
+        &self.container
     }
 
     /// Returns the compact source signature.
@@ -559,6 +670,18 @@ impl SyntaxFrontend {
         self.producer
     }
 
+    /// Returns every filename extension this frontend claims, in variant order.
+    ///
+    /// The claimed set is the single source of truth for which files a project
+    /// scan admits, so a consumer that has to derive anything else per
+    /// extension — a semantic profile, say — enumerates it here rather than
+    /// repeating the list.
+    pub fn extensions(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.variants
+            .iter()
+            .flat_map(|variant| variant.extensions.iter().copied())
+    }
+
     /// Returns whether this frontend owns a path's extension.
     #[must_use]
     pub fn supports_path(&self, path: &Path) -> bool {
@@ -583,16 +706,7 @@ impl SyntaxFrontend {
     /// parser setup failure, or an exceeded declaration bound.
     pub fn analyze(&self, path: &Path, source: &[u8]) -> Result<SourceAnalysis, SyntaxError> {
         let text = std::str::from_utf8(source).map_err(|_| SyntaxError::NonUtf8)?;
-        let extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(str::to_ascii_lowercase)
-            .ok_or_else(|| SyntaxError::UnsupportedPath(path.to_path_buf()))?;
-        let variant = self
-            .variants
-            .iter()
-            .find(|variant| variant.supports(&extension))
-            .ok_or_else(|| SyntaxError::UnsupportedPath(path.to_path_buf()))?;
+        let variant = self.variant_for(path)?;
         let mut parser = Parser::new();
         parser
             .set_language(&variant.language)
@@ -601,33 +715,45 @@ impl SyntaxFrontend {
         if tree.root_node().has_error() {
             return Err(SyntaxError::MalformedSource(self.language));
         }
-        let mut declarations = Vec::new();
-        declarations.push(module_declaration(path, self.language)?);
-        let names = variant.tags.capture_names();
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&variant.tags, tree.root_node(), source);
-        let mut seen = BTreeSet::new();
+        let captured = captured_definitions(variant, &tree, &mut cursor, source, text);
+        Ok(SourceAnalysis {
+            language: self.language,
+            content: typed_of::<InputContentSchema>(source),
+            producer: self.producer,
+            declarations: self.declarations_of(path, &captured, text)?,
+        })
+    }
+
+    fn variant_for(&self, path: &Path) -> Result<&GrammarVariant, SyntaxError> {
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_ascii_lowercase)
+            .ok_or_else(|| SyntaxError::UnsupportedPath(path.to_path_buf()))?;
+        self.variants
+            .iter()
+            .find(|variant| variant.supports(&extension))
+            .ok_or_else(|| SyntaxError::UnsupportedPath(path.to_path_buf()))
+    }
+
+    /// Projects deduplicated captures into bounded declarations.
+    ///
+    /// Containment is resolved against the complete capture set rather than
+    /// while matching, because the enclosing definition of the first capture
+    /// in a file can be selected by a later match.
+    fn declarations_of(
+        &self,
+        path: &Path,
+        captured: &[CapturedDefinition<'_>],
+        text: &str,
+    ) -> Result<Arc<[SourceDeclaration]>, SyntaxError> {
+        let resolved = resolved_definitions(self.language, captured, text);
+        let mut declarations = Vec::with_capacity(resolved.len().saturating_add(1));
+        declarations.push(module_declaration(path, self.language)?);
         let mut excerpt_bytes = 0usize;
-        while let Some(query_match) = matches.next() {
-            let definition = query_match.captures().iter().find_map(|capture| {
-                let capture_name = names.get(capture.index as usize)?;
-                capture_name
-                    .strip_prefix("definition.")
-                    .map(|kind| (kind, capture.node))
-            });
-            let name = query_match.captures().iter().find_map(|capture| {
-                (names.get(capture.index as usize).copied() == Some("name")).then_some(capture.node)
-            });
-            let (Some((kind, definition)), Some(name)) = (definition, name) else {
-                continue;
-            };
-            let name = node_text(name, text).trim();
-            let line = u32::try_from(definition.start_position().row.saturating_add(1))
-                .unwrap_or(u32::MAX);
-            if name.is_empty() || !seen.insert((line, kind, name.to_owned())) {
-                continue;
-            }
-            let declaration_source = node_text(definition, text);
+        for definition in resolved {
+            let declaration_source = node_text(definition.node, text);
             excerpt_bytes = excerpt_bytes
                 .checked_add(bounded_excerpt_end(declaration_source))
                 .ok_or(SyntaxError::TooManySourceBytes)?;
@@ -637,27 +763,170 @@ impl SyntaxFrontend {
             declarations.push(
                 SourceDeclaration::at_path(
                     path.display().to_string(),
-                    bounded(name),
-                    declaration_kind(self.language, kind, definition.kind()),
-                    line,
-                    declaration_signature(definition, text),
-                    declaration_documentation(definition, text),
+                    definition.name,
+                    definition.kind,
+                    definition.line.get(),
+                    declaration_signature(definition.node, text),
+                    declaration_documentation(definition.node, text),
                 )?
-                .with_source_excerpt(SourceExcerpt::capture_bounded(declaration_source)),
+                .with_source_excerpt(SourceExcerpt::capture_bounded(declaration_source))
+                .with_container(definition.container),
             );
             if declarations.len() > MAX_DECLARATIONS {
                 return Err(SyntaxError::TooManyDeclarations);
             }
         }
-        declarations[1..].sort_by(|left, right| {
+        let Some(tail) = declarations.get_mut(1..) else {
+            return Ok(Arc::from(declarations.into_boxed_slice()));
+        };
+        tail.sort_by(|left, right| {
             (left.line(), left.kind(), left.name()).cmp(&(right.line(), right.kind(), right.name()))
         });
-        Ok(SourceAnalysis {
-            language: self.language,
-            content: typed_of::<InputContentSchema>(source),
-            producer: self.producer,
-            declarations: Arc::from(declarations.into_boxed_slice()),
-        })
+        Ok(Arc::from(declarations.into_boxed_slice()))
+    }
+}
+
+/// One definition selected by a tags query, before it becomes a declaration.
+struct CapturedDefinition<'a> {
+    node: Node<'a>,
+    name: String,
+    tag: &'a str,
+    line: NonZeroU32,
+}
+
+/// Selects every definition a grammar's tags query matches, once each.
+///
+/// The `(line, tag, name)` identity is retained because two patterns commonly
+/// select the same definition - a supplementary pattern refining a stock one -
+/// and one declaration must not be published twice.
+fn captured_definitions<'a>(
+    variant: &'a GrammarVariant,
+    tree: &'a tree_sitter::Tree,
+    cursor: &mut QueryCursor,
+    source: &[u8],
+    text: &str,
+) -> Vec<CapturedDefinition<'a>> {
+    let names = variant.tags.capture_names();
+    let mut matches = cursor.matches(&variant.tags, tree.root_node(), source);
+    let mut seen = BTreeSet::new();
+    let mut captured: Vec<CapturedDefinition<'a>> = Vec::new();
+    while let Some(query_match) = matches.next() {
+        let definition = query_match.captures().iter().find_map(|capture| {
+            let capture_name = names.get(usize::try_from(capture.index).ok()?)?;
+            capture_name
+                .strip_prefix("definition.")
+                .map(|tag| (tag, capture.node))
+        });
+        let name = query_match.captures().iter().find_map(|capture| {
+            let index = usize::try_from(capture.index).ok()?;
+            (names.get(index).copied() == Some("name")).then_some(capture.node)
+        });
+        let (Some((tag, node)), Some(name)) = (definition, name) else {
+            continue;
+        };
+        let name = node_text(name, text).trim();
+        let line = NonZeroU32::new(
+            u32::try_from(node.start_position().row.saturating_add(1)).unwrap_or(u32::MAX),
+        )
+        .unwrap_or(NonZeroU32::MIN);
+        if name.is_empty() || !seen.insert((line, tag, name.to_owned())) {
+            continue;
+        }
+        captured.push(CapturedDefinition {
+            node,
+            name: bounded(name),
+            tag,
+            line,
+        });
+    }
+    captured
+}
+
+/// One definition node's byte span and name, as captures are grouped by.
+type DefinitionSelector = ((usize, usize), String);
+
+/// One definition with its containment and its settled role.
+struct ResolvedDefinition<'a> {
+    node: Node<'a>,
+    name: String,
+    kind: DeclarationKind,
+    line: NonZeroU32,
+    container: Container,
+}
+
+/// Settles containment, role, and identity for every captured definition.
+///
+/// The three answers are decided together because each one needs the others:
+/// a grammar tags by shape, so Rust calls every function in a `declaration_list`
+/// a method - and a `mod` body is a declaration list too - while containment
+/// knows whether that list belongs to a type. Two patterns also select one
+/// node under different tags, so the specific role has to win *after* the
+/// role is settled, or one declaration is published twice.
+fn resolved_definitions<'a>(
+    language: SourceLanguage,
+    captured: &[CapturedDefinition<'a>],
+    text: &str,
+) -> Vec<ResolvedDefinition<'a>> {
+    let mut definitions = DefinitionIndex::new();
+    for capture in captured {
+        definitions.insert(capture.node, &capture.name, capture.line, capture.tag);
+    }
+    let mut selected: BTreeMap<DefinitionSelector, usize> = BTreeMap::new();
+    let mut resolved: Vec<ResolvedDefinition<'a>> = Vec::new();
+    for capture in captured {
+        let container = container_of(capture.node, &definitions, text);
+        let tag = settled_role(capture.tag, &container, &definitions);
+        let kind = declaration_kind(language, tag, capture.node.kind());
+        let selector: DefinitionSelector = (
+            (capture.node.start_byte(), capture.node.end_byte()),
+            capture.name.clone(),
+        );
+        if let Some(held) = selected.get(&selector).and_then(|at| resolved.get_mut(*at)) {
+            if role_specificity(kind) > role_specificity(held.kind) {
+                held.kind = kind;
+            }
+            continue;
+        }
+        selected.insert(selector, resolved.len());
+        resolved.push(ResolvedDefinition {
+            node: capture.node,
+            name: capture.name.clone(),
+            kind,
+            line: capture.line,
+            container,
+        });
+    }
+    resolved
+}
+
+/// Returns the role a capture really has, given where it sits.
+///
+/// A stock tags query answers by shape: a function inside a Rust
+/// `declaration_list` is tagged a method whether that list is an `impl` body
+/// or a `mod` body, and a Python method is tagged a plain function because
+/// the grammar has one node for both. Containment is what actually decides
+/// it, so a callable attached to, or written inside, a type is a method and
+/// one inside a module is a function.
+fn settled_role<'a>(tag: &'a str, container: &Container, definitions: &DefinitionIndex) -> &'a str {
+    let inside_a_type = definitions.contained_by_a_type(container);
+    match tag.as_bytes() {
+        b"method" if !inside_a_type => "function",
+        b"function" if inside_a_type => "method",
+        _ => tag,
+    }
+}
+
+/// Returns how much a role says about one definition node.
+///
+/// Two patterns selecting the same node disagree only about specificity - a
+/// Python `@property` accessor is also a function - so the role that says
+/// more replaces the one that says less instead of being published beside it.
+const fn role_specificity(kind: DeclarationKind) -> u8 {
+    match kind {
+        DeclarationKind::Function => 0,
+        DeclarationKind::Method => 1,
+        DeclarationKind::Property | DeclarationKind::Constructor => 2,
+        _ => 3,
     }
 }
 
@@ -736,7 +1005,7 @@ fn module_declaration(
     .map_err(SyntaxError::Declaration)
 }
 
-fn node_text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
+pub(crate) fn node_text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
     source.get(node.byte_range()).unwrap_or("")
 }
 
@@ -771,35 +1040,117 @@ fn declaration_signature(node: Node<'_>, source: &str) -> String {
 
 fn declaration_documentation(mut node: Node<'_>, source: &str) -> String {
     for _ in 0..3 {
-        let mut comments = Vec::new();
-        let mut previous = node.prev_named_sibling();
-        while let Some(candidate) = previous {
-            if candidate.kind() != "comment" {
-                break;
-            }
-            comments.push(clean_comment(node_text(candidate, source)));
-            previous = candidate.prev_named_sibling();
-        }
+        let comments = preceding_comments(node, source);
         if !comments.is_empty() {
-            comments.reverse();
             return bounded(&comments.join("\n"));
+        }
+        if let Some(docstring) = enclosed_docstring(node, source) {
+            return bounded(&docstring);
         }
         let Some(parent) = node.parent() else {
             break;
         };
-        if !matches!(
-            parent.kind(),
-            "function_definition"
-                | "declaration"
-                | "export_statement"
-                | "decorated_definition"
-                | "template_declaration"
-        ) {
+        if !documentation_parent(parent.kind()) {
             break;
         }
         node = parent;
     }
     String::new()
+}
+
+/// Collects the contiguous comment run written immediately above a node.
+///
+/// An attribute, annotation, or decorator sits between a declaration and its
+/// documentation, so the scan steps over one instead of concluding the
+/// declaration is undocumented.
+fn preceding_comments(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut comments = Vec::new();
+    let mut previous = node.prev_named_sibling();
+    while let Some(candidate) = previous {
+        previous = candidate.prev_named_sibling();
+        if decorates_a_declaration(candidate.kind()) {
+            continue;
+        }
+        if !is_comment(candidate.kind()) {
+            break;
+        }
+        comments.push(clean_comment(node_text(candidate, source)));
+    }
+    comments.reverse();
+    comments
+}
+
+/// Returns a Python definition's docstring, when its body opens with one.
+///
+/// Python documents a definition from the inside rather than above it, so a
+/// class or function with a docstring and no comment would otherwise arrive
+/// with no prose at all.
+fn enclosed_docstring(node: Node<'_>, source: &str) -> Option<String> {
+    if !matches!(node.kind(), "function_definition" | "class_definition") {
+        return None;
+    }
+    let statement = node.child_by_field_name("body")?.named_child(0)?;
+    if statement.kind() != "expression_statement" {
+        return None;
+    }
+    let literal = statement.named_child(0)?;
+    if literal.kind() != "string" {
+        return None;
+    }
+    let text = node_text(literal, source)
+        .trim()
+        .trim_start_matches(['r', 'b', 'u', 'f', 'R', 'B', 'U', 'F'])
+        .trim_matches(['"', '\''])
+        .trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// Returns whether a node is a comment some grammar attaches prose to.
+///
+/// Grammars disagree about the name: Rust and Java say `line_comment` and
+/// `block_comment`, everyone else says `comment`. Reading only `comment` is
+/// why every Rust and Java declaration arrived undocumented.
+const fn is_comment(kind: &str) -> bool {
+    matches!(
+        kind.as_bytes(),
+        b"comment" | b"line_comment" | b"block_comment" | b"doc_comment"
+    )
+}
+
+/// Returns whether a node decorates the declaration that follows it.
+const fn decorates_a_declaration(kind: &str) -> bool {
+    matches!(
+        kind.as_bytes(),
+        b"attribute_item"
+            | b"attribute_list"
+            | b"attribute_declaration"
+            | b"attribute_specifier"
+            | b"annotation"
+            | b"marker_annotation"
+            | b"decorator"
+            | b"modifiers"
+    )
+}
+
+/// Returns whether documentation written above a parent belongs to its child.
+///
+/// A capture is often a declarator or an expression rather than the statement
+/// a reader wrote the comment above, and each of these parents adds no
+/// declaration of its own for the prose to belong to instead.
+const fn documentation_parent(kind: &str) -> bool {
+    matches!(
+        kind.as_bytes(),
+        b"function_definition"
+            | b"declaration"
+            | b"export_statement"
+            | b"decorated_definition"
+            | b"template_declaration"
+            | b"expression_statement"
+            | b"const_declaration"
+            | b"var_declaration"
+            | b"type_declaration"
+            | b"field_declaration"
+    )
 }
 
 fn clean_comment(comment: &str) -> String {

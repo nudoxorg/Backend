@@ -75,6 +75,36 @@ pub enum JavaRelease {
     Java25 = 4,
 }
 
+impl JavaRelease {
+    /// Returns the canonical javac `--release` spelling.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Java8 => "8",
+            Self::Java11 => "11",
+            Self::Java17 => "17",
+            Self::Java21 => "21",
+            Self::Java25 => "25",
+        }
+    }
+}
+
+impl<'release> TryFrom<&'release str> for JavaRelease {
+    type Error = &'release str;
+
+    /// Parses the canonical javac release spelling and its profile alias.
+    fn try_from(value: &'release str) -> Result<Self, Self::Error> {
+        match value {
+            "8" | "java-8" => Ok(Self::Java8),
+            "11" | "java-11" => Ok(Self::Java11),
+            "17" | "java-17" => Ok(Self::Java17),
+            "21" | "java-21" => Ok(Self::Java21),
+            "25" | "java-25" => Ok(Self::Java25),
+            value => Err(value),
+        }
+    }
+}
+
 /// C# language version selected by the Roslyn compilation authority.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

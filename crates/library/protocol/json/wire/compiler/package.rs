@@ -2,12 +2,12 @@
 
 use std::{io::ErrorKind, path::Path};
 
-use backend_semantic::vocabulary::{NativeWorkerPanicClass, NativeWorkerPanicMessage};
 use crate::interface::{
     CompilerRuntimeCause, CompilerRuntimePanic, PackageCompilePhase, PackageDeclarationScopeCause,
     PackageEcosystem, PackagePathComponentError, PackageSourceCause, PackageSourceIoFact,
     PackageSourceIoPhase, PackageTextRange,
 };
+use backend_semantic::vocabulary::{NativeWorkerPanicClass, NativeWorkerPanicMessage};
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use super::super::scalar::serialize_error_kind;
@@ -29,7 +29,10 @@ pub(crate) enum PackageCompilePhaseWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "crate::interface::PackageEcosystem", rename_all = "snake_case")]
+#[serde(
+    remote = "crate::interface::PackageEcosystem",
+    rename_all = "snake_case"
+)]
 enum PackageEcosystemWire {
     Cargo,
     Npm,

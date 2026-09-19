@@ -8,8 +8,9 @@ use backend_semantic::ir::{
 };
 use backend_semantic::ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
-    EntityKind, EntityRecord, ExtensionPoolsLane, ExtensionTypeParameter,
-    ExtensionTypeParameterBound, ExtensionTypeParameterRange, FragmentError, FragmentView,
+    EntityKind, EntityRecord, ExtensionFreePredicate, ExtensionPoolsLane, ExtensionTypeParameter,
+    ExtensionTypeParameterBound, ExtensionTypeParameterBoundRange, ExtensionTypeParameterRange,
+    FragmentError, FragmentView, FreePredicateListId,
     PrepareError, PreparedFragment, PrimitiveType, ReopenedTypeParameterList, SemanticDataFault,
     SourceIdentity, TypeNode, TypeParameterListId, WriteError, canonicalize_data_with_budget,
 };
@@ -518,6 +519,8 @@ fn schema_five_type_parameter_ranges_keep_empty_lists_distinct_from_element_star
         type_parameters: &parameters,
         type_parameter_bounds: &[],
         type_parameter_lists: &ranges,
+        free_predicates: &[],
+        free_predicate_lists: &[],
         atom_lists: &[],
         type_lists: &[],
         entity_lists: &[],
@@ -525,7 +528,7 @@ fn schema_five_type_parameter_ranges_keep_empty_lists_distinct_from_element_star
     lane.admit(0, 0, 0)?;
     let mut payload = vec![0; lane.payload_len()];
     lane.write_payload(&mut payload);
-    let pools = backend_semantic::ir::reopen_extension_pools(5, &payload, 0, 0, 0)?;
+    let pools = backend_semantic::ir::reopen_extension_pools(7, &payload, 0, 0, 0)?;
 
     match pools.type_parameter_list(TypeParameterListId::new(0))? {
         ReopenedTypeParameterList::Exact(empty) => {
@@ -598,6 +601,8 @@ fn schema_five_rejects_a_type_parameter_range_past_the_element_prefix() {
             start: 1,
             length: 1,
         }],
+        free_predicates: &[],
+        free_predicate_lists: &[],
         atom_lists: &[],
         type_lists: &[],
         entity_lists: &[],
@@ -645,6 +650,8 @@ fn schema_five_reopens_plural_bounds_and_closed_parameter_requirements()
         type_parameters: &parameters,
         type_parameter_bounds: &bounds,
         type_parameter_lists: &lists,
+        free_predicates: &[],
+        free_predicate_lists: &[],
         atom_lists: &[],
         type_lists: &[],
         entity_lists: &[],
@@ -652,7 +659,7 @@ fn schema_five_reopens_plural_bounds_and_closed_parameter_requirements()
     lane.admit(0, 1, 0)?;
     let mut payload = vec![0; lane.payload_len()];
     lane.write_payload(&mut payload);
-    let pools = backend_semantic::ir::reopen_extension_pools(5, &payload, 0, 1, 0)?;
+    let pools = backend_semantic::ir::reopen_extension_pools(7, &payload, 0, 1, 0)?;
     let backend_semantic::ir::ReopenedTypeParameterList::Exact(parameters) =
         pools.type_parameter_list(TypeParameterListId::new(0))?
     else {
@@ -726,6 +733,8 @@ fn schema_five_rejects_constructor_with_an_implied_value_requirement() {
         type_parameters: &parameters,
         type_parameter_bounds: &[],
         type_parameter_lists: &[],
+        free_predicates: &[],
+        free_predicate_lists: &[],
         atom_lists: &[],
         type_lists: &[],
         entity_lists: &[],
@@ -764,6 +773,8 @@ fn schema_five_rejects_ref_like_with_a_known_reference_requirement() {
         type_parameters: &parameters,
         type_parameter_bounds: &[],
         type_parameter_lists: &[],
+        free_predicates: &[],
+        free_predicate_lists: &[],
         atom_lists: &[],
         type_lists: &[],
         entity_lists: &[],
@@ -783,4 +794,112 @@ fn schema_five_rejects_ref_like_with_a_known_reference_requirement() {
 fn decoded_reference_list_rejects_an_overflowing_position_without_panicking() {
     let list = backend_semantic::ir::DecodedRefList { words: &[] };
     assert_eq!(list.get(usize::MAX), None);
+}
+
+#[test]
+fn schema_seven_free_predicates_round_trip_subject_and_multi_bound()
+-> Result<(), backend_semantic::ir::ExtensionPoolFault> {
+    // Two non-trivial free predicates. The first names a plain type subject
+    // with two ordered bounds; the second names an associated-type subject.
+    // The subject coordinate is a type fact and the bounds reuse the shared
+    // `type_parameter_bounds` lane.
+    let bounds = [
+        ExtensionTypeParameterBound::Type(1),
+        ExtensionTypeParameterBound::Lifetime(b"'scope"),
+        ExtensionTypeParameterBound::Type(2),
+    ];
+    let predicates = [
+        ExtensionFreePredicate {
+            subject: 0,
+            bounds: ExtensionTypeParameterBoundRange {
+                start: 0,
+                length: 2,
+            },
+        },
+        ExtensionFreePredicate {
+            subject: 3,
+            bounds: ExtensionTypeParameterBoundRange {
+                start: 2,
+                length: 1,
+            },
+        },
+    ];
+    let lists = [ExtensionTypeParameterRange {
+        start: 0,
+        length: 2,
+    }];
+    let lane = ExtensionPoolsLane {
+        type_parameters: &[],
+        type_parameter_bounds: &bounds,
+        type_parameter_lists: &[],
+        free_predicates: &predicates,
+        free_predicate_lists: &lists,
+        atom_lists: &[],
+        type_lists: &[],
+        entity_lists: &[],
+    };
+    // Four type facts are named by the subjects and bounds.
+    lane.admit(0, 4, 0)?;
+    let mut payload = vec![0; lane.payload_len()];
+    lane.write_payload(&mut payload);
+    let pools = backend_semantic::ir::reopen_extension_pools(7, &payload, 0, 4, 0)?;
+    assert_eq!(pools.free_predicate_list_count(), 1);
+    let run = pools.free_predicate_list(FreePredicateListId::new(0))?;
+    assert_eq!(run.start, 0);
+    assert_eq!(run.length, 2);
+
+    let first = pools.free_predicate(0)?;
+    assert_eq!(first.subject, 0);
+    let first_bounds = pools.free_predicate_bounds(first)?;
+    let mut cursor = first_bounds.cursor()?;
+    assert_eq!(
+        cursor.next().transpose()?,
+        Some(backend_semantic::ir::DecodedTypeParameterBound::Type(1))
+    );
+    assert_eq!(
+        cursor.next().transpose()?,
+        Some(backend_semantic::ir::DecodedTypeParameterBound::Lifetime(
+            b"'scope"
+        ))
+    );
+    assert!(cursor.next().is_none());
+
+    let second = pools.free_predicate(1)?;
+    assert_eq!(second.subject, 3);
+    let second_bounds = pools.free_predicate_bounds(second)?;
+    assert_eq!(second_bounds.length, 1);
+    assert_eq!(
+        second_bounds.get(0)?,
+        backend_semantic::ir::DecodedTypeParameterBound::Type(2)
+    );
+    Ok(())
+}
+
+#[test]
+fn schema_seven_rejects_a_free_predicate_subject_outside_the_type_lane() {
+    let predicates = [ExtensionFreePredicate {
+        subject: 4,
+        bounds: ExtensionTypeParameterBoundRange {
+            start: 0,
+            length: 0,
+        },
+    }];
+    let lane = ExtensionPoolsLane {
+        type_parameters: &[],
+        type_parameter_bounds: &[],
+        type_parameter_lists: &[],
+        free_predicates: &predicates,
+        free_predicate_lists: &[],
+        atom_lists: &[],
+        type_lists: &[],
+        entity_lists: &[],
+    };
+    assert_eq!(
+        lane.admit(0, 4, 0),
+        Err(backend_semantic::ir::ExtensionPoolFault::FreePredicateSubject {
+            predicate: 0,
+            raw: 4,
+            limit: 4,
+        })
+    );
 }

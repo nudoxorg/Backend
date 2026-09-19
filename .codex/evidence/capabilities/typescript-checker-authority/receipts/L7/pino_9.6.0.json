@@ -1,8 +1,8 @@
 {
   "class": "MonorepoSubpackage",
-  "defect_class": "checker-authority",
+  "defect_class": "entry-resolution",
   "purl": "npm:pino@9.6.0",
-  "raw_error": "TypeScript checker exited with exit status: 1; stderr tail: /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122\n  if (type.isThisType === true || type.flags & flags.ThisType) return { kind: 'this' };\n           ^\n\nTypeError: Cannot read properties of undefined (reading 'isThisType')\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122:12)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:134:17)\n    at objectTypeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:194:22)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:167:41)\n    at /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:127:72\n    at Array.map (<anonymous>)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:127:56)\n    at emitVariableLike (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:309:13)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:357:5)\n    at visitNodes (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32457:22)\n\nNode.js v26.8.1\n",
+  "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
   "schema": 1,
   "stage": "full-lifecycle",
   "verdict": "FAILED"

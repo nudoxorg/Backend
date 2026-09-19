@@ -1,8 +1,28 @@
 //! Closed product commands and bounded query descriptors.
 
-use crate::{Cursor, ViewRoot, ViewSnapshot, ViewStateRoot};
-use crate::{Document, NameRecord, Outline, PackageKey, Row, SymbolKey};
+use crate::surface::{SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget};
+use crate::{
+    Cursor, Document, NameRecord, Outline, PackageKey, Row, SymbolKey, ViewRoot, ViewSnapshot,
+    ViewStateRoot,
+};
 use backend_semantic::ReadManifest;
+
+/// One compiler-verified use of a declaration, before the view names it.
+///
+/// The application owner derives these from the semantic occurrence plane;
+/// the catalog resolves `site` against the selected view and answers with
+/// named [`crate::ReferenceRecord`]s.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReferenceFact {
+    /// Symbol of the declaration whose source contains the use.
+    pub site: SymbolKey,
+    /// Exact local or foreign endpoint the occurrence resolves to.
+    pub target: SemanticLinkTarget,
+    /// Compiler-defined relation that makes this site a use.
+    pub relation: SemanticLinkKind,
+    /// Authority classification and captured source span of the use.
+    pub evidence: SemanticLinkEvidence,
+}
 
 /// Closed command identity shared by CLI, MCP, and desktop transports.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -33,6 +53,8 @@ pub enum CommandId {
     Source,
     /// Read symbols related to one declaration.
     Related,
+    /// Find the source-verified sites where one declaration is used.
+    References,
     /// Read several declaration documents.
     Read,
     /// Compare package declaration versions.

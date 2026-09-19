@@ -1,31 +1,9 @@
 {
   "class": "BuildArtifacts",
-  "computed_samples": [],
-  "decoded_entities": 1,
-  "decoded_facts": 1,
-  "exported_declarations": 0,
-  "fallbacks": [],
-  "perf": {
-    "check_ns": 476297875,
-    "fact_count": 1,
-    "lower_ns": 2602584,
-    "parse_ns": 201798792,
-    "wall_ns": 680699251
-  },
+  "defect_class": "entry-resolution",
   "purl": "npm:hono@4.6.12",
-  "render_truth": [
-    "signature",
-    "type"
-  ],
-  "rubric": {
-    "computed_fidelity": 2,
-    "declaration_coverage": 2,
-    "docs_extensions": 2,
-    "references": 2,
-    "render_truth": 2,
-    "type_fidelity": 2
-  },
+  "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
   "schema": 1,
   "stage": "full-lifecycle",
-  "verdict": "CLEAN"
+  "verdict": "FAILED"
 }

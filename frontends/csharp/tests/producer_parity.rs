@@ -10,10 +10,22 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const SOURCE: &[u8] = include_bytes!("fixtures/producer/fidelity.cs");
+/// Regenerated 2026-09 through the locked-restore flow with the net8.0-pinned
+/// helper (SDK 8.0.422, Roslyn 5.6.0). The prior golden was produced by a
+/// net10-era helper; the only delta is the References plane, 15 → 19 rows:
+/// the current extractor now records the four bare-identifier const-field
+/// reads of `Answer` (`ReferenceTag::FieldRead`) that the older build never
+/// emitted. Every declaration, parameter, type, attribute, and doc row is
+/// byte-identical. The fixture itself is unchanged: its `allows ref struct`
+/// constraint (fidelity.cs:62) still fails to bind under net8.0 with
+/// recovered error CS9240 ("Target runtime doesn't support by-ref-like
+/// generics"), but that constraint is unobservable in the image — the
+/// TypeConstraints plane is empty in both goldens — so the fixture still
+/// round-trips faithfully without modification.
 const IMAGE: &[u8] = include_bytes!("fixtures/producer/fidelity.ncaimg");
 const UNICODE_SOURCE: &[u8] = include_bytes!("fixtures/producer/unicode.cs");
 const UNICODE_IMAGE: &[u8] = include_bytes!("fixtures/producer/unicode.ncaimg");
-const DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v3\0";
+const DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v4\0";
 
 fn image(bytes: &[u8]) -> Result<CSharpImage<'_>, Box<dyn Error>> {
     CSharpImage::open(bytes).map_err(|error| format!("image rejected: {error:?}").into())
@@ -155,9 +167,40 @@ fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn E
     // typed `ToolingUnavailable` terminal when the configured executable is
     // absent or unusable, so this test can never silently replay fixtures.
     let dotnet = probe_dotnet()?;
+    // The oracle is built from source, exactly as the flow harness does: a
+    // locked restore pins the Roslyn closure from packages.lock.json, and the
+    // no-restore publish reuses exactly those assets. No committed build
+    // output is ever trusted.
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/producer");
-    let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src/legacy/helper/bin/Release/net10.0/oracle.dll");
+    let helper_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/legacy/helper");
+    let publish = std::env::temp_dir().join(format!(
+        "nudox-csharp-oracle-publish-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
+    ));
+    fs::create_dir_all(&publish)?;
+    let restored = Command::new(&dotnet)
+        .args(["restore", "oracle.csproj", "--locked-mode", "--nologo"])
+        .current_dir(&helper_dir)
+        .status()?;
+    assert!(restored.success(), "locked oracle restore failed: {restored}");
+    let published = Command::new(&dotnet)
+        .args([
+            "publish",
+            "oracle.csproj",
+            "-c",
+            "Release",
+            "--nologo",
+            "--no-restore",
+            "-o",
+        ])
+        .arg(&publish)
+        .current_dir(&helper_dir)
+        .status()?;
+    assert!(published.success(), "oracle publish failed: {published}");
+    let helper = publish.join("oracle.dll");
     let first = std::env::temp_dir().join("nudox-csharp-fidelity-first.ncaimg");
     let second = std::env::temp_dir().join("nudox-csharp-fidelity-second.ncaimg");
     for output in [&first, &second] {

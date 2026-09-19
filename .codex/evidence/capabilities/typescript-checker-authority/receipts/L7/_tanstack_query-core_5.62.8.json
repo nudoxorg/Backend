@@ -1,8 +1,8 @@
 {
   "class": "Scoped",
-  "defect_class": "production-lowering",
+  "defect_class": "entry-resolution",
   "purl": "npm:@tanstack/query-core@5.62.8",
-  "raw_error": "compile: LoweringUnsupported { source_identity: SourceIdentity { identity: ContentId(0efb4a5a9b107cf199a95ffb837e85a09d6b5ac5aef0934dae0e80eec62daf74), byte_len: 3404 }, recipe: CompileRecipeFact { identity: ContentId(11a26c9e752c070313256bc36d9aba09d940fdda72a974763d5df10488cf3e6b), profile: TypeScript(TypeScript), stage: LowerIr, tool: TypeScriptCompiler, toolchain: ContentId(0fe9e62ffe91f46368a8274642ef1ac7bcbee7f3922850b3fa7cc8159c5e783a) }, cause: NoSupportedDeclaration }",
+  "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
   "schema": 1,
   "stage": "full-lifecycle",
   "verdict": "FAILED"

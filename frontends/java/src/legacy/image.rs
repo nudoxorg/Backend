@@ -10,14 +10,19 @@ use thiserror::Error;
 const MAGIC: [u8; 4] = *b"NJAI";
 const V1: u16 = 1;
 const V2: u16 = 2;
+const V3: u16 = 3;
+const V4: u16 = 4;
 const DIRECTORY_OFFSET: usize = 48;
 const DIRECTORY_ENTRY_BYTES: usize = 16;
 const V1_SECTIONS: usize = 8;
 const V2_SECTIONS: usize = 10;
+const V4_SECTIONS: usize = 12;
 const V1_HEADER_BYTES: usize = DIRECTORY_OFFSET + DIRECTORY_ENTRY_BYTES * V1_SECTIONS;
 const ABSENT: u32 = u32::MAX;
 const V1_DIGEST_DOMAIN: &[u8] = b"nudox.java.authority.image.sha256.v1\0";
 const V2_DIGEST_DOMAIN: &[u8] = b"nudox.java.authority.image.sha256.v2\0";
+const V3_DIGEST_DOMAIN: &[u8] = b"nudox.java.authority.image.sha256.v3\0";
+const V4_DIGEST_DOMAIN: &[u8] = b"nudox.java.authority.image.sha256.v4\0";
 const MODIFIER_PUBLIC: u32 = 1 << 0;
 const MODIFIER_PROTECTED: u32 = 1 << 1;
 const MODIFIER_PRIVATE: u32 = 1 << 2;
@@ -47,32 +52,21 @@ const KNOWN_MODIFIERS: u32 = MODIFIER_PUBLIC
     | MODIFIER_SEALED
     | MODIFIER_NON_SEALED;
 
-/// A Java release selected before the compiler task is created.
-#[repr(u16)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum JavaRelease {
-    /// Java 8 language and platform contract.
-    Java8 = 8,
-    /// Java 11 language and platform contract.
-    Java11 = 11,
-    /// Java 17 language and platform contract.
-    Java17 = 17,
-    /// Java 21 language and platform contract.
-    Java21 = 21,
-    /// Java 25 language and platform contract.
-    Java25 = 25,
-}
+// One closed vocabulary type is shared with the semantic plane; the image
+// header keeps its own raw release encoding below.
+pub use backend_semantic::vocabulary::JavaRelease;
 
-impl JavaRelease {
-    const fn decode(raw: u16) -> Option<Self> {
-        match raw {
-            8 => Some(Self::Java8),
-            11 => Some(Self::Java11),
-            17 => Some(Self::Java17),
-            21 => Some(Self::Java21),
-            25 => Some(Self::Java25),
-            _ => None,
-        }
+/// Decodes the image header's raw release field. The wire encoding is the
+/// javac release number itself; it stays fixed regardless of the vocabulary
+/// discriminants.
+const fn decode_release(raw: u16) -> Option<JavaRelease> {
+    match raw {
+        8 => Some(JavaRelease::Java8),
+        11 => Some(JavaRelease::Java11),
+        17 => Some(JavaRelease::Java17),
+        21 => Some(JavaRelease::Java21),
+        25 => Some(JavaRelease::Java25),
+        _ => None,
     }
 }
 
@@ -100,6 +94,10 @@ pub enum ImagePlane {
     DeclarationExtensions = 9,
     /// Throws, annotations, and record-component entries.
     ExtensionEntries = 10,
+    /// Compiler-resolved non-invocation use rows (image v4).
+    ResolvedUses = 11,
+    /// Per-declaration source extents (image v4).
+    DeclarationExtents = 12,
 }
 
 impl ImagePlane {
@@ -114,7 +112,9 @@ impl ImagePlane {
             6 => Self::Declarations,
             7 => Self::References,
             8 => Self::DeclarationExtensions,
-            _ => Self::ExtensionEntries,
+            9 => Self::ExtensionEntries,
+            10 => Self::ResolvedUses,
+            _ => Self::DeclarationExtents,
         }
     }
 
@@ -127,7 +127,22 @@ impl ImagePlane {
             Self::Declarations => 32,
             Self::References => 20,
             Self::DeclarationExtensions | Self::ExtensionEntries => 8,
+            Self::ResolvedUses => 32,
+            Self::DeclarationExtents => 8,
         }
+    }
+}
+
+/// One plane's fixed row width under a specific image version. Image v3
+/// widened the parameter plane so each parameter row carries its declared-name
+/// atom beside the type coordinate; v1 and v2 retain the type-only row. Image
+/// v4 appends the resolved-use and declaration-extent planes; earlier
+/// versions' directories never carry those planes, so their row widths are
+/// version-independent.
+const fn plane_row_bytes(plane: ImagePlane, version: u16) -> usize {
+    match plane {
+        ImagePlane::SymbolParameters if version >= V3 => 8,
+        _ => plane.row_bytes(),
     }
 }
 
@@ -135,7 +150,7 @@ impl ImagePlane {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct JavaImage<'image> {
     bytes: &'image [u8],
-    sections: [Section; V2_SECTIONS],
+    sections: [Section; V4_SECTIONS],
     section_count: usize,
     version: u16,
     /// The release passed to the attributed `JavacTask`.
@@ -160,7 +175,8 @@ impl<'image> JavaImage<'image> {
         let version = u16_at(bytes, 4);
         let section_count = match version {
             V1 => V1_SECTIONS,
-            V2 => V2_SECTIONS,
+            V2 | V3 => V2_SECTIONS,
+            V4 => V4_SECTIONS,
             _ => return Err(ImageError::Header(HeaderError::Version { found: version })),
         };
         let header_size = DIRECTORY_OFFSET + DIRECTORY_ENTRY_BYTES * section_count;
@@ -177,7 +193,7 @@ impl<'image> JavaImage<'image> {
         }
         let release_raw = u16_at(bytes, 8);
         let release =
-            JavaRelease::decode(release_raw).ok_or(ImageError::Header(HeaderError::Release {
+            decode_release(release_raw).ok_or(ImageError::Header(HeaderError::Release {
                 found: release_raw,
             }))?;
         let declared_section_count = u16_at(bytes, 10);
@@ -206,7 +222,7 @@ impl<'image> JavaImage<'image> {
             }));
         }
 
-        let sections = read_directory(bytes, section_count, header_size)?;
+        let sections = read_directory(bytes, section_count, header_size, version)?;
         let image = Self {
             bytes,
             sections,
@@ -270,6 +286,35 @@ impl<'image> JavaImage<'image> {
         }
     }
 
+    /// Iterates compiler-resolved non-invocation uses in canonical order.
+    /// Every version below v4 carries no such plane, so the cursor is empty.
+    #[must_use]
+    pub const fn uses(self) -> UseIter<'image> {
+        UseIter {
+            image: self,
+            next: 0,
+        }
+    }
+
+    /// Returns the source extent of one declaration ordinal. Versions below
+    /// v4 and unpositioned synthetic rows (packages or modules emitted
+    /// without a tree) carry no extent.
+    pub fn declaration_extent(self, ordinal: usize) -> Result<DeclarationExtent, ImageError> {
+        if self.version < V4 {
+            return Ok(DeclarationExtent::absent());
+        }
+        let index = row_index(
+            ordinal,
+            ImagePlane::Declarations,
+            self.section(ImagePlane::Declarations).count,
+        )? as usize;
+        let row = self.row(ImagePlane::DeclarationExtents, index);
+        Ok(DeclarationExtent {
+            start: optional_offset(u32_at(row, 0)),
+            end: optional_offset(u32_at(row, 4)),
+        })
+    }
+
     /// Returns the borrowed extension cursor for one declaration ordinal.
     pub fn declaration_extensions(
         self,
@@ -303,10 +348,11 @@ impl<'image> JavaImage<'image> {
 
     fn validate_digest(self) -> Result<(), ImageError> {
         let mut digest = Sha256::new();
-        digest.update(if self.version == V1 {
-            V1_DIGEST_DOMAIN
-        } else {
-            V2_DIGEST_DOMAIN
+        digest.update(match self.version {
+            V1 => V1_DIGEST_DOMAIN,
+            V2 => V2_DIGEST_DOMAIN,
+            V3 => V3_DIGEST_DOMAIN,
+            _ => V4_DIGEST_DOMAIN,
         });
         digest.update(&self.bytes[..16]);
         let header_bytes = self.header_bytes();
@@ -326,6 +372,10 @@ impl<'image> JavaImage<'image> {
         self.validate_references()?;
         if self.version == V2 {
             self.validate_extensions()?;
+        }
+        if self.version >= V4 {
+            self.validate_uses()?;
+            self.validate_extents()?;
         }
         Ok(())
     }
@@ -391,7 +441,14 @@ impl<'image> JavaImage<'image> {
 
     fn validate_symbols(self) -> Result<(), ImageError> {
         for index in 0..self.section(ImagePlane::SymbolParameters).count {
-            self.type_at(u32_at(self.row(ImagePlane::SymbolParameters, index), 0))?;
+            let row = self.row(ImagePlane::SymbolParameters, index);
+            self.type_at(u32_at(row, 0))?;
+            if self.version >= V3 {
+                // The declared parameter name is optional: the absent sentinel
+                // is allowed, but any present coordinate must resolve to a
+                // validated atom.
+                self.optional_atom(u32_at(row, 4))?;
+            }
         }
         for index in 0..self.section(ImagePlane::Symbols).count {
             self.symbol_at(row_index(
@@ -413,6 +470,34 @@ impl<'image> JavaImage<'image> {
     fn validate_references(self) -> Result<(), ImageError> {
         for index in 0..self.section(ImagePlane::References).count {
             Reference::decode(self, self.row(ImagePlane::References, index))?;
+        }
+        Ok(())
+    }
+
+    fn validate_uses(self) -> Result<(), ImageError> {
+        for index in 0..self.section(ImagePlane::ResolvedUses).count {
+            ResolvedUse::decode(self, self.row(ImagePlane::ResolvedUses, index))?;
+        }
+        Ok(())
+    }
+
+    fn validate_extents(self) -> Result<(), ImageError> {
+        if self.section(ImagePlane::DeclarationExtents).count
+            != self.section(ImagePlane::Declarations).count
+        {
+            return Err(ImageError::Coordinate {
+                plane: ImagePlane::DeclarationExtents,
+                index: self.section(ImagePlane::DeclarationExtents).count,
+                upper_bound: self.section(ImagePlane::Declarations).count,
+            });
+        }
+        for index in 0..self.section(ImagePlane::DeclarationExtents).count {
+            let row = self.row(ImagePlane::DeclarationExtents, index);
+            let start = u32_at(row, 0);
+            let end = u32_at(row, 4);
+            if start != ABSENT && end != ABSENT && start > end {
+                return Err(ImageError::ReferenceRange { start, end });
+            }
         }
         Ok(())
     }
@@ -499,8 +584,9 @@ impl<'image> JavaImage<'image> {
 
     fn row(self, plane: ImagePlane, index: usize) -> &'image [u8] {
         let section = self.section(plane);
-        let start = section.offset + index * plane.row_bytes();
-        &self.bytes[start..start + plane.row_bytes()]
+        let row_bytes = plane_row_bytes(plane, self.version);
+        let start = section.offset + index * row_bytes;
+        &self.bytes[start..start + row_bytes]
     }
 
     fn atom_bytes(self, offset: usize, length: usize) -> &'image [u8] {
@@ -722,6 +808,43 @@ pub struct Symbol<'image> {
     pub name: Atom<'image>,
     /// Parameter type coordinates in declared order.
     pub parameters: TypeChildren<'image>,
+    /// Declared parameter names in declared order, aligned one-for-one with
+    /// [`Self::parameters`]. Each entry is `None` when javac exposed no simple
+    /// name for that parameter (for example a compiler-synthesized parameter),
+    /// or when the image version predates the parameter-name plane.
+    pub parameter_names: ParameterNames<'image>,
+}
+
+/// An exact-size iterator over optional declared parameter-name atoms.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParameterNames<'image> {
+    image: JavaImage<'image>,
+    next: usize,
+    end: usize,
+}
+
+impl<'image> Iterator for ParameterNames<'image> {
+    type Item = Result<Option<Atom<'image>>, ImageError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next == self.end {
+            return None;
+        }
+        let row = self.image.row(ImagePlane::SymbolParameters, self.next);
+        self.next += 1;
+        Some(self.image.optional_atom(u32_at(row, 4)))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.end - self.next;
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for ParameterNames<'_> {
+    fn len(&self) -> usize {
+        self.end - self.next
+    }
 }
 
 /// A closed declaration kind provided by javac's element model.
@@ -871,6 +994,90 @@ pub struct Reference<'image> {
     pub start: u32,
     /// Exclusive UTF-16 offset of the selected member expression.
     pub end: u32,
+}
+
+/// The closed class of a v4 resolved use row.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UseTag {
+    /// A `new` expression whose target is the resolved constructor.
+    ConstructorCall = 1,
+    /// A read of a declared field.
+    FieldRead = 2,
+    /// A write of a declared field through an assignment target.
+    FieldWrite = 3,
+    /// A declared type named in a declaration, cast, instanceof, annotation,
+    /// or generic argument position.
+    TypeUse = 4,
+    /// A read of an enum constant.
+    EnumConstantUse = 5,
+}
+
+impl UseTag {
+    const fn decode(raw: u8) -> Option<Self> {
+        match raw {
+            1 => Some(Self::ConstructorCall),
+            2 => Some(Self::FieldRead),
+            3 => Some(Self::FieldWrite),
+            4 => Some(Self::TypeUse),
+            5 => Some(Self::EnumConstantUse),
+            _ => None,
+        }
+    }
+}
+
+/// A compiler-resolved non-invocation use with Javac's UTF-16 coordinates.
+/// The owner is a declaration coordinate (an executable or a declared type,
+/// whichever lexically encloses the use); executable targets keep the symbol
+/// keying, and every other target keeps its declaring qualified name plus
+/// simple name in the image's atom keying.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResolvedUse<'image> {
+    /// The declaration coordinate that lexically owns the use.
+    pub owner: u32,
+    /// The resolved constructor coordinate, when the use invokes one.
+    pub target: Option<SymbolRef>,
+    /// The closed use class.
+    pub kind: UseTag,
+    /// The qualified declaring type of the target, or the qualified type
+    /// name itself for a type use.
+    pub declaring: Atom<'image>,
+    /// The simple target name, absent for a type use.
+    pub name: Option<Atom<'image>>,
+    /// The compiler-reported source-file name.
+    pub file: Atom<'image>,
+    /// Inclusive UTF-16 offset of the written name token.
+    pub start: u32,
+    /// Exclusive UTF-16 offset of the written name token.
+    pub end: u32,
+}
+
+/// One declaration's optional source extent in UTF-16 units.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeclarationExtent {
+    /// Inclusive UTF-16 offset of the declaration's first source unit.
+    pub start: Option<u32>,
+    /// Exclusive UTF-16 offset past the declaration's last source unit.
+    pub end: Option<u32>,
+}
+
+impl DeclarationExtent {
+    const fn absent() -> Self {
+        Self {
+            start: None,
+            end: None,
+        }
+    }
+
+    /// True when both bounds are present.
+    #[must_use]
+    pub const fn present(self) -> bool {
+        self.start.is_some() && self.end.is_some()
+    }
+}
+
+fn optional_offset(raw: u32) -> Option<u32> {
+    (raw != ABSENT).then_some(raw)
 }
 
 /// An exact typed rejection from Java authority image validation.
@@ -1297,6 +1504,49 @@ impl ExactSizeIterator for ReferenceIter<'_> {
     }
 }
 
+/// An exact-size iterator over borrowed resolved non-invocation uses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UseIter<'image> {
+    image: JavaImage<'image>,
+    next: usize,
+}
+
+impl<'image> Iterator for UseIter<'image> {
+    type Item = Result<ResolvedUse<'image>, ImageError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let total = self.image.section(ImagePlane::ResolvedUses).count;
+        if self.version_below_v4() || self.next == total {
+            return None;
+        }
+        let row = self.image.row(ImagePlane::ResolvedUses, self.next);
+        self.next += 1;
+        Some(ResolvedUse::decode(self.image, row))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let total = if self.version_below_v4() {
+            0
+        } else {
+            self.image.section(ImagePlane::ResolvedUses).count
+        };
+        exact_hint(total, self.next)
+    }
+}
+
+impl UseIter<'_> {
+    fn version_below_v4(&self) -> bool {
+        self.image.version < V4
+    }
+}
+
+impl ExactSizeIterator for UseIter<'_> {
+    fn len(&self) -> usize {
+        let (remaining, _) = self.size_hint();
+        remaining.saturating_sub(self.next.min(remaining))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Section {
     offset: usize,
@@ -1331,19 +1581,26 @@ impl<'image> TypeFact<'image> {
 impl<'image> Symbol<'image> {
     fn decode(image: JavaImage<'image>, index: usize) -> Result<Self, ImageError> {
         let row = image.row(ImagePlane::Symbols, index);
+        let start = usize::try_from(u32_at(row, 8)).map_err(|_| ImageError::ChildRange {
+            plane: ImagePlane::SymbolParameters,
+            start: usize::MAX,
+            count: usize::from(u16_at(row, 12)),
+            upper_bound: image.section(ImagePlane::SymbolParameters).count,
+        })?;
+        let count = usize::from(u16_at(row, 12));
         Ok(Self {
             owner: image.atom(u32_at(row, 0))?,
             name: image.atom(u32_at(row, 4))?,
-            parameters: image.type_children(
-                ImagePlane::SymbolParameters,
-                usize::try_from(u32_at(row, 8)).map_err(|_| ImageError::ChildRange {
-                    plane: ImagePlane::SymbolParameters,
-                    start: usize::MAX,
-                    count: usize::from(u16_at(row, 12)),
-                    upper_bound: image.section(ImagePlane::SymbolParameters).count,
-                })?,
-                usize::from(u16_at(row, 12)),
-            )?,
+            parameters: image.type_children(ImagePlane::SymbolParameters, start, count)?,
+            parameter_names: if image.version >= V3 {
+                image.parameter_names(start, count)?
+            } else {
+                ParameterNames {
+                    image,
+                    next: 0,
+                    end: 0,
+                }
+            },
         })
     }
 }
@@ -1403,6 +1660,49 @@ impl<'image> Reference<'image> {
     }
 }
 
+impl<'image> ResolvedUse<'image> {
+    fn decode(image: JavaImage<'image>, row: &[u8]) -> Result<Self, ImageError> {
+        let start = u32_at(row, 24);
+        let end = u32_at(row, 28);
+        if start > end {
+            return Err(ImageError::ReferenceRange { start, end });
+        }
+        if row[9..12] != [0; 3] {
+            return Err(ImageError::ExtensionReserved);
+        }
+        let kind = UseTag::decode(row[8]).ok_or(ImageError::Tag {
+            plane: ImagePlane::ResolvedUses,
+            found: row[8],
+        })?;
+        let owner = u32_at(row, 0);
+        coordinate(
+            owner,
+            ImagePlane::Declarations,
+            image.section(ImagePlane::Declarations).count,
+        )?;
+        let target = match optional_symbol(u32_at(row, 4)) {
+            Some(target) => {
+                image.symbol(target)?;
+                Some(target)
+            }
+            None => None,
+        };
+        let declaring = image.atom(u32_at(row, 12))?;
+        let name = image.optional_atom(u32_at(row, 16))?;
+        let file = image.atom(u32_at(row, 20))?;
+        Ok(Self {
+            owner,
+            target,
+            kind,
+            declaring,
+            name,
+            file,
+            start,
+            end,
+        })
+    }
+}
+
 impl<'image> JavaImage<'image> {
     fn type_children(
         self,
@@ -1432,17 +1732,45 @@ impl<'image> JavaImage<'image> {
             end,
         })
     }
+
+    fn parameter_names(
+        self,
+        start: usize,
+        count: usize,
+    ) -> Result<ParameterNames<'image>, ImageError> {
+        let upper_bound = self.section(ImagePlane::SymbolParameters).count;
+        let end = start.checked_add(count).ok_or(ImageError::ChildRange {
+            plane: ImagePlane::SymbolParameters,
+            start,
+            count,
+            upper_bound,
+        })?;
+        if end > upper_bound {
+            return Err(ImageError::ChildRange {
+                plane: ImagePlane::SymbolParameters,
+                start,
+                count,
+                upper_bound,
+            });
+        }
+        Ok(ParameterNames {
+            image: self,
+            next: start,
+            end,
+        })
+    }
 }
 
 fn read_directory(
     bytes: &[u8],
     section_count: usize,
     header_bytes: usize,
-) -> Result<[Section; V2_SECTIONS], ImageError> {
+    version: u16,
+) -> Result<[Section; V4_SECTIONS], ImageError> {
     let mut sections = [Section {
         offset: 0,
         count: 0,
-    }; V2_SECTIONS];
+    }; V4_SECTIONS];
     let mut expected_offset = header_bytes;
     for (index, section) in sections.iter_mut().take(section_count).enumerate() {
         let plane = ImagePlane::from_directory_index(index);
@@ -1458,11 +1786,11 @@ fn read_directory(
             });
         }
         let row_bytes = usize::from(u16_at(bytes, entry + 2));
-        if row_bytes != plane.row_bytes() {
+        if row_bytes != plane_row_bytes(plane, version) {
             return Err(ImageError::Section {
                 plane,
                 cause: SectionError::RowBytes {
-                    expected: plane.row_bytes(),
+                    expected: plane_row_bytes(plane, version),
                     found: row_bytes,
                 },
             });

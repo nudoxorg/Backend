@@ -3,8 +3,10 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Owner-generic structural and semantic validation failures.
 
+use backend_semantic::index_vocabulary::{
+    ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId,
+};
 use backend_version::{ContentIdDecodeError, HASH_BYTES};
-use backend_semantic::index_vocabulary::{ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId};
 
 use super::{IndexPackLane, IndexPackRegion, IndexPackRowInvariant};
 use crate::index_publish::pack::grammar::INDEX_PACK_MAGIC_BYTES;

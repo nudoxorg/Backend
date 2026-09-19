@@ -2,7 +2,6 @@
 #![forbid(unsafe_code)]
 
 mod authority;
-mod checker;
 mod coordinate;
 mod error;
 mod package;
@@ -13,13 +12,6 @@ pub mod legacy;
 pub use authority::{
     OxcDeclaration, OxcDeclarationKind, OxcModule, SyntaxMappedModifier, analyze,
     syntax_mapped_modifier, with_analysis,
-};
-pub use checker::{
-    BoundDeclaration, BoundNarrowing, BoundReference, Checker, CheckerError, CheckerIndex,
-    Declaration, ExplicitTypeScriptChecker, LiteralBase, MappedModifier, Narrowing, ObjectMember,
-    Origin, Parameter, Reference, Report, TemplatePart, TypeScriptCheckerProgram,
-    TypeScriptCheckerProgramError, TypeScriptCheckerProgramView, TypeScriptModuleRoot,
-    TypeScriptModuleRootView, TypeTree, source_digest,
 };
 pub use coordinate::{CoordinateError, Utf8Span, Utf8ToUtf16Cursor, Utf16Span};
 pub use error::{OxcAuthorityError, OxcAuthorityError as AuthorityError};
@@ -157,16 +149,20 @@ pub fn syntax_frontend() -> Result<backend_compile::SyntaxFrontend, backend_comp
 (class_declaration name: (type_identifier) @name) @definition.class
 (method_definition name: (property_identifier) @name) @definition.method
 (type_alias_declaration name: (type_identifier) @name) @definition.type
-(enum_declaration name: (identifier) @name) @definition.type
+(enum_declaration name: (identifier) @name) @definition.enum
 (lexical_declaration (variable_declarator name: (identifier) @name)) @definition.constant
+(public_field_definition name: (property_identifier) @name) @definition.field
+(property_signature name: (property_identifier) @name) @definition.property
+(enum_assignment name: (property_identifier) @name) @definition.variant
+(enum_body name: (property_identifier) @name @definition.variant)
 "
     );
     backend_compile::SyntaxFrontend::new(
         backend_compile::SourceLanguage::TypeScript,
-        b"tree-sitter-typescript-0.23.2/tags-v2",
+        b"tree-sitter-typescript-0.23.2/tags-v3",
         vec![
             backend_compile::GrammarVariant::new(
-                &["ts", "js", "mjs", "cjs"],
+                &["ts", "mts", "cts", "js", "mjs", "cjs"],
                 tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
                 &tags,
             )?,

@@ -374,9 +374,18 @@ fn tree_sitter_boundary_scanner_ignores_data_and_catches_code() {
     ));
 }
 
-/// Every frontend exposes exactly one canonical `Authority` adapter and
-/// documents its retained `legacy` module as subordinate, so no frontend can
-/// present a second semantic plane.
+/// The single-direction semantic authority contract.
+///
+/// Lane consolidation made each frontend's `src/legacy` module the one
+/// production native-authority lane: the engine driver imports its symbols
+/// directly from that module, with no intervening adapter. The crate-level
+/// `syntax_frontend()` constructor is the separate, documented structural
+/// baseline and never substitutes for that authority. The consolidation
+/// deleted the top-level `Authority` adapters of the consolidated frontends,
+/// so the semantic plane flows one way only — engine to `src/legacy` — and
+/// no frontend can present a second semantic plane. The canonical-path
+/// marker phrase stays mandatory: it is the documented statement of this
+/// contract inside each lane.
 #[test]
 fn frontends_declare_one_canonical_authority_path() {
     let mut failures = Vec::new();
@@ -389,16 +398,30 @@ fn frontends_declare_one_canonical_authority_path() {
         "rust",
         "typescript",
     ] {
-        let lib = source(&format!("frontends/{frontend}/lib.rs"));
-        if lib.matches("impl Authority for").count() != 1 {
-            failures.push(format!(
-                "frontends/{frontend}/lib.rs: expected exactly one canonical Authority impl"
-            ));
-        }
         let legacy = source(&format!("frontends/{frontend}/src/legacy/mod.rs"));
         if !legacy.contains("CANONICAL AUTHORITY PATH") {
             failures.push(format!(
                 "frontends/{frontend}/src/legacy/mod.rs: missing canonical authority path marker"
+            ));
+        }
+        let lib = source(&format!("frontends/{frontend}/lib.rs"));
+        if !lib.contains("pub fn syntax_frontend()") {
+            failures.push(format!(
+                "frontends/{frontend}/lib.rs: missing documented `syntax_frontend` structural baseline"
+            ));
+        }
+        let lower = source(&format!("crates/engine/src/driver/lower/{frontend}.rs"));
+        if !lower.contains(&format!("backend_frontend_{frontend}::legacy")) {
+            failures.push(format!(
+                "crates/engine/src/driver/lower/{frontend}.rs: engine must import the frontends/{frontend} production legacy lane directly"
+            ));
+        }
+    }
+    for frontend in ["csharp", "go", "java", "python", "rust"] {
+        let lib = source(&format!("frontends/{frontend}/lib.rs"));
+        if lib.contains("impl Authority for") {
+            failures.push(format!(
+                "frontends/{frontend}/lib.rs: top-level Authority adapter re-added; the production lane is src/legacy alone"
             ));
         }
     }
@@ -424,21 +447,6 @@ fn real_authority_tests_do_not_self_skip() {
             "frontends/go/tests/protocol.rs",
             "explicit_go_toolchain()",
             &["Go authority test skipped"][..],
-        ),
-        (
-            "frontends/go/tests/native_helper.rs",
-            "COMPILER_GO_COMPILER",
-            &["find_executable"][..],
-        ),
-        (
-            "frontends/python/tests/native_helper.rs",
-            "COMPILER_PYTHON_COMPILER",
-            &["find_executable"][..],
-        ),
-        (
-            "frontends/python/tests/pyrefly_package.rs",
-            "PyreflyPackageError::Unavailable",
-            &[][..],
         ),
         (
             "frontends/typescript/tests/checker_protocol.rs",

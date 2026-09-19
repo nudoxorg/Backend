@@ -4,7 +4,8 @@
 
 use oxc_diagnostics::Diagnostics;
 
-use crate::{CheckerError, Utf8Span};
+use crate::legacy::CheckerError;
+use crate::Utf8Span;
 use thiserror::Error;
 
 /// A TypeScript source could not be admitted to OXC syntax-and-binding analysis.

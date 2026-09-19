@@ -5,10 +5,11 @@
 //! The crate exposes two peer authorities: the Ruff syntax extractor in this
 //! module, and the bounded pyrefly type-authority transaction in [`checker`].
 //!
-//! CANONICAL AUTHORITY PATH: this module is the retained low-level authority
-//! contract. Product and compiler-driver callers must reach it only through
-//! the crate-level `Authority` adapter in `lib.rs`; it must never be wired in
-//! as a second semantic plane.
+//! CANONICAL AUTHORITY PATH: this `legacy` module IS the production
+//! native-authority lane. The engine driver imports its symbols directly from
+//! this module; there is no intervening adapter. The crate-level
+//! `syntax_frontend()` constructor is the separate, documented structural
+//! baseline and never substitutes for this authority.
 
 pub mod checker;
 
@@ -169,6 +170,27 @@ pub enum OccurrenceKind {
     FunctionCall,
     MethodCall,
 }
+/// How a call's receiver was written, which decides the target key the
+/// occurrence resolves through. Bare-name and module-gated rows keep the
+/// extractor's original keying; widened attribute rows carry the receiver
+/// class proven by the declaration walk or an honestly foreign receiver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OccurrenceReceiver {
+    /// A bare-name call (`fn()`): resolved through module names alone.
+    None,
+    /// A call recorded under the module-name gate (`mod.fn()` where the
+    /// attribute spelling is a declared module name): resolved through
+    /// module names alone, exactly as before the widening.
+    Module,
+    /// `self.method()` / `cls.method()`: keyed by the attribute name and
+    /// the enclosing class, proven by the declaration walk.
+    EnclosingClass { class: String },
+    /// Any other receiver (`obj.method()`, `factory().method()`): honestly
+    /// foreign. The receiver's written spelling is carried when the receiver
+    /// is a plain name, so an imported module receiver can still resolve
+    /// through its own package key; it is never resolved to a local row.
+    Foreign { receiver: Option<String> },
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParameterFact {
     pub name: String,
@@ -213,6 +235,11 @@ pub struct DeclarationFact {
     /// For a `TypedDict` class, the written `total=` keyword value; `None`
     /// when the keyword is absent, which PEP 589 defines as total.
     pub total: Option<bool>,
+    /// Byte offset just past a function header's final colon — the anchor
+    /// for consumers that must find the body's first line. The declaration
+    /// extent covers the complete definition, so the header boundary is
+    /// carried explicitly; `None` for every non-function declaration.
+    pub header_end: Option<u32>,
     pub docstring: Option<DocstringFact>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +254,7 @@ pub struct OccurrenceFact {
     pub kind: OccurrenceKind,
     pub confidence: Confidence,
     pub span: Span,
+    pub receiver: OccurrenceReceiver,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Confidence {
@@ -276,8 +304,6 @@ pub enum ExtractionError {
         end: usize,
         source_length: usize,
     },
-    #[error("Ruff function header {start}..{end} has no Python delimiter")]
-    MissingFunctionDelimiter { start: usize, end: usize },
     #[error("Ruff returned an expression after a module-mode parse")]
     NonModuleParse { rejection: RejectedSyntax },
 }
@@ -444,6 +470,7 @@ fn module_facts(
             value_span: None,
             type_parameters: Vec::new(),
             total: None,
+            header_end: None,
             docstring: module_doc.clone(),
         }],
         occurrences: Vec::new(),
@@ -470,6 +497,7 @@ fn project(
             owner: MODULE_IDENTITY.to_owned(),
             class_depth: 0,
             function_depth: 0,
+            enclosing_class: None,
             decorator_ranges: Vec::new(),
             decorator_owner: None,
             error: None,
@@ -505,6 +533,27 @@ fn parse_module(text: &str, profile: PythonVersion) -> Result<Parsed<ast::Mod>, 
         });
     }
     Ok(parsed)
+}
+
+/// The byte offset just past one function header's final colon. The
+/// declaration extent covers the complete definition, so the header
+/// boundary derives from the header text before the first body statement;
+/// `None` when the header carries no delimiter.
+fn function_header_end(
+    text: &str,
+    range: ruff_text_size::TextRange,
+    body: &[ast::Stmt],
+) -> Option<u32> {
+    let start = range.start().to_usize();
+    let body_start = body
+        .first()
+        .map_or(range.end().to_usize(), |statement| {
+            statement.range().start().to_usize()
+        })
+        .min(text.len());
+    let header = text.get(start..body_start)?;
+    let colon = header.rfind(':')?;
+    u32::try_from(start + colon + 1).ok()
 }
 
 fn span(range: ruff_text_size::TextRange) -> Span {
@@ -821,6 +870,9 @@ struct Projection<'a> {
     owner: String,
     class_depth: usize,
     function_depth: usize,
+    /// The innermost class being walked, known from the declaration walk.
+    /// A `self`/`cls` receiver resolves against exactly this class.
+    enclosing_class: Option<String>,
     decorator_ranges: Vec<ruff_text_size::TextRange>,
     decorator_owner: Option<String>,
     error: Option<ExtractionError>,
@@ -883,65 +935,6 @@ impl<'a> Projection<'a> {
         }
     }
 
-    fn function_header_span(&mut self, function: &ast::StmtFunctionDef) -> Option<Span> {
-        let start = function.range.start().to_usize();
-        let body_start = function
-            .body
-            .first()
-            .map_or(function.range.end().to_usize(), |statement| {
-                statement.range().start().to_usize()
-            });
-        let header_end = body_start.min(self.text.len());
-        let header = match self.text.get(start..header_end) {
-            Some(header) => header,
-            None => {
-                self.reject(ExtractionError::InvalidRange {
-                    start,
-                    end: header_end,
-                    source_length: self.text.len(),
-                });
-                return None;
-            }
-        };
-        let end = match header.rfind(':') {
-            Some(offset) => start + offset + 1,
-            None => {
-                self.reject(ExtractionError::MissingFunctionDelimiter {
-                    start,
-                    end: header_end,
-                });
-                return None;
-            }
-        };
-        let start = start.min(self.text.len());
-        let end = end.min(self.text.len()).max(start);
-        let start_coordinate = match u32::try_from(start) {
-            Ok(coordinate) => coordinate,
-            Err(_) => {
-                self.reject(ExtractionError::InvalidRange {
-                    start,
-                    end,
-                    source_length: self.text.len(),
-                });
-                return None;
-            }
-        };
-        let end_coordinate = match u32::try_from(end) {
-            Ok(coordinate) => coordinate,
-            Err(_) => {
-                self.reject(ExtractionError::InvalidRange {
-                    start,
-                    end,
-                    source_length: self.text.len(),
-                });
-                return None;
-            }
-        };
-        Some(Span {
-            start: start_coordinate,
-            end: end_coordinate,
-        })
-    }
     fn parameter(
         &mut self,
         owner: &str,
@@ -1099,9 +1092,11 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 let Some(doc) = self.docstring(&function.body) else {
                     return;
                 };
-                let Some(declaration_span) = self.function_header_span(function) else {
-                    return;
-                };
+                // The declaration extent covers the complete definition,
+                // header and body alike, exactly like a class extent: body
+                // occurrences and nested definitions must resolve inside
+                // their owner's span rather than dangle past a header.
+                let declaration_span = span(function.range);
                 self.add_declaration(DeclarationFact {
                     name: name.clone(),
                     name_span: span(function.name.range()),
@@ -1118,6 +1113,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     value_span: None,
                     type_parameters: type_parameter_spans(function.type_params.as_deref()),
                     total: None,
+                    header_end: function_header_end(self.text, function.range, &function.body),
                     docstring: doc,
                 });
                 self.decorator_ranges = function.decorator_list.iter().map(|d| d.range).collect();
@@ -1133,6 +1129,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
             }
             ast::Stmt::ClassDef(class) => {
                 let old = self.owner.clone();
+                let old_enclosing_class = self.enclosing_class.take();
                 let old_decorator_ranges = std::mem::take(&mut self.decorator_ranges);
                 let old_decorator_owner = self.decorator_owner.take();
                 let name = class.name.as_str().to_owned();
@@ -1160,15 +1157,18 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     value_span: None,
                     type_parameters: type_parameter_spans(class.type_params.as_deref()),
                     total,
+                    header_end: None,
                     docstring,
                 });
                 self.decorator_ranges = class.decorator_list.iter().map(|d| d.range).collect();
                 self.decorator_owner = Some(old.clone());
                 self.owner = name;
+                self.enclosing_class = Some(self.owner.clone());
                 self.class_depth += 1;
                 visitor::walk_stmt(self, statement);
                 self.class_depth -= 1;
                 self.owner = old;
+                self.enclosing_class = old_enclosing_class;
                 self.decorator_ranges = old_decorator_ranges;
                 self.decorator_owner = old_decorator_owner;
                 return;
@@ -1218,14 +1218,65 @@ impl<'a> Visitor<'a> for Projection<'a> {
     }
     fn visit_expr(&mut self, expr: &'a ast::Expr) {
         if let ast::Expr::Call(call) = expr {
-            let (target, kind) = match call.func.as_ref() {
-                ast::Expr::Name(name) => (name.id.as_str(), OccurrenceKind::FunctionCall),
-                ast::Expr::Attribute(attribute) => {
-                    (attribute.attr.as_str(), OccurrenceKind::MethodCall)
+            // One call becomes at most one occurrence row. A callee whose
+            // spelling is a declared module name keeps the original
+            // module-keyed shape exactly (span included); any other
+            // attribute call is widened honestly — any receiver is
+            // recorded, the span covers the attribute token, and the
+            // receiver decides the target key.
+            let recorded = match call.func.as_ref() {
+                ast::Expr::Name(name) => {
+                    let target = name.id.as_str();
+                    self.names
+                        .iter()
+                        .any(|declared| declared == target)
+                        .then(|| {
+                            (
+                                target,
+                                OccurrenceKind::FunctionCall,
+                                OccurrenceReceiver::None,
+                                call.func.range(),
+                            )
+                        })
                 }
-                _ => ("", OccurrenceKind::FunctionCall),
+                ast::Expr::Attribute(attribute) => {
+                    let target = attribute.attr.as_str();
+                    let receiver = match attribute.value.as_ref() {
+                        ast::Expr::Name(name)
+                            if matches!(name.id.as_str(), "self" | "cls")
+                                && self.enclosing_class.is_some() =>
+                        {
+                            OccurrenceReceiver::EnclosingClass {
+                                class: self
+                                    .enclosing_class
+                                    .clone()
+                                    .expect("enclosing class proven above"),
+                            }
+                        }
+                        ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
+                            receiver: Some(name.id.as_str().to_owned()),
+                        },
+                        _ => OccurrenceReceiver::Foreign { receiver: None },
+                    };
+                    let gated = self.names.iter().any(|declared| declared == target);
+                    Some((
+                        target,
+                        OccurrenceKind::MethodCall,
+                        if gated {
+                            OccurrenceReceiver::Module
+                        } else {
+                            receiver
+                        },
+                        if gated {
+                            call.func.range()
+                        } else {
+                            attribute.attr.range()
+                        },
+                    ))
+                }
+                _ => None,
             };
-            if !target.is_empty() && self.names.iter().any(|name| name == target) {
+            if let Some((target, kind, receiver, callee_span)) = recorded {
                 let owner = if self.decorator_ranges.iter().any(|range| {
                     range.start() <= expr.range().start() && range.end() >= expr.range().end()
                 }) {
@@ -1241,7 +1292,8 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     target: target.to_owned(),
                     kind,
                     confidence: Confidence::Index,
-                    span: span(call.func.range()),
+                    span: span(callee_span),
+                    receiver,
                 });
             }
         }
@@ -1303,6 +1355,7 @@ impl Projection<'_> {
             value_span: Some(span(alias.name.range())),
             type_parameters: Vec::new(),
             total: None,
+            header_end: None,
             docstring: None,
         });
     }
@@ -1335,6 +1388,7 @@ impl Projection<'_> {
             value_span: None,
             type_parameters: type_parameter_spans(alias.type_params.as_deref()),
             total: None,
+            header_end: None,
             docstring: None,
         });
         self.facts.annotations.push(AnnotationFact {
@@ -1371,6 +1425,7 @@ impl Projection<'_> {
                 value_span: None,
                 type_parameters: Vec::new(),
                 total: None,
+                header_end: None,
                 docstring: None,
             });
             if let Some(annotation_expr) = annotation_expr {
@@ -1411,6 +1466,7 @@ impl Projection<'_> {
                 value_span: None,
                 type_parameters: Vec::new(),
                 total: None,
+                header_end: None,
                 docstring: None,
             });
             if let Some(annotation_expr) = annotation_expr {
@@ -1465,6 +1521,7 @@ mod tests {
             owner: String::new(),
             class_depth: 0,
             function_depth: 0,
+            enclosing_class: None,
             decorator_ranges: Vec::new(),
             decorator_owner: None,
             error: None,

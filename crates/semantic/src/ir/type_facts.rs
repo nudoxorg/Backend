@@ -10,8 +10,9 @@
 //! is expressible.
 
 use crate::ir_vocabulary::{
-    EntityId, ExternalEntityRef, ListSpan, NominalRef, SemanticTypeChild, SemanticTypeFault,
-    SemanticTypeRecord, SemanticTypeTag, TypeChildTarget, TypeId,
+    DeclarationFamilyId, DeclarationIdentity, EntityId, ExternalEntityRef, ListSpan, NominalRef,
+    SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableRef,
+    TypeChildTarget, TypeId, VariantFingerprint,
 };
 use backend_version::{ContentId, ContentIdDecodeError, HASH_BYTES, IrFragmentDomain};
 use thiserror::Error;
@@ -21,6 +22,12 @@ const PRESENCE_SOME: u8 = 1;
 const NOMINAL_NONE: u8 = 0;
 const NOMINAL_LOCAL: u8 = 1;
 const NOMINAL_EXTERNAL: u8 = 2;
+/// A declaration-identified external nominal: fragment identity plus exact
+/// composite declaration identity. Introduced at fragment schema 7; schema-6
+/// content never contains it because it is a new tag value, not a renumber.
+const NOMINAL_STABLE: u8 = 3;
+/// Compact width of one declaration family or variant cell.
+const COMPACT_DECLARATION_BYTES: usize = 16;
 const CHILD_LOCAL: u8 = 0;
 const CHILD_EXTERNAL: u8 = 1;
 const CHILD_TEXT: u8 = 2;
@@ -363,6 +370,7 @@ fn nominal_len(nominal: Option<NominalRef>) -> usize {
         None => 1,
         Some(NominalRef::Local(_)) => 5,
         Some(NominalRef::External(_)) => 1 + HASH_BYTES + 4,
+        Some(NominalRef::Stable(_)) => 1 + HASH_BYTES + COMPACT_DECLARATION_BYTES * 2,
     }
 }
 fn put_u32(output: &mut [u8], at: &mut usize, value: u32) {
@@ -399,8 +407,38 @@ fn put_nominal(output: &mut [u8], at: &mut usize, nominal: Option<NominalRef>) {
             put_u32(output, at, target.ordinal);
             return;
         }
+        Some(NominalRef::Stable(stable)) => {
+            output[*at] = NOMINAL_STABLE;
+            *at += 1;
+            output[*at..*at + HASH_BYTES].copy_from_slice(stable.fragment.as_ref());
+            *at += HASH_BYTES;
+            output[*at..*at + COMPACT_DECLARATION_BYTES]
+                .copy_from_slice(stable.declaration.family.as_bytes());
+            *at += COMPACT_DECLARATION_BYTES;
+            output[*at..*at + COMPACT_DECLARATION_BYTES]
+                .copy_from_slice(stable.declaration.variant.as_bytes());
+            *at += COMPACT_DECLARATION_BYTES;
+            return;
+        }
     }
     *at += 1;
+}
+
+/// Reads one declaration-identified external nominal: the owning fragment's
+/// typed identity followed by the exact composite declaration identity.
+fn read_stable_ref(reader: &mut Reader<'_>) -> Result<StableRef, TypeFactFault> {
+    let fragment = reader.identity()?;
+    let mut family = [0_u8; COMPACT_DECLARATION_BYTES];
+    family.copy_from_slice(reader.take(COMPACT_DECLARATION_BYTES)?);
+    let mut variant = [0_u8; COMPACT_DECLARATION_BYTES];
+    variant.copy_from_slice(reader.take(COMPACT_DECLARATION_BYTES)?);
+    Ok(StableRef {
+        fragment,
+        declaration: DeclarationIdentity {
+            family: DeclarationFamilyId::from_raw(family),
+            variant: VariantFingerprint::from_raw(variant),
+        },
+    })
 }
 
 pub fn validate_payload(
@@ -449,6 +487,7 @@ pub fn validate_payload(
                 reader.identity()?,
                 reader.u32()?,
             ))),
+            NOMINAL_STABLE => Some(NominalRef::Stable(read_stable_ref(&mut reader)?)),
             actual => {
                 return Err(TypeFactFault::Tag {
                     ordinal,
@@ -877,6 +916,7 @@ fn decode_record<'fragment>(
             reader.identity()?,
             reader.u32()?,
         ))),
+        NOMINAL_STABLE => Some(NominalRef::Stable(read_stable_ref(reader)?)),
         actual => {
             return Err(TypeFactFault::Tag {
                 ordinal: reader.ordinal,

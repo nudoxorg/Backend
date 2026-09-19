@@ -1186,7 +1186,7 @@ fn every_hot_borrowed_view_is_allocation_free() -> Result<(), backend_semantic::
         black_box(ir.language_extensions().typescript);
         black_box(ir.embedding_text(
             backend_semantic::ir::EntityId::new(0),
-            backend_semantic::ir::EmbeddingProfile::CONTEXTUAL,
+            backend_semantic::ir::semantic_render::EmbeddingProfile::CONTEXTUAL,
         ));
         black_box(Diff::between(snapshot, snapshot).entities.count());
         black_box(Diff::between(snapshot, snapshot).links.count());
@@ -1205,7 +1205,7 @@ fn every_hot_borrowed_view_is_allocation_free() -> Result<(), backend_semantic::
             "{}",
             ir.embedding_text(
                 backend_semantic::ir::EntityId::new(0),
-                backend_semantic::ir::EmbeddingProfile::CONTEXTUAL,
+                backend_semantic::ir::semantic_render::EmbeddingProfile::CONTEXTUAL,
             )
             .expect("embedding display")
         )

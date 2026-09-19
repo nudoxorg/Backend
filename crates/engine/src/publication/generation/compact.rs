@@ -5,12 +5,12 @@
 //! its two-entry-per-artifact topology cannot accidentally enter this grammar.
 
 use backend_store::hydration::{PlanScratch, Projection, VerifiedGeneration, demand, plan};
-use backend_version::ObjectDomain;
 use backend_store::memory::MemoryStore;
 use backend_store::root::{
     ClosureScratch, GenerationRoot, GenerationRootBuilder, GenerationView, PreparedLocality,
     RootEntry,
 };
+use backend_version::ObjectDomain;
 
 use crate::publication::manifest::{CanonicalCompilation, CompilationManifestView};
 

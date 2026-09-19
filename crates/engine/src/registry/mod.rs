@@ -21,6 +21,7 @@
 //! panic or a silent skip.
 
 mod ecosystem;
+mod facts;
 mod feed;
 mod identity;
 mod owner;
@@ -31,6 +32,7 @@ mod wire;
 mod tests;
 
 pub use ecosystem::{ChecksumAlgorithm, EcosystemAdapter, NativeRelease, RegistryChecksum};
+pub use facts::{DownloadCount, DownloadCountGap, ReleaseFacts, ReleaseStanding, SecurityStanding};
 /// Preferred closed name for the seven native registry grammars.
 pub use identity::RegistryEcosystem as RegistryKind;
 pub use identity::{

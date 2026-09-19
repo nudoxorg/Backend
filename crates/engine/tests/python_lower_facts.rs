@@ -673,3 +673,111 @@ fn nested_typevar_argument_keeps_its_leaf_spelling() -> Result<(), TestError> {
     }
     Ok(())
 }
+
+/// A function whose parameter shares the function's name and the exact
+/// return shape (`def value(value: int) -> int`) builds the owned image:
+/// the result slot reuses the identically-shaped parameter's row instead of
+/// minting a second fact that would collide byte-for-byte in family and
+/// variant. Pre-fix this source died `DuplicateDeclarationIdentity`.
+const SAME_NAME_RESULT: &[u8] = b"def value(value: int) -> int: ...\n";
+
+#[test]
+fn same_name_result_slot_reuses_the_identical_parameter_row() -> Result<(), TestError> {
+    with_image(SAME_NAME_RESULT, "same-name-result", |ir| {
+        let mut parameters = 0_usize;
+        let mut functions = 0_usize;
+        for item in ir.items() {
+            if item.name() == b"value" {
+                match item.kind() {
+                    ItemKind::Function => {
+                        functions += 1;
+                        let ty = item
+                            .semantic_type()
+                            .ok_or(TestError::Falsified("function value is untyped"))?;
+                        let TypeExpr::Concrete(ConcreteType::Function { results, .. }) =
+                            ir.ty(ty).ok_or(TestError::Falsified("function type row absent"))?
+                        else {
+                            return Err(TestError::Falsified(
+                                "function type is not a concrete function",
+                            ));
+                        };
+                        let results = ir
+                            .tuple_elements(results)
+                            .ok_or(TestError::Falsified("result list absent"))?;
+                        if results.is_empty() {
+                            return Err(TestError::Falsified(
+                                "reused slot lost the function's result row",
+                            ));
+                        }
+                    }
+                    ItemKind::Parameter => parameters += 1,
+                    _ => {}
+                }
+            }
+        }
+        if functions != 1 {
+            return Err(TestError::Falsified("function value absent"));
+        }
+        if parameters != 1 {
+            return Err(TestError::Falsified(
+                "the identical parameter and slot did not collapse to one row",
+            ));
+        }
+        Ok(())
+    })
+}
+
+/// A checker-inferred tuple wider than the bounded fact child lane keeps the
+/// module compiling: the variable takes the honest oracle gap instead of
+/// truncating a proven shape or rejecting the fact. Pre-fix this source died
+/// `LoweringUnsupported { cause: FactRejected(TypeChildCapacity) }`. The
+/// checker is optional, so an unprovisioned host proves the admission
+/// baseline only.
+const WIDE_INFERRED_TUPLE: &[u8] = b"anchor: int = 0\nvalues = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70)\n";
+
+#[test]
+fn wide_inferred_tuple_admits_as_the_honest_gap() -> Result<(), TestError> {
+    let checker = backend_frontend_python::legacy::Pyrefly::from_env();
+    if !checker.is_available() {
+        return Ok(());
+    }
+    let facts = backend_frontend_python::legacy::extract(
+        WIDE_INFERRED_TUPLE,
+        PythonVersion::Python314,
+    )
+    .map_err(|_| TestError::Falsified("wide tuple fixture failed to extract"))?;
+    let report = checker
+        .analyze(WIDE_INFERRED_TUPLE, PythonVersion::Python314, &facts)
+        .map_err(|_| TestError::Falsified("wide tuple checker transaction failed"))?;
+    let toolchain = python_toolchain()?;
+    let work = scratch_dir("wide-inferred-tuple")?;
+    let cancelled = AtomicBool::new(false);
+    let outcome = with_deep_stack(|| {
+        let mut diagnostic = [0_u8; 4096];
+        compile_ir(
+            CompileRequest {
+                profile: LanguageProfile::Python(PythonVersion::Python314),
+                stage: Stage::LowerIr,
+                source: WIDE_INFERRED_TUPLE,
+                declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
+                toolchain: ToolchainSelection::ResolvedNative(toolchain),
+                authority: SemanticAuthorityInput::Python { report: &report },
+                control: CompileControl {
+                    deadline: Instant::now() + Duration::from_secs(30),
+                    cancelled: &cancelled,
+                },
+            },
+            CompileScratch {
+                diagnostic_output: &mut diagnostic,
+                native_work: &work,
+            },
+        )
+        .map(|compiled| drop(compiled))
+        .map_err(|failure| TestError::Compile(failure_label(&failure)))
+    })?;
+    fs::remove_dir_all(&work).map_err(|source| TestError::Io {
+        operation: "remove scratch",
+        source,
+    })?;
+    Ok(())
+}

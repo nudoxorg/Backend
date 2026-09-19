@@ -4,13 +4,16 @@
 use core::{fmt, str};
 use std::io::ErrorKind;
 
+use crate::interface::{Capability, InputText};
 use backend_execution::adaptive::ContentId;
 use backend_version::{ArtifactId, Domain, Encoding};
-use crate::interface::{Capability, InputText};
 use serde::{Serialize, Serializer, ser::Error as _};
 
 #[derive(Serialize)]
-#[serde(remote = "backend_semantic::vocabulary::Language", rename_all = "snake_case")]
+#[serde(
+    remote = "backend_semantic::vocabulary::Language",
+    rename_all = "snake_case"
+)]
 pub(super) enum LanguageWire {
     Rust,
     TypeScript,
@@ -54,7 +57,9 @@ pub(super) enum AuthorityDiagnosticClassWire {
 )]
 pub(super) enum LanguageProfileWire {
     Rust(#[serde(with = "RustEditionWire")] backend_semantic::vocabulary::RustEdition),
-    TypeScript(#[serde(with = "TypeScriptSourceWire")] backend_semantic::vocabulary::TypeScriptSource),
+    TypeScript(
+        #[serde(with = "TypeScriptSourceWire")] backend_semantic::vocabulary::TypeScriptSource,
+    ),
     Python(#[serde(with = "PythonVersionWire")] backend_semantic::vocabulary::PythonVersion),
     Go(#[serde(with = "GoVersionWire")] backend_semantic::vocabulary::GoVersion),
     Java(#[serde(with = "JavaReleaseWire")] backend_semantic::vocabulary::JavaRelease),
@@ -64,7 +69,10 @@ pub(super) enum LanguageProfileWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "backend_semantic::vocabulary::RustEdition", rename_all = "snake_case")]
+#[serde(
+    remote = "backend_semantic::vocabulary::RustEdition",
+    rename_all = "snake_case"
+)]
 pub(super) enum RustEditionWire {
     Rust2015,
     Rust2018,
@@ -96,7 +104,10 @@ pub(super) enum PythonVersionWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "backend_semantic::vocabulary::GoVersion", rename_all = "snake_case")]
+#[serde(
+    remote = "backend_semantic::vocabulary::GoVersion",
+    rename_all = "snake_case"
+)]
 pub(super) enum GoVersionWire {
     Go122,
     Go123,
@@ -105,7 +116,10 @@ pub(super) enum GoVersionWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "backend_semantic::vocabulary::JavaRelease", rename_all = "snake_case")]
+#[serde(
+    remote = "backend_semantic::vocabulary::JavaRelease",
+    rename_all = "snake_case"
+)]
 pub(super) enum JavaReleaseWire {
     Java8,
     Java11,
@@ -128,7 +142,10 @@ pub(super) enum CSharpVersionWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "backend_semantic::vocabulary::CStandard", rename_all = "snake_case")]
+#[serde(
+    remote = "backend_semantic::vocabulary::CStandard",
+    rename_all = "snake_case"
+)]
 pub(super) enum CStandardWire {
     C11,
     C17,
@@ -136,7 +153,10 @@ pub(super) enum CStandardWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "backend_semantic::vocabulary::CxxStandard", rename_all = "snake_case")]
+#[serde(
+    remote = "backend_semantic::vocabulary::CxxStandard",
+    rename_all = "snake_case"
+)]
 pub(super) enum CxxStandardWire {
     Cxx17,
     Cxx20,
@@ -154,7 +174,10 @@ pub(super) enum StageWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "backend_semantic::vocabulary::NativeTool", rename_all = "snake_case")]
+#[serde(
+    remote = "backend_semantic::vocabulary::NativeTool",
+    rename_all = "snake_case"
+)]
 pub(super) enum NativeToolWire {
     Rustc,
     Clang,

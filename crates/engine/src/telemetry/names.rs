@@ -3,12 +3,12 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Static low-cardinality names for portable semantic events.
 
-use backend_store::hydration::{HydrationOutcome, PlanRejection};
-use backend_store::memory::StoreAdmission;
 use backend_runtime::server::{
     RejectionReason, RuntimeAdmission, RuntimeContainment, RuntimeExecution, RuntimeProbeEvent,
     RuntimeTerminal, TerminalClass,
 };
+use backend_store::hydration::{HydrationOutcome, PlanRejection};
+use backend_store::memory::StoreAdmission;
 use backend_store::workflow::{EventName, PhaseName, WorkflowDisposition, WorkflowRejection};
 
 pub(crate) fn hydration_fields(outcome: HydrationOutcome) -> (&'static str, u64, u64, u64, u64) {

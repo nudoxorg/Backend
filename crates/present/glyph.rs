@@ -40,6 +40,7 @@ impl KindGlyph {
             DeclarationKind::Union => "⊔",
             DeclarationKind::Variable => "▫",
             DeclarationKind::Import => "→",
+            DeclarationKind::Variant => "◦",
             DeclarationKind::Unknown => "?",
         }
     }
@@ -71,6 +72,7 @@ impl KindGlyph {
             DeclarationKind::Union => "unions",
             DeclarationKind::Variable => "variables",
             DeclarationKind::Import => "imports",
+            DeclarationKind::Variant => "variants",
             DeclarationKind::Unknown => "declarations",
         }
     }

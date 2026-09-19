@@ -488,8 +488,12 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
         }
         backend_frontend_rust::legacy::RustAuthorityError::InvalidSpan { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::Coordinate { .. }
-        | backend_frontend_rust::legacy::RustAuthorityError::Admission { .. } => AuthorityPhase::Project,
-        backend_frontend_rust::legacy::RustAuthorityError::SourceBinding { .. } => AuthorityPhase::Parse,
+        | backend_frontend_rust::legacy::RustAuthorityError::Admission { .. } => {
+            AuthorityPhase::Project
+        }
+        backend_frontend_rust::legacy::RustAuthorityError::SourceBinding { .. } => {
+            AuthorityPhase::Parse
+        }
         backend_frontend_rust::legacy::RustAuthorityError::Cancelled
         | backend_frontend_rust::legacy::RustAuthorityError::DeadlineExceeded
         | backend_frontend_rust::legacy::RustAuthorityError::Toolchain(_)
@@ -498,11 +502,15 @@ fn rust_phase(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
         | backend_frontend_rust::legacy::RustAuthorityError::MissingManifest { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceNotFile { .. }
         | backend_frontend_rust::legacy::RustAuthorityError::SourceBudget { .. }
-        | backend_frontend_rust::legacy::RustAuthorityError::SourceRead { .. } => AuthorityPhase::Open,
+        | backend_frontend_rust::legacy::RustAuthorityError::SourceRead { .. } => {
+            AuthorityPhase::Open
+        }
     }
 }
 
-fn rust_class(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> AuthorityDiagnosticClass {
+fn rust_class(
+    cause: &backend_frontend_rust::legacy::RustAuthorityError,
+) -> AuthorityDiagnosticClass {
     match rust_phase(cause) {
         AuthorityPhase::Resolve => AuthorityDiagnosticClass::Binding,
         AuthorityPhase::TypeCheck => AuthorityDiagnosticClass::Type,
@@ -514,10 +522,14 @@ fn rust_class(cause: &backend_frontend_rust::legacy::RustAuthorityError) -> Auth
 fn typescript_phase(cause: &backend_frontend_typescript::legacy::AuthorityError) -> AuthorityPhase {
     match cause {
         backend_frontend_typescript::legacy::AuthorityError::Syntax { .. } => AuthorityPhase::Parse,
-        backend_frontend_typescript::legacy::AuthorityError::Binding { .. } => AuthorityPhase::Resolve,
+        backend_frontend_typescript::legacy::AuthorityError::Binding { .. } => {
+            AuthorityPhase::Resolve
+        }
         // A checker authority rejection is the type-checking phase by
         // definition: the checker ran and rejected the transaction.
-        backend_frontend_typescript::legacy::AuthorityError::Checker { .. } => AuthorityPhase::TypeCheck,
+        backend_frontend_typescript::legacy::AuthorityError::Checker { .. } => {
+            AuthorityPhase::TypeCheck
+        }
     }
 }
 
@@ -542,16 +554,19 @@ fn python_phase(cause: &backend_frontend_python::legacy::ExtractionError) -> Aut
     match cause {
         backend_frontend_python::legacy::ExtractionError::RejectedSyntax { .. }
         | backend_frontend_python::legacy::ExtractionError::NonModuleParse { .. }
-        | backend_frontend_python::legacy::ExtractionError::InvalidUtf8 { .. } => AuthorityPhase::Parse,
+        | backend_frontend_python::legacy::ExtractionError::InvalidUtf8 { .. } => {
+            AuthorityPhase::Parse
+        }
         backend_frontend_python::legacy::ExtractionError::SourceLength { .. }
-        | backend_frontend_python::legacy::ExtractionError::InvalidRange { .. }
-        | backend_frontend_python::legacy::ExtractionError::MissingFunctionDelimiter { .. } => {
+        | backend_frontend_python::legacy::ExtractionError::InvalidRange { .. } => {
             AuthorityPhase::Project
         }
     }
 }
 
-fn python_class(cause: &backend_frontend_python::legacy::ExtractionError) -> AuthorityDiagnosticClass {
+fn python_class(
+    cause: &backend_frontend_python::legacy::ExtractionError,
+) -> AuthorityDiagnosticClass {
     match python_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
         AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
@@ -620,11 +635,15 @@ fn csharp_image_phase(cause: &backend_frontend_csharp::legacy::ImageError) -> Au
         | backend_frontend_csharp::legacy::ImageError::NameRange { .. }
         | backend_frontend_csharp::legacy::ImageError::NameUtf8 { .. }
         | backend_frontend_csharp::legacy::ImageError::Span { .. }
-        | backend_frontend_csharp::legacy::ImageError::TypeChildCount { .. } => AuthorityPhase::Project,
+        | backend_frontend_csharp::legacy::ImageError::TypeChildCount { .. } => {
+            AuthorityPhase::Project
+        }
     }
 }
 
-fn csharp_image_class(cause: &backend_frontend_csharp::legacy::ImageError) -> AuthorityDiagnosticClass {
+fn csharp_image_class(
+    cause: &backend_frontend_csharp::legacy::ImageError,
+) -> AuthorityDiagnosticClass {
     match csharp_image_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
         AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
@@ -670,7 +689,9 @@ fn java_bound_phase(cause: &backend_frontend_java::legacy::BoundImageError) -> A
     }
 }
 
-fn java_bound_class(cause: &backend_frontend_java::legacy::BoundImageError) -> AuthorityDiagnosticClass {
+fn java_bound_class(
+    cause: &backend_frontend_java::legacy::BoundImageError,
+) -> AuthorityDiagnosticClass {
     match java_bound_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
         AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,

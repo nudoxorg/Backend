@@ -837,3 +837,42 @@ fn the_status_summary_replaces_the_capability_dump() {
     assert!(summary.contains("no-manifest"), "{summary}");
     assert!(summary.contains("embedding unconfigured"), "{summary}");
 }
+
+#[test]
+fn a_references_reply_renders_sites_with_their_provenance() {
+    let reply = backend_library::SurfaceReply::References {
+        target: backend_library::ProductText::new("pkg::semantic::callee")
+            .expect("target text"),
+        references: Box::new([backend_library::ReferenceRecord {
+            site: backend_library::ProductText::new("pkg::semantic::caller")
+                .expect("site text"),
+            target: backend_library::SemanticLinkTarget::Local {
+                declaration: backend_library::SemanticDeclarationIdentity {
+                    family: [1; 16],
+                    variant: [2; 16],
+                },
+            },
+            relation: backend_library::SemanticLinkKind::Calls,
+            evidence: backend_library::SemanticLinkEvidence {
+                confidence: backend_library::SemanticConfidence::Compiler,
+                source: Some(backend_library::SemanticSourceSpan {
+                    file: backend_library::ProductText::new("src/main.rs").expect("path"),
+                    start: 40,
+                    end: 46,
+                }),
+            },
+        }]),
+    };
+    let view = product_view(&reply);
+    assert_eq!(view.heading(), "references to pkg::semantic::callee");
+    let record = view.records().first().expect("record");
+    assert_eq!(record.title(), "pkg::semantic::caller");
+    assert_eq!(record.operand(), Some("pkg::semantic::caller"));
+    let tags = record.tags();
+    assert!(tags.contains(&"calls".to_owned()), "tags are {tags:?}");
+    assert!(tags.contains(&"compiler".to_owned()), "tags are {tags:?}");
+    assert!(
+        tags.iter().any(|tag| tag == "src/main.rs:40-46"),
+        "the source span must survive rendering, tags are {tags:?}"
+    );
+}

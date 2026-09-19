@@ -120,6 +120,7 @@ let
       };
       toolchains = import ./toolchains.nix { inherit inputs pkgs system; };
       tools = import ./tools.nix { inherit pkgs toolchains workspaceRoot; };
+      corpus = import ./corpus.nix { inherit pkgs workspaceRoot; };
       commands = import ./commands.nix {
         inherit
           astGrepSuite
@@ -141,6 +142,7 @@ let
           commands
           control
           controlFile
+          corpus
           ;
       };
       checks = import ./checks.nix {
@@ -170,6 +172,7 @@ let
         astGrepSuite
         formatting
         controlFile
+        corpus
         ;
     };
 in
@@ -195,6 +198,15 @@ in
     }
     // value.pkgs.lib.optionalAttrs (value.tools.backendControl != null) {
       backend-control = value.tools.backendControl;
+    }
+    // value.pkgs.lib.optionalAttrs (value.corpus != null) {
+      fleet-corpus-rust = value.corpus.rust;
+      fleet-corpus-typescript = value.corpus.typescript;
+      fleet-corpus-python = value.corpus.python;
+      fleet-corpus-go = value.corpus.go;
+      fleet-corpus-java = value.corpus.java;
+      fleet-corpus-csharp = value.corpus.csharp;
+      fleet-corpus-clang = value.corpus.clang;
     }
   );
 

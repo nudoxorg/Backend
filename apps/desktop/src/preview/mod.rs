@@ -26,6 +26,12 @@ use gpui::{Context, Window, point, px};
 /// The environment variable that names the scene to open in.
 pub(crate) const SCENE_ENV: &str = "BACKEND_DESKTOP_PREVIEW";
 
+/// The environment variable that picks which declaration a reading scene opens.
+///
+/// Its value is matched against the end of each published coordinate, so
+/// `glyph.rs:136::RelationLabel` opens that page without the project root.
+pub(crate) const COORDINATE_ENV: &str = "BACKEND_DESKTOP_PREVIEW_COORDINATE";
+
 /// One state the window can be asked to open in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Scene {
@@ -45,6 +51,18 @@ pub(crate) enum Scene {
     Fault,
     /// A real index request for a package this deployment cannot reach.
     Index,
+    /// The settings sheet on its agents page.
+    Settings,
+    /// Three pages opened as a branch, to show the tab tree.
+    Tree,
+    /// The palette holding a command with an argument.
+    Command,
+    /// A page with its source sheet open over it.
+    Source,
+    /// The home page with the explore region's first catalog page loaded.
+    Browse,
+    /// One registry package's page, on a coordinate the demo shelf holds.
+    Package,
 }
 
 impl Scene {
@@ -64,6 +82,12 @@ impl Scene {
             "project" => Some(Self::Project),
             "fault" => Some(Self::Fault),
             "index" => Some(Self::Index),
+            "settings" => Some(Self::Settings),
+            "tree" => Some(Self::Tree),
+            "command" => Some(Self::Command),
+            "source" => Some(Self::Source),
+            "browse" => Some(Self::Browse),
+            "package" => Some(Self::Package),
             _ => None,
         }
     }
@@ -79,12 +103,18 @@ impl Scene {
             Self::Project => "project",
             Self::Fault => "fault",
             Self::Index => "index",
+            Self::Settings => "settings",
+            Self::Tree => "tree",
+            Self::Command => "command",
+            Self::Source => "source",
+            Self::Browse => "browse",
+            Self::Package => "package",
         }
     }
 
     /// Returns whether this scene needs a declaration on the shelf to be worth opening.
     const fn needs_rows(self) -> bool {
-        matches!(self, Self::Reading | Self::Hover | Self::Project)
+        matches!(self, Self::Reading | Self::Hover | Self::Project | Self::Tree | Self::Source)
     }
 }
 
@@ -95,7 +125,7 @@ const SEARCH_TERM: &str = "e";
 const MISSING: &str = "/nowhere::src/lib.rs:1::absent";
 
 /// A coordinate the add flow must refuse, for the validation scene.
-const BAD_COORDINATE: &str = "pkg:cargo/serde";
+const BAD_COORDINATE: &str = "serde@9.9.9";
 
 /// A canonical coordinate the add flow accepts and submits.
 const PINNED_COORDINATE: &str = "pkg:cargo/memchr@2.7.4";
@@ -125,6 +155,15 @@ pub(crate) fn stage(
         Scene::Project => stage_project(workspace, cx),
         Scene::Fault => stage_fault(workspace, cx),
         Scene::Index => stage_index(workspace, window, cx),
+        Scene::Settings => workspace.preview_settings(cx),
+        Scene::Tree => stage_tree(workspace, cx),
+        Scene::Command => workspace.set_field("> show Duke".to_owned(), cx),
+        Scene::Source => {
+            stage_reading(workspace, cx);
+            workspace.preview_source(cx);
+        }
+        Scene::Browse => workspace.preview_browse(cx),
+        Scene::Package => workspace.open_package(PINNED_COORDINATE.to_owned(), Target::Here, cx),
     }
     cx.notify();
     true
@@ -148,7 +187,23 @@ fn stage_hover(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
         return;
     };
     let anchor = point(px(HOVER_ANCHOR.0), px(HOVER_ANCHOR.1));
-    workspace.preview_hover(symbol, coordinate, anchor, cx);
+    workspace.preview_hover(symbol, &coordinate, anchor, cx);
+}
+
+fn stage_tree(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
+    let coordinate = workspace
+        .preview_shelf(cx)
+        .entries()
+        .first()
+        .map(|entry| entry.identity().coordinate().as_str().to_owned());
+    if let Some(coordinate) = coordinate {
+        workspace.open_project(coordinate, cx);
+    }
+    for (at, target) in [(0, Target::Child), (1, Target::Child), (2, Target::Background)] {
+        if let Some((symbol, coordinate)) = declaration_at(workspace, cx, at) {
+            workspace.open_subject(Subject::Declaration { symbol, coordinate }, target, cx);
+        }
+    }
 }
 
 fn stage_project(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
@@ -183,7 +238,20 @@ fn first_declaration(
     workspace: &Workspace,
     cx: &Context<Workspace>,
 ) -> Option<(backend_library::SymbolKey, String)> {
-    declaration_at(workspace, cx, 0)
+    let wanted = std::env::var(COORDINATE_ENV).ok().filter(|text| !text.is_empty());
+    match wanted {
+        Some(suffix) => workspace
+            .preview_root(cx)
+            .rows()
+            .iter()
+            .find_map(|row| match row.id {
+                RowId::Symbol(symbol) if row.label.ends_with(&suffix) => {
+                    Some((symbol, row.label.clone()))
+                }
+                _ => None,
+            }),
+        None => declaration_at(workspace, cx, 0),
+    }
 }
 
 fn second_declaration(

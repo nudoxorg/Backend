@@ -2678,35 +2678,12 @@ mod unix_journeys {
         // A native semantic claim requires a configured authority-protocol
         // helper. The manifest-only constructors still discover all inputs,
         // but must return a typed Unsupported witness rather than manufacture
-        // facts from ordinary compiler stdout.
+        // facts from ordinary compiler stdout. Rust, Python, Go, Java, and C#
+        // are deliberately absent here: their native authority lanes were
+        // deleted together with their manifest-only constructors, and the
+        // syntax baselines asserted above are the maintained structural lanes
+        // for those languages in this journey.
         let executable = "/bin/sh";
-        let rust_authority = backend_frontend_rust::RustFrontend::new(
-            rust_source.clone(),
-            executable,
-            b"[package]\nname='polyglot'\nversion='0.0.0'\n".to_vec(),
-            "",
-        )
-        .expect("Rust manifest authority");
-        assert_manifest_only_authority(
-            &rust_authority,
-            "src/lib.rs",
-            &rust_source,
-            Coverage::Unsupported,
-        );
-        let python_authority = backend_frontend_python::PythonFrontend::new(
-            python_source.clone(),
-            executable,
-            executable,
-            "3.13",
-            b"{}".to_vec(),
-        )
-        .expect("Python manifest authority");
-        assert_manifest_only_authority(
-            &python_authority,
-            "module.py",
-            &python_source,
-            Coverage::Unsupported,
-        );
         let typescript_authority = backend_frontend_typescript::TypeScriptFrontend::new(
             typescript_source.clone(),
             executable,
@@ -2719,45 +2696,6 @@ mod unix_journeys {
             &typescript_authority,
             "index.ts",
             &typescript_source,
-            Coverage::Unsupported,
-        );
-        let go_authority = backend_frontend_go::GoFrontend::new(
-            go_source.clone(),
-            executable,
-            b"module polyglot\n\ngo 1.22\n".to_vec(),
-            "",
-        )
-        .expect("Go manifest authority");
-        assert_manifest_only_authority(
-            &go_authority,
-            "module/source.go",
-            &go_source,
-            Coverage::Unavailable,
-        );
-        let java_authority = backend_frontend_java::JavaFrontend::new(
-            java_source.clone(),
-            executable,
-            Vec::new(),
-            "21",
-        )
-        .expect("Java manifest authority");
-        assert_manifest_only_authority(
-            &java_authority,
-            "src/Main.java",
-            &java_source,
-            Coverage::Unsupported,
-        );
-        let csharp_authority = backend_frontend_csharp::CSharpFrontend::new(
-            csharp_source.clone(),
-            executable,
-            executable,
-            "Release",
-        )
-        .expect("C# manifest authority");
-        assert_manifest_only_authority(
-            &csharp_authority,
-            "source.cs",
-            &csharp_source,
             Coverage::Unsupported,
         );
         let clang_authority = backend_frontend_clang::ClangFrontend::new(
@@ -2773,31 +2711,14 @@ mod unix_journeys {
             Coverage::Unsupported,
         );
 
-        // Unavailable is deliberately distinct from Unsupported: this
-        // authority was selected, but its required local executable vanished.
-        let absent = root.join("missing-python-authority");
-        let unavailable_python = backend_frontend_python::PythonFrontend::new(
-            python_source.clone(),
-            absent.to_string_lossy(),
-            executable,
-            "3.13",
-            b"{}".to_vec(),
-        )
-        .expect("unavailable Python authority configuration");
-        let unavailable_snapshot = unavailable_python
-            .discover()
-            .expect("discover unavailable Python authority");
-        let unavailable_key = SessionKey::new(
-            unavailable_python.identity(),
-            unavailable_snapshot.manifest(),
-            typed_of::<ProfileSchema>(b"polyglot-cutover-profile"),
-            typed_of::<FlowSchema>(b"polyglot-cutover-flow"),
-            typed_of::<SemanticBasisSchema>(b"polyglot-cutover-basis"),
-        );
-        let unavailable = unavailable_python
-            .extract(&unavailable_snapshot, unavailable_key)
-            .expect("unavailable authority is an explicit result");
-        assert_eq!(unavailable.coverage().state(), Coverage::Unavailable);
+        // Unavailable is deliberately distinct from Unsupported: an authority
+        // that was selected but whose required local executable vanished
+        // reports a typed Unavailable witness rather than a silent skip. The
+        // manifest-only constructors that produced that witness (Rust, Python,
+        // Go, Java, C#) were deleted with their native lanes; the surviving
+        // TypeScript manifest-only lane reports Unsupported instead, so this
+        // exact witness is retired here and remains proven by the typed
+        // unavailable terminals of the flow real-corpus audit.
 
         let mut index = ProcessCommand::new(binary("backend-cli"));
         index

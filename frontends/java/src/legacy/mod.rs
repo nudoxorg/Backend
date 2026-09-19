@@ -2,10 +2,11 @@
 //! `javac` writes fixed-width semantic planes and this crate only borrows them.
 //! No JSON tree, owned DTO reconstruction, scanner fallback, or semantic string parsing occurs.
 //!
-//! CANONICAL AUTHORITY PATH: this module is the retained low-level authority
-//! contract. Product and compiler-driver callers must reach it only through
-//! the crate-level `Authority` adapter in `lib.rs`; it must never be wired in
-//! as a second semantic plane.
+//! CANONICAL AUTHORITY PATH: this `legacy` module IS the production
+//! native-authority lane. The engine driver imports its symbols directly from
+//! this module; there is no intervening adapter. The crate-level
+//! `syntax_frontend()` constructor is the separate, documented structural
+//! baseline and never substitutes for this authority.
 
 mod bound;
 pub mod central;
@@ -14,11 +15,13 @@ mod image;
 pub mod jar;
 pub mod purl;
 pub mod repo;
+pub mod sourcepath;
 
 pub use self::bound::{BoundHeaderError, BoundImageError, JavaAuthorityImage};
 pub use self::image::{
-    Atom, AtomError, AtomIter, Declaration, DeclarationExtension, DeclarationIter, DeclarationKind,
-    DocFlavor, HeaderError, ImageError, ImagePlane, JavaImage, JavaRelease, Modifiers, Origin,
-    Reference, ReferenceIter, SectionError, Symbol, SymbolIter, SymbolRef, TypeChildren, TypeFact,
-    TypeIter, TypeKind, TypeRef,
+    Atom, AtomError, AtomIter, Declaration, DeclarationExtension, DeclarationExtent,
+    DeclarationIter, DeclarationKind, DocFlavor, HeaderError, ImageError, ImagePlane, JavaImage,
+    JavaRelease, Modifiers, Origin, ParameterNames, Reference, ReferenceIter, ResolvedUse,
+    SectionError, Symbol, SymbolIter, SymbolRef, TypeChildren, TypeFact, TypeIter, TypeKind,
+    TypeRef, UseIter, UseTag,
 };

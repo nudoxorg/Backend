@@ -38,17 +38,17 @@
 //! never fabricate lane-visible type cells. Never recovers C# facts by
 //! scanning source text or a native parser fallback.
 
+use backend_frontend_csharp::legacy::{
+    CSharpImage, Declaration, DeclarationKind, HeaderError, ImageError, NullabilityCell, Parameter,
+    PartialRole, RefKind, ReferenceTag, ResolvedReference, Section, TypeNode, TypeNodeKind,
+    TypeRef, VarianceTag,
+};
 use backend_semantic::ir::{
     AnnotationKind, AtomId, AtomListId, CSharpFacts, CSharpMemberEffects, CSharpNullability,
     CSharpPartialRole, CSharpReferenceKind, DocFragmentInput, DocLinkTarget, EntityId, EntityKind,
     ForeignKey, ForeignOrigin, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
     ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
     SemanticTypeTag, SourceSpan, TypeParameterListId, TypeReason, TypeWidth,
-};
-use backend_frontend_csharp::legacy::{
-    CSharpImage, Declaration, DeclarationKind, HeaderError, ImageError, NullabilityCell, Parameter,
-    PartialRole, RefKind, ReferenceTag, ResolvedReference, Section, TypeNode, TypeNodeKind,
-    TypeRef, VarianceTag,
 };
 use backend_semantic::vocabulary::{
     CSharpImageFault, CSharpImageHeaderFault, CSharpImageSection, CSharpImageTypeKind,
@@ -518,6 +518,7 @@ pub(crate) fn collect<'source>(
             | DeclarationKind::Indexer
             | DeclarationKind::Event
             | DeclarationKind::Constructor
+            | DeclarationKind::StaticConstructor
             | DeclarationKind::Method
             | DeclarationKind::Operator
             | DeclarationKind::Conversion => {}
@@ -553,6 +554,7 @@ pub(crate) fn collect<'source>(
                 ordinals.record(coordinate, ordinal).map_err(terminal)?;
             }
             DeclarationKind::Constructor
+            | DeclarationKind::StaticConstructor
             | DeclarationKind::Method
             | DeclarationKind::Operator
             | DeclarationKind::Conversion => {
@@ -562,13 +564,12 @@ pub(crate) fn collect<'source>(
         }
     }
 
-    // The Roslyn image owns both containment and identifier coordinates.
-    // Bind only relationships whose owner survived emission: partial
-    // implementation rows deliberately have no local ordinal and therefore
-    // remain explicit `Unavailable`, never fabricated roots. The image does
-    // not retain a declaration-end coordinate, so capture the exact named
-    // identifier span rather than pretending its start/name-end interval is
-    // the whole declaration.
+    // The Roslyn image owns containment, identifier, and declaration-extent
+    // coordinates. Bind only relationships whose owner survived emission:
+    // partial implementation rows deliberately have no local ordinal and
+    // therefore remain explicit `Unavailable`, never fabricated roots.
+    // The provenance span is the whole declaration extent, so
+    // declaration-relative occurrence spans satisfy containment honestly.
     // One image-aligned lane records the only positive conclusion this pass
     // needs: a retained declaration has some authority child. We record it
     // before filtering the child itself, so an unsupported or filtered child
@@ -596,10 +597,10 @@ pub(crate) fn collect<'source>(
             continue;
         };
         let span =
-            StagedSourceSpan::new(declared.name_start, declared.name_end).ok_or_else(|| {
+            StagedSourceSpan::new(declared.decl_start, declared.decl_end).ok_or_else(|| {
                 terminal(ProjectionFault::NameSpan {
-                    start: declared.name_start,
-                    end: declared.name_end,
+                    start: declared.decl_start,
+                    end: declared.decl_end,
                 })
             })?;
         facts
@@ -710,6 +711,14 @@ fn checked_name<'source>(
     source: &'source [u8],
     declared: &Declaration<'source>,
 ) -> Result<&'source [u8], CSharpCollectError> {
+    // A static constructor has no source identifier. The producer supplies
+    // its canonical metadata name `.cctor` while the retained name span
+    // remains the containing type identifier, so the spelling is authoritative
+    // rather than a source slice. Only this synthesized name skips the byte
+    // equality; every source-written declaration still proves its exact bytes.
+    if declared.kind == DeclarationKind::StaticConstructor {
+        return Ok(declared.name.bytes);
+    }
     let fault = |start: u32, end: u32| CSharpCollectError::Span { start, end };
     let start = usize::try_from(declared.name_start)
         .map_err(|_| fault(declared.name_start, declared.name_end))?;
@@ -735,6 +744,7 @@ const fn entity_kind(kind: DeclarationKind, is_const: bool) -> EntityKind {
         DeclarationKind::Namespace => EntityKind::Namespace,
         DeclarationKind::Delegate
         | DeclarationKind::Constructor
+        | DeclarationKind::StaticConstructor
         | DeclarationKind::Method
         | DeclarationKind::Operator
         | DeclarationKind::Conversion => EntityKind::Function,
@@ -784,14 +794,14 @@ fn unknown_record(reason: TypeReason, spelling: Option<&[u8]>) -> SemanticTypeRe
 
 /// Bounded qualified-name index of the image's named type declarations.
 struct Names<'image> {
-    entries: [(&'image [u8], ImageDeclarationId); MAX_EMISSION_FACTS],
+    entries: Box<[(&'image [u8], ImageDeclarationId); MAX_EMISSION_FACTS]>,
     len: usize,
 }
 
 impl<'image> Names<'image> {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
-            entries: [(&[], ImageDeclarationId(0)); MAX_EMISSION_FACTS],
+            entries: Box::new([(&[], ImageDeclarationId(0)); MAX_EMISSION_FACTS]),
             len: 0,
         }
     }
@@ -840,7 +850,7 @@ impl<'image> Names<'image> {
 
 /// Bounded index from declaration coordinates to pushed fact ordinals.
 struct Ordinals {
-    entries: [(usize, u32); MAX_EMISSION_FACTS],
+    entries: Box<[(usize, u32); MAX_EMISSION_FACTS]>,
     len: usize,
 }
 
@@ -895,9 +905,9 @@ fn staged_type_for_named_image_declaration(
 }
 
 impl Ordinals {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
-            entries: [(usize::MAX, 0); MAX_EMISSION_FACTS],
+            entries: Box::new([(usize::MAX, 0); MAX_EMISSION_FACTS]),
             len: 0,
         }
     }
@@ -949,10 +959,17 @@ fn push_type_root<'source>(
             observed: facts.len() as u64,
         })
     })?;
-    push(
-        facts,
-        SemanticFact::new(kind, name, constructor(kind)).typed(nominal_record(self_ordinal)),
-    )
+    let mut fact =
+        SemanticFact::new(kind, name, constructor(kind)).typed(nominal_record(self_ordinal));
+    if !declared.type_parameters.is_empty() {
+        let mut hash = Sha256::new();
+        hash.update(b"compiler.csharp.named-type-arity.v1\0");
+        hash.update((declared.type_parameters.len() as u64).to_le_bytes());
+        let mut discriminator = [0_u8; 16];
+        discriminator.copy_from_slice(&hash.finalize()[..16]);
+        fact = fact.with_identity_discriminator(discriminator);
+    }
+    push(facts, fact)
 }
 
 /// Resolves the enclosing fact anchor for anonymous rows of one declaration.
@@ -1021,7 +1038,20 @@ fn push_delegate<'source>(
         signature.push_result(facts, image, names, ordinals, anchor, return_type)?;
     }
     let fact = signature.finish(name)?;
-    push(facts, fact)
+    let ordinal = push(facts, fact)?;
+    // Signature carriers share names and types across executables; bind each
+    // to its delegate so identical carriers stay distinct.
+    for carrier in signature
+        .parameter_ordinals
+        .iter()
+        .copied()
+        .chain(signature.result_ordinal)
+    {
+        facts
+            .attach_parent(carrier, ordinal)
+            .map_err(|fault| lane_terminal_ordinal(carrier, declared.name.bytes.len(), fault))?;
+    }
+    Ok(ordinal)
 }
 
 /// Pushes one member declaration: field, enum member, property, indexer, or
@@ -1081,10 +1111,19 @@ fn push_member<'source>(
     for (target, label) in projection.children {
         fact = fact.type_child(target, label, 0);
     }
-    for ordinal in parameter_ordinals {
+    for ordinal in parameter_ordinals.iter().copied() {
         fact = fact.child(ProductChildRole::ProductMember, ordinal);
     }
-    push(facts, fact)
+    let ordinal = push(facts, fact)?;
+    // Indexer parameter carriers are local members of the member fact; bind
+    // each to it so the member payload can prove its ordered role and two
+    // indexers sharing a parameter name stay distinct.
+    for carrier in parameter_ordinals {
+        facts
+            .attach_parent(carrier, ordinal)
+            .map_err(|fault| lane_terminal_ordinal(carrier, declared.name.bytes.len(), fault))?;
+    }
+    Ok(ordinal)
 }
 
 /// Pushes one constructor, method, operator, or conversion: its parameter
@@ -1113,7 +1152,20 @@ fn push_executable<'source>(
         signature.push_result(facts, image, names, ordinals, anchor, return_type)?;
     }
     let fact = signature.finish(name)?;
-    push(facts, fact)
+    let ordinal = push(facts, fact)?;
+    // Signature carriers share names and types across executables; bind each
+    // to its executable so identical carriers stay distinct.
+    for carrier in signature
+        .parameter_ordinals
+        .iter()
+        .copied()
+        .chain(signature.result_ordinal)
+    {
+        facts
+            .attach_parent(carrier, ordinal)
+            .map_err(|fault| lane_terminal_ordinal(carrier, declared.name.bytes.len(), fault))?;
+    }
+    Ok(ordinal)
 }
 
 /// One executable signature under construction: ordered parameter carriers
@@ -1188,7 +1240,7 @@ impl Signature {
     /// Finishes the executable fact: function constructor over the carriers
     /// and the function-pointer record over the same ordered rows.
     fn finish<'source>(
-        self,
+        &self,
         name: &'source [u8],
     ) -> Result<SemanticFact<'source>, CSharpCollectError> {
         let arity = u32::try_from(self.parameter_ordinals.len()).map_err(|_| {
@@ -2070,7 +2122,10 @@ fn push_occurrence<'source>(
 /// lane's closed lattice; it lands as `MethodCall` — the class an invocation
 /// through the implemented interface member carries — at oracle confidence,
 /// so consumers can still resolve every implementation of one interface
-/// member from the occurrence plane alone.
+/// member from the occurrence plane alone. A bare-identifier field read is a
+/// use of a variable binding; a bare-identifier field write is the field the
+/// site accesses as its target, so the read/write distinction survives the
+/// lane boundary on the two classes the lattice proves.
 const fn reference_kind(kind: ReferenceTag) -> ReferenceKind {
     match kind {
         ReferenceTag::Invocation | ReferenceTag::InterfaceImplementation => {
@@ -2079,6 +2134,8 @@ const fn reference_kind(kind: ReferenceTag) -> ReferenceKind {
         ReferenceTag::ObjectCreation => ReferenceKind::TypeReference,
         ReferenceTag::MemberAccess => ReferenceKind::FieldAccess,
         ReferenceTag::UsingDirective => ReferenceKind::Import,
+        ReferenceTag::FieldRead => ReferenceKind::VariableUse,
+        ReferenceTag::FieldWrite => ReferenceKind::FieldAccess,
     }
 }
 
@@ -2092,6 +2149,7 @@ const fn foreign_kind(kind: ReferenceTag) -> Option<EntityKind> {
         ReferenceTag::ObjectCreation => Some(EntityKind::Record),
         ReferenceTag::MemberAccess => Some(EntityKind::Field),
         ReferenceTag::UsingDirective => Some(EntityKind::Module),
+        ReferenceTag::FieldRead | ReferenceTag::FieldWrite => Some(EntityKind::Field),
     }
 }
 
@@ -2340,12 +2398,12 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use backend_frontend_csharp::legacy::{ImageError, VarianceTag};
     use backend_semantic::ir::{
         AnnotationKind, CSharpFacts, DocFragmentInput, DocLinkTarget, EntityKind, ForeignOrigin,
         FragmentView, LanguageExtensionWireFact, NominalRef, OccurrenceTarget, PrimitiveShape,
         SemanticTypeTag, SourceIdentity,
     };
-    use backend_frontend_csharp::legacy::{ImageError, VarianceTag};
     use backend_semantic::vocabulary::{
         CSharpImageFault, CSharpProjectionFault as PortableCSharpProjectionFault, CSharpVersion,
         CompileRecipeFact, LanguageProfile, LoweringUnsupported, NativeTool, Stage,
@@ -2361,7 +2419,7 @@ mod tests {
     const DIRECTORY_ENTRY_BYTES: usize = 16;
     const IMAGE_DIGEST_OFFSET: usize = 224;
     const ABSENT: u32 = u32::MAX;
-    const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v3\0";
+    const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v4\0";
 
     /// Wire kind cells reused by fixture rows.
     const KIND_NAMED: u8 = 1;
@@ -2595,6 +2653,7 @@ mod tests {
         owner: Option<u32>,
         declared_type: Option<u32>,
         decl_start: u32,
+        decl_end: u32,
         name_start: u32,
         name_end: u32,
         params: Vec<ParamRow>,
@@ -2613,6 +2672,7 @@ mod tests {
                 owner: None,
                 declared_type: None,
                 decl_start: 0,
+                decl_end: 0,
                 name_start: 0,
                 name_end: 0,
                 params: Vec::new(),
@@ -2623,8 +2683,20 @@ mod tests {
 
         fn at(mut self, decl_start: u32, name_start: u32, name_end: u32) -> Self {
             self.decl_start = decl_start;
+            // Fixtures that do not model extents keep the version-3 claim:
+            // the declaration is exactly its name. Tests that need true
+            // extents override with `ending`.
+            self.decl_end = name_end;
             self.name_start = name_start;
             self.name_end = name_end;
+            self
+        }
+
+        /// Overrides the declaration end with the true extent. Only tests
+        /// that exercise span containment need this; the default preserves
+        /// version-3 provenance semantics.
+        fn ending(mut self, decl_end: u32) -> Self {
+            self.decl_end = decl_end;
             self
         }
 
@@ -2864,6 +2936,7 @@ mod tests {
                         .map_or(ABSENT, |d| cell(d).unwrap_or(ABSENT))
                         .to_le_bytes(),
                 );
+                declarations.extend_from_slice(&row.decl_end.to_le_bytes());
             }
             let mut type_rows = Vec::new();
             let mut type_children = Vec::new();
@@ -2926,10 +2999,10 @@ mod tests {
                 doc_rows,
                 reference_rows,
             ];
-            let row_bytes = [8_u16, 1, 48, 24, 12, 4, 16, 8, 8, 20, 28];
+            let row_bytes = [8_u16, 1, 52, 24, 12, 4, 16, 8, 8, 20, 28];
             let mut image = vec![0_u8; HEADER_BYTES];
             image[..4].copy_from_slice(b"NCAI");
-            image[4..6].copy_from_slice(&3_u16.to_le_bytes());
+            image[4..6].copy_from_slice(&4_u16.to_le_bytes());
             image[6..8].copy_from_slice(
                 &u16::try_from(HEADER_BYTES)
                     .map_err(|_| TestError::Num)?
@@ -3006,7 +3079,9 @@ mod tests {
             ContentId::<SourceFactDomain>::from_canonical_bytes(source),
             ContentId::<ToolchainDomain>::from_canonical_bytes(b"csharp-authority-toolchain"),
         );
-        let mut output = vec![0xa5_u8; 4 * 1024 * 1024];
+        // The raised lane's full payload exceeds the former 4 MiB fixture;
+        // capacity falsifiers at the exact bound need the larger scratch.
+        let mut output = vec![0xa5_u8; 16 * 1024 * 1024];
         let length = admit(&facts, identity, recipe, recipe.profile, &mut output)?.len();
         if !output[length..].iter().all(|byte| *byte == 0xa5) {
             return Err(TestError::Tail);
@@ -3103,7 +3178,8 @@ mod tests {
         let only = row(&view, 0)?;
         if only.owner.raw != 0
             || only.record.tag != SemanticTypeTag::Nominal
-            || only.record.nominal != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(0)))
+            || only.record.nominal
+                != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(0)))
         {
             return Err(TestError::Missing("recursive self nominal"));
         }
@@ -3146,7 +3222,8 @@ mod tests {
         let view = FragmentView::validate(&other)?;
         let field = row(&view, 1)?;
         if field.record.tag != SemanticTypeTag::Unknown
-            || field.record.payload0 != u32::from(backend_semantic::ir::TypeReason::UnresolvedExternal)
+            || field.record.payload0
+                != u32::from(backend_semantic::ir::TypeReason::UnresolvedExternal)
             || field.record.text != Some(b"demo.Other".as_slice())
         {
             return Err(TestError::Missing("typed unknown for foreign nominal"));
@@ -3444,7 +3521,8 @@ mod tests {
         let view = FragmentView::validate(&bytes)?;
         let stamp_row = row(&view, 1)?;
         if stamp_row.record.tag != SemanticTypeTag::Unknown
-            || stamp_row.record.payload0 != u32::from(backend_semantic::ir::TypeReason::UnresolvedExternal)
+            || stamp_row.record.payload0
+                != u32::from(backend_semantic::ir::TypeReason::UnresolvedExternal)
             || stamp_row.record.text != Some(b"System.DateTime".as_slice())
         {
             return Err(TestError::Missing("foreign unknown row"));
@@ -3466,7 +3544,8 @@ mod tests {
             return Err(TestError::Missing("universe origin"));
         };
         if ecosystem != "nuget"
-            || occurrence.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
+            || occurrence.occurrence.confidence
+                != backend_semantic::ir::OccurrenceConfidence::Oracle
             || occurrence.occurrence.kind != backend_semantic::ir::ReferenceKind::MethodCall
         {
             return Err(TestError::Missing("nuget method call"));
@@ -3803,7 +3882,8 @@ mod tests {
             return Err(TestError::Missing("binding ordinals"));
         }
         if occurrence.occurrence.kind != backend_semantic::ir::ReferenceKind::MethodCall
-            || occurrence.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
+            || occurrence.occurrence.confidence
+                != backend_semantic::ir::OccurrenceConfidence::Oracle
         {
             return Err(TestError::Missing("oracle method-call binding"));
         }
@@ -3826,10 +3906,137 @@ mod tests {
             .ok_or(TestError::Missing("occurrence"))?
             .map_err(|_| TestError::Missing("occurrence decode"))?;
         let OccurrenceTarget::Local(target) = occurrence.occurrence.target else {
-            return Err(TestError::Missing("local binding target"));
+            return Err(TestError::Missing("mutated binding target"));
         };
         if target.raw != 0 {
             return Err(TestError::Missing("mutated binding target"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bare_identifier_field_reads_and_writes_project_with_distinct_classes()
+    -> Result<(), TestError> {
+        let source = b"class Widget { int count; int Bump() { count = count + 1; return count; } }";
+        let mut fix = Fixture::default();
+        let widget = fix.class(b"demo.Widget", source);
+        let int_ty = fix.named(b"System.Int32");
+        let field = fix.field(widget, b"count", int_ty, source);
+        fix.declarations.push(field);
+        // The method's declaration extent must host the body's bare sites,
+        // so the fixture spans it over the whole body the way Roslyn does.
+        let method = fix
+            .method(widget, b"Bump", Some(int_ty), source)
+            .ending(u32::try_from(source.len()).map_err(|_| TestError::Num)?);
+        fix.declarations.push(method);
+        let spelling = fix.atom(b"count");
+        let file = fix.atom(b"Widget.cs");
+        let (write_at, _write_end) = Fixture::span_of(source, b"count = count");
+        let (first_read_at, _first_read_end) = Fixture::span_of(source, b"count + 1");
+        let (second_read_at, second_read_end) = Fixture::span_of(source, b"return count");
+        // Write target: the assignment's left operand.
+        fix.references.push(RefRow {
+            owner: 2,
+            target: Some(1),
+            spelling,
+            file,
+            start: write_at,
+            end: write_at + 5,
+            kind: 7,
+        });
+        // Read targets: the compound assignment's right operand and the
+        // return operand.
+        fix.references.push(RefRow {
+            owner: 2,
+            target: Some(1),
+            spelling,
+            file,
+            start: first_read_at,
+            end: first_read_at + 5,
+            kind: 6,
+        });
+        fix.references.push(RefRow {
+            owner: 2,
+            target: Some(1),
+            spelling,
+            file,
+            start: second_read_at + 7,
+            end: second_read_end,
+            kind: 6,
+        });
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let rows: Vec<_> = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| TestError::Missing("occurrence decode"))?;
+        let mut writes = 0;
+        let mut reads = 0;
+        for row in &rows {
+            match row.occurrence.kind {
+                backend_semantic::ir::ReferenceKind::FieldAccess => writes += 1,
+                backend_semantic::ir::ReferenceKind::VariableUse => reads += 1,
+                _ => return Err(TestError::Missing("bare-field occurrence class")),
+            }
+        }
+        if writes != 1 || reads != 2 {
+            return Err(TestError::Missing("one write and two reads"));
+        }
+        // Falsifier: a read row written as a write changes the committed
+        // class bytes.
+        let mut mutated = fix.clone();
+        mutated.references[1].kind = 7;
+        let other = lower(&mutated, source)?;
+        if other == bytes {
+            return Err(TestError::Tail);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reference_dense_small_sources_admit_every_occurrence() -> Result<(), TestError> {
+        // The reference pool is sized from entered bytes (one row per byte,
+        // documented measured demand), so a tiny source with a reference row
+        // at nearly every byte must admit without an `IndexCapacity`
+        // reference fault — the corpus-scale `todelimitedstring@1.1.2`
+        // regression class.
+        let source = b"class A { int count; }";
+        let mut fix = Fixture::default();
+        let name = fix.atom(b"A");
+        let qualified = fix.atom(b"demo.A");
+        let ty = fix.named(b"demo.A");
+        let (name_start, name_end) = Fixture::span_of(source, b"A");
+        // The class declaration extent spans the whole source so every
+        // byte-positioned occurrence stays inside its owner.
+        let widget = Decl::new(1, name, Some(qualified))
+            .typed(ty)
+            .at(0, name_start, name_end);
+        fix.declarations.push(widget);
+        let int_ty = fix.named(b"System.Int32");
+        let field = fix.field(0, b"count", int_ty, source);
+        fix.declarations.push(field);
+        let spelling = fix.atom(b"count");
+        let file = fix.atom(b"A.cs");
+        for index in 0..9u32 {
+            fix.references.push(RefRow {
+                owner: 0,
+                target: Some(1),
+                spelling,
+                file,
+                start: index,
+                end: index + 1,
+                kind: 6,
+            });
+        }
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let rows = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?
+            .count();
+        if rows != 9 {
+            return Err(TestError::Missing("nine committed occurrences"));
         }
         Ok(())
     }

@@ -13,7 +13,9 @@
 //! caller-owned pooled lane, spans validated per tag, and no owned
 //! intermediate tree.
 
-use crate::ir_vocabulary::{EntityId, ExternalEntityRef, ExternalTypeRef, ListSpan, TypeId};
+use crate::ir_vocabulary::{
+    EntityId, ExternalEntityRef, ExternalTypeRef, ListSpan, StableRef, TypeId,
+};
 
 /// Marker for the pooled type-child lane.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -40,6 +42,12 @@ pub enum NominalRef {
     Local(EntityId),
     /// An entity row owned by another fragment authority.
     External(ExternalEntityRef),
+    /// A declaration-identified external target: a known fragment authority
+    /// plus that fragment's exact composite declaration identity. Unlike
+    /// [`NominalRef::External`] it carries no unverified ordinal and, unlike
+    /// [`NominalRef::Local`], it is resolved by the target fragment's own
+    /// declaration endpoint rather than this fragment's entity lane.
+    Stable(StableRef),
 }
 
 /// The closed set of type constructors. Frozen discriminants; never
@@ -1206,7 +1214,9 @@ impl SemanticTypeRecord<'_> {
                 // be rendered as an invented `foreign` name.
                 let text_law = match self.nominal {
                     Some(NominalRef::External(_)) => CellLaw::Optional,
-                    Some(NominalRef::Local(_)) | None => CellLaw::Forbidden,
+                    Some(NominalRef::Local(_)) | Some(NominalRef::Stable(_)) | None => {
+                        CellLaw::Forbidden
+                    }
                 };
                 self.check_cell(TypeCell::Text, text_law, self.text.is_some())?;
                 self.check_cell(TypeCell::Text2, CellLaw::Forbidden, self.text2.is_some())?;

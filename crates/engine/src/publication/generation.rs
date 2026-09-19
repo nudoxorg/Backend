@@ -6,17 +6,19 @@
 use core::num::TryFromIntError;
 use std::collections::TryReserveError;
 
-use backend_store::hydration::{PlanError, PlanScratch, Projection, VerificationError, demand, plan};
-use backend_version::{ContentId, ObjectDomain};
+use backend_store::hydration::{
+    PlanError, PlanScratch, Projection, VerificationError, demand, plan,
+};
 use backend_store::memory::{
     InsertOutcome, MemoryStore, RejectedInsert, StoreCapacity, StoreError, StoreInitError,
 };
-use backend_version::object::{ObjectKind, ObjectLength, ObjectRef};
 use backend_store::root::{
     ClosureScratch, GenerationRoot, GenerationRootBuilder, GenerationView, PreparedLocality,
     RootBuildError, RootEntry, RootPushError,
 };
+use backend_version::object::{ObjectKind, ObjectLength, ObjectRef};
 use backend_version::schema::SchemaId;
+use backend_version::{ContentId, ObjectDomain};
 use thiserror::Error;
 
 use crate::publication::manifest::{CompilationManifestView, StoredFragmentFacts};

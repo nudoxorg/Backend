@@ -38,7 +38,7 @@ use backend_library::{
 };
 use backend_present::{
     Coordinate, Fault, GRAMMARS, Identity, IdentityShape, Language, Operand, Readiness, RowCount,
-    ShelfEntry, domain_name, domains, registry_size,
+    domain_name, domains, registry_size,
 };
 use backend_replication::ReplicationError;
 
@@ -52,7 +52,7 @@ fn crumb_labels(identity: &Identity) -> Vec<String> {
 }
 
 #[test]
-fn a_declaration_label_parses_into_its_project_path_line_and_leaf() {
+fn a_declaration_label_parses_into_its_project_module_and_leaf() {
     let identity = Identity::parse("/abs/project::src/lib.rs:2::ferris");
     assert_eq!(identity.shape(), IdentityShape::Declaration);
     assert_eq!(
@@ -66,7 +66,7 @@ fn a_declaration_label_parses_into_its_project_path_line_and_leaf() {
     assert_eq!(identity.language(), Language::Rust);
     assert_eq!(
         crumb_labels(&identity),
-        vec!["project", "src/lib.rs:2", "ferris"]
+        vec!["project", "lib", "ferris"]
     );
 }
 
@@ -90,7 +90,7 @@ fn a_windows_label_keeps_its_drive_letter_and_still_finds_the_line() {
     assert_eq!(identity.line().expect("a source line").get(), 2);
     assert_eq!(
         crumb_labels(&identity),
-        vec!["proj", r"src\lib.rs:2", "Thing"]
+        vec!["proj", "lib", "Thing"]
     );
 }
 
@@ -103,7 +103,7 @@ fn a_cyrillic_label_renders_its_own_script_in_every_crumb() {
     assert_eq!(identity.name(), "Структура");
     assert_eq!(
         crumb_labels(&identity),
-        vec!["проект", "src/файл.rs:9", "Структура"]
+        vec!["проект", "файл", "Структура"]
     );
 }
 
@@ -114,7 +114,7 @@ fn an_arabic_identifier_survives_parsing_without_reordering() {
     assert_eq!(identity.name(), "متغير");
     assert_eq!(
         crumb_labels(&identity),
-        vec!["مشروع", "src/lib.rs:3", "متغير"]
+        vec!["مشروع", "lib", "متغير"]
     );
 }
 

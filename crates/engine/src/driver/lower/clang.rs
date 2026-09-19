@@ -33,9 +33,11 @@
 //!   `ClangFacts` extension row; layout cells stay empty whenever
 //!   libclang could not measure the type (incomplete or dependent).
 //! - Occurrences project the authority's reference plane: resolved
-//!   in-TU targets become local rows at oracle confidence, resolved
-//!   foreign targets become `c`-universe foreign keys at oracle
-//!   confidence, and unresolved sites keep their written spelling at
+//!   in-TU targets become local rows at oracle confidence; resolved
+//!   project-local targets become stable references keyed on their
+//!   package-relative file; resolved out-of-root system targets become
+//!   stable references to one fixed system fragment keyed on the USR alone,
+//!   never a host path; and unresolved sites keep their written spelling at
 //!   index confidence. Occurrence owners are the pushed declarations
 //!   the authority names; module-owned references have no honest owner
 //!   row and are never synthesized onto another fact.
@@ -55,21 +57,26 @@
 //!   the edge.
 
 use core::sync::atomic::AtomicBool;
+use std::ffi::CString;
 
-use backend_semantic::ir::{
-    ClangFacts as WireClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass,
-    DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey, ForeignOrigin, NominalRef,
-    Occurrence, OccurrenceConfidence, OccurrenceTarget, ProductChildRole,
-    ReferenceKind as LaneReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
-    SemanticTypeTag, TypeParameterListId, TypeReason, TypeWidth,
-};
+use sha2::{Digest, Sha256};
+
+use backend_frontend_clang::ClangProject;
 use backend_frontend_clang::legacy::{
     ClangInput, ClangScratch, CollectError, DeclarationFact, DeclarationId, DeclarationKind,
-    DefinitionState, IncludeFact, MAX_CLANG_DECLARATIONS, MAX_CLANG_DIAGNOSTICS,
+    DefinitionState, IncludeFact, IntegerRank, MAX_CLANG_DECLARATIONS, MAX_CLANG_DIAGNOSTICS,
     MAX_CLANG_INCLUDES, MAX_CLANG_OVERRIDES, MAX_CLANG_REFERENCES, MAX_CLANG_TYPE_EDGES,
-    MAX_CLANG_TYPES, MethodVirtuality, OverrideFact, ReferenceFact, ReferenceKind, ReferenceTarget,
-    SYMBOL_IDENTITY_BYTES, SourceSpan, StorageClass, SymbolIdentity, TypeEdge, TypeFact,
-    TypeId as AuthorityTypeId, TypeKind, TypeRelation, collect_cancellable,
+    MAX_CLANG_TYPES, MethodVirtuality, OverrideFact, ParseFailure, ReferenceFact, ReferenceKind,
+    ReferenceTarget, SYMBOL_IDENTITY_BYTES, SourceSpan, StorageClass, SymbolIdentity, TypeEdge,
+    TypeFact, TypeId as AuthorityTypeId, TypeKind, TypeRelation, collect_cancellable,
+};
+use backend_semantic::ir::{
+    ClangFacts as WireClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass,
+    DeclarationFamilyId, DeclarationIdentity, DocFragmentInput, DocLinkTarget, EntityId,
+    EntityKind, ExternalFragmentId, ForeignKey, ForeignOrigin, NominalRef, Occurrence,
+    OccurrenceConfidence, OccurrenceTarget, ProductChildRole, ReferenceKind as LaneReferenceKind,
+    RelSpan, SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, StableRef,
+    TypeParameterListId, TypeReason, TypeWidth, VariantFingerprint,
 };
 use backend_semantic::vocabulary::{LanguageProfile, LoweringUnsupported};
 
@@ -243,6 +250,16 @@ const INTEGER_SIGNED_FLAG: u32 = 1;
 /// Bit offset of the integer width cell above the signedness bit.
 const INTEGER_WIDTH_SHIFT: u32 = 1;
 
+/// Canonical C spelling of `long`, carried in the `PrimitiveShape::Builtin`
+/// text cell because the width-bearing integer row cannot express the rank.
+const C_LONG_SPELLING: &[u8] = b"long";
+/// Canonical C spelling of `unsigned long`.
+const C_UNSIGNED_LONG_SPELLING: &[u8] = b"unsigned long";
+/// Canonical C spelling of `long long`.
+const C_LONG_LONG_SPELLING: &[u8] = b"long long";
+/// Canonical C spelling of `unsigned long long`.
+const C_UNSIGNED_LONG_LONG_SPELLING: &[u8] = b"unsigned long long";
+
 /// `void` builtin spelling; the void row is a primitive builtin leaf.
 const VOID_SPELLING: &[u8] = b"void";
 
@@ -271,14 +288,59 @@ const REF_OPENERS: [&[u8]; 2] = [b"@ref ", b"\\ref "];
 /// Streams every provable libclang fact — declarations, recursive types,
 /// signatures, occurrences, includes, and doxygen comments — into the
 /// shared fact lane.
+///
+/// When a project is supplied, the entry translation unit is parsed through
+/// its compilation-database arguments and package root so project-local
+/// `#include` closures resolve to stable cross-fragment identities. Only the
+/// entry closure is analyzed; the project's other translation units are never
+/// walked eagerly. Without a project, the single caller buffer is parsed under
+/// the synthetic profile arguments, exactly as before.
 pub(crate) fn collect<'source>(
     profile: LanguageProfile,
+    project: Option<&ClangProject>,
     source: &'source [u8],
     cancelled: &AtomicBool,
     facts: &mut FactSet<'source>,
 ) -> Result<(), ClangCollectError> {
-    let input = ClangInput::from_profile(c"nudox-input", source, profile)
-        .map_err(|_| ClangCollectError::Lowering(LoweringUnsupported::ClangDeclarationForm))?;
+    match project {
+        Some(project) => collect_project(project, source, cancelled, facts),
+        None => {
+            let input =
+                ClangInput::from_profile(c"nudox-input", source, profile).map_err(|_| {
+                    ClangCollectError::Lowering(LoweringUnsupported::ClangDeclarationForm)
+                })?;
+            collect_input(input, source, cancelled, facts)
+        }
+    }
+}
+
+/// Parses the project's one entry translation unit with its compilation
+/// arguments and package working directory, then lowers its include and
+/// reference closure through the same canonical lane.
+fn collect_project<'source>(
+    project: &ClangProject,
+    source: &'source [u8],
+    cancelled: &AtomicBool,
+    facts: &mut FactSet<'source>,
+) -> Result<(), ClangCollectError> {
+    let invalid = || {
+        ClangCollectError::Authority(CollectError::Parse {
+            failure: ParseFailure::InvalidArguments,
+        })
+    };
+    let file_name =
+        CString::new(project.entry().to_string_lossy().as_bytes()).map_err(|_| invalid())?;
+    let directory =
+        CString::new(project.root().to_string_lossy().as_bytes()).map_err(|_| invalid())?;
+    let arguments = project.arguments();
+    let owned = arguments
+        .iter()
+        .map(|argument| CString::new(argument.as_bytes()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid())?;
+    let borrowed = owned.iter().map(CString::as_c_str).collect::<Vec<_>>();
+    let input = ClangInput::from_database(&file_name, source, &borrowed, &directory)
+        .map_err(|_| invalid())?;
     collect_input(input, source, cancelled, facts)
 }
 
@@ -299,8 +361,8 @@ pub(crate) fn lower_database<'source, 'output>(
         .map_err(ClangCollectError::Admission)
 }
 
-fn collect_input<'source>(
-    input: ClangInput<'source>,
+fn collect_input<'input, 'source>(
+    input: ClangInput<'input>,
     source: &'source [u8],
     cancelled: &AtomicBool,
     facts: &mut FactSet<'source>,
@@ -333,6 +395,7 @@ fn collect_input<'source>(
     projector.push_type_anchors()?;
     projector.push_members()?;
     projector.attach_topology()?;
+    projector.push_includes()?;
     projector.push_occurrences()?;
     projector.push_docs()?;
     Ok(())
@@ -450,6 +513,7 @@ const fn empty_override() -> OverrideFact {
         target: SymbolIdentity {
             bytes: [0; SYMBOL_IDENTITY_BYTES],
         },
+        target_file: None,
     }
 }
 
@@ -804,6 +868,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     /// declarations also intern their template parameters into the pooled
     /// lane so their extension row names exactly them.
     fn push_type_anchors(&mut self) -> Result<(), ClangCollectError> {
+        // Function-template anchors project their signature in this pass, so
+        // the authority type-edge adjacency must be live before the first push.
+        self.index_edges().map_err(terminal)?;
         let declarations = self.authority.declarations;
         for index in 0..declarations.len() {
             if self.representative.get(index).copied().flatten() != Some(index) {
@@ -841,14 +908,50 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             let template_start = self.push_template_parameters(index)?;
             let own_ordinal = u32::try_from(self.facts.len())
                 .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
-            let record = match kind {
-                EntityKind::Module => unknown_record(TypeReason::Unannotated, None),
-                _ => nominal_record(own_ordinal),
-            };
             let extension = self.extension(declaration, template_start)?;
-            let fact = SemanticFact::new(kind, name, constructor(kind))
-                .typed(record)
-                .with_extension(EmissionExtension::Clang(extension));
+            // A function template is an executable anchor, not a nominal
+            // type: two same-named overloads that differ only in a parameter
+            // type (for example `float` versus `double`) must still mint
+            // distinct coordinate-free families. Carrying the projected
+            // function signature makes the overloads structurally distinct and
+            // lets every contained parameter inherit that distinction. Every
+            // other anchor keeps its recursive nominal self-record.
+            let fact = if kind == EntityKind::Function {
+                match declaration.type_root {
+                    Some(root) => {
+                        let projected = self.project_root(root)?;
+                        projected.attach(SemanticFact::new(kind, name, constructor(kind)))
+                    }
+                    None => SemanticFact::new(kind, name, constructor(kind))
+                        .typed(unknown_record(TypeReason::Unannotated, None)),
+                }
+            } else {
+                let record = match kind {
+                    EntityKind::Module => unknown_record(TypeReason::Unannotated, None),
+                    _ => nominal_record(own_ordinal),
+                };
+                SemanticFact::new(kind, name, constructor(kind)).typed(record)
+            }
+            .with_extension(EmissionExtension::Clang(extension));
+            // A C++ class-template explicit or partial specialization differs
+            // from its siblings only by template arguments, and a non-type
+            // argument is erased from the type graph (its libclang type is the
+            // argument's type, not its value). Two specializations of one
+            // primary template therefore project byte-identical variants. The
+            // authority's canonical USR-derived identity is the ground truth
+            // for "distinct declaration", so it enters the variant for records
+            // and templates exactly when libclang proves one.
+            let fact = match declaration.identity.as_ref() {
+                Some(identity)
+                    if matches!(
+                        declaration.kind,
+                        DeclarationKind::Record | DeclarationKind::Template
+                    ) =>
+                {
+                    fact.with_identity_discriminator(identity.bytes)
+                }
+                _ => fact,
+            };
             let ordinal = push(self.facts, fact)?;
             self.record_pushed(index, ordinal, declaration);
             if declaration.kind == DeclarationKind::Enumeration {
@@ -938,15 +1041,41 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 | DeclarationKind::Namespace => {}
                 DeclarationKind::Enumerator => self.push_enumerator(index)?,
                 DeclarationKind::Field => self.push_typed_member(index, EntityKind::Field)?,
-                DeclarationKind::Variable => self.push_typed_member(index, EntityKind::Static)?,
+                DeclarationKind::Variable => {
+                    // Block-scope variables share their function's parentage
+                    // but not its block scope: two same-named same-typed
+                    // locals in different blocks of one function would mint
+                    // identical coordinate-free identities. They carry no
+                    // stable declaration identity and are not admitted as
+                    // facts. The locals of an unrepresented executable (a
+                    // lambda closure, say) share that refusal — their honest
+                    // parentage target has no row. File, namespace, and
+                    // record scope variables keep their honest parentage.
+                    if !self.owner_is_functional(declaration)
+                        && !self.owner_is_unrepresented(declaration)
+                    {
+                        self.push_typed_member(index, EntityKind::Static)?;
+                    }
+                }
                 DeclarationKind::Macro => self.push_macro(index)?,
                 DeclarationKind::Function
                 | DeclarationKind::Method
                 | DeclarationKind::Constructor
                 | DeclarationKind::Destructor => self.push_function(index)?,
-                DeclarationKind::Parameter => {
-                    self.push_typed_member(index, EntityKind::Parameter)?
+                DeclarationKind::Parameter if !self.owner_is_unrepresented(declaration) => {
+                    // Signature storage of a represented executable is pushed
+                    // by that function's own signature framing; what remains
+                    // here is owner-less storage (a function-pointer
+                    // typedef's parameter) with file-scope parentage, and a
+                    // function template's parameters (the template anchor is
+                    // pushed in pass one without signature framing). Both
+                    // keep the executable framing's twin discrimination, or
+                    // macro-generated template operators whose parameters
+                    // share the invocation-text name and a dependent frame
+                    // would mint colliding identities.
+                    self.push_orphan_parameter(index)?
                 }
+                DeclarationKind::Parameter => {}
                 DeclarationKind::TemplateParameter | DeclarationKind::Unknown => {}
             }
         }
@@ -962,6 +1091,61 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         if let Some(identity) = declaration.identity {
             self.identities.push((identity, ordinal));
         }
+    }
+
+    /// True when one declaration's authoritative owner is a function-like
+    /// executable. The check reads only the authority's USR identities and
+    /// closed declaration kinds — never a lane ordinal or source coordinate.
+    /// A function template owns its body locals exactly like a plain
+    /// function does; a class template instead owns static data members,
+    /// which keep their honest template parentage and are still admitted.
+    fn owner_is_functional(&self, declaration: &DeclarationFact) -> bool {
+        let Some(owner) = declaration.owner else {
+            return false;
+        };
+        let Some(owner_decl) = self
+            .authority
+            .declarations
+            .iter()
+            .find(|candidate| candidate.identity == Some(owner))
+        else {
+            return false;
+        };
+        match owner_decl.kind {
+            DeclarationKind::Function
+            | DeclarationKind::Method
+            | DeclarationKind::Constructor
+            | DeclarationKind::Destructor => true,
+            DeclarationKind::Template => owner_decl
+                .type_root
+                .and_then(|root| self.type_row(root))
+                .is_some_and(|row| row.kind == TypeKind::Function),
+            _ => false,
+        }
+    }
+
+    /// True when one declaration's authoritative owner carries an identity
+    /// that has no retained declaration row at all.
+    ///
+    /// That form is body storage of an executable the lane never visits as a
+    /// declaration: `tinycbor`'s `tst_parser.cpp` is the measured case, where
+    /// four lambda closures inside the file-scope `byteArrayOps` initializer
+    /// each declare a block-scope `auto input` local and a `(void *token,
+    /// size_t len)` parameter run whose semantic parent is the closure's
+    /// unvisited call-operator method. Neither is file, namespace, or record
+    /// scope storage: the honest parentage target has no row, and
+    /// same-named same-typed locals or parameters of distinct closures would
+    /// mint colliding coordinate-free identities. Only a nameless owner
+    /// (`None`) is different storage — file scope — and stays admitted.
+    fn owner_is_unrepresented(&self, declaration: &DeclarationFact) -> bool {
+        let Some(owner) = declaration.owner else {
+            return false;
+        };
+        !self
+            .authority
+            .declarations
+            .iter()
+            .any(|candidate| candidate.identity == Some(owner))
     }
 
     /// Projects libclang's authoritative owner and declaration extent rows
@@ -1117,6 +1301,77 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         Ok(())
     }
 
+    /// Pushes one parameter that no executable's signature framing consumed:
+    /// owner-less function-pointer typedef storage, or the parameters of a
+    /// function template, whose anchor is pushed in pass one without framing
+    /// its own carriers.
+    ///
+    /// The executable framing separates two same-named parameters whose whole
+    /// flattened frame is byte-identical (one macro invocation can expand a
+    /// signature whose parameters share the invocation-text spelling and one
+    /// dependent type) with its twin discrimination. This path applies exactly
+    /// the same discrimination over the earlier same-owner parameters this
+    /// pass already pushed, so template parameters of one expansion mint
+    /// distinct coordinate-free identities instead of colliding.
+    fn push_orphan_parameter(&mut self, index: usize) -> Result<(), ClangCollectError> {
+        let declarations = self.authority.declarations;
+        let Some(declaration) = declarations.get(index) else {
+            return Ok(());
+        };
+        let Ok(name) = self.name_of(declaration) else {
+            return Ok(());
+        };
+        // Earlier same-owner parameter facts already pushed: the twin
+        // candidates the framing's discriminator counts.
+        let mut carriers: Vec<u32> = Vec::new();
+        for candidate in 0..index {
+            if self.representative.get(candidate).copied().flatten() != Some(candidate) {
+                continue;
+            }
+            let Some(earlier) = declarations.get(candidate) else {
+                continue;
+            };
+            if earlier.kind != DeclarationKind::Parameter || earlier.owner != declaration.owner {
+                continue;
+            }
+            if let Some(ordinal) = self.ordinals.get(candidate).copied().flatten() {
+                carriers.push(ordinal);
+            }
+        }
+        let projected = match declaration.type_root {
+            Some(root) => self
+                .project_dependent(root, declaration.owner)
+                .unwrap_or(self.project_root(root)?),
+            None => Projected::leaf(unknown_record(TypeReason::Unannotated, None)),
+        };
+        let twin_frame = (
+            projected.record,
+            projected.children,
+            projected.child_names,
+            projected.child_count,
+        );
+        let extension = self.extension(declaration, 0)?;
+        let mut fact = projected
+            .attach(SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT))
+            .with_extension(EmissionExtension::Clang(extension));
+        let twins = self.identical_carrier_twins(&carriers, &twin_frame, name);
+        let fact = match (twins, declaration.identity) {
+            (0, _) => fact,
+            (_, Some(identity)) => fact.with_identity_discriminator(identity.bytes),
+            (_, None) => {
+                let mut hash = Sha256::new();
+                hash.update(b"compiler.clang.signature-twin.v1\0");
+                hash.update(twins.to_le_bytes());
+                let mut discriminator = [0_u8; 16];
+                discriminator.copy_from_slice(&hash.finalize()[..16]);
+                fact.with_identity_discriminator(discriminator)
+            }
+        };
+        let ordinal = push(self.facts, fact)?;
+        self.record_pushed(index, ordinal, declaration);
+        Ok(())
+    }
+
     /// Projects a dependent field type when the authority preserves the
     /// template owner but leaves the dependent type root opaque.
     fn project_dependent(
@@ -1157,6 +1412,10 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         let fact = SemanticFact::new(EntityKind::Macro, name, constructor(EntityKind::Macro))
             .typed(unknown_record(TypeReason::Unannotated, None))
             .with_extension(EmissionExtension::Clang(extension));
+        let fact = match declaration.identity {
+            Some(identity) => fact.with_identity_discriminator(identity.bytes),
+            None => fact,
+        };
         let ordinal = push(self.facts, fact)?;
         self.record_pushed(index, ordinal, declaration);
         Ok(())
@@ -1223,13 +1482,44 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 continue;
             };
             let extension = self.extension(parameter, 0)?;
-            let fact = projected
+            let twin_frame = (
+                projected.record,
+                projected.children,
+                projected.child_names,
+                projected.child_count,
+            );
+            let mut fact = projected
                 .attach(SemanticFact::new(
                     EntityKind::Parameter,
                     parameter_name,
                     LEAF_PRODUCT,
                 ))
                 .with_extension(EmissionExtension::Clang(extension));
+            // Within one macro-generated signature several parameters can
+            // share the invocation-text projected name and an identical type
+            // graph (`void *oldp` and `void *newp` under one
+            // `CTL_RO_NL_CGEN(...)` expansion), and every flattened identity
+            // plane then collides. The authority's canonical USR-derived
+            // identity is the ground truth for "distinct declaration", so it
+            // enters the variant for such twins exactly when the collision is
+            // real — the parameter's own USR when libclang proves one, and
+            // otherwise the count of already-pushed identical carriers, which
+            // is span-order authority structure. Every non-twin parameter
+            // frames no new bytes.
+            let twins =
+                self.identical_carrier_twins(&signature_children, &twin_frame, parameter_name);
+            let fact = match (twins, parameter.identity) {
+                (0, _) => fact,
+                (_, Some(identity)) => fact.with_identity_discriminator(identity.bytes),
+                (_, None) => {
+                    let mut hash = Sha256::new();
+                    hash.update(b"compiler.clang.signature-twin.v1\0");
+                    hash.update(twins.to_le_bytes());
+                    let mut discriminator = [0_u8; 16];
+                    discriminator.copy_from_slice(&hash.finalize()[..16]);
+                    fact.with_identity_discriminator(discriminator)
+                }
+            };
             let ordinal = push(self.facts, fact)?;
             self.record_pushed(*candidate, ordinal, parameter);
             signature_children.push(ordinal);
@@ -1245,9 +1535,34 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         {
             let projected = self.project_root(result)?;
             let extension = self.extension(declaration, 0)?;
-            let fact = projected
+            // The carrier shares the function's projected name, and a
+            // macro-generated function's name is the same invocation text
+            // its parameters carry, so a scalar parameter and this carrier
+            // can hold identical flattened frames. The same twin
+            // discrimination applies: the function's own USR when the
+            // authority proves one, else the identical-carrier count.
+            let twin_frame = (
+                projected.record,
+                projected.children,
+                projected.child_names,
+                projected.child_count,
+            );
+            let mut fact = projected
                 .attach(SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT))
                 .with_extension(EmissionExtension::Clang(extension));
+            let twins = self.identical_carrier_twins(&signature_children, &twin_frame, name);
+            let fact = match (twins, declaration.identity) {
+                (0, _) => fact,
+                (_, Some(identity)) => fact.with_identity_discriminator(identity.bytes),
+                (_, None) => {
+                    let mut hash = Sha256::new();
+                    hash.update(b"compiler.clang.signature-twin.v1\0");
+                    hash.update(twins.to_le_bytes());
+                    let mut discriminator = [0_u8; 16];
+                    discriminator.copy_from_slice(&hash.finalize()[..16]);
+                    fact.with_identity_discriminator(discriminator)
+                }
+            };
             let ordinal = push(self.facts, fact)?;
             signature_children.push(ordinal);
             result_ordinal = Some(ordinal);
@@ -1293,9 +1608,102 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         let fact = projected
             .attach(fact)
             .with_extension(EmissionExtension::Clang(extension));
+        // Every executable kind overloads on one name inside one owner scope:
+        // `operator=` copy/move pairs, constructor overload sets, and member
+        // functions can differ only in an *unnamed* parameter's type, and a
+        // nameless parameter has no honest spelling, so it is never admitted
+        // and the structural graph cannot separate the legal overloads. The
+        // authority's canonical USR-derived identity is the ground truth for
+        // "distinct declaration", so it enters the variant for every
+        // executable row exactly when libclang proves one. Each executable's
+        // synthetic result carrier inherits the distinction through its
+        // parent's full minted identity.
+        let fact = match declaration.identity {
+            Some(identity)
+                if matches!(
+                    declaration.kind,
+                    DeclarationKind::Function
+                        | DeclarationKind::Method
+                        | DeclarationKind::Constructor
+                        | DeclarationKind::Destructor
+                ) =>
+            {
+                fact.with_identity_discriminator(identity.bytes)
+            }
+            _ => fact,
+        };
         let ordinal = push(self.facts, fact)?;
         self.record_pushed(index, ordinal, declaration);
+        // The synthetic result carrier is contained by its function exactly
+        // like a real parameter. Binding the already-minted function ordinal
+        // keeps the carriers of two same-named, same-return-typed overloads
+        // distinct without an ordinal or source coordinate entering identity:
+        // the function's coordinate-free family is the parent.
+        if let Some(carrier) = result_ordinal {
+            self.facts
+                .attach_parent(carrier, ordinal)
+                .map_err(|fault| lane_terminal(self.facts, name.len(), fault))?;
+        }
         Ok(())
+    }
+
+    /// Counts this signature's already-pushed carriers whose whole flattened
+    /// frame — kind, name, declared-type record cells, and every type child —
+    /// is byte-identical to the incoming `twin_frame` carrier named
+    /// `parameter_name`. Carriers that differ in any committed cell never
+    /// match. Anonymous staging mints fresh coordinates for genuinely
+    /// identical type graphs, so the comparison is structural through the
+    /// staged rows, never ordinal-exact.
+    fn identical_carrier_twins(
+        &self,
+        carriers: &[u32],
+        twin_frame: &(
+            SemanticTypeRecord<'source>,
+            [u32; MAX_TYPE_CHILDREN],
+            [Option<&'source [u8]>; MAX_TYPE_CHILDREN],
+            usize,
+        ),
+        parameter_name: &[u8],
+    ) -> u32 {
+        let (record, children, child_names, child_count) = twin_frame;
+        let mut twins = 0_u32;
+        for &ordinal in carriers {
+            let index = u32::try_from(ordinal).unwrap_or(u32::MAX) as usize;
+            let row = ordinal;
+            if self.facts.kinds.get(index).copied() != Some(EntityKind::Parameter)
+                || self.facts.names.get(index).copied() != Some(parameter_name)
+                || !self.facts.staged_record_matches(row, record)
+            {
+                continue;
+            }
+            let Some(count) = self.facts.staged_type_child_count(row) else {
+                continue;
+            };
+            if count != *child_count {
+                continue;
+            }
+            let mut same = true;
+            for position in 0..count {
+                let Some((target, name, flags)) = self.facts.staged_type_child(row, position)
+                else {
+                    same = false;
+                    break;
+                };
+                if name != child_names.get(position).copied().flatten()
+                    || flags != 0
+                    || !self
+                        .facts
+                        .staged_rows_structurally_equal(target, children[position], 8)
+                {
+                    same = false;
+                    break;
+                }
+            }
+            if same {
+                twins += 1;
+            }
+        }
+        twins
     }
 
     /// Projects one authority type row onto a fact root: the record and its
@@ -1417,9 +1825,15 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                         SHAPE_C_PLAIN_UNSIGNED_CHAR
                     }
                     backend_frontend_clang::legacy::BuiltinClass::SignedChar => SHAPE_C_SIGNED_CHAR,
-                    backend_frontend_clang::legacy::BuiltinClass::UnsignedChar => SHAPE_C_UNSIGNED_CHAR,
-                    backend_frontend_clang::legacy::BuiltinClass::Utf16CodeUnit => SHAPE_UTF16_CODE_UNIT,
-                    backend_frontend_clang::legacy::BuiltinClass::Utf32CodeUnit => SHAPE_UTF32_CODE_UNIT,
+                    backend_frontend_clang::legacy::BuiltinClass::UnsignedChar => {
+                        SHAPE_C_UNSIGNED_CHAR
+                    }
+                    backend_frontend_clang::legacy::BuiltinClass::Utf16CodeUnit => {
+                        SHAPE_UTF16_CODE_UNIT
+                    }
+                    backend_frontend_clang::legacy::BuiltinClass::Utf32CodeUnit => {
+                        SHAPE_UTF32_CODE_UNIT
+                    }
                     backend_frontend_clang::legacy::BuiltinClass::WideCharSigned => {
                         SHAPE_C_WIDE_SIGNED_CHAR
                     }
@@ -1440,14 +1854,46 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 record.payload1 = width;
                 record
             }
-            backend_frontend_clang::legacy::BuiltinClass::Integer { signed } => {
+            backend_frontend_clang::legacy::BuiltinClass::Integer { signed, rank } => {
                 let Some(width) = width(row.size_bits) else {
                     return Projected::leaf(unknown_record(TypeReason::OracleGap, None));
                 };
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
-                record.payload0 = SHAPE_INTEGER;
-                record.payload1 =
-                    (width << INTEGER_WIDTH_SHIFT) | u32::from(signed) * INTEGER_SIGNED_FLAG;
+                match rank {
+                    // `short`, `int`, and `__int128` have a width that no
+                    // sibling C rank shares on any supported ABI, so the
+                    // width/signedness cell already proves their exact
+                    // identity.  `long` and `long long` do not: they share a
+                    // width and signedness on LP64 (and `int`/`long` do on
+                    // LLP64, which this spelling separates as well).  Those
+                    // ranks carry their canonical C spelling, the exact fact
+                    // the closed spelling-bearing builtin shape exists to own,
+                    // while the measured width stays in the free payload1 cell
+                    // so the owned-IR conversion never assumes an LP64 ABI.
+                    IntegerRank::Short | IntegerRank::Int | IntegerRank::Int128 => {
+                        record.payload0 = SHAPE_INTEGER;
+                        record.payload1 = (width << INTEGER_WIDTH_SHIFT)
+                            | u32::from(signed) * INTEGER_SIGNED_FLAG;
+                    }
+                    IntegerRank::Long => {
+                        record.payload0 = SHAPE_BUILTIN;
+                        record.text = Some(if signed {
+                            C_LONG_SPELLING
+                        } else {
+                            C_UNSIGNED_LONG_SPELLING
+                        });
+                        record.payload1 = width;
+                    }
+                    IntegerRank::LongLong => {
+                        record.payload0 = SHAPE_BUILTIN;
+                        record.text = Some(if signed {
+                            C_LONG_LONG_SPELLING
+                        } else {
+                            C_UNSIGNED_LONG_LONG_SPELLING
+                        });
+                        record.payload1 = width;
+                    }
+                }
                 record
             }
             backend_frontend_clang::legacy::BuiltinClass::Float => {
@@ -1469,8 +1915,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     /// Projects one named row: a pushed declaration becomes its backward
     /// nominal row, a template parameter its `TypeVar` row, an anonymous
     /// record its member row, a resolved specialization its `Apply` row over
-    /// the backward base and the projected argument rows, and every other
-    /// target the typed unresolved gap.
+    /// the backward base and the projected argument rows, an out-of-root alias
+    /// with a measured canonical builtin its underlying primitive row, and
+    /// every other target the typed unresolved gap.
     fn project_named(
         &mut self,
         row: &TypeFact,
@@ -1519,7 +1966,38 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         if let Some(anonymous_index) = self.anonymous_declaration(identity) {
             return self.project_anonymous_record(anonymous_index, depth);
         }
-        Ok(gap())
+        // An out-of-root named type has no local declaration row, but an alias
+        // that canonicalizes to a builtin keeps that closed underlying class
+        // and measured width. Projecting it keeps two overloads on distinct
+        // typedefs (`uint16_t` versus `uint32_t`) structurally distinct instead
+        // of collapsing every unresolved name to one shared unknown row.
+        if row.builtin.is_some() {
+            return Ok(self.project_builtin(row));
+        }
+        // An out-of-root named type has no local declaration row, but libclang
+        // still proves its USR. Emitting a declaration-identified external
+        // nominal keeps two overloads on genuinely distinct out-of-root types
+        // structurally distinct instead of collapsing both to one unknown row.
+        // An identity that does have an authority declaration row but has not
+        // been projected yet keeps the existing typed gap rather than becoming
+        // a fabricated external target.
+        if self
+            .authority
+            .declarations
+            .iter()
+            .any(|declaration| declaration.identity == Some(identity))
+        {
+            return Ok(gap());
+        }
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
+        record.nominal = Some(NominalRef::Stable(StableRef {
+            fragment: ExternalFragmentId::from_canonical_bytes(SYSTEM_FRAGMENT_DOMAIN),
+            declaration: DeclarationIdentity {
+                family: DeclarationFamilyId::from_canonical_bytes(&identity.bytes),
+                variant: VariantFingerprint::from_canonical_bytes(&identity.bytes),
+            },
+        }));
+        Ok(Projected::leaf(record))
     }
 
     /// Projects one C-family pointer row. The common wrapper around this
@@ -1588,6 +2066,23 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     /// Projects a C++ member pointer with ordered owner then member type.
     /// Missing either authority edge is an exact projection gap; a member
     /// pointer must never silently become an ordinary raw pointer.
+    ///
+    /// The owner's class-ness is checked against what the authority actually
+    /// proved, because C++ admits a member pointer only into a complete class
+    /// type and libclang guarantees the class operand of a
+    /// `CXType_MemberPointer` is that class. An owner whose USR carries an
+    /// authority declaration row of record kind is the in-root class. An
+    /// owner whose USR has no declaration row is a class defined outside
+    /// the walked translation unit — `fmt`'s
+    /// `int (testing::TestSuite::*)() const` parameter is the
+    /// measured case: the class lives in the included `gtest.h`, whose
+    /// declarations are not children of the walked translation unit, while
+    /// the type plane still carries its USR. The shared build admits only a
+    /// local record nominal as a member-pointer owner, so that form has no
+    /// representable owner row and the whole member pointer keeps the lane's
+    /// typed projection gap instead of a fabricated shape or a whole-source
+    /// terminal. Every other owner kind stays the illegal-owner
+    /// terminal the original guard existed for.
     fn project_member_pointer(
         &mut self,
         row: &TypeFact,
@@ -1602,19 +2097,40 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         let Some(owner_row) = self.type_row(owner) else {
             return Ok(gap());
         };
-        let owner_is_record = owner_row.declaration.is_some_and(|identity| {
+        let declared_record = owner_row.declaration.is_some_and(|identity| {
             self.authority.declarations.iter().any(|declaration| {
                 declaration.identity == Some(identity)
                     && declaration.kind == DeclarationKind::Record
             })
         });
-        if owner_row.kind != TypeKind::Named || !owner_is_record {
+        // A USR that has no authority declaration row at all is a class
+        // defined outside the walked translation unit; one that has a row of
+        // another kind names a non-class entity in-root and stays illegal.
+        let out_of_root_class = owner_row.declaration.is_some_and(|identity| {
+            !self
+                .authority
+                .declarations
+                .iter()
+                .any(|declaration| declaration.identity == Some(identity))
+        });
+        if owner_row.kind != TypeKind::Named {
             return Err(terminal(ProjectionFault::IllegalMemberPointerOwner {
                 pointer: row.id,
                 owner,
                 kind: owner_row.kind,
                 declaration: owner_row.declaration,
             }));
+        }
+        if !declared_record {
+            if !out_of_root_class {
+                return Err(terminal(ProjectionFault::IllegalMemberPointerOwner {
+                    pointer: row.id,
+                    owner,
+                    kind: owner_row.kind,
+                    declaration: owner_row.declaration,
+                }));
+            }
+            return Ok(gap());
         }
         let owner = match self.project_child(owner, depth)? {
             UNHOSTABLE => return Ok(gap()),
@@ -1905,6 +2421,71 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         Ok(interned)
     }
 
+    /// Streams every retained include directive into the lane as one
+    /// file-scope module row plus the Import occurrence that names the
+    /// included path.
+    ///
+    /// The delimited path spelling is the only target text libclang proves
+    /// for a directive, so it is both the module row's name and the
+    /// path-keyed foreign key; a directive whose extent does not carry the
+    /// closed delimited form stays absent. One uniquely spelled path is one
+    /// module row: libclang emits a directive cursor per textual occurrence,
+    /// and a repeated directive would otherwise mint a second module with a
+    /// colliding identity. The occurrence rides the first directive, whose
+    /// extent is the row's captured span; a later directive's occurrence
+    /// would escape that extent and stays absent rather than wrapping.
+    fn push_includes(&mut self) -> Result<(), ClangCollectError> {
+        let includes = self.authority.includes;
+        let mut seen: Vec<&'source [u8]> = Vec::new();
+        for include in includes {
+            let Some((spelling, path_span)) = include_spelling_span(self.source, include) else {
+                continue;
+            };
+            let Some(target) = foreign_universe_key(spelling, Some(EntityKind::Module)) else {
+                continue;
+            };
+            let relative = owner_relative_span(include.span, path_span);
+            let first = !seen.iter().any(|known| *known == spelling);
+            if first {
+                seen.push(spelling);
+                let fact = SemanticFact::new(
+                    EntityKind::Module,
+                    spelling,
+                    constructor(EntityKind::Module),
+                )
+                .typed(unknown_record(TypeReason::Unannotated, None));
+                let ordinal = push(self.facts, fact)?;
+                let span = StagedSourceSpan::new(include.span.start, include.span.end)
+                    .ok_or_else(|| terminal(ProjectionFault::Span { span: include.span }))?;
+                self.facts
+                    .attach_source_span(ordinal, span)
+                    .map_err(|fault| lane_terminal(&self.facts, spelling.len(), fault))?;
+                self.facts
+                    .mark_parentage_root(ordinal)
+                    .map_err(|fault| lane_terminal(&self.facts, spelling.len(), fault))?;
+                // A preprocessor directive has no documentation comment; the
+                // lane's captured-empty contract applies to every row.
+                self.facts
+                    .mark_documentation_captured(ordinal)
+                    .map_err(|fault| lane_terminal(&self.facts, spelling.len(), fault))?;
+                if let Some(relative) = relative {
+                    self.facts
+                        .push_occurrence(
+                            ordinal,
+                            Occurrence {
+                                target,
+                                kind: LaneReferenceKind::Import,
+                                confidence: OccurrenceConfidence::Import,
+                                span: relative,
+                            },
+                        )
+                        .map_err(|fault| lane_terminal(&self.facts, spelling.len(), fault))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Streams every reference fact into the occurrence lane: an in-TU
     /// target folds to its local ordinal and a resolved external target to
     /// the `c` universe, both at oracle confidence; an unresolved site keeps
@@ -1927,8 +2508,12 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     )),
                     None => None,
                 },
-                ReferenceTarget::Foreign(identity) => {
-                    return Err(foreign_reference_terminal(identity));
+                ReferenceTarget::Foreign { identity, file } => {
+                    let target = match file {
+                        Some(file) => stable_foreign_target(identity, file),
+                        None => system_fragment_target(identity),
+                    };
+                    Some((target, OccurrenceConfidence::Oracle))
                 }
                 ReferenceTarget::Unresolved => foreign_universe(written, reference.kind)
                     .map(|target| (target, OccurrenceConfidence::Index)),
@@ -1982,7 +2567,10 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     Occurrence {
                         target: match self.ordinal_of(override_fact.target) {
                             Some(target) => OccurrenceTarget::Local(EntityId::new(target)),
-                            None => self.foreign_override_target(override_fact.target)?,
+                            None => self.foreign_override_target(
+                                override_fact.target,
+                                override_fact.target_file,
+                            )?,
                         },
                         kind: LaneReferenceKind::Overrides,
                         confidence: OccurrenceConfidence::Oracle,
@@ -2003,34 +2591,41 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             .and_then(|identity| self.ordinal_of(identity))
     }
 
-    /// Stops on a foreign override whose authority supplied only an opaque
-    /// native identity.
+    /// Resolves a foreign override target to its stable cross-fragment key when
+    /// the authority supplied a package-relative file, and to the fixed
+    /// system fragment otherwise.
     ///
     /// A declaration spelling is presentation, not a foreign declaration
-    /// identity: overloads can share it.  The current compact contract has no
-    /// full-USR field, so publishing a key from that spelling would fabricate
-    /// a target.  Preserve the authority's opaque identity in the exact
-    /// terminal until the schema carries the complete foreign contract.
+    /// identity: overloads can share it. An out-of-root target (a system
+    /// header such as `std::exception`, which proves a USR but no
+    /// package-relative path) keeps its exact USR-derived declaration
+    /// identity against the fixed system fragment — the same honest
+    /// path-free projection every out-of-root reference already receives —
+    /// never a host path and never a fabricated local edge.
     fn foreign_override_target(
         &self,
         identity: SymbolIdentity,
+        file: Option<SymbolIdentity>,
     ) -> Result<OccurrenceTarget<'source>, ClangCollectError> {
-        let _ = self;
-        Err(terminal(ProjectionFault::ForeignOverride { identity }))
+        match file {
+            Some(file) => Ok(stable_foreign_target(identity, file)),
+            None => Ok(system_fragment_target(identity)),
+        }
     }
 
     /// Retrieves the exact source extent for a pushed owner ordinal.
+    ///
+    /// The span must be the one attached by [`Projector::attach_topology`],
+    /// which is the winning representative's span. Looking up an identity's
+    /// first declaration would return a forward declaration's smaller extent
+    /// while the occurrence's relative range is measured from the definition,
+    /// producing a range that escapes the owner.
     fn owner_span(&self, owner: u32) -> Option<SourceSpan> {
-        self.identities
-            .iter()
-            .find(|(_, ordinal)| *ordinal == owner)
-            .and_then(|(identity, _)| {
-                self.authority
-                    .declarations
-                    .iter()
-                    .find(|declaration| declaration.identity == Some(*identity))
-                    .map(|declaration| declaration.span)
-            })
+        let index = self.ordinals.iter().position(|slot| *slot == Some(owner))?;
+        self.authority
+            .declarations
+            .get(index)
+            .map(|declaration| declaration.span)
     }
 
     /// Streams every declaration's raw doxygen comment into the
@@ -2079,12 +2674,48 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     }
 }
 
-/// Stops on a resolved foreign reference whose authority supplied only the
-/// compact native identity. The written use-site spelling is not a canonical
-/// path and cannot distinguish overloads, so it must not become an oracle
-/// foreign target.
-fn foreign_reference_terminal(identity: SymbolIdentity) -> ClangCollectError {
-    terminal(ProjectionFault::ForeignReference { identity })
+/// Builds one honest cross-fragment reference from an authority-proved USR and
+/// its package-relative file identity.
+///
+/// The fragment key is the package-relative file digest, never an absolute
+/// system or store path, so the same project seals byte-identically on every
+/// host. The declaration cells are separately domain-separated digests of the
+/// USR; no local ordinal or staged coordinate enters the key.
+fn stable_foreign_target(
+    identity: SymbolIdentity,
+    file: SymbolIdentity,
+) -> OccurrenceTarget<'static> {
+    OccurrenceTarget::Stable(StableRef {
+        fragment: ExternalFragmentId::from_canonical_bytes(&file.bytes),
+        declaration: DeclarationIdentity {
+            family: DeclarationFamilyId::from_canonical_bytes(&identity.bytes),
+            variant: VariantFingerprint::from_canonical_bytes(&identity.bytes),
+        },
+    })
+}
+
+/// The fixed, path-free fragment identity for every system or out-of-root
+/// header reference.
+///
+/// System headers are stable external authority: libclang proves the target's
+/// USR even when its file lives outside the package root (so no
+/// package-relative path exists), and an unkeyed fault here would discard a
+/// real resolution. The key is derived from this fixed domain string and the
+/// USR alone — never a host or store path — so the same reference seals
+/// byte-identically on every host, and the target's declaration identity
+/// survives losslessly.
+const SYSTEM_FRAGMENT_DOMAIN: &[u8] = b"nudox.clang.system-fragment.v1";
+
+/// Projects one resolved out-of-root (system) target to the fixed system
+/// fragment with its USR-derived declaration identity.
+fn system_fragment_target(identity: SymbolIdentity) -> OccurrenceTarget<'static> {
+    OccurrenceTarget::Stable(StableRef {
+        fragment: ExternalFragmentId::from_canonical_bytes(SYSTEM_FRAGMENT_DOMAIN),
+        declaration: DeclarationIdentity {
+            family: DeclarationFamilyId::from_canonical_bytes(&identity.bytes),
+            variant: VariantFingerprint::from_canonical_bytes(&identity.bytes),
+        },
+    })
 }
 
 /// True when `outer` fully contains `inner`.
@@ -2099,6 +2730,15 @@ fn include_spelling<'source>(
     source: &'source [u8],
     include: &IncludeFact,
 ) -> Option<&'source [u8]> {
+    include_spelling_span(source, include).map(|(spelling, _)| spelling)
+}
+
+/// Borrows one include directive's delimited path spelling together with its
+/// exact source extent inside the directive span.
+fn include_spelling_span<'source>(
+    source: &'source [u8],
+    include: &IncludeFact,
+) -> Option<(&'source [u8], SourceSpan)> {
     let start = usize::try_from(include.span.start).ok()?;
     let end = usize::try_from(include.span.end).ok()?;
     let bytes = source.get(start..end)?;
@@ -2116,13 +2756,23 @@ fn include_spelling<'source>(
         .iter()
         .position(|byte| *byte == closer)?;
     let spelling = bytes.get(open_at + 1..open_at + 1 + relative)?;
-    (!spelling.is_empty()).then_some(spelling)
+    (!spelling.is_empty()).then_some((
+        spelling,
+        SourceSpan {
+            start: include.span.start + (open_at as u32 + 1),
+            end: include.span.start + (open_at as u32 + 1 + relative as u32),
+        },
+    ))
 }
 
 /// Projects an absolute reference span onto its owner's span start. The
-/// subtraction is checked, so a reference outside its pushed owner's extent
-/// stays absent instead of wrapping.
+/// subtraction is checked and the range must stay inside the owner's captured
+/// extent, so a reference libclang attributed to an owner that does not
+/// strictly contain it stays absent instead of wrapping or escaping.
 fn owner_relative_span(owner: SourceSpan, reference: SourceSpan) -> Option<RelSpan> {
+    if reference.start < owner.start || reference.end > owner.end {
+        return None;
+    }
     let start = reference.start.checked_sub(owner.start)?;
     let end = reference.end.checked_sub(owner.start)?;
     RelSpan::new(start, end).ok()
@@ -2290,22 +2940,28 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::AtomicBool;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicU32, Ordering},
+    };
 
+    use backend_frontend_clang::ClangProject;
+    use backend_frontend_clang::legacy::{
+        CollectError, IncludeFact, MAX_CLANG_DECLARATIONS, SourceSpan, SymbolIdentity,
+    };
     use backend_semantic::ir::{
         ClangStorageClass, DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind,
         FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
         SourceIdentity,
     };
-    use backend_frontend_clang::legacy::{
-        CollectError, IncludeFact, MAX_CLANG_DECLARATIONS, SourceSpan, SymbolIdentity,
+    use backend_semantic::vocabulary::{
+        CStandard, CompileRecipeFact, LanguageProfile, NativeTool, Stage,
     };
-    use backend_semantic::vocabulary::{CStandard, CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use thiserror::Error;
 
-    use super::{
-        ClangCollectError, FactSet, collect, foreign_reference_terminal, include_spelling,
-    };
+    use super::{ClangCollectError, FactSet, collect, include_spelling};
 
     /// Identifies the one direct native fact a live authority proof requires.
     #[derive(Debug, Error)]
@@ -2354,8 +3010,22 @@ mod tests {
     }
 
     fn lower_with_profile(profile: LanguageProfile, source: &[u8]) -> Result<Vec<u8>, TestError> {
+        lower_with_authority(profile, None, source)
+    }
+
+    fn lower_with_authority(
+        profile: LanguageProfile,
+        project: Option<&ClangProject>,
+        source: &[u8],
+    ) -> Result<Vec<u8>, TestError> {
         let mut facts = FactSet::new();
-        collect(profile, source, &AtomicBool::new(false), &mut facts)?;
+        collect(
+            profile,
+            project,
+            source,
+            &AtomicBool::new(false),
+            &mut facts,
+        )?;
         let identity = SourceIdentity {
             identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
             byte_len: u32::try_from(source.len()).map_err(|_| TestError::Tail)?,
@@ -2368,12 +3038,13 @@ mod tests {
             ContentId::<ToolchainDomain>::from_canonical_bytes(b"clang-semantic-lane-toolchain"),
         );
         let mut output = vec![0xa5_u8; 65_536];
-        let length = crate::driver::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
-            .map_err(|fault| TestError::Admission {
-                label: "admission",
-                fault,
-            })?
-            .len();
+        let length =
+            crate::driver::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
+                .map_err(|fault| TestError::Admission {
+                    label: "admission",
+                    fault,
+                })?
+                .len();
         if !output[length..].iter().all(|byte| *byte == 0xa5) {
             return Err(TestError::Tail);
         }
@@ -2464,8 +3135,9 @@ mod tests {
             if child.ordinal < record.children.start || child.ordinal >= end {
                 continue;
             }
-            let backend_semantic::ir::TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(target)) =
-                child.child.target
+            let backend_semantic::ir::TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
+                target,
+            )) = child.child.target
             else {
                 return Err(TestError::Missing("local type child"));
             };
@@ -2642,7 +3314,8 @@ mod tests {
         // The forward declaration group collapsed to the definition: B's
         // definition (row 1) carries B's self-nominal, and A's field names
         // B's ordinal while B's field names A's.
-        if rows[1].record.nominal != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(1))) {
+        if rows[1].record.nominal != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(1)))
+        {
             return Err(TestError::Entity { ordinal: 1 });
         }
         if rows[2].record.children.length != 1 {
@@ -2703,7 +3376,8 @@ mod tests {
         let use_function = entity_of(&view, b"use", EntityKind::Function)?;
         let function_row = row_for_entity(&view, add)?.record;
         if function_row.tag != SemanticTypeTag::FunctionPointer
-            || function_row.payload1 != backend_semantic::ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
+            || function_row.payload1
+                != backend_semantic::ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || function_row.children.length != 3
         {
             return Err(TestError::Entity { ordinal: 2 });
@@ -2897,7 +3571,8 @@ mod tests {
                 if label != &&b"add"[..] {
                     return Err(TestError::Absent);
                 }
-                let backend_semantic::ir::DocLinkTarget::Foreign { ecosystem, path } = target else {
+                let backend_semantic::ir::DocLinkTarget::Foreign { ecosystem, path } = target
+                else {
                     return Err(TestError::Absent);
                 };
                 if ecosystem != &&b"c"[..] || path != &&b"add"[..] {
@@ -2912,17 +3587,161 @@ mod tests {
         Ok(())
     }
 
-    /// Foreign native identities survive the projection terminal by value;
-    /// use-site spelling is never substituted for exact authority.
+    /// An out-of-root (system) target keys on the one fixed system fragment
+    /// and the USR-derived declaration identity, never a host path. The key is
+    /// stable across runs and distinct per USR.
     #[test]
-    fn foreign_reference_projection_retains_exact_native_identity() -> Result<(), TestError> {
+    fn system_targets_key_on_fixed_fragment_and_usr() -> Result<(), TestError> {
         let identity = SymbolIdentity { bytes: [0xA5; 16] };
-        match foreign_reference_terminal(identity) {
-            ClangCollectError::Projection(
-                crate::driver::types::ClangProjectionFault::ForeignReference { identity: observed },
-            ) if observed == identity => Ok(()),
-            other => Err(TestError::Collect(other)),
+        let other = SymbolIdentity { bytes: [0x5A; 16] };
+        let first = super::system_fragment_target(identity);
+        let OccurrenceTarget::Stable(stable) = first else {
+            return Err(TestError::Missing("system stable target"));
+        };
+        if stable.fragment
+            != backend_semantic::ir::ExternalFragmentId::from_canonical_bytes(
+                super::SYSTEM_FRAGMENT_DOMAIN,
+            )
+        {
+            return Err(TestError::Missing("fixed system fragment"));
         }
+        if stable.declaration.family
+            != backend_semantic::ir::DeclarationFamilyId::from_canonical_bytes(&identity.bytes)
+            || stable.declaration.variant
+                != backend_semantic::ir::VariantFingerprint::from_canonical_bytes(&identity.bytes)
+        {
+            return Err(TestError::Missing("usr-derived declaration"));
+        }
+        let OccurrenceTarget::Stable(other_stable) = super::system_fragment_target(other) else {
+            return Err(TestError::Missing("system stable target"));
+        };
+        if stable.fragment != other_stable.fragment {
+            return Err(TestError::Missing("system fragment is shared"));
+        }
+        if stable.declaration == other_stable.declaration {
+            return Err(TestError::Missing("distinct usr declarations"));
+        }
+        Ok(())
+    }
+
+    /// A cross-file project closure resolves a project-local header reference to
+    /// a stable fragment keyed on the package-relative header path, and a system
+    /// header reference to the fixed system fragment without faulting.
+    #[test]
+    fn project_closure_resolves_local_and_system_references() -> Result<(), TestError> {
+        let root = unique_temp_project()?;
+        let header = root.join("include").join("decl.h");
+        let entry = root.join("src").join("main.c");
+        let source = b"#include <stdio.h>\n#include \"decl.h\"\nint use(void) { printf(\"x\"); return declared_in_header(); }\n";
+        fs::write(&header, b"int declared_in_header(void);\n")
+            .map_err(|_| TestError::Missing("header write"))?;
+        fs::write(&entry, source).map_err(|_| TestError::Missing("entry write"))?;
+        let database = format!(
+            "[{{\"directory\":\"{directory}\",\"file\":\"src/main.c\",\"arguments\":[\"cc\",\"-Iinclude\",\"-std=c11\",\"-c\",\"src/main.c\"]}}]",
+            directory = root.base.display(),
+        );
+        fs::write(root.join("compile_commands.json"), database)
+            .map_err(|_| TestError::Missing("database write"))?;
+
+        let project =
+            ClangProject::open(&root, &entry).map_err(|_| TestError::Missing("project open"))?;
+        let bytes =
+            lower_with_authority(LanguageProfile::C(CStandard::C11), Some(&project), source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let rows = occurrences(&view)?;
+        let system_fragment = match super::system_fragment_target(SymbolIdentity { bytes: [0; 16] })
+        {
+            OccurrenceTarget::Stable(stable) => stable.fragment,
+            _ => return Err(TestError::Missing("system fragment")),
+        };
+        let mut local = false;
+        let mut system = false;
+        for row in &rows {
+            let OccurrenceTarget::Stable(stable) = row.occurrence.target else {
+                continue;
+            };
+            if stable.fragment == system_fragment {
+                system = true;
+            } else {
+                local = true;
+            }
+        }
+        if !local || !system {
+            return Err(TestError::Missing("local and system stable references"));
+        }
+        Ok(())
+    }
+
+    /// Allocates a unique temporary project directory and removes it on drop.
+    fn unique_temp_project() -> Result<TempProject, TestError> {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let ordinal = NEXT.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!(
+            "nudox-clang-project-{pid}-{ordinal}",
+            pid = std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("include"))
+            .and_then(|()| fs::create_dir_all(base.join("src")))
+            .map_err(|_| TestError::Missing("temp project"))?;
+        Ok(TempProject { base })
+    }
+
+    struct TempProject {
+        base: PathBuf,
+    }
+
+    impl TempProject {
+        fn join(&self, path: impl AsRef<Path>) -> PathBuf {
+            self.base.join(path)
+        }
+    }
+
+    impl AsRef<Path> for TempProject {
+        fn as_ref(&self) -> &Path {
+            &self.base
+        }
+    }
+
+    impl Drop for TempProject {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.base);
+        }
+    }
+
+    /// A project-local foreign target keys on the package-relative file digest
+    /// and the USR digest alone: the same inputs seal equal, a different file
+    /// changes the fragment, and no absolute path enters the key.
+    #[test]
+    fn stable_foreign_targets_key_on_package_relative_file_and_usr() -> Result<(), TestError> {
+        let identity = SymbolIdentity { bytes: [0x11; 16] };
+        let file = SymbolIdentity { bytes: [0x22; 16] };
+        let other_file = SymbolIdentity { bytes: [0x33; 16] };
+        let first = super::stable_foreign_target(identity, file);
+        if first != super::stable_foreign_target(identity, file) {
+            return Err(TestError::Missing("stable foreign target equality"));
+        }
+        let OccurrenceTarget::Stable(stable) = first else {
+            return Err(TestError::Missing("stable foreign target"));
+        };
+        let OccurrenceTarget::Stable(other) = super::stable_foreign_target(identity, other_file)
+        else {
+            return Err(TestError::Missing("stable foreign target"));
+        };
+        if stable.fragment == other.fragment {
+            return Err(TestError::Missing("distinct foreign fragments"));
+        }
+        if stable.fragment
+            != backend_semantic::ir::ExternalFragmentId::from_canonical_bytes(&file.bytes)
+        {
+            return Err(TestError::Missing("file-derived fragment"));
+        }
+        if stable.declaration.family
+            != backend_semantic::ir::DeclarationFamilyId::from_canonical_bytes(&identity.bytes)
+        {
+            return Err(TestError::Missing("usr-derived declaration"));
+        }
+        Ok(())
     }
 
     /// A macro definition becomes a typed macro fact. libclang does not bind
@@ -2946,6 +3765,142 @@ mod tests {
         Ok(())
     }
 
+    /// A member pointer into a class defined in a project header keeps the
+    /// typed projection gap instead of the illegal-owner terminal: the class
+    /// lives outside the walked translation unit, so its USR carries no
+    /// declaration row, and no representable owner row exists. `fmt`'s
+    /// `int (testing::TestSuite::*)() const` parameter is the corpus case.
+    #[test]
+    fn member_pointer_into_header_class_lowers_without_terminal() -> Result<(), TestError> {
+        let root = unique_temp_project()?;
+        let header = root.join("include").join("decl.h");
+        let entry = root.join("src").join("main.cpp");
+        let source =
+            b"#include \"decl.h\"\nint fold(int (TestSuite::*method)() const) { return 0; }\n";
+        fs::write(&header, b"class TestSuite { public: int run(); };\n")
+            .map_err(|_| TestError::Missing("header write"))?;
+        fs::write(&entry, source).map_err(|_| TestError::Missing("entry write"))?;
+        let database = format!(
+            "[{{\"directory\":\"{directory}\",\"file\":\"src/main.cpp\",\"arguments\":[\"cc\",\"-Iinclude\",\"-std=c++23\",\"-c\",\"src/main.cpp\"]}}]",
+            directory = root.base.display(),
+        );
+        fs::write(root.join("compile_commands.json"), database)
+            .map_err(|_| TestError::Missing("database write"))?;
+        let project =
+            ClangProject::open(&root, &entry).map_err(|_| TestError::Missing("project open"))?;
+        // The whole lower must admit: an illegal-owner terminal here is the
+        // regression this test exists for.
+        let _ = lower_with_authority(
+            LanguageProfile::Cxx(backend_semantic::vocabulary::CxxStandard::Cxx23),
+            Some(&project),
+            source,
+        )?;
+        Ok(())
+    }
+
+    /// Same-named same-typed locals and parameters of distinct lambda
+    /// closures do not mint colliding coordinate-free identities: a closure's
+    /// call-operator has no retained declaration row, so its body storage is
+    /// not admitted as file, namespace, or record scope facts. `tinycbor`'s
+    /// `tst_parser.cpp` (four `auto input` locals and repeated
+    /// `(void *token, size_t len)` parameter runs inside one file-scope
+    /// initializer) is the corpus case that terminalled as a duplicate
+    /// declaration identity.
+    #[test]
+    fn lambda_closure_storage_does_not_duplicate_identities() -> Result<(), TestError> {
+        let source = b"struct Input { int consumed; };\n\
+                       struct Ops { int (*first)(void *token); int (*second)(void *token); };\n\
+                       static const Ops ops = {\n\
+                       [](void *token) { Input *input = (Input *)token; return input->consumed; },\n\
+                       [](void *token) { Input *input = (Input *)token; return input->consumed; }};\n\
+                       int use(void) { return ops.first(0) + ops.second(0); }\n";
+        let bytes = lower_with_profile(
+            LanguageProfile::Cxx(backend_semantic::vocabulary::CxxStandard::Cxx23),
+            source,
+        )?;
+        let view = FragmentView::validate(&bytes)?;
+        let entities = entity_rows(&view);
+        if entities.contains(&(&b"input"[..], EntityKind::Static)) {
+            return Err(TestError::Missing("no lambda local admitted as static"));
+        }
+        Ok(())
+    }
+
+    /// Every retained include directive becomes one file-scope module row
+    /// named by the included path plus an Import occurrence keyed on that
+    /// path; one uniquely spelled path stays one module row even when the
+    /// directive repeats.
+    #[test]
+    fn include_directives_become_module_occurrences() -> Result<(), TestError> {
+        let source = b"#include <stdio.h>\n#include <stdlib.h>\n#include <stdio.h>\nint x;\n";
+        let bytes = lower(source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let entities = entity_rows(&view);
+        if !entities.contains(&(&b"stdio.h"[..], EntityKind::Module))
+            || !entities.contains(&(&b"stdlib.h"[..], EntityKind::Module))
+        {
+            return Err(TestError::Missing("module rows for included paths"));
+        }
+        if entities
+            .iter()
+            .copied()
+            .filter(|(name, kind)| *name == b"stdio.h" && *kind == EntityKind::Module)
+            .count()
+            != 1
+        {
+            return Err(TestError::Missing("one module row per unique path"));
+        }
+        let imports = occurrences(&view)?
+            .into_iter()
+            .filter(|row| row.occurrence.kind == backend_semantic::ir::ReferenceKind::Import)
+            .count();
+        // One directive per textual occurrence: the repeated stdio.h keeps
+        // its first occurrence, the single stdlib.h keeps its own.
+        if imports != 2 {
+            return Err(TestError::Count {
+                expected: 2,
+                actual: imports,
+            });
+        }
+        Ok(())
+    }
+
+    /// Call and member reference spans narrow to the referenced name token:
+    /// the call site's bytes are exactly the callee, the member access's
+    /// bytes are exactly the member, never the whole expression.
+    #[test]
+    fn call_and_member_spans_narrow_to_name_tokens() -> Result<(), TestError> {
+        let source = b"int f(void);\nstruct S { int field; };\nint use(struct S *s) { return f() + s->field; }\n";
+        let bytes = lower(source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let needle = |text: &[u8]| {
+            source
+                .windows(text.len())
+                .position(|window| window == text)
+                .ok_or(TestError::Missing("needle"))
+                .map(|start| (start as u32, (start + text.len()) as u32))
+        };
+        // Occurrence spans are relative to the owning declaration's start.
+        let owner_start = needle(b"int use")?.0;
+        let call_site = needle(b"f()")?;
+        let member_site = needle(b"s->field")?;
+        let mut call_named = false;
+        let mut member_named = false;
+        for row in occurrences(&view)? {
+            let span = (row.occurrence.span.start, row.occurrence.span.end);
+            if span == (call_site.0 - owner_start, call_site.0 - owner_start + 1) {
+                call_named = true;
+            }
+            if span == (member_site.0 + 3 - owner_start, member_site.1 - owner_start) {
+                member_named = true;
+            }
+        }
+        if !call_named || !member_named {
+            return Err(TestError::Missing("name-token occurrence spans"));
+        }
+        Ok(())
+    }
+
     /// A source beyond the lane's fact bound retains the exact projection
     /// index terminal, never a truncated emission or a support claim.
     #[test]
@@ -2957,6 +3912,7 @@ mod tests {
         let mut facts = FactSet::new();
         match collect(
             LanguageProfile::C(CStandard::C23),
+            None,
             source.as_bytes(),
             &AtomicBool::new(false),
             &mut facts,
@@ -2981,6 +3937,7 @@ mod tests {
         let mut facts = FactSet::new();
         collect(
             LanguageProfile::C(CStandard::C23),
+            None,
             source.as_bytes(),
             &AtomicBool::new(false),
             &mut facts,
@@ -3034,6 +3991,16 @@ mod tests {
         .is_some()
         {
             return Err(TestError::Missing("wrapped rejection"));
+        }
+        // A reference that starts inside the owner but extends past its end is
+        // not representable as an owner-relative range and must stay absent.
+        if super::owner_relative_span(
+            SourceSpan { start: 10, end: 20 },
+            SourceSpan { start: 15, end: 25 },
+        )
+        .is_some()
+        {
+            return Err(TestError::Missing("escaping rejection"));
         }
         Ok(())
     }

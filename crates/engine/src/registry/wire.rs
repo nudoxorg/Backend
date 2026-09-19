@@ -2,9 +2,10 @@
 
 use super::identity::{admit_registry_coordinate, coordinate_from_registry_parts};
 use super::{
-    AcquisitionError, AcquisitionIntent, AcquisitionReceipt, CanonicalFeedV1, FeedCursor,
-    PackageName, PackageVersion, ProvenanceDigest, PublishedArtifactClaim, PublishedPackage,
-    RegistryEcosystem, RegistryId, RemoteRegistry,
+    AcquisitionError, AcquisitionIntent, AcquisitionReceipt, CanonicalFeedV1, DownloadCount,
+    DownloadCountGap, FeedCursor, PackageName, PackageVersion, ProvenanceDigest,
+    PublishedArtifactClaim, PublishedPackage, RegistryEcosystem, RegistryId, ReleaseFacts,
+    ReleaseStanding, RemoteRegistry, SecurityStanding,
 };
 use crate::journal::{JournalCodec, JournalDomain, JournalError};
 
@@ -12,7 +13,7 @@ pub(crate) enum RegistryLog {}
 impl JournalDomain for RegistryLog {
     const DOMAIN: u8 = 0x91;
     const TYPE: u16 = 1;
-    const VERSION: u8 = 1;
+    const VERSION: u8 = 2;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -127,6 +128,8 @@ fn put_package(out: &mut Vec<u8>, value: &PublishedPackage) {
     out.extend_from_slice(&value.artifact.as_bytes());
     put_u64(out, value.bytes);
     out.extend_from_slice(&value.provenance.as_bytes());
+    out.extend_from_slice(&value.upstream_integrity);
+    put_facts(out, value.facts);
 }
 fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, AcquisitionError> {
     let ecosystem = RegistryEcosystem::try_from(take_byte(bytes, at)?)
@@ -136,6 +139,8 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
     let digest = take_array(bytes, at)?;
     let byte_count = read_u64(bytes, at)?;
     let provenance = take_array(bytes, at)?;
+    let upstream_integrity = take_array(bytes, at)?;
+    let facts = read_facts(bytes, at)?;
     let coordinate = coordinate_from_registry_parts(ecosystem, name.as_str(), version.as_str())?;
     let registry = admit_registry_coordinate(&coordinate)?;
     Ok(PublishedPackage {
@@ -144,7 +149,70 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
         artifact: PublishedArtifactClaim::from_journal(digest),
         bytes: byte_count,
         provenance: ProvenanceDigest::from_journal(provenance),
+        upstream_integrity,
+        facts,
     })
+}
+
+fn put_facts(out: &mut Vec<u8>, facts: ReleaseFacts) {
+    out.push(facts.standing() as u8);
+    match facts.downloads() {
+        DownloadCount::Exact(value) => {
+            out.push(0);
+            put_u64(out, value);
+        }
+        DownloadCount::Approximate(value) => {
+            out.push(1);
+            put_u64(out, value);
+        }
+        DownloadCount::NotReported(reason) => {
+            out.push(2);
+            out.push(reason as u8);
+        }
+    }
+    match facts.security() {
+        SecurityStanding::Unassessed => out.push(0),
+        SecurityStanding::NoKnownAdvisory => out.push(1),
+        SecurityStanding::Affected {
+            advisories,
+            maximum_severity,
+        } => {
+            out.push(2);
+            out.extend_from_slice(&advisories.to_be_bytes());
+            out.push(maximum_severity.min(4));
+        }
+    }
+}
+
+fn read_facts(bytes: &[u8], at: &mut usize) -> Result<ReleaseFacts, AcquisitionError> {
+    let standing = ReleaseStanding::try_from(take_byte(bytes, at)?)
+        .map_err(|()| AcquisitionError::CorruptJournal)?;
+    let downloads = match take_byte(bytes, at)? {
+        0 => DownloadCount::Exact(read_u64(bytes, at)?),
+        1 => DownloadCount::Approximate(read_u64(bytes, at)?),
+        2 => DownloadCount::NotReported(
+            DownloadCountGap::try_from(take_byte(bytes, at)?)
+                .map_err(|()| AcquisitionError::CorruptJournal)?,
+        ),
+        _ => return Err(AcquisitionError::CorruptJournal),
+    };
+    let security = match take_byte(bytes, at)? {
+        0 => SecurityStanding::Unassessed,
+        1 => SecurityStanding::NoKnownAdvisory,
+        2 => {
+            let advisories = u32::from_be_bytes(take_array(bytes, at)?);
+            let maximum_severity = take_byte(bytes, at)?;
+            if maximum_severity > 4 {
+                return Err(AcquisitionError::CorruptJournal);
+            }
+            SecurityStanding::Affected {
+                advisories,
+                maximum_severity,
+            }
+        }
+        _ => return Err(AcquisitionError::CorruptJournal),
+    };
+    Ok(ReleaseFacts::from_wire(standing, downloads, security))
 }
 fn put_text(out: &mut Vec<u8>, value: &str) {
     put_u32(out, value.len());

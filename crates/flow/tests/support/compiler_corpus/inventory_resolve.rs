@@ -10,6 +10,93 @@ const MAX_SOURCE_TREE_DEPTH: usize = 64;
 const MAX_SOURCE_DIRECTORY_ENTRIES: usize = 16 * 1024;
 const MAX_SOURCE_FILE_CANDIDATES: usize = 16 * 1024;
 
+/// How many largest-first Go candidates may be probed for a resolvable
+/// same-module import closure before the selection falls back to the
+/// raw-largest non-test source. A Go package load is package-granular, so
+/// probing is bounded and every candidate shares the deterministic order.
+const MAX_GO_RESOLVABLE_PROBES: usize = 8;
+
+/// How many DISTINCT package directories may be closure-probed for one
+/// package, and how many non-test candidates may be visited, before the
+/// selection falls back. Verdicts are memoized per directory, so a module
+/// whose large packages all share one unresolvable closure costs one probe.
+const MAX_GO_PROBED_DIRECTORIES: usize = 16;
+const MAX_GO_PROBED_CANDIDATES: usize = 64;
+
+/// Largest-first Go selection preferring an import-resolvable package.
+///
+/// Candidates are visited in the deterministic raw-largest order; the first
+/// non-test, non-build-tagged source whose package's same-module import
+/// closure resolves against the corpus wins. Verdicts are memoized per
+/// package directory because a Go load fails package-granularly: every file
+/// of one directory shares the same fate.
+fn go_resolvable_selection(files: &[(PathBuf, u64)]) -> Option<PathBuf> {
+    let mut dir_verdicts: Vec<(PathBuf, bool)> = Vec::new();
+    let mut probed_directories = 0_usize;
+    let mut visited_candidates = 0_usize;
+    for (path, _) in files {
+        if is_go_test_file(path) {
+            continue;
+        }
+        visited_candidates += 1;
+        if visited_candidates > MAX_GO_PROBED_CANDIDATES
+            || probed_directories > MAX_GO_PROBED_DIRECTORIES
+        {
+            break;
+        }
+        if go_file_is_build_tagged(path) {
+            // A build-tagged file (for example x/exp's `//go:build ignore`
+            // shootout sources) may belong to a package the host toolchain
+            // excludes wholesale; skipping it costs nothing and keeps the
+            // selection on loadable packages.
+            continue;
+        }
+        let Some(dir) = path.parent() else {
+            continue;
+        };
+        if let Some((_, verdict)) = dir_verdicts.iter().find(|(known, _)| known == dir) {
+            if *verdict {
+                return Some(path.clone());
+            }
+            continue;
+        }
+        probed_directories += 1;
+        let verdict = go_closure_imports_resolve(path);
+        dir_verdicts.push((dir.to_owned(), verdict));
+        if verdict {
+            return Some(path.clone());
+        }
+    }
+    None
+}
+
+/// Whether one Go source carries a build constraint in its leading comment
+/// block (`//go:build …` or the legacy `// +build …`). Build-tagged files are
+/// skipped by the resolvable-selection preference, never by the raw-largest
+/// fallback.
+fn go_file_is_build_tagged(path: &Path) -> bool {
+    const LEADING_BYTES: usize = 8 * 1024;
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    let head = &bytes[..bytes.len().min(LEADING_BYTES)];
+    let Ok(text) = core::str::from_utf8(head) else {
+        return false;
+    };
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//go:build") || trimmed.starts_with("// +build") {
+            return true;
+        }
+        if trimmed.starts_with("package ") {
+            // The comment block ended; any later constraint is not a build
+            // constraint for this file.
+            return false;
+        }
+    }
+    false
+}
+
 enum SourceTraversalError {
     Io(io::Error),
     TreeTooDeep,
@@ -61,6 +148,7 @@ pub(super) fn resolve_package_source(
         profile: case.profile,
         table: case.table,
         source_root: root,
+        package_root: package_root.clone(),
         path,
         bytes,
         identity,
@@ -112,14 +200,25 @@ fn package_root(
                 .find(|path| path.is_dir())
         }
         PackageLayout::NodeModules => {
-            let (name, _) = coordinate_parts(coordinate)?;
+            let (name, version) = coordinate_parts(coordinate)?;
             let direct = root.join(name);
             if direct.is_dir() {
-                Some(direct)
-            } else {
-                let nested = root.join("node_modules").join(name);
-                nested.is_dir().then_some(nested)
+                return Some(direct);
             }
+            let nested = root.join("node_modules").join(name);
+            if nested.is_dir() {
+                return Some(nested);
+            }
+            // Version-disambiguated cache layout: real registries store
+            // same-named versions side by side instead of overwriting one
+            // another, so `{name}-{version}` is an exact address, never a
+            // fuzzy match.
+            let versioned = root.join(format!("{name}-{version}"));
+            if versioned.is_dir() {
+                return Some(versioned);
+            }
+            let nested_versioned = root.join("node_modules").join(format!("{name}-{version}"));
+            nested_versioned.is_dir().then_some(nested_versioned)
         }
         PackageLayout::PythonDistribution => {
             let (name, version) = coordinate_parts(coordinate)?;
@@ -133,13 +232,21 @@ fn package_root(
         }
         PackageLayout::MavenSource => {
             let (name, version) = coordinate_parts(coordinate)?;
+            // Maven coordinates are `group:artifact`; the Nix corpus
+            // materializes the group as a path (`org.apache.commons` →
+            // `org/apache/commons`) below the lane root.
+            let (group, artifact) = name.split_once(':')?;
+            if group.is_empty() || artifact.is_empty() || artifact.contains(':') {
+                return None;
+            }
             let mut path = root.to_owned();
-            for component in name.split(':') {
+            for component in group.split('.') {
                 if component.is_empty() {
                     return None;
                 }
                 path.push(component);
             }
+            path.push(artifact);
             path.push(version);
             path.is_dir().then_some(path)
         }
@@ -178,11 +285,456 @@ fn largest_source_file(
         source_unavailable(language, kind)
     })?;
     files.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    // Go's authority oracle loads test-augmented packages, so a `_test.go`
+    // selection forces the fixture to reconstruct a test compilation unit
+    // whose helper files are not part of the real package. Prefer the largest
+    // non-test source when the package has one, keeping a genuinely
+    // test-only package honest by falling back to its test files.
+    //
+    // A Go package load is also package-granular: when any build-matched file
+    // of the selected file's package (or of its staged same-module closure)
+    // imports a module the corpus does not provision, `go/packages` refuses
+    // the whole load and no file choice inside that package can help. Prefer
+    // the largest non-test source whose same-module import closure resolves
+    // against the corpus so a resolvable sibling package of the same frozen
+    // coordinate can be verified instead of being counted unavailable.
+    if language == CorpusLanguage::Go {
+        if let Some(path) = go_resolvable_selection(&files) {
+            return Ok(path);
+        }
+        if let Some((path, _)) = files.iter().find(|(path, _)| !is_go_test_file(path)) {
+            return Ok(path.clone());
+        }
+    }
+    // A Rust crate's largest file is frequently a feature-gated module or a
+    // generated re-export shell (`#![cfg(feature = …)]`), which lowers to
+    // zero declarations and is refused by `require_facts`. Prefer the crate
+    // root when it declares an unconditional item, else the largest such
+    // source. A crate root whose items are all `#[cfg]`-gated
+    // (`futures-executor`) and a `#![no_std]` stub
+    // (`windows_x86_64_gnullvm`) are both shells and fall through.
+    if language == CorpusLanguage::Rust {
+        if let Some((path, _)) = files
+            .iter()
+            .find(|(path, _)| is_rust_crate_root(path) && !is_rust_declaration_shell(path))
+        {
+            return Ok(path.clone());
+        }
+        if let Some((path, _)) = files
+            .iter()
+            .find(|(path, _)| !is_rust_declaration_shell(path))
+        {
+            return Ok(path.clone());
+        }
+    }
+    // A C# package's raw-largest file is frequently a conditional shell whose
+    // entire body sits behind a preprocessor gate that never holds under the
+    // oracle's fixed preprocessor environment — polyfill's
+    // `DefaultInterpolatedStringHandler.cs` is gated on
+    // `HAS_SPAN && !NET6_0_OR_GREATER`, and the oracle never defines
+    // `HAS_SPAN` while always defining `NET6_0_OR_GREATER`. The image is
+    // built from the bound tree alone, so such a file yields zero
+    // declarations and `require_facts` refuses it. Prefer the largest
+    // sibling with unconditional code; the package still lowers from real
+    // Roslyn declarations.
+    if language == CorpusLanguage::CSharp {
+        if let Some((path, _)) = files
+            .iter()
+            .find(|(path, _)| !is_csharp_conditional_shell(path))
+        {
+            return Ok(path.clone());
+        }
+    }
     files
         .into_iter()
         .next()
         .map(|(path, _)| path)
         .ok_or_else(|| source_unavailable(language, SourceUnavailableKind::SourceFileMissing))
+}
+
+/// Whether every source line of one C# file lies inside a preprocessor
+/// conditional region.
+///
+/// A conditional shell's declarations may all compile out under the oracle's
+/// fixed environment, leaving a zero-declaration authority image that
+/// `require_facts` rejects. This deliberately does not evaluate the
+/// conditions: it only rules a file out when it has *no* unconditional code,
+/// so a package is never left without a candidate — when every file is a
+/// shell the caller falls back to the raw-largest one and records its typed
+/// terminal honestly.
+fn is_csharp_conditional_shell(path: &Path) -> bool {
+    let Ok(bytes) = fs::read(path) else {
+        return true;
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    let mut depth = 0_usize;
+    let mut saw_conditional = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with('*')
+        {
+            continue;
+        }
+        if let Some(directive) = trimmed.strip_prefix('#') {
+            let directive = directive.trim_start();
+            // `#endif` must not be mistaken for `#if` followed by `ndef`.
+            if directive.strip_prefix("if").is_some_and(|rest| {
+                rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace() || c == '(')
+            }) {
+                saw_conditional = true;
+                depth += 1;
+            } else if directive.starts_with("endif") {
+                depth = depth.saturating_sub(1);
+            }
+            continue;
+        }
+        if depth == 0 {
+            return false;
+        }
+    }
+    saw_conditional && depth == 0
+}
+
+/// Whether one Rust source is a crate root (`src/lib.rs` or `src/main.rs`),
+/// the entry a crate's declarations are reachable from.
+fn is_rust_crate_root(path: &Path) -> bool {
+    let name = path.file_name().and_then(|name| name.to_str());
+    matches!(name, Some("lib.rs" | "main.rs"))
+}
+
+/// Whether one Rust source declares no unconditional top-level item: every
+/// item sits behind a `#[cfg(…)]` attribute, or the file only holds inner
+/// attributes (`#![no_std]`). Such a shell lowers to zero declarations in the
+/// single-file fixture, so it must not be selected. A read failure, an
+/// oversized file, or invalid UTF-8 is conservatively treated as a real
+/// source.
+fn is_rust_declaration_shell(path: &Path) -> bool {
+    const MAX_SCAN_BYTES: usize = 256 * 1024;
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    if bytes.len() > MAX_SCAN_BYTES {
+        return false;
+    }
+    let Ok(text) = core::str::from_utf8(&bytes) else {
+        return false;
+    };
+    let mut previous_was_cfg = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        if trimmed.starts_with("#![") {
+            // Inner attributes (including multi-line `#![doc(...)]`) are never
+            // cfg gates on an item.
+            previous_was_cfg = false;
+            continue;
+        }
+        if trimmed.starts_with("#[") {
+            previous_was_cfg = trimmed.starts_with("#[cfg");
+            continue;
+        }
+        if !starts_rust_item(trimmed) {
+            // A continuation line of a multi-line attribute or item.
+            continue;
+        }
+        if previous_was_cfg {
+            previous_was_cfg = false;
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+/// Whether one trimmed line opens a top-level Rust item or import.
+fn starts_rust_item(line: &str) -> bool {
+    let mut rest = line;
+    loop {
+        let next = if let Some(stripped) = rest.strip_prefix("pub ") {
+            stripped
+        } else if let Some(stripped) = rest.strip_prefix("pub(") {
+            match stripped.find(')') {
+                Some(close) => &stripped[close + 1..],
+                None => return false,
+            }
+        } else if let Some(stripped) = rest
+            .strip_prefix("unsafe ")
+            .or_else(|| rest.strip_prefix("async "))
+            .or_else(|| rest.strip_prefix("const "))
+            .or_else(|| rest.strip_prefix("extern "))
+        {
+            stripped
+        } else {
+            break;
+        };
+        rest = next.trim_start();
+    }
+    rest.starts_with("mod ")
+        || rest.starts_with("fn ")
+        || rest.starts_with("struct ")
+        || rest.starts_with("enum ")
+        || rest.starts_with("union ")
+        || rest.starts_with("impl")
+        || rest.starts_with("trait ")
+        || rest.starts_with("type ")
+        || rest.starts_with("use ")
+        || rest.starts_with("static ")
+        || rest.starts_with("macro_rules!")
+        || rest.starts_with("macro ")
+}
+
+fn is_go_test_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("_test.go"))
+}
+
+/// Whether one Go source's same-module import closure resolves against the
+/// corpus root named by `NUDOX_GO_CORPUS_DIR`. See the pure helper for the
+/// exact semantics; without a corpus root only import-free closures resolve.
+fn go_closure_imports_resolve(selected: &Path) -> bool {
+    let corpus_root = std::env::var_os("NUDOX_GO_CORPUS_DIR").map(PathBuf::from);
+    go_closure_imports_resolve_under(selected, corpus_root.as_deref())
+}
+
+/// Whether the same-module import closure of `selected`'s package resolves
+/// against `corpus_root`.
+///
+/// This mirrors the authority fixture staging exactly where it decides
+/// resolvability: the walk starts at the selected file's package directory,
+/// follows imports that stay inside the selected file's module (the nearest
+/// ancestor directory whose name carries the `@version` suffix), and demands
+/// a corpus checkout for every external import path (first path segment
+/// containing a dot, minus the module path itself). Standard-library imports
+/// are never external. When the corpus cannot satisfy one closure import the
+/// oracle refuses the staged load, so the selection must not prefer it.
+///
+/// The import scanner is deliberately broader than a parser: every quoted
+/// string literal that looks like an import path is treated as an import.
+/// Over-detection only demotes a candidate back to the raw-largest fallback
+/// (the pre-fix behavior), and under-detection leaves the oracle refusal as
+/// the typed per-row terminal, so both scanner errors stay safe.
+fn go_closure_imports_resolve_under(selected: &Path, corpus_root: Option<&Path>) -> bool {
+    let Some(module_root) = go_module_root(selected) else {
+        return false;
+    };
+    let Some(module_path) = go_module_directive(&module_root) else {
+        return false;
+    };
+    let Some(selected_dir) = selected.parent() else {
+        return false;
+    };
+    let Ok(selected_relative) = selected_dir.strip_prefix(&module_root) else {
+        return false;
+    };
+    let mut visited: Vec<PathBuf> = Vec::new();
+    let mut queue: Vec<PathBuf> = vec![selected_relative.to_owned()];
+    while let Some(relative) = queue.pop() {
+        if visited.contains(&relative) {
+            continue;
+        }
+        visited.push(relative.clone());
+        let Ok(entries) = fs::read_dir(module_root.join(&relative)) else {
+            continue;
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .collect();
+        names.sort();
+        for name in names {
+            if !name.ends_with(".go") || name.ends_with("_test.go") {
+                continue;
+            }
+            let Ok(bytes) = fs::read(module_root.join(&relative).join(&name)) else {
+                continue;
+            };
+            for import in go_path_import_literals(&bytes) {
+                let import = String::from_utf8_lossy(import).into_owned();
+                let same_module_prefix = format!("{module_path}/");
+                if let Some(subpackage) = import.strip_prefix(&same_module_prefix) {
+                    let subpackage = PathBuf::from(subpackage);
+                    if !visited.contains(&subpackage) {
+                        queue.push(subpackage);
+                    }
+                } else if import == module_path {
+                    // A bare import of the module's own root package is a
+                    // closure the authority staging cannot satisfy: staging
+                    // only follows `<module>/<subpackage>` imports, so the
+                    // root package never enters the fixture and the oracle's
+                    // load of it fails wholesale (`invalid package name`).
+                    // Mirror that here instead of preferring such a file.
+                    return false;
+                } else if go_import_is_external(&import) {
+                    let Some(corpus_root) = corpus_root else {
+                        return false;
+                    };
+                    if corpus_module_checkout(corpus_root, &import).is_none() {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+/// The nearest ancestor directory whose name carries the `@version` suffix —
+/// the same module-root rule the authority fixture staging applies.
+fn go_module_root(selected: &Path) -> Option<PathBuf> {
+    let mut current = selected.parent()?;
+    loop {
+        if current
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains('@'))
+        {
+            return Some(current.to_owned());
+        }
+        current = current.parent()?;
+    }
+}
+
+/// Reads the `module` directive from the checked-in `go.mod` of `module_root`.
+fn go_module_directive(module_root: &Path) -> Option<String> {
+    let bytes = fs::read(module_root.join("go.mod")).ok()?;
+    let text = core::str::from_utf8(&bytes).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("module") else {
+            continue;
+        };
+        if !(rest.starts_with(char::is_whitespace) || rest.starts_with('"')) {
+            continue;
+        }
+        let value = rest.trim().trim_matches('"').trim();
+        if !value.is_empty() {
+            return Some(value.to_owned());
+        }
+    }
+    None
+}
+
+/// Whether one import path is an external module import under the staging
+/// rules: the first path segment contains a dot (host), which excludes the
+/// standard library and relative imports.
+fn go_import_is_external(import: &str) -> bool {
+    import
+        .split('/')
+        .next()
+        .is_some_and(|first| first.contains('.'))
+}
+
+/// Collects every quoted string literal that looks like a Go import path.
+///
+/// Import paths never contain `://`, whitespace, or backslashes, so URL and
+/// prose literals are excluded; anything else that plausibly names a package
+/// is kept. This deliberately over-approximates: a data string that happens
+/// to look like an import only demotes a candidate to the raw-largest
+/// fallback, never fabricates resolvability.
+fn go_path_import_literals(bytes: &[u8]) -> Vec<&[u8]> {
+    let mut imports = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'"' {
+            index += 1;
+            continue;
+        }
+        let start = index + 1;
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != b'"' && bytes[end] != b'\n' {
+            end += 1;
+        }
+        if end < bytes.len() && bytes[end] == b'"' && looks_like_import_path(&bytes[start..end]) {
+            imports.push(&bytes[start..end]);
+        }
+        index = end + 1;
+    }
+    imports
+}
+
+fn looks_like_import_path(literal: &[u8]) -> bool {
+    if literal.is_empty()
+        || literal.len() > 256
+        || literal[0].is_ascii_digit()
+        || !literal[0].is_ascii_alphabetic()
+    {
+        return false;
+    }
+    literal.iter().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'/' | b'-' | b'_' | b'~')
+    }) && literal.iter().any(|byte| *byte == b'.')
+}
+
+/// Resolves the longest corpus module prefix of one import path that exists
+/// as a sibling module checkout, returning `(module_path, version, directory)`.
+pub(crate) fn corpus_module_checkout(
+    corpus_root: &Path,
+    import_path: &str,
+) -> Option<(String, String, PathBuf)> {
+    let components: Vec<&str> = import_path.split('/').collect();
+    for end in (1..=components.len()).rev() {
+        let module_path = components[..end].join("/");
+        if let Some(directory) = corpus_module_dir(corpus_root, &components[..end]) {
+            let version = directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.split_once('@'))
+                .map(|(_, version)| version.to_owned())
+                .unwrap_or_default();
+            return Some((module_path, version, directory));
+        }
+    }
+    None
+}
+
+/// Locates the corpus checkout of one module at exactly the requested version.
+pub(crate) fn corpus_module_checkout_exact(
+    corpus_root: &Path,
+    module_path: &str,
+    version: &str,
+) -> Option<PathBuf> {
+    if version.is_empty() {
+        return None;
+    }
+    let components: Vec<&str> = module_path.split('/').collect();
+    let (last, parents) = components.split_last()?;
+    let mut parent = corpus_root.to_owned();
+    for component in parents {
+        parent.push(component);
+    }
+    let exact = parent.join(format!("{last}@{version}"));
+    exact.is_dir().then_some(exact)
+}
+
+/// Locates `<corpus>/<module path>@<version>` by scanning the module path's
+/// parent for a version-suffixed directory with the right base name.
+fn corpus_module_dir(corpus_root: &Path, components: &[&str]) -> Option<PathBuf> {
+    let (last, parents) = components.split_last()?;
+    let mut parent = corpus_root.to_owned();
+    for component in parents {
+        parent.push(component);
+    }
+    let mut candidates: Vec<PathBuf> = fs::read_dir(&parent)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.split_once('@'))
+                .is_some_and(|(base, _version)| base == *last)
+        })
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
 }
 
 fn collect_source_files(
@@ -217,4 +769,158 @@ fn collect_source_files(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod go_selection_tests {
+    use super::{
+        corpus_module_checkout, corpus_module_checkout_exact, go_closure_imports_resolve_under,
+        go_path_import_literals,
+    };
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    /// A unique scratch directory, removed on drop. Test-support only; no
+    /// fixture subtree outlives its test.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(label: &str) -> Self {
+            static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "compiler-corpus-{label}-{}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            ));
+            fs::create_dir_all(&path).expect("scratch directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn write(&self, relative: &str, contents: &str) -> PathBuf {
+            let path = self.0.join(relative);
+            fs::create_dir_all(path.parent().expect("parent")).expect("directories");
+            fs::write(&path, contents).expect("file");
+            path
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn module(corpus: &Path, import: &str, version: &str) -> PathBuf {
+        let directory = corpus.join(format!("{import}@{version}"));
+        fs::create_dir_all(&directory).expect("module directory");
+        directory
+    }
+
+    /// A module whose largest package imports an unprovisioned sibling while
+    /// a smaller same-module package stays stdlib-only: the closure walk must
+    /// reject the larger candidate so the selection prefers the resolvable
+    /// package, mirroring how the oracle refuses an unresolvable package
+    /// load wholesale.
+    #[test]
+    fn closure_walk_prefers_the_import_resolvable_package() {
+        let corpus = Scratch::new("go-select-corpus");
+        let workspace = Scratch::new("go-select-module");
+        module(corpus.path(), "resolved.example/sibling", "v1.2.3");
+        workspace.write("mod@v0.1.0/go.mod", "module example.com/mod\n\ngo 1.23\n");
+        let unresolvable = workspace.write(
+            "mod@v0.1.0/big/big.go",
+            "package big\n\nimport _ \"absent.example/gone\"\n",
+        );
+        let resolvable = workspace.write(
+            "mod@v0.1.0/small/small.go",
+            "package small\n\nimport _ \"resolved.example/sibling\"\n",
+        );
+        assert!(!go_closure_imports_resolve_under(
+            &unresolvable,
+            Some(corpus.path())
+        ));
+        assert!(go_closure_imports_resolve_under(
+            &resolvable,
+            Some(corpus.path())
+        ));
+    }
+
+    /// A same-module import must be followed into its package directory, and
+    /// that package's own unresolvable imports must fail the closure even
+    /// though the selected file never imports the absent module directly.
+    #[test]
+    fn closure_walk_follows_same_module_imports_to_absent_modules() {
+        let corpus = Scratch::new("go-closure-corpus");
+        let workspace = Scratch::new("go-closure-module");
+        workspace.write("mod@v9.9.9/go.mod", "module example.com/mod\n\ngo 1.23\n");
+        let selected = workspace.write(
+            "mod@v9.9.9/root/root.go",
+            "package root\n\nimport _ \"example.com/mod/inner\"\n",
+        );
+        workspace.write(
+            "mod@v9.9.9/inner/inner.go",
+            "package inner\n\nimport _ \"absent.example/gone\"\n",
+        );
+        assert!(!go_closure_imports_resolve_under(
+            &selected,
+            Some(corpus.path())
+        ));
+    }
+
+    /// Standard-library imports carry no dot and are therefore never treated
+    /// as external module paths; string literals that mention URLs, spaces,
+    /// or a leading digit are equally ignored.
+    #[test]
+    fn stdlib_and_url_literals_do_not_fail_the_closure() {
+        let corpus = Scratch::new("go-literals-corpus");
+        let workspace = Scratch::new("go-literals-module");
+        module(corpus.path(), "resolved.example/sibling", "v1.2.3");
+        workspace.write("mod@v1.0.0/go.mod", "module example.com/mod\n\ngo 1.23\n");
+        let selected = workspace.write(
+            "mod@v1.0.0/p/p.go",
+            "package p\n\nimport \"fmt\"\n\nimport _ \"resolved.example/sibling\"\n\nconst home = \"https://example.com/mod\"\n",
+        );
+        assert!(go_closure_imports_resolve_under(
+            &selected,
+            Some(corpus.path())
+        ));
+        let literals = go_path_import_literals(
+            b"const a = \"fmt\"\nconst b = \"resolved.example/tool\"\nconst c = \"https://web.example/x\"\nconst d = \"has space/x\"\nconst e = \"2fast/x\"\n",
+        );
+        assert_eq!(literals.len(), 1);
+        assert_eq!(literals[0], b"resolved.example/tool");
+    }
+
+    /// The longest corpus module prefix wins, and the exact-version lookup
+    /// only accepts the requested version directory.
+    #[test]
+    fn corpus_checkout_lookup_is_longest_prefix_and_version_exact() {
+        let corpus = Scratch::new("go-lookup-corpus");
+        module(corpus.path(), "host.example/tool", "v0.30.0");
+        let (module_path, version, directory) =
+            corpus_module_checkout(corpus.path(), "host.example/tool/analysis/util")
+                .expect("longest prefix");
+        assert_eq!(module_path, "host.example/tool");
+        assert_eq!(version, "v0.30.0");
+        assert!(directory.is_dir());
+        assert!(
+            corpus_module_checkout(corpus.path(), "absent.example/gone").is_none(),
+            "an unprovisioned module must not resolve"
+        );
+        assert!(
+            corpus_module_checkout_exact(corpus.path(), "host.example/tool", "v0.29.0").is_none(),
+            "a version the corpus does not pin must not resolve"
+        );
+        assert!(
+            corpus_module_checkout_exact(corpus.path(), "host.example/tool", "v0.30.0").is_some(),
+            "the exact pinned version must resolve"
+        );
+    }
 }

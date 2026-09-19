@@ -1,13 +1,20 @@
-//! Reader tabs, per-tab history, the page cache, and hover cards.
+//! Reader tabs as a tree, per-tab history, the page cache, and hover cards.
 //! A tab keeps showing the page it has until the next one has fully arrived.
 //! Nothing here flashes: loading is a reserved state, not an empty screen.
 //!
-//! The cache is keyed by coordinate and evicted least-recently-used, which
-//! makes back and forward instant for the path a reader actually walked while
-//! keeping memory bounded on a shelf with ten thousand declarations. Hover
-//! cards share the same discipline on a smaller budget: a card is requested
-//! only after the pointer has rested, and the answer is remembered so the
-//! second hover costs nothing.
+//! Tabs form a tree rather than a strip. A declaration followed from a page
+//! opens *under* that page by default, so the reader's exploration is recorded
+//! as the shape it actually had — a trunk and the branches taken from it —
+//! instead of a flat row that forgets which page led where. A subject already
+//! open anywhere in the tree is revisited, never duplicated, so the tree stays
+//! a map of what has been read rather than a log of every click. Closing a
+//! branch hands its children to its parent; nothing is orphaned and nothing
+//! is lost.
+//!
+//! Every open goes through [`DocumentStore::open_symbol`], which resolves the
+//! declaration's coordinate from the index before a tab exists. A symbol the
+//! shelf does not hold is answered with a fault in place, never with a page
+//! titled by a hash.
 //!
 //! The page itself is assembled by [`backend_present::page_from_document`] —
 //! the same function `backend page` and the MCP `backend.page` tool call — so
@@ -15,14 +22,18 @@
 //! install them, never what they mean.
 
 use super::events::DocumentEvent;
+use super::index::IndexStore;
 use super::service::{Endpoint, Outcome, Request};
 use super::workspace::{WorkspaceStore, coordinate_operand};
 use crate::presentation::fault::wrong_shape;
-use backend_library::{DeclarationKind, Row, SymbolKey};
-use backend_present::{Fault, Identity, Page, page_from_document};
+use backend_library::{DeclarationKind, Row, SymbolKey, encode_id};
+use backend_present::{
+    Affordance, Cause, CauseSlug, Coordinate, Fault, FaultSlug, Identity, Operand, Page,
+    page_from_document,
+};
 use gpui::AppContext as _;
 use gpui::Context;
-use gpui::{Entity, EventEmitter, Pixels, Point, ScrollHandle, Task};
+use gpui::{Entity, EventEmitter, Modifiers, Pixels, Point, ScrollHandle, Task};
 use std::time::Duration;
 
 /// How many pages are remembered across tabs.
@@ -40,6 +51,8 @@ const HOVER_DELAY: Duration = Duration::from_millis(350);
 /// What a tab is showing.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Subject {
+    /// The browse page: the shelf at a glance and the registry to explore.
+    Home,
     /// One declaration, addressed by its admitted identity.
     Declaration {
         /// Admitted declaration key.
@@ -47,34 +60,90 @@ pub(crate) enum Subject {
         /// Exact producer coordinate.
         coordinate: String,
     },
-    /// One project, addressed by its coordinate.
+    /// One project on the shelf, addressed by its coordinate.
     Project {
         /// Exact project coordinate.
+        coordinate: String,
+    },
+    /// One registry package, addressed by its pinned coordinate.
+    Package {
+        /// Pinned package coordinate, `pkg:ecosystem/name@version`.
         coordinate: String,
     },
 }
 
 impl Subject {
-    /// Returns the coordinate this subject is keyed by.
+    /// Returns the coordinate this subject is keyed by; empty for home.
     pub(crate) fn coordinate(&self) -> &str {
         match self {
-            Self::Declaration { coordinate, .. } | Self::Project { coordinate } => coordinate,
+            Self::Home => "",
+            Self::Declaration { coordinate, .. }
+            | Self::Project { coordinate }
+            | Self::Package { coordinate } => coordinate,
         }
     }
 
-    /// Returns the readable identity of this subject.
-    pub(crate) fn identity(&self) -> Identity {
-        Identity::parse(self.coordinate())
+    /// Returns the readable identity of this subject, when it has one.
+    pub(crate) fn identity(&self) -> Option<Identity> {
+        match self {
+            Self::Home => None,
+            Self::Declaration { coordinate, .. }
+            | Self::Project { coordinate }
+            | Self::Package { coordinate } => Some(Identity::parse(coordinate)),
+        }
+    }
+
+    /// Returns the tab title.
+    pub(crate) fn title(&self) -> String {
+        match self {
+            Self::Home => "Browse".to_owned(),
+            Self::Declaration { .. } | Self::Project { .. } | Self::Package { .. } => self
+                .identity()
+                .map(|identity| identity.name().to_owned())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| self.coordinate().to_owned()),
+        }
+    }
+
+    /// Returns the project root this subject lives in, when it lives in one.
+    pub(crate) fn project_root(&self) -> Option<String> {
+        match self {
+            Self::Home | Self::Package { .. } => None,
+            Self::Project { coordinate } => Some(coordinate.clone()),
+            Self::Declaration { .. } => self
+                .identity()
+                .and_then(|identity| identity.project().map(|project| project.root().to_owned())),
+        }
     }
 }
 
 /// Where a newly opened subject should land.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Target {
-    /// Replace what the active tab is showing.
+    /// Replace what the active tab is showing, keeping its history.
     Here,
-    /// Open a new tab behind the active one.
+    /// Open under the active tab and switch to it — or, when the subject is
+    /// already open anywhere in the tree, switch to that tab instead.
+    Child,
+    /// Open under the active tab without switching.
     Background,
+}
+
+/// Returns where a click with these modifiers should open a link.
+///
+/// A plain click grows the tree: the page followed from this one becomes a
+/// leaf under it, so the shape of an exploration is recorded as it happens.
+/// The primary modifier reads in place instead — the same tab, one more
+/// history step — and alt opens the leaf behind. A subject already open
+/// anywhere is never opened twice; the click goes to the tab that has it.
+pub(crate) fn modifier_target(modifiers: Modifiers) -> Target {
+    if modifiers.alt {
+        Target::Background
+    } else if modifiers.secondary() {
+        Target::Here
+    } else {
+        Target::Child
+    }
 }
 
 /// What a tab has to draw right now.
@@ -82,19 +151,32 @@ pub(crate) enum Target {
 pub(crate) enum Content {
     /// Nothing has been opened in this tab yet.
     Blank,
+    /// The browse page.
+    Home,
     /// A declaration page.
     Page(Box<Page>),
-    /// A project page; its rows come from the workspace store.
+    /// A project page; its rows come from the index store.
     Project {
         /// Exact project coordinate.
+        coordinate: String,
+    },
+    /// A registry package page; its facts come from the registry store.
+    Package {
+        /// Pinned package coordinate.
         coordinate: String,
     },
     /// The subject could not be read.
     Faulted(Box<Fault>),
 }
 
+/// The stable identity of one tab for the life of the window.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct TabId(u64);
+
 /// One reader tab.
 pub(crate) struct Tab {
+    id: TabId,
+    parent: Option<TabId>,
     history: Vec<Subject>,
     cursor: usize,
     content: Content,
@@ -104,8 +186,10 @@ pub(crate) struct Tab {
 }
 
 impl Tab {
-    fn new(subject: Subject) -> Self {
+    fn new(id: TabId, parent: Option<TabId>, subject: Subject) -> Self {
         Self {
+            id,
+            parent,
             history: vec![subject],
             cursor: 0,
             content: Content::Blank,
@@ -135,12 +219,10 @@ impl Tab {
         &self.scroll
     }
 
-    /// Returns the tab strip label.
+    /// Returns the tab title.
     pub(crate) fn title(&self) -> String {
-        self.subject().map_or_else(
-            || "Untitled".to_owned(),
-            |subject| subject.identity().name().to_owned(),
-        )
+        self.subject()
+            .map_or_else(|| "Untitled".to_owned(), Subject::title)
     }
 
     /// Returns whether there is anywhere to go back to.
@@ -161,6 +243,23 @@ impl Tab {
         self.history.push(subject);
         self.cursor = self.history.len().saturating_sub(1);
     }
+}
+
+/// One row of the tab tree, in the order a tree panel draws them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TreeRow {
+    /// The tab.
+    pub(crate) id: TabId,
+    /// How many ancestors the tab has.
+    pub(crate) depth: usize,
+    /// The tab title.
+    pub(crate) title: String,
+    /// The subject, for its glyph.
+    pub(crate) subject: Option<Subject>,
+    /// Whether this is the active tab.
+    pub(crate) active: bool,
+    /// Whether the tab is still loading its subject.
+    pub(crate) loading: bool,
 }
 
 /// A small anchored card describing one declaration.
@@ -218,46 +317,51 @@ impl Hover {
 pub(crate) struct DocumentStore {
     endpoint: Endpoint,
     workspace: Entity<WorkspaceStore>,
+    index: Entity<IndexStore>,
     tabs: Vec<Tab>,
-    active: usize,
+    active: Option<TabId>,
+    next_id: u64,
     pages: Vec<(String, Page)>,
     hover: Option<Hover>,
     cards: Vec<(String, HoverCard)>,
-    loading: Vec<Task<()>>,
     hover_task: Option<Task<()>>,
 }
 
 impl EventEmitter<DocumentEvent> for DocumentStore {}
 
 impl DocumentStore {
-    /// Creates an empty reader bound to one workspace.
-    pub(crate) const fn new(endpoint: Endpoint, workspace: Entity<WorkspaceStore>) -> Self {
+    /// Creates an empty reader bound to one workspace and its index.
+    pub(crate) const fn new(
+        endpoint: Endpoint,
+        workspace: Entity<WorkspaceStore>,
+        index: Entity<IndexStore>,
+    ) -> Self {
         Self {
             endpoint,
             workspace,
+            index,
             tabs: Vec::new(),
-            active: 0,
+            active: None,
+            next_id: 1,
             pages: Vec::new(),
             hover: None,
             cards: Vec::new(),
-            loading: Vec::new(),
             hover_task: None,
         }
     }
 
-    /// Returns every open tab.
-    pub(crate) fn tabs(&self) -> &[Tab] {
-        &self.tabs
-    }
-
-    /// Returns the active tab index.
-    pub(crate) const fn active(&self) -> usize {
-        self.active
-    }
-
     /// Returns the active tab.
     pub(crate) fn tab(&self) -> Option<&Tab> {
-        self.tabs.get(self.active)
+        self.active.and_then(|id| self.find(id))
+    }
+
+    /// Returns one tab by identity.
+    pub(crate) fn find(&self, id: TabId) -> Option<&Tab> {
+        self.tabs.iter().find(|tab| tab.id == id)
+    }
+
+    fn find_mut(&mut self, id: TabId) -> Option<&mut Tab> {
+        self.tabs.iter_mut().find(|tab| tab.id == id)
     }
 
     /// Returns the hover card state.
@@ -270,121 +374,331 @@ impl DocumentStore {
     /// The reader keys its fade on this, so a page that arrives fades in once
     /// and a page that is merely re-rendered does not flicker.
     pub(crate) fn generation(&self) -> u64 {
-        let tab = u64::try_from(self.active).unwrap_or(0);
+        let tab = self.active.map_or(0, |id| id.0);
         self.tab()
             .map_or(tab, |open| tab.wrapping_mul(1024).wrapping_add(open.generation))
     }
 
-    /// Returns whether nothing is open.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.tabs.is_empty()
+
+    /// Returns the tabs as a tree, parents before children, in creation order.
+    pub(crate) fn tree(&self) -> Vec<TreeRow> {
+        let mut rows = Vec::with_capacity(self.tabs.len());
+        for root in self.tabs.iter().filter(|tab| self.is_root(tab)) {
+            self.walk(root, 0, &mut rows);
+        }
+        rows
+    }
+
+    fn is_root(&self, tab: &Tab) -> bool {
+        tab.parent.is_none_or(|parent| self.find(parent).is_none())
+    }
+
+    fn walk(&self, tab: &Tab, depth: usize, rows: &mut Vec<TreeRow>) {
+        if depth > 32 {
+            return;
+        }
+        rows.push(TreeRow {
+            id: tab.id,
+            depth,
+            title: tab.title(),
+            subject: tab.subject().cloned(),
+            active: self.active == Some(tab.id),
+            loading: tab.pending.is_some(),
+        });
+        for child in self.tabs.iter().filter(|other| other.parent == Some(tab.id)) {
+            self.walk(child, depth.saturating_add(1), rows);
+        }
+    }
+
+    /// Opens one declaration by key, resolving its coordinate from the index.
+    ///
+    /// A key the shelf does not hold — a link into a package that is not
+    /// indexed — opens as a fault that says so, rather than as a request the
+    /// engine would refuse or a page titled by sixty-four hex digits.
+    pub(crate) fn open_symbol(&mut self, symbol: SymbolKey, target: Target, cx: &mut Context<Self>) {
+        let coordinate = self
+            .index
+            .read(cx)
+            .coordinate_of(symbol)
+            .map(ToOwned::to_owned);
+        if let Some(coordinate) = coordinate {
+            self.open(Subject::Declaration { symbol, coordinate }, target, cx);
+            return;
+        }
+        let encoded = encode_id(symbol.as_bytes());
+        let id = self.place(
+            Subject::Declaration {
+                symbol,
+                coordinate: encoded.clone(),
+            },
+            target,
+            cx,
+        );
+        if let Some(tab) = self.find_mut(id) {
+            tab.pending = None;
+            tab.content = Content::Faulted(Box::new(not_on_shelf(&encoded)));
+        }
+        cx.emit(DocumentEvent::Navigated);
+        cx.notify();
     }
 
     /// Opens one subject, replacing or adding a tab.
     pub(crate) fn open(&mut self, subject: Subject, target: Target, cx: &mut Context<Self>) {
-        match target {
-            Target::Here if !self.tabs.is_empty() => {
-                if let Some(tab) = self.tabs.get_mut(self.active) {
+        let settled = target != Target::Here
+            && self.showing(&subject).is_some_and(|id| {
+                self.find(id)
+                    .is_some_and(|tab| tab.content != Content::Blank)
+            });
+        let id = self.place(subject, target, cx);
+        if settled {
+            return;
+        }
+        self.load(id, cx);
+    }
+
+    /// Opens the browse page: the tab that already shows it, or a new root.
+    ///
+    /// Home is the trunk of the tree. It is never opened twice and never
+    /// nested under a page, because "back to the start" should land on the
+    /// same tab every time.
+    pub(crate) fn open_home(&mut self, cx: &mut Context<Self>) {
+        if let Some(existing) = self.showing(&Subject::Home) {
+            self.activate(existing, cx);
+            return;
+        }
+        let id = self.spawn(None, Subject::Home);
+        self.active = Some(id);
+        cx.emit(DocumentEvent::TabsChanged);
+        self.load(id, cx);
+    }
+
+    /// Returns the tab whose current subject is this one, if any.
+    fn showing(&self, subject: &Subject) -> Option<TabId> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.subject() == Some(subject))
+            .map(|tab| tab.id)
+    }
+
+    /// Records a subject in a tab and returns which tab holds it.
+    fn place(&mut self, subject: Subject, target: Target, cx: &mut Context<Self>) -> TabId {
+        let already = (target != Target::Here)
+            .then(|| self.showing(&subject))
+            .flatten();
+        let id = match (target, already, self.active) {
+            (_, Some(existing), _) => {
+                if target == Target::Child {
+                    self.active = Some(existing);
+                }
+                existing
+            }
+            (Target::Here, None, Some(active)) if self.find(active).is_some() => {
+                if let Some(tab) = self.find_mut(active) {
                     tab.push(subject);
                 }
+                active
             }
-            Target::Background => self.tabs.push(Tab::new(subject)),
-            Target::Here => {
-                self.tabs.push(Tab::new(subject));
-                self.active = self.tabs.len().saturating_sub(1);
+            (Target::Here, None, _) => {
+                let id = self.spawn(None, subject);
+                self.active = Some(id);
+                id
             }
-        }
-        let index = match target {
-            Target::Background => self.tabs.len().saturating_sub(1),
-            Target::Here => self.active,
+            (Target::Child, None, active) => {
+                let id = self.spawn(active, subject);
+                self.active = Some(id);
+                id
+            }
+            (Target::Background, None, active) => self.spawn(active, subject),
         };
         cx.emit(DocumentEvent::TabsChanged);
         cx.notify();
-        self.load(index, cx);
+        id
+    }
+
+    fn spawn(&mut self, parent: Option<TabId>, subject: Subject) -> TabId {
+        let id = TabId(self.next_id);
+        self.next_id = self.next_id.saturating_add(1);
+        self.tabs.push(Tab::new(id, parent, subject));
+        id
     }
 
     /// Makes one tab active.
-    pub(crate) fn activate(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index >= self.tabs.len() {
+    pub(crate) fn activate(&mut self, id: TabId, cx: &mut Context<Self>) {
+        if self.find(id).is_none() || self.active == Some(id) {
             return;
         }
-        self.active = index;
+        self.active = Some(id);
         cx.emit(DocumentEvent::TabsChanged);
         cx.notify();
     }
 
-    /// Closes one tab, activating its neighbour.
-    pub(crate) fn close(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index >= self.tabs.len() {
-            return;
+    /// Makes the tab at one tree position active, counting from zero.
+    pub(crate) fn activate_nth(&mut self, at: usize, cx: &mut Context<Self>) {
+        if let Some(row) = self.tree().get(at) {
+            self.activate(row.id, cx);
         }
-        self.tabs.remove(index);
-        self.active = self.active.min(self.tabs.len().saturating_sub(1));
+    }
+
+    /// Activates the tab one step before or after the active one, in tree order.
+    pub(crate) fn activate_neighbour(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let rows = self.tree();
+        let Some(at) = rows.iter().position(|row| row.active) else {
+            return;
+        };
+        let next = if forward {
+            at.saturating_add(1).min(rows.len().saturating_sub(1))
+        } else {
+            at.saturating_sub(1)
+        };
+        if let Some(row) = rows.get(next) {
+            self.activate(row.id, cx);
+        }
+    }
+
+    /// Closes one tab, handing its children to its parent.
+    ///
+    /// The tab activated next is the parent when there is one — the page the
+    /// closed branch was opened from is where a reader's attention came from
+    /// — and otherwise the nearest remaining row in tree order.
+    pub(crate) fn close(&mut self, id: TabId, cx: &mut Context<Self>) {
+        let Some(closing) = self.find(id) else {
+            return;
+        };
+        let parent = closing.parent.filter(|parent| self.find(*parent).is_some());
+        let order = self.tree();
+        let position = order.iter().position(|row| row.id == id).unwrap_or(0);
+        for tab in &mut self.tabs {
+            if tab.parent == Some(id) {
+                tab.parent = parent;
+            }
+        }
+        self.tabs.retain(|tab| tab.id != id);
+        if self.active == Some(id) {
+            self.active = parent.or_else(|| {
+                order
+                    .iter()
+                    .filter(|row| row.id != id)
+                    .nth(position.saturating_sub(1))
+                    .or_else(|| order.iter().find(|row| row.id != id))
+                    .map(|row| row.id)
+            });
+        }
         cx.emit(DocumentEvent::TabsChanged);
         cx.notify();
+    }
+
+    /// Closes the active tab.
+    pub(crate) fn close_active(&mut self, cx: &mut Context<Self>) {
+        if let Some(active) = self.active {
+            self.close(active, cx);
+        }
+    }
+
+    /// Closes every tab whose subject lives in one project.
+    ///
+    /// A project taken off the shelf must take its pages with it: a reader
+    /// left looking at a fault for something they just removed would be
+    /// looking at an error they caused on purpose.
+    pub(crate) fn close_project(&mut self, root: &str, cx: &mut Context<Self>) {
+        let doomed: Vec<TabId> = self
+            .tabs
+            .iter()
+            .filter(|tab| {
+                tab.subject()
+                    .and_then(Subject::project_root)
+                    .is_some_and(|held| held == root)
+            })
+            .map(|tab| tab.id)
+            .collect();
+        for id in doomed {
+            self.close(id, cx);
+        }
+        self.pages.retain(|(key, _)| !key.starts_with(root));
     }
 
     /// Walks the active tab's history back one step.
     pub(crate) fn back(&mut self, cx: &mut Context<Self>) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(id) = self.active else {
+            return;
+        };
+        let Some(tab) = self.find_mut(id) else {
             return;
         };
         if !tab.can_go_back() {
             return;
         }
         tab.cursor = tab.cursor.saturating_sub(1);
-        let index = self.active;
         cx.emit(DocumentEvent::Navigated);
-        self.load(index, cx);
+        self.load(id, cx);
     }
 
     /// Walks the active tab's history forward one step.
     pub(crate) fn forward(&mut self, cx: &mut Context<Self>) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(id) = self.active else {
+            return;
+        };
+        let Some(tab) = self.find_mut(id) else {
             return;
         };
         if !tab.can_go_forward() {
             return;
         }
         tab.cursor = tab.cursor.saturating_add(1);
-        let index = self.active;
         cx.emit(DocumentEvent::Navigated);
-        self.load(index, cx);
+        self.load(id, cx);
+    }
+
+    /// Returns whether the active tab can walk back.
+    pub(crate) fn can_go_back(&self) -> bool {
+        self.tab().is_some_and(Tab::can_go_back)
+    }
+
+    /// Returns whether the active tab can walk forward.
+    pub(crate) fn can_go_forward(&self) -> bool {
+        self.tab().is_some_and(Tab::can_go_forward)
     }
 
     /// Re-reads whatever the active tab is showing.
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
-        let index = self.active;
+        let Some(id) = self.active else {
+            return;
+        };
         if let Some(coordinate) = self
-            .tabs
-            .get(index)
+            .find(id)
             .and_then(Tab::subject)
             .map(|subject| subject.coordinate().to_owned())
         {
             self.pages.retain(|(key, _)| *key != coordinate);
         }
-        self.load(index, cx);
+        self.load(id, cx);
     }
 }
 
 /// Loading pages.
 impl DocumentStore {
-    fn load(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(subject) = self.tabs.get(index).and_then(Tab::subject).cloned() else {
+    fn load(&mut self, id: TabId, cx: &mut Context<Self>) {
+        let Some(subject) = self.find(id).and_then(Tab::subject).cloned() else {
             return;
         };
         match subject {
-            Subject::Project { coordinate } => self.show_project(index, coordinate, cx),
+            Subject::Home => self.show_static(id, Content::Home, cx),
+            Subject::Project { coordinate } => {
+                self.show_static(id, Content::Project { coordinate }, cx);
+            }
+            Subject::Package { coordinate } => {
+                self.show_static(id, Content::Package { coordinate }, cx);
+            }
             Subject::Declaration { symbol, coordinate } => {
-                self.show_declaration(index, symbol, coordinate, cx);
+                self.show_declaration(id, symbol, coordinate, cx);
             }
         }
     }
 
-    fn show_project(&mut self, index: usize, coordinate: String, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get_mut(index) {
+    fn show_static(&mut self, id: TabId, content: Content, cx: &mut Context<Self>) {
+        if let Some(tab) = self.find_mut(id) {
             tab.pending = None;
-            tab.content = Content::Project { coordinate };
+            tab.content = content;
+            tab.generation = tab.generation.saturating_add(1);
         }
         cx.emit(DocumentEvent::Navigated);
         cx.notify();
@@ -392,36 +706,31 @@ impl DocumentStore {
 
     fn show_declaration(
         &mut self,
-        index: usize,
+        id: TabId,
         symbol: SymbolKey,
         coordinate: String,
         cx: &mut Context<Self>,
     ) {
         if let Some(cached) = self.cached(&coordinate) {
-            if let Some(tab) = self.tabs.get_mut(index) {
-                tab.pending = None;
-                tab.content = Content::Page(Box::new(cached));
-            }
-            cx.emit(DocumentEvent::Navigated);
-            cx.notify();
+            self.show_static(id, Content::Page(Box::new(cached)), cx);
             return;
         }
-        let generation = self.begin(index, &coordinate, cx);
+        let generation = self.begin(id, &coordinate, cx);
         let endpoint = self.endpoint.clone();
         let wanted = coordinate.clone();
-        let task = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let parts = cx
                 .background_spawn(async move { fetch(&endpoint, symbol, &wanted) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.finish(index, generation, symbol, &coordinate, parts, cx);
+                this.finish(id, generation, symbol, &coordinate, parts, cx);
             });
-        });
-        self.loading.push(task);
+        })
+        .detach();
     }
 
-    fn begin(&mut self, index: usize, coordinate: &str, cx: &mut Context<Self>) -> u64 {
-        let Some(tab) = self.tabs.get_mut(index) else {
+    fn begin(&mut self, id: TabId, coordinate: &str, cx: &mut Context<Self>) -> u64 {
+        let Some(tab) = self.find_mut(id) else {
             return 0;
         };
         tab.generation = tab.generation.saturating_add(1);
@@ -433,7 +742,7 @@ impl DocumentStore {
 
     fn finish(
         &mut self,
-        index: usize,
+        id: TabId,
         generation: u64,
         symbol: SymbolKey,
         coordinate: &str,
@@ -441,8 +750,7 @@ impl DocumentStore {
         cx: &mut Context<Self>,
     ) {
         let stale = self
-            .tabs
-            .get(index)
+            .find(id)
             .is_none_or(|tab| tab.generation != generation);
         if stale {
             return;
@@ -454,7 +762,7 @@ impl DocumentStore {
             }
             Err(fault) => Content::Faulted(Box::new(fault)),
         };
-        if let Some(tab) = self.tabs.get_mut(index) {
+        if let Some(tab) = self.find_mut(id) {
             tab.pending = None;
             tab.content = content;
         }
@@ -471,10 +779,12 @@ impl DocumentStore {
     ) -> Result<Page, Fault> {
         let document = parts.document?;
         let workspace = self.workspace.read(cx);
+        let index = self.index.read(cx);
         let members = workspace.page_rows(symbol);
         let relations = parts.relations.unwrap_or_default();
         let page = page_from_document(coordinate, &document, &members, &relations, parts.notes);
-        let resolver = |name: &str| workspace.resolve_name(name);
+        let near = index.project_of(symbol).map(|project| project.root().to_owned());
+        let resolver = |name: &str| index.resolve_name(name, near.as_deref());
         Ok(match page.signature().cloned() {
             Some(signature) => page.with_signature(signature.resolve_types(resolver)),
             None => page,
@@ -503,7 +813,6 @@ impl DocumentStore {
     pub(crate) fn hover_over(
         &mut self,
         symbol: SymbolKey,
-        coordinate: String,
         anchor: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
@@ -514,6 +823,14 @@ impl DocumentStore {
         {
             return;
         }
+        let Some(coordinate) = self
+            .index
+            .read(cx)
+            .coordinate_of(symbol)
+            .map(ToOwned::to_owned)
+        else {
+            return;
+        };
         let card = self
             .cards
             .iter()
@@ -531,7 +848,7 @@ impl DocumentStore {
             return;
         }
         let endpoint = self.endpoint.clone();
-        let kind = self.workspace.read(cx).kind_of(symbol);
+        let kind = self.index.read(cx).entry(symbol).and_then(super::index::Entry::kind);
         self.hover_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(HOVER_DELAY).await;
             let outcome = cx
@@ -573,7 +890,8 @@ impl DocumentStore {
                     signature: page.signature().map_or_else(String::new, |signature| {
                         crate::ui::specimen::preview(signature, CARD_PREVIEW)
                     }),
-                    summary: crate::ui::prose::summary(page.prose()),
+                    summary: crate::ui::prose::summary(page.prose())
+                        .filter(|summary| !crate::ui::prose::tautological(summary, &identity)),
                     identity,
                 }
             }
@@ -635,13 +953,20 @@ fn fetch(endpoint: &Endpoint, symbol: SymbolKey, coordinate: &str) -> Parts {
 fn rows_of(endpoint: &Endpoint, request: &Request) -> Result<Vec<Row>, Fault> {
     match super::service::run(endpoint.path(), request) {
         Ok(Outcome::Rows(page)) => Ok(page.into_rows()),
-        Ok(_) => Err(wrong_shape(
-            backend_present::Operand::Whole,
-            "a page of rows",
-        )),
-        Err(error) => Err(Fault::from_client_error(
-            &error,
-            backend_present::Operand::Whole,
-        )),
+        Ok(_) => Err(wrong_shape(Operand::Whole, "a page of rows")),
+        Err(error) => Err(Fault::from_client_error(&error, Operand::Whole)),
     }
+}
+
+/// Returns the fault shown for a link into a package the shelf does not hold.
+fn not_on_shelf(encoded: &str) -> Fault {
+    Fault::new(
+        FaultSlug::NotFound,
+        Operand::Coordinate(Coordinate::new(encoded)),
+        Cause::new(
+            CauseSlug::Absent,
+            "this link points into a package that is not on the shelf; add the package and the link will resolve",
+        ),
+        Affordance::None,
+    )
 }

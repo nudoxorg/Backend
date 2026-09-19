@@ -267,12 +267,20 @@ function isNominalDeclaration(origin) {
 }
 
 function isReadonlyProperty(property) {
+  const declarations = property.getDeclarations ? property.getDeclarations() || [] : [];
+  const origin = declarations[0];
+  // An `as const` assertion seals every member readonly without writing any
+  // `readonly` token, so the assertion chain above the origin declaration is
+  // the only honest witness. Parent pointers exist because the compiler host
+  // sets parent nodes.
+  for (let node = origin; node; node = node.parent) {
+    if (ts.isAsExpression(node) && node.type && ts.isTypeReferenceNode(node.type)
+      && node.type.typeName.getText(sourceFile) === 'const') return true;
+  }
   const checkFlags = ts.CheckFlags || {};
   if (checkFlags.Readonly !== undefined && property.checkFlags !== undefined) {
     return (property.checkFlags & checkFlags.Readonly) !== 0;
   }
-  const declarations = property.getDeclarations ? property.getDeclarations() || [] : [];
-  const origin = declarations[0];
   if (origin && ts.isPropertySignature(origin)) return origin.readonly === true;
   if (origin && ts.isPropertyDeclaration(origin)) {
     return origin.modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword);
@@ -283,9 +291,20 @@ function isReadonlyProperty(property) {
 /** Builds the tree of one callable signature. */
 function signatureTree(signature, depth) {
   const parameters = (signature.parameters || []).map((parameter) =>
-    typeTree(checker.getTypeOfSymbol(parameter), depth),
+    parameterTree(parameter, depth),
   );
   return { kind: 'function', parameters, result: typeTree(signature.getReturnType(), depth) };
+}
+
+function parameterTree(parameter, depth) {
+  const declaration = parameter.valueDeclaration || (parameter.getDeclarations && parameter.getDeclarations()[0]);
+  const name = declaration && declaration.name ? declaration.name.getText(sourceFile) : null;
+  return {
+    name: name && name.length > 0 ? name : null,
+    optional: (parameter.flags & ts.SymbolFlags.Optional) !== 0 || Boolean(declaration && declaration.questionToken),
+    rest: Boolean(declaration && declaration.dotDotDotToken),
+    type: typeTree(checker.getTypeOfSymbol(parameter), depth),
+  };
 }
 
 /** The declaration-name identifier of one declaration node, if any. */
@@ -376,6 +395,16 @@ function visit(node) {
           type: typeTree(checker.getTypeOfSymbolAtLocation(symbol, name), 0),
         });
       }
+    }
+  } else if (ts.isTypeAliasDeclaration(node)) {
+    const name = declaredName(node);
+    if (name && ts.isIdentifier(name)) {
+      declarations.push({
+        nameStart: name.getStart(sourceFile),
+        nameEnd: name.getEnd(),
+        origin: 'declared',
+        type: typeTree(checker.getTypeFromTypeNode(node.type), 0),
+      });
     }
   } else if (ts.isIdentifier(node)) {
     emitReference(node);

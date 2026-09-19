@@ -1,16 +1,16 @@
 //! Defines json wire compiler authority behavior for `backend-library`, whose purpose is to decode and project the shared application vocabulary for external transports.
 //! This module owns the json wire compiler authority invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
+use crate::interface::{
+    DurableReceiptAuthority, GenerationAuthority, PublicationAuthority, SemanticImageAuthority,
+    SourceAuthority,
+};
 use backend_semantic::vocabulary::CompileRecipeFact;
 use backend_version::{
     ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, CompileRecipeDomain,
     DependencySetDomain, IrFragmentDomain, IrFragmentEncoding, IrManifestDomain,
     IrManifestEncoding, IrSemanticImageDomain, IrSemanticImageEncoding, SourceFactDomain,
     ToolchainDomain,
-};
-use crate::interface::{
-    DurableReceiptAuthority, GenerationAuthority, PublicationAuthority, SemanticImageAuthority,
-    SourceAuthority,
 };
 use serde::Serialize;
 

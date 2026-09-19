@@ -769,6 +769,7 @@ dependencies = [
  "backend-frontend-python",
  "backend-frontend-rust",
  "backend-frontend-typescript",
+ "backend-semantic",
 ]
 
 [[package]]
@@ -964,6 +965,7 @@ name = "backend-flow"
 version = "0.1.0"
 dependencies = [
  "backend-engine",
+ "backend-frontend-clang",
  "backend-frontend-csharp",
  "backend-frontend-go",
  "backend-frontend-java",
@@ -974,6 +976,7 @@ dependencies = [
  "backend-store",
  "backend-version",
  "blake3",
+ "rustix 1.1.4",
  "sha2",
  "thiserror 2.0.20",
 ]
@@ -985,7 +988,6 @@ dependencies = [
  "backend-compile",
  "backend-semantic",
  "blake3",
- "clang",
  "clang-sys",
  "serde",
  "serde_json",
@@ -1026,6 +1028,7 @@ name = "backend-frontend-java"
 version = "0.1.0"
 dependencies = [
  "backend-compile",
+ "backend-semantic",
  "flate2",
  "sha2",
  "thiserror 2.0.20",
@@ -1262,7 +1265,14 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
+ "backend-engine",
  "backend-flow",
+ "backend-frontend-clang",
+ "backend-frontend-go",
+ "backend-frontend-java",
+ "backend-frontend-python",
+ "backend-frontend-rust",
+ "backend-frontend-typescript",
  "backend-version",
  "blake3",
  "futures-executor",
@@ -1959,16 +1969,6 @@ dependencies = [
  "crypto-common",
  "inout",
  "zeroize",
-]
-
-[[package]]
-name = "clang"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34c6913be3a1c94f52fb975cdec7ef5a7b69de10a55de66dcbc30d7046b85fa1"
-dependencies = [
- "clang-sys",
- "libc",
 ]
 
 [[package]]

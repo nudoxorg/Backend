@@ -79,11 +79,11 @@ fn overflowing_the_emission_lane_retains_the_exact_rejection_operands() -> Resul
     let toolchain = ResolvedToolchain::from_version(NativeTool::Python, &executable, version_bytes)
         .map_err(|_| TestError::Resolve)?;
     let mut source = String::new();
-    // The landed emission geometry is MAX_EMISSION_FACTS = 16384: one
+    // The landed emission geometry is MAX_EMISSION_FACTS = 32768: one
     // fact per zero-arity function, so bound + 1 functions is the exact
     // first overflow. The law is unchanged — the rejection retains the
     // exact rejected ordinal and cause.
-    for index in 0..16_385usize {
+    for index in 0..32_769usize {
         source.push_str(&one_function(index));
     }
     let source_bytes = source.into_bytes();

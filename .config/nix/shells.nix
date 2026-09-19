@@ -8,6 +8,7 @@
   commands,
   control,
   controlFile,
+  corpus,
 }:
 let
   compilers = tools.compilers;
@@ -16,6 +17,19 @@ let
   };
   optionalOracleEnv = pkgs.lib.optionalAttrs (tools.goOracle != null) {
     NUDOX_GO_ORACLE_BIN = "${tools.goOracle}/bin/oracle";
+  };
+  # Real package sources for the seven-language corpus. Every value names a
+  # pinned store path built by `.config/nix/corpus.nix`; absent when this
+  # module is evaluated from the configuration-only `.config` flake, whose
+  # source root cannot reach the workspace tree.
+  optionalCorpusEnv = pkgs.lib.optionalAttrs (corpus != null) {
+    NUDOX_RUST_CORPUS_DIR = "${corpus.rust}";
+    NUDOX_TYPESCRIPT_CORPUS_DIR = "${corpus.typescript}";
+    NUDOX_PYTHON_CORPUS_DIR = "${corpus.python}";
+    NUDOX_GO_CORPUS_DIR = "${corpus.go}";
+    NUDOX_JAVA_CORPUS_DIR = "${corpus.java}";
+    NUDOX_CSHARP_CORPUS_DIR = "${corpus.csharp}";
+    NUDOX_CLANG_CORPUS_DIR = "${corpus.clang}";
   };
   # Absolute native-toolchain authorities for the seven-language corpus. Every
   # value names a pinned nixpkgs binary; nothing is discovered from ambient
@@ -48,7 +62,8 @@ let
     RUSTC = "${toolchains.stable}/bin/rustc";
   }
   // optionalEnv
-  // optionalOracleEnv;
+  // optionalOracleEnv
+  // optionalCorpusEnv;
   common = corpusEnv // {
     BACKEND_STABLE_CARGO = toolchains.stableCargo;
     BACKEND_RUSTFMT = toolchains.rustfmt;

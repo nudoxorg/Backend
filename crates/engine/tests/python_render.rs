@@ -349,7 +349,7 @@ fn python_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         });
     }
     let embedding = ir
-        .embedding_text(plain, backend_semantic::ir::EmbeddingProfile::DOCUMENTED)
+        .embedding_text(plain, backend_semantic::ir::semantic_render::EmbeddingProfile::DOCUMENTED)
         .ok_or(TestError::Falsified("embedding unavailable"))?
         .to_string();
     if embedding != "struct Plain\n\nPlain documentation." {

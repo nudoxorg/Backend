@@ -11,7 +11,8 @@ use super::identity::coordinate_from_registry_parts;
 use super::transport::ArchiveIntegrity;
 use super::{
     AcquisitionError, FeedPage, FeedRequest, PackageCoordinate, PackageName, PackageVersion,
-    ProvenanceDigest, RegistryEcosystem, RegistryEndpoint, RemotePackage, TransportFailure,
+    ProvenanceDigest, RegistryEcosystem, RegistryEndpoint, ReleaseFacts, RemotePackage,
+    TransportFailure,
 };
 use std::sync::Arc;
 
@@ -28,7 +29,7 @@ pub enum ChecksumAlgorithm {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegistryChecksum {
     algorithm: ChecksumAlgorithm,
-    bytes: Box<[u8]>,
+    pub(crate) bytes: Box<[u8]>,
 }
 
 impl RegistryChecksum {
@@ -79,6 +80,8 @@ pub struct NativeRelease {
     pub checksum: RegistryChecksum,
     /// Digest binding the source metadata row used as provenance.
     pub provenance: ProvenanceDigest,
+    /// Mutable registry policy and observations, versioned independently.
+    pub facts: ReleaseFacts,
 }
 
 /// Stateless native registry adapter for one package feed.
@@ -105,11 +108,14 @@ impl EcosystemAdapter {
         package: PackageName,
         namespace: Option<PackageName>,
     ) -> Result<Self, AcquisitionError> {
-        let requires_namespace = matches!(
-            endpoint.ecosystem(),
-            RegistryEcosystem::Maven | RegistryEcosystem::Cpp
-        );
-        if requires_namespace != namespace.is_some() {
+        let namespace_is_valid = match endpoint.ecosystem() {
+            RegistryEcosystem::Maven | RegistryEcosystem::Cpp => namespace.is_some(),
+            RegistryEcosystem::Npm | RegistryEcosystem::Golang => true,
+            RegistryEcosystem::Cargo | RegistryEcosystem::Pypi | RegistryEcosystem::Nuget => {
+                namespace.is_none()
+            }
+        };
+        if !namespace_is_valid {
             return Err(AcquisitionError::InvalidConfiguration);
         }
         Ok(Self {
@@ -129,8 +135,21 @@ impl EcosystemAdapter {
                 self.endpoint.url(),
                 cargo_sparse_path(self.package.as_str())
             ),
-            RegistryEcosystem::Npm => format!("{}/{package}", self.endpoint.url()),
-            RegistryEcosystem::Pypi => format!("{}/pypi/{package}/json", self.endpoint.url()),
+            RegistryEcosystem::Npm => self.namespace.as_ref().map_or_else(
+                || format!("{}/{package}", self.endpoint.url()),
+                |namespace| {
+                    format!(
+                        "{}/{}%2F{package}",
+                        self.endpoint.url(),
+                        path_components(namespace.as_str())
+                    )
+                },
+            ),
+            RegistryEcosystem::Pypi => format!(
+                "{}/pypi/{}/json",
+                self.endpoint.url(),
+                normalized_pypi_name(self.package.as_str())
+            ),
             RegistryEcosystem::Maven => {
                 let namespace = self.namespace_path('/');
                 format!(
@@ -145,9 +164,22 @@ impl EcosystemAdapter {
                     package.to_ascii_lowercase()
                 )
             }
-            RegistryEcosystem::Golang => {
-                format!("{}/{package}/@v/list", self.endpoint.url())
-            }
+            RegistryEcosystem::Golang => self.namespace.as_ref().map_or_else(
+                || {
+                    format!(
+                        "{}/{}/@v/list",
+                        self.endpoint.url(),
+                        go_proxy_escape(self.package.as_str())
+                    )
+                },
+                |_| {
+                    format!(
+                        "{}/{}/@v/list",
+                        self.endpoint.url(),
+                        self.go_proxy_package()
+                    )
+                },
+            ),
             RegistryEcosystem::Cpp => {
                 let namespace = self.namespace_path('/');
                 format!(
@@ -213,6 +245,7 @@ impl EcosystemAdapter {
                 coordinate: release.coordinate.clone(),
                 integrity: ArchiveIntegrity::Native(release.checksum.clone()),
                 provenance: release.provenance,
+                facts: release.facts,
                 archive_url: Arc::from(release.archive_url.as_str()),
             })
             .collect();
@@ -237,8 +270,26 @@ impl EcosystemAdapter {
         checksum: RegistryChecksum,
         provenance: &[u8],
     ) -> Result<NativeRelease, TransportFailure> {
+        self.release_with_facts(
+            version,
+            archive_url,
+            checksum,
+            provenance,
+            ReleaseFacts::default(),
+        )
+    }
+
+    fn release_with_facts(
+        &self,
+        version: &str,
+        archive_url: String,
+        checksum: RegistryChecksum,
+        provenance: &[u8],
+        facts: ReleaseFacts,
+    ) -> Result<NativeRelease, TransportFailure> {
         let version = PackageVersion::new(version).map_err(|_| TransportFailure::Protocol)?;
-        if !same_https_authority_or_loopback(self.endpoint.url(), &archive_url) {
+        if !allowed_archive_authority(self.endpoint.ecosystem(), self.endpoint.url(), &archive_url)
+        {
             return Err(TransportFailure::Configuration);
         }
         let name = match self.namespace.as_ref() {
@@ -247,8 +298,16 @@ impl EcosystemAdapter {
                 // Keep a namespaced native coordinate lossless when it enters
                 // the shared owner. The adapter still uses the separate
                 // namespace/package components for URL construction.
-                PackageName::new(format!("{}:{}", namespace.as_str(), self.package.as_str()))
-                    .map_err(|_| TransportFailure::Protocol)?
+                let separator = match self.endpoint.ecosystem() {
+                    RegistryEcosystem::Maven | RegistryEcosystem::Cpp => ':',
+                    _ => '/',
+                };
+                PackageName::new(format!(
+                    "{}{separator}{}",
+                    namespace.as_str(),
+                    self.package.as_str()
+                ))
+                .map_err(|_| TransportFailure::Protocol)?
             }
         };
         Ok(NativeRelease {
@@ -263,6 +322,7 @@ impl EcosystemAdapter {
             provenance: ProvenanceDigest::from_authenticated_feed(
                 *blake3::hash(provenance).as_bytes(),
             ),
+            facts,
         })
     }
 
@@ -270,6 +330,23 @@ impl EcosystemAdapter {
         self.namespace.as_ref().map_or_else(String::new, |value| {
             component(value.as_str()).replace('.', &separator.to_string())
         })
+    }
+
+    fn slash_qualified_package(&self) -> String {
+        self.namespace.as_ref().map_or_else(
+            || component(self.package.as_str()),
+            |namespace| {
+                format!(
+                    "{}/{}",
+                    path_components(namespace.as_str()),
+                    component(self.package.as_str())
+                )
+            },
+        )
+    }
+
+    fn go_proxy_package(&self) -> String {
+        go_proxy_escape(&self.slash_qualified_package())
     }
 }
 
@@ -289,6 +366,46 @@ fn component(value: &str) -> String {
         }
     }
     output
+}
+
+fn path_components(value: &str) -> String {
+    value
+        .split('/')
+        .map(component)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn go_proxy_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            'A'..='Z' => {
+                escaped.push('!');
+                escaped.extend(character.to_lowercase());
+            }
+            '!' => escaped.push_str("!!"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn normalized_pypi_name(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut separator = false;
+    for character in value.chars() {
+        if matches!(character, '-' | '_' | '.') {
+            if !separator {
+                normalized.push('-');
+                separator = true;
+            }
+        } else {
+            normalized.extend(character.to_lowercase());
+            separator = false;
+        }
+    }
+    normalized
 }
 
 fn cargo_sparse_path(name: &str) -> String {
@@ -320,7 +437,7 @@ fn hex_nibble(value: u8) -> Result<u8, TransportFailure> {
     }
 }
 
-fn same_https_authority_or_loopback(base: &str, archive: &str) -> bool {
+fn allowed_archive_authority(ecosystem: RegistryEcosystem, base: &str, archive: &str) -> bool {
     let (Ok(base), Ok(archive)) = (
         base.parse::<ureq::http::Uri>(),
         archive.parse::<ureq::http::Uri>(),
@@ -333,6 +450,22 @@ fn same_https_authority_or_loopback(base: &str, archive: &str) -> bool {
     let Some(archive_authority) = archive.authority() else {
         return false;
     };
+    let same_authority = base.authority() == Some(archive_authority);
+    let official_cargo_split = ecosystem == RegistryEcosystem::Cargo
+        && base
+            .authority()
+            .is_some_and(|authority| authority.host().eq_ignore_ascii_case("index.crates.io"))
+        && archive_authority
+            .host()
+            .eq_ignore_ascii_case("static.crates.io");
+    let official_pypi_split = ecosystem == RegistryEcosystem::Pypi
+        && base
+            .authority()
+            .is_some_and(|authority| authority.host().eq_ignore_ascii_case("pypi.org"))
+        && archive_authority
+            .host()
+            .eq_ignore_ascii_case("files.pythonhosted.org");
+
     archive.query().is_none()
         && !archive.to_string().contains('#')
         && archive_authority.as_str().find('@').is_none()
@@ -342,5 +475,5 @@ fn same_https_authority_or_loopback(base: &str, archive: &str) -> bool {
                     .host()
                     .parse::<std::net::IpAddr>()
                     .is_ok_and(|address| address.is_loopback())))
-        && base.authority() == Some(archive_authority)
+        && (same_authority || official_cargo_split || official_pypi_split)
 }

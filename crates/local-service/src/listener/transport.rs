@@ -2,7 +2,7 @@
 
 use super::{Inbound, ListenerError};
 use crate::protocol::{FrameLimits, ProtocolError, read_frame, write_frame};
-use std::io;
+use std::io::{self, Read as _};
 use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -20,6 +20,8 @@ pub(super) struct ConnectionContext {
     pub(super) connection_id: usize,
     pub(super) limits: FrameLimits,
     pub(super) timeout: Duration,
+    pub(super) request_idle: Duration,
+    pub(super) owner_reply: Duration,
 }
 
 pub(super) fn connection_worker(
@@ -34,70 +36,36 @@ pub(super) fn connection_worker(
         connection_id,
         limits,
         timeout,
+        request_idle,
+        owner_reply,
     } = context;
     let mut frames = 0usize;
     while !stop.load(Ordering::Acquire) && frames < limits.max_frames_per_connection {
-        let Ok(payload) = read_frame(&mut stream, limits) else {
+        // Waiting for the next request is not the same as reading a frame
+        // slowly. Charging the per-frame deadline for the wait closed every
+        // connection that went one `timeout` without a request, which is
+        // what a thinking agent does between tool calls; the client then saw
+        // a reset on its next call and had no way back.
+        let Some(first) = await_frame_start(&mut stream, request_idle, timeout) else {
             break;
         };
-        let (reply_sender, reply_receiver) = mpsc::sync_channel(1);
-        let correlation = crate::service::RequestCorrelation::from_payload(&payload);
-        let mut inbound = Inbound {
+        // The byte that proved the frame started is the frame's first byte,
+        // so hand it back to the reader rather than losing it.
+        let Ok(payload) = read_frame(&mut io::Cursor::new([first]).chain(&mut stream), limits)
+        else {
+            break;
+        };
+        let Some(response) = serve_one_frame(
+            &mut stream,
             payload,
-            reply: reply_sender,
-        };
-        // A client must never be able to park a thread forever while the
-        // owner loop is stopped or saturated. The listener normally drains
-        // this channel promptly; the deadline turns saturation into an
-        // explicit backpressure response.
-        let handoff_deadline = Instant::now() + timeout;
-        let handed_off = loop {
-            match sender.try_send(inbound) {
-                Ok(()) => break true,
-                Err(TrySendError::Disconnected(_)) => break false,
-                Err(TrySendError::Full(returned)) => {
-                    inbound = returned;
-                    if Instant::now() >= handoff_deadline {
-                        let _ = write_frame(
-                            &mut stream,
-                            &crate::service::error_payload(
-                                correlation,
-                                &ProtocolError::Backpressure,
-                                limits,
-                            ),
-                            limits,
-                        );
-                        break false;
-                    }
-                    thread::sleep(Duration::from_millis(1));
-                }
-            }
-        };
-        if !handed_off {
+            &sender,
+            ServeWindows {
+                handoff: timeout,
+                owner_reply,
+            },
+            limits,
+        ) else {
             break;
-        }
-        let response = match reply_receiver.recv_timeout(timeout) {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
-                // The owner loop has already validated and, when possible,
-                // emitted a correlated response. On a hard protocol fault we
-                // close this connection to avoid desynchronizing later frames.
-                let _ = write_frame(
-                    &mut stream,
-                    &crate::service::error_payload(correlation, &error, limits),
-                    limits,
-                );
-                break;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let _ = write_frame(
-                    &mut stream,
-                    &crate::service::error_payload(correlation, &ProtocolError::Timeout, limits),
-                    limits,
-                );
-                break;
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         if write_frame(&mut stream, &response, limits).is_err() {
             break;
@@ -108,6 +76,121 @@ pub(super) fn connection_worker(
         active_streams.remove(&connection_id);
     }
     active.fetch_sub(1, Ordering::AcqRel);
+}
+
+/// The two windows one served frame is charged against.
+#[derive(Clone, Copy)]
+struct ServeWindows {
+    /// How long the owner channel may stay saturated before the client is
+    /// told so.
+    handoff: Duration,
+    /// How long the owner itself may take to answer.
+    owner_reply: Duration,
+}
+
+/// Hands one payload to the owner loop and returns its response.
+///
+/// `None` means this connection is finished: either the client was told why
+/// (backpressure, a protocol fault, or an owner that ran past its window) or
+/// the owner is gone. Every refusal is written before returning.
+fn serve_one_frame(
+    stream: &mut std::os::unix::net::UnixStream,
+    payload: Vec<u8>,
+    sender: &SyncSender<Inbound>,
+    windows: ServeWindows,
+    limits: FrameLimits,
+) -> Option<Vec<u8>> {
+    let (reply_sender, reply_receiver) = mpsc::sync_channel(1);
+    let correlation = crate::service::RequestCorrelation::from_payload(&payload);
+    let inbound = Inbound {
+        payload,
+        reply: reply_sender,
+    };
+    let refuse = |stream: &mut std::os::unix::net::UnixStream, error: &ProtocolError| {
+        let _ = write_frame(
+            stream,
+            &crate::service::error_payload(correlation, error, limits),
+            limits,
+        );
+        None
+    };
+    if !hand_off(stream, inbound, sender, windows.handoff, limits) {
+        return None;
+    }
+    // The owner has the request now. Waiting for it to finish indexing a
+    // project is not an I/O deadline, so it gets its own window: the
+    // per-frame one is far shorter than a real index and made the surface
+    // report a timeout for work the owner then completed anyway.
+    match reply_receiver.recv_timeout(windows.owner_reply) {
+        Ok(Ok(response)) => Some(response),
+        // The owner loop has already validated and, when possible, emitted a
+        // correlated response. On a hard protocol fault this connection
+        // closes rather than desynchronizing later frames.
+        Ok(Err(error)) => refuse(stream, &error),
+        Err(mpsc::RecvTimeoutError::Timeout) => refuse(stream, &ProtocolError::Timeout),
+        Err(mpsc::RecvTimeoutError::Disconnected) => None,
+    }
+}
+
+/// Offers one request to the single owner loop, returning whether it landed.
+///
+/// A client must never be able to park a thread forever while the owner loop
+/// is stopped or saturated. The listener normally drains this channel
+/// promptly; the deadline turns saturation into an explicit backpressure
+/// response rather than a silent wait.
+fn hand_off(
+    stream: &mut std::os::unix::net::UnixStream,
+    mut inbound: Inbound,
+    sender: &SyncSender<Inbound>,
+    handoff: Duration,
+    limits: FrameLimits,
+) -> bool {
+    let correlation = crate::service::RequestCorrelation::from_payload(&inbound.payload);
+    let deadline = Instant::now() + handoff;
+    loop {
+        match sender.try_send(inbound) {
+            Ok(()) => return true,
+            Err(TrySendError::Disconnected(_)) => return false,
+            Err(TrySendError::Full(returned)) => {
+                inbound = returned;
+                if Instant::now() >= deadline {
+                    let _ = write_frame(
+                        stream,
+                        &crate::service::error_payload(
+                            correlation,
+                            &ProtocolError::Backpressure,
+                            limits,
+                        ),
+                        limits,
+                    );
+                    return false;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+}
+
+/// Waits for a client to begin its next frame, then arms the frame deadline.
+///
+/// Returns the frame's first byte, which the caller must feed back to the
+/// frame reader.  The wait is bounded by `request_idle`, so an abandoned
+/// connection still releases its client slot; once the first byte has arrived
+/// the rest of the frame must land inside `frame_timeout`, which is what stops
+/// a peer trickling one frame forever.
+fn await_frame_start(
+    stream: &mut std::os::unix::net::UnixStream,
+    request_idle: Duration,
+    frame_timeout: Duration,
+) -> Option<u8> {
+    stream.set_read_timeout(Some(request_idle)).ok()?;
+    let mut first = [0_u8; 1];
+    let started = stream.read_exact(&mut first).is_ok();
+    // Re-arm the frame deadline before reading the rest of the frame: the
+    // remainder of a started frame is charged the per-frame window, never the
+    // idle one.
+    stream.set_read_timeout(Some(frame_timeout)).ok()?;
+    started.then_some(first).and_then(|bytes| bytes.first().copied())
 }
 
 pub(super) fn configure_stream(

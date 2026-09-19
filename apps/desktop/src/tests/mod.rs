@@ -2,5 +2,7 @@
 //! Pure state and projections live in `state`; GPUI entity tests in `gpui`.
 //! The transport and reducer proofs are unchanged from before this rewrite.
 
+mod reader;
+mod registry;
 mod state;
 mod transport;

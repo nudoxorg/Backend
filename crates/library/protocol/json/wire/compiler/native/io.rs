@@ -1,8 +1,8 @@
 //! Defines json wire compiler native io behavior for `backend-library`, whose purpose is to decode and project the shared application vocabulary for external transports.
 //! This module owns the json wire compiler native io invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use backend_semantic::vocabulary::NativeWorkPhase;
 use crate::interface::{NativeIoFact, NativeIoPhase};
+use backend_semantic::vocabulary::NativeWorkPhase;
 use serde::{Serialize, Serializer};
 
 use super::super::super::scalar::serialize_error_kind;

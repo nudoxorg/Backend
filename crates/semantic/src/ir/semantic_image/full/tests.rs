@@ -283,6 +283,8 @@ fn shared_sparse_extension_fact_binds_each_canonical_entity_without_duplication(
         lifetimes: builder.intern_attributes(&[])?,
         where_clauses: builder.intern_type_parameters(&[])?,
         macros: builder.intern_attributes(&[])?,
+        const_defaults: builder.intern_attributes(&[])?,
+        free_predicates: builder.intern_free_predicates(&[])?,
     };
     let authority = EntityAuthorityFacts {
         parentage: ParentageAuthority::Root,

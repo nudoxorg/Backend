@@ -15,6 +15,7 @@ thiserror.workspace = true
 [dev-dependencies]
 backend-engine = { path = "../engine" }
 backend-semantic = { path = "../semantic" }
+backend-frontend-clang = { path = "../../frontends/clang" }
 backend-frontend-csharp = { path = "../../frontends/csharp" }
 backend-frontend-go = { path = "../../frontends/go" }
 backend-frontend-java = { path = "../../frontends/java" }
@@ -22,6 +23,9 @@ backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
 backend-frontend-python = { path = "../../frontends/python" }
 sha2 = "=0.10.9"
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["process", "std"] }
 
 [lints]
 workspace = true

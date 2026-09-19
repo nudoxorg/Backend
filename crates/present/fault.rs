@@ -653,6 +653,15 @@ impl Fault {
                 format!("the local endpoint could not be used: {detail}"),
                 Affordance::Retry,
             ),
+            ClientError::Disconnected(kind) => (
+                FaultSlug::Endpoint,
+                CauseSlug::Unreachable,
+                format!(
+                    "the local endpoint closed this connection ({kind}); \
+                     a fresh connection was opened, so retry the command"
+                ),
+                Affordance::Retry,
+            ),
             ClientError::Protocol(detail) => (
                 FaultSlug::Protocol,
                 CauseSlug::Unproven,

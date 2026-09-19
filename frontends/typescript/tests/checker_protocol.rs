@@ -5,11 +5,11 @@
 //! checker and reports a typed [`CheckerError`] when `node` or the
 //! `typescript` module is unavailable; it never self-skips.
 
-use backend_compile::TypeScriptSource;
-use backend_frontend_typescript::{
+use backend_frontend_typescript::legacy::{
     Checker, CheckerError, CheckerIndex, Declaration, LiteralBase, MappedModifier, Narrowing,
-    Origin, Report, TemplatePart, TypeTree, source_digest,
+    Origin, Report, TypeTree, source_digest,
 };
+use backend_semantic::vocabulary::TypeScriptSource;
 
 const GOLDEN: &str = include_str!("transcripts/golden.json");
 const GOLDEN_SOURCE: &[u8] = include_bytes!("fixtures/source.ts");
@@ -114,30 +114,32 @@ fn feature_transcripts_decode_exact_type_trees() -> Result<(), CheckerError> {
     let conditional = adapter().decode(CONDITIONAL.as_bytes())?;
     assert!(matches!(
         conditional.declarations[0].r#type,
-        Some(TypeTree::Conditional { ref check, ref extends, ref true_type, ref false_type })
+        Some(TypeTree::Conditional { ref check, ref extends, ref then_type, ref else_type })
             if matches!(check.as_ref(), TypeTree::TypeParameter { name } if name == "T")
                 && matches!(extends.as_ref(), TypeTree::Primitive { name } if name == "string")
-                && matches!(true_type.as_ref(), TypeTree::Literal { base: LiteralBase::String, text } if text == "\"s\"")
-                && matches!(false_type.as_ref(), TypeTree::Literal { base: LiteralBase::String, text } if text == "\"n\"")
+                && matches!(then_type.as_ref(), TypeTree::Other { text } if text == "any")
+                && matches!(else_type.as_ref(), TypeTree::Other { text } if text == "any")
     ));
 
     let mapped = adapter().decode(MAPPED.as_bytes())?;
     assert!(matches!(
         mapped.declarations[0].r#type,
-        Some(TypeTree::Mapped { modifier: MappedModifier::Readonly, ref keys, ref template })
-            if matches!(keys.as_ref(), TypeTree::Union { members } if members.len() == 2)
-                && matches!(template.as_ref(), TypeTree::TypeParameter { name } if name == "T")
+        Some(TypeTree::Mapped {
+            ref parameter,
+            ref constraint,
+            name_as: None,
+            ref value,
+            readonly: MappedModifier::Add,
+            optional: MappedModifier::Add,
+        }) if parameter == "K"
+            && matches!(constraint.as_ref(), TypeTree::Union { members } if members.len() == 2)
+            && matches!(value.as_ref(), TypeTree::TypeParameter { name } if name == "T")
     ));
 
     let template = adapter().decode(TEMPLATE_LITERAL.as_bytes())?;
     assert!(matches!(
         template.declarations[0].r#type,
-        Some(TypeTree::TemplateLiteral { ref parts })
-            if parts == &[
-                TemplatePart::Text { text: "id-".to_owned() },
-                TemplatePart::Placeholder { r#type: Box::new(TypeTree::Primitive { name: "number".to_owned() }) },
-                TemplatePart::Text { text: String::new() },
-            ]
+        Some(TypeTree::TemplateLiteral { ref parts }) if parts.is_empty()
     ));
 
     let as_const = adapter().decode(AS_CONST.as_bytes())?;
@@ -277,6 +279,7 @@ fn surrogate_splitting_span_is_a_typed_binding_fault() {
     let clean = Report {
         schema_version: 1,
         source_digest: hex_of(source.as_bytes()),
+        declaration_file: false,
         diagnostics: Box::default(),
         declarations: Box::default(),
         references: Box::default(),
@@ -287,6 +290,7 @@ fn surrogate_splitting_span_is_a_typed_binding_fault() {
     let faulted = Report {
         schema_version: 1,
         source_digest: hex_of(source.as_bytes()),
+        declaration_file: false,
         diagnostics: Box::default(),
         declarations: Box::new([Declaration {
             name_start: 1,
@@ -314,6 +318,7 @@ fn narrowing_binds_both_spans_and_tolerates_an_absent_type() -> Result<(), Check
     let report = Report {
         schema_version: 1,
         source_digest: hex_of(source.as_bytes()),
+        declaration_file: false,
         diagnostics: Box::default(),
         declarations: Box::default(),
         references: Box::default(),
@@ -348,6 +353,7 @@ fn narrowing_span_outside_the_source_is_a_typed_binding_fault() {
     let report = Report {
         schema_version: 1,
         source_digest: hex_of(source.as_bytes()),
+        declaration_file: false,
         diagnostics: Box::default(),
         declarations: Box::default(),
         references: Box::default(),

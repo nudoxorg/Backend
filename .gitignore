@@ -13,5 +13,5 @@
 **/*.log
 **/__pycache__/
 **/*.py[cod]
-compiler/languages/csharp/helper/bin/
-compiler/languages/csharp/helper/obj/
+frontends/csharp/src/legacy/helper/bin/
+frontends/csharp/src/legacy/helper/obj/

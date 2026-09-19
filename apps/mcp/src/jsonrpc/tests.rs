@@ -188,6 +188,29 @@ impl Engine for Fake {
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         match command {
             SurfaceCommand::Subscriptions => Ok(SurfaceReply::Subscriptions(Box::new([]))),
+            SurfaceCommand::References { target } => Ok(SurfaceReply::References {
+                target,
+                references: Box::new([backend_library::ReferenceRecord {
+                    site: backend_library::ProductText::new("pkg::semantic::caller")
+                        .expect("site text"),
+                    target: backend_library::SemanticLinkTarget::Local {
+                        declaration: backend_library::SemanticDeclarationIdentity {
+                            family: [1; 16],
+                            variant: [2; 16],
+                        },
+                    },
+                    relation: backend_library::SemanticLinkKind::Calls,
+                    evidence: backend_library::SemanticLinkEvidence {
+                        confidence: backend_library::SemanticConfidence::Compiler,
+                        source: Some(backend_library::SemanticSourceSpan {
+                            file: backend_library::ProductText::new("src/main.rs")
+                                .expect("path text"),
+                            start: 40,
+                            end: 46,
+                        }),
+                    },
+                }]),
+            }),
             SurfaceCommand::Diff { .. } => Err(ClientError::CommandFailed(
                 backend_library::CommandFailure::InvalidQuery(
                     "the package is not indexed at this revision".to_owned(),
@@ -603,6 +626,30 @@ fn an_unknown_tool_is_a_protocol_error_not_a_result() {
 // ---------------------------------------------------------------------------
 // the escape hatch and the typed lane
 // ---------------------------------------------------------------------------
+
+#[test]
+fn the_references_tool_serves_occurrence_sites_with_source_spans() {
+    let mut server = ready(Fake::default());
+    let result = call(
+        &mut server,
+        "backend.references",
+        &json!({ "coordinate": "pkg::semantic::callee" }),
+    );
+    assert_eq!(result["isError"], false);
+    let rendered = text_of(&result);
+    assert!(
+        rendered.contains("pkg::semantic::caller"),
+        "the referencing site must be named: {rendered}"
+    );
+    assert!(
+        rendered.contains("src/main.rs:40-46"),
+        "the captured source span must be present: {rendered}"
+    );
+    assert!(
+        rendered.to_lowercase().contains("compiler"),
+        "the authority class is provenance: {rendered}"
+    );
+}
 
 #[test]
 fn the_surface_escape_hatch_returns_the_typed_reply_and_a_readable_block() {

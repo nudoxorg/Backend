@@ -9,8 +9,8 @@ use backend_semantic::ir::{
     encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_store::hydration::VerifiedGeneration;
-use backend_version::ObjectDomain;
 use backend_store::journal::{CancelError, DurablePublisher, PublicationError, SubmitError};
+use backend_version::ObjectDomain;
 
 use super::types::{
     PublicationScratch, PublishCompiledError, PublishControl, PublishSemanticError,

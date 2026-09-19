@@ -17,26 +17,28 @@ use std::{
     time::Duration,
 };
 
-use arrayvec::ArrayVec;
 use crate::driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
+use crate::publication::{binding::CompilationBindingFacts, manifest::CompilationManifestFacts};
+use arrayvec::ArrayVec;
 use backend_frontend_csharp::legacy::{CSharpAuthorityConfiguration, CSharpOracle};
 use backend_frontend_go::legacy::ConfiguredGoOracle;
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
 use backend_frontend_rust::legacy::{RustFeatureControl, RustToolchain, SourceByteLimit};
 use backend_frontend_typescript::legacy::ExplicitTypeScriptChecker;
-use crate::publication::{binding::CompilationBindingFacts, manifest::CompilationManifestFacts};
-use backend_semantic::vocabulary::{Language, LanguageProfile, NativeTool, Stage};
-use backend_version::{CompilationTargetDomain, ContentId, ToolchainDomain};
 use backend_library::interface::{
     CompilerCapability, CompilerReadiness, CompilerRequest, CompilerRuntimeCause, CompilerTerminal,
     GeneratedArtifact, PackageCompilePhase, PackageCompileRequest, SemanticImageAccessError,
     SemanticImageAuthority, SemanticImageSnapshot,
 };
+use backend_semantic::vocabulary::{Language, LanguageProfile, NativeTool, Stage};
 use backend_store::journal::PublicationLimits;
+use backend_version::{CompilationTargetDomain, ContentId, ToolchainDomain};
 use thiserror::Error;
 
-use crate::application::toolchain_probe::{ToolchainProbeError, ToolchainProbeLimits, probe_version};
+use crate::application::toolchain_probe::{
+    ToolchainProbeError, ToolchainProbeLimits, probe_version,
+};
 use crate::application::{
     ActivatedSemanticPackage, CSharpPackageAuthorityConfiguration,
     JavaPackageAuthorityConfiguration, LocalCompiler, LocalCompilerConfig, LocalCompilerControl,
@@ -1501,7 +1503,9 @@ fn run_worker_generation(
                         let _ = response.send(RuntimeEvent::Complete(result));
                     }
                     Err(payload) => {
-                        let cause = backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref());
+                        let cause = backend_library::interface::CompilerRuntimePanic::capture(
+                            payload.as_ref(),
+                        );
                         let _ = response.send(RuntimeEvent::Complete(Err(
                             facts.terminal(CompilerRuntimeCause::WorkerPanic(cause))
                         )));
@@ -1521,7 +1525,9 @@ fn run_worker_generation(
                         let _ = response.send(result);
                     }
                     Err(payload) => {
-                        let cause = backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref());
+                        let cause = backend_library::interface::CompilerRuntimePanic::capture(
+                            payload.as_ref(),
+                        );
                         let _ = response.send(Err(SemanticImageAccessError::WorkerPanic {
                             requested,
                             cause,
@@ -1545,7 +1551,9 @@ fn run_worker_generation(
                         let _ = response.send(result);
                     }
                     Err(payload) => {
-                        let cause = backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref());
+                        let cause = backend_library::interface::CompilerRuntimePanic::capture(
+                            payload.as_ref(),
+                        );
                         let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
                             facts.terminal(CompilerRuntimeCause::WorkerPanic(cause)),
                         )));
@@ -1569,7 +1577,9 @@ fn run_worker_generation(
                         let _ = response.send(result);
                     }
                     Err(payload) => {
-                        let cause = backend_library::interface::CompilerRuntimePanic::capture(payload.as_ref());
+                        let cause = backend_library::interface::CompilerRuntimePanic::capture(
+                            payload.as_ref(),
+                        );
                         let terminal = RequestFacts {
                             language: profile.language(),
                             stage: Stage::LowerIr,

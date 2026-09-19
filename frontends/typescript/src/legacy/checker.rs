@@ -23,10 +23,10 @@ use std::{
 };
 
 use backend_semantic::vocabulary::{NativeWorker, NativeWorkerPanic, TypeScriptSource};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use sha2::{Digest, Sha256};
 
-use crate::legacy::{CoordinateError, Utf8Span, Utf16Span};
+use crate::legacy::Utf8Span;
 
 /// Digest width of one SHA-256 source binding.
 const DIGEST_BYTES: usize = 32;
@@ -37,7 +37,16 @@ const TRANSCRIPT_TAIL_LIMIT: usize = 4096;
 /// Exit code the vendored driver uses when `typescript` is not resolvable.
 const MODULE_MISSING_EXIT: i32 = 3;
 /// Maximum number of files copied for one package-context run.
-const PACKAGE_FILE_LIMIT: usize = 4096;
+///
+/// The bound caps staging work, not package legitimacy: the per-run byte
+/// budget ([`PACKAGE_BYTE_LIMIT`]) already caps copied volume, so this count
+/// bound only has to sit above the largest declaration tree a real package
+/// legitimately ships. The frozen real-package corpus tops out at
+/// `date-fns@4.1.0` (5326 files, 39 MB) with `es-toolkit@1.52.0` next
+/// (4255 files, 18 MB); 8192 is the next power of two above both, admitting
+/// every corpus package with margin while a hostile tree still hits the
+/// byte budget long before the staging count can grow without bound.
+const PACKAGE_FILE_LIMIT: usize = 8192;
 /// Maximum total bytes copied for one package-context run.
 const PACKAGE_BYTE_LIMIT: usize = 64 * 1024 * 1024;
 
@@ -258,8 +267,9 @@ pub enum TypeTree {
     },
     /// A callable signature.
     Function {
-        /// The parameter types, in declared order.
-        parameters: Vec<TypeTree>,
+        /// The parameters, in declared order, each carrying its declaration
+        /// name and optional/rest flags beside its checker type.
+        parameters: Vec<Parameter>,
         /// The result type.
         result: Box<TypeTree>,
     },
@@ -302,6 +312,74 @@ pub enum TemplatePart {
     Text { text: String },
     /// A placeholder type.
     Type { r#type: Box<TypeTree> },
+}
+
+/// One named or positional parameter in a callable signature.
+///
+/// The wire cell is additive: transcripts emitted before the structured
+/// parameter lane existed decode each parameter as its bare [`TypeTree`]
+/// (name `None`, flags `false`), so persisted reports never change meaning.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Parameter {
+    /// The declaration spelling, or null for an unavailable name.
+    pub name: Option<String>,
+    /// Whether the parameter is optional.
+    pub optional: bool,
+    /// Whether the parameter is variadic.
+    pub rest: bool,
+    /// The checker type of the parameter.
+    pub r#type: TypeTree,
+}
+
+impl<'de> Deserialize<'de> for Parameter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum WireParameter {
+            Structured(WireStructuredParameter),
+            Legacy(TypeTree),
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct WireStructuredParameter {
+            #[serde(default)]
+            name: Option<String>,
+            #[serde(default)]
+            optional: bool,
+            #[serde(default)]
+            rest: bool,
+            #[serde(rename = "type")]
+            r#type: TypeTree,
+        }
+        match WireParameter::deserialize(deserializer)? {
+            WireParameter::Structured(parameter) => Ok(Self {
+                name: parameter.name,
+                optional: parameter.optional,
+                rest: parameter.rest,
+                r#type: parameter.r#type,
+            }),
+            WireParameter::Legacy(r#type) => Ok(Self {
+                name: None,
+                optional: false,
+                rest: false,
+                r#type,
+            }),
+        }
+    }
+}
+
+impl core::ops::Deref for Parameter {
+    type Target = TypeTree;
+
+    /// Dereferences to the parameter's checker type, so callers that stream
+    /// signature parameters as type trees keep consuming the identical
+    /// trees; the name and flags are additive wire cells beside the type.
+    fn deref(&self) -> &TypeTree {
+        &self.r#type
+    }
 }
 
 /// The base class of one [`TypeTree::Literal`].
@@ -422,6 +500,12 @@ pub struct Report {
     pub schema_version: u32,
     /// SHA-256 hex digest of the exact checked source bytes.
     pub source_digest: String,
+    /// Whether the checker classified the exact source as an ambient
+    /// declaration file (`.d.ts`/`.d.mts`/`.d.cts`) by matching it to its
+    /// package file. The syntax authority must select the declaration grammar
+    /// for these bytes; the checker neither invents nor drops facts for them.
+    #[serde(default)]
+    pub declaration_file: bool,
     /// The checker's own diagnostics, best-effort and non-fatal.
     #[serde(default)]
     pub diagnostics: Box<[String]>,
@@ -519,12 +603,47 @@ impl<'report> CheckerIndex<'report> {
                 });
             }
         }
+        // One UTF-16-code-unit -> UTF-8-byte table makes every span bind O(1).
+        // Scanning the whole source per span is quadratic, and a real
+        // declaration file carries tens of thousands of checker spans, so the
+        // per-span scan alone exceeded the corpus compile deadline.
+        let mut unit_bytes: Vec<u32> = Vec::with_capacity(source.len() + 1);
+        let mut byte = 0_usize;
+        for scalar in source.chars() {
+            // `Utf8Span` is u32-addressed, so a source beyond that width is
+            // already unrepresentable; the sentinel keeps the table total.
+            let at = u32::try_from(byte).unwrap_or(u32::MAX);
+            if scalar.len_utf16() == 2 {
+                unit_bytes.push(at);
+                // The trailing surrogate unit splits a scalar encoding.
+                unit_bytes.push(u32::MAX);
+            } else {
+                unit_bytes.push(at);
+            }
+            byte = byte.saturating_add(scalar.len_utf8());
+        }
+        unit_bytes.push(u32::try_from(byte).unwrap_or(u32::MAX));
+        let bind = |start: u32, end: u32| -> Result<Utf8Span, CheckerError> {
+            let fault = || CheckerError::SpanBinding { start, end };
+            let start_byte = unit_bytes
+                .get(usize::try_from(start).unwrap_or(usize::MAX))
+                .copied()
+                .ok_or_else(fault)?;
+            let end_byte = unit_bytes
+                .get(usize::try_from(end).unwrap_or(usize::MAX))
+                .copied()
+                .ok_or_else(fault)?;
+            if start_byte == u32::MAX || end_byte == u32::MAX {
+                return Err(fault());
+            }
+            Utf8Span::try_from(start_byte..end_byte).map_err(|_| fault())
+        };
         let declarations = report
             .declarations
             .iter()
             .map(
                 |declaration| -> Result<BoundDeclaration<'report>, CheckerError> {
-                    let name = bind_span(source, declaration.name_start, declaration.name_end)?;
+                    let name = bind(declaration.name_start, declaration.name_end)?;
                     Ok(BoundDeclaration {
                         name,
                         origin: declaration.origin,
@@ -539,9 +658,9 @@ impl<'report> CheckerIndex<'report> {
             .iter()
             .map(
                 |reference| -> Result<BoundReference<'report>, CheckerError> {
-                    let span = bind_span(source, reference.start, reference.end)?;
+                    let span = bind(reference.start, reference.end)?;
                     let target = match (reference.target_start, reference.target_end) {
-                        (Some(start), Some(end)) => Some(bind_span(source, start, end)?),
+                        (Some(start), Some(end)) => Some(bind(start, end)?),
                         _ => None,
                     };
                     Ok(BoundReference {
@@ -564,8 +683,8 @@ impl<'report> CheckerIndex<'report> {
             .iter()
             .map(
                 |narrowing| -> Result<BoundNarrowing<'report>, CheckerError> {
-                    let name = bind_span(source, narrowing.name_start, narrowing.name_end)?;
-                    let site = bind_span(source, narrowing.start, narrowing.end)?;
+                    let name = bind(narrowing.name_start, narrowing.name_end)?;
+                    let site = bind(narrowing.start, narrowing.end)?;
                     Ok(BoundNarrowing {
                         name,
                         site,
@@ -619,18 +738,6 @@ impl<'report> CheckerIndex<'report> {
     pub fn narrowings(&self) -> impl Iterator<Item = &BoundNarrowing<'report>> {
         self.narrowings.iter()
     }
-}
-
-fn bind_span(source: &str, start: u32, end: u32) -> Result<Utf8Span, CheckerError> {
-    let span =
-        Utf16Span::try_from(start..end).map_err(|_| CheckerError::SpanBinding { start, end })?;
-    span.to_utf8(source)
-        .map_err(|cause| span_fault(cause, start, end))
-}
-
-fn span_fault(cause: CoordinateError, start: u32, end: u32) -> CheckerError {
-    let _ = cause;
-    CheckerError::SpanBinding { start, end }
 }
 
 /// Computes the report source binding of exact source bytes.
@@ -966,13 +1073,20 @@ impl Checker {
         let run = (|| {
             let staged = work.join("package");
             let mut budget = PackageBudget::new(started, self.timeout);
-            stage_package(package_root, &staged, &mut budget)?;
-            let file = staged.join(package_entry_file(profile));
+            let mut declaration_file = false;
+            stage_package(
+                package_root,
+                &staged,
+                &mut budget,
+                source,
+                &mut declaration_file,
+            )?;
+            let file = staged.join(package_entry_file(profile, declaration_file));
             std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
                 phase: "prepare",
                 source: cause,
             })?;
-            match std::env::var("NUDOX_TYPESCRIPT_CHECKER_BIN") {
+            let report = match std::env::var("NUDOX_TYPESCRIPT_CHECKER_BIN") {
                 Ok(binary) => self.run_child(&work, Path::new(&binary), &file),
                 Err(std::env::VarError::NotPresent) => {
                     let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -986,7 +1100,8 @@ impl Checker {
                     tool: "NUDOX_TYPESCRIPT_CHECKER_BIN",
                     source: std::io::Error::other(cause),
                 }),
-            }
+            }?;
+            Ok(declaration_report(report, declaration_file))
         })();
         match std::fs::remove_dir_all(&work) {
             Ok(()) => run,
@@ -1020,13 +1135,21 @@ impl Checker {
         let run = (|| {
             let staged = work.join("package");
             let mut budget = PackageBudget::new(started, self.timeout);
-            stage_package(package_root, &staged, &mut budget)?;
-            let file = staged.join(package_entry_file(profile));
+            let mut declaration_file = false;
+            stage_package(
+                package_root,
+                &staged,
+                &mut budget,
+                source,
+                &mut declaration_file,
+            )?;
+            let file = staged.join(package_entry_file(profile, declaration_file));
             std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
                 phase: "prepare",
                 source: cause,
             })?;
-            self.run_explicit_file(invocation, &work, &file)
+            let report = self.run_explicit_file(invocation, &work, &file)?;
+            Ok(declaration_report(report, declaration_file))
         })();
         match std::fs::remove_dir_all(&work) {
             Ok(()) => run,
@@ -1302,11 +1425,32 @@ pub(crate) const fn source_file(profile: TypeScriptSource) -> &'static str {
     }
 }
 
-const fn package_entry_file(profile: TypeScriptSource) -> &'static str {
+const fn package_entry_file(profile: TypeScriptSource, declaration: bool) -> &'static str {
+    if declaration {
+        return "index.d.ts";
+    }
     match profile {
         TypeScriptSource::TypeScript => "index.ts",
         TypeScriptSource::Tsx => "index.tsx",
     }
+}
+
+/// Stamps the checker's package-derived declaration classification onto the
+/// decoded report. The classification is the checker's own decision: it is
+/// true exactly when the checked bytes were read from an ambient declaration
+/// file in the staged package, never a guess about their contents.
+fn declaration_report(mut report: Report, declaration_file: bool) -> Report {
+    report.declaration_file = declaration_file;
+    report
+}
+
+/// Whether one package path names an ambient TypeScript declaration file.
+fn is_declaration_file_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts")
+        })
 }
 
 struct PackageBudget {
@@ -1356,6 +1500,8 @@ fn stage_package(
     source: &Path,
     destination: &Path,
     budget: &mut PackageBudget,
+    probe: &[u8],
+    declaration_file: &mut bool,
 ) -> Result<(), CheckerError> {
     let metadata = std::fs::symlink_metadata(source).map_err(|cause| CheckerError::Work {
         phase: "stage metadata",
@@ -1391,7 +1537,7 @@ fn stage_package(
             source: cause,
         })?;
         if metadata.is_dir() {
-            stage_package(&child, &target, budget)?;
+            stage_package(&child, &target, budget, probe, declaration_file)?;
         } else if metadata.is_file() {
             let remaining = PACKAGE_BYTE_LIMIT.saturating_sub(budget.bytes);
             let mut bytes = Vec::new();
@@ -1411,6 +1557,18 @@ fn stage_package(
                     observed: budget.bytes.saturating_add(bytes.len()),
                     limit: PACKAGE_BYTE_LIMIT,
                 });
+            }
+            // The checked source is one member of this package tree. Matching
+            // its exact bytes to the file that owns them proves the source's
+            // real name, so a declaration entry is classified as ambient
+            // rather than reparsed as a value file. Non-matching files and
+            // non-declaration matches leave the classification untouched.
+            if !*declaration_file
+                && bytes.len() == probe.len()
+                && bytes == probe
+                && is_declaration_file_name(&child)
+            {
+                *declaration_file = true;
             }
             budget.check(bytes.len())?;
             std::fs::write(&target, bytes).map_err(|cause| CheckerError::Work {

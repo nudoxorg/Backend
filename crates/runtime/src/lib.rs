@@ -84,6 +84,22 @@ const ENDPOINT_DOMAIN: &[u8] = b"backend-v2-local-endpoint\0";
 /// is 104 bytes on macOS and 108 on Linux; staying under this keeps the
 /// preferred runtime directory from producing an unbindable socket.
 const MAX_DERIVED_ENDPOINT_BYTES: usize = 100;
+/// Total capacity of `sockaddr_un.sun_path`, in bytes, on the strictest
+/// platform this crate targets.
+///
+/// macOS declares `sun_path` as `char[104]` in `<sys/un.h>`; Linux declares it
+/// as `char[108]` in `unix(7)`. A workspace's daemon and every client that
+/// dials it must agree on one endpoint regardless of which of the two built
+/// it, so the smaller of the two capacities is the one this crate enforces
+/// everywhere `sockaddr_un` is unix-specific, not per compiled target.
+#[cfg(target_os = "linux")]
+const SUN_PATH_CAPACITY: usize = 108;
+#[cfg(all(unix, not(target_os = "linux")))]
+const SUN_PATH_CAPACITY: usize = 104;
+/// Bytes available to the endpoint path itself once the NUL terminator that
+/// `bind(2)`/`connect(2)` require inside `sun_path` is reserved.
+#[cfg(unix)]
+const MAX_ENDPOINT_PATH_BYTES: usize = SUN_PATH_CAPACITY - 1;
 static SECRET_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// All local paths selected for one project session.
@@ -134,6 +150,7 @@ impl WorkspacePaths {
         if endpoint.as_os_str().is_empty() {
             return Err(RuntimeError::InvalidPath("endpoint path is empty"));
         }
+        validate_endpoint_length(&endpoint)?;
         let authority_secret = std::env::var_os(AUTHORITY_SECRET_ENV)
             .map_or_else(|| data.join(AUTHORITY_FILE), PathBuf::from);
         Ok(Self {
@@ -469,6 +486,23 @@ fn socket_directory(_file_name: &str) -> PathBuf {
     std::env::temp_dir()
 }
 
+/// Derives the short Unix endpoint for a workspace's data directory using
+/// this crate's hashed, short-prefix scheme — the same one
+/// [`WorkspacePaths::discover`] falls back to when no endpoint is supplied
+/// *and* `BACKEND_LOCALD_ENDPOINT` is unset.
+///
+/// Unlike `discover`, this never consults the environment. A caller that
+/// needs a workspace-specific endpoint regardless of an ambient
+/// `BACKEND_LOCALD_ENDPOINT` left over from another session on a shared
+/// machine — a test deriving a fresh, unique, always-short socket per
+/// fixture is the motivating case — should call this directly instead of
+/// duplicating the hashing scheme or risking a collision with whatever that
+/// variable happens to name.
+#[must_use]
+pub fn derive_endpoint(data: &Path) -> PathBuf {
+    default_endpoint(data)
+}
+
 /// Derives the endpoint for a workspace from its filesystem identity.
 ///
 /// The digest covers a domain separator, the effective user, and the
@@ -489,6 +523,32 @@ fn default_endpoint(data: &Path) -> PathBuf {
     }
     let file_name = format!("backend-v2-{short}.sock");
     socket_directory(&file_name).join(file_name)
+}
+
+/// Rejects an endpoint that could never be bound or connected to.
+///
+/// `UnixListener`/`UnixStream` copy the path into a fixed-size `sun_path`
+/// buffer at the syscall boundary, so an over-long path fails there with a
+/// raw `ENAMETOOLONG` `io::Error` that gives a caller no way to tell "this
+/// workspace's identity is unreachable" from an ordinary transient I/O fault.
+/// Catching it here, against an honestly derived platform limit, turns that
+/// into a typed, actionable error before a socket is ever touched.
+#[cfg(unix)]
+fn validate_endpoint_length(endpoint: &Path) -> Result<(), RuntimeError> {
+    let bytes = endpoint.as_os_str().len();
+    if bytes > MAX_ENDPOINT_PATH_BYTES {
+        return Err(RuntimeError::EndpointTooLong {
+            endpoint: endpoint.to_path_buf(),
+            bytes,
+            limit: MAX_ENDPOINT_PATH_BYTES,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+const fn validate_endpoint_length(_endpoint: &Path) -> Result<(), RuntimeError> {
+    Ok(())
 }
 
 fn locald_executable() -> Result<PathBuf, RuntimeError> {
@@ -573,6 +633,17 @@ pub enum RuntimeError {
     InvalidPath(&'static str),
     /// The authority credential was not one private 32-byte file.
     InvalidCredential(PathBuf),
+    /// The endpoint path is longer than the platform `sockaddr_un.sun_path`
+    /// can hold, so it could never be bound or connected to.
+    EndpointTooLong {
+        /// The path that was rejected.
+        endpoint: PathBuf,
+        /// Its length in bytes.
+        bytes: usize,
+        /// The maximum number of path bytes the platform allows, with room
+        /// already reserved for the mandatory NUL terminator.
+        limit: usize,
+    },
     /// No installed daemon executable was found.
     MissingExecutable(PathBuf),
     /// Starting the selected executable failed.
@@ -599,6 +670,15 @@ impl fmt::Display for RuntimeError {
                 formatter,
                 "authority credential {} must be one 32-byte file",
                 path.display()
+            ),
+            Self::EndpointTooLong {
+                endpoint,
+                bytes,
+                limit,
+            } => write!(
+                formatter,
+                "endpoint {} is {bytes} bytes, exceeding the {limit}-byte sockaddr_un.sun_path limit",
+                endpoint.display()
             ),
             Self::MissingExecutable(path) => write!(
                 formatter,
@@ -627,6 +707,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn discover_rejects_an_endpoint_that_overflows_sun_path() {
+        let root = test_directory("endpoint-too-long");
+        fs::create_dir_all(&root).expect("create fixture root");
+        let padding = "x".repeat(MAX_ENDPOINT_PATH_BYTES);
+        let endpoint = root.join(format!("{padding}.sock"));
+        assert!(
+            endpoint.as_os_str().len() > MAX_ENDPOINT_PATH_BYTES,
+            "fixture endpoint must actually exceed the limit"
+        );
+
+        let error = WorkspacePaths::discover(Some(root.clone()), None, Some(endpoint.clone()))
+            .expect_err("an oversized endpoint must be rejected");
+        match &error {
+            RuntimeError::EndpointTooLong {
+                endpoint: rejected,
+                bytes,
+                limit,
+            } => {
+                assert_eq!(rejected, &endpoint);
+                assert_eq!(*limit, MAX_ENDPOINT_PATH_BYTES);
+                assert!(*bytes > *limit);
+            }
+            other => panic!("expected EndpointTooLong, got {other:?}"),
+        }
+        let message = error.to_string();
+        assert!(
+            message.contains("sockaddr_un.sun_path"),
+            "rendered message did not name the limit it enforces: {message}"
+        );
+
+        fs::remove_dir_all(root).expect("remove runtime fixture");
+    }
+
+    #[test]
+    fn discover_accepts_an_endpoint_within_sun_path() {
+        let root = test_directory("endpoint-short-ok");
+        fs::create_dir_all(&root).expect("create fixture root");
+        let endpoint = PathBuf::from("/tmp/backend-v2-endpoint-short-ok.sock");
+        assert!(endpoint.as_os_str().len() <= MAX_ENDPOINT_PATH_BYTES);
+
+        let discovered = WorkspacePaths::discover(Some(root.clone()), None, Some(endpoint.clone()))
+            .expect("a short endpoint must be accepted");
+        assert_eq!(discovered.endpoint(), endpoint);
+
+        fs::remove_dir_all(root).expect("remove runtime fixture");
+    }
+
+    #[test]
     fn derived_endpoints_are_short_stable_and_workspace_specific() {
         let first = default_endpoint(Path::new("/a/very/long/project/data/path"));
         let repeated = default_endpoint(Path::new("/a/very/long/project/data/path"));
@@ -634,6 +762,17 @@ mod tests {
         assert_eq!(first, repeated);
         assert_ne!(first, other);
         assert!(first.as_os_str().len() < 80);
+    }
+
+    #[test]
+    fn public_derive_endpoint_matches_the_internal_scheme() {
+        // `derive_endpoint` is the pub wrapper callers outside this crate
+        // (`tests/journeys`, notably) use to get a workspace-specific socket
+        // without going through `discover`'s `BACKEND_LOCALD_ENDPOINT`
+        // environment fallback. It must be a plain passthrough to the same
+        // hashing scheme, not a second implementation that could drift.
+        let workspace = Path::new("/a/very/long/project/data/path");
+        assert_eq!(derive_endpoint(workspace), default_endpoint(workspace));
     }
 
     #[test]

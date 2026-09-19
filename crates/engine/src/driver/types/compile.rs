@@ -234,6 +234,7 @@ struct PreparedCompile<'source, 'cancel> {
 enum EnteredAuthority<'source> {
     Clang {
         profile: LanguageProfile,
+        project: Option<&'source backend_frontend_clang::ClangProject>,
     },
     TypeScript {
         profile: backend_semantic::vocabulary::TypeScriptSource,
@@ -308,17 +309,21 @@ seal_specs!(
 );
 
 impl LanguageSpec for ClangSpec {
-    type Authority<'source> = LanguageProfile;
+    type Authority<'source> = (
+        LanguageProfile,
+        Option<&'source backend_frontend_clang::ClangProject>,
+    );
     type Extension = backend_semantic::ir::ClangFacts;
 
     fn collect<'source, 'cancel, 'diagnostic>(
-        profile: &Self::Authority<'source>,
+        authority: &Self::Authority<'source>,
         prepared: &PreparedCompile<'source, 'cancel>,
         _: Option<&'diagnostic mut [u8]>,
         facts: &mut lower::FactSet<'source>,
     ) -> Result<(), CompileFailure<'diagnostic>> {
         lower::clang::collect(
-            *profile,
+            authority.0,
+            authority.1,
             prepared.lease.bytes(),
             prepared.permit.cancelled(),
             facts,
@@ -352,7 +357,9 @@ impl LanguageSpec for TypeScriptSpec {
                             prepared.source,
                             prepared.recipe,
                             TypeScriptCollectError::Authority(
-                                backend_frontend_typescript::legacy::AuthorityError::Checker { cause },
+                                backend_frontend_typescript::legacy::AuthorityError::Checker {
+                                    cause,
+                                },
                             ),
                         )
                     })?,
@@ -396,8 +403,8 @@ impl LanguageSpec for PythonSpec {
             None => lower::python::collect(authority.0, source, facts)
                 .map_err(|cause| python_terminal(prepared.source, prepared.recipe, cause)),
             Some(report) => {
-                let module =
-                    backend_frontend_python::legacy::extract(source, authority.0).map_err(|cause| {
+                let module = backend_frontend_python::legacy::extract(source, authority.0)
+                    .map_err(|cause| {
                         python_terminal(
                             prepared.source,
                             prepared.recipe,
@@ -598,15 +605,34 @@ fn enter_authority<'source, 'diagnostic>(
         recipe,
         profile,
     };
+    // The production buffer-only libclang lane: with no project supplied, the
+    // single caller buffer is parsed under the synthetic profile arguments, so
+    // no compilation database is consulted and no cross-file (cross-fragment)
+    // include keys are minted — only the buffer itself is analyzed (see
+    // `driver/lower/clang.rs::collect`).
     match (profile, input) {
         (LanguageProfile::C(profile), SemanticAuthorityInput::None) => {
             Ok(EnteredAuthority::Clang {
                 profile: LanguageProfile::C(profile),
+                project: None,
+            })
+        }
+        (LanguageProfile::C(profile), SemanticAuthorityInput::Clang { project }) => {
+            Ok(EnteredAuthority::Clang {
+                profile: LanguageProfile::C(profile),
+                project: Some(project),
             })
         }
         (LanguageProfile::Cxx(profile), SemanticAuthorityInput::None) => {
             Ok(EnteredAuthority::Clang {
                 profile: LanguageProfile::Cxx(profile),
+                project: None,
+            })
+        }
+        (LanguageProfile::Cxx(profile), SemanticAuthorityInput::Clang { project }) => {
+            Ok(EnteredAuthority::Clang {
+                profile: LanguageProfile::Cxx(profile),
+                project: Some(project),
             })
         }
         (LanguageProfile::TypeScript(profile), SemanticAuthorityInput::None) => {
@@ -685,7 +711,9 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
 ) -> Result<(), CompileFailure<'diagnostic>> {
     checkpoint(prepared.permit, prepared.recipe)?;
     match &prepared.authority {
-        EnteredAuthority::Clang { profile } => ClangSpec::collect(profile, prepared, None, facts)?,
+        EnteredAuthority::Clang { profile, project } => {
+            ClangSpec::collect(&(*profile, *project), prepared, None, facts)?
+        }
         EnteredAuthority::TypeScript { profile, report } => {
             TypeScriptSpec::collect(&(*profile, *report), prepared, diagnostic_output, facts)?;
         }
@@ -712,7 +740,31 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
         }
     }
     checkpoint(prepared.permit, prepared.recipe)?;
-    require_facts(prepared.source, prepared.recipe, facts)
+    // An empty fact set is a typed rejection for every lane whose source
+    // ought to carry declarations. Three authorities legally admit
+    // declaration-free sources and prove the empty product themselves:
+    // a Go package whose only file is a `doc.go` package clause, a C/C++
+    // translation unit whose every declaration sits behind an unmet
+    // preprocessor gate (a `#ifdef USE_OPENSSL` vtls backend, a config-gated
+    // mbedtls build unit), and a Rust crate root whose every written item
+    // stayed out of the lane behind an unmet `#[cfg]` gate, an unresolved
+    // facade re-export, or a `compile_error!` stub — the Rust lane rejects
+    // a source with no written item at all before this gate, so an
+    // admitted-empty Rust product always carries that written-surface
+    // proof. Each authority succeeded, so the collected-empty product is
+    // the honest parity output — rejecting it would contradict an
+    // authority that succeeded.
+    if facts.len() == 0
+        && !matches!(
+            prepared.authority,
+            EnteredAuthority::Go { .. }
+                | EnteredAuthority::Clang { .. }
+                | EnteredAuthority::Rust { .. }
+        )
+    {
+        require_facts(prepared.source, prepared.recipe, facts)?;
+    }
+    Ok(())
 }
 
 fn require_facts<'source, 'diagnostic>(
@@ -763,7 +815,9 @@ fn python_terminal<'diagnostic>(
             CompileFailure::LoweringUnsupported {
                 source_identity,
                 recipe,
-                cause: backend_semantic::vocabulary::LoweringUnsupported::PythonProjection { fault },
+                cause: backend_semantic::vocabulary::LoweringUnsupported::PythonProjection {
+                    fault,
+                },
             }
         }
         lower::python::PythonCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
@@ -1049,7 +1103,9 @@ fn typescript_terminal<'diagnostic>(
         TypeScriptCollectError::Projection(fault) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
-            cause: backend_semantic::vocabulary::LoweringUnsupported::TypeScriptProjection { fault },
+            cause: backend_semantic::vocabulary::LoweringUnsupported::TypeScriptProjection {
+                fault,
+            },
         },
         TypeScriptCollectError::Span { start, end } => CompileFailure::Authority {
             source_identity,

@@ -56,5 +56,9 @@ opentelemetry_sdk = { workspace = true, features = ["testing"] }
 name = "source_resolution"
 harness = false
 
+[[bench]]
+name = "registry_decode"
+harness = false
+
 [lints]
 workspace = true

@@ -38,7 +38,9 @@ use std::time::Duration;
 use backend_semantic::vocabulary::{NativeWorker, NativeWorkerPanic, PythonVersion};
 use thiserror::Error;
 
-use crate::legacy::{Annotation, AnnotationPosition, DeclarationKind, ModuleFacts, Span, TypeReason};
+use crate::legacy::{
+    Annotation, AnnotationPosition, DeclarationKind, ModuleFacts, Span, TypeReason,
+};
 
 /// Tail retained from a child stream inside one typed diagnostic.
 const TRANSCRIPT_LIMIT: usize = 4096;
@@ -1316,7 +1318,13 @@ fn collect_parameter_reveals(
         if declaration.kind != DeclarationKind::Function {
             continue;
         }
-        let Some((statement_start, indent)) = first_body_line(source, declaration.span.end) else {
+        // The declaration extent covers the complete definition, so the
+        // body's first line anchors on the header boundary the extractor
+        // carries, never on the body's own end.
+        let Some((statement_start, indent)) = first_body_line(
+            source,
+            declaration.header_end.unwrap_or(declaration.span.end),
+        ) else {
             continue;
         };
         let mut inserted = indent.to_owned();

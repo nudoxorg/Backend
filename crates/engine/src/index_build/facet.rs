@@ -6,12 +6,12 @@
 
 use core::mem::MaybeUninit;
 
-use backend_semantic::ir::{EntityKind, LinkKind, TypeTag};
 use backend_semantic::index_core::{
     ExactDegradation, ExactManifest, ExactOperation, ExactResolution, ExactSegmentId,
     ExactTerminal, IndexSnapshotId, LexicalDegradation, LexicalSegmentId, LexicalSnapshotHit,
     LexicalTerminal,
 };
+use backend_semantic::ir::{EntityKind, LinkKind, TypeTag};
 use thiserror::Error;
 
 use crate::index_build::{
@@ -408,14 +408,14 @@ const fn lexical_parts<'manifest, 'output, 'bytes>(
 mod tests {
     use super::{FacetCell, FacetHit, FacetTable, join_facets};
     use crate::index_build::{ExactEntityValue, IndexedType, LinkKinds, SemanticTypeFact};
-    use backend_semantic::ir::{EntityId, EntityKind, LinkKind, TypeId, TypeTag};
-    use core::mem::MaybeUninit;
-    use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
     use backend_semantic::index_core::{
         EntityArtifactIdentity, EntityDocumentId, ExactManifest, ExactRow, ExactSegment,
         IndexSnapshot, LexicalManifest, LexicalOperation, LexicalRow, LexicalScore, LexicalSegment,
         LexicalSnapshotHit, LexicalTopK,
     };
+    use backend_semantic::ir::{EntityId, EntityKind, LinkKind, TypeId, TypeTag};
+    use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
+    use core::mem::MaybeUninit;
 
     #[test]
     fn one_snapshot_join_exposes_rich_type_and_relation_facets_without_allocation() {

@@ -405,6 +405,9 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
         CommandId::Read => SurfaceCommand::Read {
             locators: locators(invocation)?,
         },
+        CommandId::References => SurfaceCommand::References {
+            target: text(invocation, 0)?,
+        },
         CommandId::Diff => SurfaceCommand::Diff {
             from: package(invocation, 0)?,
             to: package(invocation, 1)?,

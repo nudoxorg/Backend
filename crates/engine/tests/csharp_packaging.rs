@@ -37,7 +37,7 @@ fn io(source: std::io::Error) -> TestError {
 fn helper() -> Result<PathBuf, TestError> {
     let manifest = std::env::var("CARGO_MANIFEST_DIR")
         .map_err(|_| TestError::Fact("manifest directory missing".into()))?;
-    Ok(PathBuf::from(manifest).join("../languages/csharp/helper"))
+    Ok(PathBuf::from(manifest).join("../../frontends/csharp/src/legacy/helper"))
 }
 
 fn run_dotnet(
@@ -114,12 +114,12 @@ fn locked_roslyn_packaging_round_trips_fixture_and_rejects_tracked_outputs() -> 
     }
 
     let producer = helper
-        .join("../tests/fixtures/producer")
+        .join("../../../tests/fixtures/producer")
         .canonicalize()
         .map_err(io)?;
     let output_root = csharp_support::fresh_dir("packaging-image")?;
     let output = output_root.join("fidelity.ncaimg");
-    let oracle = helper.join("bin/Release/net10.0/oracle.dll");
+    let oracle = helper.join("bin/Release/net8.0/oracle.dll");
     let produced = Command::new(&dotnet)
         .arg(&oracle)
         .args([

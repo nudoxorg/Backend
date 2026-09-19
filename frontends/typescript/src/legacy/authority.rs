@@ -124,7 +124,29 @@ pub fn analyze<'source>(
     source: &'source str,
     arena: &'source Allocator,
 ) -> Result<OxcModule<'source>, AuthorityError> {
-    let parsed = Parser::new(arena, source, source_type(profile)).parse();
+    analyze_with_declaration(profile, source, false, arena)
+}
+
+/// Parses and lexically resolves `source` under one closed TypeScript profile,
+/// selecting the ambient declaration-file grammar when `declaration` is set.
+///
+/// A `.d.ts`/`.d.mts`/`.d.cts` source is entirely ambient: constructors and
+/// overloaded methods legitimately carry no implementation, so OXC's
+/// implementation-presence checks (TS2390/TS2391) must observe the
+/// declaration-file source type. The caller owns that classification; this
+/// boundary never guesses it from the source bytes.
+///
+/// # Errors
+///
+/// Returns every OXC parser diagnostic as [`AuthorityError::Syntax`] or every
+/// lexical-resolution diagnostic as [`AuthorityError::Binding`].
+pub fn analyze_with_declaration<'source>(
+    profile: TypeScriptSource,
+    source: &'source str,
+    declaration: bool,
+    arena: &'source Allocator,
+) -> Result<OxcModule<'source>, AuthorityError> {
+    let parsed = Parser::new(arena, source, source_type(profile, declaration)).parse();
     if !parsed.diagnostics.is_empty() {
         return Err(AuthorityError::Syntax {
             diagnostics: parsed.diagnostics,
@@ -159,8 +181,24 @@ pub fn with_analysis<Output>(
     source: &str,
     consume: impl for<'analysis> FnOnce(OxcModule<'analysis>) -> Output,
 ) -> Result<Output, AuthorityError> {
+    with_analysis_declaration(profile, source, false, consume)
+}
+
+/// Runs one non-escaping OXC authority transaction, selecting the ambient
+/// declaration-file grammar when `declaration` is set.
+///
+/// # Errors
+///
+/// Returns the same complete syntax or binding diagnostics as
+/// [`analyze_with_declaration`].
+pub fn with_analysis_declaration<Output>(
+    profile: TypeScriptSource,
+    source: &str,
+    declaration: bool,
+    consume: impl for<'analysis> FnOnce(OxcModule<'analysis>) -> Output,
+) -> Result<Output, AuthorityError> {
     let arena = Allocator::default();
-    analyze(profile, source, &arena).map(consume)
+    analyze_with_declaration(profile, source, declaration, &arena).map(consume)
 }
 
 fn declaration_kind(flags: SymbolFlags) -> Option<OxcDeclarationKind> {
@@ -191,7 +229,14 @@ fn declaration_kind(flags: SymbolFlags) -> Option<OxcDeclarationKind> {
     }
 }
 
-const fn source_type(profile: TypeScriptSource) -> SourceType {
+/// Selects the OXC source grammar from the closed profile and the caller's
+/// declaration-file classification. A declaration file is ambient under the
+/// TypeScript definition grammar; JSX is never admitted in a `.d.ts`, so the
+/// TSX profile still lowers declarations under the definition source type.
+const fn source_type(profile: TypeScriptSource, declaration: bool) -> SourceType {
+    if declaration {
+        return SourceType::d_ts();
+    }
     match profile {
         TypeScriptSource::TypeScript => SourceType::ts(),
         TypeScriptSource::Tsx => SourceType::tsx(),

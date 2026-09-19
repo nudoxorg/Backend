@@ -2,10 +2,10 @@
 //! Falsifies grammar confusion, lossy diagnostics, local-resolution loss, and coordinate drift.
 //! Uses no native compiler, fixture scanner, or canonical-IR serializer.
 
-use backend_compile::TypeScriptSource;
-use backend_frontend_typescript::{
-    AuthorityError, OxcDeclarationKind, Utf8Span, Utf16Span, analyze,
+use backend_frontend_typescript::legacy::{
+    AuthorityError, CoordinateError, OxcDeclarationKind, Utf8Span, Utf16Span, analyze,
 };
+use backend_semantic::vocabulary::TypeScriptSource;
 use oxc_allocator::Allocator;
 
 #[derive(Debug, thiserror::Error)]
@@ -13,7 +13,7 @@ enum AuthorityTestError {
     #[error(transparent)]
     Authority(#[from] AuthorityError),
     #[error(transparent)]
-    Coordinate(#[from] backend_frontend_typescript::CoordinateError),
+    Coordinate(#[from] CoordinateError),
     #[error("missing lexical symbol {name}")]
     MissingSymbol { name: &'static str },
     #[error("symbol {name} was not resolved at each expected local use")]
@@ -128,7 +128,7 @@ fn surrogate_halves_are_never_reinterpreted_as_coordinates() -> Result<(), Autho
     let interior = Utf16Span::try_from(2..2)?;
     matches!(
         interior.to_utf8(source),
-        Err(backend_frontend_typescript::CoordinateError::SurrogateBoundary)
+        Err(CoordinateError::SurrogateBoundary)
     )
     .then_some(())
     .ok_or(AuthorityTestError::UnexpectedAdmission {

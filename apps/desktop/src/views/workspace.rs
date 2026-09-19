@@ -10,16 +10,20 @@
 
 use super::actions::{
     Accept, AddProject, CloseTab, Complete, CopyIdentity, CopyKey, Dismiss, FocusOmnibar, GoBack,
-    GoForward, GrowInterface, MoveDown, MoveUp, NextTab, OpenPalette, OpenSettings, PageDown,
-    PageUp, PreviousTab, Reload, ResetInterface, SelectFirst, SelectLast, ShrinkInterface, Tab1,
-    Tab2, Tab3, Tab4, Tab5, Tab6, Tab7, Tab8, Tab9, ToggleAppearance, ToggleContext, ToggleLibrary,
-    ToggleMotion, WINDOW_CONTEXT, tab_index,
+    GoForward, GoHome, GrowInterface, MoveDown, MoveUp, NextTab, OpenEditor, OpenPalette,
+    OpenSettings, OpenSource, PageDown, PageUp, PreviousTab, Reload, ResetInterface, SelectFirst, SelectLast,
+    ShrinkInterface, Tab1, Tab2, Tab3, Tab4, Tab5, Tab6, Tab7, Tab8, Tab9, ToggleAppearance,
+    ToggleContext, ToggleLibrary, ToggleMotion, WINDOW_CONTEXT, tab_index,
 };
 use crate::host::lease::HostMode;
 use backend_present::Identity;
 use crate::reducer::model::Model;
 use crate::store::document::{DocumentStore, Subject, Target};
-use crate::store::catalog::CatalogStore;
+use crate::store::catalog::{Ask, CatalogStore};
+use crate::store::events::CatalogEvent;
+use crate::store::marks::Recent;
+use crate::store::index::IndexStore;
+use crate::store::registry::RegistryStore;
 use crate::store::jobs::{JobKind, JobsStore};
 use crate::store::prefs::Preferences;
 use crate::store::search::{Mode, SearchStore};
@@ -30,7 +34,7 @@ use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::transport::unix::UnixSubscriptionTransport;
 use crate::ui::surface;
-use backend_library::{RowId, SymbolKey, ViewRoot};
+use backend_library::{SymbolKey, ViewRoot};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement,
@@ -44,13 +48,18 @@ pub(crate) struct Workspace {
     pub(super) engine: Entity<WorkspaceStore>,
     pub(super) search: Entity<SearchStore>,
     pub(super) document: Entity<DocumentStore>,
+    pub(super) index: Entity<IndexStore>,
     pub(super) jobs: Entity<JobsStore>,
     pub(super) catalog: Entity<CatalogStore>,
+    pub(super) registry: Entity<RegistryStore>,
     pub(super) shell: Entity<ShellStore>,
     pub(super) field: Entity<EditableTextState>,
     pub(super) coordinate: Entity<EditableTextState>,
     pub(super) adding: bool,
     pub(super) add_fault: Option<String>,
+    pub(super) add_ecosystem: backend_library::RegistryEcosystem,
+    pub(super) source_open: bool,
+    pub(super) source_cache: Option<super::source::SourceCache>,
     folded: Vec<String>,
     unfurled: Vec<String>,
     #[cfg(feature = "preview")]
@@ -116,8 +125,10 @@ impl Workspace {
                 engine: &engine,
                 search: &stores.search,
                 document: &stores.document,
+                index: &stores.index,
                 jobs: &stores.jobs,
                 catalog: &stores.catalog,
+                registry: &stores.registry,
                 shell: &stores.shell,
                 field: &stores.field,
                 coordinate: &stores.coordinate,
@@ -137,8 +148,10 @@ impl Workspace {
         let Stores {
             search,
             document,
+            index,
             jobs,
             catalog,
+            registry,
             shell,
             field,
             coordinate,
@@ -147,13 +160,18 @@ impl Workspace {
             engine,
             search,
             document,
+            index,
             jobs,
             catalog,
+            registry,
             shell,
             field,
             coordinate,
             adding: false,
             add_fault: None,
+            add_ecosystem: backend_library::RegistryEcosystem::Cargo,
+            source_open: false,
+            source_cache: None,
             folded: Vec::new(),
             unfurled: Vec::new(),
             #[cfg(feature = "preview")]
@@ -175,11 +193,16 @@ impl Workspace {
         prefs: Preferences,
         cx: &mut Context<Self>,
     ) -> Stores {
+        let index = cx.new(|cx| IndexStore::new(engine, cx));
         Stores {
             search: cx.new(|_| SearchStore::new(endpoint.clone())),
-            document: cx.new(|_| DocumentStore::new(endpoint.clone(), engine.clone())),
+            document: cx.new(|_| {
+                DocumentStore::new(endpoint.clone(), engine.clone(), index.clone())
+            }),
+            index,
             jobs: cx.new(|_| JobsStore::new(endpoint.clone())),
             catalog: cx.new(|_| CatalogStore::new(endpoint.clone())),
+            registry: cx.new(|_| RegistryStore::new(endpoint.clone())),
             shell: cx.new(|_| ShellStore::new(data, prefs)),
             field: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
             coordinate: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
@@ -191,8 +214,13 @@ impl Workspace {
             cx.observe(parts.engine, |this, store, cx| this.on_engine(&store, cx)),
             cx.observe(parts.search, |_, _, cx| cx.notify()),
             cx.observe(parts.document, |_, _, cx| cx.notify()),
+            cx.observe(parts.index, |_, _, cx| cx.notify()),
             cx.observe(parts.jobs, |_, _, cx| cx.notify()),
             cx.observe(parts.catalog, |_, _, cx| cx.notify()),
+            cx.subscribe(parts.catalog, |this, catalog, event, cx| {
+                this.on_catalog(&catalog, *event, cx);
+            }),
+            cx.observe(parts.registry, |_, _, cx| cx.notify()),
             cx.observe(parts.shell, |_, _, cx| cx.notify()),
             cx.subscribe(parts.field, |this, field, event, cx| this.on_typed(&field, event, cx)),
             cx.subscribe(parts.coordinate, |this, field, event, cx| {
@@ -221,6 +249,31 @@ impl Workspace {
             eprintln!("backend-desktop: opened in the {} scene", scene.name());
             self.scene = None;
         }
+    }
+
+    /// Acts on a resolved add: index what was decided, or say why nothing was.
+    fn on_catalog(&mut self, catalog: &Entity<CatalogStore>, event: CatalogEvent, cx: &mut Context<Self>) {
+        if event != CatalogEvent::Resolved {
+            return;
+        }
+        let Some(resolution) = catalog.update(cx, |catalog, _| catalog.take_resolved()) else {
+            return;
+        };
+        match resolution.coordinate() {
+            Some(coordinate) => {
+                let coordinate = coordinate.to_owned();
+                self.add_fault = None;
+                self.adding = false;
+                self.coordinate.update(cx, |field, cx| field.emplace("", cx));
+                self.catalog.update(cx, CatalogStore::clear);
+                if let Some(notice) = resolution.notice() {
+                    self.shell.update(cx, |shell, cx| shell.notify(notice, cx));
+                }
+                self.index_project(coordinate, cx);
+            }
+            None => self.add_fault = resolution.notice(),
+        }
+        cx.notify();
     }
 
     fn on_typed(
@@ -259,26 +312,71 @@ impl Workspace {
 
 /// Navigation.
 impl Workspace {
-    /// Opens one declaration, resolving its coordinate from the shelf.
+    /// Opens one declaration, resolving its coordinate from the index.
     pub(super) fn open_symbol(&mut self, symbol: SymbolKey, target: Target, cx: &mut Context<Self>) {
-        let coordinate = self
-            .engine
-            .read(cx)
-            .row(RowId::Symbol(symbol))
-            .map_or_else(
-                || backend_library::encode_id(symbol.as_bytes()),
-                |row| row.label.clone(),
-            );
+        self.document
+            .update(cx, |document, cx| document.open_symbol(symbol, target, cx));
+        if let Some(coordinate) = self.index.read(cx).coordinate_of(symbol).map(ToOwned::to_owned) {
+            self.remember(Recent::Declaration { coordinate }, cx);
+        }
+        self.dismiss_sheet(cx);
+    }
+
+    /// Opens one registry package's page.
+    pub(crate) fn open_package(&mut self, coordinate: String, target: Target, cx: &mut Context<Self>) {
+        self.remember(Recent::Package { coordinate: coordinate.clone() }, cx);
         self.document.update(cx, |document, cx| {
-            document.open(Subject::Declaration { symbol, coordinate }, target, cx);
+            document.open(Subject::Package { coordinate }, target, cx);
         });
+        self.dismiss_sheet(cx);
+    }
+
+    /// Records one subject in the reader's recents.
+    fn remember(&mut self, entry: Recent, cx: &mut Context<Self>) {
+        self.shell.update(cx, |shell, cx| shell.remember(entry, cx));
+    }
+
+    /// Opens one remembered subject again.
+    pub(super) fn open_recent(&mut self, entry: &Recent, cx: &mut Context<Self>) {
+        match entry {
+            Recent::Project { coordinate } => self.open_project(coordinate.clone(), cx),
+            Recent::Package { coordinate } => self.open_package(coordinate.clone(), Target::Child, cx),
+            Recent::Declaration { coordinate } => {
+                match self.index.read(cx).symbol_for(coordinate) {
+                    Some(symbol) => self.open_symbol(symbol, Target::Child, cx),
+                    None => self.set_field(Identity::parse(coordinate).name().to_owned(), cx),
+                }
+            }
+        }
+    }
+
+    /// Pins or unpins one project or package for the browse page.
+    pub(super) fn toggle_pin(&mut self, coordinate: &str, cx: &mut Context<Self>) {
+        let pinned = self.shell.update(cx, |shell, cx| shell.toggle_pin(coordinate, cx));
+        let notice = if pinned { "Pinned" } else { "Unpinned" };
+        self.shell.update(cx, |shell, cx| shell.notify(notice, cx));
+    }
+
+    /// Moves focus into the omnibar field and drops the sheet.
+    pub(super) fn focus_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = self.field.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+        self.shell
+            .update(cx, |shell, cx| shell.focus_on(Focus::Omnibar, cx));
+        self.search.update(cx, SearchStore::open);
+    }
+
+    /// Opens the browse page.
+    pub(crate) fn open_home(&mut self, cx: &mut Context<Self>) {
+        self.document.update(cx, DocumentStore::open_home);
         self.dismiss_sheet(cx);
     }
 
     /// Opens one project's page.
     pub(crate) fn open_project(&mut self, coordinate: String, cx: &mut Context<Self>) {
+        self.remember(Recent::Project { coordinate: coordinate.clone() }, cx);
         self.document.update(cx, |document, cx| {
-            document.open(Subject::Project { coordinate }, Target::Here, cx);
+            document.open(Subject::Project { coordinate }, Target::Child, cx);
         });
         self.dismiss_sheet(cx);
     }
@@ -290,8 +388,12 @@ impl Workspace {
         });
     }
 
-    /// Submits a remove intent for one project.
+    /// Submits a remove intent for one project and closes its pages.
     pub(super) fn remove_project(&mut self, coordinate: String, cx: &mut Context<Self>) {
+        self.document
+            .update(cx, |document, cx| document.close_project(&coordinate, cx));
+        self.shell
+            .update(cx, |shell, cx| shell.forget_project(&coordinate, cx));
         self.jobs.update(cx, |jobs, cx| {
             jobs.submit(JobKind::Remove, coordinate, cx);
         });
@@ -323,7 +425,7 @@ impl Workspace {
         self.document
             .read(cx)
             .tab()
-            .and_then(|tab| tab.subject().map(Subject::identity))
+            .and_then(|tab| tab.subject().and_then(Subject::identity))
     }
 
     /// Follows one crumb of the trail above the page.
@@ -336,23 +438,35 @@ impl Workspace {
         match destination {
             super::page::Destination::Project(root) => self.open_project(root.clone(), cx),
             super::page::Destination::File(path) => {
-                let scope = self
-                    .active_identity(cx)
-                    .and_then(|identity| identity.project().map(|project| project.name().to_owned()));
-                let text = match scope {
-                    Some(project) => format!("@{project} {path}"),
-                    None => path.clone(),
-                };
-                self.set_field(text, cx);
-                self.search.update(cx, SearchStore::open);
-            }
-            super::page::Destination::Symbol(coordinate) => {
-                let symbol = self.engine.read(cx).symbol_for(coordinate);
-                if let Some(symbol) = symbol {
-                    self.open_symbol(symbol, Target::Here, cx);
+                let root = self.active_identity(cx).and_then(|identity| {
+                    identity.project().map(|project| project.root().to_owned())
+                });
+                let module = root.and_then(|root| self.module_symbol(&root, path, cx));
+                if let Some(symbol) = module {
+                    self.open_symbol(symbol, Target::Child, cx);
+                } else {
+                    self.set_field(path.clone(), cx);
+                    self.search.update(cx, SearchStore::open);
                 }
             }
+            super::page::Destination::Symbol(coordinate) => {
+                let symbol = self.index.read(cx).symbol_for(coordinate);
+                if let Some(symbol) = symbol {
+                    self.open_symbol(symbol, Target::Child, cx);
+                }
+            }
+            super::page::Destination::Key(symbol) => self.open_symbol(*symbol, Target::Child, cx),
         }
+    }
+
+    /// Returns the symbol of the module one source file is, when published.
+    pub(super) fn module_symbol(&self, root: &str, path: &str, cx: &Context<Self>) -> Option<SymbolKey> {
+        self.index
+            .read(cx)
+            .project(root)?
+            .modules()
+            .find(|module| module.path() == Some(path))
+            .map(crate::store::index::Entry::symbol)
     }
 
     /// Opens one already-resolved subject, for the preview scenes.
@@ -372,12 +486,21 @@ impl Workspace {
     pub(crate) fn preview_hover(
         &mut self,
         symbol: SymbolKey,
-        coordinate: String,
+        coordinate: &str,
         anchor: gpui::Point<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) {
+        let _ = coordinate;
         self.document.update(cx, |document, cx| {
-            document.hover_over(symbol, coordinate, anchor, cx);
+            document.hover_over(symbol, anchor, cx);
+        });
+    }
+
+    /// Opens the settings sheet on its agents page, for the preview scenes.
+    #[cfg(feature = "preview")]
+    pub(crate) fn preview_settings(&mut self, cx: &mut Context<Self>) {
+        self.shell.update(cx, |shell, cx| {
+            shell.show_settings_page(crate::store::shell::SettingsPage::Agents, cx);
         });
     }
 
@@ -426,6 +549,16 @@ impl Workspace {
         }
         cx.notify();
     }
+
+    /// Shows or hides everything one page section was holding back.
+    pub(super) fn toggle_unfurl(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.is_unfurled(key) {
+            self.unfurled.retain(|held| held != key);
+        } else {
+            self.unfurled.push(key.to_owned());
+        }
+        cx.notify();
+    }
 }
 
 impl Focusable for Workspace {
@@ -449,7 +582,7 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .text_color(theme.paint(Paint::Text))
-            .child(self.titlebar(&theme, cx))
+            .child(self.titlebar(&theme, window, cx))
             .child(self.body(&theme, cx))
             .child(self.status_bar(&theme, cx))
             .child(self.overlays(&theme, window, cx))
@@ -460,7 +593,11 @@ impl Render for Workspace {
 impl Workspace {
     fn fit(&mut self, window: &Window, cx: &mut Context<Self>) {
         let width = f32::from(window.viewport_size().width);
-        self.shell.update(cx, |shell, cx| shell.fit_to(width, cx));
+        let available = self.context_available(cx);
+        self.shell.update(cx, |shell, cx| {
+            shell.set_context_available(available, cx);
+            shell.fit_to(width, cx);
+        });
     }
 
     fn body(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -488,6 +625,7 @@ impl Workspace {
             .when(settings, |layer| {
                 layer.child(self.settings_sheet(theme, cx))
             })
+            .when_some(self.source_sheet(theme, cx), ParentElement::child)
             .when_some(self.hover_card(theme, cx), ParentElement::child)
             .when_some(self.notice_bar(theme, cx), ParentElement::child)
             .child(self.omnibar_sheet(theme, window, cx))
@@ -510,6 +648,9 @@ impl<E: InteractiveElement> KeyHandlers for E {
             .on_action(cx.listener(Workspace::open_settings))
             .on_action(cx.listener(Workspace::go_back))
             .on_action(cx.listener(Workspace::go_forward))
+            .on_action(cx.listener(Workspace::go_home))
+            .on_action(cx.listener(Workspace::open_source))
+            .on_action(cx.listener(Workspace::open_editor))
             .on_action(cx.listener(Workspace::close_tab))
             .on_action(cx.listener(Workspace::previous_tab))
             .on_action(cx.listener(Workspace::next_tab))
@@ -592,30 +733,41 @@ impl Workspace {
         self.document.update(cx, DocumentStore::forward);
     }
 
+    fn go_home(&mut self, _: &GoHome, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_home(cx);
+    }
+
+    fn open_source(&mut self, _: &OpenSource, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_source(cx);
+    }
+
+    fn open_editor(&mut self, _: &OpenEditor, _: &mut Window, cx: &mut Context<Self>) {
+        let site = match self.document.read(cx).tab().map(super::super::store::document::Tab::content) {
+            Some(super::super::store::document::Content::Page(page)) => super::page::site_of(page),
+            _ => None,
+        };
+        if let Some((path, line)) = site {
+            self.open_in_editor(&path, line, cx);
+        }
+    }
+
     fn close_tab(&mut self, _: &CloseTab, _: &mut Window, cx: &mut Context<Self>) {
-        self.document.update(cx, |document, cx| {
-            let active = document.active();
-            document.close(active, cx);
-        });
+        self.document.update(cx, DocumentStore::close_active);
     }
 
     fn previous_tab(&mut self, _: &PreviousTab, _: &mut Window, cx: &mut Context<Self>) {
-        self.document.update(cx, |document, cx| {
-            let index = document.active().saturating_sub(1);
-            document.activate(index, cx);
-        });
+        self.document
+            .update(cx, |document, cx| document.activate_neighbour(false, cx));
     }
 
     fn next_tab(&mut self, _: &NextTab, _: &mut Window, cx: &mut Context<Self>) {
-        self.document.update(cx, |document, cx| {
-            let index = document.active().saturating_add(1);
-            document.activate(index, cx);
-        });
+        self.document
+            .update(cx, |document, cx| document.activate_neighbour(true, cx));
     }
 
     pub(super) fn select_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         self.document
-            .update(cx, |document, cx| document.activate(index, cx));
+            .update(cx, |document, cx| document.activate_nth(index, cx));
     }
 
     fn copy_identity(&mut self, _: &CopyIdentity, _: &mut Window, cx: &mut Context<Self>) {
@@ -634,10 +786,13 @@ impl Workspace {
 
     fn active_key(&self, cx: &Context<Self>) -> Option<String> {
         match self.document.read(cx).tab()?.subject()? {
+            Subject::Home => None,
             Subject::Declaration { symbol, .. } => {
                 Some(backend_library::encode_id(symbol.as_bytes()))
             }
-            Subject::Project { coordinate } => Some(coordinate.clone()),
+            Subject::Project { coordinate } | Subject::Package { coordinate } => {
+                Some(coordinate.clone())
+            }
         }
     }
 
@@ -693,6 +848,10 @@ impl Workspace {
     fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
         if self.shell.read(cx).settings_open() {
             self.shell.update(cx, ShellStore::toggle_settings);
+            return;
+        }
+        if self.source_open {
+            self.close_source(cx);
             return;
         }
         if self.adding {
@@ -754,6 +913,10 @@ impl Workspace {
             return;
         }
         if let Some(command) = self.search.read(cx).selected_command() {
+            let arguments = self.search.read(cx).parsed().arguments().to_owned();
+            if self.run_palette(command, &arguments, window, cx) {
+                return;
+            }
             self.search
                 .update(cx, |search, cx| search.run(command, cx));
             return;
@@ -803,8 +966,25 @@ impl Workspace {
             .update(cx, |search, cx| search.set_text(text, cx));
     }
 
-    fn submit_add(&mut self, cx: &mut Context<Self>) {
+    /// Submits the add field: a folder or pinned URL at once, a name via the catalog.
+    pub(super) fn submit_add(&mut self, cx: &mut Context<Self>) {
         let text = self.coordinate.read(cx).as_str().trim().to_owned();
+        let ask = Ask::parse(&text);
+        if let Ask::Named { name, version } = &ask {
+            if name.is_empty() {
+                self.add_fault = Some("Type a package name, or choose a folder.".to_owned());
+                cx.notify();
+                return;
+            }
+            let ecosystem = self.add_ecosystem.as_str().to_owned();
+            let (name, version) = (name.clone(), version.clone());
+            self.add_fault = None;
+            self.catalog.update(cx, |catalog, cx| {
+                catalog.resolve_named(&ecosystem, &name, version.as_deref(), cx);
+            });
+            cx.notify();
+            return;
+        }
         match super::library::validate(&text) {
             Err(message) => {
                 self.add_fault = Some(message);
@@ -814,6 +994,7 @@ impl Workspace {
                 self.add_fault = None;
                 self.adding = false;
                 self.coordinate.update(cx, |field, cx| field.emplace("", cx));
+                self.catalog.update(cx, CatalogStore::clear);
                 self.index_project(coordinate, cx);
             }
         }
@@ -824,8 +1005,10 @@ impl Workspace {
 struct Stores {
     search: Entity<SearchStore>,
     document: Entity<DocumentStore>,
+    index: Entity<IndexStore>,
     jobs: Entity<JobsStore>,
     catalog: Entity<CatalogStore>,
+    registry: Entity<RegistryStore>,
     shell: Entity<ShellStore>,
     field: Entity<EditableTextState>,
     coordinate: Entity<EditableTextState>,
@@ -836,8 +1019,10 @@ struct Wiring<'a> {
     engine: &'a Entity<WorkspaceStore>,
     search: &'a Entity<SearchStore>,
     document: &'a Entity<DocumentStore>,
+    index: &'a Entity<IndexStore>,
     jobs: &'a Entity<JobsStore>,
     catalog: &'a Entity<CatalogStore>,
+    registry: &'a Entity<RegistryStore>,
     shell: &'a Entity<ShellStore>,
     field: &'a Entity<EditableTextState>,
     coordinate: &'a Entity<EditableTextState>,

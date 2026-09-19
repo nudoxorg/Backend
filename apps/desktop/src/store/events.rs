@@ -66,9 +66,25 @@ pub(crate) enum ShellEvent {
     Notice,
 }
 
+/// Something changed in the registry browse state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RegistryEvent {
+    /// A page, a search, or a package read started, answered, or failed.
+    Changed,
+}
+
+/// The derived index was rebuilt for a new revision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum IndexEvent {
+    /// Every project's structure was recomputed.
+    Rebuilt,
+}
+
 /// Something changed in the registry catalog behind the add-a-project field.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CatalogEvent {
     /// A catalog lookup started, answered, or failed.
     Changed,
+    /// A typed name and version were resolved against the catalog.
+    Resolved,
 }

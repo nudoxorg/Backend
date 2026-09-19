@@ -16,6 +16,8 @@ use crate::ir::{
 
 #[path = "semantic_render/canonical.rs"]
 mod canonical;
+#[path = "semantic_render/display.rs"]
+mod display;
 #[path = "semantic_render/document.rs"]
 mod document;
 
@@ -23,6 +25,7 @@ pub use canonical::{
     CanonicalTypeRenderError, CanonicalTypeRenderLimits, CanonicalTypeRenderReference,
     PreparedCanonicalType, PreparedCanonicalTypeView, prepare_canonical_type,
 };
+pub use display::{DocsDisplay, EmbeddingDisplay, EmbeddingProfile, SignatureDisplay, TypeDisplay};
 pub use document::{
     CFamilySemanticDocumentDialect, CSharpSemanticDocumentDialect, GoSemanticDocumentDialect,
     JavaSemanticDocumentDialect, PreparedSemanticDocument, PreparedSemanticDocumentView,

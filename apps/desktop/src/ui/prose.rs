@@ -182,3 +182,22 @@ fn link_style(theme: &Theme) -> HighlightStyle {
         ..HighlightStyle::default()
     }
 }
+
+/// Returns whether a summary only restates the identity it belongs to.
+///
+/// The producer writes `struct in src/main.cpp:3` for a declaration with no
+/// documentation. That sentence is true and says nothing the header does not
+/// already say, so no surface should set it as prose.
+pub(crate) fn tautological(summary: &str, identity: &backend_present::Identity) -> bool {
+    let Some((_, site)) = summary.trim().split_once(" in ") else {
+        return false;
+    };
+    let path = identity
+        .path()
+        .map(backend_present::PackagePath::as_str)
+        .unwrap_or_default();
+    let spelled = identity
+        .line()
+        .map_or_else(|| path.to_owned(), |line| format!("{path}:{}", line.get()));
+    !path.is_empty() && site.trim() == spelled
+}

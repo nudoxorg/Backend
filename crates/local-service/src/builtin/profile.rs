@@ -1055,9 +1055,16 @@ fn admit_persisted_intent(objects: &[TypedObject]) -> Result<BuiltinIntent, Buil
     }
     let persisted_intent = BuiltinIntent::decode(intent_object.bytes())
         .map_err(|error| BuiltinModelError(format!("decode persisted builtin intent: {error}")))?;
+    // The object key is derived from these exact bytes, so an intent that
+    // re-encodes differently cannot be replayed under its own identity. That
+    // happens when the bytes were written by a build whose canonical form
+    // differs from this one, which a reader can only resolve by re-indexing,
+    // so the refusal says which of the two it is.
     if persisted_intent.encode().as_slice() != intent_object.bytes() {
         return Err(BuiltinModelError(
-            "persisted builtin intent is not canonically encoded".to_owned(),
+            "persisted builtin intent is not canonically encoded: this workspace was written \
+             by a build with a different canonical encoding and has to be indexed again"
+                .to_owned(),
         ));
     }
     Ok(persisted_intent)
@@ -1493,6 +1500,79 @@ mod persisted_intent_tests {
             claim,
         };
         (package, selected, generation, before, after)
+    }
+
+    /// Builds an index intent carrying one source file record.
+    fn file_intent(declarations: Vec<backend_compile::SourceDeclaration>) -> BuiltinIntent {
+        let label = "fixture:containment";
+        let package = backend_engine::PackageKey::from_value(label);
+        let key = backend_engine::product_source_file_key(package.to_bytes(), "src/lib.rs");
+        let record = BuiltinPackageRecord::file(
+            package.to_bytes(),
+            "src/lib.rs",
+            backend_engine::SourceLanguage::Rust,
+            [4; 32],
+            [5; 32],
+            Arc::from(declarations.into_boxed_slice()),
+        )
+        .expect("file record");
+        BuiltinIntent::index_with_semantics(
+            package,
+            label,
+            vec![BuiltinSourceChange {
+                key,
+                after: Some(record),
+            }],
+            Vec::new(),
+        )
+        .expect("file intent")
+    }
+
+    fn declaration(container: backend_compile::Container) -> backend_compile::SourceDeclaration {
+        backend_compile::SourceDeclaration::at_path(
+            "src/lib.rs",
+            "answer",
+            "function",
+            7,
+            "fn answer() -> u32",
+            "",
+        )
+        .expect("declaration")
+        .with_container(container)
+    }
+
+    /// A workspace written before containment existed must still open.
+    ///
+    /// Restart admission re-encodes the persisted intent and refuses it
+    /// unless the bytes are identical, and the intent embeds whole source
+    /// records. A record that states no containment therefore has to keep the
+    /// format tag it was written with; bumping it unconditionally refused
+    /// every workspace indexed by an earlier binary with
+    /// "persisted builtin intent is not canonically encoded".
+    #[test]
+    fn a_persisted_intent_without_containment_keeps_its_earlier_encoding() {
+        let intent = file_intent(vec![declaration(backend_compile::Container::Module)]);
+        let bytes = intent.encode();
+        assert!(bytes.windows(4).any(|window| window == b"PSR8"));
+        assert!(!bytes.windows(4).any(|window| window == b"PSR9"));
+        let object = intent_object(&intent);
+        assert_eq!(
+            admit_persisted_intent(std::slice::from_ref(&object)).expect("admit intent"),
+            intent
+        );
+    }
+
+    #[test]
+    fn a_persisted_intent_with_containment_is_admitted_and_canonical() {
+        let intent = file_intent(vec![declaration(backend_compile::Container::attached(
+            "Worker",
+        ))]);
+        let bytes = intent.encode();
+        assert!(bytes.windows(4).any(|window| window == b"PSR9"));
+        let object = intent_object(&intent);
+        let admitted = admit_persisted_intent(std::slice::from_ref(&object)).expect("admit intent");
+        assert_eq!(admitted, intent);
+        assert_eq!(admitted.encode(), bytes);
     }
 
     #[test]

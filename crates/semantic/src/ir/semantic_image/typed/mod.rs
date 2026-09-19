@@ -46,6 +46,13 @@ impl<'image> TypedDependencyPlan<'image> {
         self.canonical_node(model::TypedPlanNode::TypeParameters(id))
     }
 
+    pub(crate) fn canonical_free_predicates(
+        &self,
+        id: crate::ir::FreePredicateListId,
+    ) -> Result<u32, TypedPlanError> {
+        self.canonical_node(model::TypedPlanNode::FreePredicates(id))
+    }
+
     pub(crate) fn canonical(&self) -> &CanonicalFullPlan<'image> {
         &self.canonical
     }

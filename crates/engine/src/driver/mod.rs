@@ -12,7 +12,6 @@ mod lower;
 mod native;
 mod types;
 
-pub use backend_semantic::vocabulary::{LoweringUnsupported, NativeArtifactRole, NativeWorkPhase};
 pub use self::database::{DatabaseCompileFailure, compile_database_translation_unit};
 pub use self::types::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, AuthorityFailureProjection,
@@ -26,3 +25,4 @@ pub use self::types::{
     ToolchainResolutionError, ToolchainSelection, ToolchainSelectionFact, TypeChildLane, compile,
     compile_ir, compile_semantic,
 };
+pub use backend_semantic::vocabulary::{LoweringUnsupported, NativeArtifactRole, NativeWorkPhase};

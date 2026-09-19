@@ -2,7 +2,7 @@
   "class": "BuildArtifacts",
   "defect_class": "entry-resolution",
   "purl": "npm:uuid@11.0.3",
-  "raw_error": "retry exhausted; first=network request failed: http status: 404; second=network request failed: http status: 404",
+  "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
   "schema": 1,
   "stage": "full-lifecycle",
   "verdict": "FAILED"

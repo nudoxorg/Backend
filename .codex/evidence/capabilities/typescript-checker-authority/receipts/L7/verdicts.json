@@ -1,161 +1,117 @@
 [
   {
-    "class": "SingleShipped",
+    "class": "SiblingTypes",
     "defect_class": "entry-resolution",
     "purl": "npm:lodash@4.17.21",
-    "raw_error": "package has no declaration entry; searched [\"/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-typescript-corpus-16083-0/index.d.ts\"]",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "SingleShipped",
-    "computed_samples": [],
-    "decoded_entities": 1,
-    "decoded_facts": 1,
-    "exported_declarations": 0,
-    "fallbacks": [],
-    "perf": {
-      "check_ns": 479762083,
-      "fact_count": 1,
-      "lower_ns": 4427417,
-      "parse_ns": 280762958,
-      "wall_ns": 764952458
-    },
+    "defect_class": "entry-resolution",
     "purl": "npm:zod@3.25.76",
-    "render_truth": [
-      "signature",
-      "type"
-    ],
-    "rubric": {
-      "computed_fidelity": 2,
-      "declaration_coverage": 2,
-      "docs_extensions": 2,
-      "references": 2,
-      "render_truth": 2,
-      "type_fidelity": 2
-    },
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
-    "verdict": "CLEAN"
+    "verdict": "FAILED"
   },
   {
     "class": "Scoped",
-    "defect_class": "checker-authority",
+    "defect_class": "entry-resolution",
     "purl": "npm:@types/react@18.3.12",
-    "raw_error": "TypeScript checker exited with exit status: 1; stderr tail: /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122\n  if (type.isThisType === true || type.flags & flags.ThisType) return { kind: 'this' };\n           ^\n\nTypeError: Cannot read properties of undefined (reading 'isThisType')\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122:12)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:134:17)\n    at emitVariableLike (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:309:13)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:359:5)\n    at visitNodes (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32457:22)\n    at forEachChildInInterfaceDeclaration (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32737:197)\n    at forEachChild (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32970:35)\n    at NodeObject.forEachChild (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:151891:12)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:380:8)\n    at visitNodes (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32457:22)\n\nNode.js v26.8.1\n",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "Scoped",
-    "computed_samples": [],
-    "decoded_entities": 209,
-    "decoded_facts": 477,
-    "exported_declarations": 90,
-    "fallbacks": [],
-    "perf": {
-      "check_ns": 352085959,
-      "fact_count": 477,
-      "lower_ns": 37324417,
-      "parse_ns": 268845584,
-      "wall_ns": 658255960
-    },
+    "defect_class": "entry-resolution",
     "purl": "npm:@babel/parser@7.26.8",
-    "render_truth": [
-      "signature",
-      "type"
-    ],
-    "rubric": {
-      "computed_fidelity": 2,
-      "declaration_coverage": 2,
-      "docs_extensions": 2,
-      "references": 2,
-      "render_truth": 2,
-      "type_fidelity": 2
-    },
-    "schema": 1,
-    "stage": "full-lifecycle",
-    "verdict": "CLEAN"
-  },
-  {
-    "class": "SingleShipped",
-    "defect_class": "checker-authority",
-    "purl": "npm:typescript@5.7.2",
-    "raw_error": "TypeScript checker exited with exit status: 1; stderr tail: /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122\n  if (type.isThisType === true || type.flags & flags.ThisType) return { kind: 'this' };\n           ^\n\nTypeError: Cannot read properties of undefined (reading 'isThisType')\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122:12)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:134:17)\n    at objectTypeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:194:22)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:167:41)\n    at /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:204:75\n    at Array.map (<anonymous>)\n    at objectTypeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:204:57)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:167:41)\n    at emitVariableLike (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:309:13)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:359:5)\n\nNode.js v26.8.1\n",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "SingleShipped",
+    "defect_class": "entry-resolution",
+    "purl": "npm:typescript@5.7.2",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
+    "schema": 1,
+    "stage": "full-lifecycle",
+    "verdict": "FAILED"
+  },
+  {
+    "class": "SiblingTypes",
     "defect_class": "entry-resolution",
     "purl": "npm:react@18.3.1",
-    "raw_error": "package has no declaration entry; searched [\"/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-typescript-corpus-16083-9/index.d.ts\"]",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
-    "class": "SingleShipped",
+    "class": "SiblingTypes",
     "defect_class": "entry-resolution",
     "purl": "npm:express@4.21.1",
-    "raw_error": "package has no declaration entry; searched [\"/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-typescript-corpus-16083-10/index.d.ts\"]",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "Scoped",
-    "defect_class": "production-lowering",
+    "defect_class": "entry-resolution",
     "purl": "npm:@types/node@22.10.1",
-    "raw_error": "compile: LoweringUnsupported { source_identity: SourceIdentity { identity: ContentId(0e70f730c712c03aa10b5b40f6884ce54d08241ce0f9a8734ff95e91999c0b8c), byte_len: 3868 }, recipe: CompileRecipeFact { identity: ContentId(11edee07dc21ff51e149f58997cdca9852f0fec88fdec31258c082f93269b56e), profile: TypeScript(TypeScript), stage: LowerIr, tool: TypeScriptCompiler, toolchain: ContentId(0fe9e62ffe91f46368a8274642ef1ac7bcbee7f3922850b3fa7cc8159c5e783a) }, cause: NoSupportedDeclaration }",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "NonStandardLayout",
-    "defect_class": "package-budget",
+    "defect_class": "entry-resolution",
     "purl": "npm:date-fns@4.1.0",
-    "raw_error": "TypeScript checker package file limit exceeded: observed 4097, limit 4096",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "SingleShipped",
-    "defect_class": "checker-authority",
+    "defect_class": "entry-resolution",
     "purl": "npm:axios@1.7.9",
-    "raw_error": "TypeScript checker exited with exit status: 1; stderr tail: /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122\n  if (type.isThisType === true || type.flags & flags.ThisType) return { kind: 'this' };\n           ^\n\nTypeError: Cannot read properties of undefined (reading 'isThisType')\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122:12)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:134:17)\n    at emitVariableLike (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:309:13)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:359:5)\n    at visitNodes (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32457:22)\n    at forEachChildInInterfaceDeclaration (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32737:197)\n    at forEachChild (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32970:35)\n    at NodeObject.forEachChild (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:151891:12)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:380:8)\n    at visitNodes (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32457:22)\n\nNode.js v26.8.1\n",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "SingleShipped",
-    "defect_class": "production-authority",
+    "defect_class": "entry-resolution",
     "purl": "npm:chalk@5.3.0",
-    "raw_error": "compile: Authority { source_identity: SourceIdentity { identity: ContentId(0e58821a0f28e72554b318bbfce694886b9ed22ddeb79b5db5c37168c4df3dbe), byte_len: 6911 }, recipe: CompileRecipeFact { identity: ContentId(11a605702dc8dd6d6dfefce9d6c3e478435a5b1d65b8733e0985838f513f21bf), profile: TypeScript(TypeScript), stage: LowerIr, tool: TypeScriptCompiler, toolchain: ContentId(0fe9e62ffe91f46368a8274642ef1ac7bcbee7f3922850b3fa7cc8159c5e783a) }, failure: TypeScript { diagnostic: AuthorityDiagnostic { primary: [67, 104, 97, 108, 107], observed: 5, truncated: false }, cause: Syntax { diagnostics: Diagnostics([OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Missing initializer in const declaration\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(790), length: 5 }, primary: false }]), help: Some(\"Add an initializer (e.g. ` = undefined`) here\"), note: None, severity: Error, code: OxcCode { scope: None, number: None }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Missing initializer in const declaration\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(4939), length: 13 }, primary: false }]), help: Some(\"Add an initializer (e.g. ` = undefined`) here\"), note: None, severity: Error, code: OxcCode { scope: None, number: None }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Missing initializer in const declaration\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(4979), length: 11 }, primary: false }]), help: Some(\"Add an initializer (e.g. ` = undefined`) here\"), note: None, severity: Error, code: OxcCode { scope: None, number: None }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Missing initializer in const declaration\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(5019), length: 19 }, primary: false }]), help: Some(\"Add an initializer (e.g. ` = undefined`) here\"), note: None, severity: Error, code: OxcCode { scope: None, number: None }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Missing initializer in const declaration\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(6400), length: 9 }, primary: false }]), help: Some(\"Add an initializer (e.g. ` = undefined`) here\"), note: None, severity: Error, code: OxcCode { scope: None, number: None }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Missing initializer in const declaration\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(6533), length: 16 }, primary: false }]), help: Some(\"Add an initializer (e.g. ` = undefined`) here\"), note: None, severity: Error, code: OxcCode { scope: None, number: None }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Missing initializer in const declaration\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(6679), length: 16 }, primary: false }]), help: Some(\"Add an initializer (e.g. ` = undefined`) here\"), note: None, severity: Error, code: OxcCode { scope: None, number: None }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Missing initializer in const declaration\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(6862), length: 6 }, primary: false }]), help: Some(\"Add an initializer (e.g. ` = undefined`) here\"), note: None, severity: Error, code: OxcCode { scope: None, number: None }, url: None } }]) } } }",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "SingleShipped",
-    "defect_class": "checker-authority",
+    "defect_class": "entry-resolution",
     "purl": "npm:commander@13.1.0",
-    "raw_error": "TypeScript checker exited with exit status: 1; stderr tail: /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122\n  if (type.isThisType === true || type.flags & flags.ThisType) return { kind: 'this' };\n           ^\n\nTypeError: Cannot read properties of undefined (reading 'isThisType')\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122:12)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:134:17)\n    at signatureTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:283:50)\n    at emitOverloadGroup (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:336:18)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:361:5)\n    at visitNodes (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32457:22)\n    at forEachChildInClassDeclarationOrExpression (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32933:195)\n    at forEachChild (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32970:35)\n    at NodeObject.forEachChild (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:151891:12)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:380:8)\n\nNode.js v26.8.1\n",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "MonorepoSubpackage",
-    "defect_class": "checker-authority",
+    "defect_class": "entry-resolution",
     "purl": "npm:fastify@5.2.1",
-    "raw_error": "TypeScript checker exited with exit status: 1; stderr tail: /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122\n  if (type.isThisType === true || type.flags & flags.ThisType) return { kind: 'this' };\n           ^\n\nTypeError: Cannot read properties of undefined (reading 'isThisType')\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122:12)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:134:17)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:132:14)\n    at /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:204:75\n    at Array.map (<anonymous>)\n    at objectTypeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:204:57)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:167:41)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:132:14)\n    at /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:204:75\n    at Array.map (<anonymous>)\n\nNode.js v26.8.1\n",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
@@ -164,56 +120,34 @@
     "class": "BuildArtifacts",
     "defect_class": "entry-resolution",
     "purl": "npm:uuid@11.0.3",
-    "raw_error": "package has no declaration entry; searched [\"/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-typescript-corpus-16083-19/index.d.ts\"]",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "MonorepoSubpackage",
-    "defect_class": "checker-authority",
+    "defect_class": "entry-resolution",
     "purl": "npm:pino@9.6.0",
-    "raw_error": "TypeScript checker exited with exit status: 1; stderr tail: /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122\n  if (type.isThisType === true || type.flags & flags.ThisType) return { kind: 'this' };\n           ^\n\nTypeError: Cannot read properties of undefined (reading 'isThisType')\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122:12)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:134:17)\n    at objectTypeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:194:22)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:167:41)\n    at /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:127:72\n    at Array.map (<anonymous>)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:127:56)\n    at emitVariableLike (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:309:13)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:357:5)\n    at visitNodes (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32457:22)\n\nNode.js v26.8.1\n",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "BuildArtifacts",
-    "computed_samples": [],
-    "decoded_entities": 1,
-    "decoded_facts": 1,
-    "exported_declarations": 0,
-    "fallbacks": [],
-    "perf": {
-      "check_ns": 476297875,
-      "fact_count": 1,
-      "lower_ns": 2602584,
-      "parse_ns": 201798792,
-      "wall_ns": 680699251
-    },
+    "defect_class": "entry-resolution",
     "purl": "npm:hono@4.6.12",
-    "render_truth": [
-      "signature",
-      "type"
-    ],
-    "rubric": {
-      "computed_fidelity": 2,
-      "declaration_coverage": 2,
-      "docs_extensions": 2,
-      "references": 2,
-      "render_truth": 2,
-      "type_fidelity": 2
-    },
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
-    "verdict": "CLEAN"
+    "verdict": "FAILED"
   },
   {
     "class": "SingleShipped",
-    "defect_class": "checker-authority",
+    "defect_class": "entry-resolution",
     "purl": "npm:yup@1.6.1",
-    "raw_error": "TypeScript checker exited with exit status: 1; stderr tail: /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122\n  if (type.isThisType === true || type.flags & flags.ThisType) return { kind: 'this' };\n           ^\n\nTypeError: Cannot read properties of undefined (reading 'isThisType')\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122:12)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:134:17)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:132:14)\n    at emitVariableLike (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:309:13)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:359:5)\n    at visitNodes (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32457:22)\n    at forEachChildInClassDeclarationOrExpression (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32933:195)\n    at forEachChild (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32970:35)\n    at NodeObject.forEachChild (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:151891:12)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:380:8)\n\nNode.js v26.8.1\n",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
@@ -222,25 +156,25 @@
     "class": "NonStandardLayout",
     "defect_class": "entry-resolution",
     "purl": "npm:rxjs@7.8.1",
-    "raw_error": "package has no declaration entry; searched [\"/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-typescript-corpus-16083-25/index.d.ts\", \"typesVersions:{\\\">=4.2\\\":{\\\"*\\\":[\\\"dist/types/*\\\"]}}\", \"/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-typescript-corpus-16083-25/index.d.ts\"]",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "Scoped",
-    "defect_class": "production-lowering",
+    "defect_class": "entry-resolution",
     "purl": "npm:@tanstack/query-core@5.62.8",
-    "raw_error": "compile: LoweringUnsupported { source_identity: SourceIdentity { identity: ContentId(0efb4a5a9b107cf199a95ffb837e85a09d6b5ac5aef0934dae0e80eec62daf74), byte_len: 3404 }, recipe: CompileRecipeFact { identity: ContentId(11a26c9e752c070313256bc36d9aba09d940fdda72a974763d5df10488cf3e6b), profile: TypeScript(TypeScript), stage: LowerIr, tool: TypeScriptCompiler, toolchain: ContentId(0fe9e62ffe91f46368a8274642ef1ac7bcbee7f3922850b3fa7cc8159c5e783a) }, cause: NoSupportedDeclaration }",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"
   },
   {
     "class": "BuildArtifacts",
-    "defect_class": "production-authority",
+    "defect_class": "entry-resolution",
     "purl": "npm:eslint@9.17.0",
-    "raw_error": "compile: Authority { source_identity: SourceIdentity { identity: ContentId(0e8795afc8591d51390d9e5a218c2bca188adaa0317e404076936c264c01396c), byte_len: 66875 }, recipe: CompileRecipeFact { identity: ContentId(11235d7baa48b4cd853e101b0f44556f30fa1931bf9e9a72c56ff3ed17dedb38), profile: TypeScript(TypeScript), stage: LowerIr, tool: TypeScriptCompiler, toolchain: ContentId(0fe9e62ffe91f46368a8274642ef1ac7bcbee7f3922850b3fa7cc8159c5e783a) }, failure: TypeScript { diagnostic: AuthorityDiagnostic { primary: [99, 111, 110, 115, 116, 114, 117, 99, 116, 111, 114], observed: 11, truncated: false }, cause: Binding { diagnostics: Diagnostics([OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Constructor implementation is missing.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(4822), length: 11 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2390\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(4874), length: 10 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(4915), length: 7 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(5000), length: 8 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(5027), length: 14 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(5068), length: 12 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(5121), length: 20 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(5185), length: 15 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(5249), length: 19 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(5310), length: 20 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(5383), length: 15 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(5437), length: 15 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(5675), length: 20 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(6782), length: 20 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(6938), length: 17 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(7018), length: 16 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(7097), length: 17 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(7158), length: 8 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(7205), length: 14 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(7323), length: 18 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Constructor implementation is missing.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(39708), length: 11 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2390\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(39974), length: 6 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(40322), length: 12 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(40495), length: 13 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(40529), length: 10 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(40589), length: 11 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(40657), length: 8 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(40704), length: 12 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(40766), length: 8 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(40806), length: 15 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(58035), length: 11 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(58105), length: 15 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Constructor implementation is missing.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(58178), length: 11 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2390\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(58222), length: 9 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(58297), length: 8 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(58459), length: 22 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(58554), length: 7 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(58591), length: 22 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(58652), length: 14 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(58704), length: 13 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(58760), length: 13 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Constructor implementation is missing.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(65327), length: 11 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2390\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(65369), length: 3 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }, OxcDiagnostic { inner: OxcDiagnosticInner { message: \"Function implementation is missing or not immediately following the declaration.\", labels: One([LabeledSpan { label: None, span: SourceSpan { offset: SourceOffset(65592), length: 4 }, primary: false }]), help: None, note: None, severity: Error, code: OxcCode { scope: Some(\"TS\"), number: Some(\"2391\") }, url: None } }]) } } }",
+    "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
     "schema": 1,
     "stage": "full-lifecycle",
     "verdict": "FAILED"

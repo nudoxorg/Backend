@@ -195,6 +195,9 @@ fn rich_rust() -> Result<Ir, backend_semantic::ir::BuildError> {
     let lifetimes = builder.intern_attributes(&[lifetime])?;
     let macro_name = builder.intern_atom(b"trace")?;
     let macros = builder.intern_attributes(&[macro_name])?;
+    let const_default = builder.intern_atom(b"0")?;
+    let const_defaults_list = builder.intern_attributes(&[const_default])?;
+    let free_predicates = builder.intern_free_predicates(&[])?;
     add_one(
         &mut builder,
         profile,
@@ -203,6 +206,8 @@ fn rich_rust() -> Result<Ir, backend_semantic::ir::BuildError> {
             lifetimes,
             where_clauses: type_parameters,
             macros,
+            const_defaults: const_defaults_list,
+            free_predicates,
         }),
     )?;
     builder.finish()
@@ -346,6 +351,7 @@ fn every_named_extension_payload_is_owned_reopen_byte_exact() -> Result<(), back
             "lifetimes=atom-list(",
             "where-clauses=type-parameter-list(",
             "macros=atom-list(",
+            "const-defaults=atom-list(",
         ],
     );
 
@@ -486,6 +492,7 @@ fn all_named_extension_planes_admit_their_static_document_dialect()
     let mut rust_builder = IrBuilder::new();
     let rust_atoms = rust_builder.intern_attributes(&[])?;
     let rust_parameters = rust_builder.intern_type_parameters(&[])?;
+    let rust_free_predicates = rust_builder.intern_free_predicates(&[])?;
     add_one(
         &mut rust_builder,
         LanguageProfile::Rust(RustEdition::Rust2024),
@@ -494,6 +501,8 @@ fn all_named_extension_planes_admit_their_static_document_dialect()
             lifetimes: rust_atoms,
             where_clauses: rust_parameters,
             macros: rust_atoms,
+            const_defaults: rust_atoms,
+            free_predicates: rust_free_predicates,
         }),
     )?;
     let rust = rust_builder.finish()?;

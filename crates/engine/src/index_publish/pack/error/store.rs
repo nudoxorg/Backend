@@ -5,8 +5,8 @@
 
 use std::{io, path::PathBuf};
 
-use backend_version::GenerationId;
 use backend_semantic::index_vocabulary::{IndexPackId, IndexSnapshotId};
+use backend_version::GenerationId;
 
 use super::{IndexPackEncodeError, IndexPackOpenError};
 

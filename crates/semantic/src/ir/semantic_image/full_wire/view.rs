@@ -8,8 +8,9 @@ use core::{iter::FusedIterator, ops::Deref};
 
 use crate::ir::{
     AtomId, AtomListId, CSharpFacts, ClangFacts, CoreSemanticEntity, DeclarationIdentity,
-    DocFragment, DocId, EntityId, EntityListId, ExternalId, ExternalTarget, GoFacts, JavaFacts,
-    Link, LinkId, LinkOccurrence, LinkOccurrenceId, ObjectMember, ObjectMemberListId,
+    DocFragment, DocId, EntityId, EntityListId, ExternalId, ExternalTarget, FreePredicate,
+    FreePredicateListId, GoFacts, JavaFacts, Link, LinkId, LinkOccurrence, LinkOccurrenceId,
+    ObjectMember, ObjectMemberListId,
     OccurrenceAuthorityFacts, PythonFacts, RustFacts, SemanticCoreReader, SemanticEntity,
     SemanticImageFacts, SemanticReader, TemplatePart, TemplatePartListId, TupleElement,
     TupleElementListId, TypeExpr, TypeId, TypeListId, TypeParameter, TypeParameterBound,
@@ -116,6 +117,70 @@ impl<T> Iterator for FullRows<'_, T> {
 }
 impl<T> ExactSizeIterator for FullRows<'_, T> {}
 impl<T> FusedIterator for FullRows<'_, T> {}
+
+/// Single-pass row cursor over one typed list node.
+///
+/// The node's [`typed_decode::Edges`] is opened once and its grouped
+/// `(role, index)` adjacency is built at most once, so iterating `n` rows
+/// costs one edge-run pass plus `O(1)` (amortized) field lookups per row
+/// instead of rescanning the whole edge run for every field of every row.
+/// Rows decode in the same order and to the same values as per-row decoding.
+pub struct FullGroupRows<'bytes, T> {
+    edges: typed_decode::Edges<'bytes>,
+    next: u32,
+    end: u32,
+    decode: fn(
+        &mut typed_decode::Edges<'bytes>,
+        u32,
+    ) -> Result<T, super::FullSemanticImageFault>,
+}
+
+impl<T> Iterator for FullGroupRows<'_, T> {
+    type Item = T;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next >= self.end {
+            return None;
+        }
+        let index = self.next;
+        self.next = self.next.checked_add(1)?;
+        // Admission parsed the same row grammar, bounds, and tag sequence.
+        (self.decode)(&mut self.edges, index).ok()
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = remaining(self.end, self.next);
+        (remaining, Some(remaining))
+    }
+}
+impl<T> ExactSizeIterator for FullGroupRows<'_, T> {}
+impl<T> FusedIterator for FullGroupRows<'_, T> {}
+
+/// Sequential documentation cursor.  Fragment rows are variable-length
+/// records in one byte range, so the cursor keeps its parse offset instead of
+/// reparsing the prefix of the range for every row.
+pub struct FullDocRows<'bytes> {
+    value: &'bytes [u8],
+    count: u32,
+    next: u32,
+    cursor: usize,
+}
+
+impl Iterator for FullDocRows<'_> {
+    type Item = DocFragment;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next >= self.count {
+            return None;
+        }
+        let fragment = doc_fragment_at(self.value, &mut self.cursor)?;
+        self.next = self.next.checked_add(1)?;
+        Some(fragment)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = remaining(self.count, self.next);
+        (remaining, Some(remaining))
+    }
+}
+impl ExactSizeIterator for FullDocRows<'_> {}
+impl FusedIterator for FullDocRows<'_> {}
 
 pub struct FullCanonicalEntities<'view, 'bytes> {
     view: &'view SemanticImageView<'bytes>,
@@ -356,11 +421,11 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
     where
         Self: 'image;
     type Types<'image>
-        = FullRows<'image, TypeId>
+        = FullGroupRows<'image, TypeId>
     where
         Self: 'image;
     type Atoms<'image>
-        = FullRows<'image, AtomId>
+        = FullGroupRows<'image, AtomId>
     where
         Self: 'image;
     type Entities<'image>
@@ -368,27 +433,31 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
     where
         Self: 'image;
     type Docs<'image>
-        = FullRows<'image, DocFragment>
+        = FullDocRows<'image>
     where
         Self: 'image;
     type TupleElements<'image>
-        = FullRows<'image, TupleElement>
+        = FullGroupRows<'image, TupleElement>
     where
         Self: 'image;
     type ObjectMembers<'image>
-        = FullRows<'image, ObjectMember>
+        = FullGroupRows<'image, ObjectMember>
     where
         Self: 'image;
     type TemplateParts<'image>
-        = FullRows<'image, TemplatePart>
+        = FullGroupRows<'image, TemplatePart>
     where
         Self: 'image;
     type TypeParameters<'image>
-        = FullRows<'image, TypeParameter>
+        = FullGroupRows<'image, TypeParameter>
     where
         Self: 'image;
     type TypeParameterBounds<'image>
-        = FullRows<'image, TypeParameterBound>
+        = FullGroupRows<'image, TypeParameterBound>
+    where
+        Self: 'image;
+    type FreePredicates<'image>
+        = FullGroupRows<'image, FreePredicate>
     where
         Self: 'image;
     type CanonicalTypes<'image>
@@ -422,10 +491,10 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
         typed_decode::ty(self.bytes, self.layout(), self.typed(), id).ok()
     }
     fn types(&self, id: TypeListId) -> Option<Self::Types<'_>> {
-        rows(self, 1, id.raw, type_list_row)
+        rows(self, 1, id.raw, typed_decode::type_list_item)
     }
     fn atom_list(&self, id: AtomListId) -> Option<Self::Atoms<'_>> {
-        rows(self, 5, id.raw, atom_list_row)
+        rows(self, 5, id.raw, typed_decode::atom_list_item)
     }
     fn entity_list(&self, id: EntityListId) -> Option<Self::Entities<'_>> {
         entity_rows(self, id)
@@ -434,22 +503,25 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
         doc_rows(self, id)
     }
     fn tuple_elements(&self, id: TupleElementListId) -> Option<Self::TupleElements<'_>> {
-        rows(self, 2, id.raw, tuple_row)
+        rows(self, 2, id.raw, typed_decode::tuple_element)
     }
     fn object_members(&self, id: ObjectMemberListId) -> Option<Self::ObjectMembers<'_>> {
-        rows(self, 3, id.raw, object_row)
+        rows(self, 3, id.raw, typed_decode::object_member)
     }
     fn template_parts(&self, id: TemplatePartListId) -> Option<Self::TemplateParts<'_>> {
-        rows(self, 4, id.raw, template_row)
+        rows(self, 4, id.raw, typed_decode::template_part)
     }
     fn type_parameters(&self, id: TypeParameterListId) -> Option<Self::TypeParameters<'_>> {
-        rows(self, 6, id.raw, parameter_row)
+        rows(self, 6, id.raw, typed_decode::type_parameter)
     }
     fn type_parameter_bounds(
         &self,
         id: TypeParameterBoundListId,
     ) -> Option<Self::TypeParameterBounds<'_>> {
-        rows(self, 7, id.raw, bound_row)
+        rows(self, 7, id.raw, typed_decode::type_parameter_bound)
+    }
+    fn free_predicates(&self, id: FreePredicateListId) -> Option<Self::FreePredicates<'_>> {
+        rows(self, 8, id.raw, typed_decode::free_predicate)
     }
 
     fn canonical_entities(&self) -> Self::CanonicalEntities<'_> {
@@ -630,14 +702,11 @@ fn rows<'view, 'bytes, T>(
     domain: u8,
     coordinate: u32,
     decode: fn(
-        &[u8],
-        FullImageLayout,
-        TypedLayout,
-        u32,
+        &mut typed_decode::Edges<'bytes>,
         u32,
     ) -> Result<T, super::FullSemanticImageFault>,
-) -> Option<FullRows<'view, T>> {
-    let end = typed_decode::logical_list_count(
+) -> Option<FullGroupRows<'bytes, T>> {
+    let mut edges = typed_decode::Edges::for_node(
         view.bytes,
         view.layout(),
         view.typed(),
@@ -645,11 +714,9 @@ fn rows<'view, 'bytes, T>(
         coordinate,
     )
     .ok()?;
-    Some(FullRows {
-        bytes: view.bytes,
-        layout: view.layout(),
-        typed: view.typed(),
-        coordinate,
+    let end = typed_decode::logical_count(&mut edges, domain).ok()?;
+    Some(FullGroupRows {
+        edges,
         next: 0,
         end,
         decode,
@@ -682,7 +749,7 @@ fn entity_rows<'view, 'bytes>(
 fn doc_rows<'view, 'bytes>(
     view: &'view SemanticImageView<'bytes>,
     id: DocId,
-) -> Option<FullRows<'view, DocFragment>> {
+) -> Option<FullDocRows<'bytes>> {
     let value = validate::range_value(
         view.bytes,
         view.layout().entry(FullDirectoryKind::Documentation),
@@ -691,110 +758,13 @@ fn doc_rows<'view, 'bytes>(
         super::FullSemanticImageField::Documentation,
     )
     .ok()?;
-    let end = read_u32(value, 1)?;
-    Some(FullRows {
-        bytes: view.bytes,
-        layout: view.layout(),
-        typed: view.typed(),
-        coordinate: id.raw,
+    let count = read_u32(value, 1)?;
+    Some(FullDocRows {
+        value,
+        count,
         next: 0,
-        end,
-        decode: doc_row,
+        cursor: 5,
     })
-}
-
-fn type_list_row(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    coordinate: u32,
-    index: u32,
-) -> Result<TypeId, super::FullSemanticImageFault> {
-    typed_decode::type_list_item(bytes, layout, typed, TypeListId::new(coordinate), index)
-}
-fn atom_list_row(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    coordinate: u32,
-    index: u32,
-) -> Result<AtomId, super::FullSemanticImageFault> {
-    typed_decode::atom_list_item(bytes, layout, typed, AtomListId::new(coordinate), index)
-}
-fn tuple_row(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    coordinate: u32,
-    index: u32,
-) -> Result<TupleElement, super::FullSemanticImageFault> {
-    typed_decode::tuple_element(
-        bytes,
-        layout,
-        typed,
-        TupleElementListId::new(coordinate),
-        index,
-    )
-}
-fn object_row(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    coordinate: u32,
-    index: u32,
-) -> Result<ObjectMember, super::FullSemanticImageFault> {
-    typed_decode::object_member(
-        bytes,
-        layout,
-        typed,
-        ObjectMemberListId::new(coordinate),
-        index,
-    )
-}
-fn template_row(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    coordinate: u32,
-    index: u32,
-) -> Result<TemplatePart, super::FullSemanticImageFault> {
-    typed_decode::template_part(
-        bytes,
-        layout,
-        typed,
-        TemplatePartListId::new(coordinate),
-        index,
-    )
-}
-fn parameter_row(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    coordinate: u32,
-    index: u32,
-) -> Result<TypeParameter, super::FullSemanticImageFault> {
-    typed_decode::type_parameter(
-        bytes,
-        layout,
-        typed,
-        TypeParameterListId::new(coordinate),
-        index,
-    )
-}
-fn bound_row(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    coordinate: u32,
-    index: u32,
-) -> Result<TypeParameterBound, super::FullSemanticImageFault> {
-    typed_decode::type_parameter_bound(
-        bytes,
-        layout,
-        typed,
-        TypeParameterBoundListId::new(coordinate),
-        index,
-    )
 }
 
 fn entity_list_row(
@@ -828,120 +798,40 @@ fn entity_list_row(
     )?))
 }
 
-fn doc_row(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    _: TypedLayout,
-    coordinate: u32,
-    wanted: u32,
-) -> Result<DocFragment, super::FullSemanticImageFault> {
-    let value = validate::range_value(
-        bytes,
-        layout.entry(FullDirectoryKind::Documentation),
-        layout.entry(FullDirectoryKind::DocumentationBytes),
-        coordinate,
-        super::FullSemanticImageField::Documentation,
-    )?;
-    let count = read_u32(value, 1).ok_or(super::FullSemanticImageFault::Truncated {
-        field: super::FullSemanticImageField::Documentation,
-        offset: 1,
-    })?;
-    if wanted >= count {
-        return Err(super::FullSemanticImageFault::Reference {
-            field: super::FullSemanticImageField::Documentation,
-            row: coordinate,
-            expected: count,
-            observed: wanted,
-        });
-    }
-    let mut cursor = 5_usize;
-    for index in 0..=wanted {
-        let tag = *value
-            .get(cursor)
-            .ok_or(super::FullSemanticImageFault::Truncated {
-                field: super::FullSemanticImageField::Documentation,
-                offset: cursor,
-            })?;
-        cursor = cursor
-            .checked_add(1)
-            .ok_or(super::FullSemanticImageFault::LengthOverflow {
-                field: super::FullSemanticImageField::Documentation,
-            })?;
-        let fragment = match tag {
-            0 => {
-                let atom = AtomId::new(read_u32(value, cursor).ok_or(
-                    super::FullSemanticImageFault::Truncated {
-                        field: super::FullSemanticImageField::Documentation,
-                        offset: cursor,
-                    },
-                )?);
-                cursor += 4;
-                DocFragment::Text(crate::ir::TextId::new(atom.raw))
-            }
-            1 => {
-                let atom = AtomId::new(read_u32(value, cursor).ok_or(
-                    super::FullSemanticImageFault::Truncated {
-                        field: super::FullSemanticImageField::Documentation,
-                        offset: cursor,
-                    },
-                )?);
-                cursor += 4;
-                DocFragment::Code(crate::ir::TextId::new(atom.raw))
-            }
-            2 => {
-                let label = crate::ir::TextId::new(read_u32(value, cursor).ok_or(
-                    super::FullSemanticImageFault::Truncated {
-                        field: super::FullSemanticImageField::Documentation,
-                        offset: cursor,
-                    },
-                )?);
-                let target_tag =
-                    *value
-                        .get(cursor + 4)
-                        .ok_or(super::FullSemanticImageFault::Truncated {
-                            field: super::FullSemanticImageField::Documentation,
-                            offset: cursor + 4,
-                        })?;
-                let target = read_u32(value, cursor + 5).ok_or(
-                    super::FullSemanticImageFault::Truncated {
-                        field: super::FullSemanticImageField::Documentation,
-                        offset: cursor + 5,
-                    },
-                )?;
-                cursor += 9;
-                let target = match target_tag {
-                    0 => crate::ir::LinkTarget::Local(EntityId::new(target)),
-                    1 => crate::ir::LinkTarget::External(ExternalId::new(target)),
-                    observed => {
-                        return Err(super::FullSemanticImageFault::Discriminant {
-                            field: super::FullSemanticImageField::Documentation,
-                            row: coordinate,
-                            observed,
-                        });
-                    }
-                };
-                DocFragment::Link { label, target }
-            }
-            3 => DocFragment::SoftBreak,
-            4 => DocFragment::HardBreak,
-            observed => {
-                return Err(super::FullSemanticImageFault::Discriminant {
-                    field: super::FullSemanticImageField::Documentation,
-                    row: coordinate,
-                    observed,
-                });
-            }
-        };
-        if index == wanted {
-            return Ok(fragment);
+/// Decodes one documentation fragment at `cursor`, advancing it past the
+/// record.  Returns `None` on any truncation or discriminant fault, exactly
+/// like the row decoder it replaces.
+fn doc_fragment_at(value: &[u8], cursor: &mut usize) -> Option<DocFragment> {
+    let tag = *value.get(*cursor)?;
+    *cursor = cursor.checked_add(1)?;
+    let fragment = match tag {
+        0 => {
+            let atom = AtomId::new(read_u32(value, *cursor)?);
+            *cursor += 4;
+            DocFragment::Text(crate::ir::TextId::new(atom.raw))
         }
-    }
-    Err(super::FullSemanticImageFault::Reference {
-        field: super::FullSemanticImageField::Documentation,
-        row: coordinate,
-        expected: count,
-        observed: wanted,
-    })
+        1 => {
+            let atom = AtomId::new(read_u32(value, *cursor)?);
+            *cursor += 4;
+            DocFragment::Code(crate::ir::TextId::new(atom.raw))
+        }
+        2 => {
+            let label = crate::ir::TextId::new(read_u32(value, *cursor)?);
+            let target_tag = *value.get(cursor.checked_add(4)?)?;
+            let target = read_u32(value, cursor.checked_add(5)?)?;
+            *cursor += 9;
+            let target = match target_tag {
+                0 => crate::ir::LinkTarget::Local(EntityId::new(target)),
+                1 => crate::ir::LinkTarget::External(ExternalId::new(target)),
+                _ => return None,
+            };
+            DocFragment::Link { label, target }
+        }
+        3 => DocFragment::SoftBreak,
+        4 => DocFragment::HardBreak,
+        _ => return None,
+    };
+    Some(fragment)
 }
 
 fn binary_entity(view: &SemanticImageView<'_>, identity: DeclarationIdentity) -> Option<EntityId> {

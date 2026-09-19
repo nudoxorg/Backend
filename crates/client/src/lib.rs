@@ -31,6 +31,14 @@ pub const MAX_FRAME: usize = backend_replication::LOCAL_CONTROL_MAX_FRAME;
 pub enum ClientError {
     /// The endpoint or stream could not be used.
     Io(String),
+    /// The connection is gone: the peer closed it, reset it, or stopped
+    /// answering on it.
+    ///
+    /// This is separate from [`ClientError::Io`] because it is not a fault of
+    /// the request. The daemon closes a connection that has sent nothing for
+    /// its read timeout, so a long-lived client sees this on its first call
+    /// after an idle gap and can recover by connecting again.
+    Disconnected(std::io::ErrorKind),
     /// A frame, DTO, or identity proof failed admission.
     Protocol(String),
     /// A bounded transport allocation was rejected.
@@ -63,6 +71,9 @@ impl fmt::Display for ClientError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(message) => write!(formatter, "local endpoint: {message}"),
+            Self::Disconnected(kind) => {
+                write!(formatter, "local endpoint disconnected: {kind}")
+            }
             Self::Protocol(message) => write!(formatter, "protocol: {message}"),
             Self::Transport(error) => write!(formatter, "transport: {error}"),
             Self::CommandFailed(failure) => write!(formatter, "command failed: {failure}"),
@@ -240,6 +251,7 @@ impl CertifiedCommandTransport for UnixCommandTransport {
 /// identity certificates themselves.
 #[cfg(unix)]
 pub struct Session {
+    endpoint: std::path::PathBuf,
     transport: UnixCommandTransport,
     next_request_id: u64,
     continuations: BTreeMap<backend_library::Cursor, WireCertificate>,
@@ -271,11 +283,38 @@ impl Session {
     /// # Errors
     /// Returns an error when the local endpoint is unavailable or cannot authenticate.
     pub fn connect(path: impl AsRef<Path>) -> Result<Self, ClientError> {
+        let endpoint = path.as_ref().to_path_buf();
         Ok(Self {
-            transport: UnixCommandTransport::connect(path)?,
+            transport: UnixCommandTransport::connect(&endpoint)?,
+            endpoint,
             next_request_id: 1,
             continuations: BTreeMap::new(),
         })
+    }
+
+    /// Returns the endpoint this session was connected to.
+    #[must_use]
+    pub fn endpoint(&self) -> &Path {
+        &self.endpoint
+    }
+
+    /// Replaces this session's connection with a fresh one to the same
+    /// endpoint.
+    ///
+    /// Request numbering and remembered page continuations belong to the
+    /// connection that issued them, so both are discarded: a continuation
+    /// certificate admitted by the old connection proves nothing about the
+    /// new one. The session keeps its identity so callers hold one handle
+    /// across a connection the daemon retired.
+    ///
+    /// # Errors
+    /// Returns an error when the endpoint is unavailable or cannot
+    /// authenticate.
+    pub fn reconnect(&mut self) -> Result<(), ClientError> {
+        self.transport = UnixCommandTransport::connect(&self.endpoint)?;
+        self.next_request_id = 1;
+        self.continuations.clear();
+        Ok(())
     }
 
     /// Reads the current admitted product revision.
@@ -922,12 +961,39 @@ fn map_frame(error: LocalControlError) -> ClientError {
         LocalControlError::FrameTooLarge => {
             ClientError::Transport(ReplicationError::MessageTooLarge)
         }
+        LocalControlError::Io(kind) if is_disconnect(kind) => ClientError::Disconnected(kind),
         LocalControlError::Io(kind) => {
             ClientError::Io(format!("local control I/O failed: {kind:?}"))
         }
-        LocalControlError::Closed => ClientError::Io("local endpoint is closed".to_owned()),
+        LocalControlError::Closed => {
+            ClientError::Disconnected(std::io::ErrorKind::NotConnected)
+        }
+        // The framing layer reports `Truncated` only for an unexpected
+        // end of file, which is a peer that stopped mid-frame rather than a
+        // frame this client failed to understand.
+        LocalControlError::Truncated => {
+            ClientError::Disconnected(std::io::ErrorKind::UnexpectedEof)
+        }
         other => ClientError::Protocol(other.to_string()),
     }
+}
+
+/// Returns whether one stream error kind means this connection is gone.
+///
+/// `WouldBlock` and `TimedOut` are both here because a socket read timeout
+/// surfaces as either depending on the platform, and the local listener closes
+/// a connection whose read timeout expires without writing anything back.
+const fn is_disconnect(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::NotConnected
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::WouldBlock
+    )
 }
 
 fn encode_request(request: &CommandDto) -> Result<Vec<u8>, ClientError> {

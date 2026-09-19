@@ -9,6 +9,7 @@
 //! exits when every spring has settled, and a test can assert exactly that.
 
 use super::events::ShellEvent;
+use super::marks::{self, Marks, Recent};
 use super::prefs::{self, EditorScheme, Preferences};
 use crate::motion::spring::{Spring, Stiffness};
 use crate::theme::palette::Appearance;
@@ -64,24 +65,65 @@ impl Notice {
     }
 }
 
+/// One page of the settings sheet.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum SettingsPage {
+    /// Palette, size, motion.
+    #[default]
+    Appearance,
+    /// Where source opens.
+    Editor,
+    /// Connecting an agent over MCP.
+    Agents,
+    /// Capabilities, lanes, endpoint, revision.
+    Diagnostics,
+    /// Every mark and what it means.
+    Legend,
+}
+
+impl SettingsPage {
+    /// Every page, in sidebar order.
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Appearance,
+        Self::Editor,
+        Self::Agents,
+        Self::Diagnostics,
+        Self::Legend,
+    ];
+
+    /// Returns the sidebar label.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Editor => "Editor",
+            Self::Agents => "Agents",
+            Self::Diagnostics => "Diagnostics",
+            Self::Legend => "Legend",
+        }
+    }
+}
+
 /// Panels, focus, notices, and preferences.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "three independent facts about one window: is anything moving, is the settings sheet up, is the window too narrow"
+    reason = "independent facts about one window: is anything moving, is the settings sheet up, is the window too narrow, is there a page for the context panel"
 )]
 pub(crate) struct ShellStore {
     data: PathBuf,
     prefs: Preferences,
+    marks: Marks,
     library: Spring,
     context: Spring,
     focus: Focus,
     settings: bool,
+    settings_page: SettingsPage,
     notice: Option<Notice>,
     notice_task: Option<Task<()>>,
     animation: Option<Task<()>>,
     animating: bool,
     narrow: bool,
     context_only: bool,
+    context_available: bool,
 }
 
 impl EventEmitter<ShellEvent> for ShellStore {}
@@ -90,30 +132,97 @@ impl ShellStore {
     /// Restores the shell from the preferences beside a workspace.
     pub(crate) fn new(data: PathBuf, prefs: Preferences) -> Self {
         Self {
+            marks: marks::load(&data),
             library: Spring::at(
                 open_width(prefs.library_open(), prefs.library_width()),
                 Stiffness::PANEL,
             ),
-            context: Spring::at(
-                open_width(prefs.context_open(), prefs.context_width()),
-                Stiffness::PANEL,
-            ),
+            context: Spring::at(0.0, Stiffness::PANEL),
             focus: Focus::Reader,
             settings: false,
+            settings_page: SettingsPage::default(),
             notice: None,
             notice_task: None,
             animation: None,
             animating: false,
             narrow: false,
             context_only: false,
+            context_available: false,
             data,
             prefs,
         }
     }
 
+    /// Returns the durable workspace directory preferences live beside.
+    pub(crate) fn data(&self) -> &std::path::Path {
+        &self.data
+    }
+
+    /// Returns the settings page being shown.
+    pub(crate) const fn settings_page(&self) -> SettingsPage {
+        self.settings_page
+    }
+
+    /// Shows one settings page.
+    pub(crate) fn show_settings_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
+        self.settings_page = page;
+        self.settings = true;
+        cx.notify();
+    }
+
+    /// Records whether the open page has anything for the context panel.
+    ///
+    /// The panel is not a fixture. With nothing open it has nothing to say,
+    /// so it is not shown at all — not as a rail, not as an empty column.
+    pub(crate) fn set_context_available(&mut self, available: bool, cx: &mut Context<Self>) {
+        if self.context_available == available {
+            return;
+        }
+        self.context_available = available;
+        self.retarget(cx);
+    }
+
     /// Returns the persisted preferences.
     pub(crate) const fn prefs(&self) -> Preferences {
         self.prefs
+    }
+
+    /// Returns the reader's pins and recents.
+    pub(crate) const fn marks(&self) -> &Marks {
+        &self.marks
+    }
+
+    /// Pins or unpins one coordinate and persists it; returns whether it is now pinned.
+    pub(crate) fn toggle_pin(&mut self, coordinate: &str, cx: &mut Context<Self>) -> bool {
+        let pinned = self.marks.toggle_pin(coordinate);
+        self.persist_marks(cx);
+        cx.emit(ShellEvent::Preferences);
+        cx.notify();
+        pinned
+    }
+
+    /// Records one subject as the most recently opened and persists it.
+    pub(crate) fn remember(&mut self, entry: Recent, cx: &mut Context<Self>) {
+        self.marks.remember(entry);
+        self.persist_marks(cx);
+        cx.notify();
+    }
+
+    /// Forgets a project that left the shelf: its pin and its recent pages.
+    pub(crate) fn forget_project(&mut self, root: &str, cx: &mut Context<Self>) {
+        self.marks.unpin(root);
+        self.marks.forget_project(root);
+        self.persist_marks(cx);
+        cx.notify();
+    }
+
+    fn persist_marks(&self, cx: &mut Context<Self>) {
+        let data = self.data.clone();
+        let marks = self.marks.clone();
+        cx.background_spawn(async move {
+            let _ = marks::save(&data, &marks);
+        })
+        .detach();
     }
 
     /// Returns the library panel's current width in pixels.
@@ -130,6 +239,7 @@ impl ShellStore {
     pub(crate) const fn library_open(&self) -> bool {
         self.prefs.library_open()
     }
+
 
     /// Returns which region owns the keyboard.
     pub(crate) const fn focus(&self) -> Focus {
@@ -200,15 +310,7 @@ impl ShellStore {
         }
         self.narrow = narrow;
         self.context_only = context_only;
-        self.library.retarget(open_width(
-            self.prefs.library_open() && !narrow,
-            self.prefs.library_width(),
-        ));
-        self.context.retarget(open_width(
-            self.prefs.context_open() && !narrow && !context_only,
-            self.prefs.context_width(),
-        ));
-        self.start(cx);
+        self.retarget(cx);
     }
 
     /// Switches appearance and persists it.
@@ -248,6 +350,11 @@ impl ShellStore {
         cx.notify();
     }
 
+    /// Raises a short statement of something that just happened.
+    pub(crate) fn notify(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.notify_copied(text, None, cx);
+    }
+
     /// Raises a short confirmation.
     pub(crate) fn notify_copied(
         &mut self,
@@ -276,10 +383,13 @@ impl ShellStore {
             self.prefs.library_open() && !self.narrow,
             self.prefs.library_width(),
         ));
-        self.context.retarget(open_width(
-            self.prefs.context_open() && !self.narrow && !self.context_only,
-            self.prefs.context_width(),
-        ));
+        let context_open =
+            self.prefs.context_open() && !self.narrow && !self.context_only;
+        self.context.retarget(if self.context_available {
+            open_width(context_open, self.prefs.context_width())
+        } else {
+            0.0
+        });
         self.start(cx);
     }
 

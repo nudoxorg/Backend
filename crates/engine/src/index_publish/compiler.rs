@@ -5,9 +5,11 @@
 
 use core::ops::Deref;
 
-use crate::publication::OpenedCompilation;
 use crate::index_build::PreparedIndex;
-use backend_semantic::index_core::{ExactSegmentId, IndexSnapshot, IndexSnapshotError, LexicalSegmentId};
+use crate::publication::OpenedCompilation;
+use backend_semantic::index_core::{
+    ExactSegmentId, IndexSnapshot, IndexSnapshotError, LexicalSegmentId,
+};
 
 use crate::index_publish::PublishedIndexSnapshotView;
 

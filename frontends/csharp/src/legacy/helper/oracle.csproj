@@ -16,7 +16,9 @@
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- net8.0 tracks the pinned shell SDK; the oracle cannot target a
+      framework newer than the SDK that publishes it. -->
+    <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -26,6 +28,11 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <!-- Warnings are the point of an extractor: it must not silently drop symbols. -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- CS9057 only: the analyzers bundled with Roslyn 5.6.0 reference
+      compiler 4.12, newer than the pinned SDK 8's 4.11, so they cannot load
+      at build time. Demoted until the shell moves to a newer SDK; every
+      other warning stays an error. -->
+    <WarningsNotAsErrors>CS9057</WarningsNotAsErrors>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>

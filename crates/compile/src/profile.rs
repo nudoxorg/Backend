@@ -1,5 +1,6 @@
 //! Closed source profiles that alter parsing or semantic meaning.
 
+use backend_semantic::vocabulary::JavaRelease;
 use crate::SourceLanguage;
 
 /// Rust edition selected before name resolution and macro expansion.
@@ -102,50 +103,6 @@ pub enum GoVersion {
     Go124,
     /// Go 1.25.
     Go125,
-}
-
-/// Java source release selected before javac attribution.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum JavaRelease {
-    /// Java 8.
-    Java8,
-    /// Java 11.
-    Java11,
-    /// Java 17.
-    Java17,
-    /// Java 21.
-    Java21,
-    /// Java 25.
-    Java25,
-}
-
-impl JavaRelease {
-    /// Returns the canonical javac release spelling.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Java8 => "8",
-            Self::Java11 => "11",
-            Self::Java17 => "17",
-            Self::Java21 => "21",
-            Self::Java25 => "25",
-        }
-    }
-}
-
-impl<'source> TryFrom<&'source str> for JavaRelease {
-    type Error = UnsupportedProfile<'source>;
-
-    fn try_from(value: &'source str) -> Result<Self, Self::Error> {
-        match value {
-            "8" | "java-8" => Ok(Self::Java8),
-            "11" | "java-11" => Ok(Self::Java11),
-            "17" | "java-17" => Ok(Self::Java17),
-            "21" | "java-21" => Ok(Self::Java21),
-            "25" | "java-25" => Ok(Self::Java25),
-            value => Err(UnsupportedProfile::new(SourceLanguage::Java, value)),
-        }
-    }
 }
 
 /// C# language version selected by Roslyn.
@@ -288,11 +245,12 @@ mod tests {
             PythonVersion::try_from("python-3.13"),
             Ok(PythonVersion::Python313)
         );
-        let Err(error) = JavaRelease::try_from("latest") else {
-            return Err("open release was accepted");
+        let Err(error) = PythonVersion::try_from("python-next") else {
+            return Err("open version was accepted");
         };
-        assert_eq!(error.language(), SourceLanguage::Java);
-        assert_eq!(error.value(), "latest");
+        assert_eq!(error.language(), SourceLanguage::Python);
+        assert_eq!(error.value(), "python-next");
+        assert_eq!(JavaRelease::try_from("latest"), Err("latest"));
         Ok(())
     }
 }

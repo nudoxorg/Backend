@@ -226,10 +226,9 @@ impl IngestProgress {
         }
         let mut languages = languages;
         languages.sort_by_key(|row: &LanguageRows| row.language());
-        if languages
-            .windows(2)
-            .any(|pair| pair.first().map(|row| row.language()) == pair.get(1).map(|row| row.language()))
-        {
+        if languages.windows(2).any(|pair| {
+            pair.first().map(|row| row.language()) == pair.get(1).map(|row| row.language())
+        }) {
             return Err(ProgressError::DuplicateLanguage);
         }
         let mut faults = faults;

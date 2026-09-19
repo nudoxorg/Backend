@@ -31,6 +31,7 @@ use serde_json::{Map, Value, json};
 use std::io::{self, BufRead, Write};
 
 mod codec;
+mod reconnect;
 mod resources;
 mod tools;
 use codec::{
@@ -112,6 +113,22 @@ impl Product for SessionProduct {
     }
 }
 
+/// The local daemon endpoint this server reconnects to.
+///
+/// The server outlives any one connection: the daemon closes a connection that
+/// has been idle for its read timeout, and an agent thinks for longer than
+/// that between tool calls. Remembering the endpoint is what lets the next
+/// call open a fresh connection instead of failing on a dead one.
+struct SessionEndpoint(std::path::PathBuf);
+
+impl reconnect::Endpoint for SessionEndpoint {
+    type Product = SessionProduct;
+
+    fn connect(&mut self) -> Result<Self::Product, ClientError> {
+        Session::connect(&self.0).map(SessionProduct::new)
+    }
+}
+
 /// Runs newline-delimited MCP stdio until the client closes stdin.
 pub(super) fn serve_stdio(
     session: Session,
@@ -119,7 +136,9 @@ pub(super) fn serve_stdio(
     reader: &mut impl BufRead,
     writer: &mut impl Write,
 ) -> io::Result<()> {
-    let mut server = Server::new(SessionProduct::new(session), project);
+    let endpoint = SessionEndpoint(session.endpoint().to_path_buf());
+    let product = reconnect::Reconnecting::new(endpoint, SessionProduct::new(session));
+    let mut server = Server::new(product, project);
     loop {
         let Some(line) = read_line(reader)? else {
             return Ok(());

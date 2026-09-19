@@ -218,7 +218,7 @@ fn jsdoc_renders() {
     assert_eq!(
         ir.embedding_text(
             item(&ir, "add", ItemKind::Function),
-            backend_semantic::ir::EmbeddingProfile::DOCUMENTED,
+            backend_semantic::ir::semantic_render::EmbeddingProfile::DOCUMENTED,
         )
         .expect("embedding")
         .to_string(),

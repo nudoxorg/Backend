@@ -2,7 +2,9 @@
 //! This module owns the manifest wire invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use crate::driver::CompiledFragment;
-use backend_semantic::ir::{FragmentRange, FragmentRangeManifest, RecipeFact, SectionKind, SourceIdentity};
+use backend_semantic::ir::{
+    FragmentRange, FragmentRangeManifest, RecipeFact, SectionKind, SourceIdentity,
+};
 use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
 use backend_version::{
     ArtifactId, CompileRecipeDomain, ContentId, IrFragmentDomain, IrFragmentEncoding,

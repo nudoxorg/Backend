@@ -1,4 +1,44 @@
 //! Compatibility contract tests using deterministic native authority inputs.
+//!
+//! AUTHORITY-LANE CONSOLIDATION (cutover rationale, mirroring
+//! `tests/journeys/tests/cutover_e2e.rs`): the manifest-only native stub
+//! lanes for C#, Go, Java, and Python (`CSharpFrontend`, `GoFrontend`,
+//! `JavaFrontend`, `PythonFrontend`) were deleted together with their
+//! helper-protocol transports. Their production native-authority lanes
+//! survive as the real toolchain transactions the engine drives (the Roslyn
+//! `CSharpAuthorityProducer`, the vendored `GoOracle` image, the javac
+//! harness behind `JavaAuthorityImage`, and the `Pyrefly` checker), but those
+//! require a live dotnet/go/jdk/pyrefly toolchain, so they cannot ground a
+//! deterministic helper-protocol contract here. The surviving
+//! deterministic authority owners — `ClangFrontend` and the
+//! `TypeScriptFrontend` (whose helper protocol is the same language-agnostic
+//! native contract) — carry the discovery-root-binding, persistent-protocol,
+//! and partial-coverage legs below. The retired legs per test:
+//!
+//! - `native_authorities_bind_facts_to_their_discovery_root`: the C#, Go,
+//!   Java, and Python stub legs are retired (deleted stub lanes; the same
+//!   discovery-root law is exercised by the two surviving deterministic
+//!   lanes and by the engine suites driving the real lanes, e.g.
+//!   `go_render`, `java_corpus`, `python_render`, and the Roslyn
+//!   authority tests).
+//! - `native_authorities_complete_the_persistent_protocol`: same four
+//!   retired stub legs, same rationale; the persistent half-duplex protocol
+//!   itself is language-agnostic and stays proven by the surviving lanes.
+//! - `semantic_profiles_parse_before_environment_validation`: the Java and
+//!   Python string-profile legs are re-pointed at the closed vocabulary
+//!   where that parsing now lives (`backend_semantic::vocabulary`), keeping
+//!   the open-ended-profile rejection intent.
+//! - `semantic_profile_aliases_have_one_manifest_identity`: the Java alias
+//!   leg is re-pointed at `JavaRelease` (which still admits both spellings);
+//!   the Python alias leg is retired because the closed vocabulary admits
+//!   exactly one canonical spelling per profile, so the one-identity law
+//!   holds by construction (documented below).
+//!
+//! Rust's stub authority was retired earlier for the same reason (the root
+//! `RustFrontend` was deleted; the engine drives the legacy Cargo/rust-analyzer
+//! adapter, and Rust's structural floor is proven by the `compiler_parity`
+//! and `structural_containment` suites through
+//! `backend_frontend_rust::syntax_frontend`).
 #![forbid(unsafe_code)]
 
 #[cfg(test)]
@@ -10,17 +50,9 @@ use backend_compile::{
 #[cfg(test)]
 use backend_frontend_clang::ClangFrontend;
 #[cfg(test)]
-use backend_frontend_csharp::CSharpFrontend;
-#[cfg(test)]
-use backend_frontend_go::GoFrontend;
-#[cfg(test)]
-use backend_frontend_java::JavaFrontend;
-#[cfg(test)]
-use backend_frontend_python::PythonFrontend;
-#[cfg(test)]
-use backend_frontend_rust::RustFrontend;
-#[cfg(test)]
 use backend_frontend_typescript::TypeScriptFrontend;
+#[cfg(test)]
+use backend_semantic::vocabulary::{JavaRelease, LanguageProfile};
 #[cfg(test)]
 use std::error::Error;
 
@@ -99,28 +131,16 @@ fn golden_fixture_inputs_are_nonempty_and_facts_are_normalized() {
 
 #[test]
 fn semantic_profiles_parse_before_environment_validation() -> Result<(), &'static str> {
-    let Err(java) = JavaFrontend::new(Vec::new(), "relative-javac", Vec::new(), "latest") else {
-        return Err("open-ended Java release was accepted");
-    };
-    assert!(
-        java.to_string()
-            .contains("unsupported java profile \"latest\"")
-    );
-
-    let Err(python) = PythonFrontend::new(
-        Vec::new(),
-        "relative-python",
-        "relative-pyrefly",
-        "python-next",
-        Vec::new(),
-    ) else {
-        return Err("open-ended Python version was accepted");
-    };
-    assert!(
-        python
-            .to_string()
-            .contains("unsupported python profile \"python-next\"")
-    );
+    // The Java and Python string-profile grammars moved into the closed
+    // vocabulary the surviving lanes share (`backend_semantic::vocabulary`),
+    // so the parse-before-environment law is asserted exactly where the
+    // rejection now happens: an open-ended profile never parses, and
+    // parsing touches no toolchain, executable, or filesystem state.
+    assert!(matches!(JavaRelease::try_from("latest"), Err("latest")));
+    assert!(matches!(
+        LanguageProfile::try_from("python-next"),
+        Err("python-next")
+    ));
 
     let Err(typescript) = TypeScriptFrontend::new(
         Vec::new(),
@@ -141,16 +161,19 @@ fn semantic_profiles_parse_before_environment_validation() -> Result<(), &'stati
 
 #[test]
 fn semantic_profile_aliases_have_one_manifest_identity() -> Result<(), Box<dyn Error>> {
-    let canonical = JavaFrontend::new(Vec::new(), "/bin/sh", Vec::new(), "21")?.discover()?;
-    let alias = JavaFrontend::new(Vec::new(), "/bin/sh", Vec::new(), "java-21")?.discover()?;
-    assert_eq!(canonical.manifest().digest(), alias.manifest().digest());
+    // Java still admits the canonical javac release spelling and its profile
+    // alias; both must collapse onto the one closed variant.
+    assert_eq!(
+        JavaRelease::try_from("21"),
+        JavaRelease::try_from("java-21")
+    );
 
-    let canonical =
-        PythonFrontend::new(Vec::new(), "/bin/sh", "/bin/sh", "3.13", Vec::new())?.discover()?;
-    let alias = PythonFrontend::new(Vec::new(), "/bin/sh", "/bin/sh", "python-3.13", Vec::new())?
-        .discover()?;
-    assert_eq!(canonical.manifest().digest(), alias.manifest().digest());
-
+    // The Python alias leg is retired: the closed `LanguageProfile`
+    // vocabulary admits exactly one canonical spelling per profile
+    // (`python-3.13`), so the alias-collapse law the stub lane used to
+    // enforce holds by construction and no second spelling remains to join
+    // against. The TypeScript lane keeps a live alias surface and still
+    // binds both spellings to one manifest identity.
     let canonical =
         TypeScriptFrontend::new(Vec::new(), "/bin/sh", "/bin/sh", "ts", Vec::new())?.discover()?;
     let alias =
@@ -168,6 +191,21 @@ enum FixtureMode {
 }
 
 #[cfg(test)]
+/// The deterministic authority legs that survive the stub-lane deletion.
+///
+/// Deliberately two lanes: the C#, Go, Java, and Python native stub
+/// authorities were deleted together with their manifest-only frontends
+/// (`CSharpFrontend`, `GoFrontend`, `JavaFrontend`, `PythonFrontend`), and
+/// their production lanes (Roslyn `CSharpAuthorityProducer`, vendored
+/// `GoOracle`, javac harness + `JavaAuthorityImage`, `Pyrefly`) are real
+/// toolchain transactions that cannot ground a deterministic helper-protocol
+/// contract here. Those lanes' semantics are exercised by the engine suites
+/// that drive them (`go_render`, `java_corpus`, `python_render`, and the
+/// Roslyn authority tests). Clang and TypeScript keep live helper lanes with
+/// the same language-agnostic native protocol and carry the contract below.
+const AUTHORITY_LEGS: &[&str] = &["clang", "typescript"];
+
+#[cfg(test)]
 fn authority_for(language: &str, mode: FixtureMode) -> Result<Box<dyn Authority>, Box<dyn Error>> {
     let input = corpus_input(language)?.to_vec();
     let authority: Box<dyn Authority> = match language {
@@ -178,70 +216,6 @@ fn authority_for(language: &str, mode: FixtureMode) -> Result<Box<dyn Authority>
             FixtureMode::Persistent => {
                 ClangFrontend::with_persistent_helper(input, "/bin/sh", NATIVE_HELPER, "-O0")?
             }
-        }),
-        "csharp" => Box::new(match mode {
-            FixtureMode::Cold => {
-                CSharpFrontend::with_helper(input, "/bin/sh", NATIVE_HELPER, "net8")?
-            }
-            FixtureMode::Persistent => {
-                CSharpFrontend::with_persistent_helper(input, "/bin/sh", NATIVE_HELPER, "net8")?
-            }
-        }),
-        "go" => Box::new(match mode {
-            FixtureMode::Cold => GoFrontend::with_helper(
-                input,
-                "/bin/sh",
-                NATIVE_HELPER,
-                b"module p".to_vec(),
-                "linux",
-            )?,
-            FixtureMode::Persistent => GoFrontend::with_persistent_helper(
-                input,
-                "/bin/sh",
-                NATIVE_HELPER,
-                b"module p".to_vec(),
-                "linux",
-            )?,
-        }),
-        "java" => Box::new(match mode {
-            FixtureMode::Cold => {
-                JavaFrontend::with_helper(input, "/bin/sh", NATIVE_HELPER, b"cp".to_vec(), "21")?
-            }
-            FixtureMode::Persistent => JavaFrontend::with_persistent_helper(
-                input,
-                "/bin/sh",
-                NATIVE_HELPER,
-                b"cp".to_vec(),
-                "21",
-            )?,
-        }),
-        "python" => Box::new(match mode {
-            FixtureMode::Cold => {
-                PythonFrontend::with_helper(input, "/bin/sh", NATIVE_HELPER, "3.13", Vec::new())?
-            }
-            FixtureMode::Persistent => PythonFrontend::with_persistent_helper(
-                input,
-                "/bin/sh",
-                NATIVE_HELPER,
-                "3.13",
-                Vec::new(),
-            )?,
-        }),
-        "rust" => Box::new(match mode {
-            FixtureMode::Cold => RustFrontend::with_helper(
-                input,
-                "/bin/sh",
-                NATIVE_HELPER,
-                b"[package]".to_vec(),
-                "default",
-            )?,
-            FixtureMode::Persistent => RustFrontend::with_persistent_helper(
-                input,
-                "/bin/sh",
-                NATIVE_HELPER,
-                b"[package]".to_vec(),
-                "default",
-            )?,
         }),
         "typescript" => Box::new(match mode {
             FixtureMode::Cold => {
@@ -261,8 +235,14 @@ fn authority_for(language: &str, mode: FixtureMode) -> Result<Box<dyn Authority>
 }
 
 #[test]
-fn all_seven_authorities_bind_facts_to_their_discovery_root() -> Result<(), Box<dyn Error>> {
-    for &(language, _, _) in FIXTURES {
+fn native_authorities_bind_facts_to_their_discovery_root() -> Result<(), Box<dyn Error>> {
+    // Deliberately two lanes: the C#, Go, Java, Python, and Rust native stub
+    // authorities were deleted with their manifest-only frontends (see the
+    // module-level cutover rationale and [`AUTHORITY_LEGS`]). The surviving
+    // deterministic helper lanes carry the discovery-root law; the real
+    // production lanes for the retired languages prove it in the engine
+    // suites that drive them.
+    for &language in AUTHORITY_LEGS {
         let authority = authority_for(language, FixtureMode::Cold)?;
         let snapshot = authority.discover()?;
         let key = SessionKey::new(
@@ -317,8 +297,11 @@ fn all_seven_authorities_bind_facts_to_their_discovery_root() -> Result<(), Box<
 }
 
 #[test]
-fn all_seven_authorities_complete_the_persistent_protocol() -> Result<(), Box<dyn Error>> {
-    for &(language, _, _) in FIXTURES {
+fn native_authorities_complete_the_persistent_protocol() -> Result<(), Box<dyn Error>> {
+    // Deliberately two lanes: the C#, Go, Java, Python, and Rust native stub
+    // authorities were deleted with their manifest-only frontends (see the
+    // module-level cutover rationale and [`AUTHORITY_LEGS`]).
+    for &language in AUTHORITY_LEGS {
         let authority = authority_for(language, FixtureMode::Persistent)?;
         let snapshot = authority.discover()?;
         let key = SessionKey::new(
@@ -348,12 +331,19 @@ fn all_seven_authorities_complete_the_persistent_protocol() -> Result<(), Box<dy
 
 #[test]
 fn partial_native_authority_keeps_scope_incomplete() -> Result<(), Box<dyn Error>> {
-    let authority = RustFrontend::with_helper(
-        b"fn main() {}".to_vec(),
+    // Re-based from `RustFrontend` onto the live TypeScript native lane. The
+    // `partial_authority.py` fixture speaks the language-agnostic protocol,
+    // echoes the requested language, and emits the same generic record shape
+    // the TypeScript adapter already admits in `native_authority.py`'s
+    // fallback, so the coverage-semantics claim (a partial native authority
+    // never claims complete scope and every record still carries evidence) is
+    // preserved unchanged.
+    let authority = TypeScriptFrontend::with_helper(
+        b"export function main(): number { return 0; }\n".to_vec(),
         "/bin/sh",
         NATIVE_PARTIAL_HELPER,
-        b"[package]\nname = \"fixture\"\n".to_vec(),
-        "default",
+        "ts",
+        Vec::new(),
     )?;
     let snapshot = authority.discover()?;
     let key = SessionKey::new(
@@ -425,6 +415,73 @@ fn partial_and_unavailable_never_authorize_deletion() {
     let unavailable = CoverageWitness::Unavailable(UntrustedCoverageScope::new(7));
     assert!(!matches!(partial, CoverageWitness::Complete(_)));
     assert!(!matches!(unavailable, CoverageWitness::Complete(_)));
+}
+
+#[test]
+fn a_selected_but_vanished_authority_is_unavailable_not_unsupported() -> Result<(), Box<dyn Error>>
+{
+    // Journey-leg restoration. `tests/journeys/tests/cutover_e2e.rs` used to
+    // carry the only journey-level proof that a selected-but-vanished
+    // authority yields the typed `Coverage::Unavailable` witness — distinct
+    // from `Coverage::Unsupported` — and that witness was retired there with
+    // its manifest-only constructors (Rust, Python, Go, Java, C#). The
+    // distinction now lives in the shared native adapter
+    // (`extract_native_with_adapter`): no configured helper is Unsupported,
+    // while a helper that was configured but whose executable has vanished is
+    // Unavailable. This leg re-proves both terminals through the surviving
+    // TypeScript authority shape: same source, same profile, only the
+    // helper's existence differs.
+    let source = b"export function main(): number { return 0; }\n".to_vec();
+    let node = "/bin/sh";
+
+    // Manifest-only: no helper was ever selected, so the lane never claims
+    // native semantic authority — the typed Unsupported witness.
+    let manifest_only = TypeScriptFrontend::new(source.clone(), node, node, "ts", Vec::new())?;
+    let snapshot = manifest_only.discover()?;
+    let key = SessionKey::new(
+        manifest_only.identity(),
+        snapshot.manifest(),
+        typed_of::<ProfileSchema>(b"vanish-profile"),
+        typed_of::<FlowSchema>(b"vanish-flow"),
+        typed_of::<SemanticBasisSchema>(b"vanish-basis"),
+    );
+    let extraction = manifest_only.extract(&snapshot, key)?;
+    assert_eq!(
+        extraction.coverage().state(),
+        Coverage::Unsupported,
+        "a manifest-only authority must report Unsupported"
+    );
+
+    // Selected-but-vanished: the helper path was configured and its identity
+    // is part of the manifest, but the executable is gone. The lane reports
+    // the typed Unavailable witness — a counted terminal, never a silent
+    // skip and never the Unsupported that would mean "never selected".
+    let vanished = TypeScriptFrontend::with_helper(
+        source,
+        node,
+        "/nonexistent/backend-vanished-checker.js",
+        "ts",
+        Vec::new(),
+    )?;
+    let snapshot = vanished.discover()?;
+    let key = SessionKey::new(
+        vanished.identity(),
+        snapshot.manifest(),
+        typed_of::<ProfileSchema>(b"vanish-profile"),
+        typed_of::<FlowSchema>(b"vanish-flow"),
+        typed_of::<SemanticBasisSchema>(b"vanish-basis"),
+    );
+    let extraction = vanished.extract(&snapshot, key)?;
+    assert_eq!(
+        extraction.coverage().state(),
+        Coverage::Unavailable,
+        "a selected-but-vanished authority must report Unavailable"
+    );
+    assert!(
+        extraction.records().is_empty(),
+        "an unavailable authority manufactures no facts"
+    );
+    Ok(())
 }
 
 #[test]

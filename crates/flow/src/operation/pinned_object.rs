@@ -10,10 +10,12 @@
 use core::{convert::Infallible, marker::PhantomData, ops::Deref};
 
 use backend_store::hydration::VerifiedGeneration;
-use backend_version::{Domain, GenerationId};
+use backend_store::root::{
+    BorrowedGenerationView, EntryKey, GenerationEntry, GenerationView, Locality,
+};
 use backend_version::object::{ObjectRef, ProviderSet};
-use backend_store::root::{BorrowedGenerationView, EntryKey, GenerationEntry, GenerationView, Locality};
 use backend_version::schema::OperationId;
+use backend_version::{Domain, GenerationId};
 use thiserror::Error;
 
 use crate::operation::{BatchSource, Operation, Provider, SourcePoll, TerminalSummary};
@@ -36,15 +38,15 @@ mod tests {
     extern crate alloc;
 
     use alloc::{vec, vec::Vec};
-    use backend_version::{ContentId, GenerationId, ObjectDomain};
-    use backend_version::object::{
-        ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet, RemoteBase,
-    };
     use backend_store::root::{
         EntryKey, GenerationRoot, GenerationView, LocalityError, LocalityException,
         LocalityWriteError, NonResident, PreparedLocality, RootBuildError, RootEntry,
     };
+    use backend_version::object::{
+        ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet, RemoteBase,
+    };
     use backend_version::schema::SchemaId;
+    use backend_version::{ContentId, GenerationId, ObjectDomain};
     use thiserror::Error;
 
     use super::{LocalObjectError, LocalObjectProvider, ObjectProvenance, PinnedObjectRequest};

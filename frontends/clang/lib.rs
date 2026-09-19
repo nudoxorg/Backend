@@ -13,21 +13,12 @@ use std::{fmt, path::Path};
 
 mod authority;
 mod compile_commands;
-mod extract;
-mod oracle;
 mod system_includes;
 
 #[path = "src/legacy/mod.rs"]
 pub mod legacy;
 
-pub use authority::{
-    ClangAuthorityError, ClangProject, analyze_file, analyze_source, native_records,
-};
-pub use oracle::{
-    ClangOracle, OracleAlias, OracleDiagnostic, OracleEnum, OracleField, OracleFnMod,
-    OracleFunction, OracleGenericParam, OracleNamespace, OracleParam, OracleReceiver, OracleRecord,
-    OracleType, OracleVar, OracleVariant, OracleVisibility, Reference, Usr,
-};
+pub use authority::{ClangAuthorityError, ClangProject};
 
 const LANGUAGE: &str = "clang";
 
@@ -261,13 +252,27 @@ fn valid_diagnostic(value: &str) -> bool {
 /// # Errors
 /// Returns an error when the embedded grammar query cannot be admitted.
 pub fn syntax_frontend() -> Result<backend_compile::SyntaxFrontend, backend_compile::SyntaxError> {
+    // A member's name sits in the declarator, which is a pointer declarator
+    // for the common `T *member;` form, so both shapes are selected. The
+    // stock query already tags an out-of-line `Type::member` a method; what
+    // was missing is the data a record declares.
+    let tags = format!(
+        "{}\n{}",
+        tree_sitter_cpp::TAGS_QUERY,
+        r"
+(field_declaration declarator: (field_identifier) @name) @definition.field
+(field_declaration declarator: (pointer_declarator declarator: (field_identifier) @name)) @definition.field
+(enumerator name: (identifier) @name) @definition.variant
+(namespace_definition name: (namespace_identifier) @name) @definition.module
+"
+    );
     backend_compile::SyntaxFrontend::new(
         backend_compile::SourceLanguage::Clang,
-        b"tree-sitter-cpp-0.23.4/tags-v1",
+        b"tree-sitter-cpp-0.23.4/tags-v2",
         vec![backend_compile::GrammarVariant::new(
             &["c", "h", "cc", "cpp", "cxx", "hh", "hpp", "hxx", "m", "mm"],
             tree_sitter_cpp::LANGUAGE.into(),
-            tree_sitter_cpp::TAGS_QUERY,
+            &tags,
         )?],
     )
 }

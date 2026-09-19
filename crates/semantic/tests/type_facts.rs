@@ -8,8 +8,9 @@ use backend_semantic::ir::{
     TypeFactInput, TypeFactLane, TypeNode, WriteError,
 };
 use backend_semantic::ir_vocabulary::{
-    AtomId, EntityId, ExternalEntityRef, ListSpan, NominalRef, SemanticTypeRecord, SemanticTypeTag,
-    TypeChildTarget, TypeRef,
+    AtomId, DeclarationFamilyId, DeclarationIdentity, EntityId, ExternalEntityRef, ListSpan,
+    NominalRef, SemanticTypeRecord, SemanticTypeTag, StableRef, TypeChildTarget, TypeRef,
+    VariantFingerprint,
 };
 use backend_semantic::vocabulary::{LanguageProfile, NativeTool, RustEdition, Stage};
 use core::num::ParseIntError;
@@ -512,6 +513,54 @@ fn self_nominal_admits_and_round_trips_as_the_recursive_terminal() -> Result<(),
         decoded.record.nominal,
         Some(NominalRef::Local(EntityId::new(0)))
     );
+    Ok(())
+}
+
+#[test]
+fn stable_nominal_round_trips_with_its_declaration_identity() -> Result<(), TestFailure> {
+    // A declaration-identified external nominal carries no spelling and no
+    // local coordinate: only the target fragment identity plus the exact
+    // composite declaration identity.
+    let stable = StableRef {
+        fragment: ContentId::<IrFragmentDomain>::from_canonical_bytes(b"system-fragment"),
+        declaration: DeclarationIdentity {
+            family: DeclarationFamilyId::from_canonical_bytes(b"out-of-root-usr"),
+            variant: VariantFingerprint::from_canonical_bytes(b"out-of-root-usr"),
+        },
+    };
+    let inputs = [TypeFactInput {
+        owner: EntityId::new(0),
+        record: SemanticTypeRecord {
+            tag: SemanticTypeTag::Nominal,
+            payload0: 0,
+            payload1: 0,
+            text: None,
+            text2: None,
+            nominal: Some(NominalRef::Stable(stable)),
+            children: ListSpan::new(0, 0),
+        },
+    }];
+    let lane = TypeFactLane {
+        inputs: &inputs,
+        computed: &[],
+        children: &[],
+    };
+    assert!(lane.admit(1, &[]).is_ok());
+    let bytes = write(&lane)?;
+    let view = FragmentView::validate(&bytes)?;
+    let mut cursor =
+        view.type_facts()
+            .ok_or(TestFailure::Admission(TypeFactFault::TrailingBytes {
+                declared: 0,
+            }))?;
+    let decoded = cursor
+        .next()
+        .transpose()
+        .map_err(TestFailure::Admission)?
+        .ok_or(TestFailure::Admission(TypeFactFault::TrailingBytes {
+            declared: 0,
+        }))?;
+    assert_eq!(decoded.record.nominal, Some(NominalRef::Stable(stable)));
     Ok(())
 }
 

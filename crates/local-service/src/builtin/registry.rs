@@ -13,9 +13,10 @@ use backend_engine::registry::{
 use flate2::read::{DeflateDecoder, GzDecoder};
 use std::collections::BTreeSet;
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 const MAX_TARGET_POLL_PAGES: usize = 256;
@@ -42,6 +43,13 @@ pub(super) enum RegistryAddError {
     NotFound,
     /// The verified bytes are not a supported bounded source archive.
     UnsupportedArchive,
+    /// Release exists but registry policy excludes it from a new add.
+    ReleasePolicy(backend_engine::registry::ReleaseStanding),
+    /// Active advisory policy excludes this exact release from a new add.
+    SecurityPolicy {
+        advisories: u32,
+        maximum_severity: u8,
+    },
     /// A typed registry acquisition or persistence failure.
     Acquisition(AcquisitionError),
 }
@@ -59,6 +67,19 @@ impl fmt::Display for RegistryAddError {
             Self::UnsupportedArchive => {
                 formatter.write_str("registry archive is unsupported or contains no source files")
             }
+            Self::ReleasePolicy(standing) => {
+                write!(
+                    formatter,
+                    "registry release is {standing:?} and cannot be newly added"
+                )
+            }
+            Self::SecurityPolicy {
+                advisories,
+                maximum_severity,
+            } => write!(
+                formatter,
+                "registry release matches {advisories} active advisories (maximum severity {maximum_severity})"
+            ),
             Self::Acquisition(error) => error.fmt(formatter),
         }
     }
@@ -80,6 +101,68 @@ impl RegistryGateway {
                     name: backend_engine::ProductText::new(admitted.qualified_name().as_str())?,
                     version: backend_engine::ProductText::new(admitted.version().as_str())?,
                     bytes: published.bytes,
+                    standing: match published.facts.standing() {
+                        backend_engine::registry::ReleaseStanding::Available => {
+                            backend_engine::RegistryReleaseStanding::Available
+                        }
+                        backend_engine::registry::ReleaseStanding::Yanked => {
+                            backend_engine::RegistryReleaseStanding::Yanked
+                        }
+                        backend_engine::registry::ReleaseStanding::Deprecated => {
+                            backend_engine::RegistryReleaseStanding::Deprecated
+                        }
+                        backend_engine::registry::ReleaseStanding::Unlisted => {
+                            backend_engine::RegistryReleaseStanding::Unlisted
+                        }
+                        backend_engine::registry::ReleaseStanding::Retracted => {
+                            backend_engine::RegistryReleaseStanding::Retracted
+                        }
+                        backend_engine::registry::ReleaseStanding::Removed => {
+                            backend_engine::RegistryReleaseStanding::Removed
+                        }
+                    },
+                    downloads: match published.facts.downloads() {
+                        backend_engine::registry::DownloadCount::Exact(value) => {
+                            backend_engine::RegistryDownloadCount::Exact(value)
+                        }
+                        backend_engine::registry::DownloadCount::Approximate(value) => {
+                            backend_engine::RegistryDownloadCount::Approximate(value)
+                        }
+                        backend_engine::registry::DownloadCount::NotReported(reason) => {
+                            backend_engine::RegistryDownloadCount::NotReported(
+                                backend_engine::ProductText::new(match reason {
+                                    backend_engine::registry::DownloadCountGap::Unsupported => {
+                                        "unsupported"
+                                    }
+                                    backend_engine::registry::DownloadCountGap::Privileged => {
+                                        "privileged"
+                                    }
+                                    backend_engine::registry::DownloadCountGap::Withheld => {
+                                        "withheld"
+                                    }
+                                    backend_engine::registry::DownloadCountGap::Unavailable => {
+                                        "unavailable"
+                                    }
+                                })?,
+                            )
+                        }
+                    },
+                    security: match published.facts.security() {
+                        backend_engine::registry::SecurityStanding::Unassessed => {
+                            backend_engine::RegistrySecurityStanding::Unassessed
+                        }
+                        backend_engine::registry::SecurityStanding::NoKnownAdvisory => {
+                            backend_engine::RegistrySecurityStanding::NoKnownAdvisory
+                        }
+                        backend_engine::registry::SecurityStanding::Affected {
+                            advisories,
+                            maximum_severity,
+                        } => backend_engine::RegistrySecurityStanding::Affected {
+                            advisories,
+                            maximum_severity,
+                        },
+                    },
+                    facts_version: published.facts.version(),
                 })
             })
             .collect::<Result<Vec<_>, backend_engine::ProductAdmissionError>>()
@@ -129,7 +212,13 @@ impl RegistryGateway {
                 AcquisitionOutcome::RetryAfter { delay, .. } => {
                     return Err(RegistryAddError::RetryAfter(delay));
                 }
-                AcquisitionOutcome::UpToDate { .. } => return Err(RegistryAddError::NotFound),
+                AcquisitionOutcome::UpToDate { .. } => {
+                    return if self.owner.published(coordinate).is_some() {
+                        self.ensure_artifact(coordinate)
+                    } else {
+                        Err(RegistryAddError::NotFound)
+                    };
+                }
                 AcquisitionOutcome::Published(receipt) => {
                     if receipt
                         .packages
@@ -154,6 +243,28 @@ impl RegistryGateway {
     }
 
     fn ensure_artifact(&self, coordinate: &PackageCoordinate) -> Result<Vec<u8>, RegistryAddError> {
+        let published = self
+            .owner
+            .published(coordinate)
+            .ok_or(RegistryAddError::NotFound)?;
+        if matches!(
+            published.facts.standing(),
+            backend_engine::registry::ReleaseStanding::Yanked
+                | backend_engine::registry::ReleaseStanding::Retracted
+                | backend_engine::registry::ReleaseStanding::Removed
+        ) {
+            return Err(RegistryAddError::ReleasePolicy(published.facts.standing()));
+        }
+        if let backend_engine::registry::SecurityStanding::Affected {
+            advisories,
+            maximum_severity,
+        } = published.facts.security()
+        {
+            return Err(RegistryAddError::SecurityPolicy {
+                advisories,
+                maximum_severity,
+            });
+        }
         self.owner
             .read_artifact(coordinate)
             .map_err(RegistryAddError::Acquisition)?
@@ -218,16 +329,13 @@ impl StagedProject {
     }
 }
 
-impl Drop for StagedProject {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
 const MAX_EXTRACTED_FILES: usize = 100_000;
 const MAX_EXTRACTED_FILE_BYTES: usize = 512 * 1024;
 const MAX_EXTRACTED_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+const MAX_EXPANSION_RATIO: usize = 200;
+const EXPANSION_SLACK_BYTES: usize = 1024 * 1024;
 const TAR_BLOCK_BYTES: usize = 512;
+static STAGING_NONCE: AtomicU64 = AtomicU64::new(0);
 
 /// Materializes a verified archive beneath a private workspace staging root.
 ///
@@ -249,21 +357,40 @@ pub(super) fn stage_archive(
     let digest = blake3::hash(archive);
     let directory = staging_root.join(hex(digest.as_bytes()));
     if directory.exists() {
-        fs::remove_dir_all(&directory)
-            .map_err(|error| RegistryAddError::Acquisition(AcquisitionError::Io(error)))?;
+        return Ok(StagedProject { path: directory });
     }
-    fs::create_dir(&directory)
+    let temporary = staging_root.join(format!(
+        ".{}.{}.{}.tmp",
+        hex(digest.as_bytes()),
+        std::process::id(),
+        STAGING_NONCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&temporary)
         .map_err(|error| RegistryAddError::Acquisition(AcquisitionError::Io(error)))?;
-    let mut writer = StageWriter::new(directory.clone());
+    let mut writer = StageWriter::new(temporary.clone());
     let result = extract_archive(archive, &mut writer);
     if result.is_err() {
-        let _ = fs::remove_dir_all(&directory);
+        let _ = fs::remove_dir_all(&temporary);
     }
     result?;
     if writer.source_files == 0 {
-        let _ = fs::remove_dir_all(&directory);
+        let _ = fs::remove_dir_all(&temporary);
         return Err(RegistryAddError::UnsupportedArchive);
     }
+    File::open(&temporary)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| RegistryAddError::Acquisition(AcquisitionError::Io(error)))?;
+    if let Err(error) = fs::rename(&temporary, &directory) {
+        if directory.is_dir() {
+            let _ = fs::remove_dir_all(&temporary);
+        } else {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(RegistryAddError::Acquisition(AcquisitionError::Io(error)));
+        }
+    }
+    File::open(&staging_root)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| RegistryAddError::Acquisition(AcquisitionError::Io(error)))?;
     Ok(StagedProject { path: directory })
 }
 
@@ -337,6 +464,7 @@ fn extract_archive(archive: &[u8], writer: &mut StageWriter) -> Result<(), Regis
     if archive.starts_with(&[0x1f, 0x8b]) {
         let mut decoder = GzDecoder::new(Cursor::new(archive));
         let decompressed = read_bounded(&mut decoder, MAX_EXTRACTED_TOTAL_BYTES)?;
+        admit_expansion(archive.len(), decompressed.len())?;
         return extract_tar(&decompressed, writer);
     }
     if archive.starts_with(b"PK\x03\x04") || archive.starts_with(b"PK\x05\x06") {
@@ -357,6 +485,7 @@ fn extract_tar(bytes: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAdd
             terminated = true;
             break;
         }
+        validate_tar_checksum(header)?;
         let name = tar_name(header)?;
         let size = tar_octal(&header[124..136])?;
         let data_start = offset
@@ -412,6 +541,36 @@ fn tar_octal(field: &[u8]) -> Result<usize, RegistryAddError> {
     usize::from_str_radix(value, 8).map_err(|_| RegistryAddError::UnsupportedArchive)
 }
 
+fn validate_tar_checksum(header: &[u8]) -> Result<(), RegistryAddError> {
+    let expected = tar_octal(&header[148..156])?;
+    let measured = header
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| {
+            if (148..156).contains(&index) {
+                usize::from(b' ')
+            } else {
+                usize::from(*byte)
+            }
+        })
+        .sum::<usize>();
+    (expected == measured)
+        .then_some(())
+        .ok_or(RegistryAddError::UnsupportedArchive)
+}
+
+fn admit_expansion(compressed: usize, expanded: usize) -> Result<(), RegistryAddError> {
+    let maximum = compressed
+        .checked_mul(MAX_EXPANSION_RATIO)
+        .and_then(|value| value.checked_add(EXPANSION_SLACK_BYTES))
+        .ok_or(RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+    if expanded > maximum {
+        Err(RegistryAddError::Acquisition(AcquisitionError::Bounds))
+    } else {
+        Ok(())
+    }
+}
+
 fn trim_nul(bytes: &[u8]) -> &str {
     let end = bytes
         .iter()
@@ -436,10 +595,12 @@ fn extract_zip(bytes: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAdd
         }
         let flags = le_u16(bytes, offset + 6)?;
         let method = le_u16(bytes, offset + 8)?;
+        let expected_crc = le_u32(bytes, offset + 14)?;
         let compressed = usize::try_from(le_u32(bytes, offset + 18)?)
             .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
         let declared = usize::try_from(le_u32(bytes, offset + 22)?)
             .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+        admit_expansion(compressed, declared)?;
         let name_len = usize::from(le_u16(bytes, offset + 26)?);
         let extra_len = usize::from(le_u16(bytes, offset + 28)?);
         let name_start = offset + 30;
@@ -475,6 +636,9 @@ fn extract_zip(bytes: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAdd
                 _ => return Err(RegistryAddError::UnsupportedArchive),
             };
             if content.len() != declared {
+                return Err(RegistryAddError::UnsupportedArchive);
+            }
+            if crc32(&content) != expected_crc {
                 return Err(RegistryAddError::UnsupportedArchive);
             }
             writer.file(name, &content)?;
@@ -515,6 +679,18 @@ fn le_u32(bytes: &[u8], offset: usize) -> Result<u32, RegistryAddError> {
         .get(offset..offset.saturating_add(4))
         .ok_or(RegistryAddError::UnsupportedArchive)?;
     Ok(u32::from_le_bytes([value[0], value[1], value[2], value[3]]))
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = 0_u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
 }
 
 fn confined_path(raw: &str) -> Result<PathBuf, RegistryAddError> {
@@ -571,9 +747,12 @@ fn supported_source_name(path: &str) -> bool {
     matches!(
         extension.to_ascii_lowercase().as_str(),
         "rs" | "py"
+            | "pyw"
             | "pyi"
             | "ts"
             | "tsx"
+            | "mts"
+            | "cts"
             | "js"
             | "mjs"
             | "cjs"
@@ -586,9 +765,12 @@ fn supported_source_name(path: &str) -> bool {
             | "cc"
             | "cpp"
             | "cxx"
+            | "c++"
             | "hh"
             | "hpp"
             | "hxx"
+            | "h++"
+            | "ipp"
             | "m"
             | "mm"
     )
@@ -625,6 +807,10 @@ mod tests {
         header[124..136].copy_from_slice(size.as_bytes());
         header[156] = b'0';
         header[257..263].copy_from_slice(b"ustar\0");
+        header[148..156].fill(b' ');
+        let checksum: usize = header.iter().map(|byte| usize::from(*byte)).sum();
+        let checksum = format!("{checksum:06o}\0 ");
+        header[148..156].copy_from_slice(checksum.as_bytes());
         let mut archive = header.to_vec();
         archive.extend_from_slice(bytes);
         archive.resize(archive.len().div_ceil(TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES, 0);
@@ -632,8 +818,26 @@ mod tests {
         archive
     }
 
+    fn stored_zip_file(name: &str, bytes: &[u8], checksum: u32) -> Vec<u8> {
+        let mut archive = Vec::new();
+        archive.extend_from_slice(&0x0403_4b50_u32.to_le_bytes());
+        archive.extend_from_slice(&20_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&checksum.to_le_bytes());
+        archive.extend_from_slice(&u32::try_from(bytes.len()).expect("zip size").to_le_bytes());
+        archive.extend_from_slice(&u32::try_from(bytes.len()).expect("zip size").to_le_bytes());
+        archive.extend_from_slice(&u16::try_from(name.len()).expect("zip name").to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(name.as_bytes());
+        archive.extend_from_slice(bytes);
+        archive
+    }
+
     #[test]
-    fn tar_archive_materializes_source_and_cleans_up() {
+    fn tar_archive_materializes_once_and_reuses_the_immutable_tree() {
         let root = scratch();
         let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
         let archive = tar_file("package/src/lib.rs", b"pub fn from_registry() {}");
@@ -642,7 +846,9 @@ mod tests {
         assert_eq!(source, b"pub fn from_registry() {}");
         let path = staged.path().to_path_buf();
         drop(staged);
-        assert!(!path.exists());
+        assert!(path.exists());
+        let reused = stage_archive(&coordinate, &archive, &root).expect("reuse archive");
+        assert_eq!(reused.path(), path);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -656,6 +862,28 @@ mod tests {
             Err(RegistryAddError::UnsupportedArchive)
         ));
         assert!(!root.parent().unwrap_or(&root).join("outside.rs").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn zip_entries_require_their_declared_crc() {
+        let root = scratch();
+        let coordinate = PackageCoordinate::parse("pkg:npm/demo@1.0.0").expect("coordinate");
+        let source = b"export const verified = true;";
+        let valid = stored_zip_file("package/src/index.mts", source, crc32(source));
+        let staged = stage_archive(&coordinate, &valid, &root).expect("valid zip");
+        assert_eq!(
+            fs::read(staged.path().join("package/src/index.mts")).expect("source"),
+            source
+        );
+
+        let corrupt_coordinate =
+            PackageCoordinate::parse("pkg:npm/corrupt@1.0.0").expect("coordinate");
+        let corrupt = stored_zip_file("package/src/index.ts", source, crc32(source) ^ 1);
+        assert!(matches!(
+            stage_archive(&corrupt_coordinate, &corrupt, &root),
+            Err(RegistryAddError::UnsupportedArchive)
+        ));
         let _ = fs::remove_dir_all(root);
     }
 }

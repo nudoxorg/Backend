@@ -88,9 +88,9 @@ impl<'source> DeclarationScope<'source> {
     pub fn standalone(profile: LanguageProfile) -> DeclarationScope<'static> {
         let (ecosystem, path) = match profile {
             LanguageProfile::Rust(_) => ("standalone-rust", "input.rs"),
-            LanguageProfile::TypeScript(backend_semantic::vocabulary::TypeScriptSource::TypeScript) => {
-                ("standalone-typescript", "input.ts")
-            }
+            LanguageProfile::TypeScript(
+                backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+            ) => ("standalone-typescript", "input.ts"),
             LanguageProfile::TypeScript(backend_semantic::vocabulary::TypeScriptSource::Tsx) => {
                 ("standalone-typescript", "input.tsx")
             }
@@ -224,6 +224,16 @@ impl<'cancel> WorkPermit<'cancel> {
 pub enum SemanticAuthorityInput<'source> {
     /// No profile-specific project authority accompanies this request.
     None,
+    /// Whole-project C/C++ authority bound to one entry translation unit.
+    ///
+    /// The project supplies the entry's compilation-database arguments and the
+    /// package root that keys project-local cross-file references; system and
+    /// out-of-root targets remain opaque but stable. This is deliberately a
+    /// borrow of the project owner, which retains libclang discovery state.
+    Clang {
+        /// Checked project root and its exact entry translation unit.
+        project: &'source backend_frontend_clang::ClangProject,
+    },
     /// Caller-selected Cargo graph for in-process rust-analyzer admission.
     Rust {
         /// Exact Cargo root and toolchain context selected by the caller.

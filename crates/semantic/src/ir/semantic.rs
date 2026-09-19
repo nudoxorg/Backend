@@ -71,6 +71,13 @@ pub type TypeParameterListId = ListId<TypeParameter>;
 /// the same written sequence as trait bounds, and a renderer/discovery view
 /// must never recover their order from language-specific side tables.
 pub type TypeParameterBoundListId = ListId<TypeParameterBound>;
+/// Interned sequence of Rust free predicates.
+///
+/// A free predicate names a subject that is *not* a declared generic
+/// parameter (`Vec<T>: Clone`, `T::Item: Clone`, `Self: Sized`, a trait
+/// supertrait) together with its ordered bounds.  The bounds reuse the shared
+/// [`TypeParameterBound`] lane; only the row table is Rust-specific.
+pub type FreePredicateListId = ListId<FreePredicate>;
 
 /// Compatibility spelling for the one frozen declaration-kind vocabulary.
 ///
@@ -1859,6 +1866,20 @@ pub enum TypeParameterBound {
     Lifetime(AtomId),
 }
 
+/// One free generic predicate whose subject is not a declared parameter.
+///
+/// Rust admits predicates on arbitrary written types (`Vec<T>: Clone`,
+/// `<T as Trait>::Item: Clone`) and on the implicit `Self` type.  These rows
+/// keep the exact subject type and its ordered bound run without inventing a
+/// declared parameter for it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct FreePredicate {
+    /// The predicate subject type.
+    pub subject: TypeId,
+    /// Ordered bounds in the shared bound lane.
+    pub bounds: TypeParameterBoundListId,
+}
+
 /// The declaration role of a generic parameter.
 ///
 /// A Rust `const N: usize` is a value parameter with a declared value type;
@@ -2075,6 +2096,13 @@ pub struct RustFacts {
     pub lifetimes: AtomListId,
     pub where_clauses: TypeParameterListId,
     pub macros: AtomListId,
+    /// const-generic value-default expression spellings, in written order.
+    /// Rust requires every generic default to be trailing (E0128), so this
+    /// suffix run pairs with the trailing const parameters; a const parameter
+    /// without a default contributes no atom and no empty atom is ever used.
+    pub const_defaults: AtomListId,
+    /// Free generic predicates whose subject is not a declared parameter.
+    pub free_predicates: FreePredicateListId,
 }
 
 /// Python parameter convention, retained instead of erasing it into an atom.
@@ -2847,6 +2875,8 @@ impl LanguageExtensions {
             validate_atom_list(builder, facts.lifetimes)?;
             validate_type_parameters(builder, facts.where_clauses)?;
             validate_atom_list(builder, facts.macros)?;
+            validate_atom_list(builder, facts.const_defaults)?;
+            validate_free_predicates(builder, facts.free_predicates)?;
         }
         if let Some(facts) = self.python.get(entity).copied() {
             validate_atom_list(builder, facts.decorators)?;
@@ -2918,6 +2948,30 @@ fn validate_type_parameters(
             });
         }
         optional_id(parameter.default, builder.types.len(), SemanticSpace::Type)?;
+    }
+    Ok(())
+}
+
+fn validate_free_predicates(
+    builder: &IrBuilder,
+    predicates: FreePredicateListId,
+) -> Result<(), BuildError> {
+    for predicate in
+        list_or_dangling(&builder.free_predicates, predicates, SemanticSpace::FreePredicates)?
+    {
+        id(predicate.subject, builder.types.len(), SemanticSpace::Type)?;
+        for bound in list_or_dangling(
+            &builder.type_parameter_bounds,
+            predicate.bounds,
+            SemanticSpace::TypeParameterBounds,
+        )? {
+            match bound {
+                TypeParameterBound::Type(ty) => {
+                    id(*ty, builder.types.len(), SemanticSpace::Type)?;
+                }
+                TypeParameterBound::Lifetime(name) => atom(builder, *name)?,
+            }
+        }
     }
     Ok(())
 }
@@ -3332,6 +3386,7 @@ pub enum SemanticSpace {
     TemplateParts,
     TypeParameterBounds,
     TypeParameters,
+    FreePredicates,
 }
 
 /// Closed semantic fault in a language-owned extension row.
@@ -3726,6 +3781,7 @@ pub struct IrBuilder {
     template_parts: ListInterner<TemplatePart>,
     type_parameter_bounds: ListInterner<TypeParameterBound>,
     type_parameters: ListInterner<TypeParameter>,
+    free_predicates: ListInterner<FreePredicate>,
     items: ItemColumns,
     authority_facts: AuthorityColumns,
     sources: SourceColumns,
@@ -3957,6 +4013,12 @@ impl IrBuilder {
         parameters: &[TypeParameter],
     ) -> Result<TypeParameterListId, BuildError> {
         self.type_parameters.intern(parameters).map_err(Into::into)
+    }
+    pub fn intern_free_predicates(
+        &mut self,
+        predicates: &[FreePredicate],
+    ) -> Result<FreePredicateListId, BuildError> {
+        self.free_predicates.intern(predicates).map_err(Into::into)
     }
     pub fn add_item(
         &mut self,
@@ -4230,6 +4292,7 @@ impl IrBuilder {
             template_parts: self.template_parts.freeze(),
             type_parameter_bounds: self.type_parameter_bounds.freeze(),
             type_parameters: self.type_parameters.freeze(),
+            free_predicates: self.free_predicates.freeze(),
             items: self.items,
             authority_facts: self.authority_facts,
             sources: self.sources,
@@ -4696,6 +4759,12 @@ impl TreeBuilder<'_, '_> {
         parameters: &[TypeParameter],
     ) -> Result<TypeParameterListId, BuildError> {
         self.builder.intern_type_parameters(parameters)
+    }
+    pub fn intern_free_predicates(
+        &mut self,
+        predicates: &[FreePredicate],
+    ) -> Result<FreePredicateListId, BuildError> {
+        self.builder.intern_free_predicates(predicates)
     }
     /// Interns an entity list while the reserved tree range keeps local
     /// entity identities branded to this one transaction.
@@ -5733,6 +5802,7 @@ pub struct StorageColumns<'ir> {
     pub template_parts: ListTableView<'ir, TemplatePart>,
     pub type_parameter_bounds: ListTableView<'ir, TypeParameterBound>,
     pub type_parameters: ListTableView<'ir, TypeParameter>,
+    pub free_predicates: ListTableView<'ir, FreePredicate>,
     pub entities: EntityColumns<'ir>,
     /// Cold authority facts aligned exactly with `entities`.
     pub entity_authority: EntityAuthorityColumns<'ir>,
@@ -5786,6 +5856,8 @@ impl StorageColumns<'_> {
         add!(self.type_parameter_bounds.ranges);
         add!(self.type_parameters.elements);
         add!(self.type_parameters.ranges);
+        add!(self.free_predicates.elements);
+        add!(self.free_predicates.ranges);
         add!(self.entities.names);
         add!(self.entities.kinds);
         add!(self.entities.visibility);
@@ -5870,6 +5942,7 @@ pub struct Ir {
     template_parts: ListTable<TemplatePart>,
     type_parameter_bounds: ListTable<TypeParameterBound>,
     type_parameters: ListTable<TypeParameter>,
+    free_predicates: ListTable<FreePredicate>,
     items: ItemColumns,
     authority_facts: AuthorityColumns,
     sources: SourceColumns,
@@ -5929,6 +6002,7 @@ impl Ir {
             template_parts: self.template_parts.view(),
             type_parameter_bounds: self.type_parameter_bounds.view(),
             type_parameters: self.type_parameters.view(),
+            free_predicates: self.free_predicates.view(),
             entities: self.entity_columns(),
             entity_authority: self.entity_authority_columns(),
             occurrence_authority: self.occurrence_authority_columns(),
@@ -6047,6 +6121,10 @@ impl Ir {
         id: TypeParameterBoundListId,
     ) -> Option<&[TypeParameterBound]> {
         self.type_parameter_bounds.get(id)
+    }
+    #[must_use]
+    pub fn free_predicates(&self, id: FreePredicateListId) -> Option<&[FreePredicate]> {
+        self.free_predicates.get(id)
     }
     #[must_use]
     pub fn external(&self, id: ExternalId) -> Option<&ExternalTarget> {
@@ -6185,6 +6263,7 @@ impl Ir {
                     type_lists: u32::try_from(columns.type_lists.ranges.len()).ok()?,
                     entity_lists: u32::try_from(columns.entity_lists.ranges.len()).ok()?,
                     atom_lists: u32::try_from(columns.atom_lists.ranges.len()).ok()?,
+                    free_predicates: u32::try_from(columns.free_predicates.ranges.len()).ok()?,
                     type_parameters: crate::ir::TypeParameterListBounds::ExactRanges {
                         count: u32::try_from(columns.type_parameters.ranges.len()).ok()?,
                     },

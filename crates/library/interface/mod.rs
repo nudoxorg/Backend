@@ -17,6 +17,14 @@ mod service;
 mod source;
 mod text;
 
+pub use backend_execution::adaptive::{
+    BatteryState, ByteCount, CapabilityDomain, CapabilityKind, ContentId, GenerationId,
+    IndexSnapshotId, OperationBudget, Pin, Pressure, RecoveryCause, ResourceBudget, ResourceClass,
+    RetryBudget,
+};
+pub use backend_semantic::vocabulary::{
+    AuthorityDiagnosticClass, AuthorityPhase, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,
+};
 pub use compiler::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerDiagnostic,
     CompilerDiagnosticFacts, CompilerReadiness, CompilerRequest, CompilerRuntimeCause,
@@ -28,14 +36,6 @@ pub use compiler::{
     NativeWorkerPanicClass, NativeWorkerPanicMessage, PublicationAuthority, PublicationCause,
     PublicationPhase, SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot,
     SourceAuthority, UnavailableCompiler,
-};
-pub use backend_semantic::vocabulary::{
-    AuthorityDiagnosticClass, AuthorityPhase, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,
-};
-pub use backend_execution::adaptive::{
-    BatteryState, ByteCount, CapabilityDomain, CapabilityKind, ContentId, GenerationId,
-    IndexSnapshotId, OperationBudget, Pin, Pressure, RecoveryCause, ResourceBudget, ResourceClass,
-    RetryBudget,
 };
 pub use index_sync::{
     BaseGeneration, ClientIndex, ClientManifest, ClientSyncError, ClientSyncPhase,

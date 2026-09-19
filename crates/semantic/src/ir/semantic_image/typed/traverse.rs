@@ -369,7 +369,7 @@ impl<'image> TypedDependencyPlan<'image> {
     }
 }
 
-const PLAN_DOMAINS: [TypedPlanDomain; 8] = [
+const PLAN_DOMAINS: [TypedPlanDomain; 9] = [
     TypedPlanDomain::Type,
     TypedPlanDomain::TypeList,
     TypedPlanDomain::TupleElements,
@@ -378,6 +378,7 @@ const PLAN_DOMAINS: [TypedPlanDomain; 8] = [
     TypedPlanDomain::AtomList,
     TypedPlanDomain::TypeParameters,
     TypedPlanDomain::TypeParameterBounds,
+    TypedPlanDomain::FreePredicates,
 ];
 
 fn for_each_node(
@@ -533,6 +534,8 @@ pub(crate) fn role_key(role: TypedEdgeRole) -> (u8, u32) {
         TypedEdgeRole::ParameterAllowsRefLike(index) => (21, index),
         TypedEdgeRole::BoundKind(index) => (22, index),
         TypedEdgeRole::BoundValue(index) => (23, index),
+        TypedEdgeRole::PredicateSubject(index) => (24, index),
+        TypedEdgeRole::PredicateBound(index) => (25, index),
     }
 }
 

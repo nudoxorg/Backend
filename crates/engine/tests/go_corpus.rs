@@ -288,9 +288,9 @@ fn row(
                     ..
                 },
             ..
-        }) if module.starts_with("golang.org/x/tools") && fact == 16_384 => {
+        }) if module.starts_with("golang.org/x/tools") && fact == 32_768 => {
             return Ok((
-                16_384,
+                32_768,
                 "FactCapacity",
                 started.elapsed().as_millis(),
                 oracle_ms,

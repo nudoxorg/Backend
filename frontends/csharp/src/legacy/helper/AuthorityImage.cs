@@ -10,13 +10,13 @@ using Microsoft.CodeAnalysis.Text;
 
 namespace Nudox.Oracle;
 
-/// <summary>Writes the canonical version-3 Roslyn authority image.</summary>
+    /// <summary>Writes the canonical version-4 Roslyn authority image.</summary>
 internal static class AuthorityImage
 {
     private const int HeaderBytes = 256;
     private const uint Absent = uint.MaxValue;
-    private static readonly byte[] DigestDomain = "nudox.csharp.authority.image.sha256.v3\0"u8.ToArray();
-    private static readonly int[] Widths = [8, 1, 48, 24, 12, 4, 16, 8, 8, 20, 28];
+    private static readonly byte[] DigestDomain = "nudox.csharp.authority.image.sha256.v4\0"u8.ToArray();
+    private static readonly int[] Widths = [8, 1, 52, 24, 12, 4, 16, 8, 8, 20, 28];
 
     public static void Write(LoadedCompilation loaded, string sourceBinding, Stream destination)
     {
@@ -93,7 +93,7 @@ internal static class AuthorityImage
                             node,
                             null,
                             variable.Identifier.Span));
-                        declarations.Add(new byte[48]);
+                        declarations.Add(new byte[52]);
                     }
                     continue;
                 }
@@ -104,7 +104,7 @@ internal static class AuthorityImage
                 declarationMap.TryAdd(symbol, checked((uint)row));
                 syntaxMap.Add(node, checked((uint)row));
                 infos.Add(new DeclarationInfo(symbol, node, null, null));
-                declarations.Add(new byte[48]);
+                declarations.Add(new byte[52]);
             }
             // Roslyn exposes record primary-constructor properties as symbols but
             // there is no property declaration node to visit. Preserve the
@@ -124,7 +124,7 @@ internal static class AuthorityImage
                     declarationMap.Add(property, checked((uint)row));
                     infos.Add(new DeclarationInfo(property, declaration,
                         declaration.ParameterList!.Span, parameter.Identifier.Span));
-                    declarations.Add(new byte[48]);
+                    declarations.Add(new byte[52]);
                 }
             }
             // Named type rows are made before any member rows; all later type uses
@@ -169,13 +169,23 @@ internal static class AuthorityImage
             var symbol = info.Symbol;
             var span = Span(info.Span);
             var nameSpan = info.NameSpan;
-            var name = Atom(SourceSlice(nameSpan));
+            // A static constructor has no source identifier: Roslyn names it
+            // after the containing type in syntax, but its canonical metadata
+            // name is `.cctor`, which is the only fact that separates it from
+            // the parameterless instance constructor. Every other declaration
+            // keeps its exact source spelling.
+            var name = symbol is IMethodSymbol { MethodKind: MethodKind.StaticConstructor }
+                ? Atom(symbol.Name)
+                : Atom(SourceSlice(nameSpan));
             Put(row, 0, Kind(symbol)); row[1] = Flags(symbol, info.Node);
             row[2] = Partial(symbol, tree, info.Node); row[3] = RefKind(symbol);
             Put(row, 4, name); Put(row, 8, symbol is INamedTypeSymbol n ? Atom(Fqn(n)) : Absent);
             Put(row, 12, Owner(symbol));
             Put(row, 16, DeclaredType(symbol));
             Put(row, 20, span.Start); Put(row, 24, U(offsets[nameSpan.Start])); Put(row, 28, U(offsets[nameSpan.End]));
+            // UNWIRED (v4 activates it): the exclusive end of the full
+            // declaration span, mapped through the same byte-offset table.
+            Put(row, 48, span.End);
             var ps = parameters.Count; var gs = typeParameters.Count;
             if (symbol is INamedTypeSymbol delegateType && delegateType.TypeKind == TypeKind.Delegate && delegateType.DelegateInvokeMethod is { } invoke) WriteParameters(invoke.Parameters);
             else if (symbol is IMethodSymbol m) WriteParameters(m.Parameters);
@@ -267,6 +277,12 @@ internal static class AuthorityImage
 
         private IEnumerable<(ITypeSymbol Type, string? Label)> TypeChildren(ITypeSymbol type)
         {
+            // Error types are leaves by contract: the display-string spelling
+            // already carries the unresolved name (including any arity), so
+            // their type arguments must not become structural children. Note
+            // Roslyn models errors as named types; without this guard an
+            // unresolvable generic silently violates the reader's child law.
+            if (type is IErrorTypeSymbol) yield break;
             if (type is IArrayTypeSymbol a) { for (var i = 0; i < a.Rank; i++) yield return (a.ElementType, null); yield break; }
             if (type is IPointerTypeSymbol p) { yield return (p.PointedAtType, null); yield break; }
             if (type is INamedTypeSymbol n && n.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T) { yield return (n.TypeArguments[0], null); yield break; }
@@ -315,6 +331,26 @@ internal static class AuthorityImage
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()) AddReference(model, node, 1, node.Expression);
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<ObjectCreationExpressionSyntax>()) AddReference(model, node, 2, node.Type);
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<MemberAccessExpressionSyntax>()) AddReference(model, node, 3, node.Name);
+            // A bare identifier resolving to a field is a compiler-proved
+            // reference even without a member-access receiver: `count`,
+            // `count = 5`, `count++`. The read/write split keeps the two
+            // classes the helper can prove; a compound assignment or an
+            // increment both reads and writes and keeps the write class, the
+            // state-changing half. Member-access names are the member-access
+            // sweep's rows, and a site Roslyn cannot resolve keeps no row:
+            // locals and parameters are not fields, so an unresolved or
+            // non-field name has no honest target here.
+            foreach (var node in tree.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>())
+            {
+                if (node.Parent is MemberAccessExpressionSyntax) continue;
+                if (model.GetSymbolInfo(node).Symbol is not IFieldSymbol) continue;
+                var write = (node.Parent is AssignmentExpressionSyntax assignment && assignment.Left == node)
+                    || node.Parent.IsKind(SyntaxKind.PreIncrementExpression)
+                    || node.Parent.IsKind(SyntaxKind.PostIncrementExpression)
+                    || node.Parent.IsKind(SyntaxKind.PreDecrementExpression)
+                    || node.Parent.IsKind(SyntaxKind.PostDecrementExpression);
+                AddReference(model, node, write ? (byte)7 : (byte)6, node);
+            }
             foreach (var info in infos)
             {
                 var targets = info.Symbol switch
@@ -327,27 +363,50 @@ internal static class AuthorityImage
                 if (!syntaxMap.TryGetValue(info.Node, out var owner)) continue;
                 foreach (var target in targets)
                 {
-                    if (!declarationMap.TryGetValue(target, out var targetRow)) continue;
+                    // An implementation binding whose interface member lives
+                    // in another assembly has no local row: the binding is
+                    // still real compiler-proved authority, so the row keeps
+                    // an absent target and the member name as the foreign
+                    // spelling the reader keys on.
+                    var targetRow = declarationMap.TryGetValue(target, out var row) ? row : Absent;
                     var span = Span(info.Span);
                     var nameEnd = U(offsets[info.NameSpan.End]);
-                    var row = new byte[28]; Put(row, 0, owner); Put(row, 4, targetRow);
-                    Put(row, 8, Atom(target.Name)); Put(row, 12, Atom(tree.FilePath));
-                    Put(row, 16, span.Start); Put(row, 20, nameEnd); row[24] = 5; references.Add(row);
+                    var binding = new byte[28]; Put(binding, 0, owner); Put(binding, 4, targetRow);
+                    Put(binding, 8, Atom(target.Name)); Put(binding, 12, Atom(tree.FilePath));
+                    Put(binding, 16, span.Start); Put(binding, 20, nameEnd); binding[24] = 5; references.Add(binding);
                 }
             }
         }
 
         private void AddReference(SemanticModel model, SyntaxNode node, byte tag, SyntaxNode spellingNode)
         {
-            var ownerNode = node.Ancestors().FirstOrDefault(n => DeclaredSymbol(model, n) is not null && syntaxMap.ContainsKey(n));
+            var ownerNode = node.Ancestors().FirstOrDefault(syntaxMap.ContainsKey);
             if (ownerNode is null || !syntaxMap.TryGetValue(ownerNode, out var ownerRow)) return;
-            var symbol = model.GetSymbolInfo(node).Symbol; var target = symbol is null ? Absent : declarationMap.GetValueOrDefault(symbol, Absent);
+            var target = ResolveTarget(model.GetSymbolInfo(node).Symbol);
             var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, target); Put(row, 8, Atom(spellingNode.ToString())); Put(row, 12, Atom(tree.FilePath)); var s = Span(spellingNode); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = tag; references.Add(row);
+        }
+
+        private uint ResolveTarget(ISymbol? symbol)
+        {
+            if (symbol is null) return Absent;
+            if (declarationMap.TryGetValue(symbol, out var row)) return row;
+            // An object creation binds to the constructor it invokes, and
+            // Roslyn answers the creation's type site with exactly that
+            // constructor. A constructor the source never declares (the
+            // compiler-generated implicit one) has no declaration row of its
+            // own, but the constructed type is declared in this compiled
+            // source and is the honest same-file target of the reference.
+            // Explicitly declared constructors keep their own rows, and any
+            // other unmapped symbol stays unmapped.
+            if (symbol is IMethodSymbol { MethodKind: MethodKind.Constructor or MethodKind.StaticConstructor } constructor
+                && declarationMap.TryGetValue(constructor.ContainingType, out var typeRow))
+                return typeRow;
+            return Absent;
         }
 
         private uint DocRow(ISymbol symbol) => Absent; // populated after docs are written
         private uint Owner(ISymbol symbol) => symbol.ContainingSymbol is { } parent && declarationMap.TryGetValue(parent, out var row) ? row : Absent;
-        private byte Kind(ISymbol s) => s switch { INamedTypeSymbol n when n.TypeKind == TypeKind.Class && n.IsRecord => 6, INamedTypeSymbol n when n.TypeKind == TypeKind.Struct && n.IsRecord => 7, INamedTypeSymbol n when n.TypeKind == TypeKind.Class => 1, INamedTypeSymbol n when n.TypeKind == TypeKind.Struct => 2, INamedTypeSymbol n when n.TypeKind == TypeKind.Interface => 3, INamedTypeSymbol n when n.TypeKind == TypeKind.Enum => 4, INamedTypeSymbol n when n.TypeKind == TypeKind.Delegate => 5, INamespaceSymbol => 8, IFieldSymbol f when f.ContainingType?.TypeKind == TypeKind.Enum => 10, IFieldSymbol => 9, IPropertySymbol p when p.IsIndexer => 12, IPropertySymbol => 11, IEventSymbol => 13, IMethodSymbol m when m.MethodKind is MethodKind.Constructor or MethodKind.StaticConstructor => 14, IMethodSymbol m when m.MethodKind == MethodKind.UserDefinedOperator => 16, IMethodSymbol m when m.MethodKind == MethodKind.Conversion => 17, IMethodSymbol => 15, _ => throw new OracleFailure("Roslyn emitted unsupported declaration kind") };
+        private byte Kind(ISymbol s) => s switch { INamedTypeSymbol n when n.TypeKind == TypeKind.Class && n.IsRecord => 6, INamedTypeSymbol n when n.TypeKind == TypeKind.Struct && n.IsRecord => 7, INamedTypeSymbol n when n.TypeKind == TypeKind.Class => 1, INamedTypeSymbol n when n.TypeKind == TypeKind.Struct => 2, INamedTypeSymbol n when n.TypeKind == TypeKind.Interface => 3, INamedTypeSymbol n when n.TypeKind == TypeKind.Enum => 4, INamedTypeSymbol n when n.TypeKind == TypeKind.Delegate => 5, INamespaceSymbol => 8, IFieldSymbol f when f.ContainingType?.TypeKind == TypeKind.Enum => 10, IFieldSymbol => 9, IPropertySymbol p when p.IsIndexer => 12, IPropertySymbol => 11, IEventSymbol => 13, IMethodSymbol m when m.MethodKind == MethodKind.StaticConstructor => 18, IMethodSymbol m when m.MethodKind == MethodKind.Constructor => 14, IMethodSymbol m when m.MethodKind == MethodKind.UserDefinedOperator => 16, IMethodSymbol m when m.MethodKind == MethodKind.Conversion => 17, IMethodSymbol => 15, _ => throw new OracleFailure("Roslyn emitted unsupported declaration kind") };
         private static byte RefKind(ISymbol s) => s is IMethodSymbol method ? RefKind(method.RefKind) : s is IPropertySymbol property && property.ReturnsByRefReadonly ? (byte)4 : s is IPropertySymbol property2 && property2.ReturnsByRef ? (byte)2 : (byte)0;
         private static byte RefKind(RefKind k) => k switch { Microsoft.CodeAnalysis.RefKind.In => 1, Microsoft.CodeAnalysis.RefKind.Ref => 2, Microsoft.CodeAnalysis.RefKind.Out => 3, Microsoft.CodeAnalysis.RefKind.RefReadOnlyParameter => 4, _ => 0 };
         private static byte Flags(ISymbol s, SyntaxNode n) => (byte)((s is IMethodSymbol method && method.IsExtensionMethod ? 1 : 0) | (s is IMethodSymbol asyncMethod && asyncMethod.IsAsync ? 2 : 0) | (s is IMethodSymbol iterator && HasYield(n) ? 4 : 0) | (s is IFieldSymbol field && field.IsConst ? 8 : 0) | (s switch { IMethodSymbol m => m.ExplicitInterfaceImplementations.Length > 0, IPropertySymbol p => p.ExplicitInterfaceImplementations.Length > 0, IEventSymbol e => e.ExplicitInterfaceImplementations.Length > 0, _ => false } ? 16 : 0));
@@ -398,7 +457,7 @@ internal static class AuthorityImage
         private byte[] AtomRows() { var rows = new byte[atomMap.Count * 8]; var ordered = atomMap.OrderBy(p => p.Value); var at = 0; var offset = 0u; foreach (var pair in ordered) { var bytes = Convert.FromBase64String(pair.Key); Put(rows, at, offset); Put(rows, at + 4, checked((uint)bytes.Length)); offset += checked((uint)bytes.Length); at += 8; } return rows; }
         private static byte[] Image(byte[] source, List<byte[]> sections)
         {
-            var body = sections.Sum(s => s.Length); var image = new byte[HeaderBytes + body]; "NCAI"u8.CopyTo(image); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(4), 3); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(6), HeaderBytes); BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(8), checked((uint)body)); SHA256.HashData(source).CopyTo(image, 12); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(44), 11);
+            var body = sections.Sum(s => s.Length); var image = new byte[HeaderBytes + body]; "NCAI"u8.CopyTo(image); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(4), 4); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(6), HeaderBytes); BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(8), checked((uint)body)); SHA256.HashData(source).CopyTo(image, 12); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(44), 11);
             var offset = HeaderBytes; for (var i = 0; i < 11; i++) { var at = 48 + i * 16; BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(at), checked((ushort)(i + 1))); BinaryPrimitives.WriteUInt16LittleEndian(image.AsSpan(at + 2), checked((ushort)Widths[i])); BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(at + 4), checked((uint)(sections[i].Length / Widths[i]))); BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(at + 8), checked((uint)offset)); BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(at + 12), checked((uint)sections[i].Length)); sections[i].CopyTo(image, offset); offset += sections[i].Length; }
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256); hash.AppendData(DigestDomain); hash.AppendData(image, 0, 224); hash.AppendData(image, HeaderBytes, body); hash.GetHashAndReset().CopyTo(image, 224); return image;
         }

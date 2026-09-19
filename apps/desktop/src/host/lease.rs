@@ -238,13 +238,15 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let project = std::env::temp_dir().join(format!(
-            "backend-desktop-host-{}-{nonce}",
+        // `/tmp`, not `temp_dir()`: under nix the latter is long enough that
+        // the socket path exceeds `sockaddr_un` and the owner refuses to bind.
+        let project = PathBuf::from("/tmp").join(format!(
+            "nudox-h-{}-{nonce}",
             std::process::id()
         ));
         let data = project.join("state");
-        let endpoint = std::env::temp_dir().join(format!(
-            "backend-desktop-host-{}-{nonce}.sock",
+        let endpoint = PathBuf::from("/tmp").join(format!(
+            "nudox-h-{}-{nonce}.sock",
             std::process::id()
         ));
         fs::create_dir_all(project.join("src")).expect("create project");

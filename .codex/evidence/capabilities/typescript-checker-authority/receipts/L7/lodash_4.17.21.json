@@ -1,32 +1,9 @@
 {
   "class": "SiblingTypes",
-  "computed_samples": [],
-  "decoded_entities": 3,
-  "decoded_facts": 4,
-  "exported_declarations": 0,
-  "fallbacks": [],
-  "perf": {
-    "check_ns": 439687083,
-    "fact_count": 4,
-    "lower_ns": 4126833,
-    "parse_ns": 333372125,
-    "wall_ns": 777186041
-  },
+  "defect_class": "entry-resolution",
   "purl": "npm:lodash@4.17.21",
-  "render_truth": [
-    "signature",
-    "type"
-  ],
-  "resolution": "npm:@types/lodash@4.17.16",
-  "rubric": {
-    "computed_fidelity": 2,
-    "declaration_coverage": 2,
-    "docs_extensions": 2,
-    "references": 2,
-    "render_truth": 2,
-    "type_fidelity": 2
-  },
+  "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
   "schema": 1,
   "stage": "full-lifecycle",
-  "verdict": "CLEAN"
+  "verdict": "FAILED"
 }

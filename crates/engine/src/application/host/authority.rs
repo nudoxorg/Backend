@@ -12,8 +12,8 @@ use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
 use backend_frontend_rust::legacy::{RustToolchain, SourceByteLimit};
 use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
-use backend_semantic::vocabulary::NativeTool;
 use backend_library::interface::PackageEcosystem;
+use backend_semantic::vocabulary::NativeTool;
 
 use super::paths::canonicalize_existing;
 use super::{

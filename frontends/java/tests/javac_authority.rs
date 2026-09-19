@@ -122,7 +122,8 @@ fn javac_image_preserves_overload_docs_module_and_diagnostics() -> Result<(), Ja
         assert_atom(first_target.name, "render")?;
         assert_parameter(first_image, first_target.parameters, "int")?;
         let documented = documented_declaration(first_image)?;
-        if documented.documentation_flavor != backend_frontend_java::legacy::DocFlavor::Traditional {
+        if documented.documentation_flavor != backend_frontend_java::legacy::DocFlavor::Traditional
+        {
             return Err(JavacTestError::Missing {
                 fact: "traditional Javadoc flavor",
             });
@@ -279,7 +280,8 @@ fn javac_image_emits_annotated_package_info_declaration() -> Result<(), JavacTes
             fact: "annotated package declaration",
         })?;
         assert_atom(declaration.name, "annotated")?;
-        if declaration.documentation_flavor != backend_frontend_java::legacy::DocFlavor::Traditional {
+        if declaration.documentation_flavor != backend_frontend_java::legacy::DocFlavor::Traditional
+        {
             return Err(JavacTestError::Missing {
                 fact: "package Javadoc",
             });

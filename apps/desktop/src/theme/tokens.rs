@@ -63,8 +63,6 @@ pub(crate) enum TypeScale {
     Section,
     /// 22px — page titles.
     Title,
-    /// 28px — the first-run headline.
-    Display,
 }
 
 /// Returns the `rem` size of one type rung.
@@ -77,7 +75,6 @@ pub(crate) fn type_size(scale: TypeScale) -> Rems {
         TypeScale::Body => 0.9375,
         TypeScale::Section => 1.125,
         TypeScale::Title => 1.375,
-        TypeScale::Display => 1.75,
     })
 }
 
@@ -93,7 +90,6 @@ pub(crate) fn line_height(scale: TypeScale) -> Rems {
         TypeScale::Interface => 1.25,
         TypeScale::Body | TypeScale::Section => 1.5,
         TypeScale::Title => 1.75,
-        TypeScale::Display => 2.125,
     })
 }
 
@@ -214,8 +210,6 @@ pub(crate) struct Chrome;
 impl Chrome {
     /// Titlebar height, tall enough to clear the macOS traffic lights.
     pub(crate) const TITLEBAR: f32 = 44.0;
-    /// Tab strip height.
-    pub(crate) const TABS: f32 = 32.0;
     /// Status bar height.
     pub(crate) const STATUS: f32 = 24.0;
     /// Height of one outline row.

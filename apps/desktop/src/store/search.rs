@@ -63,15 +63,26 @@ impl Mode {
 pub(crate) struct Parsed {
     mode: Mode,
     term: String,
+    arguments: String,
 }
 
 impl Parsed {
     /// Splits raw field text into a mode and a term.
     pub(crate) fn of(text: &str) -> Self {
         if let Some(rest) = text.strip_prefix('>') {
+            let rest = rest.trim_start();
+            let (word, arguments) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            if exact_command(word).is_some() {
+                return Self {
+                    mode: Mode::Palette,
+                    term: word.to_owned(),
+                    arguments: arguments.trim().to_owned(),
+                };
+            }
             return Self {
                 mode: Mode::Palette,
-                term: rest.trim_start().to_owned(),
+                term: rest.to_owned(),
+                arguments: String::new(),
             };
         }
         if let Some(rest) = text.strip_prefix('@') {
@@ -82,13 +93,24 @@ impl Parsed {
                         project: project.to_owned(),
                     },
                     term: term.trim_start().to_owned(),
+                    arguments: String::new(),
                 };
             }
         }
         Self {
             mode: Mode::Search,
             term: text.to_owned(),
+            arguments: String::new(),
         }
+    }
+
+    /// Returns the operand text typed after an exact command name.
+    ///
+    /// `> show ferris` names the command `show` and hands it `ferris`; the
+    /// command word alone is what filters the palette, so a reader who has
+    /// typed an argument sees exactly one row, the one Return will run.
+    pub(crate) fn arguments(&self) -> &str {
+        &self.arguments
     }
 
     /// Returns the detected mode.
@@ -356,7 +378,10 @@ impl SearchStore {
         self.pending = None;
         self.searching = false;
         self.fault = None;
-        self.commands = palette_rows(self.parsed.term());
+        self.commands = match exact_command(self.parsed.term()) {
+            Some(row) if !self.parsed.arguments().is_empty() => vec![row],
+            _ => palette_rows(self.parsed.term()),
+        };
         cx.notify();
     }
 
@@ -545,6 +570,20 @@ fn guidance_for(row: CommandRow) -> String {
         spec.description,
         row.grammar().usage()
     )
+}
+
+/// Returns the one command a word names exactly, by name or alias.
+fn exact_command(word: &str) -> Option<CommandRow> {
+    if word.is_empty() {
+        return None;
+    }
+    let lower = word.to_ascii_lowercase();
+    GRAMMARS
+        .into_iter()
+        .filter_map(|grammar| grammar.spec().map(|spec| CommandRow { grammar, spec }))
+        .find(|row| {
+            row.spec().name == lower || row.grammar().aliases().iter().any(|alias| *alias == lower)
+        })
 }
 
 fn palette_rows(term: &str) -> Vec<CommandRow> {

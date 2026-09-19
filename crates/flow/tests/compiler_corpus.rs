@@ -45,6 +45,12 @@ use backend_engine::driver::{
     CompiledSemantic, DeclarationScope, NativeTool, ResolvedToolchain, SemanticAuthorityInput,
     ToolchainSelection, compile_semantic,
 };
+use backend_engine::publication::manifest::SemanticImageRegion;
+use backend_engine::publication::{
+    OpenPublicationScratch, OpenSemanticPublicationScratch, OpenedFragmentError,
+    PublicationScratch, PublishControl, SemanticPublicationScratch, open_published,
+    open_published_semantic, publish_compiled, publish_semantic,
+};
 use backend_semantic::ir::{
     BuiltinType, ConcreteType, DeclarationFamilyId, DeclarationKeyFault, EntityAuthorityFacts,
     EntityId, EntityKind, FactAvailability, FragmentRangeManifest, FragmentView, ImageProvenance,
@@ -52,16 +58,11 @@ use backend_semantic::ir::{
     SemanticImageIdentity, SemanticReader, SourceIdentity, SourceSpan, TypeExpr, TypeId, TypeNode,
     VariantFingerprint, Visibility,
 };
-use backend_engine::publication::manifest::SemanticImageRegion;
-use backend_engine::publication::{
-    OpenPublicationScratch, OpenSemanticPublicationScratch, OpenedFragmentError,
-    PublicationScratch, PublishControl, SemanticPublicationScratch, open_published,
-    open_published_semantic, publish_compiled, publish_semantic,
-};
 use backend_semantic::vocabulary::{
     CSharpVersion, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
     RustEdition, Stage, TypeScriptSource,
 };
+use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use multilingual_corpus::{
     CaseAvailability, CaseId, CorpusLanguage, CorpusPackage, CountExpectation, ExpectedFacts,
@@ -69,14 +70,14 @@ use multilingual_corpus::{
     RenderAvailability, SOURCE_BYTE_LIMIT, corpus_packages,
 };
 use native_tooling::{HostTool, NativeToolingError, NativeWork};
-use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;
 
 use authority::{
     AuthorityBuildError, AuthorityFactory, AuthorityUnavailableCause, CSharpHelperError, HostTools,
     NativeUnavailableCause, NativeUnavailableKind, ProviderSlot, ResolvedTools,
-    SourceUnavailableCause, SourceUnavailableKind, go_error_is_unavailable, go_fixture,
-    native_slot, native_tool, rust_error_is_unavailable, rust_fixture,
+    SourceUnavailableCause, SourceUnavailableKind, csharp_row_is_unavailable,
+    go_error_is_unavailable, go_fixture, java_row_is_unavailable, native_slot, native_tool,
+    rust_error_is_unavailable, rust_fixture,
 };
 use comparison::{
     CorpusMismatch, Pass, PermutationField, Plane, compare_passes, expected_mismatches,
@@ -562,12 +563,13 @@ fn real_package_inventory_keeps_source_provenance_and_closed_terminals()
     for (index, language) in CorpusLanguage::ALL.into_iter().enumerate() {
         let lane = audit.lanes[index];
         eprintln!(
-            "real-corpus language={language:?} attempted={} source_bound={} output={} verified={} unavailable={} terminals={} mismatches={}",
+            "real-corpus language={language:?} attempted={} source_bound={} output={} verified={} unavailable={} not_compared={} terminals={} mismatches={}",
             lane.attempted,
             lane.source_bound,
             lane.output,
             lane.verified,
             lane.unavailable,
+            lane.not_compared,
             lane.terminals,
             lane.mismatches,
         );
@@ -580,12 +582,42 @@ fn real_package_inventory_keeps_source_provenance_and_closed_terminals()
         audit.unavailable.len(),
         audit.mismatches.len(),
     );
+    // Bounded audit telemetry: the first mismatch records, one line each, so
+    // a lane-wide red verdict identifies *which* authority plane disagreed on
+    // *which* row without re-running a filtered sweep. The dump is hard-capped
+    // at 60 records — a diagnostic head, not a transcript — and prints only
+    // the language, coordinate, and plane field; digests stay in the typed
+    // verdict that follows.
+    for entry in audit.mismatches.iter().take(60) {
+        match entry {
+            CorpusMismatch::Real { case, field, .. } => eprintln!(
+                "real-row-mismatch lang={:?} coord={:?} field={}",
+                case.language,
+                case.coordinate.raw(),
+                real::encode_real_field(*field),
+            ),
+            CorpusMismatch::RealUnavailable { case, field, cause } => eprintln!(
+                "real-row-mismatch lang={:?} coord={:?} field={} cause={}",
+                case.language,
+                case.coordinate.raw(),
+                real::encode_real_field(*field),
+                real::encode_cause(cause),
+            ),
+            CorpusMismatch::RealTerminal { case, terminal, .. } => eprintln!(
+                "real-row-mismatch lang={:?} coord={:?} field=terminal kind={}",
+                case.language,
+                case.coordinate.raw(),
+                real::encode_terminal_kind(*terminal),
+            ),
+            _ => {}
+        }
+    }
     let accounted: usize = audit.lanes.iter().map(|lane| lane.attempted).sum();
-    if accounted != REAL_PACKAGE_COUNT {
+    if accounted != audit.expected {
         return Err(CorpusAuditError::Inventory {
             cause: InventoryInvariant::TotalCount {
                 observed: accounted,
-                expected: REAL_PACKAGE_COUNT,
+                expected: audit.expected,
             },
         });
     }
@@ -611,6 +643,7 @@ fn real_audit_verdict_separates_unavailable_terminals_from_parity_mismatches() {
 
     let unavailable_only = real::RealAuditSummary {
         lanes,
+        expected: REAL_PACKAGE_COUNT,
         capacity: CorpusCapacityVerdict::MeetsMinimum,
         unavailable: vec![CorpusMismatch::RealUnavailable {
             case,
@@ -625,6 +658,7 @@ fn real_audit_verdict_separates_unavailable_terminals_from_parity_mismatches() {
 
     let genuine_mismatch = real::RealAuditSummary {
         lanes,
+        expected: REAL_PACKAGE_COUNT,
         capacity: CorpusCapacityVerdict::MeetsMinimum,
         unavailable: Vec::new().into_boxed_slice(),
         mismatches: vec![CorpusMismatch::Real {
@@ -640,10 +674,183 @@ fn real_audit_verdict_separates_unavailable_terminals_from_parity_mismatches() {
     assert!(
         matches!(
             error,
-            CorpusAuditError::Mismatches { count: 1, first: Some(_) }
+            CorpusAuditError::Mismatches {
+                count: 1,
+                first: Some(_)
+            }
         ),
         "expected a mismatch verdict, observed {error:?}"
     );
+}
+
+/// Focused polyfill repro for the C# conditional-shell selection.
+///
+/// polyfill 2.0.0's raw-largest source, `DefaultInterpolatedStringHandler.cs`,
+/// is wrapped in `#if HAS_SPAN && !NET6_0_OR_GREATER`. The oracle never
+/// defines `HAS_SPAN` and always defines `NET6_0_OR_GREATER`, so the bound
+/// tree emits zero declarations; because the authority image is built from
+/// the bound tree alone, compiling the whole package alongside it changes
+/// nothing. This proves the shell image is empty, then proves the resolver's
+/// replacement selection (`is_csharp_conditional_shell`) produces a real
+/// image that lowers through the exact request the audit uses.
+#[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "the audit retains exact typed source, authority, publication, and mismatch facts"
+)]
+fn csharp_polyfill_package_source_lowers_real_declarations() -> Result<(), CorpusAuditError> {
+    let hosts = HostTools::resolve();
+    let resolved = ResolvedTools::from_hosts(&hosts);
+    let key = CaseKey {
+        case_id: CaseId(0),
+        language: CorpusLanguage::CSharp,
+        shape: PackageShape::Reference,
+    };
+    let authorities = AuthorityFactory::new(&hosts)
+        .map_err(|cause| CorpusAuditError::AuthoritySetup { key, cause })?;
+    let ProviderSlot::Ready(provider) = &authorities.csharp else {
+        eprintln!("csharp provider unavailable; skipping focused polyfill repro");
+        return Ok(());
+    };
+    let Ok((profile, toolchain)) = native_slot(CorpusLanguage::CSharp, &resolved) else {
+        eprintln!("csharp native toolchain unavailable; skipping focused polyfill repro");
+        return Ok(());
+    };
+
+    let mut polyfill = None;
+    for input in inventory::real_package_inputs() {
+        if let inventory::RealPackageInput::Source { case, source } = input {
+            if case.coordinate == inventory::PackageCoordinate::Purl("nuget:polyfill@2.0.0") {
+                polyfill = Some((case, source));
+                break;
+            }
+        }
+    }
+    let Some((case, source)) = polyfill else {
+        eprintln!("polyfill not provisioned; skipping focused repro");
+        return Ok(());
+    };
+
+    // The raw-largest source is the conditional shell: its source-bound image
+    // must carry no declarations, which is the exact terminal being fixed.
+    let Some(shell) = raw_largest_csharp_source(&source.package_root) else {
+        eprintln!("polyfill package has no .cs files; skipping focused repro");
+        return Ok(());
+    };
+    // A distinct synthetic case id keeps the provider's per-case staging
+    // directory from colliding with the real row's own extraction below.
+    let shell_image = provider
+        .image_for_package_source(u16::MAX, &source.package_root, &shell)
+        .map_err(|cause| CorpusAuditError::AuthoritySetup { key, cause })?;
+    let shell_declarations = backend_frontend_csharp::legacy::CSharpImage::open(&shell_image)
+        .map_err(|error| CorpusAuditError::AuthoritySetup {
+            key,
+            cause: AuthorityBuildError::CSharpImage(error),
+        })?
+        .declarations()
+        .len();
+
+    let image = provider
+        .image_for_package_source(case.case_id.raw(), &source.package_root, &source.path)
+        .map_err(|cause| CorpusAuditError::AuthoritySetup { key, cause })?;
+    let declarations = backend_frontend_csharp::legacy::CSharpImage::open(&image)
+        .map_err(|error| CorpusAuditError::AuthoritySetup {
+            key,
+            cause: AuthorityBuildError::CSharpImage(error),
+        })?
+        .declarations()
+        .len();
+    eprintln!(
+        "polyfill raw_largest={} shell_declarations={shell_declarations} selected={} declarations={declarations}",
+        shell.display(),
+        source.path.display(),
+    );
+
+    let (ecosystem, package) = case.coordinate.lineage();
+    let lineage = PackageLineage::new(ecosystem.as_str(), package.as_str())
+        .map_err(CorpusAuditError::ScopeLineage)?;
+    let path = source
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("source");
+    let scope = DeclarationScope::new(lineage, path).map_err(CorpusAuditError::ScopeKey)?;
+    let work = NativeWork::create().map_err(|cause| CorpusAuditError::NativeWork { key, cause })?;
+    let cancelled = AtomicBool::new(false);
+    let mut diagnostic = [0_u8; DIAGNOSTIC_BYTES];
+    let mut fragment = vec![0xa5_u8; FRAGMENT_BYTES];
+    let compiled = execution::compile_with_authority(
+        profile,
+        &source.bytes,
+        scope,
+        toolchain,
+        SemanticAuthorityInput::CSharp { image: &image },
+        &cancelled,
+        &mut diagnostic,
+        work.path(),
+        &mut fragment,
+    );
+
+    assert_eq!(
+        shell_declarations, 0,
+        "the raw-largest polyfill source is expected to be a fully gated shell"
+    );
+    assert!(
+        declarations > 0,
+        "the resolver must select a polyfill source with real declarations"
+    );
+    assert!(
+        compiled.is_ok(),
+        "polyfill must lower real declarations, observed {:?}",
+        compiled.err()
+    );
+    let entity_count = compiled
+        .as_ref()
+        .map(|compiled| compiled.artifact.fragment.entities().count())
+        .unwrap_or(0);
+    assert!(
+        entity_count > 0,
+        "the lowered polyfill fragment must carry real entities"
+    );
+    Ok(())
+}
+
+/// The raw-largest `.cs` beneath a package root, matching the resolver's
+/// pre-fix selection shape (size descending, then path) closely enough to
+/// identify polyfill's gated shell.
+fn raw_largest_csharp_source(root: &Path) -> Option<PathBuf> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut best: Option<(u64, PathBuf)> = None;
+    while let Some(directory) = stack.pop() {
+        let entries = fs::read_dir(&directory).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                if matches!(
+                    entry.file_name().to_str(),
+                    Some("bin" | "obj" | ".git" | "node_modules")
+                ) {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|extension| extension.to_str()) != Some("cs") {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let length = metadata.len();
+            if best.as_ref().is_none_or(|(known, _)| length > *known) {
+                best = Some((length, path));
+            }
+        }
+    }
+    best.map(|(_, path)| path)
 }
 
 fn real_lane(attempted: usize) -> real::RealLaneSummary {
@@ -653,6 +860,7 @@ fn real_lane(attempted: usize) -> real::RealLaneSummary {
         output: 0,
         verified: 0,
         unavailable: 0,
+        not_compared: 0,
         terminals: 0,
         mismatches: 0,
     }
@@ -666,7 +874,7 @@ fn run_pass(
     authorities: &AuthorityFactory,
 ) -> Result<PassObservation, CorpusAuditError> {
     let ordered = ordered_packages(packages, pass);
-    let mut publisher = PassPublisher::new(pass)?;
+    let mut publisher = PassPublisher::new(pass, FRAGMENT_BYTES)?;
     let mut slots: Vec<Option<CaseObservation>> = vec![None; PACKAGE_COUNT];
     let mut summary = MatrixSummary::new();
     let mut mismatches = Vec::new();
@@ -710,7 +918,7 @@ fn run_pass(
             .mismatches
             .saturating_add(u16::try_from(result.mismatches.len()).unwrap_or(u16::MAX));
         slots[raw] = Some(result.observation);
-        mismatches.extend(result.mismatches.iter().copied());
+        mismatches.extend(result.mismatches.iter().cloned());
     }
     let shutdown = publisher.finish();
     if let Some(error) = failure {
@@ -758,8 +966,8 @@ fn run_pass(
 #[test]
 fn fleet_selection_is_seeded_and_reproducible() {
     use inventory::fleet_manifest::{
-        manifest_lane_counts, manifest_origin_counts, selection_bytes_for_seed, FLEET_MANIFEST_VERSION,
-        FLEET_SELECTION_SEED,
+        FLEET_MANIFEST_VERSION, FLEET_SELECTION_SEED, manifest_lane_counts, manifest_origin_counts,
+        selection_bytes_for_seed,
     };
 
     let first = selection_bytes_for_seed(FLEET_SELECTION_SEED);

@@ -5,12 +5,14 @@
 
 use core::{cmp::Ordering, ops::Deref};
 
-use backend_version::{ArtifactId, HASH_BYTES};
 use backend_semantic::index_core::{
     EntityDocumentId, ExactRow, ExactSegmentError, ExactSegmentVerifier, IndexSnapshot, LexicalRow,
     LexicalScore, LexicalSegmentError, LexicalSegmentVerifier,
 };
-use backend_semantic::index_vocabulary::{ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId};
+use backend_semantic::index_vocabulary::{
+    ExactSegmentId, IndexPackId, IndexSnapshotId, LexicalSegmentId,
+};
+use backend_version::{ArtifactId, HASH_BYTES};
 
 use crate::index_publish::pack::{
     MAX_PACK_SEGMENTS,
@@ -1231,8 +1233,8 @@ mod tests {
         let generation = generation();
         let snapshot = exact_snapshot()?;
         let rows = [ExactRow::present(b"alpha", b"value")];
-        let segment =
-            backend_semantic::index_core::ExactSegment::new(&rows).map_err(|_| PackTestError::Exact)?;
+        let segment = backend_semantic::index_core::ExactSegment::new(&rows)
+            .map_err(|_| PackTestError::Exact)?;
         let body = exact_body(&rows)?;
         let total = grammar::INDEX_PACK_HEADER_BYTES
             .checked_add(grammar::INDEX_PACK_DIRECTORY_BYTES)
@@ -1266,8 +1268,8 @@ mod tests {
         let body_start = grammar::INDEX_PACK_HEADER_BYTES + grammar::INDEX_PACK_DIRECTORY_BYTES;
         let body = original.get(body_start..).ok_or(PackTestError::Geometry)?;
         let rows = [ExactRow::present(b"alpha", b"value")];
-        let segment =
-            backend_semantic::index_core::ExactSegment::new(&rows).map_err(|_| PackTestError::Exact)?;
+        let segment = backend_semantic::index_core::ExactSegment::new(&rows)
+            .map_err(|_| PackTestError::Exact)?;
         let id = segment.id;
         let duplicate_body_start = body_start
             .checked_add(grammar::INDEX_PACK_DIRECTORY_BYTES)
@@ -1334,8 +1336,8 @@ mod tests {
 
     fn exact_snapshot() -> Result<IndexSnapshotId, PackTestError> {
         let rows = [ExactRow::present(b"alpha", b"value")];
-        let segment =
-            backend_semantic::index_core::ExactSegment::new(&rows).map_err(|_| PackTestError::Exact)?;
+        let segment = backend_semantic::index_core::ExactSegment::new(&rows)
+            .map_err(|_| PackTestError::Exact)?;
         let exact = [segment.id];
         IndexSnapshot::new(generation(), &exact, &[])
             .map(|snapshot| snapshot.id)

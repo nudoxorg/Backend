@@ -28,31 +28,47 @@
 //! their reason cell: universe and foreign nominals (`error`, `comparable`,
 //! other packages), unconstrained inline interfaces, and depth-limit
 //! truncation. Parameter and result carriers borrow exact names from the
-//! v5 signature-parameter plane, projecting a blank image name as `_`;
-//! receiver spelling and pointer-receiver bits have no `GoFacts` cell and
-//! stay image-only. Foreign method-set entries, module metadata, exact
-//! constant values, and receiver spellings remain image-only; local
-//! method-set entries and package rows are projected below.
+//! v5 signature-parameter plane; an absent name and an explicit Go blank
+//! (`_`) both project to the canonical blank `_` at signature position zero
+//! and to a positional spelling (`_1`, `_2`, …) at every later position, so
+//! two blank same-typed carriers in one signature never frame identical
+//! coordinate-free identities. Receiver spelling and pointer-receiver bits
+//! have no
+//! `GoFacts` cell and stay image-only. Foreign method-set entries, module
+//! metadata, exact constant values, and receiver spellings remain
+//! image-only; local method-set entries and package rows are projected
+//! below.
 //!
 //! Interface-satisfaction edges — Go's structural implements relation,
 //! proved by the oracle across the whole loaded module — project as
 //! oracle-confidence type-reference occurrences owned by the satisfying
 //! type's fact, resolving in-package targets to local ordinals and
-//! cross-package targets to foreign `go` lineage keys. The oracle records
-//! no source position for a satisfaction edge (Go never names it), so the
-//! occurrence carries the documented position-free spelling: a zero-width
-//! owner-relative span at the owner's start.
+//! cross-package targets to foreign `go` lineage keys. The oracle records no
+//! written relation for a satisfaction edge, so each occurrence anchors on
+//! the subject's declared identifier: a version-6 image carries the
+//! declaration's exact NAME-TOKEN extent, and the occurrence's
+//! owner-relative span is that extent (a real extent, verifiable against
+//! the source bytes); without one the occurrence keeps the position-free
+//! zero-width spelling at the owner's start.
+//!
+//! Authority-bound source spans: the image marks every declaration and
+//! method row that declares in the exact source file the image is
+//! digest-bound to, and carries its full declaration extent. The projector
+//! attaches those extents as the facts' primary-source spans, so every
+//! occurrence's owner-relative span lifts into an absolute, source-verifiable
+//! site under the shared containment law. Rows from sibling files stay
+//! source-less rather than borrowing another file's coordinates.
 
+use backend_frontend_go::legacy::{
+    ChanDir, Declaration, DeclarationKind, DocOwner, GoImage, HeaderError, ImageError, MemberKind,
+    ReferenceTargetClass, ReferenceUseKind, TypeRowKind, parse_constraint_blob,
+};
 use backend_semantic::ir::{
     AtomListId, ChannelDirection, DocFragmentInput, EntityId, EntityKind, EntityListId, ForeignKey,
     ForeignKeyFault, ForeignOrigin, GoFacts, GoSignature, NominalRef, Occurrence,
     OccurrenceConfidence, OccurrenceTarget, PackageLineage, PackageLineageFault, ProductChildRole,
     ReferenceKind, RelSpan, RelSpanFault, SemanticProductConstructor, SemanticTypeChild,
     SemanticTypeRecord, SemanticTypeTag, TypeListId, TypeParameterListId, TypeReason, TypeWidth,
-};
-use backend_frontend_go::legacy::{
-    ChanDir, Declaration, DeclarationKind, DocOwner, GoImage, HeaderError, ImageError, MemberKind,
-    TypeRowKind, parse_constraint_blob,
 };
 use backend_semantic::vocabulary::{
     GoImageDeclarationKind, GoImageDocOwnerKind, GoImageFault, GoImageFlagCell, GoImageHeaderFault,
@@ -65,7 +81,8 @@ use core::str;
 use sha2::{Digest, Sha256};
 
 use crate::driver::lower::{
-    EmissionExtension, FactSet, LEAF_PRODUCT, MAX_REF_LIST_ELEMENTS, SemanticFact, push_fact,
+    EmissionExtension, FactSet, LEAF_PRODUCT, MAX_REF_LIST_ELEMENTS, SemanticFact,
+    StagedSourceSpan, push_fact,
 };
 use crate::driver::types::{FactFault, FactRejection};
 
@@ -116,13 +133,11 @@ enum ProjectionFault {
     },
     /// No pushed fact existed to own an anonymous compound row.
     Anchor { owner: u32 },
-    /// A pooled field or method list exceeded its bounded width.
+    /// A bounded pooled field or method list exceeded its bounded width.
     ListCapacity {
         owner: u32,
         phase: GoProjectionListPhase,
     },
-    /// A same-package reference named no declared function.
-    OrphanTarget { reference: u32 },
     /// A foreign key could not be built for a resolved external target.
     ForeignKey {
         reference: u32,
@@ -783,9 +798,6 @@ fn terminal(fault: ProjectionFault) -> GoCollectError {
         ProjectionFault::ListCapacity { owner, phase } => {
             PortableGoProjectionFault::ListCapacity { owner, phase }
         }
-        ProjectionFault::OrphanTarget { reference } => {
-            PortableGoProjectionFault::OrphanTarget { reference }
-        }
         ProjectionFault::ForeignKey { reference, cause } => PortableGoProjectionFault::ForeignKey {
             reference,
             cause: portable_foreign_key(cause),
@@ -870,9 +882,70 @@ fn push<'source>(
 /// the budget is the typed defense.
 const DEPTH_LIMIT: usize = 64;
 
-/// Carrier-fact name for the unnamed parameters and results the image's
-/// type plane carries no spellings for.
+/// Carrier-fact name for an unnamed position whose signature coordinate is
+/// unavailable, and for an anonymous embedded interface term.
 const UNNAMED: &[u8] = b"_";
+
+/// Bounded width of the positional absent-name table. A signature's carrier
+/// facts are themselves bounded by the lane's type-child width, far below
+/// this, so every representable signature position has a spelling.
+const ABSENT_NAME_LIMIT: usize = 128;
+
+/// Coordinate-free spellings for absent parameter and result names, indexed
+/// by the carrier's position inside its signature. Position zero keeps the
+/// canonical blank `_`; every later position gains its structural index, so
+/// two absent same-typed carriers in one signature frame distinct identities
+/// without inventing a source position or a semantic name. The spellings are
+/// static so they outlive every borrowing fact set.
+static ABSENT_NAMES: [[u8; 8]; ABSENT_NAME_LIMIT] = build_absent_names();
+
+const fn build_absent_names() -> [[u8; 8]; ABSENT_NAME_LIMIT] {
+    let mut table = [[0_u8; 8]; ABSENT_NAME_LIMIT];
+    let mut index = 0;
+    while index < ABSENT_NAME_LIMIT {
+        table[index][0] = b'_';
+        if index != 0 {
+            let mut value = index;
+            let mut reversed = [0_u8; 3];
+            let mut digits = 0;
+            while value != 0 {
+                reversed[digits] = b'0' + (value % 10) as u8;
+                value /= 10;
+                digits += 1;
+            }
+            let mut cursor = 0;
+            while cursor < digits {
+                table[index][1 + cursor] = reversed[digits - 1 - cursor];
+                cursor += 1;
+            }
+        }
+        index += 1;
+    }
+    table
+}
+
+/// The exact digit width of one positional absent-name spelling.
+const fn absent_name_len(index: usize) -> usize {
+    if index == 0 {
+        return 1;
+    }
+    let mut value = index;
+    let mut digits = 0;
+    while value != 0 {
+        digits += 1;
+        value /= 10;
+    }
+    1 + digits
+}
+
+/// The static spelling for one absent carrier position, or the canonical
+/// blank when the position exceeds the bounded table.
+fn absent_name(index: usize) -> &'static [u8] {
+    match ABSENT_NAMES.get(index) {
+        Some(slot) => &slot[..absent_name_len(index)],
+        None => UNNAMED,
+    }
+}
 
 /// `PrimitiveShape::Integer` wire cell.
 const SHAPE_INTEGER: u32 = 0;
@@ -974,6 +1047,92 @@ const fn entity_kind(kind: DeclarationKind) -> EntityKind {
     }
 }
 
+impl<'image> Projector<'image, '_> {
+    /// The canonical kind of one pass-one named type: a declared type whose
+    /// root type row is an interface projects as the canonical trait, and
+    /// every other defined type (struct or basic-rooted) projects as a
+    /// record. A missing root row stays a record — the closed default.
+    fn named_type_kind(&self, declaration: &Declaration<'_>) -> Result<EntityKind, GoCollectError> {
+        let interface = declaration
+            .type_root
+            .map(|root| self.image.type_row(index_of(root)).map(|row| row.kind))
+            .transpose()
+            .map_err(GoCollectError::Image)?
+            .is_some_and(|kind| kind == TypeRowKind::Interface);
+        Ok(if interface {
+            EntityKind::Trait
+        } else {
+            EntityKind::Record
+        })
+    }
+}
+
+/// The canonical reference kind of one reference row, from its closed use
+/// kind and the used object's closed class. A method use is a method call
+/// whether the source called it (`x.Close()`) or bound it as a method value
+/// (`f := x.Close`) — the lane's closed vocabulary carries both as the
+/// method reference they are. A call through a field (`x.handler()`) is a
+/// use of the field; value reads of variables, constants, and functions are
+/// variable uses.
+const fn occurrence_kind(use_kind: ReferenceUseKind, class: ReferenceTargetClass) -> ReferenceKind {
+    use ReferenceTargetClass as Class;
+    use ReferenceUseKind as Use;
+    match (use_kind, class) {
+        (Use::Import, _) => ReferenceKind::Import,
+        (Use::TypeRef, _) => ReferenceKind::TypeReference,
+        (Use::Call, Class::Method) => ReferenceKind::MethodCall,
+        (Use::Call, Class::Field) => ReferenceKind::FieldAccess,
+        (Use::Call, _) => ReferenceKind::FunctionCall,
+        (Use::Read, Class::Method) => ReferenceKind::MethodCall,
+        (Use::Read, Class::Field) => ReferenceKind::FieldAccess,
+        (Use::Read, _) => ReferenceKind::VariableUse,
+    }
+}
+
+/// The foreign-key entity kind one reference row's closed target class
+/// demands.
+const fn foreign_entity_kind(class: ReferenceTargetClass) -> EntityKind {
+    match class {
+        ReferenceTargetClass::Const => EntityKind::Constant,
+        ReferenceTargetClass::Field => EntityKind::Field,
+        ReferenceTargetClass::Func | ReferenceTargetClass::Method => EntityKind::Function,
+        ReferenceTargetClass::Pkg => EntityKind::Module,
+        ReferenceTargetClass::Type => EntityKind::Record,
+        ReferenceTargetClass::Var => EntityKind::Static,
+    }
+}
+
+/// Builds the typed foreign target key for one reference row: the `go`
+/// package lineage plus the exact target spelling, under the entity kind
+/// the row's closed target class demands. Unresolved and external uses stay
+/// exactly this — a resolvable, untruncated key — never a dropped row.
+fn foreign_target<'source>(
+    reference: u32,
+    package: &'source [u8],
+    target: &'source [u8],
+    kind: EntityKind,
+) -> Result<OccurrenceTarget<'source>, GoCollectError> {
+    let package = str::from_utf8(package).map_err(|_| {
+        terminal(ProjectionFault::Utf8 {
+            plane: GoImagePlane::ReferenceTarget,
+            row: reference,
+        })
+    })?;
+    let name = str::from_utf8(target).map_err(|_| {
+        terminal(ProjectionFault::Utf8 {
+            plane: GoImagePlane::ReferenceTarget,
+            row: reference,
+        })
+    })?;
+    let lineage = PackageLineage::new(ECOSYSTEM, package)
+        .map_err(|cause| ProjectionFault::Lineage { reference, cause })
+        .map_err(terminal)?;
+    let key = ForeignKey::new(ForeignOrigin::Package(lineage), name, name, Some(kind))
+        .map_err(|cause| ProjectionFault::ForeignKey { reference, cause })
+        .map_err(terminal)?;
+    Ok(OccurrenceTarget::Foreign(key))
+}
+
 const fn constructor(kind: EntityKind) -> SemanticProductConstructor {
     match kind {
         EntityKind::Function => SemanticProductConstructor::function(0, 0),
@@ -1069,6 +1228,19 @@ struct AnonymousMemo {
     coordinate: u32,
 }
 
+/// One same-package member target: the (package, receiver type, member)
+/// spelling of a declared method or field plus its pushed fact ordinal, so
+/// reference rows naming members through their receiver type resolve to
+/// exact local facts.
+#[derive(Clone, Copy)]
+struct MemberKey<'source> {
+    package: &'source [u8],
+    type_name: &'source [u8],
+    member: &'source [u8],
+    ordinal: u32,
+    is_field: bool,
+}
+
 /// The two-pass Go projector over one validated authority image.
 struct Projector<'x, 'source> {
     image: GoImage<'source>,
@@ -1085,10 +1257,22 @@ struct Projector<'x, 'source> {
     /// valid only for the current declaration transaction and are replaced
     /// when the next owner reaches the same image coordinate.
     anonymous: Vec<Option<AnonymousMemo>>,
+    /// Primary-source declaration spans keyed by image declaration index:
+    /// the full authority-bound declaration extent that the declaration's
+    /// occurrences are relative to. Only rows flagged bound carry an entry.
+    declaration_spans: Vec<Option<(u32, u32)>>,
+    /// Primary-source declaration NAME-TOKEN extents keyed by image
+    /// declaration index, for satisfaction occurrences that anchor on the
+    /// declared identifier itself.
+    name_spans: Vec<Option<(u32, u32)>>,
+    /// Same-package member targets, resolved for reference rows naming
+    /// methods or fields through their receiver type.
+    members: Vec<MemberKey<'source>>,
 }
 
 impl<'x, 'source> Projector<'x, 'source> {
     fn new(image: GoImage<'source>, facts: &'x mut FactSet<'source>) -> Self {
+        let declarations = image.declaration_count();
         Self {
             declaration_ordinals: vec![None; image.declaration_count()],
             method_ordinals: vec![None; image.method_count()],
@@ -1097,6 +1281,9 @@ impl<'x, 'source> Projector<'x, 'source> {
             image,
             facts,
             names: Vec::new(),
+            declaration_spans: vec![None; declarations],
+            name_spans: vec![None; declarations],
+            members: Vec::new(),
         }
     }
 
@@ -1113,6 +1300,82 @@ impl<'x, 'source> Projector<'x, 'source> {
             .map(|(_, _, ordinal)| *ordinal)
     }
 
+    /// Resolves one receiver-qualified member spelling to its pushed fact
+    /// ordinal and class.
+    fn lookup_member(
+        &self,
+        package: &[u8],
+        type_name: &[u8],
+        member: &[u8],
+    ) -> Option<(u32, bool)> {
+        self.members
+            .iter()
+            .find(|key| {
+                key.package == package && key.type_name == type_name && key.member == member
+            })
+            .map(|key| (key.ordinal, key.is_field))
+    }
+
+    /// Records one image declaration's primary-source facts: its fact's
+    /// source span (the full authority-bound declaration extent, the exact
+    /// basis every owned occurrence's relative span is measured from) and
+    /// its NAME-TOKEN extent for satisfaction anchoring. Unbound rows —
+    /// declarations that declare in a sibling source file — stay
+    /// source-less rather than borrowing another file's coordinates.
+    fn record_declaration_spans(
+        &mut self,
+        index: usize,
+        declaration: &Declaration<'source>,
+        ordinal: u32,
+    ) -> Result<(), GoCollectError> {
+        if !declaration.bound {
+            return Ok(());
+        }
+        if let Some((start, end)) = declaration.span {
+            self.declaration_spans[index] = Some((start, end));
+            let staged = StagedSourceSpan::new(start, end).ok_or_else(|| {
+                terminal(ProjectionFault::Span {
+                    row: u32::try_from(index).unwrap_or(u32::MAX),
+                    start,
+                    end,
+                })
+            })?;
+            self.facts
+                .attach_source_span(ordinal, staged)
+                .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
+        }
+        if let Some((start, end)) = declaration.name_span {
+            self.name_spans[index] = Some((start, end));
+        }
+        Ok(())
+    }
+
+    /// Records one image method's primary-source span: the declaring
+    /// `func` extent, the exact basis every method-owned occurrence's
+    /// relative span is measured from. Unbound methods stay source-less.
+    fn record_method_span(
+        &mut self,
+        method: backend_frontend_go::legacy::MethodRow<'source>,
+        ordinal: u32,
+    ) -> Result<(), GoCollectError> {
+        if !method.bound {
+            return Ok(());
+        }
+        let Some((start, end)) = method.span else {
+            return Ok(());
+        };
+        let staged = StagedSourceSpan::new(start, end).ok_or_else(|| {
+            terminal(ProjectionFault::Span {
+                row: method.owner,
+                start,
+                end,
+            })
+        })?;
+        self.facts
+            .attach_source_span(ordinal, staged)
+            .map_err(|fault| lane_terminal_ordinal(ordinal, method.name.len(), fault))
+    }
+
     /// The pending fact that owns anonymous rows being built immediately
     /// before its push. `FactSet` records this reserved coordinate and proves
     /// it becomes valid when the caller admits that exact next fact.
@@ -1125,6 +1388,8 @@ impl<'x, 'source> Projector<'x, 'source> {
     }
 
     /// Pass one: one named type with its recursive diagonal self-nominal.
+    /// The kind follows the underlying shape: an interface root row is the
+    /// canonical trait, every other defined type is a record.
     fn named_type(
         &mut self,
         index: usize,
@@ -1136,15 +1401,16 @@ impl<'x, 'source> Projector<'x, 'source> {
                 observed: self.facts.len() as u64,
             })
         })?;
-        let fact = SemanticFact::new(
-            EntityKind::Record,
-            declaration.name,
-            SemanticProductConstructor::PRODUCT,
-        )
-        .typed(nominal_record(own));
+        let kind = self.named_type_kind(declaration)?;
+        let fact =
+            SemanticFact::new(kind, declaration.name, constructor(kind)).typed(nominal_record(own));
         let ordinal = push(self.facts, fact)?;
+        self.facts
+            .mark_parentage_root(ordinal)
+            .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
         self.record_name(declaration.package, declaration.name, ordinal);
+        self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
     }
 
@@ -1163,8 +1429,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             constructor(EntityKind::Alias),
         ));
         let ordinal = push(self.facts, fact)?;
+        self.facts
+            .mark_parentage_root(ordinal)
+            .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
         self.record_name(declaration.package, declaration.name, ordinal);
+        self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
     }
 
@@ -1204,8 +1474,20 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .type_row(index_of(root_cell))
                 .map_err(GoCollectError::Image)?;
             match row.kind {
-                TypeRowKind::Struct => self.fields(&row, &mut fields)?,
-                TypeRowKind::Interface => self.interface_methods(&row, &mut interface_methods)?,
+                TypeRowKind::Struct => self.fields(
+                    &row,
+                    &mut fields,
+                    type_ordinal,
+                    declaration.package,
+                    declaration.name,
+                )?,
+                TypeRowKind::Interface => self.interface_methods(
+                    &row,
+                    &mut interface_methods,
+                    type_ordinal,
+                    declaration.package,
+                    declaration.name,
+                )?,
                 _ => {}
             }
         }
@@ -1231,6 +1513,17 @@ impl<'x, 'source> Projector<'x, 'source> {
                     .map_err(|fault| lane_terminal(self.facts.len(), method.name.len(), fault))?;
             }
             let ordinal = self.executable(method.name, method.type_root, receiver_start)?;
+            self.facts
+                .attach_parent(ordinal, type_ordinal)
+                .map_err(|fault| lane_terminal_ordinal(ordinal, method.name.len(), fault))?;
+            self.record_method_span(method, ordinal)?;
+            self.members.push(MemberKey {
+                package: declaration.package,
+                type_name: declaration.name,
+                member: method.name,
+                ordinal,
+                is_field: false,
+            });
             methods.push(ordinal);
             method_names.push(method.name);
             self.method_ordinals[method_index] = Some(ordinal);
@@ -1250,11 +1543,19 @@ impl<'x, 'source> Projector<'x, 'source> {
             {
                 continue;
             }
-            methods.push(self.executable(
-                method_set.name,
-                method_set.type_root,
-                parameter_start,
-            )?);
+            let ordinal =
+                self.executable(method_set.name, method_set.type_root, parameter_start)?;
+            self.facts
+                .attach_parent(ordinal, type_ordinal)
+                .map_err(|fault| lane_terminal_ordinal(ordinal, method_set.name.len(), fault))?;
+            self.members.push(MemberKey {
+                package: declaration.package,
+                type_name: declaration.name,
+                member: method_set.name,
+                ordinal,
+                is_field: false,
+            });
+            methods.push(ordinal);
             method_names.push(method_set.name);
         }
         let fields_list = self.entity_list(&fields, type_ordinal, GoProjectionListPhase::Entity)?;
@@ -1322,11 +1623,15 @@ impl<'x, 'source> Projector<'x, 'source> {
     }
 
     /// Pushes one fact per struct field, projecting each field type as the
-    /// field fact's root record.
+    /// field fact's root record, and registers each field under its
+    /// receiver type's spelling for member-target resolution.
     fn fields(
         &mut self,
         row: &backend_frontend_go::legacy::TypeRow<'source>,
         fields: &mut Vec<u32>,
+        owner: u32,
+        package: &'source [u8],
+        type_name: &'source [u8],
     ) -> Result<(), GoCollectError> {
         for member_index in member_run(row) {
             let member = self
@@ -1343,17 +1648,32 @@ impl<'x, 'source> Projector<'x, 'source> {
                 LEAF_PRODUCT,
             ));
             let ordinal = push(self.facts, fact)?;
+            self.facts
+                .attach_parent(ordinal, owner)
+                .map_err(|fault| lane_terminal_ordinal(ordinal, member.name.len(), fault))?;
+            self.members.push(MemberKey {
+                package,
+                type_name,
+                member: member.name,
+                ordinal,
+                is_field: true,
+            });
             fields.push(ordinal);
             self.member_ordinals[member_index] = Some(ordinal);
         }
         Ok(())
     }
 
-    /// Pushes one function fact per interface method signature.
+    /// Pushes one function fact per interface method signature, registering
+    /// each under its interface type's spelling for member-target
+    /// resolution.
     fn interface_methods(
         &mut self,
         row: &backend_frontend_go::legacy::TypeRow<'source>,
         methods: &mut Vec<(u32, &'source [u8])>,
+        owner: u32,
+        package: &'source [u8],
+        type_name: &'source [u8],
     ) -> Result<(), GoCollectError> {
         for member_index in member_run(row) {
             let member = self
@@ -1370,6 +1690,16 @@ impl<'x, 'source> Projector<'x, 'source> {
                 })
             })?;
             let ordinal = self.executable(member.name, member.type_root, start)?;
+            self.facts
+                .attach_parent(ordinal, owner)
+                .map_err(|fault| lane_terminal_ordinal(ordinal, member.name.len(), fault))?;
+            self.members.push(MemberKey {
+                package,
+                type_name,
+                member: member.name,
+                ordinal,
+                is_field: false,
+            });
             methods.push((ordinal, member.name));
             self.member_ordinals[member_index] = Some(ordinal);
         }
@@ -1390,8 +1720,12 @@ impl<'x, 'source> Projector<'x, 'source> {
         })?;
         self.type_parameters(index)?;
         let ordinal = self.executable(declaration.name, declaration.type_root, parameter_start)?;
+        self.facts
+            .mark_parentage_root(ordinal)
+            .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
         self.record_name(declaration.package, declaration.name, ordinal);
+        self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
     }
 
@@ -1448,8 +1782,12 @@ impl<'x, 'source> Projector<'x, 'source> {
                 constant_flags,
             }));
         let ordinal = push(self.facts, fact)?;
+        self.facts
+            .mark_parentage_root(ordinal)
+            .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
         self.record_name(declaration.package, declaration.name, ordinal);
+        self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
     }
 
@@ -1471,6 +1809,19 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .facts
                 .intern_atom(row.constraint)
                 .map_err(|fault| lane_terminal(self.facts.len(), 0, fault))?;
+            // The excluded file is an authority owner the lane emits no entity
+            // for, and it is the only thing that keeps mutually-exclusive
+            // declarations distinct: `colorable_windows.go` and
+            // `colorable_appengine.go` both spell `NewColorableStdout`. The
+            // normalized build-constraint expression is coordinate-free and,
+            // because two files that share an expression can never both
+            // declare one name, a stable digest of it is a collision-free
+            // owner identity.
+            let mut hasher = Sha256::new();
+            hasher.update(b"nudox.go.build-constraint-owner.v1\0");
+            hasher.update(row.constraint);
+            let mut owner_identity = [0_u8; 16];
+            owner_identity.copy_from_slice(&hasher.finalize()[..16]);
             let list = self
                 .facts
                 .intern_atom_list(core::slice::from_ref(&atom))
@@ -1500,7 +1851,12 @@ impl<'x, 'source> Projector<'x, 'source> {
                         constant_group: 0,
                         constant_flags: 0,
                     }));
-                push(self.facts, fact)?;
+                let ordinal = push(self.facts, fact)?;
+                self.facts
+                    .mark_unrepresented_parent(ordinal, owner_identity)
+                    .map_err(|fault| {
+                        lane_terminal_ordinal(ordinal, declaration.name.len(), fault)
+                    })?;
             }
         }
         Ok(())
@@ -1553,10 +1909,18 @@ impl<'x, 'source> Projector<'x, 'source> {
         Ok(())
     }
 
-    /// Pass five: one resolved call occurrence per reference row, local
-    /// when the target declares in this package and otherwise a foreign
-    /// `go` package key, both at oracle confidence over owner-relative
-    /// spans.
+    /// Pass five: one oracle-confidence occurrence per reference row. The
+    /// image's reference plane carries every go/types use of a keyable
+    /// object, each with its closed use kind, the used object's closed
+    /// class, and the receiver type name for method and field targets.
+    /// Resolution keeps the call-graph law: a same-package target resolves
+    /// to its local fact when the lane carries one (package scope by name,
+    /// members by receiver type and name); everything else — every foreign
+    /// package, every promoted or otherwise unlocalizable member — stays a
+    /// typed foreign `go` lineage key. Owners lift relative spans over the
+    /// authority-bound source spans attached in passes one and two, so the
+    /// shared containment law places every site in the exact source bytes
+    /// of the used identifier.
     fn occurrences(&mut self) -> Result<(), GoCollectError> {
         for index in 0..self.image.reference_count() {
             let reference_index =
@@ -1580,59 +1944,66 @@ impl<'x, 'source> Projector<'x, 'source> {
                     owner: row.owner_row,
                 })
             })?;
-            let target = if row.target_package.is_empty() {
-                let package = if row.owner_is_declaration {
-                    self.image
-                        .declaration(index_of(row.owner_row))
-                        .map_err(GoCollectError::Image)?
-                        .package
-                } else {
-                    let method = self
-                        .image
-                        .method(index_of(row.owner_row))
-                        .map_err(GoCollectError::Image)?;
-                    self.image
-                        .declaration(index_of(method.owner))
-                        .map_err(GoCollectError::Image)?
-                        .package
-                };
-                let ordinal = self.lookup(package, row.target).ok_or_else(|| {
-                    terminal(ProjectionFault::OrphanTarget {
-                        reference: reference_index,
-                    })
-                })?;
-                OccurrenceTarget::Local(EntityId::new(ordinal))
+            let kind = occurrence_kind(row.use_kind, row.target_class);
+            // The package whose lineage keys an unresolvable target: the
+            // target's own declaring package when it declares elsewhere,
+            // else the owner's package.
+            let owner_package = if row.owner_is_declaration {
+                self.image
+                    .declaration(index_of(row.owner_row))
+                    .map_err(GoCollectError::Image)?
+                    .package
             } else {
-                let package = str::from_utf8(row.target_package).map_err(|_| {
-                    terminal(ProjectionFault::Utf8 {
-                        plane: GoImagePlane::ReferenceTarget,
-                        row: reference_index,
-                    })
-                })?;
-                let function = str::from_utf8(row.target).map_err(|_| {
-                    terminal(ProjectionFault::Utf8 {
-                        plane: GoImagePlane::ReferenceTarget,
-                        row: reference_index,
-                    })
-                })?;
-                let lineage = PackageLineage::new(ECOSYSTEM, package)
-                    .map_err(|cause| ProjectionFault::Lineage {
-                        reference: reference_index,
-                        cause,
-                    })
-                    .map_err(terminal)?;
-                let key = ForeignKey::new(
-                    ForeignOrigin::Package(lineage),
-                    function,
-                    function,
-                    Some(EntityKind::Function),
-                )
-                .map_err(|cause| ProjectionFault::ForeignKey {
-                    reference: reference_index,
-                    cause,
-                })
-                .map_err(terminal)?;
-                OccurrenceTarget::Foreign(key)
+                let method = self
+                    .image
+                    .method(index_of(row.owner_row))
+                    .map_err(GoCollectError::Image)?;
+                self.image
+                    .declaration(index_of(method.owner))
+                    .map_err(GoCollectError::Image)?
+                    .package
+            };
+            let target = if row.target_class == ReferenceTargetClass::Pkg {
+                // An imported package binding: the used object is the
+                // package itself, keyed by its import path under the `go`
+                // ecosystem. The lane owns no package entities, so an
+                // import use is always a typed foreign key.
+                let package = if row.target_package.is_empty() {
+                    owner_package
+                } else {
+                    row.target_package
+                };
+                foreign_target(reference_index, package, row.target, EntityKind::Module)?
+            } else if row.target_package.is_empty() {
+                let local = self
+                    .lookup(owner_package, row.target)
+                    .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
+                    .or_else(|| {
+                        self.lookup_member(owner_package, row.recv_type, row.target)
+                            .map(|(ordinal, _)| OccurrenceTarget::Local(EntityId::new(ordinal)))
+                    });
+                match local {
+                    Some(target) => target,
+                    None => {
+                        // Same-package target with no local fact: promoted
+                        // members, blank-keyed fields, or build-excluded
+                        // declarations. The key keeps the exact spelling
+                        // under the declaring package's lineage.
+                        foreign_target(
+                            reference_index,
+                            owner_package,
+                            row.target,
+                            foreign_entity_kind(row.target_class),
+                        )?
+                    }
+                }
+            } else {
+                foreign_target(
+                    reference_index,
+                    row.target_package,
+                    row.target,
+                    foreign_entity_kind(row.target_class),
+                )?
             };
             let span = RelSpan::new(row.relative.0, row.relative.1)
                 .map_err(|fault| match fault {
@@ -1648,7 +2019,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                     owner,
                     Occurrence {
                         target,
-                        kind: ReferenceKind::FunctionCall,
+                        kind,
                         confidence: OccurrenceConfidence::Oracle,
                         span,
                     },
@@ -1661,10 +2032,14 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// Pass six: one oracle-confidence type-reference occurrence per
     /// interface-satisfaction edge, owned by the satisfying type's fact.
     /// In-package targets resolve to their local nominal ordinals;
-    /// cross-package targets fold to foreign `go` lineage keys. The oracle
-    /// records no position for a satisfaction edge — Go never names the
-    /// relation — so every occurrence carries the position-free spelling: a
-    /// zero-width owner-relative span at the owner's start.
+    /// cross-package targets fold to foreign `go` lineage keys. Go never
+    /// writes the satisfaction relation, so the occurrence anchors on the
+    /// subject's declared identifier: when the image carries the subject's
+    /// authority-bound NAME-TOKEN extent, the occurrence's owner-relative
+    /// span is exactly that extent — a real extent whose lifted site
+    /// verifies against the declared identifier's source bytes; without
+    /// one, the occurrence keeps the position-free zero-width spelling at
+    /// the owner's start.
     fn satisfactions(&mut self) -> Result<(), GoCollectError> {
         for index in 0..self.image.satisfaction_count() {
             let reference_index = go_u32(index, GoProjectionIndexPhase::Satisfaction).map_err(
@@ -1674,9 +2049,10 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .image
                 .satisfaction(index)
                 .map_err(GoCollectError::Image)?;
+            let subject_index = index_of(row.subject);
             let subject = self
                 .declaration_ordinals
-                .get(index_of(row.subject))
+                .get(subject_index)
                 .copied()
                 .flatten()
                 .ok_or_else(|| terminal(ProjectionFault::OrphanOwner { owner: row.subject }))?;
@@ -1685,7 +2061,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             // target package means the subject's declaration package.
             let subject_package = self
                 .image
-                .declaration(index_of(row.subject))
+                .declaration(subject_index)
                 .map_err(GoCollectError::Image)?
                 .package;
             let target_package = if row.target_package.is_empty() {
@@ -1696,46 +2072,60 @@ impl<'x, 'source> Projector<'x, 'source> {
             let target = if let Some(ordinal) = self.lookup(target_package, row.target) {
                 OccurrenceTarget::Local(EntityId::new(ordinal))
             } else {
-                let package = str::from_utf8(row.target_package).map_err(|_| {
-                    terminal(ProjectionFault::Utf8 {
-                        plane: GoImagePlane::SatisfactionTarget,
-                        row: reference_index,
-                    })
-                })?;
-                let interface = str::from_utf8(row.target).map_err(|_| {
-                    terminal(ProjectionFault::Utf8 {
-                        plane: GoImagePlane::SatisfactionTarget,
-                        row: reference_index,
-                    })
-                })?;
-                let lineage = PackageLineage::new(ECOSYSTEM, package)
-                    .map_err(|cause| ProjectionFault::Lineage {
-                        reference: reference_index,
-                        cause,
-                    })
-                    .map_err(terminal)?;
-                let key = ForeignKey::new(
-                    ForeignOrigin::Package(lineage),
-                    interface,
-                    interface,
-                    Some(EntityKind::Record),
-                )
-                .map_err(|cause| ProjectionFault::ForeignKey {
-                    reference: reference_index,
-                    cause,
-                })
-                .map_err(terminal)?;
-                OccurrenceTarget::Foreign(key)
+                // A satisfaction target is an interface by the plane's
+                // construction, so its honest foreign kind is the trait —
+                // the same kind a local interface projects.
+                foreign_target(
+                    reference_index,
+                    row.target_package,
+                    row.target,
+                    EntityKind::Trait,
+                )?
             };
-            let span = RelSpan::new(0, 0)
-                .map_err(|fault| match fault {
-                    RelSpanFault::Inverted { start, end } => ProjectionFault::Span {
-                        row: reference_index,
-                        start,
-                        end,
-                    },
-                })
-                .map_err(terminal)?;
+            // The NAME-TOKEN extent relative to the declaration-extent basis
+            // the subject's source span was attached with. Both spans come
+            // from one bound row and the image proves the identifier sits
+            // inside its declaration, so the relative span is ordered and
+            // contained; any other shape is a typed span fault.
+            let span = match (
+                self.declaration_spans[subject_index],
+                self.name_spans[subject_index],
+            ) {
+                (Some((base, _)), Some((name_start, name_end))) => {
+                    let start = name_start.checked_sub(base).ok_or_else(|| {
+                        terminal(ProjectionFault::Span {
+                            row: reference_index,
+                            start: name_start,
+                            end: base,
+                        })
+                    })?;
+                    let end = name_end.checked_sub(base).ok_or_else(|| {
+                        terminal(ProjectionFault::Span {
+                            row: reference_index,
+                            start: name_start,
+                            end: base,
+                        })
+                    })?;
+                    RelSpan::new(start, end)
+                        .map_err(|fault| match fault {
+                            RelSpanFault::Inverted { start, end } => ProjectionFault::Span {
+                                row: reference_index,
+                                start,
+                                end,
+                            },
+                        })
+                        .map_err(terminal)?
+                }
+                _ => RelSpan::new(0, 0)
+                    .map_err(|fault| match fault {
+                        RelSpanFault::Inverted { start, end } => ProjectionFault::Span {
+                            row: reference_index,
+                            start,
+                            end,
+                        },
+                    })
+                    .map_err(terminal)?,
+            };
             self.facts
                 .push_occurrence(
                     subject,
@@ -1867,16 +2257,23 @@ impl<'x, 'source> Projector<'x, 'source> {
             constant_group: 0,
             constant_flags: 0,
         }));
-        for ordinal in parameters {
-            fact = fact.child(ProductChildRole::FunctionParameter, ordinal);
+        for ordinal in &parameters {
+            fact = fact.child(ProductChildRole::FunctionParameter, *ordinal);
         }
-        for ordinal in results {
-            fact = fact.child(ProductChildRole::FunctionResult, ordinal);
+        for ordinal in &results {
+            fact = fact.child(ProductChildRole::FunctionResult, *ordinal);
         }
         for carrier in carriers {
             fact = fact.type_child(carrier.target, carrier.name, carrier.flags);
         }
         let ordinal = push(self.facts, fact)?;
+        // Signature carriers share names and types across functions; bind
+        // each to its executable so identical carriers stay distinct.
+        for carrier in parameters.iter().chain(results.iter()) {
+            self.facts
+                .attach_parent(*carrier, ordinal)
+                .map_err(|fault| lane_terminal_ordinal(*carrier, name.len(), fault))?;
+        }
         Ok(ordinal)
     }
 
@@ -1899,9 +2296,15 @@ impl<'x, 'source> Projector<'x, 'source> {
                 Err(error) => Some(Err(GoCollectError::Image(error))),
             })
             .transpose()?
-            .unwrap_or(UNNAMED);
-        Ok(if parameter.is_empty() {
-            UNNAMED
+            .unwrap_or(&[]);
+        // An unnamed carrier is absent from the image; a source may also spell
+        // one with Go's blank identifier. Both are blanks, so both take the
+        // positional spelling: `_` at position zero and `_1`, `_2`, … after
+        // it. Without this, a signature such as
+        // `filter(_ *state, _ reflect.Type, _, _ reflect.Value)` frames four
+        // byte-identical carrier identities and collides as a duplicate.
+        Ok(if parameter.is_empty() || parameter == b"_" {
+            absent_name(ordinal)
         } else {
             parameter
         })
@@ -2750,7 +3153,7 @@ mod tests {
 
     const HEADER_BYTES: usize = 136;
     const NONE: u32 = u32::MAX;
-    const IMAGE_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v5\0";
+    const IMAGE_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v6\0";
     const FILE: &[u8] = b"main.go";
     const PACKAGE: &[u8] = b"example.com/demo";
     const SPAN_END: u32 = 256;
@@ -2794,6 +3197,8 @@ mod tests {
         Occurrence(backend_semantic::ir::OccurrenceFault),
         #[error("documentation cursor rejected: {0:?}")]
         Doc(backend_semantic::ir::DocFactFault),
+        #[error("owned image materialization rejected the fact set: {0:?}")]
+        Ir(backend_semantic::ir::BuildError),
         #[error("fixture scalar conversion failed: {0}")]
         Num(core::num::TryFromIntError),
         #[error("expected {0}")]
@@ -2946,6 +3351,7 @@ mod tests {
         constraints: Vec<ConstraintF>,
         satisfactions: Vec<SatisfactionF>,
         children: Vec<u32>,
+        signature_parameter_names: Vec<(u32, u32, Cell)>,
     }
 
     #[derive(Clone)]
@@ -2957,6 +3363,13 @@ mod tests {
         value: Cell,
         const_group: i64,
         iota: bool,
+        /// The declaration's full source extent; every declaration carries
+        /// one.
+        span: (u32, u32),
+        /// The declared identifier's absolute byte extent (version 6).
+        name_span: Option<(u32, u32)>,
+        /// The authority-bound-source flag (version 6).
+        bound: bool,
     }
 
     #[derive(Clone)]
@@ -2979,6 +3392,10 @@ mod tests {
         type_root: Option<u32>,
         receiver: Cell,
         receiver_params: (Cell, u32),
+        /// The method's declaring extent.
+        span: (u32, u32),
+        /// The authority-bound-source flag (version 6).
+        bound: bool,
     }
 
     #[derive(Clone)]
@@ -3019,6 +3436,12 @@ mod tests {
         receiver: Cell,
         start: u32,
         end: u32,
+        /// The closed use-kind byte (version 6).
+        use_kind: u8,
+        /// The closed target-class byte (version 6).
+        target_class: u8,
+        /// The target receiver type-name atom (version 6).
+        recv_type: Cell,
     }
 
     #[derive(Clone)]
@@ -3183,6 +3606,12 @@ mod tests {
             index
         }
 
+        /// Names one signature parameter or result position on a func row.
+        fn name_signature_parameter(&mut self, owner: u32, ordinal: u32, name: &[u8]) {
+            let cell = self.atom(name);
+            self.signature_parameter_names.push((owner, ordinal, cell));
+        }
+
         fn field(&mut self, owner: u32, name: &[u8], type_root: Option<u32>) {
             let spelled = self.atom(name);
             self.add_member(
@@ -3234,6 +3663,9 @@ mod tests {
                 },
                 const_group: 0,
                 iota: false,
+                span: (0, SPAN_END),
+                name_span: None,
+                bound: false,
             });
             self.declarations.len() - 1
         }
@@ -3278,6 +3710,8 @@ mod tests {
                     },
                     0,
                 ),
+                span: (0, SPAN_END),
+                bound: false,
             });
             self.methods.len() - 1
         }
@@ -3309,9 +3743,38 @@ mod tests {
             start: u32,
             end: u32,
         ) {
+            self.reference_typed(
+                owner,
+                receiver,
+                target,
+                target_package,
+                start,
+                end,
+                0,
+                0,
+                b"",
+            );
+        }
+
+        /// One version-6 reference row: the legacy cells plus the closed
+        /// use-kind byte, the target-class byte, and the receiver type-name
+        /// atom.
+        fn reference_typed(
+            &mut self,
+            owner: u32,
+            receiver: &[u8],
+            target: &[u8],
+            target_package: &[u8],
+            start: u32,
+            end: u32,
+            use_kind: u8,
+            target_class: u8,
+            recv_type: &[u8],
+        ) {
             let target = self.atom(target);
             let package = self.atom(target_package);
             let receiver = self.atom(receiver);
+            let recv_type = self.atom(recv_type);
             self.references.push(RefF {
                 owner,
                 target,
@@ -3319,6 +3782,9 @@ mod tests {
                 receiver,
                 start,
                 end,
+                use_kind,
+                target_class,
+                recv_type,
             });
         }
 
@@ -3366,13 +3832,19 @@ mod tests {
                 declarations.extend_from_slice(&package);
                 declarations.extend_from_slice(&package_len);
                 declarations.extend_from_slice(&row.type_root.unwrap_or(NONE).to_le_bytes());
-                declarations.extend_from_slice(&0_u32.to_le_bytes());
-                declarations.extend_from_slice(&SPAN_END.to_le_bytes());
+                declarations.extend_from_slice(&row.span.0.to_le_bytes());
+                declarations.extend_from_slice(&row.span.1.to_le_bytes());
                 declarations.extend_from_slice(&file.offset.to_le_bytes());
                 declarations.extend_from_slice(&file.length.to_le_bytes());
                 declarations.extend_from_slice(&value);
                 declarations.extend_from_slice(&value_len);
                 declarations.extend_from_slice(&row.const_group.to_le_bytes());
+                // Version 6: the declared identifier's byte extent and the
+                // authority-bound flag.
+                let (name_start, name_end) = row.name_span.unwrap_or((NONE, NONE));
+                declarations.extend_from_slice(&name_start.to_le_bytes());
+                declarations.extend_from_slice(&name_end.to_le_bytes());
+                declarations.extend_from_slice(&[u8::from(row.bound), 0, 0, 0, 0, 0, 0, 0]);
             }
             let mut types = Vec::new();
             for row in &self.types {
@@ -3408,10 +3880,12 @@ mod tests {
                 methods.extend_from_slice(&row.receiver_params.1.to_le_bytes());
                 methods.extend_from_slice(&0_u32.to_le_bytes());
                 methods.extend_from_slice(&0_u32.to_le_bytes());
-                methods.extend_from_slice(&0_u32.to_le_bytes());
-                methods.extend_from_slice(&SPAN_END.to_le_bytes());
+                methods.extend_from_slice(&row.span.0.to_le_bytes());
+                methods.extend_from_slice(&row.span.1.to_le_bytes());
                 methods.extend_from_slice(&file.offset.to_le_bytes());
                 methods.extend_from_slice(&file.length.to_le_bytes());
+                // Version 6: the authority-bound flag.
+                methods.extend_from_slice(&[u8::from(row.bound), 0, 0, 0, 0, 0, 0, 0]);
             }
             let mut parameters = Vec::new();
             for row in &self.parameters {
@@ -3448,6 +3922,7 @@ mod tests {
                 let (target, target_len) = cell(row.target);
                 let (package, package_len) = cell(row.target_package);
                 let (receiver, receiver_len) = cell(row.receiver);
+                let (recv_type, recv_type_len) = cell(row.recv_type);
                 references.extend_from_slice(&row.owner.to_le_bytes());
                 references.extend_from_slice(&target);
                 references.extend_from_slice(&target_len);
@@ -3459,7 +3934,11 @@ mod tests {
                 references.extend_from_slice(&file.length.to_le_bytes());
                 references.extend_from_slice(&receiver);
                 references.extend_from_slice(&receiver_len);
-                references.extend_from_slice(&0_u32.to_le_bytes());
+                // Version 6: the closed use kind, the target class, and the
+                // receiver type-name atom.
+                references.extend_from_slice(&[row.use_kind, row.target_class, 0, 0]);
+                references.extend_from_slice(&recv_type);
+                references.extend_from_slice(&recv_type_len);
             }
             let mut constraints = Vec::new();
             for row in &self.constraints {
@@ -3544,13 +4023,23 @@ mod tests {
                 if row.kind != ROW_FUNC {
                     continue;
                 }
+                let owner_u32 = u32::try_from(owner).map_err(TestError::from)?;
                 for ordinal in 0..row.children.1 {
-                    signature_parameters.extend_from_slice(
-                        &u32::try_from(owner).map_err(TestError::from)?.to_le_bytes(),
-                    );
+                    let name = self
+                        .signature_parameter_names
+                        .iter()
+                        .find(|(named_owner, named_ordinal, _)| {
+                            *named_owner == owner_u32 && *named_ordinal == ordinal
+                        })
+                        .map(|(_, _, cell)| *cell)
+                        .unwrap_or(Cell {
+                            offset: 0,
+                            length: 0,
+                        });
+                    signature_parameters.extend_from_slice(&owner_u32.to_le_bytes());
                     signature_parameters.extend_from_slice(&ordinal.to_le_bytes());
-                    signature_parameters.extend_from_slice(&0_u32.to_le_bytes());
-                    signature_parameters.extend_from_slice(&0_u32.to_le_bytes());
+                    signature_parameters.extend_from_slice(&name.offset.to_le_bytes());
+                    signature_parameters.extend_from_slice(&name.length.to_le_bytes());
                     signature_parameters.extend_from_slice(&0_u32.to_le_bytes());
                     signature_parameters.extend_from_slice(&0_u32.to_le_bytes());
                     signature_parameters.extend_from_slice(&NONE.to_le_bytes());
@@ -3628,7 +4117,7 @@ mod tests {
             let body = sections.iter().map(Vec::len).sum::<usize>();
             let mut image = vec![0_u8; HEADER_BYTES];
             image[..4].copy_from_slice(b"NGAI");
-            image[4..6].copy_from_slice(&5_u16.to_le_bytes());
+            image[4..6].copy_from_slice(&6_u16.to_le_bytes());
             image[6..8].copy_from_slice(
                 &u16::try_from(HEADER_BYTES)
                     .map_err(TestError::from)?
@@ -3684,14 +4173,57 @@ mod tests {
             ContentId::<ToolchainDomain>::from_canonical_bytes(b"go-authority-toolchain"),
         );
         let mut output = vec![0xa5_u8; 65_536];
-        let length = crate::driver::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
-            .map_err(TestError::from)?
-            .len();
+        let length =
+            crate::driver::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
+                .map_err(TestError::from)?
+                .len();
         if !output[length..].iter().all(|byte| *byte == 0xa5) {
             return Err(TestError::Tail);
         }
         output.truncate(length);
         Ok(output)
+    }
+
+    /// Materializes the owned semantic image for one fixture image — the
+    /// surface where the link plane and its absolute, source-verified
+    /// occurrence sites live.
+    fn lower_ir(fix: &Fixture, source: &[u8]) -> Result<backend_semantic::ir::Ir, TestError> {
+        let image = fix.encode(source)?;
+        let mut facts = FactSet::new();
+        collect(source, &image, &mut facts)?;
+        let identity = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            byte_len: u32::try_from(source.len()).map_err(TestError::from)?,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125),
+            Stage::LowerIr,
+            NativeTool::GoCompiler,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"go-authority-toolchain"),
+        );
+        facts
+            .build_ir(
+                LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125),
+                identity,
+                recipe,
+                crate::driver::types::DeclarationScope::fixture(),
+            )
+            .map_err(TestError::Ir)
+    }
+
+    /// The byte extent of the first occurrence of one needle in the test
+    /// source, so fixture spans can be proven against the exact bytes they
+    /// claim to cover.
+    fn at(source: &[u8], needle: &[u8]) -> Result<(u32, u32), TestError> {
+        let at = source
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .ok_or(TestError::Missing("fixture needle in source"))?;
+        Ok((
+            u32::try_from(at).map_err(TestError::from)?,
+            u32::try_from(at + needle.len()).map_err(TestError::from)?,
+        ))
     }
 
     /// Borrows one validated type-fact row by its wire ordinal.
@@ -3716,6 +4248,20 @@ mod tests {
                 .ok_or(TestError::Missing("entity atom"))?;
             if atom.bytes == name {
                 return Ok(entity.entity);
+            }
+        }
+        Err(TestError::Missing("entity by name"))
+    }
+
+    /// The canonical kind of one named entity row.
+    fn entity_kind_of(view: &FragmentView<'_>, name: &[u8]) -> Result<EntityKind, TestError> {
+        for entity in view.entities() {
+            let atom = view
+                .atoms()
+                .nth(usize::try_from(entity.name.raw).map_err(TestError::from)?)
+                .ok_or(TestError::Missing("entity atom"))?;
+            if atom.bytes == name {
+                return Ok(entity.kind);
             }
         }
         Err(TestError::Missing("entity by name"))
@@ -3809,6 +4355,46 @@ mod tests {
         Ok(())
     }
 
+    /// The kind selection of pass-one named types follows the underlying
+    /// shape: an interface root row projects the canonical trait, a struct
+    /// root row stays a record, and a true alias stays an alias.
+    #[test]
+    fn interface_types_project_traits_while_structs_and_aliases_keep_their_kinds()
+    -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let node = fix.declaration(KIND_TYPE, b"Node", None);
+        let struct_row = fix.start_row(ROW_STRUCT);
+        fix.field(struct_row, b"next", None);
+        fix.declarations[node].type_root = Some(struct_row);
+        let closer = fix.declaration(KIND_TYPE, b"Closer", None);
+        let iface_row = fix.start_row(ROW_INTERFACE);
+        fix.interface_method(iface_row, b"Close", None);
+        fix.declarations[closer].type_root = Some(iface_row);
+        let int = fix.basic(b"int");
+        fix.declaration(KIND_ALIAS, b"Count", Some(int));
+        let source = b"package demo\n";
+        // Two-run byte stability: the kind reframe must not make the
+        // fragment digest input-order or memory dependent.
+        let first = lower(&fix, source)?;
+        let second = lower(&fix, source)?;
+        if first != second {
+            return Err(TestError::Tail);
+        }
+        let bytes = first;
+        let view = FragmentView::validate(&bytes)?;
+        let expected: [(&[u8], EntityKind); 3] = [
+            (b"Node", EntityKind::Record),
+            (b"Closer", EntityKind::Trait),
+            (b"Count", EntityKind::Alias),
+        ];
+        for (name, kind) in expected {
+            if entity_kind_of(&view, name)? != kind {
+                return Err(TestError::Missing("kind selection"));
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn recursive_pointer_field_targets_the_backward_nominal() -> Result<(), TestError> {
         let mut fix = Fixture::new();
@@ -3874,8 +4460,9 @@ mod tests {
             if child.ordinal < start || child.ordinal >= end {
                 continue;
             }
-            let backend_semantic::ir::TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(target)) =
-                child.child.target
+            let backend_semantic::ir::TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(
+                target,
+            )) = child.child.target
             else {
                 return Err(TestError::Missing("local child"));
             };
@@ -4074,18 +4661,30 @@ mod tests {
         // 7 int param, 8 error result, 9 Put.
         let node_facts = go_extension(&view, 0)?;
         if node_facts.fields.raw != 1
-            || pooled_list(&view, backend_semantic::ir::ExtensionPoolListLane::Entities, 1)? != vec![3, 4]
+            || pooled_list(
+                &view,
+                backend_semantic::ir::ExtensionPoolListLane::Entities,
+                1,
+            )? != vec![3, 4]
         {
             return Err(TestError::Missing("node field list"));
         }
         if node_facts.method_set.raw != 2
-            || pooled_list(&view, backend_semantic::ir::ExtensionPoolListLane::Entities, 2)? != vec![6]
+            || pooled_list(
+                &view,
+                backend_semantic::ir::ExtensionPoolListLane::Entities,
+                2,
+            )? != vec![6]
         {
             return Err(TestError::Missing("node method set"));
         }
         let store_facts = go_extension(&view, 1)?;
         if store_facts.method_set.raw != 3
-            || pooled_list(&view, backend_semantic::ir::ExtensionPoolListLane::Entities, 3)? != vec![9]
+            || pooled_list(
+                &view,
+                backend_semantic::ir::ExtensionPoolListLane::Entities,
+                3,
+            )? != vec![9]
         {
             return Err(TestError::Missing("store method set"));
         }
@@ -4301,7 +4900,9 @@ mod tests {
                         backend_semantic::ir::DecodedTypeParameterBound::Type(raw) => Some(raw),
                         backend_semantic::ir::DecodedTypeParameterBound::Lifetime(_) => None,
                     }),
-                backend_semantic::ir::DecodedTypeParameterSemantics::Legacy { constraint } => constraint,
+                backend_semantic::ir::DecodedTypeParameterSemantics::Legacy { constraint } => {
+                    constraint
+                }
             };
             parameters.push((parameter.name, constraint));
         }
@@ -4540,6 +5141,27 @@ mod tests {
         Ok(())
     }
 
+    /// A source may spell several carriers with Go's blank identifier, exactly
+    /// as go-cmp's `filter(_ *state, _ reflect.Type, _, _ reflect.Value)`
+    /// does. Each blank takes its positional spelling, so four same-typed
+    /// blanks frame four distinct identities.
+    #[test]
+    fn explicit_blank_parameter_names_take_positional_spellings() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let brew = fix.func(&[int, int, int], &[int], false);
+        for ordinal in 0..4 {
+            fix.name_signature_parameter(brew, ordinal, b"_");
+        }
+        fix.declaration(KIND_FUNC, b"Blank", Some(brew));
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        for name in [b"_".as_slice(), b"_1", b"_2", b"_3"] {
+            entity_of(&view, name)?;
+        }
+        Ok(())
+    }
+
     #[test]
     fn capacity_beyond_the_lane_rejects_exactly() -> Result<(), TestError> {
         let mut fix = Fixture::new();
@@ -4561,6 +5183,9 @@ mod tests {
                 },
                 const_group: 0,
                 iota: false,
+                span: (0, SPAN_END),
+                name_span: None,
+                bound: false,
             });
         }
         let exact_image = fix.encode(b"package demo\n")?;
@@ -4585,6 +5210,9 @@ mod tests {
             },
             const_group: 0,
             iota: false,
+            span: (0, SPAN_END),
+            name_span: None,
+            bound: false,
         });
         let image = fix.encode(b"package demo\n")?;
         let mut facts = FactSet::new();
@@ -4707,6 +5335,275 @@ mod tests {
         }
         if occurrences.next().is_some() {
             return Err(TestError::Missing("exact satisfaction occurrences"));
+        }
+        Ok(())
+    }
+
+    /// The widened reference plane: every closed use kind maps to its
+    /// canonical reference kind, receiver-qualified members resolve to their
+    /// exact local facts, and unresolved and foreign targets stay typed
+    /// foreign `go` lineage keys under the used object's class.
+    #[test]
+    fn widened_occurrences_carry_kinds_member_targets_and_typed_foreign_keys()
+    -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let lang = fix.declaration(KIND_TYPE, b"Lang", None);
+        let greeter = fix.declaration(KIND_TYPE, b"Greeter", None);
+        let state = fix.declaration(KIND_VAR, b"state", None);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        let set_name = fix.method(lang, b"SetName", None);
+        let string_row = fix.basic(b"string");
+        let lang_row = fix.start_row(ROW_STRUCT);
+        fix.field(lang_row, b"Name", Some(string_row));
+        fix.declarations[lang].type_root = Some(lang_row);
+        let iface_row = fix.start_row(ROW_INTERFACE);
+        fix.interface_method(iface_row, b"Read", None);
+        fix.declarations[greeter].type_root = Some(iface_row);
+        let _ = (set_name, state);
+        // Facts: 0 Lang, 1 Greeter, 2 Name (field), 3 SetName (method),
+        // 4 Read (interface method), 5 state, 6 Use.
+
+        // One method-owned field write inside SetName: the receiver atom
+        // routes the row to the method row spanning the site.
+        fix.reference_typed(lang as u32, b"l", b"Name", b"", 32, 36, 1, 2, b"Lang");
+        // A method call through a receiver, resolved member-exactly.
+        fix.reference_typed(use_fn as u32, b"", b"SetName", b"", 48, 55, 0, 1, b"Lang");
+        // A field read through a receiver.
+        fix.reference_typed(use_fn as u32, b"", b"Name", b"", 66, 70, 1, 2, b"Lang");
+        // An unresolved same-package member: typed foreign key under the
+        // declaring package's lineage, never a dropped row.
+        fix.reference_typed(use_fn as u32, b"", b"Ghost", b"", 80, 85, 1, 2, b"Lang");
+        // A package-level variable read.
+        fix.reference_typed(use_fn as u32, b"", b"state", b"", 96, 101, 1, 3, b"");
+        // A type use.
+        fix.reference_typed(use_fn as u32, b"", b"Greeter", b"", 112, 119, 2, 5, b"");
+        // An imported package binding.
+        fix.reference_typed(use_fn as u32, b"", b"fmt", b"fmt", 130, 133, 3, 6, b"");
+        // A foreign free-function call: the exact v3 row shape.
+        fix.reference(use_fn as u32, b"", b"Println", b"fmt", 134, 141);
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+
+        let write = occurrences
+            .next()
+            .ok_or(TestError::Missing("field write"))??;
+        if write.owner.raw != 3
+            || write.occurrence.target != OccurrenceTarget::Local(EntityId::new(2))
+            || write.occurrence.kind != ReferenceKind::FieldAccess
+            || write.occurrence.span != (RelSpan::new(32, 36).map_err(|_| TestError::Tail)?)
+        {
+            return Err(TestError::Missing("method-owned field write"));
+        }
+        let method_call = occurrences
+            .next()
+            .ok_or(TestError::Missing("method call"))??;
+        if method_call.owner.raw != 6
+            || method_call.occurrence.target != OccurrenceTarget::Local(EntityId::new(3))
+            || method_call.occurrence.kind != ReferenceKind::MethodCall
+        {
+            return Err(TestError::Missing("receiver method call"));
+        }
+        let field_read = occurrences
+            .next()
+            .ok_or(TestError::Missing("field read"))??;
+        if field_read.occurrence.target != OccurrenceTarget::Local(EntityId::new(2))
+            || field_read.occurrence.kind != ReferenceKind::FieldAccess
+        {
+            return Err(TestError::Missing("receiver field read"));
+        }
+        let ghost = occurrences.next().ok_or(TestError::Missing("ghost"))??;
+        let OccurrenceTarget::Foreign(ref key) = ghost.occurrence.target else {
+            return Err(TestError::Missing("unresolved member stays foreign"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo"
+            || key.path != "Ghost"
+            || key.kind != Some(EntityKind::Field)
+            || ghost.occurrence.kind != ReferenceKind::FieldAccess
+        {
+            return Err(TestError::Missing("typed foreign member key"));
+        }
+        let var_read = occurrences.next().ok_or(TestError::Missing("var read"))??;
+        if var_read.occurrence.target != OccurrenceTarget::Local(EntityId::new(5))
+            || var_read.occurrence.kind != ReferenceKind::VariableUse
+        {
+            return Err(TestError::Missing("variable use"));
+        }
+        let type_use = occurrences.next().ok_or(TestError::Missing("type use"))??;
+        if type_use.occurrence.target != OccurrenceTarget::Local(EntityId::new(1))
+            || type_use.occurrence.kind != ReferenceKind::TypeReference
+        {
+            return Err(TestError::Missing("type use"));
+        }
+        let import = occurrences.next().ok_or(TestError::Missing("import"))??;
+        let OccurrenceTarget::Foreign(ref key) = import.occurrence.target else {
+            return Err(TestError::Missing("import target"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("import lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "fmt"
+            || key.path != "fmt"
+            || key.kind != Some(EntityKind::Module)
+            || import.occurrence.kind != ReferenceKind::Import
+        {
+            return Err(TestError::Missing("import key"));
+        }
+        let foreign_call = occurrences
+            .next()
+            .ok_or(TestError::Missing("foreign call"))??;
+        let OccurrenceTarget::Foreign(ref key) = foreign_call.occurrence.target else {
+            return Err(TestError::Missing("foreign call target"));
+        };
+        if key.path != "Println"
+            || key.kind != Some(EntityKind::Function)
+            || foreign_call.occurrence.kind != ReferenceKind::FunctionCall
+        {
+            return Err(TestError::Missing("foreign call key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact occurrences"));
+        }
+        Ok(())
+    }
+
+    /// The owned IR carries every widened occurrence with an absolute source
+    /// site that verifies against the exact identifier bytes, and the
+    /// satisfaction edge anchors on the subject's declared NAME-TOKEN
+    /// extent instead of the position-free zero-width spelling.
+    #[test]
+    fn ir_links_carry_source_verified_occurrence_sites() -> Result<(), TestError> {
+        use backend_semantic::ir::{LinkKind, LinkTarget, SemanticReader as _};
+        let source: &[u8] = b"package demo\n\ntype Lang struct {\n\tName string\n}\n\nfunc (l *Lang) SetName() {\n}\n\ntype Greeter interface {\n\tRead()\n}\n\nfunc Use() {\n\tl := Lang{}\n\tl.SetName()\n\tvar g Greeter = l\n\t_ = g\n}\n";
+        let mut fix = Fixture::new();
+        let lang = fix.declaration(KIND_TYPE, b"Lang", None);
+        let greeter = fix.declaration(KIND_TYPE, b"Greeter", None);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        let set_name = fix.method(lang, b"SetName", None);
+        let string_row = fix.basic(b"string");
+        let lang_row = fix.start_row(ROW_STRUCT);
+        fix.field(lang_row, b"Name", Some(string_row));
+        fix.declarations[lang].type_root = Some(lang_row);
+        let iface_row = fix.start_row(ROW_INTERFACE);
+        fix.interface_method(iface_row, b"Read", None);
+        fix.declarations[greeter].type_root = Some(iface_row);
+        // Authority-bound rows with their exact declaration extents.
+        let (lang_start, _) = at(source, b"type Lang")?;
+        let (lang_name_start, lang_name_end) = at(source, b"Lang")?;
+        fix.declarations[lang].span = (lang_start, at(source, b"\n\nfunc (l")?.0);
+        fix.declarations[lang].name_span = Some((lang_name_start, lang_name_end));
+        fix.declarations[lang].bound = true;
+        let (greeter_start, _) = at(source, b"type Greeter")?;
+        fix.declarations[greeter].span = (greeter_start, at(source, b"\n\nfunc Use")?.0);
+        fix.declarations[greeter].name_span = Some(at(source, b"Greeter")?);
+        fix.declarations[greeter].bound = true;
+        fix.declarations[use_fn].span = (at(source, b"func Use")?.0, source.len() as u32);
+        fix.declarations[use_fn].name_span = Some(at(source, b"Use")?);
+        fix.declarations[use_fn].bound = true;
+        fix.methods[set_name].span = (
+            at(source, b"func (l *Lang) SetName")?.0,
+            at(source, b"func (l *Lang) SetName() {\n}\n\n")?.1,
+        );
+        fix.methods[set_name].bound = true;
+        // Facts: 0 Lang, 1 Greeter, 2 Name, 3 SetName, 4 Read, 5 Use.
+        // Reference rows, ascending by site: the type use inside the
+        // composite literal, the method call, and the satisfaction edge.
+        let (site, end) = at(source, b"Lang{}")?;
+        let (site, end) = (site, end - 2);
+        fix.reference_typed(use_fn as u32, b"", b"Lang", b"", site, end, 2, 5, b"");
+        let (site, end) = at(source, b"l.SetName()")?;
+        let (site, end) = (site + 2, end - 2);
+        fix.reference_typed(
+            use_fn as u32,
+            b"",
+            b"SetName",
+            b"",
+            site,
+            end,
+            0,
+            1,
+            b"Lang",
+        );
+        let (greeter_site, greeter_end) = at(source, b"Greeter = l")?;
+        let (greeter_site, greeter_end) = (greeter_site, greeter_end - 4);
+        fix.reference_typed(
+            use_fn as u32,
+            b"",
+            b"Greeter",
+            b"",
+            greeter_site,
+            greeter_end,
+            2,
+            5,
+            b"",
+        );
+        fix.satisfaction(lang, b"Greeter", b"");
+        let ir = lower_ir(&fix, source)?;
+
+        // Entities carry their authority-bound declaration spans.
+        let mut lang_source = None;
+        for row in ir.canonical_entities() {
+            let name = ir.atom(row.name).ok_or(TestError::Missing("entity atom"))?;
+            if name == b"Lang" {
+                lang_source = row.source;
+            }
+        }
+        let lang_span = lang_source.ok_or(TestError::Missing("Lang entity source span"))?;
+        if &source[lang_span.start() as usize..lang_span.start() as usize + 9] != b"type Lang" {
+            return Err(TestError::Missing("Lang entity span basis"));
+        }
+
+        // Every link occurrence carries an absolute site whose bytes are
+        // exactly the used identifier, and each kind matches its row's
+        // closed class.
+        let mut sites = Vec::new();
+        for (_, occurrence) in ir.link_occurrences() {
+            let Some(site) = occurrence.source else {
+                return Err(TestError::Missing("absolute occurrence site"));
+            };
+            let link = ir
+                .link(occurrence.link)
+                .ok_or(TestError::Missing("occurrence link"))?;
+            let bytes = &source[site.start() as usize..site.end() as usize];
+            sites.push((bytes.to_vec(), link.kind, link.target));
+        }
+        if sites.len() != 4 {
+            return Err(TestError::Missing("exact link occurrences"));
+        }
+        let (bytes, kind, target) = &sites[0];
+        if bytes != b"Lang"
+            || *kind != LinkKind::TypeReference
+            || *target != LinkTarget::Local(EntityId::new(0))
+        {
+            return Err(TestError::Missing("type-use site"));
+        }
+        let (bytes, kind, target) = &sites[1];
+        if bytes != b"SetName"
+            || *kind != LinkKind::MethodCall
+            || *target != LinkTarget::Local(EntityId::new(3))
+        {
+            return Err(TestError::Missing("method-call site"));
+        }
+        let (bytes, kind, target) = &sites[2];
+        if bytes != b"Greeter"
+            || *kind != LinkKind::TypeReference
+            || *target != LinkTarget::Local(EntityId::new(1))
+        {
+            return Err(TestError::Missing("satisfaction site"));
+        }
+        let (bytes, kind, target) = &sites[3];
+        if bytes != b"Lang"
+            || *kind != LinkKind::TypeReference
+            || *target != LinkTarget::Local(EntityId::new(1))
+        {
+            return Err(TestError::Missing("satisfaction NAME-TOKEN site"));
         }
         Ok(())
     }

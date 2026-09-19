@@ -6,7 +6,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -64,6 +67,10 @@ pub struct PublishedPackage {
     pub bytes: u64,
     /// Digest of authenticated provenance evidence.
     pub provenance: super::ProvenanceDigest,
+    /// Version of the registry checksum claim used to avoid redownloading.
+    pub upstream_integrity: [u8; 32],
+    /// Mutable release facts, independently content-versioned.
+    pub facts: super::ReleaseFacts,
 }
 
 /// Receipt atomically pairing archive publication and cursor advancement.
@@ -279,7 +286,6 @@ impl RegistryOwner {
         fs::create_dir_all(&root)?;
         let objects = root.join("registry-objects");
         fs::create_dir_all(&objects)?;
-        cleanup_temporary(&objects)?;
         let (journal, recovery) =
             HashChainJournal::<RegistryLog>::open(root.join("registry.journal"))?;
         let mut cursor = FeedCursor::genesis(endpoint.id());
@@ -483,11 +489,29 @@ impl RegistryOwner {
                     delay,
                 });
             }
+            TransportResult::NotModified => {
+                // A 304 is meaningful only after this owner has committed a
+                // metadata frontier. Accepting it at genesis turns an
+                // unconditional or malicious response into a false empty
+                // registry.
+                if self.cursor.sequence() == 0 {
+                    return Err(AcquisitionError::Transport(TransportFailure::Protocol));
+                }
+                self.journal.append(&RegistryRecord::Settled(intent))?;
+                self.pending = None;
+                self.readiness = RegistryReadiness::Ready {
+                    source: self.endpoint.id(),
+                    cursor: self.cursor.sequence(),
+                };
+                return Ok(AcquisitionOutcome::UpToDate {
+                    cursor: self.cursor,
+                });
+            }
         };
         if page.base != intent.cursor || page.packages.len() > self.limits.max_items {
             return Err(AcquisitionError::Transport(TransportFailure::Protocol));
         }
-        if page.packages.is_empty() {
+        if page.packages.is_empty() && page.next_token == self.cursor.token() {
             self.journal.append(&RegistryRecord::Settled(intent))?;
             self.pending = None;
             self.readiness = RegistryReadiness::Ready {
@@ -553,13 +577,17 @@ impl RegistryOwner {
         let mut publications = Vec::with_capacity(packages.len());
         for package in packages {
             if let Some(existing) = self.catalog.get(&package.coordinate) {
-                if package
-                    .canonical_digest()
-                    .is_some_and(|digest| existing.artifact.as_bytes() != digest)
-                {
-                    return Err(AcquisitionError::Transport(TransportFailure::Integrity));
-                }
-                if package.canonical_digest().is_some() {
+                let upstream_integrity = package.integrity_version();
+                if existing.upstream_integrity == upstream_integrity {
+                    publications.push(PublishedPackage {
+                        coordinate: existing.coordinate.clone(),
+                        registry: existing.registry.clone(),
+                        artifact: existing.artifact,
+                        bytes: existing.bytes,
+                        provenance: package.provenance,
+                        upstream_integrity,
+                        facts: package.facts,
+                    });
                     continue;
                 }
             }
@@ -571,6 +599,9 @@ impl RegistryOwner {
                 TransportResult::Unavailable => return Ok(PageAcquisition::Unavailable),
                 TransportResult::RetryAfter(delay) => {
                     return Ok(PageAcquisition::RetryAfter(delay));
+                }
+                TransportResult::NotModified => {
+                    return Err(AcquisitionError::Transport(TransportFailure::Protocol));
                 }
             };
             total = total
@@ -616,6 +647,8 @@ impl RegistryOwner {
             artifact: PublishedArtifactClaim::verified(artifact),
             bytes: u64::try_from(bytes.len()).map_err(|_| AcquisitionError::Bounds)?,
             provenance: package.provenance,
+            upstream_integrity: package.integrity_version(),
+            facts: package.facts,
         })
     }
 }
@@ -626,15 +659,8 @@ enum PageAcquisition {
     RetryAfter(Duration),
 }
 
-fn cleanup_temporary(directory: &Path) -> Result<(), AcquisitionError> {
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        if path.extension().is_some_and(|value| value == "tmp") {
-            fs::remove_file(path)?;
-        }
-    }
-    Ok(())
-}
+static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 fn write_immutable(
     directory: &Path,
     id: CapabilityArtifactId,
@@ -656,14 +682,42 @@ fn write_immutable(
         }
         return Err(AcquisitionError::CorruptJournal);
     }
-    let temporary = directory.join(format!("{name}.tmp"));
+    // A deterministic temporary name lets one process delete or overwrite a
+    // concurrent writer. Keep receiving objects private until their bytes are
+    // durable, then use a no-clobber hard-link as the publication primitive.
+    let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = directory.join(format!(".{name}.{}.{}.tmp", std::process::id(), sequence));
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
         .open(&temporary)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    fs::rename(&temporary, &target)?;
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.into());
+    }
+    drop(file);
+    match fs::hard_link(&temporary, &target) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let mut existing = Vec::new();
+            File::open(&target)?
+                .take(
+                    u64::try_from(bytes.len())
+                        .map_err(|_| AcquisitionError::Bounds)?
+                        .saturating_add(1),
+                )
+                .read_to_end(&mut existing)?;
+            if existing != bytes {
+                let _ = fs::remove_file(&temporary);
+                return Err(AcquisitionError::CorruptJournal);
+            }
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            return Err(error.into());
+        }
+    }
+    fs::remove_file(&temporary)?;
     File::open(directory)?.sync_all()?;
     Ok(())
 }
@@ -683,6 +737,44 @@ fn verify_receipt_objects(
         let _ = package.artifact.admit(&bytes)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod immutable_object_tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_first_writers_publish_one_complete_object() {
+        let directory = std::env::temp_dir().join(format!(
+            "backend-registry-object-race-{}-{}",
+            std::process::id(),
+            TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&directory).expect("object directory");
+        let bytes = Arc::<[u8]>::from(vec![0x5a; 256 * 1024]);
+        let id = CapabilityArtifactId::from_value(&bytes);
+        let mut writers = Vec::new();
+        for _ in 0..16 {
+            let directory = directory.clone();
+            let bytes = Arc::clone(&bytes);
+            writers.push(std::thread::spawn(move || {
+                write_immutable(&directory, id, &bytes)
+            }));
+        }
+        for writer in writers {
+            writer.join().expect("writer thread").expect("publication");
+        }
+        let target = directory.join(super::super::transport::hex(id.as_bytes()));
+        assert_eq!(fs::read(target).expect("published object"), &*bytes);
+        assert_eq!(
+            fs::read_dir(&directory)
+                .expect("directory")
+                .filter_map(Result::ok)
+                .count(),
+            1
+        );
+        fs::remove_dir_all(directory).expect("cleanup");
+    }
 }
 
 fn validate_receipt_catalog(

@@ -224,7 +224,7 @@ let
       pkgs.writeScriptBin "nudox-typescript-checker" ''
         #!${pkgs.runtimeShell}
         export NODE_PATH="${pkgs.typescript}/lib/node_modules''${NODE_PATH:+:$NODE_PATH}"
-        exec ${pkgs.nodejs_22}/bin/node ${workspaceRoot + "/frontends/typescript/checker/main.cjs"} "$@"
+        exec ${pkgs.nodejs_22}/bin/node ${workspaceRoot + "/frontends/typescript/src/legacy/checker/main.cjs"} "$@"
       ''
     else
       null;

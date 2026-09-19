@@ -9,8 +9,8 @@ use std::{
 
 use crate::driver::ToolchainSelection;
 use crate::publication::manifest::StoredFragmentFacts;
-use backend_semantic::vocabulary::{MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool};
 use backend_library::interface::PackageEcosystem;
+use backend_semantic::vocabulary::{MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool};
 use thiserror::Error;
 
 /// Maximum explicit native-tool rows one local compiler configuration may borrow.

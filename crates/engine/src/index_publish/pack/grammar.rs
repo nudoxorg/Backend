@@ -5,12 +5,12 @@
 
 use core::mem::size_of;
 
-use backend_version::{GenerationId, HASH_BYTES};
 use backend_semantic::index_core::{
     ENTITY_DOCUMENT_ID_BYTES, MAX_EXACT_PAYLOAD_BYTES, MAX_EXACT_ROWS, MAX_LEXICAL_PAYLOAD_BYTES,
     MAX_LEXICAL_ROWS,
 };
 use backend_semantic::index_vocabulary::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
+use backend_version::{GenerationId, HASH_BYTES};
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout,
     byteorder::{LittleEndian, U16, U32},

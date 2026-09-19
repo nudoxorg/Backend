@@ -160,6 +160,10 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::Read(records) => {
             ProductView::rows("read", records.iter().map(declaration_row).collect())
         }
+        SurfaceReply::References { target, references } => ProductView::rows(
+            format!("references to {}", target.as_str()).as_str(),
+            references.iter().map(reference_row).collect(),
+        ),
         SurfaceReply::Diff(records) => {
             ProductView::rows("diff", records.iter().map(diff_row).collect())
         }
@@ -314,8 +318,47 @@ fn declaration_row(record: &DeclarationRecord) -> ProductRecord {
     )
 }
 
-fn diff_row(record: &DiffRecord) -> ProductRecord {
-    let change = match record.change {
+/// Renders one source-verified use of the queried declaration.
+fn reference_row(record: &backend_library::ReferenceRecord) -> ProductRecord {
+    let mut tags = vec![
+        match record.relation {
+            backend_library::SemanticLinkKind::Calls => "calls".to_owned(),
+            backend_library::SemanticLinkKind::MethodCall => "method call".to_owned(),
+            backend_library::SemanticLinkKind::TypeReference => "type reference".to_owned(),
+            backend_library::SemanticLinkKind::Reads => "reads".to_owned(),
+            backend_library::SemanticLinkKind::Writes => "writes".to_owned(),
+            backend_library::SemanticLinkKind::Imports => "imports".to_owned(),
+            backend_library::SemanticLinkKind::Implements => "implements".to_owned(),
+            backend_library::SemanticLinkKind::Overrides => "overrides".to_owned(),
+            backend_library::SemanticLinkKind::Reexports => "re-exports".to_owned(),
+            backend_library::SemanticLinkKind::Inherits => "inherits".to_owned(),
+            backend_library::SemanticLinkKind::Documents => "documents".to_owned(),
+        },
+        match record.evidence.confidence {
+            backend_library::SemanticConfidence::Syntactic => "syntactic".to_owned(),
+            backend_library::SemanticConfidence::Heuristic => "heuristic".to_owned(),
+            backend_library::SemanticConfidence::Indexed => "indexed".to_owned(),
+            backend_library::SemanticConfidence::Imported => "imported".to_owned(),
+            backend_library::SemanticConfidence::Compiler => "compiler".to_owned(),
+        },
+    ];
+    match record.evidence.source.as_ref() {
+        Some(span) => tags.push(format!(
+            "{}:{}-{}",
+            span.file.as_str(),
+            span.start,
+            span.end
+        )),
+        None => tags.push("site not captured".to_owned()),
+    }
+    ProductRecord::new(
+        record.site.as_str().to_owned(),
+        Some(record.site.as_str().to_owned()),
+        tags,
+    )
+}
+
+fn diff_row(record: &DiffRecord) -> ProductRecord {    let change = match record.change {
         DeclarationChange::Added => "added",
         DeclarationChange::Removed => "removed",
         DeclarationChange::Changed => "changed",

@@ -110,8 +110,8 @@ fn golden_transcript_decodes_decl_and_promotion() -> Result<(), OracleError> {
 #[test]
 fn unknown_field_is_a_decode_fault() {
     let mutated = GOLDEN.replacen(
-        "\"schemaVersion\":3",
-        "\"schemaVersion\":3,\"surprise\":true",
+        "\"schemaVersion\":4",
+        "\"schemaVersion\":4,\"surprise\":true",
         1,
     );
     let error = adapter()
@@ -135,24 +135,24 @@ fn unknown_decl_kind_is_retained_in_decode_fault() {
 
 #[test]
 fn stale_schema_names_both_versions() {
-    let mutated = GOLDEN.replacen("\"schemaVersion\":3", "\"schemaVersion\":2", 1);
+    let mutated = GOLDEN.replacen("\"schemaVersion\":4", "\"schemaVersion\":2", 1);
     assert!(matches!(
         adapter().decode(mutated.as_bytes()),
         Err(OracleError::Staleness {
             found: 2,
-            expected: 3
+            expected: 4
         })
     ));
 }
 
 #[test]
 fn newer_schema_is_rejected_by_the_single_schema_owner() {
-    let mutated = GOLDEN.replacen("\"schemaVersion\":3", "\"schemaVersion\":4", 1);
+    let mutated = GOLDEN.replacen("\"schemaVersion\":4", "\"schemaVersion\":5", 1);
     assert!(matches!(
         adapter().decode(mutated.as_bytes()),
         Err(OracleError::Staleness {
-            found: 4,
-            expected: 3
+            found: 5,
+            expected: 4
         })
     ));
 }
@@ -386,6 +386,199 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations() -> Result<(), 
             .iter()
             .any(|constraint| constraint.file.ends_with("linux.go"))
     );
+    Ok(())
+}
+
+/// The v4 widened Uses walk, over a fixture exercising every class: one
+/// type use, one method call, one method value, one field read, one field
+/// write, one import use, one foreign call, and one satisfaction edge —
+/// one row each, with the closed kind, the NAME-TOKEN extent, and a
+/// resolvable target identity. Requires an explicit Go toolchain.
+#[test]
+fn widened_references_record_every_named_object_use() -> Result<(), OracleError> {
+    use backend_frontend_go::legacy::oracle::{DeclKind, Reference};
+    let _guard = ENVIRONMENT
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap();
+    let _compiler = explicit_go_toolchain()?;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/refs");
+    let source =
+        fs::read(fixture.join("refs.go")).map_err(|error| OracleError::ToolingUnavailable {
+            tool: "refs fixture",
+            source: error,
+        })?;
+    let output = adapter().run(&fixture)?;
+    let package = output
+        .packages
+        .iter()
+        .find(|package| package.import_path == "example.com/refs")
+        .ok_or_else(|| OracleError::Decode {
+            message: "refs package missing".to_owned(),
+            transcript: String::new(),
+        })?;
+    let extent = |row: &Reference| -> String {
+        source
+            .get(row.start..row.end)
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            .unwrap_or_default()
+    };
+    let find = |predicate: &dyn Fn(&Reference) -> bool| -> Option<&Reference> {
+        package.references.iter().find(|row| predicate(row))
+    };
+    fn expect_row<'a>(
+        found: Option<&'a Reference>,
+        what: &'static str,
+    ) -> Result<&'a Reference, OracleError> {
+        found.ok_or_else(|| OracleError::Decode {
+            message: format!("{what} row missing"),
+            transcript: String::new(),
+        })
+    }
+
+    // One type use: `Greeter` inside `Use`'s variable declaration.
+    let type_use = expect_row(
+        find(&|row| row.owner == "Use" && row.target == "Greeter" && row.kind == "typeref"),
+        "Greeter type use",
+    )?;
+    assert_eq!(type_use.class, "type");
+    assert_eq!(type_use.target_pkg, "");
+    assert_eq!(extent(&type_use), "Greeter");
+
+    // One method call: `l.SetName("go")`.
+    let method_call = expect_row(
+        find(&|row| row.owner == "Use" && row.target == "SetName" && row.kind.is_empty()),
+        "SetName method call",
+    )?;
+    assert_eq!(method_call.class, "method");
+    assert_eq!(method_call.recv, "Lang");
+    assert_eq!(extent(&method_call), "SetName");
+
+    // One method value: `fn := l.Greet` reads the method without calling it.
+    let method_value = expect_row(
+        find(&|row| row.owner == "Use" && row.target == "Greet" && row.kind == "read"),
+        "Greet method value",
+    )?;
+    assert_eq!(method_value.class, "method");
+    assert_eq!(method_value.recv, "Lang");
+    assert_eq!(extent(&method_value), "Greet");
+
+    // One unexported field read and one exported field write: both carry
+    // the read kind (the Uses table records no lvalue distinction), the
+    // field class, and the receiver spelling.
+    let field_read = expect_row(
+        find(&|row| row.owner == "Use" && row.target == "n" && row.class == "field"),
+        "unexported field read",
+    )?;
+    assert_eq!(field_read.kind, "read");
+    assert_eq!(field_read.recv, "Lang");
+    assert_eq!(extent(&field_read), "n");
+    let field_write = expect_row(
+        find(&|row| row.owner == "SetName" && row.target == "Name" && row.class == "field"),
+        "field write",
+    )?;
+    assert_eq!(field_write.kind, "read");
+    assert_eq!(field_write.recv, "Lang");
+    assert_eq!(field_write.owner_recv, "Lang");
+    assert_eq!(extent(&field_write), "Name");
+
+    // One import use and one foreign call, both keyed to the fmt package.
+    let import_use = expect_row(
+        find(&|row| row.owner == "Use" && row.kind == "import"),
+        "fmt import use",
+    )?;
+    assert_eq!(import_use.class, "pkg");
+    assert_eq!(import_use.target, "fmt");
+    assert_eq!(import_use.target_pkg, "fmt");
+    assert_eq!(extent(&import_use), "fmt");
+    let foreign_call = expect_row(
+        find(&|row| row.owner == "Use" && row.target == "Println" && row.kind.is_empty()),
+        "Println foreign call",
+    )?;
+    // The v3 call-row spelling: an empty class and an empty kind.
+    assert!(foreign_call.class.is_empty());
+    assert_eq!(foreign_call.target_pkg, "fmt");
+    assert_eq!(extent(&foreign_call), "Println");
+
+    // One satisfaction edge: Lang satisfies Greeter structurally, and the
+    // declaration carries its exact NAME-TOKEN extent.
+    let lang = package
+        .decls
+        .iter()
+        .find(|decl| decl.name == "Lang" && decl.kind == DeclKind::Type)
+        .ok_or_else(|| OracleError::Decode {
+            message: "Lang declaration missing".to_owned(),
+            transcript: String::new(),
+        })?;
+    let implemented = lang
+        .implements
+        .iter()
+        .find(|implemented| implemented.name == "Greeter")
+        .ok_or_else(|| OracleError::Decode {
+            message: "Lang→Greeter satisfaction edge missing".to_owned(),
+            transcript: String::new(),
+        })?;
+    assert_eq!(implemented.pkg, "example.com/refs");
+    let name_span = lang
+        .name_span
+        .as_ref()
+        .map(|span| (span.start as usize, span.end as usize))
+        .ok_or_else(|| OracleError::Decode {
+            message: "Lang NAME-TOKEN extent missing".to_owned(),
+            transcript: String::new(),
+        })?;
+    assert_eq!(&source[name_span.0..name_span.1], b"Lang");
+
+    // The binary image carries the same facts in version-6 rows: the bound
+    // flag marks the digest-bound source's declarations, the NAME-TOKEN
+    // extent survives, and every reference row keeps its closed kind,
+    // class, and receiver spelling.
+    let bytes = adapter().authority_image(&fixture.join("refs.go"), &fixture)?;
+    let image = GoImage::open(&bytes).map_err(image_fault)?;
+    let mut typed_rows = 0_usize;
+    for index in 0..image.reference_count() {
+        let row = image.reference(index).map_err(image_fault)?;
+        if row.use_kind != backend_frontend_go::legacy::ReferenceUseKind::Call
+            || row.target_class != backend_frontend_go::legacy::ReferenceTargetClass::Func
+        {
+            typed_rows += 1;
+        }
+        if row.target == b"Greet"
+            && row.use_kind == backend_frontend_go::legacy::ReferenceUseKind::Read
+        {
+            assert_eq!(
+                row.target_class,
+                backend_frontend_go::legacy::ReferenceTargetClass::Method,
+                "the method value keeps its method class in the image"
+            );
+            assert_eq!(row.recv_type, b"Lang");
+        }
+        if row.target == b"Println" {
+            assert_eq!(
+                row.use_kind,
+                backend_frontend_go::legacy::ReferenceUseKind::Call
+            );
+            assert_eq!(
+                row.target_class,
+                backend_frontend_go::legacy::ReferenceTargetClass::Func
+            );
+            assert_eq!(row.recv_type, b"");
+        }
+    }
+    assert!(
+        typed_rows >= 8,
+        "the image must carry the widened typed rows, found {typed_rows}"
+    );
+    let lang_index = (0..image.declaration_count())
+        .find(|&index| image.declaration(index).map_err(image_fault).unwrap().name == b"Lang")
+        .expect("Lang declaration row");
+    let lang_row = image.declaration(lang_index).map_err(image_fault)?;
+    assert!(lang_row.bound, "Lang declares in the bound source");
+    let lang_name = lang_row.name_span.ok_or_else(|| OracleError::Decode {
+        message: "Lang image name extent missing".to_owned(),
+        transcript: String::new(),
+    })?;
+    assert_eq!(&source[lang_name.0 as usize..lang_name.1 as usize], b"Lang");
     Ok(())
 }
 

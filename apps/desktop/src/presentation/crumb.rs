@@ -2,10 +2,13 @@
 //!
 //! [`backend_present::Identity::trail_within`] renders the trail as one string,
 //! which is what a terminal needs. A window needs the same trail as separately
-//! navigable steps — `polyglot › src/lib.rs:2 › ferris`, where each step opens
+//! navigable steps — `polyglot › lib › ferris`, where each step opens
 //! something different — so this module splits the same typed identity into
-//! steps rather than re-parsing the coordinate. Nothing here invents a part of
-//! an identity the shared parser did not find.
+//! steps rather than re-parsing the coordinate. The file step is spelled as
+//! the module it is, by stem, because the trail is a path through the
+//! program and not through the disk; the path and line stay on the source
+//! control, where a path belongs. Nothing here invents a part of an identity
+//! the shared parser did not find.
 
 use backend_present::{Identity, IdentityShape};
 
@@ -19,12 +22,19 @@ pub(crate) enum Crumb {
         /// Exact project root, as the producer spelled it.
         root: String,
     },
-    /// The source file, with its line when the identity carries one.
+    /// The module a source file is, named by its stem; opens that module.
     Path {
-        /// Package-relative path, with `:line` appended when known.
+        /// The file stem: `glyph` for `glyph.rs`.
         label: String,
         /// The package-relative path alone.
         path: String,
+    },
+    /// A declaration the index says contains this one; opens it.
+    Container {
+        /// The container's name.
+        label: String,
+        /// The container's stable key.
+        symbol: backend_library::SymbolKey,
     },
     /// One symbol segment; opens that declaration.
     Symbol {
@@ -42,14 +52,16 @@ impl Crumb {
     pub(crate) fn label(&self) -> &str {
         match self {
             Self::Project { name, .. } => name,
-            Self::Path { label, .. } | Self::Symbol { label, .. } => label,
+            Self::Path { label, .. } | Self::Symbol { label, .. } | Self::Container { label, .. } => {
+                label
+            }
         }
     }
 
     /// Returns whether following this step reaches somewhere new.
     pub(crate) const fn is_navigable(&self) -> bool {
         match self {
-            Self::Project { .. } | Self::Path { .. } => true,
+            Self::Project { .. } | Self::Path { .. } | Self::Container { .. } => true,
             Self::Symbol { leaf, .. } => !*leaf,
         }
     }
@@ -66,10 +78,7 @@ pub(crate) fn trail(identity: &Identity) -> Vec<Crumb> {
     }
     if let Some(path) = identity.path() {
         steps.push(Crumb::Path {
-            label: identity.line().map_or_else(
-                || path.as_str().to_owned(),
-                |line| format!("{path}:{line}"),
-            ),
+            label: path.stem().to_owned(),
             path: path.as_str().to_owned(),
         });
     }

@@ -22,14 +22,15 @@ mod model;
 mod prepared;
 mod range;
 mod reader;
-mod render;
 mod semantic;
 mod semantic_data_view;
 mod semantic_discovery;
 mod semantic_extension_section;
 mod semantic_facts;
 mod semantic_image;
-mod semantic_render;
+/// The maintained renderer surface: prepared semantic-document, canonical-type,
+/// neutral, and zero-allocation display lanes over one static reader.
+pub mod semantic_render;
 mod type_facts;
 mod vcs;
 mod view;
@@ -80,10 +81,11 @@ pub use docs_facts::{
     DocumentationLane,
 };
 pub use extension_pools::{
-    DecodedRefList, DecodedTypeParameter, DecodedTypeParameterBound,
+    DecodedFreePredicate, DecodedRefList, DecodedTypeParameter, DecodedTypeParameterBound,
     DecodedTypeParameterBoundCursor, DecodedTypeParameterBoundList, DecodedTypeParameterCursor,
     DecodedTypeParameterKind, DecodedTypeParameterList, DecodedTypeParameterSemantics,
-    ExtensionPoolFault, ExtensionPoolListLane, ExtensionPoolsLane, ExtensionRefList,
+    ExtensionFreePredicate, ExtensionPoolFault, ExtensionPoolListLane, ExtensionPoolsLane,
+    ExtensionRefList,
     ExtensionTypeParameter, ExtensionTypeParameterBound, ExtensionTypeParameterBoundRange,
     ExtensionTypeParameterKind, ExtensionTypeParameterRange, ReopenedExtensionPools,
     ReopenedTypeParameterList, TypeParameterField, TypeParameterListBounds, TypeParameterTagField,
@@ -115,7 +117,6 @@ pub use reader::{
     SemanticCoreReader, SemanticCursor, SemanticEntity, SemanticImageFacts, SemanticReader,
 };
 #[doc(hidden)]
-pub use render::{DocsDisplay, EmbeddingDisplay, EmbeddingProfile, SignatureDisplay, TypeDisplay};
 pub use semantic::{
     ArrayShape, AtomListId, BorrowedTree, BuildError, BuiltinType, CSharpExtension, CSharpFacts,
     CSharpMemberEffects, CSharpNullability, CSharpPartialRole, CSharpReferenceKind,
@@ -130,8 +131,9 @@ pub use semantic::{
     LanguageExtensionsView, Link, LinkId, LinkIter, LinkKind, LinkOccurrence,
     LinkOccurrenceColumns, LinkOccurrenceId, LinkOccurrenceIter, LinkOccurrenceSpace, LinkSpace,
     LinkTarget, LiteralType, MappedModifier, Mutability, NativeCharacterRole, ObjectMember,
-    ObjectMemberListId, OptionalId, PropertyKey, PythonExtension, PythonFacts, PythonParameterKind,
-    QualifiedSegments, RustExtension, RustFacts, RustOwnership, SemanticImageAuthority,
+    FreePredicate, FreePredicateListId, ObjectMemberListId, OptionalId, PropertyKey, PythonExtension,
+    PythonFacts, PythonParameterKind, QualifiedSegments, RustExtension, RustFacts, RustOwnership,
+    SemanticImageAuthority,
     SemanticSpace, SourceColumnsView, SourceSpan, SparseColumnView, StorageColumns, TemplatePart,
     TemplatePartListId, TreeBuilder, TreeEntity, TreeEntityId, TreeItemInput, TreeLinkInput,
     TreeLinkTarget, TupleElement, TupleElementKind, TupleElementListId, TypeColumns, TypeExpr,

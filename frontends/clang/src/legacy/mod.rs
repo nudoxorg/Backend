@@ -6,10 +6,11 @@
 //! [`collect`] either fills prefixes of those slots from libclang or returns a typed failure.
 //! Native-library absence is explicit; the crate never scans source as a substitute authority.
 //!
-//! CANONICAL AUTHORITY PATH: this module is the retained low-level authority
-//! contract. Product and compiler-driver callers must reach it only through
-//! the crate-level `Authority` adapter in `lib.rs`; it must never be wired in
-//! as a second semantic plane.
+//! CANONICAL AUTHORITY PATH: this `legacy` module IS the production
+//! native-authority lane. The engine driver imports its symbols directly from
+//! this module; there is no intervening adapter. The crate-level
+//! `syntax_frontend()` constructor is the separate, documented structural
+//! baseline and never substitutes for this authority.
 
 #![allow(
     unsafe_code,
@@ -25,14 +26,16 @@ pub mod purl;
 mod scratch;
 
 pub use self::collect::{collect, collect_cancellable};
-pub use self::error::{CollectError, DatabaseError, NativeApi, NativeFailure, ParseFailure, ScratchLane};
+pub use self::error::{
+    CollectError, DatabaseError, NativeApi, NativeFailure, ParseFailure, ScratchLane,
+};
 pub use self::facts::{
     BuiltinClass, ClangFacts, DeclarationFact, DeclarationId, DeclarationKind, DefinitionState,
-    DiagnosticFact, DiagnosticSeverity, IncludeFact, MAX_CLANG_DECLARATIONS, MAX_CLANG_DIAGNOSTICS,
-    MAX_CLANG_FACTS, MAX_CLANG_INCLUDES, MAX_CLANG_OVERRIDES, MAX_CLANG_REFERENCES,
-    MAX_CLANG_TYPE_EDGES, MAX_CLANG_TYPES, MethodVirtuality, OverrideFact, ReferenceFact,
-    ReferenceKind, ReferenceTarget, SYMBOL_IDENTITY_BYTES, SourceDependencyKind, SourceSpan,
-    StorageClass, SymbolIdentity, TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers,
+    DiagnosticFact, DiagnosticSeverity, IncludeFact, IntegerRank, MAX_CLANG_DECLARATIONS,
+    MAX_CLANG_DIAGNOSTICS, MAX_CLANG_FACTS, MAX_CLANG_INCLUDES, MAX_CLANG_OVERRIDES,
+    MAX_CLANG_REFERENCES, MAX_CLANG_TYPE_EDGES, MAX_CLANG_TYPES, MethodVirtuality, OverrideFact,
+    ReferenceFact, ReferenceKind, ReferenceTarget, SYMBOL_IDENTITY_BYTES, SourceDependencyKind,
+    SourceSpan, StorageClass, SymbolIdentity, TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers,
     TypeRelation,
 };
 pub use self::input::{

@@ -90,6 +90,30 @@ fn rows(report: &backend_frontend_typescript::legacy::Report) -> Vec<(String, Op
 }
 
 #[test]
+fn package_declaration_entry_is_classified_ambient() -> Result<(), TestError> {
+    let root = fixture()?;
+    // The checked bytes are exactly the package's own ambient entry. The
+    // checker must recognise them as a declaration file rather than reparse
+    // a value file that appears to omit every implementation.
+    let source = b"export class Box {\n  constructor(value?: string);\n  concat(...values: string[]): Box;\n  static concat(...values: string[]): Box;\n}\n";
+    fs::write(root.join("index.d.ts"), source).map_err(io)?;
+    let report = Checker::default().run_in_package(TypeScriptSource::TypeScript, source, &root)?;
+    assert!(
+        report.declaration_file,
+        "an ambient .d.ts entry must classify as a declaration file"
+    );
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("implementation is missing")),
+        "ambient members must not report implementation-missing diagnostics: {:?}",
+        report.diagnostics
+    );
+    Ok(())
+}
+
+#[test]
 fn package_root_resolves_modules_without_mutating_the_caller_tree() -> Result<(), TestError> {
     let root = fixture()?;
     let source = br#"export { util } from "./lib/util";

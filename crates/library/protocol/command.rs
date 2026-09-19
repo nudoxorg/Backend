@@ -3,8 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Closed raw application commands shared by positional and JSON-RPC adapters.
 
-use backend_semantic::vocabulary::{LanguageProfile, Stage};
 use crate::interface::InputText;
+use backend_semantic::vocabulary::{LanguageProfile, Stage};
 use serde::{Deserialize, Deserializer, de::Error as _};
 
 /// A bounded numeric transport value accepted in either native JSON or CLI text form.

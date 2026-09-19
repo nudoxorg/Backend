@@ -2,10 +2,11 @@
 //! Loads one Cargo graph under an explicit Rust edition and extracts only HIR-backed facts.
 //! Keeps rust-analyzer implementation values within a bounded, non-serialized transaction.
 //!
-//! CANONICAL AUTHORITY PATH: this module is the retained low-level authority
-//! contract. Product and compiler-driver callers must reach it only through
-//! the crate-level `Authority` adapter in `lib.rs`; it must never be wired in
-//! as a second semantic plane.
+//! CANONICAL AUTHORITY PATH: this `legacy` module IS the production
+//! native-authority lane. The engine driver imports its symbols directly from
+//! this module; there is no intervening adapter. The crate-level
+//! `syntax_frontend()` constructor is the separate, documented structural
+//! baseline and never substitutes for this authority.
 
 use std::{path::PathBuf, process::Command};
 

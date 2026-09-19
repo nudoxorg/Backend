@@ -6,20 +6,26 @@
 use std::collections::TryReserveError;
 use std::num::TryFromIntError;
 
-use backend_store::hydration::{Need, PlanError, PlanScratch, Projection, VerificationError, plan_borrowed};
-use backend_version::{ContentId, GenerationId, ObjectDomain};
-use backend_store::memory::{InsertOutcome, MemoryStore, RejectedInsert, StoreCapacity, StoreInitError};
-use backend_version::object::{ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet};
+use backend_flow::operation::{
+    BatchSource, LocalObjectProvider, ObjectProvenance, SourcePoll, TerminalSummary,
+    VerifiedObjectBindError,
+};
+use backend_store::hydration::{
+    Need, PlanError, PlanScratch, Projection, VerificationError, plan_borrowed,
+};
+use backend_store::memory::{
+    InsertOutcome, MemoryStore, RejectedInsert, StoreCapacity, StoreInitError,
+};
 use backend_store::root::{
     BorrowedGenerationView, ClosureScratch, EntryKey, GenerationRoot, LocalityError,
     LocalityException, LocalityWriteError, NonResident, PreparedLocality, RootBuildError,
     RootEntry, RootReadError, RootWriteError, ValidatedRoot,
 };
-use backend_version::schema::SchemaId;
-use backend_flow::operation::{
-    BatchSource, LocalObjectProvider, ObjectProvenance, SourcePoll, TerminalSummary,
-    VerifiedObjectBindError,
+use backend_version::object::{
+    ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet,
 };
+use backend_version::schema::SchemaId;
+use backend_version::{ContentId, GenerationId, ObjectDomain};
 use thiserror::Error;
 
 const FIRST_BYTES: [u8; 4] = *b"one!";
@@ -200,7 +206,12 @@ fn insert(
 }
 
 fn assert_run<PayloadOwner: AsRef<[u8]>>(
-    provider: &backend_flow::operation::BoundLocalObjectProvider<'_, '_, ObjectDomain, PayloadOwner>,
+    provider: &backend_flow::operation::BoundLocalObjectProvider<
+        '_,
+        '_,
+        ObjectDomain,
+        PayloadOwner,
+    >,
     generation: GenerationId,
     expected: ObjectRef<ObjectDomain>,
     provenance: ObjectProvenance,

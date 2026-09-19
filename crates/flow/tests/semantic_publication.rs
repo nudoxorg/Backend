@@ -13,10 +13,8 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile_semantic,
 };
-use backend_semantic::ir::{
-    AtomId, CanonicalTypeRenderLimits, ImageProvenance, SemanticCoreReader, SemanticEntity,
-    SemanticImageCensus, SemanticImageDiscovery, SemanticImageFacts, SemanticReader,
-    full_semantic_image_len, prepare_canonical_type,
+use backend_engine::index_build::{
+    IndexedType, SemanticIndexBuildScratch, SemanticTypeFact, build_semantic,
 };
 use backend_engine::publication::{
     OpenSemanticPublicationScratch, PublishControl, SemanticPublicationScratch,
@@ -24,11 +22,13 @@ use backend_engine::publication::{
     manifest::{COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES, SemanticImageRegion},
     open_published_semantic, publish_semantic,
 };
-use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
-use backend_engine::index_build::{
-    IndexedType, SemanticIndexBuildScratch, SemanticTypeFact, build_semantic,
-};
 use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId};
+use backend_semantic::ir::{
+    AtomId, CanonicalTypeRenderLimits, ImageProvenance, SemanticCoreReader, SemanticEntity,
+    SemanticImageCensus, SemanticImageDiscovery, SemanticImageFacts, SemanticReader,
+    full_semantic_image_len, prepare_canonical_type,
+};
+use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use sha2::{Digest, Sha256};
 use thiserror::Error;

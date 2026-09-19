@@ -8,12 +8,15 @@
 
 use backend_semantic::ir::{
     CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, DeclarationKey,
-    DeclarationParentage, EntityId, EntityVersion, NominalRef, ScopedDeclarationKey,
+    DeclarationParentage, EntityId, EntityKind, EntityVersion, NominalRef, ScopedDeclarationKey,
     SemanticTypeRecord, VariantFingerprint,
 };
 use backend_semantic::vocabulary::LanguageProfile;
 
-use super::{ANONYMOUS_ROW_BASE, COMPUTED_ROW_BASE, FactSet, STAGED_TEXT_CHILD, SemanticFact};
+use super::{
+    ANONYMOUS_ROW_BASE, COMPUTED_ROW_BASE, EmissionExtension, FactSet, STAGED_TEXT_CHILD,
+    SemanticFact,
+};
 use crate::driver::types::{DeclarationScope, ParentageState};
 
 /// Builds every admitted entity version.  Siblings are sorted and grouped
@@ -118,9 +121,11 @@ fn declaration_identities(
                     facts.kinds[ordinal],
                     facts.names[ordinal],
                 )
-                .map_err(|cause| backend_semantic::ir::BuildError::DeclarationKey {
-                    entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
-                    cause,
+                .map_err(|cause| {
+                    backend_semantic::ir::BuildError::DeclarationKey {
+                        entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
+                        cause,
+                    }
                 })?;
                 let scoped = ScopedDeclarationKey::new(key, profile, parentage);
                 let length = scoped.family_preimage_len().map_err(|cause| {
@@ -258,6 +263,7 @@ fn variant_fingerprints(
     facts: &FactSet<'_>,
     locators: &[CorePayloadHash],
 ) -> Result<Box<[VariantFingerprint]>, backend_semantic::ir::BuildError> {
+    let members = declaration_children_by_parent(facts)?;
     let mut shapes = vec![None; facts.len].into_boxed_slice();
     let mut type_shapes =
         vec![None; facts.len + facts.anonymous_rows + facts.computed_rows].into_boxed_slice();
@@ -268,6 +274,7 @@ fn variant_fingerprints(
                 facts,
                 ordinal,
                 locators,
+                &members,
                 &mut shapes,
                 &mut type_shapes,
                 &mut type_visiting,
@@ -276,6 +283,29 @@ fn variant_fingerprints(
         })
         .collect::<Result<Vec<_>, backend_semantic::ir::BuildError>>()
         .map(Vec::into_boxed_slice)
+}
+
+/// Groups every declaration ordinal under its already-bound parent, in
+/// emission order. The parentage plane is the one authoritative owner of the
+/// relationship; no child coordinate is stored here, only the semantic order
+/// the members were emitted in.
+fn declaration_children_by_parent(
+    facts: &FactSet<'_>,
+) -> Result<Vec<Vec<u32>>, backend_semantic::ir::BuildError> {
+    let mut children = vec![Vec::new(); facts.len];
+    for ordinal in 0..facts.len {
+        let Some(parentage) = facts.provenance.parentage().get(ordinal).copied() else {
+            return Err(dangling_entity(ordinal));
+        };
+        if let ParentageState::Bound { parent } = parentage {
+            let parent = usize::try_from(parent.raw).map_err(|_| dangling_entity(ordinal))?;
+            if parent < facts.len {
+                let ordinal = u32::try_from(ordinal).map_err(|_| dangling_entity(ordinal))?;
+                children[parent].push(ordinal);
+            }
+        }
+    }
+    Ok(children)
 }
 
 /// Builds lexical declaration locators with an explicit enter/exit stack.
@@ -599,7 +629,10 @@ fn signature_dependency_at(
     Ok((target != STAGED_TEXT_CHILD).then_some(target))
 }
 
-fn signature_has_self_edge(facts: &FactSet<'_>, row: u32) -> Result<bool, backend_semantic::ir::BuildError> {
+fn signature_has_self_edge(
+    facts: &FactSet<'_>,
+    row: u32,
+) -> Result<bool, backend_semantic::ir::BuildError> {
     let count = signature_dependency_count(facts, row)?;
     for position in 0..count {
         if signature_dependency_at(facts, row, position)? == Some(row) {
@@ -659,6 +692,12 @@ fn signature_direct_header(
             header.push(1);
             header.extend_from_slice(external.fragment.as_ref());
             header.extend_from_slice(&external.ordinal.to_le_bytes());
+        }
+        Some(NominalRef::Stable(stable)) => {
+            header.push(2);
+            header.extend_from_slice(stable.fragment.as_ref());
+            header.extend_from_slice(stable.declaration.family.as_bytes());
+            header.extend_from_slice(stable.declaration.variant.as_bytes());
         }
     }
     Ok(CorePayloadHash::from_canonical_bytes(&header))
@@ -731,6 +770,14 @@ fn signature_shape(
                 // its authority, never a local staged row coordinate.
                 preimage.extend_from_slice(external.fragment.as_ref());
                 preimage.extend_from_slice(&external.ordinal.to_le_bytes());
+            }
+            Some(NominalRef::Stable(stable)) => {
+                preimage.push(3);
+                // A declaration-identified external endpoint: fragment plus
+                // the exact composite declaration identity. Coordinate-free.
+                preimage.extend_from_slice(stable.fragment.as_ref());
+                preimage.extend_from_slice(stable.declaration.family.as_bytes());
+                preimage.extend_from_slice(stable.declaration.variant.as_bytes());
             }
         }
         preimage.extend_from_slice(
@@ -873,6 +920,12 @@ pub(super) fn fact_payload_basis(fact: &SemanticFact<'_>) -> CorePayloadHash {
                 out.extend_from_slice(target.fragment.as_ref());
                 out.extend_from_slice(&target.ordinal.to_le_bytes());
             }
+            Some(NominalRef::Stable(stable)) => {
+                out.push(3);
+                out.extend_from_slice(stable.fragment.as_ref());
+                out.extend_from_slice(stable.declaration.family.as_bytes());
+                out.extend_from_slice(stable.declaration.variant.as_bytes());
+            }
         }
     }
 
@@ -903,17 +956,53 @@ pub(super) fn fact_payload_basis(fact: &SemanticFact<'_>) -> CorePayloadHash {
     for child in fact.children.iter().take(usize::from(fact.child_count)) {
         preimage.push(u8::from(child.role));
     }
+    if let Some(discriminator) = fact.identity_discriminator {
+        preimage
+            .extend_from_slice(b"compiler.declaration-payload-basis.authority-discriminator.v1");
+        preimage.extend_from_slice(&discriminator);
+    }
     CorePayloadHash::from_canonical_bytes(&preimage)
 }
 
 /// Structural declaration signature framed for every row. Unlike a payload,
-/// it deliberately excludes member
-/// topology, source/provenance, docs, visibility, extensions, and occurrence
-/// planes, so editing those facts never remints a collided declaration.
+/// it deliberately excludes member topology, source/provenance, docs,
+/// visibility, and occurrence planes, so editing those facts never remints a
+/// collided declaration. Language extensions are excluded for the same
+/// reason, with one exception: a Function row frames its ordered parameter
+/// conventions, because two same-name/same-parent overloads can differ only
+/// in a parameter's convention such as Python's keyword-only `*` marker.
+///
+/// Frame layout (`compiler.declaration-variant.v3`), in emission order:
+///
+/// ```text
+/// b"compiler.declaration-variant.v3"
+/// u16                                  entity kind
+/// u32                                  name byte length
+/// name bytes
+/// u8                                   declared type tag
+/// tag-owned scalar cells; optional text, text2
+/// u64                                  type-child count
+/// per type child                       target payload                 (1)
+/// Function rows only                   parameter convention frame   (2)
+/// Implementation rows only             trait + generic + member frame (3)
+/// optional                             nominal target
+/// ```
+///
+/// `(2)` emits exactly one slot per type child, in the row's own child
+/// order, so arity and position can never become ambiguous. A slot is
+/// either a single `0` ABSENT byte — the child is not an entity, or its
+/// extension is missing, or its extension is not a parameter extension —
+/// or `1`, the extension's convention byte, then one default-presence bit
+/// (`0`/`1`). Only Python proves a convention today
+/// (`PythonFacts::parameter_kind`), and no lane yet proves default presence,
+/// so that bit is reserved and currently always `0`. A byte-identical true
+/// twin therefore frames identically and still collides as a
+/// `DuplicateDeclarationIdentity`, which is the intended honest terminal.
 fn declaration_variant_for(
     facts: &FactSet<'_>,
     ordinal: usize,
     locators: &[CorePayloadHash],
+    members: &[Vec<u32>],
     shapes: &mut [Option<CorePayloadHash>],
     type_shapes: &mut [Option<CorePayloadHash>],
     type_visiting: &mut [bool],
@@ -925,12 +1014,28 @@ fn declaration_variant_for(
         return Ok(shape);
     }
     let mut preimage = Vec::with_capacity(48 + MAX_CHILD_SHAPE_BYTES);
-    preimage.extend_from_slice(b"compiler.declaration-variant.v2");
+    preimage.extend_from_slice(b"compiler.declaration-variant.v3");
     preimage.extend_from_slice(&u16::from(facts.kinds[ordinal]).to_le_bytes());
     let name_len =
         u32::try_from(facts.names[ordinal].len()).map_err(|_| dangling_entity(ordinal))?;
     preimage.extend_from_slice(&name_len.to_le_bytes());
     preimage.extend_from_slice(facts.names[ordinal]);
+    // A static and an instance member of one TypeScript class can share kind,
+    // name, owner, and structure while remaining two source declarations. The
+    // modifier therefore enters the structural variant exactly when the row
+    // carries it; every non-static frame stays byte-identical to v3.
+    if facts.static_members[ordinal] {
+        preimage.extend_from_slice(b"compiler.declaration-variant.static-member.v1");
+    }
+    // An authority-proven discriminator separates two declarations the
+    // structural graph cannot (C++ class-template specializations whose
+    // non-type arguments are erased from the type graph). It is framed only
+    // when the declaring frontend proves one, so every other variant frame
+    // stays byte-identical.
+    if let Some(discriminator) = facts.identity_discriminators[ordinal] {
+        preimage.extend_from_slice(b"compiler.declaration-variant.authority-discriminator.v1");
+        preimage.extend_from_slice(&discriminator);
+    }
     let record = facts.type_records[ordinal];
     preimage.push(u8::from(record.tag));
     append_tag_owned_scalars(&mut preimage, record);
@@ -968,6 +1073,37 @@ fn declaration_variant_for(
             type_visiting,
         )?;
     }
+    if facts.kinds[ordinal] == EntityKind::Function {
+        append_parameter_conventions(&mut preimage, facts, type_child_start, type_child_count);
+        append_function_generics(
+            &mut preimage,
+            facts,
+            ordinal,
+            locators,
+            type_shapes,
+            type_visiting,
+        )?;
+    }
+    if facts.kinds[ordinal] == EntityKind::Implementation {
+        append_impl_trait(&mut preimage, facts, ordinal, locators)?;
+        append_impl_generics(
+            &mut preimage,
+            facts,
+            ordinal,
+            locators,
+            type_shapes,
+            type_visiting,
+        )?;
+        // Multiple inherent impl blocks for one type are a Rust-only legal
+        // shape; gating on the Rust extension leaves every other language's
+        // established implementation variant byte-identical.
+        if matches!(
+            facts.extensions.get(ordinal).copied().flatten(),
+            Some(EmissionExtension::Rust(_))
+        ) {
+            append_impl_members(&mut preimage, ordinal, members, locators)?;
+        }
+    }
     if let Some(nominal) = facts.type_records[ordinal].nominal {
         append_nominal_payload(
             &mut preimage,
@@ -981,6 +1117,314 @@ fn declaration_variant_for(
     let shape = CorePayloadHash::from_canonical_bytes(&preimage);
     shapes[ordinal] = Some(shape);
     Ok(shape)
+}
+
+/// Appends one ordered parameter-convention slot per type child of a
+/// Function row. Every child position contributes exactly one slot, so a
+/// missing or foreign extension can never shorten the frame and shift a
+/// later convention into an earlier position.
+fn append_parameter_conventions(
+    preimage: &mut Vec<u8>,
+    facts: &FactSet<'_>,
+    type_child_start: usize,
+    type_child_count: usize,
+) {
+    let type_child_end = type_child_start.saturating_add(type_child_count);
+    let targets = facts
+        .type_child_targets
+        .get(type_child_start..type_child_end)
+        .unwrap_or(&[]);
+    for target in targets {
+        let convention = usize::try_from(*target)
+            .ok()
+            .filter(|child| facts.kinds.get(*child).copied() == Some(EntityKind::Parameter))
+            .and_then(|child| parameter_convention(facts.extensions.get(child).copied().flatten()));
+        match convention {
+            Some((kind, default_present)) => {
+                preimage.push(1);
+                preimage.push(kind);
+                preimage.push(default_present);
+            }
+            None => preimage.push(0),
+        }
+    }
+}
+
+/// Extracts the identity-bearing convention of one parameter extension.
+/// Python is the only lane that proves a convention today: its
+/// `PythonParameterKind` discriminant is the convention byte. No lane yet
+/// proves default presence, so the paired bit is reserved at `0` until a
+/// semantic-plane fact can witness it.
+fn parameter_convention(extension: Option<EmissionExtension>) -> Option<(u8, u8)> {
+    match extension {
+        Some(EmissionExtension::Python(facts)) => Some((facts.parameter_kind as u8, 0)),
+        _ => None,
+    }
+}
+
+/// Frames one Rust implementation's trait reference into its structural
+/// variant. An inherent block keeps its tag; a lane-local trait frames
+/// through its coordinate-free locator plus its exact written spelling
+/// (carrying the generic arguments that separate legal trait impls), and a
+/// foreign trait through its exact written spelling. No staging ordinal
+/// enters the frame.
+fn append_impl_trait(
+    preimage: &mut Vec<u8>,
+    facts: &FactSet<'_>,
+    ordinal: usize,
+    locators: &[CorePayloadHash],
+) -> Result<(), backend_semantic::ir::BuildError> {
+    match facts.impl_traits.get(ordinal).copied().flatten() {
+        None | Some(super::StagedImplTrait::Inherent) => {
+            preimage.push(0);
+        }
+        Some(super::StagedImplTrait::Local { target, spelling }) => {
+            preimage.push(1);
+            let locator = locators
+                .get(target as usize)
+                .ok_or_else(|| dangling_entity(target as usize))?;
+            preimage.extend_from_slice(locator.as_bytes());
+            // The trait locator alone cannot separate several legal impls of
+            // one local trait for one self type; the exact written spelling
+            // carries the trait's generic arguments and is coordinate-free.
+            let length = u32::try_from(spelling.len()).map_err(|_| dangling_entity(ordinal))?;
+            preimage.extend_from_slice(&length.to_le_bytes());
+            preimage.extend_from_slice(spelling);
+        }
+        Some(super::StagedImplTrait::Foreign(spelling)) => {
+            preimage.push(2);
+            let length = u32::try_from(spelling.len()).map_err(|_| dangling_entity(ordinal))?;
+            preimage.extend_from_slice(&length.to_le_bytes());
+            preimage.extend_from_slice(spelling);
+        }
+    }
+    Ok(())
+}
+
+/// Frames one implementation's ordered direct-local-member run into its
+/// structural variant. Rust admits several inherent impl blocks for one type
+/// (`impl Node { ... }` may appear many times), and two trait impls for one
+/// self type can differ only in the trait's generic arguments when the trait
+/// is lane-local. The impl's written trait and generic frame cannot separate
+/// those legal siblings, so the exact ordered member locators — names,
+/// signatures, and nesting, all coordinate-free — are the local-instance
+/// discriminator. A memberless impl appends a zero-member frame so it never
+/// aliases the empty marker of an unrelated lane.
+fn append_impl_members(
+    preimage: &mut Vec<u8>,
+    ordinal: usize,
+    members: &[Vec<u32>],
+    locators: &[CorePayloadHash],
+) -> Result<(), backend_semantic::ir::BuildError> {
+    let children = members.get(ordinal).map(Vec::as_slice).unwrap_or(&[]);
+    preimage.extend_from_slice(b"compiler.declaration-variant.impl-members.v1");
+    preimage.extend_from_slice(
+        &u32::try_from(children.len())
+            .map_err(|_| dangling_entity(ordinal))?
+            .to_le_bytes(),
+    );
+    for child in children {
+        let child = usize::try_from(*child).map_err(|_| dangling_entity(ordinal))?;
+        preimage.extend_from_slice(
+            locators
+                .get(child)
+                .ok_or_else(|| dangling_entity(child))?
+                .as_bytes(),
+        );
+    }
+    Ok(())
+}
+
+/// Frames one Function row's declaration-site generic parameter run into its
+/// structural variant. Generic arity and parameter names are identity, not
+/// payload: two same-name, same-parent overloads can differ only in their
+/// generic parameter list, so a shared erased signature must never alias
+/// them. A Function with no generic run frames no bytes at all, leaving every
+/// previously established non-generic variant byte-identical; a generic
+/// Function frames a presence marker before the run. Languages that never
+/// populate a type-parameter range for Functions are unaffected.
+fn append_function_generics(
+    preimage: &mut Vec<u8>,
+    facts: &FactSet<'_>,
+    ordinal: usize,
+    locators: &[CorePayloadHash],
+    type_shapes: &mut [Option<CorePayloadHash>],
+    type_visiting: &mut [bool],
+) -> Result<(), backend_semantic::ir::BuildError> {
+    // Only C# proves declaration-site generic parameters for callables that
+    // can also overload on erased signatures. Restricting the frame to the
+    // C# extension leaves every other lane's established function variant
+    // byte-identical.
+    if !matches!(
+        facts.extensions.get(ordinal).copied().flatten(),
+        Some(EmissionExtension::CSharp(_))
+    ) {
+        return Ok(());
+    }
+    let Some(range) = facts.type_parameter_ranges.get(ordinal).copied().flatten() else {
+        return Ok(());
+    };
+    if range.length == 0 {
+        return Ok(());
+    }
+    preimage.push(1);
+    append_generic_run(
+        preimage,
+        facts,
+        ordinal,
+        range.start as usize,
+        range.length as usize,
+        locators,
+        type_shapes,
+        type_visiting,
+    )
+}
+
+/// Frames one Rust implementation's generic parameter run into its structural
+/// variant. Names keep their exact written spelling, type bounds frame
+/// through their coordinate-free target payloads, and lifetime bounds keep
+/// their leading-quote bytes. An implementation with no generic parameters
+/// frames its empty run, so it never aliases a generic one.
+fn append_impl_generics(
+    preimage: &mut Vec<u8>,
+    facts: &FactSet<'_>,
+    ordinal: usize,
+    locators: &[CorePayloadHash],
+    type_shapes: &mut [Option<CorePayloadHash>],
+    type_visiting: &mut [bool],
+) -> Result<(), backend_semantic::ir::BuildError> {
+    let Some(range) = facts.type_parameter_ranges.get(ordinal).copied().flatten() else {
+        preimage.extend_from_slice(&0_u32.to_le_bytes());
+        return Ok(());
+    };
+    let start = range.start as usize;
+    let length = range.length as usize;
+    append_generic_run(
+        preimage,
+        facts,
+        ordinal,
+        start,
+        length,
+        locators,
+        type_shapes,
+        type_visiting,
+    )
+}
+
+/// Encodes one declaration-site generic parameter run: the exact parameter
+/// count followed by each parameter's name, kind, bounds, and default. Both
+/// Implementations and Functions frame through this one writer.
+fn append_generic_run(
+    preimage: &mut Vec<u8>,
+    facts: &FactSet<'_>,
+    ordinal: usize,
+    start: usize,
+    length: usize,
+    locators: &[CorePayloadHash],
+    type_shapes: &mut [Option<CorePayloadHash>],
+    type_visiting: &mut [bool],
+) -> Result<(), backend_semantic::ir::BuildError> {
+    let parameters = facts
+        .type_parameters
+        .get(
+            start
+                ..start
+                    .checked_add(length)
+                    .ok_or_else(|| dangling_entity(ordinal))?,
+        )
+        .ok_or_else(|| dangling_entity(ordinal))?;
+    preimage.extend_from_slice(
+        &u32::try_from(parameters.len())
+            .map_err(|_| dangling_entity(ordinal))?
+            .to_le_bytes(),
+    );
+    for parameter in parameters {
+        let name_len = u32::try_from(parameter.name.len()).map_err(|_| dangling_entity(ordinal))?;
+        preimage.extend_from_slice(&name_len.to_le_bytes());
+        preimage.extend_from_slice(parameter.name);
+        match parameter.kind {
+            backend_semantic::ir::ExtensionTypeParameterKind::Type { inference } => {
+                preimage.push(0);
+                preimage.push(match inference {
+                    backend_semantic::ir::TypeParameterInference::Ordinary => 0,
+                    backend_semantic::ir::TypeParameterInference::Const => 1,
+                });
+            }
+            backend_semantic::ir::ExtensionTypeParameterKind::ConstValue { value_type } => {
+                preimage.push(1);
+                append_type_target_payload(
+                    preimage,
+                    facts,
+                    value_type,
+                    None,
+                    0,
+                    locators,
+                    type_shapes,
+                    type_visiting,
+                )?;
+            }
+            backend_semantic::ir::ExtensionTypeParameterKind::Lifetime => {
+                preimage.push(2);
+            }
+        }
+        let bound_start = parameter.bounds.start as usize;
+        let bound_length = parameter.bounds.length as usize;
+        let bounds = facts
+            .type_parameter_bounds
+            .get(
+                bound_start
+                    ..bound_start
+                        .checked_add(bound_length)
+                        .ok_or_else(|| dangling_entity(ordinal))?,
+            )
+            .ok_or_else(|| dangling_entity(ordinal))?;
+        preimage.extend_from_slice(
+            &u32::try_from(bounds.len())
+                .map_err(|_| dangling_entity(ordinal))?
+                .to_le_bytes(),
+        );
+        for bound in bounds {
+            match bound {
+                backend_semantic::ir::ExtensionTypeParameterBound::Type(target) => {
+                    preimage.push(0);
+                    append_type_target_payload(
+                        preimage,
+                        facts,
+                        *target,
+                        None,
+                        0,
+                        locators,
+                        type_shapes,
+                        type_visiting,
+                    )?;
+                }
+                backend_semantic::ir::ExtensionTypeParameterBound::Lifetime(name) => {
+                    preimage.push(1);
+                    let name_len =
+                        u32::try_from(name.len()).map_err(|_| dangling_entity(ordinal))?;
+                    preimage.extend_from_slice(&name_len.to_le_bytes());
+                    preimage.extend_from_slice(name);
+                }
+            }
+        }
+        match parameter.default {
+            Some(target) => {
+                preimage.push(1);
+                append_type_target_payload(
+                    preimage,
+                    facts,
+                    target,
+                    None,
+                    0,
+                    locators,
+                    type_shapes,
+                    type_visiting,
+                )?;
+            }
+            None => preimage.push(0),
+        }
+    }
+    Ok(())
 }
 
 /// Full payload hash for one declaration.  It includes its direct basis,
@@ -1093,6 +1537,13 @@ fn append_nominal_payload(
             preimage.extend_from_slice(&target.ordinal.to_le_bytes());
             Ok(())
         }
+        NominalRef::Stable(stable) => {
+            preimage.push(2);
+            preimage.extend_from_slice(stable.fragment.as_ref());
+            preimage.extend_from_slice(stable.declaration.family.as_bytes());
+            preimage.extend_from_slice(stable.declaration.variant.as_bytes());
+            Ok(())
+        }
     }
 }
 
@@ -1145,10 +1596,11 @@ fn type_shape(
     cache: &mut [Option<CorePayloadHash>],
     visiting: &mut [bool],
 ) -> Result<CorePayloadHash, backend_semantic::ir::BuildError> {
-    let slot = staged_type_slot(facts, row).ok_or_else(|| backend_semantic::ir::BuildError::Dangling {
-        space: backend_semantic::ir::SemanticSpace::Type,
-        raw: row,
-    })?;
+    let slot =
+        staged_type_slot(facts, row).ok_or_else(|| backend_semantic::ir::BuildError::Dangling {
+            space: backend_semantic::ir::SemanticSpace::Type,
+            raw: row,
+        })?;
     if let Some(shape) = cache[slot] {
         return Ok(shape);
     }
@@ -1172,7 +1624,9 @@ fn type_shape(
                     let nested =
                         staged_type_slot(facts, target).ok_or_else(|| dangling_type(target))?;
                     if visiting[nested] {
-                        return Err(backend_semantic::ir::BuildError::RecursiveType { raw: target });
+                        return Err(backend_semantic::ir::BuildError::RecursiveType {
+                            raw: target,
+                        });
                     }
                     if cache[nested].is_none() {
                         stack.push((target, false));
@@ -1217,6 +1671,13 @@ fn type_shape(
                 preimage.push(1);
                 preimage.extend_from_slice(external.fragment.as_ref());
                 preimage.extend_from_slice(&external.ordinal.to_le_bytes());
+            }
+            Some(NominalRef::Stable(stable)) => {
+                preimage.push(1);
+                preimage.push(2);
+                preimage.extend_from_slice(stable.fragment.as_ref());
+                preimage.extend_from_slice(stable.declaration.family.as_bytes());
+                preimage.extend_from_slice(stable.declaration.variant.as_bytes());
             }
         }
         preimage.extend_from_slice(

@@ -3,6 +3,10 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::time::Duration;
 
+use crate::interface::{
+    CompilerAttempt, CompilerCause, CompilerDiagnostic, CompilerRuntimeCause, FragmentCause,
+    PackageCompilePhase, PackageSourceCause, PublicationCause, SourceAuthority,
+};
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CSharpImageFault, CSharpImageHeaderFault,
     CSharpImageSection, CSharpImageTypeKind, CSharpProjectionFault, ClangProjectionDeclaration,
@@ -17,10 +21,6 @@ use backend_semantic::vocabulary::{
     ProjectionParentageState, ProjectionSemanticTypeFault, ProjectionSemanticTypeTag,
     ProjectionSpan, ProjectionTypeCell, ProjectionTypeChildLane, PythonProjectionFault, Stage,
     TypeScriptProjectionFault,
-};
-use crate::interface::{
-    CompilerAttempt, CompilerCause, CompilerDiagnostic, CompilerRuntimeCause, FragmentCause,
-    PackageCompilePhase, PackageSourceCause, PublicationCause, SourceAuthority,
 };
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
@@ -1045,6 +1045,10 @@ enum PythonProjectionFaultWire {
         end: u32,
         #[serde(with = "ProjectionPackageLineageFaultWire")]
         cause: ProjectionPackageLineageFault,
+    },
+    Containment {
+        start: u32,
+        end: u32,
     },
 }
 

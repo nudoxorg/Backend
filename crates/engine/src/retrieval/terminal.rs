@@ -3,17 +3,17 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Closed runtime operation vocabulary and retained typed causes.
 
-use backend_semantic::index_core::{
-    ExactDegradation, ExactManifestError, ExactResolution, LexicalDegradation,
-    LexicalManifestError, LexicalQueryError, LexicalSnapshotHit,
-};
+use backend_extension_qdrant::server::{QdrantError, QueryCandidateCount};
+use backend_extension_tantivy::server::{TantivyAdapterError, TantivyTerminal};
+use backend_extension_trustfall::server::{TrustfallGraphError, TrustfallTerminal};
 use backend_semantic::graph_vector::{
     GraphAuthority, GraphDegradation, MissingPartitions, MissingPartitionsError,
     StreamCapacityError, VectorAuthority, VectorSegmentDescriptor,
 };
-use backend_extension_qdrant::server::{QdrantError, QueryCandidateCount};
-use backend_extension_tantivy::server::{TantivyAdapterError, TantivyTerminal};
-use backend_extension_trustfall::server::{TrustfallGraphError, TrustfallTerminal};
+use backend_semantic::index_core::{
+    ExactDegradation, ExactManifestError, ExactResolution, LexicalDegradation,
+    LexicalManifestError, LexicalQueryError, LexicalSnapshotHit,
+};
 use backend_semantic::index_vocabulary::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 
 /// Exact immutable coverage absent from an otherwise authoritative operation.

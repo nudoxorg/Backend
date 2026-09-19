@@ -36,6 +36,8 @@ impl<'bytes> ExtensionPoolsLane<'bytes> {
                 length += 4 + 4 * list.elements.len();
             }
         }
+        length += 4 + 12 * self.free_predicates.len();
+        length += 4 + 8 * self.free_predicate_lists.len();
         length
     }
 
@@ -116,6 +118,25 @@ impl<'bytes> ExtensionPoolsLane<'bytes> {
                     cursor = write_u32(payload, cursor, *raw);
                 }
             }
+        }
+        cursor = write_u32(
+            payload,
+            cursor,
+            u32::try_from(self.free_predicates.len()).unwrap_or(u32::MAX),
+        );
+        for predicate in self.free_predicates {
+            cursor = write_u32(payload, cursor, predicate.subject);
+            cursor = write_u32(payload, cursor, predicate.bounds.start);
+            cursor = write_u32(payload, cursor, predicate.bounds.length);
+        }
+        cursor = write_u32(
+            payload,
+            cursor,
+            u32::try_from(self.free_predicate_lists.len()).unwrap_or(u32::MAX),
+        );
+        for range in self.free_predicate_lists {
+            cursor = write_u32(payload, cursor, range.start);
+            cursor = write_u32(payload, cursor, range.length);
         }
     }
 }

@@ -1,6 +1,7 @@
 mod java_support;
 
-use backend_semantic::ir::{EmbeddingProfile, EntityId, Ir, ItemKind};
+use backend_semantic::ir::semantic_render::EmbeddingProfile;
+use backend_semantic::ir::{EntityId, Ir, ItemKind};
 use java_support::ImageBuilder;
 
 const SOURCE: &[u8] =

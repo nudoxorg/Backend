@@ -112,6 +112,18 @@ impl PackagePath {
         last_component(&self.0)
     }
 
+    /// Returns the file name without its extension: the module a file is.
+    ///
+    /// `components.rs` is the file; `components` is the module every surface
+    /// should call it. A dotfile or an extensionless file keeps its whole name.
+    #[must_use]
+    pub fn stem(&self) -> &str {
+        let name = self.file_name();
+        name.rsplit_once('.')
+            .filter(|(stem, extension)| !stem.is_empty() && !extension.is_empty())
+            .map_or(name, |(stem, _)| stem)
+    }
+
     /// Returns the lowercase extension, when the path has one.
     #[must_use]
     pub fn extension(&self) -> Option<String> {

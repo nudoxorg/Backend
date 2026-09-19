@@ -41,12 +41,14 @@
 //!   confidence, and every span is relative to the innermost owning
 //!   declaration.
 //! - Macro invocation spellings travel in each owning declaration's Rust
-//!   extension row; a `macro_rules!` definition itself has no closed lane
-//!   row kind, so definitions stay out of the declaration set instead of
-//!   being misdeclared as some other entity. Declarations that exist only
-//!   through macro expansion are enumerated from the HIR module scope, kept
-//!   only when their `definition_origin` projects into this source, and
-//!   emitted exactly like written declarations with their projected spans.
+//!   extension row. A `macro_rules!` definition commits its own closed
+//!   `Macro` row — leaf product, honest unannotated record — exactly as the
+//!   C lane commits its macros, so a crate whose only written declaration is
+//!   a macro still lowers instead of rejecting as empty. Declarations that
+//!   exist only through macro expansion are enumerated from the HIR module
+//!   scope, kept only when their `definition_origin` projects into this
+//!   source, and emitted exactly like written declarations with their
+//!   projected spans.
 //! - Associated-type projections and inferred array lengths have no row the
 //!   HIR walk can prove, so they fold to the honest `Unknown(OracleGap)`
 //!   record instead of a fabricated shape.
@@ -58,34 +60,37 @@
 //! |---|---|---|
 //! | `MAX_TYPE_DEPTH` (16) | `TruncatedAtDepthLimit` | retain an unknown row with that reason |
 //! | `MAX_COMPOUND_CHILDREN` (8) | `NoIrRepresentation`, or enclosing `OracleGap` without a written shape | retain spelling when available; otherwise retain the gap row |
-//! | `MAX_DEDUPED_FOREIGN_ROWS` (64) | memory-only dedup bound | the 65th and later leaves remain separate, semantically identical rows |
+//! | `MAX_DEDUPED_FOREIGN_ROWS` (512) | `NoSupportedDeclaration` | a distinct foreign spelling beyond the cap rejects exactly |
 //! | `TUPLE_FIELD_NAMES` (16 entries) | positional-name fold | positions beyond 15 are not materialized by the module walk |
 //! | computed rows (1024) | `ComputedRowCapacity` | not applicable: computed rows belong to the checker lane |
 
 use std::{collections::HashMap, vec::Vec};
 
+use backend_frontend_rust::legacy::{
+    ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
+    RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustProject,
+    SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir, ra_ap_ide_db, ra_ap_syntax,
+};
 use backend_semantic::ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey, ForeignOrigin,
     ListSpan, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PrimitiveShape,
     ProductChildRole, ReferenceKind, RelSpan, RustFacts, RustOwnership, SemanticProductConstructor,
     SemanticTypeRecord, SemanticTypeTag, TypeParameterListId, TypeReason, TypeWidth,
 };
-use backend_frontend_rust::legacy::{
-    ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
-    RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustProject,
-    SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir, ra_ap_ide_db, ra_ap_syntax,
-};
 use ra_ap_syntax::{
     AstNode, SyntaxNode,
-    ast::{self, HasGenericArgs, HasGenericParams, HasName, HasTypeBounds, HasVisibility},
+    ast::{
+        self, HasAttrs, HasGenericArgs, HasGenericParams, HasName, HasTypeBounds, HasVisibility,
+    },
 };
+use sha2::{Digest, Sha256};
 
 use crate::driver::{
     lower::{
         EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, SemanticFact,
-        portable_admission, portable_count, push_fact,
+        StagedSourceSpan, portable_admission, portable_count, push_fact,
     },
-    types::{CompileControl, LoweringUnsupported},
+    types::{CompileControl, FactFault, LoweringUnsupported},
 };
 
 /// The bit a `Primitive(Reference)` payload1 cell reserves for mutability.
@@ -98,8 +103,18 @@ const MAX_TYPE_DEPTH: usize = 16;
 /// Maximum pooled children of one compound row or fact record; positions
 /// beyond it fold to the honest gap reason instead of a lane rejection.
 const MAX_COMPOUND_CHILDREN: usize = 8;
-/// Maximum entries of the anonymous foreign-leaf row dedup table.
-const MAX_DEDUPED_FOREIGN_ROWS: usize = 64;
+/// Maximum entries of the anonymous foreign-leaf row dedup table. Measured
+/// against the real corpus demand: a fixture crate root re-exports whole
+/// dependency surfaces (`itertools`'s written re-export list alone names
+/// more distinct foreign spellings than the founding 64-entry bound), so the
+/// table is sized an order of magnitude above the largest measured lane.
+const MAX_DEDUPED_FOREIGN_ROWS: usize = 512;
+/// Maximum entries of the compound-type carrier dedup table. A compound
+/// spelling (`[u8]`, `&'a T`, `Vec<u8>`) lowers to the same carrier every
+/// time it is written, so a second occurrence must reuse the first carrier
+/// rather than mint a byte-identical twin; beyond this many distinct compound
+/// spellings the pass rejects exactly instead of growing without bound.
+const MAX_DEDUPED_CARRIER_ROWS: usize = 2048;
 /// Ecosystem namespace of every foreign key this authority emits.
 const CARGO_ECOSYSTEM: &str = "cargo";
 /// The receiver's written name; every Rust receiver spells exactly this.
@@ -150,7 +165,29 @@ pub(crate) fn collect<'source>(
                         observed: authority.source.len(),
                     });
                 }
-                Emitter::new(&authority, source, facts).run()
+                let mut emitter = Emitter::new(&authority, source, facts);
+                emitter.run()?;
+                // A source whose every written item stayed out of the lane
+                // (each behind an unmet `#[cfg]` gate, an unresolved facade
+                // re-export, or a `compile_error!` stub) proved by HIR that
+                // it has no active declaration: the collected-empty product
+                // is its honest parity output, exactly the Go `doc.go` and
+                // Clang cfg-gated analogues. Only a written surface with no
+                // top-level item at all carries no proof, and stays the
+                // lane's exact typed rejection.
+                if facts.len() == 0 {
+                    let written_items = authority
+                        .root
+                        .syntax()
+                        .children()
+                        .any(|child| ast::Item::can_cast(child.kind()));
+                    if !written_items {
+                        return Err(RustAuthorityError::Admission {
+                            cause: LoweringUnsupported::NoSupportedDeclaration,
+                        });
+                    }
+                }
+                Ok(())
             },
         )
         .map_err(|cause| match cause {
@@ -181,6 +218,19 @@ fn push<'source>(
 fn admission() -> RustAuthorityError {
     RustAuthorityError::Admission {
         cause: LoweringUnsupported::NoSupportedDeclaration,
+    }
+}
+
+/// Names one parentage staging rejection exactly: the fact ordinal and name
+/// length travel with the admission cause so a parentage fault stays
+/// diagnosable without consulting emission order.
+fn parentage_fault(ordinal: u32, name_len: usize, fault: FactFault) -> RustAuthorityError {
+    RustAuthorityError::Admission {
+        cause: backend_semantic::vocabulary::LoweringUnsupported::FactRejected {
+            fact: portable_count(ordinal as usize),
+            name_len: portable_count(name_len),
+            cause: portable_admission(fault),
+        },
     }
 }
 
@@ -255,6 +305,69 @@ impl<'source> Lowered<'source> {
     }
 }
 
+/// True for the declaration kinds that own a lane type root and therefore
+/// must be reserved before any bound may name them.
+fn is_type_root(kind: SemanticKind) -> bool {
+    matches!(
+        kind,
+        SemanticKind::Module | SemanticKind::Record | SemanticKind::Enum | SemanticKind::Trait
+    )
+}
+
+/// True when any written `#[cfg(…)]` (or `#[cfg_attr(…, cfg(…))]`) on one
+/// inline module evaluates false under this crate's resolved options.
+/// rust-analyzer resolves a disabled module's definition to its enabled
+/// same-name sibling (module lookup is by parent and name), so the written
+/// walk would otherwise emit a byte-identical twin; the disabled syntax owns
+/// no HIR declaration and stays out.
+fn module_cfg_disabled(item: &ast::Module, cfg: &ra_ap_hir::CfgOptions) -> bool {
+    item.attrs().any(|attr| {
+        attr.meta()
+            .is_some_and(|meta| meta_cfg_disabled(&meta, cfg))
+    })
+}
+
+/// Whether one attribute meta disables its item: a `cfg(pred)` whose predicate
+/// is provably false, or a `cfg_attr(cond, …)` whose condition is provably true
+/// and which applies a disabling meta. An unprovable predicate never disables.
+fn meta_cfg_disabled(meta: &ast::Meta, cfg: &ra_ap_hir::CfgOptions) -> bool {
+    match meta {
+        ast::Meta::CfgMeta(meta) => meta.cfg_predicate().is_some_and(|predicate| {
+            cfg.check(&ra_ap_hir::CfgExpr::parse_from_ast(predicate)) == Some(false)
+        }),
+        ast::Meta::CfgAttrMeta(meta) => {
+            let condition = meta.cfg_predicate().is_some_and(|predicate| {
+                cfg.check(&ra_ap_hir::CfgExpr::parse_from_ast(predicate)) == Some(true)
+            });
+            condition && meta.metas().any(|inner| meta_cfg_disabled(&inner, cfg))
+        }
+        _ => false,
+    }
+}
+
+/// One `where` predicate bound staged for a declared parameter: the written
+/// subject spelling it augments, its exact written bound, and whether a
+/// declared parameter claimed it. An unclaimed bound carries its full subject
+/// type for the free-predicate lane; a lifetime subject has no type row and
+/// stays an exact terminal.
+struct WhereBound<'source> {
+    subject: &'source [u8],
+    ty: Option<ast::Type>,
+    bound: ast::TypeBound,
+    matched: bool,
+}
+
+/// Resolution outcome of one written trait bound at a declaration site.
+enum TraitBoundTarget {
+    /// Local trait already committed to a lane ordinal.
+    Committed(u32),
+    /// Trait defined outside this source fragment; the caller keeps its exact
+    /// written spelling as an unresolved external row.
+    Foreign,
+    /// The written bound did not resolve to a trait definition at all.
+    Unresolved,
+}
+
 /// The two-pass Rust semantic emitter over one borrowed authority.
 struct Emitter<'authority, 'analysis, 'source> {
     authority: &'authority RustAuthority<'analysis>,
@@ -278,8 +391,14 @@ struct Emitter<'authority, 'analysis, 'source> {
     ordinals: Vec<Option<u32>>,
     /// Dedup table of interned foreign-unknown leaf rows, keyed by spelling.
     foreign_rows: Vec<(&'source [u8], u32)>,
+    /// Dedup table of compound-type carrier facts, keyed by written spelling.
+    carrier_rows: Vec<(&'source [u8], u32)>,
     /// Macro invocation sites collected before emission.
     macro_sites: Vec<MacroSite<'source>>,
+    /// Committed `(enclosing item span, kind, name)` keys, so Rust's
+    /// single-name law keeps later cfg-disjoint twins out instead of letting
+    /// them mint byte-identical declaration identities.
+    scoped_names: std::collections::HashSet<(Option<(u32, u32)>, u8, Vec<u8>)>,
     /// Declaration rows ordered by source start for logarithmic owner admission.
     owner_order: Vec<usize>,
 }
@@ -303,7 +422,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             covered_impls: Vec::new(),
             ordinals: Vec::new(),
             foreign_rows: Vec::new(),
+            carrier_rows: Vec::new(),
             macro_sites: Vec::new(),
+            scoped_names: std::collections::HashSet::new(),
             owner_order: Vec::new(),
         }
     }
@@ -316,6 +437,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.emit_type_roots(&declarations)?;
         self.emit_members(&declarations)?;
         self.rebuild_owner_order();
+        self.emit_parentage()?;
         self.attach_macros()?;
         self.emit_occurrences()?;
         self.emit_docs(&declarations)?;
@@ -369,22 +491,67 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     }
 
     /// Materializes every lane-admissible declaration once, with its exact
-    /// name bytes and whole-item span. `macro_rules!` definitions carry no
-    /// closed declaration-kind row and stay out of the set; their invocation
-    /// spellings travel on the invoking declarations instead. After the
-    /// written syntax walk, the HIR module-scope walk appends the uncovered
-    /// remainder: declarations that exist only through macro expansion and
-    /// tuple-struct fields the written tree does not cast.
+    /// name bytes and whole-item span. A `macro_rules!` definition keeps its
+    /// closed `Macro` row, so a crate whose only declaration is a macro
+    /// lowers like any other. After the written syntax walk, the HIR
+    /// module-scope walk appends the uncovered remainder: declarations that
+    /// exist only through macro expansion and tuple-struct fields the
+    /// written tree does not cast.
     fn materialize_declarations(&mut self) -> Result<Vec<Decl<'source>>, RustAuthorityError> {
         let authority = self.authority;
         let mut declarations = Vec::new();
+        // rust-analyzer projects a `#[cfg]`-disabled module through the written
+        // syntax walk even though it omits every other cfg-disabled item from
+        // HIR, and its module lookup resolves both same-name branches to the
+        // one enabled definition. Its whole subtree therefore leaks with it
+        // (the nested items are syntactically present). Such a module is
+        // dropped, subtree and all, exactly as the module-scope walk already
+        // omits it.
+        let crate_cfg = self.crate_cfg_options();
+        let mut disabled_spans: Vec<ByteSpan> = Vec::new();
         for declaration in authority.declarations() {
-            if matches!(declaration.definition, RustDefinition::Macro(_)) {
+            let span = authority.span(&declaration.syntax)?;
+            if let RustDefinition::Module(_) = &declaration.definition
+                && let Some(item) = ast::Module::cast(declaration.syntax.clone())
+                && module_cfg_disabled(&item, &crate_cfg)
+            {
+                disabled_spans.push(span);
                 continue;
             }
-            let span = authority.span(&declaration.syntax)?;
+            if disabled_spans
+                .iter()
+                .any(|disabled| disabled.start <= span.start && span.end <= disabled.end)
+            {
+                continue;
+            }
+            // An anonymous `const _: () = …;` carries no name of its own. The
+            // authority's first-identifier fallback would otherwise name it
+            // after an incidental path in its initializer (`assert`),
+            // collapsing every such compile-time assertion at one scope onto a
+            // fabricated duplicate. Anonymous items are not name-addressable;
+            // they stay out, exactly as the module-scope walk drops an absent
+            // name.
+            if let RustDefinition::Constant(_) = &declaration.definition
+                && let Some(item) = ast::Const::cast(declaration.syntax.clone())
+                && item.name().is_none()
+            {
+                continue;
+            }
             let name_span = self.declaration_name(&declaration)?;
             let name = self.bytes_of(name_span)?;
+            // Rust's single-name law (E0428) makes any two same-name items
+            // in one scope cfg-disjoint twins; an authority that does not
+            // evaluate the gate (a tool attribute such as
+            // `#[rustversion::since]`) streams both. Commit the first and
+            // keep each later twin out rather than minting byte-identical
+            // declaration identities the image build must reject.
+            let scope = self.enclosing_item_span(&declaration.syntax)?;
+            if !self
+                .scoped_names
+                .insert((scope, declaration.kind as u8, name.to_vec()))
+            {
+                continue;
+            }
             match &declaration.definition {
                 RustDefinition::Field(field) => self.covered_fields.push(*field),
                 RustDefinition::Implementation(implementation) => {
@@ -453,6 +620,34 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         Ok(declarations)
     }
 
+    /// The exact span of the innermost enclosing item, so single-name-law
+    /// twins are keyed by their true scope: two nested helpers in different
+    /// functions stay distinct, while two same-name items in one function
+    /// body are the E0428 twins the image build cannot represent twice.
+    /// `None` marks a top-level item, whose scope is the crate file itself.
+    fn enclosing_item_span(
+        &self,
+        syntax: &SyntaxNode,
+    ) -> Result<Option<(u32, u32)>, RustAuthorityError> {
+        let Some(item) = syntax.ancestors().skip(1).find_map(ast::Item::cast) else {
+            return Ok(None);
+        };
+        let span = self.authority.span(item.syntax())?;
+        Ok(Some((span.start, span.end)))
+    }
+
+    /// Clones this source crate's resolved conditional-compilation options,
+    /// owned so the written walk can hold them while it mutates its cover
+    /// sets. The options already include the caller's Cargo feature policy and
+    /// target, so they evaluate exactly as rust-analyzer's own HIR did.
+    fn crate_cfg_options(&self) -> ra_ap_hir::CfgOptions {
+        self.authority
+            .semantics
+            .hir_file_to_module_def(self.authority.source_file)
+            .map(|root| root.krate(self.database).cfg(self.database).clone())
+            .unwrap_or_default()
+    }
+
     /// True when the written syntax walk already materialized one HIR
     /// definition, so the module-scope walk must not emit it twice.
     fn is_covered(&self, definition: &RustDefinition) -> bool {
@@ -466,8 +661,16 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     }
 
     /// Borrows the exact name bytes of one declaration. Implementations name
-    /// by their written self type (the closed lane has no anonymous rows),
-    /// falling back to the authority's first-identifier rule.
+    /// by their whole written self type (the closed lane has no anonymous
+    /// rows), so two blocks whose self types differ only in generic
+    /// arguments (`U<N, false>` versus `U<N, true>`) commit distinct
+    /// declarations instead of byte-identical twins; falling back to the
+    /// last path segment alone would collapse them and the image build
+    /// would honestly reject the collision. A non-path self type (`&[u8]`,
+    /// a tuple, a trait object) owns no name segment; its exact written
+    /// spelling is likewise the only self-describing name — the authority's
+    /// first-identifier rule would otherwise name the block after its first
+    /// method or generic parameter and collapse distinct impls together.
     fn declaration_name(
         &self,
         declaration: &RustDeclaration,
@@ -475,11 +678,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         if declaration.kind == SemanticKind::Implementation
             && let Some(implementation) = ast::Impl::cast(declaration.syntax.clone())
             && let Some(self_ty) = implementation.self_ty()
-            && let Some(ast::Type::PathType(path_type)) = Some(self_ty.clone())
-            && let Some(segment) = path_type.path().and_then(|path| path.segments().last())
-            && let Some(name_ref) = segment.name_ref()
         {
-            return self.authority.span(name_ref.syntax());
+            return self.authority.span(self_ty.syntax());
         }
         self.authority.declaration_name(declaration)
     }
@@ -516,11 +716,14 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     fn collect_macro_sites(&mut self) -> Result<(), RustAuthorityError> {
         let authority = self.authority;
         for call in authority.macro_calls() {
-            let span = authority.span(call.syntax())?;
             let Some(path) = call.path() else {
                 continue;
             };
             let spelling = self.bytes_of_node(path.syntax())?;
+            // The occurrence site is the written macro path — the name a
+            // reader searched for — never the whole invocation call, whose
+            // argument text can carry arbitrary bytes.
+            let span = authority.span(path.syntax())?;
             let resolved = authority.resolve_macro(&call).is_some();
             self.macro_sites.push(MacroSite {
                 spelling,
@@ -531,36 +734,30 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         Ok(())
     }
 
-    /// Pass one: every module, record, enum, and trait with its legal
-    /// diagonal self-nominal, so any later type can name any type root.
+    /// Reserves every module, record, enum, and trait with its legal diagonal
+    /// self-nominal, so any later type can name any type root. The reservation
+    /// pass carries no extension, because a local trait declared later in the
+    /// file has no ordinal yet when an earlier root's bounds are built; the
+    /// second pass rebuilds each root's real extension after every local
+    /// ordinal exists and reattaches it against the exact parameter range
+    /// captured at that declaration's own close point.
     fn emit_type_roots(
         &mut self,
         declarations: &[Decl<'source>],
     ) -> Result<(), RustAuthorityError> {
+        let placeholder = self.empty_extension(RustOwnership::Value)?;
         for index in 0..declarations.len() {
             let kind = declarations[index].kind;
-            if !matches!(
-                kind,
-                SemanticKind::Module
-                    | SemanticKind::Record
-                    | SemanticKind::Enum
-                    | SemanticKind::Trait
-            ) {
+            if !is_type_root(kind) {
                 continue;
             }
             let declaration = &declarations[index];
-            let extension = self.base_extension(
-                RustOwnership::Value,
-                &declaration.syntax,
-                declaration.expanded,
-            )?;
             let mut fact = SemanticFact::new(
                 entity_kind(kind)?,
                 self.name_of(declaration)?,
                 constructor(kind)?,
             )
-            .with_visibility(self.declaration_visibility(declaration))
-            .with_extension(EmissionExtension::Rust(extension));
+            .with_visibility(self.declaration_visibility(declaration));
             if kind != SemanticKind::Module {
                 let own_ordinal = coordinate(self.facts.len())?;
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
@@ -568,7 +765,40 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 fact = fact.typed(record);
             }
             let ordinal = push(self.facts, fact)?;
-            self.register(ordinal, index, declaration, extension)?;
+            self.register(ordinal, index, declaration, placeholder)?;
+        }
+        for index in 0..declarations.len() {
+            let kind = declarations[index].kind;
+            if !is_type_root(kind) {
+                continue;
+            }
+            let declaration = &declarations[index];
+            let extension = self.base_extension(RustOwnership::Value, declaration)?;
+            let Some(ordinal) = self.ordinals.get(index).copied().flatten() else {
+                continue;
+            };
+            let range = self
+                .facts
+                .type_parameter_range(extension.where_clauses.raw)
+                .map_err(|_| admission())?;
+            let free_range = self
+                .facts
+                .free_predicate_range(extension.free_predicates.raw)
+                .map_err(|_| admission())?;
+            let slot = usize::try_from(ordinal).map_err(|_| admission())?;
+            self.facts
+                .attach_extension_with_type_parameters(
+                    slot,
+                    EmissionExtension::Rust(extension),
+                    range,
+                )
+                .map_err(|_| admission())?;
+            self.facts
+                .set_free_predicate_range(slot, &EmissionExtension::Rust(extension), free_range)
+                .map_err(|_| admission())?;
+            if let Some(row) = self.rows.iter_mut().find(|row| row.ordinal == ordinal) {
+                row.extension = extension;
+            }
         }
         Ok(())
     }
@@ -586,11 +816,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 SemanticKind::TypeAlias | SemanticKind::Constant | SemanticKind::Static => {
                     self.emit_binding(index, declaration)?
                 }
+                SemanticKind::Macro => self.emit_macro(index, declaration)?,
                 SemanticKind::Module
                 | SemanticKind::Record
                 | SemanticKind::Enum
                 | SemanticKind::Trait
-                | SemanticKind::Macro
                 | SemanticKind::LocalBinding
                 | SemanticKind::GenericParameter
                 | SemanticKind::Builtin => {}
@@ -615,13 +845,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             ast::RecordField::cast(declaration.syntax.clone()).and_then(|item| item.ty())
         };
         let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
-        self.push_typed(
-            index,
-            declaration,
-            lowered,
-            RustOwnership::Value,
-            &declaration.syntax,
-        )
+        self.push_typed(index, declaration, lowered, RustOwnership::Value)
     }
 
     /// Emits one enum variant as the constructor it is: its declared type is
@@ -656,7 +880,6 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 declaration,
                 Lowered::leaf(record),
                 RustOwnership::Value,
-                &declaration.syntax,
             );
         }
         let variant_syntax = if declaration.expanded {
@@ -686,7 +909,6 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         declaration,
                         Lowered::leaf(record),
                         RustOwnership::Value,
-                        &declaration.syntax,
                     );
                 }
             }
@@ -699,11 +921,14 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             declaration,
             Lowered { record, children },
             RustOwnership::Value,
-            &declaration.syntax,
         )
     }
 
-    /// Emits one inherent or trait implementation with its self type.
+    /// Emits one inherent or trait implementation with its self type. The
+    /// trait reference is recorded beside the fact so coordinate-free
+    /// identity can distinguish `impl Trait for Self` splits that share one
+    /// written self type; an inherent implementation records its distinct
+    /// tag instead of a fabricated trait shape.
     fn emit_implementation(
         &mut self,
         index: usize,
@@ -719,13 +944,51 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             ast::Impl::cast(declaration.syntax.clone()).and_then(|item| item.self_ty())
         };
         let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
-        self.push_typed(
-            index,
-            declaration,
-            lowered,
-            RustOwnership::Value,
-            &declaration.syntax,
-        )
+        let trait_ref = self.impl_trait_ref(declaration)?;
+        self.push_typed(index, declaration, lowered, RustOwnership::Value)?;
+        if let Some(trait_ref) = trait_ref
+            && let Some(Some(ordinal)) = self.ordinals.get(index).copied()
+        {
+            self.facts
+                .set_impl_trait(ordinal, trait_ref)
+                .map_err(|_| admission())?;
+        }
+        Ok(())
+    }
+
+    /// Resolves one implementation's trait reference without inventing a
+    /// shape. An inherent block keeps its tag; a trait block naming a
+    /// committed lane-local trait keeps that ordinal, while a foreign or
+    /// unresolved trait keeps its exact written spelling. `None` means the
+    /// expanded syntax owns no borrowable spelling, so identity falls back
+    /// to the inherent tag rather than manufacturing bytes.
+    fn impl_trait_ref(
+        &mut self,
+        declaration: &Decl<'source>,
+    ) -> Result<Option<crate::driver::lower::StagedImplTrait<'source>>, RustAuthorityError> {
+        if declaration.expanded {
+            return Ok(None);
+        }
+        let Some(item) = ast::Impl::cast(declaration.syntax.clone()) else {
+            return Ok(None);
+        };
+        let Some(trait_ty) = item.trait_() else {
+            return Ok(Some(crate::driver::lower::StagedImplTrait::Inherent));
+        };
+        match self.trait_bound_constraint(&trait_ty)? {
+            TraitBoundTarget::Committed(ordinal) => {
+                Ok(Some(crate::driver::lower::StagedImplTrait::Local {
+                    target: ordinal,
+                    spelling: self.bytes_of_node(trait_ty.syntax())?,
+                }))
+            }
+            TraitBoundTarget::Foreign | TraitBoundTarget::Unresolved => {
+                let spelling = self.bytes_of_node(trait_ty.syntax())?;
+                Ok(Some(crate::driver::lower::StagedImplTrait::Foreign(
+                    spelling,
+                )))
+            }
+        }
     }
 
     /// Emits one type alias, constant, or static binding from its HIR
@@ -754,7 +1017,30 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             _ => RustOwnership::Value,
         };
         let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
-        self.push_typed(index, declaration, lowered, ownership, &declaration.syntax)
+        self.push_typed(index, declaration, lowered, ownership)
+    }
+
+    /// Emits one `macro_rules!` definition with the honest unwritten type:
+    /// the lane proves the macro's name and extent, never a replacement-list
+    /// type, so the fact keeps the unannotated record exactly as the C lane
+    /// keeps its macros. The written visibility prefix stays the lane's only
+    /// visibility witness (`#[macro_export]` is not a written `pub`).
+    fn emit_macro(
+        &mut self,
+        index: usize,
+        declaration: &Decl<'source>,
+    ) -> Result<(), RustAuthorityError> {
+        let extension = self.base_extension(RustOwnership::Value, declaration)?;
+        let fact = SemanticFact::new(
+            EntityKind::Macro,
+            self.name_of(declaration)?,
+            constructor(declaration.kind)?,
+        )
+        .with_visibility(self.declaration_visibility(declaration))
+        .typed(unknown_record(TypeReason::Unannotated, None))
+        .with_extension(EmissionExtension::Rust(extension));
+        let ordinal = push(self.facts, fact)?;
+        self.register(ordinal, index, declaration, extension)
     }
 
     /// Emits one function: its receiver, parameters, and result slot first,
@@ -799,7 +1085,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         for (position, parameter) in parameters.iter().enumerate() {
             let semantic = parameter.ty().clone();
             let anchor = written.get(position).and_then(|param| param.ty());
-            let name = self.parameter_name(written.get(position), parameter.name(self.database));
+            let name = self.parameter_name(
+                written.get(position),
+                parameter.name(self.database),
+                position,
+            );
             let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
             let ownership = parameter_ownership(self.database, &semantic);
             let ordinal = self.push_parameter(name, lowered, ownership)?;
@@ -832,11 +1122,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         let arity = coordinate(parameter_ordinals.len())?;
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
         record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
-        let extension = self.base_extension(
-            RustOwnership::Value,
-            &declaration.syntax,
-            declaration.expanded,
-        )?;
+        let extension = self.base_extension(RustOwnership::Value, declaration)?;
         let mut fact = SemanticFact::new(
             EntityKind::Function,
             self.name_of(declaration)?,
@@ -853,6 +1139,15 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             fact = fact.type_child(*ordinal, None, 0);
         }
         let ordinal = push(self.facts, fact)?;
+        // Signature carriers share names and types across functions; bind
+        // each to its executable so identical carriers stay distinct.
+        let executable = coordinate(ordinal)?;
+        let name_len = declaration.name.len();
+        for carrier in parameter_ordinals.iter().copied().chain([result_ordinal]) {
+            self.facts
+                .attach_parent(carrier, executable)
+                .map_err(|fault| parentage_fault(carrier, name_len, fault))?;
+        }
         self.register(ordinal, index, declaration, extension)
     }
 
@@ -875,11 +1170,16 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
     /// Borrows one written parameter name: the binding identifier when the
     /// pattern spells one, otherwise the analyzer's own parameter name found
-    /// in the source text, otherwise the static fallback binding name.
+    /// in the source text, otherwise the static fallback binding name. A
+    /// wildcard pattern binds nothing, so two same-typed `_` parameters would
+    /// otherwise mint byte-identical siblings; such a position keeps the
+    /// lane's canonical positional spelling (the same spellings Rust uses for
+    /// tuple fields) so a repeated wildcard stays distinct.
     fn parameter_name(
         &self,
         written: Option<&ast::Param>,
         hir_name: Option<ra_ap_hir::Name>,
+        position: usize,
     ) -> &'source [u8] {
         if let Some(param) = written {
             if let Some(pattern) = param.pat() {
@@ -888,6 +1188,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     && let Ok(bytes) = self.bytes_of_node(name.syntax())
                 {
                     return bytes;
+                }
+                if matches!(&pattern, ast::Pat::WildcardPat(_))
+                    && let Some(name) = TUPLE_FIELD_NAMES.get(position)
+                {
+                    return name;
                 }
                 if let Ok(bytes) = self.bytes_of_node(pattern.syntax()) {
                     return bytes;
@@ -904,7 +1209,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     }
 
     /// Captures only the written visibility prefix; omitted visibility is Rust-private.
-    fn declaration_visibility(&self, declaration: &Decl<'source>) -> backend_semantic::ir::Visibility {
+    fn declaration_visibility(
+        &self,
+        declaration: &Decl<'source>,
+    ) -> backend_semantic::ir::Visibility {
         if declaration.expanded {
             return backend_semantic::ir::Visibility::Unknown;
         }
@@ -940,9 +1248,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         declaration: &Decl<'source>,
         lowered: Lowered<'source>,
         ownership: RustOwnership,
-        syntax: &SyntaxNode,
     ) -> Result<(), RustAuthorityError> {
-        let extension = self.base_extension(ownership, syntax, declaration.expanded)?;
+        let extension = self.base_extension(ownership, declaration)?;
         let mut fact = SemanticFact::new(
             entity_kind(declaration.kind)?,
             self.name_of(declaration)?,
@@ -951,11 +1258,44 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         .with_visibility(self.declaration_visibility(declaration))
         .typed(lowered.record)
         .with_extension(EmissionExtension::Rust(extension));
+        if let Some(discriminator) = self.expanded_impl_discriminator(declaration) {
+            fact = fact.with_identity_discriminator(discriminator);
+        }
         for target in lowered.children {
             fact = fact.type_child(target, None, 0);
         }
         let ordinal = push(self.facts, fact)?;
         self.register(ordinal, index, declaration, extension)
+    }
+
+    /// Mints the identity discriminator of one macro-expanded implementation
+    /// from the expansion's own trait and self-type spelling. A macro that
+    /// stamps several impl blocks for one self type projects them all onto the
+    /// single invocation span, so the written projections cannot separate
+    /// them: the whole-item span cannot frame a per-impl trait reference, and
+    /// member names have no same-source spelling at a shared call-site range.
+    /// The expansion buffer is the authority's own projected Rust syntax for
+    /// those impls, so the header it spells is authority truth; only its
+    /// domain-separated digest enters identity, keeping every written impl's
+    /// variant byte-identical.
+    fn expanded_impl_discriminator(&self, declaration: &Decl<'source>) -> Option<[u8; 16]> {
+        if !declaration.expanded {
+            return None;
+        }
+        let item = ast::Impl::cast(declaration.syntax.clone())?;
+        let trait_spelling = item
+            .trait_()
+            .map(|trait_ty| trait_ty.syntax().to_string())
+            .unwrap_or_else(|| "inherent".to_owned());
+        let self_spelling = item.self_ty()?.syntax().to_string();
+        let mut hash = Sha256::new();
+        hash.update(b"compiler.rust.expanded-impl.v1\0");
+        hash.update(trait_spelling.as_bytes());
+        hash.update([0]);
+        hash.update(self_spelling.as_bytes());
+        let mut discriminator = [0_u8; 16];
+        discriminator.copy_from_slice(&hash.finalize()[..16]);
+        Some(discriminator)
     }
 
     /// Builds one declaration's base Rust extension row: the ownership cell,
@@ -969,21 +1309,29 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     fn base_extension(
         &mut self,
         ownership: RustOwnership,
-        syntax: &SyntaxNode,
-        expanded: bool,
+        declaration: &Decl<'source>,
     ) -> Result<RustFacts, RustAuthorityError> {
-        if expanded {
+        if declaration.expanded {
             return self.empty_extension(ownership);
         }
+        let syntax = &declaration.syntax;
         let lifetimes = self.lifetime_atoms(syntax)?;
-        let where_clauses = self
-            .where_rows(syntax)?
-            .unwrap_or(coordinate(self.facts.type_parameter_len)?);
+        let free_start = coordinate(self.facts.free_predicate_len)?;
+        let (where_clauses, const_defaults) =
+            match self.where_rows(&declaration.definition, syntax)? {
+                Some((start, list)) => (TypeParameterListId::new(start), list),
+                None => (
+                    TypeParameterListId::new(coordinate(self.facts.type_parameter_len)?),
+                    AtomListId::new(0),
+                ),
+            };
         Ok(RustFacts {
             ownership,
             lifetimes,
-            where_clauses: TypeParameterListId::new(where_clauses),
+            where_clauses,
             macros: AtomListId::new(0),
+            const_defaults,
+            free_predicates: backend_semantic::ir::FreePredicateListId::new(free_start),
         })
     }
 
@@ -999,6 +1347,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             lifetimes: empty_atoms,
             where_clauses: TypeParameterListId::new(coordinate(self.facts.type_parameter_len)?),
             macros: empty_atoms,
+            const_defaults: empty_atoms,
+            free_predicates: backend_semantic::ir::FreePredicateListId::new(coordinate(
+                self.facts.free_predicate_len,
+            )?),
         })
     }
 
@@ -1023,181 +1375,507 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.facts.intern_atom_list(&atoms).map_err(|_| admission())
     }
 
-    /// Pushes exactly one pooled row per written generic parameter. Its bound
-    /// run preserves `T: A + B` and lifetime bounds in source order; a const
-    /// parameter remains a value parameter with its own declared type.
-    fn where_rows(&mut self, syntax: &SyntaxNode) -> Result<Option<u32>, RustAuthorityError> {
+    /// Pushes exactly one pooled row per HIR generic parameter, in written
+    /// order, and preserves each written bound run. HIR gives the ordered
+    /// parameter set and kinds (including `Self` and argument `impl Trait`,
+    /// which have no written row and are skipped); the exact `T: A + B`
+    /// spelling and order come from the mapped written `type_bound_list`.
+    /// Inline bounds come first, then every matching `where` predicate in
+    /// source order, merged into that parameter's single run so a bound is
+    /// never duplicated onto a second parameter row. A lifetime parameter
+    /// keeps its lifetime bounds, a const parameter keeps its declared type,
+    /// and a written parameter with no HIR counterpart (or a kind mismatch) is
+    /// an exact unsupported terminal rather than a shifted or invented row.
+    /// A `where` predicate whose subject is not a declared parameter lowers
+    /// into the free-predicate lane instead of erasing the predicate.
+    /// Const-generic value defaults are preserved as their exact written
+    /// expression spellings in a suffix atom list paired with the trailing
+    /// const parameters; because Rust makes every declared default trailing
+    /// (E0128), no const parameter without a default can follow one that has a
+    /// default, and no empty atom is ever emitted.
+    fn where_rows(
+        &mut self,
+        definition: &RustDefinition,
+        syntax: &SyntaxNode,
+    ) -> Result<Option<(u32, AtomListId)>, RustAuthorityError> {
         let start = coordinate(self.facts.type_parameter_len)?;
+        let generics = ast::AnyHasGenericParams::cast(syntax.clone());
+        let written: Vec<ast::GenericParam> = generics
+            .as_ref()
+            .and_then(|generics| generics.generic_param_list())
+            .map(|list| list.generic_params().collect())
+            .unwrap_or_default();
+        let mut written = written.into_iter();
         let mut parameters_written = false;
-        let Some(generics) = ast::AnyHasGenericParams::cast(syntax.clone()) else {
-            return Ok(None);
-        };
-        if let Some(list) = generics.generic_param_list() {
-            for generic in list.generic_params() {
-                match generic {
-                    ast::GenericParam::TypeParam(param) => {
-                        let Some(name) = param.name() else {
-                            continue;
-                        };
-                        let name = self.bytes_of_node(name.syntax())?;
-                        let bounds = param
-                            .type_bound_list()
-                            .map(|bounds| bounds.bounds().collect::<Vec<_>>())
-                            .unwrap_or_default();
-                        // A default must bind the declaration-scoped
-                        // parameter it augments. The present pool has no
-                        // scoped parameter reference, so accepting even a
-                        // resolvable default would claim a relationship it
-                        // cannot encode exactly.
-                        if param.default_type().is_some() {
-                            return Err(unsupported_generic());
-                        }
-                        let mut staged_bounds = Vec::with_capacity(bounds.len());
-                        for bound in bounds {
-                            if let Some(lifetime) = bound.lifetime() {
-                                staged_bounds.push(
-                                    backend_semantic::ir::ExtensionTypeParameterBound::Lifetime(
-                                        self.bytes_of_node(lifetime.syntax())?,
-                                    ),
-                                );
-                            } else if let Some(bound_ty) = bound.ty() {
-                                staged_bounds.push(backend_semantic::ir::ExtensionTypeParameterBound::Type(
-                                    self.generic_type_bound_target(&bound_ty)?,
-                                ));
-                            } else {
-                                return Err(unsupported_generic());
-                            }
-                        }
-                        self.facts
-                            .push_type_parameter_with_bounds(
-                                name,
-                                &staged_bounds,
-                                None,
-                                backend_semantic::ir::ExtensionTypeParameterKind::Type {
-                                    inference: backend_semantic::ir::TypeParameterInference::Ordinary,
-                                },
-                                backend_semantic::ir::Variance::Invariant,
-                                backend_semantic::ir::TypeParameterRequirements::none(),
-                            )
-                            .map_err(|_| admission())?;
-                        parameters_written = true;
-                    }
-                    ast::GenericParam::ConstParam(param) => {
-                        let Some(name) = param.name() else {
-                            continue;
-                        };
-                        if self.bytes_of_node(param.syntax())?.contains(&b'=') {
-                            // A const value default is not a type default. Do
-                            // not write it through `Option<TypeId>`; the next
-                            // scoped-generic transaction gives it a distinct
-                            // value-expression fact.
-                            return Err(unsupported_generic());
-                        }
-                        let Some(value_type) = param.ty() else {
-                            continue;
-                        };
-                        let spelling = self.bytes_of_node(value_type.syntax())?;
-                        let value_type = self
-                            .host(
-                                Lowered::leaf(unknown_record(
-                                    TypeReason::NoIrRepresentation,
-                                    Some(spelling),
-                                )),
-                                Some(&value_type),
-                            )?
-                            .ok_or_else(admission)?;
-                        self.facts
-                            .push_type_parameter_with_bounds(
-                                self.bytes_of_node(name.syntax())?,
-                                &[],
-                                None,
-                                backend_semantic::ir::ExtensionTypeParameterKind::ConstValue { value_type },
-                                backend_semantic::ir::Variance::Invariant,
-                                backend_semantic::ir::TypeParameterRequirements::none(),
-                            )
-                            .map_err(|_| admission())?;
-                        parameters_written = true;
-                    }
-                    ast::GenericParam::LifetimeParam(param) => {
-                        let Some(lifetime) = param.lifetime() else {
-                            continue;
-                        };
-                        let bounds = param
-                            .type_bound_list()
-                            .map(|bounds| bounds.bounds().collect::<Vec<_>>())
-                            .unwrap_or_default();
-                        let mut staged_bounds = Vec::with_capacity(bounds.len());
-                        for bound in bounds {
-                            let Some(bound_lifetime) = bound.lifetime() else {
-                                return Err(unsupported_generic());
-                            };
-                            staged_bounds.push(backend_semantic::ir::ExtensionTypeParameterBound::Lifetime(
-                                self.bytes_of_node(bound_lifetime.syntax())?,
-                            ));
-                        }
-                        self.facts
-                            .push_type_parameter_with_bounds(
-                                self.bytes_of_node(lifetime.syntax())?,
-                                &staged_bounds,
-                                None,
-                                backend_semantic::ir::ExtensionTypeParameterKind::Lifetime,
-                                backend_semantic::ir::Variance::Invariant,
-                                backend_semantic::ir::TypeParameterRequirements::none(),
-                            )
-                            .map_err(|_| admission())?;
-                        parameters_written = true;
-                    }
+        // Const-generic value defaults are preserved as their exact written
+        // expression spellings, in written order, with a const parameter that
+        // declares no default contributing nothing. Rust requires every
+        // generic parameter with a default to be trailing (E0128), so the
+        // declared const defaults are always a suffix of the const parameter
+        // sequence; a consumer pairs this list with that suffix. A parameter
+        // without a default is never given an empty atom, which the fragment
+        // wire format rejects as invalid.
+        let mut const_atoms: Vec<Option<u32>> = Vec::new();
+        // Stage every `where` predicate bound in source order, keyed by its
+        // written subject spelling, before pairing parameters. A predicate
+        // augments a declared parameter when its subject is a simple
+        // parameter path (`T`, `'a`); any other subject (`Vec<T>`,
+        // `T::Item`, `Self`, and every higher-ranked `for<'a> &'a L: Into`
+        // predicate, whose binder names no declaration-scoped row) stages
+        // for the free-predicate lane with its exact written subject and
+        // bound.
+        let mut where_bounds: Vec<WhereBound<'source>> = Vec::new();
+        if let Some(where_clause) = generics
+            .as_ref()
+            .and_then(|generics| generics.where_clause())
+        {
+            for predicate in where_clause.predicates() {
+                let (subject, ty) = if let Some(lifetime) = predicate.lifetime() {
+                    (self.bytes_of_node(lifetime.syntax())?, None)
+                } else if let Some(ty) = predicate.ty() {
+                    let subject = match self.simple_parameter_subject(&ty) {
+                        Some(subject) => subject,
+                        None => self.bytes_of_node(ty.syntax())?,
+                    };
+                    (subject, Some(ty))
+                } else {
+                    return Err(unsupported_generic());
+                };
+                let Some(bounds) = predicate.type_bound_list() else {
+                    return Err(unsupported_generic());
+                };
+                let bounds: Vec<ast::TypeBound> = bounds.bounds().collect();
+                if bounds.is_empty() {
+                    return Err(unsupported_generic());
+                }
+                for bound in bounds {
+                    where_bounds.push(WhereBound {
+                        subject,
+                        ty: ty.clone(),
+                        bound,
+                        matched: false,
+                    });
                 }
             }
         }
-        if generics
-            .where_clause()
-            .is_some_and(|where_clause| where_clause.predicates().next().is_some())
-        {
-            // A `where` predicate augments a declaration-site parameter; it
-            // is never a second generic declaration. Until the scoped
-            // transaction can merge both ordered runs (and reserve forward
-            // roots), retain an exact unsupported terminal rather than
-            // duplicate `T` or erase a predicate.
+        // HIR lists lifetimes before type/const parameters regardless of
+        // written order, and positional pairing would silently misalign
+        // `fn f<T, 'a>`. Pair in written order by kind and name instead:
+        // implicit HIR parameters (`Self`, `impl Trait` arguments) have no
+        // written row and never pair.
+        let mut hir: Vec<ra_ap_hir::GenericParam> = Vec::new();
+        for parameter in definition.generic_params(self.database) {
+            if matches!(
+                parameter,
+                ra_ap_hir::GenericParam::TypeParam(type_param)
+                    if type_param.is_implicit(self.database)
+            ) {
+                continue;
+            }
+            hir.push(parameter);
+        }
+        for written in written.by_ref() {
+            // Written bytes of the parameter name for HIR pairing.
+            // Lifetimes keep their leading quote (`'a`); raw identifiers
+            // shed `r#` to match HIR's unescaped symbol text.
+            let (kind, spelled) = match &written {
+                ast::GenericParam::TypeParam(param) => {
+                    let Some(name) = param.name() else {
+                        continue;
+                    };
+                    (0_u8, self.bytes_of_node(name.syntax())?)
+                }
+                ast::GenericParam::ConstParam(param) => {
+                    let Some(name) = param.name() else {
+                        continue;
+                    };
+                    (1_u8, self.bytes_of_node(name.syntax())?)
+                }
+                ast::GenericParam::LifetimeParam(param) => {
+                    let Some(lifetime) = param.lifetime() else {
+                        continue;
+                    };
+                    (2_u8, self.bytes_of_node(lifetime.syntax())?)
+                }
+            };
+            let spelled = spelled.strip_prefix(b"r#").unwrap_or(spelled);
+            let Some(position) = hir.iter().position(|parameter| {
+                let (hir_kind, hir_name) = match parameter {
+                    ra_ap_hir::GenericParam::TypeParam(_) => (0_u8, parameter.name(self.database)),
+                    ra_ap_hir::GenericParam::ConstParam(_) => (1_u8, parameter.name(self.database)),
+                    ra_ap_hir::GenericParam::LifetimeParam(_) => {
+                        (2_u8, parameter.name(self.database))
+                    }
+                };
+                hir_kind == kind && hir_name.as_str().as_bytes() == spelled
+            }) else {
+                return Err(unsupported_generic());
+            };
+            let parameter = hir.remove(position);
+            match (parameter, written) {
+                (
+                    ra_ap_hir::GenericParam::TypeParam(type_param),
+                    ast::GenericParam::TypeParam(param),
+                ) => {
+                    let Some(name) = param.name() else {
+                        continue;
+                    };
+                    let name = self.bytes_of_node(name.syntax())?;
+                    let bounds = param
+                        .type_bound_list()
+                        .map(|bounds| bounds.bounds().collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    // A default type binds the declaration-scoped parameter
+                    // it augments. Lower it through the same target path as
+                    // any other written type so local nominals stay ordinal
+                    // references and foreign spellings stay unresolved
+                    // externals; a default the lane cannot encode is an
+                    // exact terminal, never an erased None.
+                    let default = match (param.default_type(), type_param.default(self.database)) {
+                        (None, None) => None,
+                        (Some(written), semantic) => {
+                            Some(self.default_type_target(&written, semantic.as_ref())?)
+                        }
+                        // A HIR default with no written row cannot be placed
+                        // without inventing source evidence.
+                        (None, Some(_)) => return Err(unsupported_generic()),
+                    };
+                    let mut staged_bounds = Vec::with_capacity(bounds.len());
+                    for bound in &bounds {
+                        staged_bounds.push(self.staged_bound(bound)?);
+                    }
+                    for where_bound in where_bounds.iter_mut() {
+                        if where_bound.subject == name {
+                            let staged = self.staged_bound(&where_bound.bound)?;
+                            staged_bounds.push(staged);
+                            where_bound.matched = true;
+                        }
+                    }
+                    self.facts
+                        .push_type_parameter_with_bounds(
+                            name,
+                            &staged_bounds,
+                            default,
+                            backend_semantic::ir::ExtensionTypeParameterKind::Type {
+                                inference: backend_semantic::ir::TypeParameterInference::Ordinary,
+                            },
+                            backend_semantic::ir::Variance::Invariant,
+                            backend_semantic::ir::TypeParameterRequirements::none(),
+                        )
+                        .map_err(|_| admission())?;
+                    parameters_written = true;
+                }
+                (ra_ap_hir::GenericParam::ConstParam(_), ast::GenericParam::ConstParam(param)) => {
+                    let Some(name) = param.name() else {
+                        continue;
+                    };
+                    // A const value default is preserved as its exact written
+                    // expression spelling; a parameter without one contributes
+                    // no atom to the defaults suffix.
+                    let default_atom = match param.default_val() {
+                        Some(value) => {
+                            let spelling = self.bytes_of_node(value.syntax())?;
+                            Some(self.facts.intern_atom(spelling).map_err(|_| admission())?)
+                        }
+                        None => None,
+                    };
+                    let Some(value_type) = param.ty() else {
+                        continue;
+                    };
+                    let spelling = self.bytes_of_node(value_type.syntax())?;
+                    let value_type = self
+                        .host(
+                            Lowered::leaf(unknown_record(
+                                TypeReason::NoIrRepresentation,
+                                Some(spelling),
+                            )),
+                            Some(&value_type),
+                        )?
+                        .ok_or_else(admission)?;
+                    self.facts
+                        .push_type_parameter_with_bounds(
+                            self.bytes_of_node(name.syntax())?,
+                            &[],
+                            None,
+                            backend_semantic::ir::ExtensionTypeParameterKind::ConstValue {
+                                value_type,
+                            },
+                            backend_semantic::ir::Variance::Invariant,
+                            backend_semantic::ir::TypeParameterRequirements::none(),
+                        )
+                        .map_err(|_| admission())?;
+                    const_atoms.push(default_atom);
+                    parameters_written = true;
+                }
+                (
+                    ra_ap_hir::GenericParam::LifetimeParam(_),
+                    ast::GenericParam::LifetimeParam(param),
+                ) => {
+                    let Some(lifetime) = param.lifetime() else {
+                        continue;
+                    };
+                    let lifetime_bytes = self.bytes_of_node(lifetime.syntax())?;
+                    let bounds = param
+                        .type_bound_list()
+                        .map(|bounds| bounds.bounds().collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    let mut staged_bounds = Vec::with_capacity(bounds.len());
+                    for bound in &bounds {
+                        let Some(bound_lifetime) = bound.lifetime() else {
+                            return Err(unsupported_generic());
+                        };
+                        staged_bounds.push(
+                            backend_semantic::ir::ExtensionTypeParameterBound::Lifetime(
+                                self.bytes_of_node(bound_lifetime.syntax())?,
+                            ),
+                        );
+                    }
+                    for where_bound in where_bounds.iter_mut() {
+                        if where_bound.subject == lifetime_bytes {
+                            let Some(bound_lifetime) = where_bound.bound.lifetime() else {
+                                return Err(unsupported_generic());
+                            };
+                            let staged =
+                                backend_semantic::ir::ExtensionTypeParameterBound::Lifetime(
+                                    self.bytes_of_node(bound_lifetime.syntax())?,
+                                );
+                            staged_bounds.push(staged);
+                            where_bound.matched = true;
+                        }
+                    }
+                    self.facts
+                        .push_type_parameter_with_bounds(
+                            lifetime_bytes,
+                            &staged_bounds,
+                            None,
+                            backend_semantic::ir::ExtensionTypeParameterKind::Lifetime,
+                            backend_semantic::ir::Variance::Invariant,
+                            backend_semantic::ir::TypeParameterRequirements::none(),
+                        )
+                        .map_err(|_| admission())?;
+                    parameters_written = true;
+                }
+                // A written parameter whose HIR kind disagrees, or a written
+                // parameter the HIR does not model, cannot be placed without
+                // inventing a declaration-scoped binding.
+                _ => return Err(unsupported_generic()),
+            }
+        }
+        if !hir.is_empty() {
+            // A modeled HIR parameter with no written row cannot be placed
+            // without inventing a declaration-scoped binding.
             return Err(unsupported_generic());
         }
-        Ok(parameters_written.then_some(start))
+        for where_bound in where_bounds.iter().filter(|bound| !bound.matched) {
+            // A `where` predicate whose subject is not a declared parameter
+            // (`Vec<T>: Clone`, `T::Item: Clone`, `Self: Sized`) lowers its
+            // subject type and ordered bound into the free-predicate lane. A
+            // lifetime subject has no subject type row and stays an exact
+            // terminal rather than being erased.
+            let Some(ty) = where_bound.ty.clone() else {
+                return Err(unsupported_generic());
+            };
+            let subject = self.free_subject_target(&ty)?;
+            let bound = self.staged_bound(&where_bound.bound)?;
+            self.facts
+                .push_free_predicate(subject, &[bound])
+                .map_err(|_| admission())?;
+        }
+        // E0128 makes every declared default trailing, so a const parameter
+        // without a default may never follow one that declares a default. A
+        // producer that violates the invariant cannot be paired with the
+        // suffix list and stays an exact terminal rather than shifting it.
+        if let Some(first) = const_atoms.iter().position(Option::is_some)
+            && const_atoms[first..].iter().any(Option::is_none)
+        {
+            return Err(unsupported_generic());
+        }
+        let const_atoms: Vec<u32> = const_atoms.into_iter().flatten().collect();
+        let const_defaults = self
+            .facts
+            .intern_atom_list(&const_atoms)
+            .map_err(|_| admission())?;
+        Ok(parameters_written.then_some((start, const_defaults)))
     }
 
-    /// Resolves one written trait bound to an already committed local fact.
-    /// The scoped generic transaction owns both forward and foreign binding;
-    /// this provisional path refuses either unresolved case instead of
-    /// inventing an external target.
+    /// Borrows the written subject of one `where` predicate that augments a
+    /// declared parameter: a path with a single, argument-free segment. A
+    /// qualified path (`T::Item`), an applied type (`Vec<T>`), a bare `Self`,
+    /// or any non-path type has no declared-parameter row and returns `None`.
+    fn simple_parameter_subject(&self, ty: &ast::Type) -> Option<&'source [u8]> {
+        let ast::Type::PathType(path_type) = ty else {
+            return None;
+        };
+        let path = path_type.path()?;
+        let mut segments = path.segments();
+        let segment = segments.next()?;
+        if segments.next().is_some() || segment.generic_arg_list().is_some() {
+            return None;
+        }
+        let name_ref = segment.name_ref()?;
+        let span = self.authority.span(name_ref.syntax()).ok()?;
+        self.bytes_of(span).ok()
+    }
+
+    /// Lowers one free-predicate subject to its hosted staged coordinate. A
+    /// bare `Self` keeps its `SelfType` leaf, a simple path keeps its exact
+    /// spelling as a `TypeVar` row, and any other written subject keeps its
+    /// full spelling as an honest `NoIrRepresentation` unknown rather than a
+    /// fabricated application shape.
+    fn free_subject_target(&mut self, ty: &ast::Type) -> Result<u32, RustAuthorityError> {
+        if let ast::Type::PathType(path_type) = ty
+            && let Some(path) = path_type.path()
+            && path.qualifier().is_none()
+        {
+            let mut segments = path.segments();
+            if let Some(segment) = segments.next()
+                && segments.next().is_none()
+                && segment.generic_arg_list().is_none()
+                && let Some(name_ref) = segment.name_ref()
+                && let Ok(spelling) = self.bytes_of_node(name_ref.syntax())
+                && spelling == b"Self"
+            {
+                return self
+                    .host(
+                        Lowered::leaf(SemanticTypeRecord::leaf(SemanticTypeTag::SelfType)),
+                        None,
+                    )?
+                    .ok_or_else(admission);
+            }
+        }
+        if let Some(spelling) = self.simple_parameter_subject(ty) {
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
+            record.text = Some(spelling);
+            return self
+                .host(Lowered::leaf(record), None)?
+                .ok_or_else(admission);
+        }
+        let spelling = self.bytes_of_node(ty.syntax())?;
+        self.host(
+            Lowered::leaf(unknown_record(
+                TypeReason::NoIrRepresentation,
+                Some(spelling),
+            )),
+            None,
+        )?
+        .ok_or_else(admission)
+    }
+
+    /// Stages one written bound: a lifetime bound keeps its exact spelling, and
+    /// a trait bound resolves through the same committed/foreign/unresolved
+    /// lattice as an inline bound.
+    fn staged_bound(
+        &mut self,
+        bound: &ast::TypeBound,
+    ) -> Result<backend_semantic::ir::ExtensionTypeParameterBound<'source>, RustAuthorityError>
+    {
+        if let Some(lifetime) = bound.lifetime() {
+            return Ok(backend_semantic::ir::ExtensionTypeParameterBound::Lifetime(
+                self.bytes_of_node(lifetime.syntax())?,
+            ));
+        }
+        if let Some(bound_ty) = bound.ty() {
+            return Ok(backend_semantic::ir::ExtensionTypeParameterBound::Type(
+                self.generic_type_bound_target(&bound_ty)?,
+            ));
+        }
+        Err(unsupported_generic())
+    }
+
+    /// Resolves one written trait bound. A committed local trait keeps its lane
+    /// ordinal; a foreign trait is named by the caller as an unresolved
+    /// external row; a local trait with no reserved lane root stays an exact
+    /// terminal instead of being invented as an external symbol.
     fn trait_bound_constraint(
         &mut self,
         bound_ty: &ast::Type,
-    ) -> Result<Option<u32>, RustAuthorityError> {
+    ) -> Result<TraitBoundTarget, RustAuthorityError> {
         let ast::Type::PathType(path_type) = bound_ty else {
-            return Ok(None);
+            return Ok(TraitBoundTarget::Unresolved);
         };
         let Some(path) = path_type.path() else {
-            return Ok(None);
+            return Ok(TraitBoundTarget::Unresolved);
         };
         let Some((ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Trait(trait_)), _)) =
             self.authority.resolve_path(&path)
         else {
-            return Ok(None);
+            return Ok(TraitBoundTarget::Unresolved);
         };
         if let Some(ordinal) = self.ordinal_of_trait(trait_) {
-            return Ok(Some(ordinal));
+            return Ok(TraitBoundTarget::Committed(ordinal));
         }
-        // A local trait that has not been committed is a forward root, not
-        // an external symbol. The generic transaction must reserve roots
-        // before it can bind this coordinate.
-        Err(unsupported_generic())
+        // Every lane-admissible local trait is a reserved type root before any
+        // bound resolves, so a local lookup failure means the trait has no
+        // lane row at all (e.g. declared in a function body). That cannot be
+        // downgraded to an external symbol, so it stays an exact terminal.
+        if self
+            .authority
+            .definition_origin(trait_, SemanticKind::Trait)
+            .is_local()
+        {
+            return Err(unsupported_generic());
+        }
+        Ok(TraitBoundTarget::Foreign)
     }
 
-    /// Preserves every non-lifetime bound. A form the HIR does not expose as
-    /// `Type` retains its exact written spelling as an explicit unknown;
-    /// unresolved path targets are rejected by `trait_bound_constraint`.
+    /// Lowers one default type to its scoped row. A bare path naming a
+    /// committed lane-local type keeps that type's fact ordinal, so the
+    /// default binds the declaration it augments; every other form lowers
+    /// through the shared target path (foreign spellings stay unresolved
+    /// externals, never fabricated nominals). When the HIR lends no semantic
+    /// type for an otherwise-written default (rust-analyzer does not model
+    /// every alias generic default), the written spelling is preserved as an
+    /// honest `NoIrRepresentation` unknown instead of rejecting the whole
+    /// declaration. A default the lane cannot even borrow stays an exact
+    /// terminal.
+    fn default_type_target(
+        &mut self,
+        written: &ast::Type,
+        semantic: Option<&ra_ap_hir::Type<'_>>,
+    ) -> Result<u32, RustAuthorityError> {
+        if let ast::Type::PathType(path_type) = written
+            && let Some(path) = path_type.path()
+            && path.qualifier().is_none()
+            && path
+                .segments()
+                .all(|segment| segment.generic_arg_list().is_none())
+            && let Some((ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Adt(adt)), _)) =
+                self.authority.resolve_path(&path)
+            && let Some(ordinal) = self.ordinal_of_adt(adt)
+        {
+            return Ok(ordinal);
+        }
+        if let Some(semantic) = semantic {
+            return self
+                .lower_target(semantic, Some(written.clone()), MAX_TYPE_DEPTH - 1)?
+                .ok_or_else(unsupported_generic);
+        }
+        let spelling = self.bytes_of_node(written.syntax())?;
+        self.host(
+            Lowered::leaf(unknown_record(
+                TypeReason::NoIrRepresentation,
+                Some(spelling),
+            )),
+            Some(written),
+        )?
+        .ok_or_else(unsupported_generic)
+    }
+
+    /// Preserves every non-lifetime bound. A foreign trait keeps its exact
+    /// written spelling as an unresolved external row (never a fabricated
+    /// nominal); a bound form the HIR does not expose as a trait keeps its
+    /// exact written spelling as an explicit `NoIrRepresentation` unknown.
     fn generic_type_bound_target(&mut self, bound: &ast::Type) -> Result<u32, RustAuthorityError> {
-        if let Some(target) = self.trait_bound_constraint(bound)? {
-            return Ok(target);
+        match self.trait_bound_constraint(bound)? {
+            TraitBoundTarget::Committed(ordinal) => return Ok(ordinal),
+            TraitBoundTarget::Foreign => {
+                let spelling = self.bytes_of_node(bound.syntax())?;
+                let record = self.unresolved_record_with(Some(spelling));
+                return self
+                    .host(Lowered::leaf(record), Some(bound))?
+                    .ok_or_else(unsupported_generic);
+            }
+            TraitBoundTarget::Unresolved => {}
         }
         let spelling = self.bytes_of_node(bound.syntax())?;
         self.host(
@@ -1211,7 +1889,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     }
 
     /// Registers one pushed declaration row, its HIR definition ordinal, and
-    /// its lane ordinal for the later phases.
+    /// its lane ordinal for the later phases. The authority's whole-item span
+    /// is bound here as the row's provenance span: it is the exact basis every
+    /// later owner-relative occurrence span is measured against, so the
+    /// shared containment law holds by construction.
     fn register(
         &mut self,
         ordinal: usize,
@@ -1222,6 +1903,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         let Some(ordinal) = u32::try_from(ordinal).ok() else {
             return Ok(());
         };
+        let span = StagedSourceSpan::new(declaration.span.start, declaration.span.end)
+            .ok_or_else(admission)?;
+        self.facts
+            .attach_source_span(ordinal, span)
+            .map_err(|fault| parentage_fault(ordinal, declaration.name.len(), fault))?;
         self.rows.push(Row {
             ordinal,
             name: self.name_of(declaration)?,
@@ -1293,6 +1979,59 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         })
     }
 
+    /// Picks the innermost strictly-containing pushed row for `span`,
+    /// excluding the row itself. Siblings from macro expansion may share a
+    /// span with their site; equal spans never parent each other, so such
+    /// siblings resolve to their shared outer container (or root) instead
+    /// of an arbitrary sibling. A row with no strictly-containing row is a
+    /// parentage root.
+    fn enclosing_row(&self, span: ByteSpan, ordinal: u32) -> Option<u32> {
+        let mut low = 0;
+        let mut high = self.owner_order.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let row = &self.rows[self.owner_order[middle]];
+            if row.span.start <= span.start {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        self.owner_order[..low].iter().rev().find_map(|index| {
+            let row = &self.rows[*index];
+            (row.ordinal != ordinal
+                && span.end <= row.span.end
+                && (row.span.start < span.start || span.end < row.span.end))
+                .then_some(row.ordinal)
+        })
+    }
+
+    /// Binds lexical parentage from declaration spans after every row
+    /// exists. Only relationships whose owner survived emission are bound:
+    /// a row with no strictly-containing row is an explicit parentage
+    /// root, never a fabricated child. Signature carriers are bound by
+    /// their emitters; anonymous hosted rows keep their honest unavailable
+    /// state until a use-site owner exists.
+    fn emit_parentage(&mut self) -> Result<(), RustAuthorityError> {
+        for index in 0..self.rows.len() {
+            let (ordinal, span, name_len) = {
+                let row = &self.rows[index];
+                (row.ordinal, row.span, row.name.len())
+            };
+            match self.enclosing_row(span, ordinal) {
+                Some(parent) => self
+                    .facts
+                    .attach_parent(ordinal, parent)
+                    .map_err(|fault| parentage_fault(ordinal, name_len, fault))?,
+                None => self
+                    .facts
+                    .mark_parentage_root(ordinal)
+                    .map_err(|fault| parentage_fault(ordinal, name_len, fault))?,
+            }
+        }
+        Ok(())
+    }
+
     /// Builds the source-ordered declaration index once, after all declaration
     /// rows exist. Rows are nested or disjoint in the syntax tree; reverse
     /// search therefore selects the innermost containing declaration while
@@ -1335,13 +2074,22 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             if let Some(NominalRef::Local(target)) = lowered.record.nominal {
                 return Ok(Some(target.raw));
             }
-            if lowered.record.tag == SemanticTypeTag::Unknown
-                && let Some(text) = lowered.record.text
-            {
+            let foreign = if lowered.record.tag == SemanticTypeTag::Unknown {
+                lowered.record.text
+            } else {
+                None
+            };
+            if let Some(text) = foreign {
                 for (known, ordinal) in &self.foreign_rows {
                     if *known == text {
                         return Ok(Some(*ordinal));
                     }
+                }
+                // The dedup table is a bounded lane: a distinct foreign
+                // spelling beyond its cap must reject exactly, never silently
+                // mint an unbounded duplicate row.
+                if self.foreign_rows.len() >= MAX_DEDUPED_FOREIGN_ROWS {
+                    return Err(admission());
                 }
             }
             let anchor_row = coordinate(self.facts.len())?;
@@ -1349,10 +2097,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .facts
                 .intern_reserved_anchor_type_row(anchor_row, lowered.record)
                 .map_err(|_| admission())?;
-            if lowered.record.tag == SemanticTypeTag::Unknown
-                && let Some(text) = lowered.record.text
-                && self.foreign_rows.len() < MAX_DEDUPED_FOREIGN_ROWS
-            {
+            if let Some(text) = foreign {
                 self.foreign_rows.push((text, row));
             }
             return Ok(Some(row));
@@ -1363,6 +2108,18 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 None,
             );
         };
+        // A compound spelling lowers to the same carrier every time it is
+        // written, so a repeat occurrence must reuse the first carrier
+        // ordinal. Emitting one row per occurrence minted byte-identical
+        // twins that the image build honestly rejected as a duplicate.
+        for (known, ordinal) in &self.carrier_rows {
+            if *known == name {
+                return Ok(Some(*ordinal));
+            }
+        }
+        if self.carrier_rows.len() >= MAX_DEDUPED_CARRIER_ROWS {
+            return Err(admission());
+        }
         let extension = self.empty_extension(RustOwnership::Value)?;
         let mut fact = SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT)
             .typed(lowered.record)
@@ -1371,6 +2128,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             fact = fact.type_child(target, None, 0);
         }
         let ordinal = coordinate(push(self.facts, fact)?)?;
+        self.carrier_rows.push((name, ordinal));
         Ok(Some(ordinal))
     }
 
@@ -1691,12 +2449,15 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
     /// Lowers one `impl Trait` position over its local bound rows; any bound
     /// resolving outside the fragment folds to the written unresolved row.
+    /// `impl Trait` spells no path, so the shared leaf-name reader returns
+    /// `None` for it; the whole written bound run is borrowed instead,
+    /// mirroring the declaration-site foreign bound's exact written text.
     fn lower_impl_trait(
         &mut self,
         bounds: Vec<ra_ap_hir::Trait>,
         anchor: Option<&ast::Type>,
     ) -> Result<Lowered<'source>, RustAuthorityError> {
-        let written = self.written_type_name(anchor);
+        let written = anchor.and_then(|anchor| self.bytes_of_node(anchor.syntax()).ok());
         if bounds.len() > MAX_COMPOUND_CHILDREN {
             return Ok(Lowered::leaf(match written {
                 Some(text) => unknown_record(TypeReason::NoIrRepresentation, Some(text)),
@@ -1841,6 +2602,15 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         .map_err(|_| admission())?,
                 )
                 .map_err(|_| admission())?;
+            self.facts
+                .set_free_predicate_range(
+                    ordinal,
+                    &EmissionExtension::Rust(updated),
+                    self.facts
+                        .captured_free_predicate_range(ordinal)
+                        .map_err(|_| admission())?,
+                )
+                .map_err(|_| admission())?;
         }
         Ok(())
     }
@@ -1874,6 +2644,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 ReferenceKind::MethodCall,
                 ResolvedTarget::Definition(definition),
                 confidence,
+                None,
             )?;
         }
         let accesses: Vec<RustFieldAccess> = authority.field_accesses().collect();
@@ -1886,20 +2657,44 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let target = access
                 .target
                 .map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
-            self.emit_one_occurrence(span, ReferenceKind::FieldAccess, target, confidence)?;
+            self.emit_one_occurrence(span, ReferenceKind::FieldAccess, target, confidence, None)?;
         }
         let paths: Vec<_> = authority.top_level_paths().collect();
         for path in &paths {
-            let Some((resolution, _)) = authority.resolve_path(path) else {
-                continue;
+            // A path rust-analyzer could not resolve keeps its exact written
+            // spelling as a self-describing foreign key instead of being
+            // dropped: the reference site is authority-proven even where the
+            // target is not.
+            let resolved = authority
+                .resolve_path(path)
+                .map(|(resolution, _)| resolution);
+            // The occurrence site is the written name extent — the final
+            // path segment's identifier — never the whole qualified or
+            // generic path, so the committed site's source bytes are the
+            // identifier a reader searched for. The key text stays the whole
+            // written path, which is the self-describing foreign spelling.
+            let full = authority.span(path.syntax())?;
+            let span = path
+                .segments()
+                .last()
+                .and_then(|segment| segment.name_ref())
+                .and_then(|name| authority.span(name.syntax()).ok())
+                .unwrap_or(full);
+            let written = self.bytes_of(full)?;
+            let kind = match &resolved {
+                Some(resolution) => reference_kind(path, resolution),
+                None => unresolved_reference_kind(path),
             };
-            let span = authority.span(path.syntax())?;
-            let kind = reference_kind(path, &resolution);
+            let confidence = match resolved {
+                Some(_) => OccurrenceConfidence::Oracle,
+                None => OccurrenceConfidence::Syntactic,
+            };
             self.emit_one_occurrence(
                 span,
                 kind,
-                ResolvedTarget::Definition(path_definition(&resolution)),
-                OccurrenceConfidence::Oracle,
+                ResolvedTarget::Definition(resolved.as_ref().and_then(path_definition)),
+                confidence,
+                Some(written),
             )?;
         }
         let sites: Vec<MacroSite<'source>> = self.macro_sites.to_vec();
@@ -1910,6 +2705,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 ReferenceKind::MacroInvocation,
                 ResolvedTarget::Definition(None),
                 confidence,
+                Some(site.spelling),
             )?;
         }
         Ok(())
@@ -1917,15 +2713,29 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
     /// Emits one occurrence fact, resolving the target through the pushed
     /// definition and field tables and folding to a self-describing foreign
-    /// key when the target lives outside this fragment. Positions with no
-    /// owning declaration (module-level `use` items) stay unowned and
-    /// unemitted.
+    /// key when the target lives outside this fragment. The reference site
+    /// (`span`) is the written name extent; `key` carries the canonical
+    /// written spelling the foreign key names when it differs from the site
+    /// (a whole qualified path, a macro path).
+    ///
+    /// Owner-less disposition: positions with no owning declaration
+    /// (module-level `use` items) stay unowned and unemitted. The shared
+    /// wire format carries no owner-less occurrence — `push_occurrence`
+    /// requires an owning fact ordinal — and the shared containment law
+    /// rejects an occurrence span that escapes its owner's provenance span
+    /// at build time, so the only possible emission would fabricate a
+    /// containing relation that no declaration proves: the exact boundary
+    /// the C lane records as "containment is not ownership". The skip is
+    /// the honest unowned disposition, never a silent truncation of the
+    /// written spelling, which the foreign key still carries whenever an
+    /// owned sibling site or a doc link names it.
     fn emit_one_occurrence(
         &mut self,
         span: ByteSpan,
         kind: ReferenceKind,
         resolved: ResolvedTarget,
         confidence: OccurrenceConfidence,
+        key: Option<&'source [u8]>,
     ) -> Result<(), RustAuthorityError> {
         let Some(owner) = self.owner_of(span) else {
             return Ok(());
@@ -1938,7 +2748,15 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         let Some(owner_span) = owner_span else {
             return Ok(());
         };
-        let written = self.bytes_of(span)?;
+        // A macro invocation's written reference site is its path spelling,
+        // not the whole invocation call: the call's token text can carry a
+        // line-continuation backslash inside a string literal, which is not a
+        // canonical foreign path. Every other occurrence kind borrows the
+        // exact written span.
+        let written = match key {
+            Some(key) => key,
+            None => self.bytes_of(span)?,
+        };
         let ordinal = match resolved {
             ResolvedTarget::Definition(Some(definition)) => self.ordinal_of_definition(&definition),
             ResolvedTarget::NamedField(field) => self.ordinal_of_field(&field),
@@ -2201,10 +3019,10 @@ const fn entity_kind(kind: SemanticKind) -> Result<EntityKind, RustAuthorityErro
         SemanticKind::Constant => Ok(EntityKind::Constant),
         SemanticKind::Static => Ok(EntityKind::Static),
         SemanticKind::Variant => Ok(EntityKind::Variant),
-        SemanticKind::Macro
-        | SemanticKind::LocalBinding
-        | SemanticKind::GenericParameter
-        | SemanticKind::Builtin => Err(RustAuthorityError::MissingSemanticFact { fact: kind }),
+        SemanticKind::Macro => Ok(EntityKind::Macro),
+        SemanticKind::LocalBinding | SemanticKind::GenericParameter | SemanticKind::Builtin => {
+            Err(RustAuthorityError::MissingSemanticFact { fact: kind })
+        }
     }
 }
 
@@ -2222,10 +3040,10 @@ const fn constructor(kind: SemanticKind) -> Result<SemanticProductConstructor, R
         | SemanticKind::Constant
         | SemanticKind::Static
         | SemanticKind::Variant => Ok(LEAF_PRODUCT),
-        SemanticKind::Macro
-        | SemanticKind::LocalBinding
-        | SemanticKind::GenericParameter
-        | SemanticKind::Builtin => Err(RustAuthorityError::MissingSemanticFact { fact: kind }),
+        SemanticKind::Macro => Ok(LEAF_PRODUCT),
+        SemanticKind::LocalBinding | SemanticKind::GenericParameter | SemanticKind::Builtin => {
+            Err(RustAuthorityError::MissingSemanticFact { fact: kind })
+        }
     }
 }
 
@@ -2272,6 +3090,23 @@ fn reference_kind(path: &ast::Path, resolution: &ra_ap_hir::PathResolution) -> R
             | ra_ap_hir::ModuleDef::Module(_),
         ) => ReferenceKind::TypeReference,
         _ => ReferenceKind::VariableUse,
+    }
+}
+
+/// Categorizes one unresolved path reference from its written syntax position
+/// alone: an import-tree path stays an import, a call-position path stays a
+/// call, and every other position keeps the honest value-use default. The
+/// oracle could not prove a target, so the kind names only the site's shape.
+fn unresolved_reference_kind(path: &ast::Path) -> ReferenceKind {
+    if let Some(parent) = path.syntax().parent()
+        && parent.kind() == ra_ap_syntax::SyntaxKind::USE_TREE
+    {
+        return ReferenceKind::Import;
+    }
+    if is_call_position(path) {
+        ReferenceKind::FunctionCall
+    } else {
+        ReferenceKind::VariableUse
     }
 }
 
@@ -2485,13 +3320,15 @@ fn find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::driver::lower::{AdmissionFault, admit};
+    use backend_frontend_rust::legacy::{RustAuthorityError, RustProject, RustToolchain};
     use backend_semantic::ir::{
         DocFactFault, DocFragmentInput, DocLinkTarget, EntityKind, FragmentError, FragmentView,
-        Occurrence, OccurrenceConfidence, OccurrenceFault, ReferenceKind, SourceIdentity,
-        TypeFactFault,
+        Occurrence, OccurrenceConfidence, OccurrenceFault, ReferenceKind, SemanticReader,
+        SourceIdentity, TypeFactFault,
     };
-    use backend_frontend_rust::legacy::{RustAuthorityError, RustProject, RustToolchain};
-    use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+    use backend_semantic::vocabulary::{
+        CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
+    };
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use std::{
         fs,
@@ -2519,6 +3356,8 @@ mod tests {
         Collection(RustCollectError),
         #[error("lane admission rejected the fact set: {0:?}")]
         Admission(AdmissionFault),
+        #[error("owned image build rejected the fact set: {0:?}")]
+        Build(#[from] backend_semantic::ir::BuildError),
         #[error("fragment validation rejected the bytes: {0:?}")]
         Validate(#[from] FragmentError),
         #[error("type fact cursor rejected: {0:?}")]
@@ -2561,6 +3400,40 @@ mod tests {
 
     /// Lowers one fixture crate root into committed fragment bytes.
     fn lower_bytes(source: &str) -> Result<Vec<u8>, TestError> {
+        let (facts, identity, recipe) = collected(source)?;
+        let mut output = vec![0xa5_u8; 65_536];
+        let length = admit(&facts, identity, recipe, recipe.profile, &mut output)
+            .map_err(TestError::Admission)?
+            .len();
+        if !output[length..].iter().all(|byte| *byte == 0xa5) {
+            return Err(TestError::Tail);
+        }
+        output.truncate(length);
+        Ok(output)
+    }
+
+    /// Builds the owned semantic image for one fixture source, so assertions
+    /// can read the authority planes (entity provenance spans, absolute link
+    /// occurrence sites) the compact fragment does not carry.
+    fn owned_ir(source: &str) -> Result<backend_semantic::ir::Ir, TestError> {
+        let (facts, identity, recipe) = collected(source)?;
+        facts
+            .build_ir(
+                LanguageProfile::Rust(RustEdition::Rust2024),
+                identity,
+                recipe,
+                crate::driver::types::DeclarationScope::fixture(),
+            )
+            .map_err(TestError::Build)
+    }
+
+    /// Stages one fixture crate root through the complete Rust lane and
+    /// returns its admitted fact set with the identity and recipe that admit
+    /// it. The fixture root is removed before returning; the collected facts
+    /// borrow only the caller's source.
+    fn collected<'source>(
+        source: &'source str,
+    ) -> Result<(FactSet<'source>, SourceIdentity, CompileRecipeFact), TestError> {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| TestError::Io {
@@ -2615,16 +3488,8 @@ mod tests {
             ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
             ContentId::<ToolchainDomain>::from_canonical_bytes(b"rust-hir-lane-fixture"),
         );
-        let mut output = vec![0xa5_u8; 65_536];
-        let length = admit(&facts, identity, recipe, recipe.profile, &mut output)
-            .map_err(TestError::Admission)?
-            .len();
-        if !output[length..].iter().all(|byte| *byte == 0xa5) {
-            return Err(TestError::Tail);
-        }
         drop(guard);
-        output.truncate(length);
-        Ok(output)
+        Ok((facts, identity, recipe))
     }
 
     fn rustc_path() -> PathBuf {
@@ -2671,13 +3536,13 @@ mod tests {
             .filter_map(|child| match child {
                 Ok(child) if child.ordinal >= record.children.start && child.ordinal < end => {
                     match child.child.target {
-                        backend_semantic::ir::TypeChildTarget::Type(backend_semantic::ir::TypeRef::Local(target)) => {
-                            Some(Ok(target))
-                        }
+                        backend_semantic::ir::TypeChildTarget::Type(
+                            backend_semantic::ir::TypeRef::Local(target),
+                        ) => Some(Ok(target)),
                         backend_semantic::ir::TypeChildTarget::Text
-                        | backend_semantic::ir::TypeChildTarget::Type(backend_semantic::ir::TypeRef::External(_)) => {
-                            None
-                        }
+                        | backend_semantic::ir::TypeChildTarget::Type(
+                            backend_semantic::ir::TypeRef::External(_),
+                        ) => None,
                     }
                 }
                 Ok(_) => None,
@@ -2750,7 +3615,7 @@ mod tests {
         let facts_at = base + usize::try_from(row_count * 4)?;
         let mut words = [0_u32; 4];
         for (index, word_at) in words.iter_mut().enumerate() {
-            *word_at = word(facts_at + usize::try_from(slot * 16)? + index * 4)?;
+            *word_at = word(facts_at + usize::try_from(slot * 24)? + index * 4)?;
         }
         Ok(Some(words))
     }
@@ -2828,7 +3693,9 @@ mod tests {
         let node_row = row_for_entity(&view, node_ordinal)?;
         if node_row.record.tag != SemanticTypeTag::Nominal
             || node_row.record.nominal
-                != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(node_ordinal)))
+                != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(
+                    node_ordinal,
+                )))
         {
             return Err(TestError::Missing("recursive self nominal"));
         }
@@ -2987,7 +3854,8 @@ mod tests {
             .iter()
             .find(|(_, occurrence)| occurrence.kind == ReferenceKind::TypeReference)
             .ok_or(TestError::Missing("impl trait edge"))?;
-        if trait_edge.1.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(service))
+        if trait_edge.1.target
+            != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(service))
             || trait_edge.1.confidence != OccurrenceConfidence::Oracle
         {
             return Err(TestError::Missing("local trait edge at oracle confidence"));
@@ -3078,7 +3946,9 @@ mod tests {
         let generated = fact_of(&view, b"Generated", EntityKind::Record)?;
         let generated_row = row_for_entity(&view, generated)?;
         if generated_row.record.nominal
-            != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(generated)))
+            != Some(NominalRef::Local(backend_semantic::ir::EntityId::new(
+                generated,
+            )))
         {
             return Err(TestError::Missing(
                 "projected expanded declaration structure",
@@ -3150,9 +4020,103 @@ mod tests {
         match outcome {
             Err(TestError::Collection(RustCollectError::Lowering(
                 backend_semantic::vocabulary::LoweringUnsupported::FactRejected { fact, .. },
-            ))) if fact == crate::driver::lower::portable_count(crate::driver::lower::MAX_EMISSION_FACTS) => Ok(()),
+            ))) if fact
+                == crate::driver::lower::portable_count(
+                    crate::driver::lower::MAX_EMISSION_FACTS,
+                ) =>
+            {
+                Ok(())
+            }
             Err(_) => Err(TestError::Missing("capacity terminal")),
             Ok(_) => Err(TestError::Missing("capacity rejection")),
         }
+    }
+
+    /// A qualified path reference commits its occurrence at the final
+    /// segment's name extent: the absolute site bytes are exactly the
+    /// identifier, and the site stays inside the owning declaration's
+    /// provenance span — the containment law the image build re-checks.
+    #[test]
+    fn qualified_path_occurrences_commit_their_name_extent() -> Result<(), TestError> {
+        let source =
+            "pub enum Focus {\n    Near,\n}\n\npub fn aim() -> Focus {\n    Focus::Near\n}\n";
+        let ir = owned_ir(source)?;
+        let needle = source
+            .find("Focus::Near")
+            .ok_or(TestError::Missing("qualified path in fixture source"))?;
+        let name_at = needle + "Focus::".len();
+        let mut verified = false;
+        for (_, occurrence) in ir.link_occurrences() {
+            let Some(site) = occurrence.source else {
+                continue;
+            };
+            let start = usize::try_from(site.start())?;
+            let end = usize::try_from(site.end())?;
+            if source.as_bytes().get(start..end) != Some(&b"Near"[..]) {
+                continue;
+            }
+            verified = true;
+            // The site is the name extent of the written qualified path.
+            if start != name_at {
+                return Err(TestError::Missing("occurrence at the name extent"));
+            }
+            // The site sits inside some owning declaration's provenance span
+            // (the `aim` function), the containment law the image build
+            // re-checks.
+            let containing = ir.canonical_entities().any(|entity| {
+                entity.source.is_some_and(|span| {
+                    span.start() as usize <= start && end <= span.end() as usize
+                })
+            });
+            if !containing {
+                return Err(TestError::Missing("site inside its owner's span"));
+            }
+            // The link targets the variant entity by name.
+            let Some(link) = ir.link(occurrence.link) else {
+                return Err(TestError::Missing("occurrence link"));
+            };
+            let backend_semantic::ir::LinkTarget::Local(target) = link.target else {
+                return Err(TestError::Missing("local variant target"));
+            };
+            let Some(item) = ir.item(target) else {
+                return Err(TestError::Missing("target entity"));
+            };
+            if item.name() != b"Near" {
+                return Err(TestError::Missing("variant entity target"));
+            }
+        }
+        if !verified {
+            return Err(TestError::Missing("name-extent occurrence site"));
+        }
+        Ok(())
+    }
+
+    /// A path the oracle could not resolve is retained, never dropped: a
+    /// cargo-universe foreign key carrying the exact written spelling at
+    /// syntactic confidence, owned by the containing function.
+    #[test]
+    fn unresolved_paths_stay_foreign_with_their_written_spelling() -> Result<(), TestError> {
+        let view = lower("pub fn probe() {\n    vanish_without_trace();\n}\n")?;
+        let occurrences = occurrences(&view)?;
+        let path = occurrences
+            .iter()
+            .find(|(_, occurrence)| occurrence.kind == ReferenceKind::FunctionCall)
+            .ok_or(TestError::Missing("unresolved path occurrence"))?;
+        if path.1.confidence != OccurrenceConfidence::Syntactic {
+            return Err(TestError::Missing("syntactic confidence"));
+        }
+        let backend_semantic::ir::OccurrenceTarget::Foreign(key) = path.1.target else {
+            return Err(TestError::Missing("foreign target"));
+        };
+        if !matches!(
+            key.origin,
+            backend_semantic::ir::ForeignOrigin::Universe { ecosystem: "cargo" }
+        ) {
+            return Err(TestError::Missing("cargo-universe origin"));
+        }
+        if key.path != "vanish_without_trace" || key.display != "vanish_without_trace" {
+            return Err(TestError::Missing("written spelling as the key"));
+        }
+        Ok(())
     }
 }

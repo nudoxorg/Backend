@@ -8,8 +8,8 @@ use crate::{
     CapabilityAuthority, CapabilityFamily, CapabilityId, CapabilityInventory, CapabilityLifecycle,
     CapabilityStatus, CapabilityTarget, CapabilityUnavailable, EmbeddingCapabilityRecipe,
     EmbeddingEncoding, EmbeddingMetric, EmbeddingNormalization, EmbeddingPooling,
-    EmbeddingRecipeId, EmbeddingSource, LanguageOracleTask, MAX_CAPABILITY_INVENTORY,
-    FaultRows, IngestProgress, LanguageRows, PackageAuthorityIdentity, SourceLanguage,
+    EmbeddingRecipeId, EmbeddingSource, FaultRows, IngestProgress, LanguageOracleTask,
+    LanguageRows, MAX_CAPABILITY_INVENTORY, PackageAuthorityIdentity, SourceLanguage,
     SourceUnavailableReason, decode_id, encode_id,
 };
 

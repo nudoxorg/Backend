@@ -122,7 +122,7 @@ pub(crate) fn render(ir: &Ir) -> Result<StageWork, BenchmarkError> {
             write!(output, "{signature}").map_err(|_| BenchmarkError::SemanticRender)?;
         }
         if let Some(embedding) =
-            ir.embedding_text(item.id(), backend_semantic::ir::EmbeddingProfile::CONTEXTUAL)
+            ir.embedding_text(item.id(), backend_semantic::ir::semantic_render::EmbeddingProfile::CONTEXTUAL)
         {
             write!(output, "{embedding}").map_err(|_| BenchmarkError::SemanticRender)?;
         }

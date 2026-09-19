@@ -5,14 +5,14 @@
 
 use std::{error::Error, fmt, num::ParseIntError};
 
-use backend_execution::adaptive::CapabilityDomain;
-use backend_version::{ContentIdDecodeError, Domain, HASH_BYTES, IndexSnapshotDomain, RootDomain};
 use crate::interface::{
     ApplicationInput, BatteryState, ByteCount, ContentId, CorrelationId, GenerateRequest,
     GenerateTarget, InconsistentRecovery, InputText, InputTextError, OperationBudget, OperationKey,
     PackageCompileRequest, PackageProfileMismatch, PackageUrl, Pin, Pressure, RejectedPackageUrl,
     RejectedSourceText, ResourceBudget, RetryBudget, SourceText,
 };
+use backend_execution::adaptive::CapabilityDomain;
+use backend_version::{ContentIdDecodeError, Domain, HASH_BYTES, IndexSnapshotDomain, RootDomain};
 
 use crate::protocol::command::{
     RawApplicationCommand, RawCompilePackage, RawGenerate, RawHealth, RawInconsistentPolicy,

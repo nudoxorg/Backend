@@ -249,6 +249,118 @@ fn unavailable_feed_retains_one_durable_retry_intent() {
 }
 
 #[test]
+fn metadata_only_delta_advances_and_recovers_its_checkpoint() {
+    struct MetadataDelta {
+        next: [u8; 32],
+    }
+    impl RegistryTransport for MetadataDelta {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: self.next,
+                packages: Vec::new(),
+            }))
+        }
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<Vec<u8>>, TransportFailure> {
+            panic!("metadata-only delta has no archive")
+        }
+    }
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("metadata-only-delta");
+    let (mut owner, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("owner");
+    let next = [19; 32];
+    let outcome = owner
+        .poll(&mut MetadataDelta { next })
+        .expect("metadata checkpoint");
+    let AcquisitionOutcome::Published(receipt) = outcome else {
+        panic!("metadata delta must commit")
+    };
+    assert!(receipt.packages.is_empty());
+    assert_eq!(receipt.target.token(), next);
+    drop(owner);
+    let (_, recovery) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("recovery");
+    assert_eq!(recovery.cursor.sequence(), 1);
+    assert_eq!(recovery.cursor.token(), next);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn policy_delta_reuses_the_exact_archive_without_a_second_download() {
+    struct PolicyDelta {
+        archive: Vec<u8>,
+        page: u8,
+        archive_fetches: usize,
+    }
+    impl RegistryTransport for PolicyDelta {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            self.page = self.page.saturating_add(1);
+            let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
+            let standing = if self.page == 1 {
+                ReleaseStanding::Available
+            } else {
+                ReleaseStanding::Yanked
+            };
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [self.page; 32],
+                packages: vec![RemotePackage {
+                    coordinate,
+                    integrity: transport::ArchiveIntegrity::Canonical(
+                        *CapabilityArtifactId::from_value(&self.archive).as_bytes(),
+                    ),
+                    provenance: ProvenanceDigest::from_authenticated_feed([self.page; 32]),
+                    facts: ReleaseFacts::new(
+                        standing,
+                        DownloadCount::NotReported(DownloadCountGap::Unsupported),
+                        SecurityStanding::Unassessed,
+                    ),
+                    archive_url: std::sync::Arc::from("https://registry.example.test/demo.crate"),
+                }],
+            }))
+        }
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<Vec<u8>>, TransportFailure> {
+            self.archive_fetches += 1;
+            Ok(TransportResult::Available(self.archive.clone()))
+        }
+    }
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("policy-delta-reuse");
+    let (mut owner, _) =
+        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()).expect("owner");
+    let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
+    let mut transport = PolicyDelta {
+        archive: b"one immutable archive".to_vec(),
+        page: 0,
+        archive_fetches: 0,
+    };
+    let _ = owner.poll(&mut transport).expect("initial release");
+    let first = owner.published(&coordinate).expect("published").artifact;
+    let _ = owner.poll(&mut transport).expect("yank delta");
+    let current = owner.published(&coordinate).expect("updated");
+    assert_eq!(transport.archive_fetches, 1);
+    assert_eq!(current.artifact, first);
+    assert_eq!(current.facts.standing(), ReleaseStanding::Yanked);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
 fn endpoint_policy_rejects_plaintext_remote_hosts_and_redirects() {
     assert!(matches!(
         RegistryEndpoint::new(RegistryEcosystem::Cargo, "http://example.test"),
@@ -295,6 +407,26 @@ fn oversized_feed_is_rejected_before_unbounded_read() {
         })
     ));
     server.join().expect("server");
+}
+
+#[test]
+fn rate_limit_preserves_and_clamps_the_server_retry_delay() {
+    for (header, expected) in [
+        ("Retry-After: 37\r\n", 37),
+        ("Retry-After: 999999\r\n", 3600),
+    ] {
+        let (endpoint_text, server) = one_response(429, header, Vec::new());
+        let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text)
+            .expect("loopback endpoint");
+        let cursor = FeedCursor::genesis(endpoint.id());
+        let mut transport =
+            HttpRegistryTransport::new(endpoint, None, limits()).expect("transport");
+        assert!(matches!(
+            transport.fetch_page(FeedRequest { cursor, max_items: 1 }),
+            Ok(TransportResult::RetryAfter(delay)) if delay == std::time::Duration::from_secs(expected)
+        ));
+        server.join().expect("server");
+    }
 }
 
 #[test]
@@ -757,8 +889,7 @@ fn sparse_cargo_chunks_resume_and_changed_snapshot_restarts() {
     let mut forged = [0_u8; 32];
     forged[..24].copy_from_slice(&first.next_token[..24]);
     forged[24..].copy_from_slice(&u64::from(99u8).to_be_bytes());
-    let forged_cursor =
-        FeedCursor::from_parts(endpoint.id(), resumed_cursor.sequence(), forged);
+    let forged_cursor = FeedCursor::from_parts(endpoint.id(), resumed_cursor.sequence(), forged);
     assert!(matches!(
         adapter.admit_page(
             rows.as_bytes(),
@@ -775,12 +906,8 @@ fn sparse_cargo_chunks_resume_and_changed_snapshot_restarts() {
 fn sparse_cargo_duplicate_and_checksum_grammar_are_typed() {
     let origin = "https://registry.example.test";
     let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, origin).expect("endpoint");
-    let adapter = EcosystemAdapter::new(
-        endpoint,
-        PackageName::new("demo").expect("package"),
-        None,
-    )
-    .expect("adapter");
+    let adapter = EcosystemAdapter::new(endpoint, PackageName::new("demo").expect("package"), None)
+        .expect("adapter");
     let digest = "00".repeat(32);
     let duplicate = format!(
         "{{\"name\":\"demo\",\"vers\":\"1.0.0\",\"cksum\":\"{digest}\"}}\n{{\"name\":\"demo\",\"vers\":\"1.0.0\",\"cksum\":\"{digest}\"}}\n"
@@ -792,12 +919,16 @@ fn sparse_cargo_duplicate_and_checksum_grammar_are_typed() {
     // Shuffled rows admit the same canonical chunk.
     let ordered = ["1.0.0", "1.0.1", "2.0.0"]
         .iter()
-        .map(|version| format!("{{\"name\":\"demo\",\"vers\":\"{version}\",\"cksum\":\"{digest}\"}}"))
+        .map(|version| {
+            format!("{{\"name\":\"demo\",\"vers\":\"{version}\",\"cksum\":\"{digest}\"}}")
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let shuffled = ["2.0.0", "1.0.0", "1.0.1"]
         .iter()
-        .map(|version| format!("{{\"name\":\"demo\",\"vers\":\"{version}\",\"cksum\":\"{digest}\"}}"))
+        .map(|version| {
+            format!("{{\"name\":\"demo\",\"vers\":\"{version}\",\"cksum\":\"{digest}\"}}")
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let left = adapter.decode(ordered.as_bytes()).expect("ordered");
@@ -806,15 +937,13 @@ fn sparse_cargo_duplicate_and_checksum_grammar_are_typed() {
     // Checksum grammar rejects whitespace exactly like the removed sparse parser.
     assert!(matches!(
         adapter.decode(
-            format!("{{\"name\":\"demo\",\"vers\":\"1.0.0\",\"cksum\":\" {digest}\"}}")
-                .as_bytes()
+            format!("{{\"name\":\"demo\",\"vers\":\"1.0.0\",\"cksum\":\" {digest}\"}}").as_bytes()
         ),
         Err(TransportFailure::Protocol)
     ));
     assert!(matches!(
         adapter.decode(
-            format!("{{\"name\":\"demo\",\"vers\":\"1.0.0\",\"cksum\":\"{digest} \"}}")
-                .as_bytes()
+            format!("{{\"name\":\"demo\",\"vers\":\"1.0.0\",\"cksum\":\"{digest} \"}}").as_bytes()
         ),
         Err(TransportFailure::Protocol)
     ));
@@ -833,7 +962,7 @@ fn sparse_cargo_duplicate_and_checksum_grammar_are_typed() {
 }
 
 #[test]
-fn sparse_cargo_yanked_rows_never_publish() {
+fn sparse_cargo_yanked_rows_remain_visible_as_versioned_policy_facts() {
     let origin = "https://registry.example.test";
     let digest = "00".repeat(32);
     let body = format!(
@@ -847,8 +976,10 @@ fn sparse_cargo_yanked_rows_never_publish() {
     )
     .expect("adapter");
     let releases = adapter.decode(body.as_bytes()).expect("decode");
-    assert_eq!(releases.len(), 1);
+    assert_eq!(releases.len(), 2);
     assert!(releases[0].coordinate.as_str().contains("1.0.0"));
+    assert_eq!(releases[0].facts.standing(), ReleaseStanding::Available);
+    assert_eq!(releases[1].facts.standing(), ReleaseStanding::Yanked);
     let page = adapter
         .admit_page(
             body.as_bytes(),
@@ -858,7 +989,8 @@ fn sparse_cargo_yanked_rows_never_publish() {
             },
         )
         .expect("page");
-    assert_eq!(page.packages.len(), 1);
+    assert_eq!(page.packages.len(), 2);
+    assert_eq!(page.packages[1].facts.standing(), ReleaseStanding::Yanked);
 }
 
 #[test]
@@ -903,8 +1035,8 @@ fn receipt_catalog_overrun_is_measured_and_durable() {
         "{{\"name\":\"demo\",\"version\":\"2.0.0\",\"archive\":\"{endpoint_text}/b\",\"blake3\":\"{}\",\"provenance\":\"{provenance}\"}}",
         transport::hex(&digest_b)
     );
-    let page = format!("{{\"schema\":1,\"next\":\"{next}\",\"items\":[{item_a},{item_b}]}}")
-        .into_bytes();
+    let page =
+        format!("{{\"schema\":1,\"next\":\"{next}\",\"items\":[{item_a},{item_b}]}}").into_bytes();
     let server = thread::spawn(move || {
         for body in [page, archive_a.to_vec(), archive_b.to_vec()] {
             let (mut stream, _) = listener.accept().expect("accept");
@@ -953,7 +1085,7 @@ fn receipt_catalog_overrun_is_measured_and_durable() {
 }
 
 #[test]
-fn conditional_304_is_a_typed_rejection_not_a_silent_noop() {
+fn conditional_304_is_a_typed_metadata_cache_hit() {
     // The single-stack transport never sends If-None-Match validators, so a
     // 304 has no conditional context and is a typed rejection. ETag resume is
     // intentionally unsupported rather than silently treated as no-change.
@@ -967,7 +1099,7 @@ fn conditional_304_is_a_typed_rejection_not_a_silent_noop() {
             cursor,
             max_items: 1
         }),
-        Err(TransportFailure::Rejected(304))
+        Ok(TransportResult::NotModified)
     ));
     server.join().expect("server");
 }
@@ -982,16 +1114,85 @@ fn cross_authority_archive_is_a_configuration_rejection() {
         "{{\"versions\":{{\"1.2.3\":{{\"dist\":{{\"integrity\":\"sha512-{sha512}\",\"tarball\":\"https://other.example.test/demo.tgz\"}}}}}}}}"
     );
     let endpoint = RegistryEndpoint::new(RegistryEcosystem::Npm, origin).expect("endpoint");
-    let adapter = EcosystemAdapter::new(
-        endpoint,
-        PackageName::new("demo").expect("package"),
-        None,
-    )
-    .expect("adapter");
+    let adapter = EcosystemAdapter::new(endpoint, PackageName::new("demo").expect("package"), None)
+        .expect("adapter");
     assert!(matches!(
         adapter.decode(body.as_bytes()),
         Err(TransportFailure::Configuration)
     ));
+}
+
+#[test]
+fn crates_io_sparse_index_resolves_the_official_static_archive_origin() {
+    let archive = b"crate";
+    let digest = digest_hex(Sha256::digest(archive).as_slice());
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://index.crates.io")
+        .expect("official sparse endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint,
+        PackageName::new("serde").expect("crate name"),
+        None,
+    )
+    .expect("cargo adapter");
+    let row = format!(
+        "{{\"name\":\"serde\",\"vers\":\"1.0.0\",\"cksum\":\"{digest}\",\"yanked\":false}}\n"
+    );
+    let releases = adapter.decode(row.as_bytes()).expect("official row");
+    assert_eq!(releases.len(), 1);
+    assert_eq!(
+        releases[0].archive_url,
+        "https://static.crates.io/crates/serde/serde-1.0.0.crate"
+    );
+}
+
+#[test]
+fn namespaced_npm_and_go_adapters_preserve_the_native_identity() {
+    let npm_endpoint = RegistryEndpoint::new(RegistryEcosystem::Npm, "https://registry.npmjs.org")
+        .expect("npm endpoint");
+    let npm = EcosystemAdapter::new(
+        npm_endpoint,
+        PackageName::new("node").expect("name"),
+        Some(PackageName::new("@types").expect("scope")),
+    )
+    .expect("scoped npm adapter");
+    assert_eq!(
+        npm.metadata_url(),
+        "https://registry.npmjs.org/@types%2Fnode"
+    );
+
+    let archive = b"go module";
+    let digest = digest_hex(Sha256::digest(archive).as_slice());
+    let go_endpoint = RegistryEndpoint::new(RegistryEcosystem::Golang, "https://proxy.golang.org")
+        .expect("go endpoint");
+    let go = EcosystemAdapter::new(
+        go_endpoint,
+        PackageName::new("errors").expect("name"),
+        Some(PackageName::new("github.com/pkg").expect("module namespace")),
+    )
+    .expect("go adapter");
+    assert_eq!(
+        go.metadata_url(),
+        "https://proxy.golang.org/github.com/pkg/errors/@v/list"
+    );
+    let releases = go
+        .decode(format!("v0.9.1 {digest}\n").as_bytes())
+        .expect("go release");
+    assert_eq!(
+        releases[0].coordinate.as_str(),
+        "pkg:golang/github.com/pkg/errors@v0.9.1"
+    );
+
+    let uppercase = EcosystemAdapter::new(
+        RegistryEndpoint::new(RegistryEcosystem::Golang, "https://proxy.golang.org")
+            .expect("endpoint"),
+        PackageName::new("toml").expect("name"),
+        Some(PackageName::new("github.com/BurntSushi").expect("namespace")),
+    )
+    .expect("uppercase module");
+    assert_eq!(
+        uppercase.metadata_url(),
+        "https://proxy.golang.org/github.com/!burnt!sushi/toml/@v/list"
+    );
 }
 
 #[test]
@@ -1040,12 +1241,20 @@ fn legacy_unscoped_journal_path_is_never_aliased() {
     fs::write(root.join("registry.journal"), b"legacy").expect("legacy file");
     let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
         .expect("endpoint");
-    let (owner, recovery) =
-        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Offline, limits())
-            .expect("owner");
+    let (owner, recovery) = RegistryOwner::open(
+        &root,
+        endpoint.clone(),
+        AcquisitionPolicy::Offline,
+        limits(),
+    )
+    .expect("owner");
     assert_eq!(recovery.cursor.sequence(), 0);
     assert!(recovery.pending.is_none());
-    assert!(storage_root(&root, &endpoint).join("registry.journal").is_file());
+    assert!(
+        storage_root(&root, &endpoint)
+            .join("registry.journal")
+            .is_file()
+    );
     assert_eq!(owner.cursor().sequence(), 0);
     fs::remove_dir_all(root).expect("cleanup");
 }

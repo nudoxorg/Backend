@@ -122,7 +122,7 @@ impl PermutationField {
 
 /// Exact source-vs-output mismatch.  Every arm retains typed expected and
 /// observed facts; display text is intentionally not part of this state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum CorpusMismatch {
     Source {
         key: CaseKey,
@@ -705,7 +705,7 @@ pub(super) fn expected_mismatches(
         type_facts: compact.type_facts,
         documentation: compact.documentation,
         extensions: compact.extensions,
-        semantic: output.owned.semantic,
+        semantic: output.owned.semantic.clone(),
     };
     if output.reopened != expected_reopened {
         mismatches.push(CorpusMismatch::Reopened {
@@ -733,8 +733,8 @@ pub(super) fn expected_mismatches(
 
     check_semantic_image(
         key,
-        expected_reopened.semantic,
-        output.reopened.semantic,
+        expected_reopened.semantic.clone(),
+        output.reopened.semantic.clone(),
         mismatches,
     );
     check_reopened_plane(
@@ -786,8 +786,8 @@ fn check_semantic_image(
             mismatches.push(CorpusMismatch::SemanticImage {
                 key,
                 field,
-                expected,
-                observed,
+                expected: expected.clone(),
+                observed: observed.clone(),
             });
         }
     };
@@ -943,35 +943,35 @@ fn check_render(
     }
 }
 
-fn field_digest(case: CaseObservation, field: PermutationField) -> Digest {
+fn field_digest(case: &CaseObservation, field: PermutationField) -> Digest {
     match case {
         CaseObservation::Output(output) => match field {
             PermutationField::Source => digest_source(output.source),
             PermutationField::Recipe => digest_recipe(output.recipe),
-            PermutationField::Owned => digest_owned(output.owned),
-            PermutationField::Compact => digest_compact(output.compact),
-            PermutationField::Reopened => digest_reopened(output.reopened),
+            PermutationField::Owned => digest_owned(&output.owned),
+            PermutationField::Compact => digest_compact(&output.compact),
+            PermutationField::Reopened => digest_reopened(&output.reopened),
             PermutationField::NeutralRender => digest_render(output.neutral_render),
             PermutationField::DialectRender => digest_render(output.dialect_render),
             PermutationField::Terminal | PermutationField::Availability => digest_u64(0),
         },
         CaseObservation::LocallyUnavailable { cause, .. } => match field {
-            PermutationField::Availability => digest_authority_unavailable(cause),
+            PermutationField::Availability => digest_authority_unavailable(*cause),
             _ => digest_u64(0),
         },
         CaseObservation::Terminal {
             source, terminal, ..
         } => match field {
-            PermutationField::Source => digest_source(source),
-            PermutationField::Terminal => digest_terminal(terminal),
+            PermutationField::Source => digest_source(*source),
+            PermutationField::Terminal => digest_terminal(*terminal),
             _ => digest_u64(0),
         },
     }
 }
 
 fn field_equal(
-    expected: CaseObservation,
-    observed: CaseObservation,
+    expected: &CaseObservation,
+    observed: &CaseObservation,
     field: PermutationField,
 ) -> bool {
     match (expected, observed, field) {
@@ -1028,8 +1028,8 @@ pub(super) fn compare_passes(
     mismatches: &mut Vec<CorpusMismatch>,
 ) {
     for (index, package) in packages.iter().copied().enumerate() {
-        let expected_case = expected.cases[index];
-        let observed_case = observed.cases[index];
+        let expected_case = &expected.cases[index];
+        let observed_case = &observed.cases[index];
         let fields: &[PermutationField] = match (expected_case, observed_case) {
             (CaseObservation::Output(_), CaseObservation::Output(_)) => &PermutationField::OUTPUT,
             (CaseObservation::Terminal { .. }, CaseObservation::Terminal { .. }) => {

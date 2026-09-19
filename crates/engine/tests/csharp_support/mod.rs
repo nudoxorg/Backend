@@ -631,7 +631,7 @@ fn helper_dir() -> Result<PathBuf, Error> {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| Error::OraclePublish {
         cause: "CARGO_MANIFEST_DIR is unset".into(),
     })?;
-    Ok(Path::new(&manifest).join("../languages/csharp/helper"))
+    Ok(Path::new(&manifest).join("../../frontends/csharp/src/legacy/helper"))
 }
 
 /// Publishes the vendored oracle once per process into a fresh temporary

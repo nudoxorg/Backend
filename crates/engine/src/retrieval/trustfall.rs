@@ -3,11 +3,11 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Bounded graph-acquisition composition and synchronous Trustfall classification.
 
-use backend_semantic::ir::EntityId;
+use backend_extension_trustfall::server::{TrustfallGraph, TrustfallHit, TrustfallTerminal};
 use backend_semantic::graph_vector::{
     GraphAuthority, GraphDegradation, GraphTerminal, MissingPartitions, ValidatedGraphView,
 };
-use backend_extension_trustfall::server::{TrustfallGraph, TrustfallHit, TrustfallTerminal};
+use backend_semantic::ir::EntityId;
 
 use crate::retrieval::{
     CancellationCause, RetrievalAbsence, RetrievalBoundary, RetrievalCoverage,

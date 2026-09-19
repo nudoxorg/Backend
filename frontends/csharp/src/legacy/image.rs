@@ -5,18 +5,17 @@
 //! and generic constraints without JSON reconstruction.
 //! Rejects malformed image coordinates before they can enter canonical facts.
 //!
-//! Wire layout (version 3): a fixed 256-byte header — magic `NCAI`, version,
+//! Wire layout (version 4): a fixed 256-byte header — magic `NCAI`, version,
 //! header length, body length, the SHA-256 of the bound source, a section
 //! count, and a fixed eleven-entry section directory — followed by the
 //! canonical body sections in directory order. A domain-separated SHA-256
 //! covers every byte the header declares except the digest cell itself.
-//! Version 3 extends the version-2 closed vocabularies with the explicit
-//! interface-implementation flag on declaration rows and the
-//! implementation-binding class on reference rows; the row layouts are
-//! unchanged, and every earlier rejection stays typed.
+//! Version 4 extends the version-3 declaration rows with the trailing
+//! declaration-end coordinate (`decl_end`), so occurrence spans can be
+//! contained honestly; every earlier rejection stays typed.
 //!
 //! Error laws: the crate's image-fault lattice is frozen at seven variants,
-//! so every version-3 fault reuses a variant whose operands name the
+//! so every version-4 fault reuses a variant whose operands name the
 //! offending section, the row ordinal, and the observed cells:
 //! - envelope and directory violations are [`HeaderError`] arms;
 //! - a closed-tag violation on any section is [`ImageError::DeclarationKind`]
@@ -33,7 +32,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const MAGIC: [u8; 4] = *b"NCAI";
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
 const SOURCE_DIGEST_OFFSET: usize = 12;
 const DIRECTORY_OFFSET: usize = 48;
 const DIRECTORY_ENTRY_BYTES: usize = 16;
@@ -42,7 +41,7 @@ const DIRECTORY_BYTES: usize = DIRECTORY_ENTRY_BYTES * SECTION_COUNT;
 const IMAGE_DIGEST_OFFSET: usize = DIRECTORY_OFFSET + DIRECTORY_BYTES;
 const HEADER_BYTES: usize = IMAGE_DIGEST_OFFSET + 32;
 const ABSENT: u32 = u32::MAX;
-const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v3\0";
+const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v4\0";
 
 /// A fixed image section in canonical directory order.
 #[repr(u16)]
@@ -93,7 +92,7 @@ impl Section {
         match self {
             Self::Atoms => 8,
             Self::AtomBytes => 1,
-            Self::Declarations => 48,
+            Self::Declarations => 52,
             Self::Parameters => 24,
             Self::TypeParameters => 12,
             Self::TypeConstraints => 4,
@@ -146,6 +145,11 @@ pub enum DeclarationKind {
     Operator = 16,
     /// An implicit or explicit conversion declaration.
     Conversion = 17,
+    /// A static constructor (type initializer). Roslyn names it after the
+    /// containing type in syntax but `.cctor` in metadata, so it is kept a
+    /// distinct closed kind: a parameterless static constructor and a
+    /// parameterless instance constructor are otherwise indistinguishable.
+    StaticConstructor = 18,
 }
 
 impl DeclarationKind {
@@ -168,6 +172,7 @@ impl DeclarationKind {
             15 => Some(Self::Method),
             16 => Some(Self::Operator),
             17 => Some(Self::Conversion),
+            18 => Some(Self::StaticConstructor),
             _ => None,
         }
     }
@@ -374,6 +379,14 @@ pub enum ReferenceTag {
     /// the target is the implemented interface member row when that member
     /// is inside the assembly.
     InterfaceImplementation = 5,
+    /// A bare-identifier field read: the compiler proved the target field
+    /// but the site carries no member-access receiver.
+    FieldRead = 6,
+    /// A bare-identifier field write: the identifier is an assignment
+    /// target or an increment/decrement operand. A compound assignment or
+    /// increment both reads and writes; the row keeps the write class, the
+    /// state-changing half.
+    FieldWrite = 7,
 }
 
 impl ReferenceTag {
@@ -384,6 +397,8 @@ impl ReferenceTag {
             3 => Some(Self::MemberAccess),
             4 => Some(Self::UsingDirective),
             5 => Some(Self::InterfaceImplementation),
+            6 => Some(Self::FieldRead),
+            7 => Some(Self::FieldWrite),
             _ => None,
         }
     }
@@ -666,6 +681,11 @@ pub struct Declaration<'image> {
     pub declared_type: Option<TypeRef>,
     /// Inclusive source byte coordinate where the whole declaration starts.
     pub decl_start: u32,
+    /// Exclusive source byte coordinate where the whole declaration ends.
+    ///
+    /// UNWIRED (v4 activates it): decoded and validated here, but no caller
+    /// consumes it until the lowerer and goldens are updated together.
+    pub decl_end: u32,
     /// Inclusive source byte coordinate of the declared identifier.
     pub name_start: u32,
     /// Exclusive source byte coordinate of the declared identifier.
@@ -1006,7 +1026,8 @@ impl<'image> CSharpImage<'image> {
         let decl_start = u32_at(row, 20);
         let name_start = u32_at(row, 24);
         let name_end = u32_at(row, 28);
-        if decl_start > name_start || name_start > name_end {
+        let decl_end = u32_at(row, 48);
+        if decl_start > name_start || name_start > name_end || name_end > decl_end {
             return Err(ImageError::Span {
                 index,
                 start: decl_start,
@@ -1031,6 +1052,7 @@ impl<'image> CSharpImage<'image> {
             owner,
             declared_type,
             decl_start,
+            decl_end,
             name_start,
             name_end,
             parameters: ParamSlice {

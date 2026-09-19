@@ -5,7 +5,7 @@ use std::{fmt, io::Read, sync::Arc, time::Duration};
 use super::{
     AcquisitionError, AcquisitionLimits, AuthenticationToken, CanonicalFeedV1, EcosystemAdapter,
     FeedCursor, FeedSchema, PackageCoordinate, ProvenanceDigest, RegistryChecksum,
-    RegistryEcosystem, RegistryEndpoint, RemoteRegistry,
+    RegistryEcosystem, RegistryEndpoint, ReleaseFacts, RemoteRegistry,
 };
 use crate::capability::CapabilityArtifactId;
 
@@ -27,6 +27,8 @@ pub struct RemotePackage {
     pub(super) integrity: ArchiveIntegrity,
     /// Digest of signature/transparency/provenance evidence verified by the adapter.
     pub provenance: ProvenanceDigest,
+    /// Mutable policy and observations detached from immutable archive identity.
+    pub facts: ReleaseFacts,
     pub(super) archive_url: Arc<str>,
 }
 
@@ -49,6 +51,22 @@ impl RemotePackage {
             ArchiveIntegrity::Native(_) => None,
         }
     }
+
+    pub(crate) fn integrity_version(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"nudox.registry.upstream-integrity.v1\0");
+        match &self.integrity {
+            ArchiveIntegrity::Canonical(value) => {
+                hasher.update(&[0]);
+                hasher.update(value);
+            }
+            ArchiveIntegrity::Native(checksum) => {
+                hasher.update(&[1, checksum.algorithm() as u8]);
+                hasher.update(checksum.bytes.as_ref());
+            }
+        }
+        *hasher.finalize().as_bytes()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,6 +81,7 @@ impl fmt::Debug for RemotePackage {
             .field("coordinate", &self.coordinate)
             .field("integrity", &self.integrity)
             .field("provenance", &self.provenance)
+            .field("facts", &self.facts)
             .field("archive_url", &"[REDACTED]")
             .finish()
     }
@@ -88,6 +107,8 @@ pub enum TransportResult<T> {
     Unavailable,
     /// Endpoint explicitly requested a later retry.
     RetryAfter(Duration),
+    /// Conditional metadata request confirmed the cached representation.
+    NotModified,
 }
 
 /// Terminal transport or protocol rejection. Diagnostics contain no endpoint or credential.
@@ -212,16 +233,26 @@ impl HttpRegistryTransport {
         for attempt in 1..=self.limits.attempts.get() {
             let request = self.agent.get(url);
             let request = match &self.authentication {
-                Some(token) => request.header("authorization", token.expose()),
+                Some(token) if same_authority(self.endpoint.url(), url) => {
+                    request.header("authorization", token.expose())
+                }
                 None => request,
+                Some(_) => request,
             };
             let result = request.call();
             match result {
                 Ok(mut response) => {
                     let status = response.status().as_u16();
-                    if status == 429 || status == 503 {
+                    if status == 304 {
+                        return Ok(TransportResult::NotModified);
+                    }
+                    if status == 429 {
+                        return Ok(TransportResult::RetryAfter(retry_after(&response)));
+                    }
+                    if matches!(status, 408 | 502 | 503 | 504) {
+                        let delay = retry_after(&response);
                         if attempt == self.limits.attempts.get() {
-                            return Ok(TransportResult::RetryAfter(Duration::from_secs(1)));
+                            return Ok(TransportResult::RetryAfter(delay));
                         }
                         continue;
                     }
@@ -264,6 +295,27 @@ impl HttpRegistryTransport {
     }
 }
 
+fn same_authority(left: &str, right: &str) -> bool {
+    let (Ok(left), Ok(right)) = (
+        left.parse::<ureq::http::Uri>(),
+        right.parse::<ureq::http::Uri>(),
+    ) else {
+        return false;
+    };
+    left.scheme_str() == right.scheme_str() && left.authority() == right.authority()
+}
+
+fn retry_after(response: &ureq::http::Response<ureq::Body>) -> Duration {
+    const MAX_RETRY_AFTER_SECONDS: u64 = 60 * 60;
+    response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| Duration::from_secs(seconds.min(MAX_RETRY_AFTER_SECONDS)))
+        .unwrap_or(Duration::from_secs(1))
+}
+
 impl RegistryTransport for HttpRegistryTransport {
     fn fetch_page(
         &mut self,
@@ -283,6 +335,7 @@ impl RegistryTransport for HttpRegistryTransport {
             TransportResult::Available(value) => value,
             TransportResult::Unavailable => return Ok(TransportResult::Unavailable),
             TransportResult::RetryAfter(delay) => return Ok(TransportResult::RetryAfter(delay)),
+            TransportResult::NotModified => return Ok(TransportResult::NotModified),
         };
         match &self.mode {
             HttpFeedMode::Canonical => {
@@ -301,6 +354,7 @@ impl RegistryTransport for HttpRegistryTransport {
             TransportResult::Available(value) => value,
             TransportResult::Unavailable => return Ok(TransportResult::Unavailable),
             TransportResult::RetryAfter(delay) => return Ok(TransportResult::RetryAfter(delay)),
+            TransportResult::NotModified => return Err(TransportFailure::Protocol),
         };
         let _ = package.verify_archive(&bytes)?;
         Ok(TransportResult::Available(bytes))

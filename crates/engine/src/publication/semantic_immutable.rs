@@ -7,7 +7,9 @@ use backend_semantic::ir::{SemanticImageIdentity, SemanticImageReopenError, Sema
 use backend_version::{IrSemanticImageDomain, IrSemanticImageEncoding};
 use thiserror::Error;
 
-use crate::publication::storage::{ImmutableFileError, ImmutableFileStore, StorageNamespace, StoredFile};
+use crate::publication::storage::{
+    ImmutableFileError, ImmutableFileStore, StorageNamespace, StoredFile,
+};
 
 /// Content-addressed facts required to reopen one complete semantic image.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

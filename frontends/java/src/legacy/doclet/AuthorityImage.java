@@ -41,13 +41,21 @@ import javax.lang.model.type.UnionType;
 import javax.lang.model.type.WildcardType;
 import javax.lang.model.util.Elements;
 
+import com.sun.source.tree.AssignmentTree;
 import com.sun.source.tree.ClassTree;
 import com.sun.source.tree.CompilationUnitTree;
+import com.sun.source.tree.CompoundAssignmentTree;
 import com.sun.source.tree.ExpressionTree;
+import com.sun.source.tree.IdentifierTree;
+import com.sun.source.tree.ImportTree;
 import com.sun.source.tree.MemberSelectTree;
 import com.sun.source.tree.MethodInvocationTree;
 import com.sun.source.tree.MethodTree;
+import com.sun.source.tree.NewClassTree;
 import com.sun.source.tree.PackageTree;
+import com.sun.source.tree.Tree;
+import com.sun.source.tree.UnaryTree;
+import com.sun.source.tree.VariableTree;
 import com.sun.source.doctree.DocCommentTree;
 import com.sun.source.util.DocTrees;
 import com.sun.source.util.JavacTask;
@@ -59,14 +67,24 @@ import com.sun.source.util.Trees;
 /** Emits the immutable Java authority image from one attributed compiler task. */
 final class AuthorityImage {
 	private static final byte[] MAGIC = { 'N', 'J', 'A', 'I' };
-	private static final byte[] DOMAIN = "nudox.java.authority.image.sha256.v2\0".getBytes(StandardCharsets.US_ASCII);
+	private static final byte[] DOMAIN = "nudox.java.authority.image.sha256.v4\0".getBytes(StandardCharsets.US_ASCII);
 	private static final byte[] BOUND_MAGIC = { 'N', 'J', 'A', 'B' };
 	private static final byte[] BOUND_DOMAIN = "nudox.java.bound.authority.image.sha256.v1\0".getBytes(StandardCharsets.US_ASCII);
-	private static final int VERSION = 2;
-	private static final int SECTION_COUNT = 10;
+	private static final int VERSION = 4;
+	private static final int SECTION_COUNT = 12;
 	private static final int HEADER_BYTES = 48 + SECTION_COUNT * 16;
 	private static final int BOUND_HEADER_BYTES = 80;
 	private static final int ABSENT = -1;
+	/** Closed resolved-use tag: a `new` expression targeting its constructor. */
+	private static final byte TAG_CONSTRUCTOR_CALL = 1;
+	/** Closed resolved-use tag: a read of a declared field. */
+	private static final byte TAG_FIELD_READ = 2;
+	/** Closed resolved-use tag: an assignment-target write of a declared field. */
+	private static final byte TAG_FIELD_WRITE = 3;
+	/** Closed resolved-use tag: a declared type named in type position. */
+	private static final byte TAG_TYPE_USE = 4;
+	/** Closed resolved-use tag: a read of an enum constant. */
+	private static final byte TAG_ENUM_CONSTANT_USE = 5;
 	private static final int PUBLIC = 1 << 0;
 	private static final int PROTECTED = 1 << 1;
 	private static final int PRIVATE = 1 << 2;
@@ -89,6 +107,12 @@ private final Trees trees;
 	private final TypePool types = new TypePool();
 	private final SymbolPool symbols = new SymbolPool();
 	private final List<DeclarationRow> declarations = new ArrayList<>();
+	// Source extents aligned one-for-one with `declarations` (UTF-16 units).
+	private final List<SpanRow> spans = new ArrayList<>();
+	// Resolved non-invocation uses, emitted per scanned unit in tree order.
+	private final List<UseRow> uses = new ArrayList<>();
+	// Emitted declaration elements mapped to their declaration coordinate.
+	private final Map<Element, Integer> declaredCoordinates = new IdentityHashMap<>();
 	private final List<List<ExtensionEntry>> extensions = new ArrayList<>();
 	private final List<ReferenceRow> references = new ArrayList<>();
 	private final Map<String, Boolean> emittedPackages = new LinkedHashMap<>();
@@ -103,65 +127,114 @@ private final Trees trees;
 	static void write(JavacTask task, Iterable<? extends CompilationUnitTree> units, int release, Path sourceBinding, Path output)
 		throws IOException {
 		AuthorityImage image = new AuthorityImage(task);
-		image.collect(units);
+		image.collect(units, sourceBinding);
 		image.write(release, sourceBinding, output);
 	}
 
-	private void collect(Iterable<? extends CompilationUnitTree> units) {
+	private void collect(Iterable<? extends CompilationUnitTree> units, Path sourceBinding) {
+		// The binding unit is scanned first so package rows (deduplicated by
+		// name) are claimed by the unit whose extents the image can carry.
+		List<CompilationUnitTree> bindingUnits = new ArrayList<>();
+		List<CompilationUnitTree> otherUnits = new ArrayList<>();
 		for (CompilationUnitTree unit : units) {
-			new TreePathScanner<Void, Void>() {
-				@Override
-				public Void visitPackage(PackageTree node, Void unused) {
-					Element element = trees.getElement(getCurrentPath());
-					if (element instanceof PackageElement pkg) emitPackage(pkg, getCurrentPath());
-					return super.visitPackage(node, unused);
-				}
-				@Override
-				public Void visitClass(ClassTree node, Void unused) {
-					Element element = trees.getElement(getCurrentPath());
-					// Anonymous classes have no qualified name and are
-					// method-body implementation artifacts: they carry no
-					// declaration rows, and their bodies' invocations
-					// attribute to the enclosing declared executable.
-					if (element instanceof TypeElement type && !type.getSimpleName().isEmpty()) {
-						emitType(type, getCurrentPath());
-					}
-					return super.visitClass(node, unused);
-				}
-			}.scan(unit, null);
-			new CallScanner(unit).scan(unit, null);
+			(isBindingUnit(unit, sourceBinding) ? bindingUnits : otherUnits).add(unit);
+		}
+		for (CompilationUnitTree unit : bindingUnits) scanUnit(unit, true);
+		for (CompilationUnitTree unit : otherUnits) scanUnit(unit, false);
+	}
+
+	private void scanUnit(CompilationUnitTree unit, boolean binding) {
+		new DeclarationScanner(unit, binding).scan(unit, null);
+		new CallScanner(unit).scan(unit, null);
+		new UseScanner(unit).scan(unit, null);
+	}
+
+	// True when the unit's source file is the exact bound compile source.
+	// Declaration spans are recorded only for the binding unit, so every
+	// emitted extent lives in the source bytes the image is bound to.
+	private static boolean isBindingUnit(CompilationUnitTree unit, Path sourceBinding) {
+		if (sourceBinding == null) return false;
+		try {
+			return java.nio.file.Paths.get(unit.getSourceFile().toUri()).toAbsolutePath().normalize()
+				.equals(sourceBinding.toAbsolutePath().normalize());
+		} catch (RuntimeException failure) {
+			return false;
 		}
 	}
 
-	private void emitType(TypeElement type, TreePath typePath) {
-		emitPackage(elements.getPackageOf(type), null);
+	private final class DeclarationScanner extends TreePathScanner<Void, Void> {
+		private final CompilationUnitTree unit;
+		private final SourcePositions positions;
+		private final boolean binding;
+		DeclarationScanner(CompilationUnitTree unit, boolean binding) {
+			this.unit = unit;
+			this.binding = binding;
+			positions = trees.getSourcePositions();
+		}
+		@Override
+		public Void visitPackage(PackageTree node, Void unused) {
+			Element element = trees.getElement(getCurrentPath());
+			if (element instanceof PackageElement pkg) emitPackage(pkg, getCurrentPath(), unit, binding);
+			return super.visitPackage(node, unused);
+		}
+		@Override
+		public Void visitClass(ClassTree node, Void unused) {
+			Element element = trees.getElement(getCurrentPath());
+			// Anonymous classes have no qualified name and are
+			// method-body implementation artifacts: they carry no
+			// declaration rows, and their bodies' invocations
+			// attribute to the enclosing declared executable.
+			if (element instanceof TypeElement type && !type.getSimpleName().isEmpty()) {
+				emitType(type, getCurrentPath(), unit, binding);
+			}
+			return super.visitClass(node, unused);
+		}
+	}
+
+	// One declaration's source extent in UTF-16 units, or both-absent when
+	// the unit carries no positions for the tree or is not the bound source.
+	private SpanRow spanOf(CompilationUnitTree unit, SourcePositions positions, Tree tree) {
+		long start = positions.getStartPosition(unit, tree);
+		long end = positions.getEndPosition(unit, tree);
+		if (start < 0 || end < start || end > Integer.MAX_VALUE) return new SpanRow(ABSENT, ABSENT);
+		return new SpanRow((int) start, (int) end);
+	}
+
+	private void emitType(TypeElement type, TreePath typePath, CompilationUnitTree unit, boolean binding) {
+		emitPackage(elements.getPackageOf(type), null, unit, false);
 		emitModule(elements.getModuleOf(type));
+		SourcePositions positions = trees.getSourcePositions();
+		SpanRow typeSpan = binding ? spanOf(unit, positions, typePath.getLeaf()) : new SpanRow(ABSENT, ABSENT);
 		int typeDeclaration = declarations.size();
-		declarations.add(declaration(
+		addDeclaration(type, declaration(
 			declarationKind(type.getKind()),
 			type.getQualifiedName().toString(),
 			ownerName(type.getEnclosingElement()),
 			documentation(type, typePath), type, types.intern(type.asType()), ABSENT
-		));
+		), typeSpan);
 		Map<Element, TreePath> memberPaths = memberPaths(typePath);
 		for (Element member : type.getEnclosedElements()) {
 			Documentation doc = documentation(member, memberPaths.get(member));
+			TreePath memberPath = memberPaths.get(member);
+			SpanRow memberSpan = binding && memberPath != null
+				? spanOf(unit, positions, memberPath.getLeaf())
+				: new SpanRow(ABSENT, ABSENT);
 			switch (member.getKind()) {
-				case FIELD, ENUM_CONSTANT -> declarations.add(declaration(
+				case FIELD, ENUM_CONSTANT -> addDeclaration(member, declaration(
 					member.getKind() == ElementKind.FIELD ? 8 : 9,
 					member.getSimpleName().toString(), type.getQualifiedName().toString(),
 					doc, member, types.intern(member.asType()), ABSENT
-				));
+				), memberSpan);
 				case CONSTRUCTOR, METHOD -> {
 					ExecutableElement executable = (ExecutableElement) member;
 					int symbol = symbols.intern(executable);
-					declarations.add(declaration(
+					addDeclaration(executable, declaration(
 						member.getKind() == ElementKind.CONSTRUCTOR ? 10 : 11,
 						executable.getSimpleName().toString(), type.getQualifiedName().toString(),
 						doc, executable,
 						executable.getKind() == ElementKind.CONSTRUCTOR ? ABSENT : types.intern(executable.getReturnType()),
 						symbol
-					));
+					), memberSpan);
 				}
 				default -> { }
 			}
@@ -178,11 +251,14 @@ private final Trees trees;
 		}
 	}
 
-	private void emitPackage(PackageElement pkg, TreePath path) {
+	private void emitPackage(PackageElement pkg, TreePath path, CompilationUnitTree unit, boolean binding) {
 		if (pkg.isUnnamed()) return;
 		String name = pkg.getQualifiedName().toString();
 		if (emittedPackages.putIfAbsent(name, Boolean.TRUE) == null) {
-			declarations.add(declaration(2, name, null, documentation(pkg, path), pkg, ABSENT, ABSENT));
+			SpanRow span = binding && path != null
+				? spanOf(unit, trees.getSourcePositions(), path.getLeaf())
+				: new SpanRow(ABSENT, ABSENT);
+			addDeclaration(pkg, declaration(2, name, null, documentation(pkg, path), pkg, ABSENT, ABSENT), span);
 		}
 	}
 
@@ -190,8 +266,16 @@ private final Trees trees;
 		if (module == null || module.isUnnamed()) return;
 		String name = module.getQualifiedName().toString();
 		if (emittedModules.putIfAbsent(name, Boolean.TRUE) == null) {
-			declarations.add(declaration(1, name, null, documentation(module, null), module, ABSENT, ABSENT));
+			addDeclaration(module, declaration(1, name, null, documentation(module, null), module, ABSENT, ABSENT), new SpanRow(ABSENT, ABSENT));
 		}
+	}
+
+	// Appends one declaration row with its aligned source extent and records
+	// the emitted element's declaration coordinate for use attribution.
+	private void addDeclaration(Element element, DeclarationRow row, SpanRow span) {
+		declaredCoordinates.put(element, declarations.size());
+		declarations.add(row);
+		spans.add(span);
 	}
 
 	private DeclarationRow declaration(int kind, String name, String owner, Documentation doc, Element element, int type, int symbol) {
@@ -307,10 +391,163 @@ private final Trees trees;
 		}
 	}
 
+	// Records compiler-resolved non-invocation uses: `new` expressions,
+	// field reads and assignment-target writes, declared types in type
+	// position, and enum-constant reads. Every use resolves through
+	// `Trees.getElement`, keeps its written name-token extent, and
+	// attributes to the innermost declared executable or declared type
+	// that lexically encloses it. Imports are skipped: they are scoped
+	// names, not uses.
+	private final class UseScanner extends TreePathScanner<Void, Void> {
+		private final CompilationUnitTree unit;
+		private final SourcePositions positions;
+		UseScanner(CompilationUnitTree unit) {
+			this.unit = unit;
+			positions = trees.getSourcePositions();
+		}
+		@Override public Void visitImport(ImportTree node, Void unused) {
+			return null;
+		}
+		@Override public Void visitNewClass(NewClassTree node, Void unused) {
+			Element element = trees.getElement(getCurrentPath());
+			if (element instanceof ExecutableElement executable) {
+				recordConstructorUse(getCurrentPath(), node.getIdentifier(), executable);
+			}
+			// The constructed type's name token is the constructor call's
+			// extent, so scanning it again would double-record the token.
+			scan(node.getEnclosingExpression(), unused);
+			scan(node.getArguments(), unused);
+			scan(node.getClassBody(), unused);
+			return null;
+		}
+		@Override public Void visitMemberSelect(MemberSelectTree node, Void unused) {
+			// `Outer.this` resolves to a type but names no type use.
+			if (!node.getIdentifier().contentEquals("this")) {
+				recordUse(getCurrentPath(), node, trees.getElement(getCurrentPath()), false);
+			}
+			return super.visitMemberSelect(node, unused);
+		}
+		@Override public Void visitIdentifier(IdentifierTree node, Void unused) {
+			if (!node.getName().contentEquals("this") && !node.getName().contentEquals("super")) {
+				recordUse(getCurrentPath(), node, trees.getElement(getCurrentPath()), false);
+			}
+			return super.visitIdentifier(node, unused);
+		}
+		@Override public Void visitAssignment(AssignmentTree node, Void unused) {
+			writeScan(node.getVariable());
+			scan(node.getExpression(), unused);
+			return null;
+		}
+		@Override public Void visitCompoundAssignment(CompoundAssignmentTree node, Void unused) {
+			writeScan(node.getVariable());
+			scan(node.getExpression(), unused);
+			return null;
+		}
+		@Override public Void visitUnary(UnaryTree node, Void unused) {
+			switch (node.getKind()) {
+				case POSTFIX_INCREMENT, POSTFIX_DECREMENT, PREFIX_INCREMENT, PREFIX_DECREMENT -> {
+					writeScan(node.getExpression());
+					return null;
+				}
+				default -> { return super.visitUnary(node, unused); }
+			}
+		}
+// Records one assignment-target write when the target names a
+// declared field; a qualified target still yields its receiver's
+// reads, and any other target shape (array access, parenthesized
+// form) keeps all of its inner reads.
+		private void writeScan(Tree variable) {
+			if (variable instanceof IdentifierTree) {
+				recordUse(new TreePath(getCurrentPath(), variable), variable,
+					trees.getElement(new TreePath(getCurrentPath(), variable)), true);
+				return;
+			}
+			if (variable instanceof MemberSelectTree member) {
+				recordUse(new TreePath(getCurrentPath(), variable), variable,
+					trees.getElement(new TreePath(getCurrentPath(), variable)), true);
+				scan(member.getExpression(), null);
+				return;
+			}
+			scan(variable, null);
+		}
+// The closed image tag for one resolved element, or 0 when the
+// element names no emitted declaration: local variables, parameters,
+// bindings, packages, modules, type parameters, and executables in
+// non-invocation position carry no image identity.
+		private byte tagOf(Element element, boolean write) {
+			if (element instanceof VariableElement variable) {
+				if (variable.getKind() == ElementKind.ENUM_CONSTANT) return TAG_ENUM_CONSTANT_USE;
+				if (variable.getKind() == ElementKind.FIELD) return write ? TAG_FIELD_WRITE : TAG_FIELD_READ;
+				return 0;
+			}
+			if (element instanceof TypeElement) return TAG_TYPE_USE;
+			return 0;
+		}
+		private void recordUse(TreePath usePath, Tree nameTree, Element element, boolean write) {
+			byte tag = element == null ? 0 : tagOf(element, write);
+			if (tag == 0) return;
+			writeUseRow(usePath, nameTree, element, tag);
+		}
+		// A `new` expression resolves to its constructor executable; the row
+		// keeps the invocation plane's symbol keying for its target and the
+		// declaring type plus `<init>` spelling for its atoms.
+		private void recordConstructorUse(TreePath usePath, Tree nameTree, Element element) {
+			writeUseRow(usePath, nameTree, element, TAG_CONSTRUCTOR_CALL);
+		}
+		private void writeUseRow(TreePath usePath, Tree nameTree, Element element, byte tag) {
+			Element owner = useOwner(usePath);
+			if (owner == null) return;
+			Integer ownerCoordinate = declaredCoordinates.get(owner);
+			if (ownerCoordinate == null) return;
+			long start = positions.getStartPosition(unit, nameTree);
+			long end = positions.getEndPosition(unit, nameTree);
+			if (nameTree instanceof MemberSelectTree member && start >= 0 && end >= start) {
+				long width = member.getIdentifier().length();
+				if (width <= end - start) start = end - width;
+			}
+			if (start < 0 || end < start || end > Integer.MAX_VALUE) return;
+			String declaring;
+			String name;
+			if (element instanceof TypeElement type) {
+				declaring = type.getQualifiedName().toString();
+				name = null;
+			} else {
+				Element host = element.getEnclosingElement();
+				declaring = host instanceof TypeElement type
+					? type.getQualifiedName().toString()
+					: host.toString();
+				name = element.getSimpleName().toString();
+			}
+			uses.add(new UseRow(ownerCoordinate,
+				tag == TAG_CONSTRUCTOR_CALL ? symbols.intern((ExecutableElement) element) : ABSENT,
+				tag, atoms.intern(declaring), name == null ? ABSENT : atoms.intern(name),
+				atoms.intern(unit.getSourceFile().getName()), (int) start, (int) end));
+		}
+// The innermost declared executable, or declared type when no
+// executable encloses the use, walking past anonymous classes.
+		private Element useOwner(TreePath path) {
+			for (TreePath current = path.getParentPath(); current != null; current = current.getParentPath()) {
+				if (current.getLeaf() instanceof MethodTree) {
+					Element element = trees.getElement(current);
+					if (element instanceof ExecutableElement executable) {
+						Element host = executable.getEnclosingElement();
+						if (host instanceof TypeElement type && type.getSimpleName().isEmpty()) continue;
+						return executable;
+					}
+				}
+				if (current.getLeaf() instanceof ClassTree) {
+					Element element = trees.getElement(current);
+					if (element instanceof TypeElement type && !type.getSimpleName().isEmpty()) return type;
+				}
+			}
+			return null;
+		}
+	}
+
 	private void write(int release, Path sourceBinding, Path output) throws IOException {
-		byte[][] sections = { atoms.directory(), atoms.bytes(), types.rows(), types.edges(), symbols.rows(), symbols.parameters(), declarations(), references(), declarationExtensions(), extensionEntries() };
-		int[] records = { 8, 1, 16, 4, 16, 4, 32, 20, 8, 8 };
-		int[] counts = { atoms.count(), atoms.byteCount(), types.count(), types.edgeCount(), symbols.count(), symbols.parameterCount(), declarations.size(), references.size(), declarations.size(), extensionCount() };
+		byte[][] sections = { atoms.directory(), atoms.bytes(), types.rows(), types.edges(), symbols.rows(), symbols.parameters(), declarations(), references(), declarationExtensions(), extensionEntries(), uses(), spans() };
+		int[] records = { 8, 1, 16, 4, 16, 8, 32, 20, 8, 8, 32, 8 };
+		int[] counts = { atoms.count(), atoms.byteCount(), types.count(), types.edgeCount(), symbols.count(), symbols.parameterCount(), declarations.size(), references.size(), declarations.size(), extensionCount(), uses.size(), spans.size() };
 		int bodyBytes = 0;
 		for (byte[] section : sections) bodyBytes = Math.addExact(bodyBytes, section.length);
 		byte[] header = header(release, bodyBytes, records, counts, sections);
@@ -392,22 +629,41 @@ private final Trees trees;
 		int intern(TypeMirror mirror) { return intern(mirror, 0); }
 		private int intern(TypeMirror mirror, int depth) {
 			if (depth > 64) throw new IllegalArgumentException("Java type nesting exceeds 64");
-			int start = edges.size(); int tag; int atom = ABSENT; int flags = 0;
+			int tag; int atom = ABSENT; int flags = 0;
+			// Child type coordinates are interned into this row's own list
+			// *before* the shared edge run is written, so a nested row's edges
+			// can never interleave into this row's child range. The parent's
+			// range is therefore exactly its ordered children.
+			List<Integer> children = new ArrayList<>();
 			switch (mirror.getKind()) {
 				case BOOLEAN, BYTE, SHORT, INT, LONG, CHAR, FLOAT, DOUBLE -> { tag = 1; atom = atoms.intern(mirror.getKind().name().toLowerCase()); }
 				case VOID -> tag = 2;
-				case DECLARED -> { tag = 3; DeclaredType declared = (DeclaredType) mirror; atom = atoms.intern(((TypeElement) declared.asElement()).getQualifiedName().toString()); for (TypeMirror argument : declared.getTypeArguments()) edges.add(intern(argument, depth + 1)); TypeMirror owner = declared.getEnclosingType(); if (owner.getKind() == javax.lang.model.type.TypeKind.DECLARED) { flags = 1; edges.add(intern(owner, depth + 1)); } }
-				case ARRAY -> { tag = 4; edges.add(intern(((ArrayType) mirror).getComponentType(), depth + 1)); }
-				case TYPEVAR -> { tag = 5; atom = atoms.intern(((TypeVariable) mirror).asElement().getSimpleName().toString()); }
-				case WILDCARD -> { tag = 6; WildcardType wildcard = (WildcardType) mirror; if (wildcard.getExtendsBound() != null) { flags |= 1; edges.add(intern(wildcard.getExtendsBound(), depth + 1)); } if (wildcard.getSuperBound() != null) { flags |= 2; edges.add(intern(wildcard.getSuperBound(), depth + 1)); } }
-				case INTERSECTION -> { tag = 7; for (TypeMirror bound : ((IntersectionType) mirror).getBounds()) edges.add(intern(bound, depth + 1)); }
-				case UNION -> { tag = 8; for (TypeMirror option : ((UnionType) mirror).getAlternatives()) edges.add(intern(option, depth + 1)); }
+				case DECLARED -> { tag = 3; DeclaredType declared = (DeclaredType) mirror; atom = atoms.intern(((TypeElement) declared.asElement()).getQualifiedName().toString()); for (TypeMirror argument : declared.getTypeArguments()) children.add(intern(argument, depth + 1)); TypeMirror owner = declared.getEnclosingType(); if (owner.getKind() == javax.lang.model.type.TypeKind.DECLARED) { flags = 1; children.add(intern(owner, depth + 1)); } }
+				case ARRAY -> { tag = 4; children.add(intern(((ArrayType) mirror).getComponentType(), depth + 1)); }
+				case TYPEVAR -> {
+					tag = 5;
+					TypeVariable variable = (TypeVariable) mirror;
+					String spelling = variable.asElement().getSimpleName().toString();
+					// A type variable's upper bound is part of its identity:
+					// two same-named variables with different bounds must stay
+					// distinct. The bound is rendered into the spelling rather
+					// than recursed as child coordinates, which would cycle for
+					// F-bounded variables such as `<T extends Comparable<T>>`.
+					TypeMirror upper = variable.getUpperBound();
+					String bound = upper.toString();
+					atom = atoms.intern("java.lang.Object".equals(bound) ? spelling : spelling + " extends " + bound);
+				}
+				case WILDCARD -> { tag = 6; WildcardType wildcard = (WildcardType) mirror; if (wildcard.getExtendsBound() != null) { flags |= 1; children.add(intern(wildcard.getExtendsBound(), depth + 1)); } if (wildcard.getSuperBound() != null) { flags |= 2; children.add(intern(wildcard.getSuperBound(), depth + 1)); } }
+				case INTERSECTION -> { tag = 7; for (TypeMirror bound : ((IntersectionType) mirror).getBounds()) children.add(intern(bound, depth + 1)); }
+				case UNION -> { tag = 8; for (TypeMirror option : ((UnionType) mirror).getAlternatives()) children.add(intern(option, depth + 1)); }
 				case ERROR -> { tag = 9; atom = atoms.intern(mirror.toString()); }
 				case NONE -> tag = 10;
 				case NULL -> tag = 11;
 				default -> throw new IllegalArgumentException("unsupported Java TypeKind: " + mirror.getKind());
 			}
-			int index = rows.size(); rows.add(new TypeRow(tag, flags, atom, start, edges.size() - start)); return index;
+			int start = edges.size();
+			for (int child : children) edges.add(child);
+			int index = rows.size(); rows.add(new TypeRow(tag, flags, atom, start, children.size())); return index;
 		}
 		int count() { return rows.size(); } int edgeCount() { return edges.size(); }
 		byte[] rows() { ByteBuffer out = ByteBuffer.allocate(count() * 16).order(ByteOrder.LITTLE_ENDIAN); for (TypeRow row : rows) out.put((byte) row.tag).put((byte) row.flags).putShort((short) row.children).putInt(row.atom).putInt(row.start).putInt(0); return out.array(); }
@@ -417,15 +673,32 @@ private final Trees trees;
 	private final class SymbolPool {
 		private final IdentityHashMap<ExecutableElement, Integer> indices = new IdentityHashMap<>();
 		private final List<SymbolRow> rows = new ArrayList<>();
-		private final List<Integer> parameters = new ArrayList<>();
-		int intern(ExecutableElement element) { Integer known = indices.get(element); if (known != null) return known; int start = parameters.size(); for (VariableElement parameter : element.getParameters()) parameters.add(types.intern(parameter.asType())); Element owner = element.getEnclosingElement(); String declaring = owner instanceof TypeElement type ? type.getQualifiedName().toString() : owner.toString(); int index = rows.size(); rows.add(new SymbolRow(atoms.intern(declaring), atoms.intern(element.getSimpleName().toString()), start, parameters.size() - start)); indices.put(element, index); return index; }
-		int count() { return rows.size(); } int parameterCount() { return parameters.size(); }
+		private final List<Integer> parameterTypes = new ArrayList<>();
+		private final List<Integer> parameterNames = new ArrayList<>();
+		int intern(ExecutableElement element) {
+			Integer known = indices.get(element); if (known != null) return known;
+			int start = parameterTypes.size();
+			for (VariableElement parameter : element.getParameters()) {
+				parameterTypes.add(types.intern(parameter.asType()));
+				// The declared parameter name travels beside its type coordinate
+				// so the lane can name each carrier by the source name. A
+				// compiler-synthesized parameter with no simple name stays
+				// explicitly absent; the reader then falls back to the type
+				// spelling rather than fabricating a name.
+				String name = parameter.getSimpleName().toString();
+				parameterNames.add(name.isEmpty() ? ABSENT : atoms.intern(name));
+			}
+			Element owner = element.getEnclosingElement(); String declaring = owner instanceof TypeElement type ? type.getQualifiedName().toString() : owner.toString(); int index = rows.size(); rows.add(new SymbolRow(atoms.intern(declaring), atoms.intern(element.getSimpleName().toString()), start, parameterTypes.size() - start)); indices.put(element, index); return index;
+		}
+		int count() { return rows.size(); } int parameterCount() { return parameterTypes.size(); }
 		byte[] rows() { ByteBuffer out = ByteBuffer.allocate(count() * 16).order(ByteOrder.LITTLE_ENDIAN); for (SymbolRow row : rows) out.putInt(row.owner).putInt(row.name).putInt(row.start).putShort((short) row.count).putShort((short) 0); return out.array(); }
-		byte[] parameters() { ByteBuffer out = ByteBuffer.allocate(parameterCount() * 4).order(ByteOrder.LITTLE_ENDIAN); for (int parameter : parameters) out.putInt(parameter); return out.array(); }
+		byte[] parameters() { ByteBuffer out = ByteBuffer.allocate(parameterCount() * 8).order(ByteOrder.LITTLE_ENDIAN); for (int index = 0; index < parameterTypes.size(); index++) out.putInt(parameterTypes.get(index)).putInt(parameterNames.get(index)); return out.array(); }
 	}
 
 	private byte[] declarations() { ByteBuffer out = ByteBuffer.allocate(declarations.size() * 32).order(ByteOrder.LITTLE_ENDIAN); for (DeclarationRow row : declarations) out.put((byte) row.kind).put((byte) row.origin).put((byte) row.docFlavor).put((byte) 0).putInt(row.modifiers).putInt(row.name).putInt(row.owner).putInt(row.doc).putInt(ABSENT).putInt(row.type).putInt(row.symbol); return out.array(); }
 	private byte[] references() { ByteBuffer out = ByteBuffer.allocate(references.size() * 20).order(ByteOrder.LITTLE_ENDIAN); for (ReferenceRow row : references) out.putInt(row.owner).putInt(row.target).putInt(row.file).putInt(row.start).putInt(row.end); return out.array(); }
+	private byte[] uses() { ByteBuffer out = ByteBuffer.allocate(uses.size() * 32).order(ByteOrder.LITTLE_ENDIAN); for (UseRow row : uses) out.putInt(row.owner).putInt(row.target).put(row.tag).put(new byte[3]).putInt(row.declaring).putInt(row.name).putInt(row.file).putInt(row.start).putInt(row.end); return out.array(); }
+	private byte[] spans() { ByteBuffer out = ByteBuffer.allocate(spans.size() * 8).order(ByteOrder.LITTLE_ENDIAN); for (SpanRow row : spans) out.putInt(row.start).putInt(row.end); return out.array(); }
 	private byte[] declarationExtensions() { ByteBuffer out = ByteBuffer.allocate(declarations.size() * 8).order(ByteOrder.LITTLE_ENDIAN); int start = 0; for (List<ExtensionEntry> facts : extensions) { out.putInt(facts.isEmpty() ? 0 : start).putInt(facts.size()); start += facts.size(); } return out.array(); }
 	private int extensionCount() { return extensions.stream().mapToInt(List::size).sum(); }
 	private byte[] extensionEntries() { ByteBuffer out = ByteBuffer.allocate(extensionCount() * 8).order(ByteOrder.LITTLE_ENDIAN); for (List<ExtensionEntry> facts : extensions) for (ExtensionEntry entry : facts) out.put((byte) entry.tag).put(new byte[3]).putInt(entry.value); return out.array(); }
@@ -434,5 +707,7 @@ private final Trees trees;
 	private record SymbolRow(int owner, int name, int start, int count) { }
 	private record DeclarationRow(int kind, int origin, int docFlavor, int modifiers, int name, int owner, int doc, int type, int symbol) { }
 	private record ReferenceRow(int owner, int target, int file, int start, int end) { }
+	private record UseRow(int owner, int target, byte tag, int declaring, int name, int file, int start, int end) { }
+	private record SpanRow(int start, int end) { }
 	private record ExtensionEntry(int tag, int value) { }
 }

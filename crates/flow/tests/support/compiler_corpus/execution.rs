@@ -224,6 +224,10 @@ pub(super) fn run_package(
             )
         }
         CorpusLanguage::TypeScript | CorpusLanguage::Python | CorpusLanguage::Clang => {
+            // The synthetic matrix renders bytes in memory and has no package
+            // directory to open, so Clang takes the single-buffer `None`
+            // authority here. The real-package audit (real.rs) is the lane that
+            // supplies a whole-project `ClangProject` for cross-file identity.
             compile_with_authority(
                 profile,
                 source,

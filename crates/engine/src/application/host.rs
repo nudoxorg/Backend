@@ -20,8 +20,8 @@ use std::{
 
 use authority::NativeExecutables;
 use backend_semantic::vocabulary::NativeTool;
-use paths::create_directory;
 use backend_store::journal::PublicationLimits;
+use paths::create_directory;
 
 use crate::application::{
     LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,

@@ -1076,6 +1076,10 @@ pub(crate) enum GoldenPythonProjectionFault {
         end: u32,
         cause: GoldenPackageLineageFault,
     },
+    Containment {
+        start: u32,
+        end: u32,
+    },
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -2373,6 +2377,7 @@ impl From<backend_semantic::vocabulary::PythonProjectionFault> for GoldenPythonP
                 end,
                 cause: cause.into(),
             },
+            PythonProjectionFault::Containment { start, end } => Self::Containment { start, end },
         }
     }
 }

@@ -3,8 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::num::TryFromIntError;
 
-use backend_semantic::ir::{AtomId, EntityId, TypeId};
 use backend_semantic::index_core::{ExactSegmentError, LexicalSegmentError};
+use backend_semantic::ir::{AtomId, EntityId, TypeId};
 use thiserror::Error;
 
 /// A caller-owned region required by one bounded compiler-to-index build.

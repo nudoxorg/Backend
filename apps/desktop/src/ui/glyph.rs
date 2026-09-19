@@ -1,12 +1,14 @@
 //! Glyph tiles: declaration kinds, source languages, and readiness marks.
-//! A tile is a small rounded square holding one letter on the chromatic plane.
+//! A tile is a small rounded square holding one drawn mark on the chromatic plane.
 //! Its hue is the only colour a dense list carries, and it means exactly one thing.
 //!
-//! Letters rather than pictograms, because eighteen distinguishable pictograms
-//! do not exist at fourteen pixels, while eighteen letters at eighteen hues on
-//! one luminance plane are read preattentively and still say something true in
+//! Marks rather than letters. Nineteen distinguishable letters at fourteen
+//! pixels collide — `C` for class beside `c` for the C language was the
+//! complaint that retired them — while nineteen small shapes on nineteen hues
+//! at one luminance are read preattentively and still say something true in
 //! greyscale. The tile is washed rather than filled so a column of them reads
-//! as texture, and the letter carries the contrast.
+//! as texture, and the mark carries the contrast. A language is drawn as its
+//! logo, never as two letters, for the same reason.
 //!
 //! One glyph deliberately differs from the shared model's. `backend packages`
 //! prints `●` for a ready project because a terminal cannot draw weight; this
@@ -14,37 +16,68 @@
 //! an `✗` in colour. The *state* is [`backend_present::Readiness`] in both
 //! places; only the mark is a drawing decision.
 
-use crate::theme::kind::{kind_glyph, package_glyph, untyped_glyph};
-use crate::theme::language::{hue as language_hue, tag as language_tag_text};
+use crate::presentation::project::Standing;
+use crate::theme::kind::{kind_glyph, mark_path, package_glyph, untyped_glyph};
+use crate::theme::language::hue as language_hue;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Radius, TypeScale, radius, type_size};
 use crate::theme::{Theme, ramp::Hue};
+use crate::ui::icon::{self, Logo};
 use backend_library::DeclarationKind;
-use crate::presentation::project::Standing;
-use backend_present::{Language, LanguageCount};
-use gpui::{Div, FontWeight, ParentElement, Styled, div, px};
+use backend_present::Language;
+use gpui::{Div, ParentElement, Styled, div, px, svg};
 
 /// Side length of a glyph tile, in pixels.
 const TILE: f32 = 16.0;
 
 /// Side length of the larger tile used in page headers.
-const TILE_LARGE: f32 = 22.0;
+const TILE_LARGE: f32 = 24.0;
+
+/// Size of the mark inside a tile, in pixels.
+const MARK: f32 = 11.0;
+
+/// Size of the mark inside a large tile, in pixels.
+const MARK_LARGE: f32 = 16.0;
 
 /// Returns the tile for one declaration kind.
 pub(crate) fn kind_tile(theme: &Theme, kind: Option<DeclarationKind>, large: bool) -> Div {
     let glyph = kind.map_or_else(untyped_glyph, kind_glyph);
-    tile(theme, glyph.hue(), &glyph.letter().to_string(), large)
+    tile(theme, glyph.hue(), large).child(mark(theme, mark_path(kind), glyph.hue(), large))
+}
+
+/// Returns the bare mark for one kind, at an explicit size and in its hue.
+///
+/// For places too dense for a tile: a section head, a tree row, a chip.
+pub(crate) fn kind_mark(theme: &Theme, kind: Option<DeclarationKind>, side: f32) -> gpui::Svg {
+    let glyph = kind.map_or_else(untyped_glyph, kind_glyph);
+    svg()
+        .path(mark_path(kind))
+        .w(px(side))
+        .h(px(side))
+        .flex_none()
+        .text_color(theme.on_plane(glyph.hue()))
 }
 
 /// Returns the tile for a package or project row.
 pub(crate) fn package_tile(theme: &Theme, large: bool) -> Div {
     let glyph = package_glyph();
-    tile(theme, glyph.hue(), &glyph.letter().to_string(), large)
+    tile(theme, glyph.hue(), large).child(mark(theme, icon::PACKAGE_PATH, glyph.hue(), large))
 }
 
-/// Returns the two-letter tag for one source language.
+/// Returns the tile for one source language: its logo in its hue.
 pub(crate) fn language_tag(theme: &Theme, language: Language) -> Div {
-    tile(theme, language_hue(language), language_tag_text(language), false)
+    let hue = language_hue(language);
+    let ink = theme.on_plane(hue);
+    let shell = tile(theme, hue, false);
+    match Logo::of(language) {
+        Some(logo) => shell.child(icon::logo(logo, MARK, ink)),
+        None => shell.child(
+            div()
+                .text_size(type_size(TypeScale::Micro))
+                .text_color(ink)
+                .child("··"),
+        ),
+    }
 }
 
 /// Returns the readable name of one declaration kind.
@@ -52,27 +85,27 @@ pub(crate) fn kind_label(kind: Option<DeclarationKind>) -> &'static str {
     kind.map_or_else(|| untyped_glyph().label(), |kind| kind_glyph(kind).label())
 }
 
-fn tile(theme: &Theme, hue: Hue, letter: &str, large: bool) -> Div {
+fn tile(theme: &Theme, hue: Hue, large: bool) -> Div {
     let side = if large { TILE_LARGE } else { TILE };
-    let scale = if large {
-        TypeScale::Small
-    } else {
-        TypeScale::Micro
-    };
     div()
         .flex_none()
         .w(px(side))
         .h(px(side))
-        .rounded(radius(Radius::Hair))
+        .rounded(radius(if large { Radius::Small } else { Radius::Hair }))
         .bg(theme.plane_wash(hue, 0.16))
         .flex()
         .items_center()
         .justify_center()
-        .text_size(type_size(scale))
-        .font_weight(FontWeight::SEMIBOLD)
-        .font_family(theme.specimen())
+}
+
+fn mark(theme: &Theme, path: &'static str, hue: Hue, large: bool) -> gpui::Svg {
+    let side = if large { MARK_LARGE } else { MARK };
+    svg()
+        .path(path)
+        .w(px(side))
+        .h(px(side))
+        .flex_none()
         .text_color(theme.on_plane(hue))
-        .child(letter.to_owned())
 }
 
 /// Returns the mark this window draws for one standing.
@@ -106,39 +139,4 @@ pub(crate) fn standing_mark(theme: &Theme, standing: Standing) -> Div {
         .text_size(type_size(TypeScale::Small))
         .text_color(theme.paint(standing_paint(standing)))
         .child(standing_glyph(standing))
-}
-
-/// Returns a hue-coded bar showing one project's language mix.
-///
-/// A bar rather than a sentence: the mix is a proportion, and a proportion is
-/// a length. The bar is the width of the row, so two projects can be compared
-/// at a glance without reading a single number.
-pub(crate) fn language_bar(theme: &Theme, counts: &[LanguageCount], total: u64) -> Div {
-    let total = total.max(1);
-    div()
-        .h(px(3.0))
-        .w_full()
-        .flex()
-        .gap(px(1.0))
-        .children(counts.iter().map(|count| {
-            let share = ratio(count.declarations().get(), total);
-            div()
-                .h_full()
-                .rounded_full()
-                .bg(theme.on_plane(language_hue(count.language())))
-                .flex_basis(px(0.0))
-                .flex_grow(share)
-                .flex_shrink(1.0)
-        }))
-}
-
-fn ratio(part: u64, total: u64) -> f32 {
-    let part = u32::try_from(part).unwrap_or(u32::MAX);
-    let total = u32::try_from(total).unwrap_or(u32::MAX).max(1);
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "a declaration count above sixteen million cannot change a bar's width"
-    )]
-    let share = part as f32 / total as f32;
-    share.clamp(0.0, 1.0)
 }

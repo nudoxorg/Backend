@@ -32,6 +32,7 @@ fn empty_report(source: &[u8]) -> Report {
     Report {
         schema_version: 1,
         source_digest,
+        declaration_file: false,
         diagnostics: Box::new([]),
         declarations: Box::new([]),
         references: Box::new([]),

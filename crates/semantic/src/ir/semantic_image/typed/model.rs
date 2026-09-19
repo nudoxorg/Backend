@@ -4,9 +4,9 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::ir::{
-    ArenaRange, AtomId, AtomListId, EntityId, ExternalId, Ir, ObjectMemberListId,
-    TemplatePartListId, TupleElementListId, TypeId, TypeListId, TypeParameterBoundListId,
-    TypeParameterListId,
+    ArenaRange, AtomId, AtomListId, EntityId, ExternalId, FreePredicateListId, Ir,
+    ObjectMemberListId, TemplatePartListId, TupleElementListId, TypeId, TypeListId,
+    TypeParameterBoundListId, TypeParameterListId,
 };
 
 /// A closed graph vertex; each list domain remains distinct even though each
@@ -21,6 +21,7 @@ pub enum TypedPlanNode {
     AtomList(AtomListId),
     TypeParameters(TypeParameterListId),
     TypeParameterBounds(TypeParameterBoundListId),
+    FreePredicates(FreePredicateListId),
 }
 
 impl TypedPlanNode {
@@ -34,6 +35,7 @@ impl TypedPlanNode {
             Self::AtomList(value) => value.raw,
             Self::TypeParameters(value) => value.raw,
             Self::TypeParameterBounds(value) => value.raw,
+            Self::FreePredicates(value) => value.raw,
         }
     }
 
@@ -47,6 +49,7 @@ impl TypedPlanNode {
             Self::AtomList(_) => TypedPlanDomain::AtomList,
             Self::TypeParameters(_) => TypedPlanDomain::TypeParameters,
             Self::TypeParameterBounds(_) => TypedPlanDomain::TypeParameterBounds,
+            Self::FreePredicates(_) => TypedPlanDomain::FreePredicates,
         }
     }
 
@@ -62,6 +65,7 @@ impl TypedPlanNode {
             TypedPlanDomain::TypeParameterBounds => {
                 Self::TypeParameterBounds(TypeParameterBoundListId::new(raw))
             }
+            TypedPlanDomain::FreePredicates => Self::FreePredicates(FreePredicateListId::new(raw)),
         }
     }
 }
@@ -77,6 +81,7 @@ impl TypedPlanDomain {
             Self::AtomList => 5,
             Self::TypeParameters => 6,
             Self::TypeParameterBounds => 7,
+            Self::FreePredicates => 8,
         }
     }
 
@@ -90,6 +95,7 @@ impl TypedPlanDomain {
             Self::AtomList => 5,
             Self::TypeParameters => 6,
             Self::TypeParameterBounds => 7,
+            Self::FreePredicates => 8,
         }
     }
 }
@@ -107,6 +113,7 @@ pub enum TypedPlanDomain {
     AtomList,
     TypeParameters,
     TypeParameterBounds,
+    FreePredicates,
 }
 
 /// Exact typed-pool graph rejection. No cycle is converted into a synthetic
@@ -200,6 +207,8 @@ pub(crate) enum TypedEdgeRole {
     ParameterAllowsRefLike(u32),
     BoundKind(u32),
     BoundValue(u32),
+    PredicateSubject(u32),
+    PredicateBound(u32),
 }
 
 /// A full semantic dependency target, never a raw untyped `u32`.
@@ -259,12 +268,13 @@ pub(crate) struct TypedPlanBases {
     atoms: u32,
     parameters: u32,
     bounds: u32,
+    predicates: u32,
     total: u32,
 }
 
 impl TypedPlanBases {
-    pub(crate) fn new(counts: [u32; 8]) -> Result<Self, TypedPlanFault> {
-        let mut bases = [0_u32; 8];
+    pub(crate) fn new(counts: [u32; 9]) -> Result<Self, TypedPlanFault> {
+        let mut bases = [0_u32; 9];
         let mut total = 0_u32;
         for (index, count) in counts.into_iter().enumerate() {
             bases[index] = total;
@@ -284,6 +294,7 @@ impl TypedPlanBases {
             atoms: bases[5],
             parameters: bases[6],
             bounds: bases[7],
+            predicates: bases[8],
             total,
         })
     }
@@ -292,7 +303,7 @@ impl TypedPlanBases {
         self.total
     }
 
-    pub(crate) fn slot(self, node: TypedPlanNode, counts: [u32; 8]) -> Result<u32, TypedPlanFault> {
+    pub(crate) fn slot(self, node: TypedPlanNode, counts: [u32; 9]) -> Result<u32, TypedPlanFault> {
         let (base, count) = match node {
             TypedPlanNode::Type(_) => (self.types, counts[0]),
             TypedPlanNode::TypeList(_) => (self.type_lists, counts[1]),
@@ -302,6 +313,7 @@ impl TypedPlanBases {
             TypedPlanNode::AtomList(_) => (self.atoms, counts[5]),
             TypedPlanNode::TypeParameters(_) => (self.parameters, counts[6]),
             TypedPlanNode::TypeParameterBounds(_) => (self.bounds, counts[7]),
+            TypedPlanNode::FreePredicates(_) => (self.predicates, counts[8]),
         };
         let raw = node.raw();
         if raw >= count {
@@ -314,7 +326,7 @@ impl TypedPlanBases {
 /// Exact domain counts used for every global-state and remap lookup.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TypedPlanCounts {
-    values: [u32; 8],
+    values: [u32; 9],
     node_capacity: usize,
 }
 
@@ -330,6 +342,7 @@ impl TypedPlanCounts {
             columns.atom_lists.ranges.len(),
             columns.type_parameters.ranges.len(),
             columns.type_parameter_bounds.ranges.len(),
+            columns.free_predicates.ranges.len(),
         ];
         let mut node_capacity = 0_usize;
         for count in source {
@@ -340,7 +353,7 @@ impl TypedPlanCounts {
                         nodes: node_capacity,
                     })?;
         }
-        let mut values = [0_u32; 8];
+        let mut values = [0_u32; 9];
         for (index, count) in source.into_iter().enumerate() {
             values[index] = count_u32(count)?;
         }
@@ -350,7 +363,7 @@ impl TypedPlanCounts {
         })
     }
 
-    pub(crate) const fn as_array(self) -> [u32; 8] {
+    pub(crate) const fn as_array(self) -> [u32; 9] {
         self.values
     }
 

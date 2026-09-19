@@ -1009,6 +1009,37 @@ impl RustDefinition {
             Self::Static(definition) => Some(definition.ty(database)),
         }
     }
+
+    /// Borrows this definition's HIR generic parameters.
+    ///
+    /// Order follows rust-analyzer: lifetimes first, then type and const
+    /// parameters. Callers that emit positionally must re-pair with the
+    /// written parameter list rather than trusting this order.
+    ///
+    /// Every definition rust-analyzer models as a public [`ra_ap_hir::GenericDef`]
+    /// is projected directly. Fields, enum variants, modules, and macros have no
+    /// such handle and yield an empty vector rather than an approximated one.
+    #[must_use]
+    pub fn generic_params<'analysis>(
+        &self,
+        database: &'analysis ra_ap_ide_db::RootDatabase,
+    ) -> Vec<ra_ap_hir::GenericParam> {
+        let generic = match self {
+            Self::Field(_) | Self::Variant(_) | Self::Macro(_) | Self::Module(_) => {
+                return Vec::new();
+            }
+            Self::Trait(definition) => ra_ap_hir::GenericDef::from(*definition),
+            Self::Implementation(definition) => ra_ap_hir::GenericDef::from(*definition),
+            Self::Function(definition) => ra_ap_hir::GenericDef::from(*definition),
+            Self::Record(definition) | Self::Enum(definition) => {
+                ra_ap_hir::GenericDef::from(*definition)
+            }
+            Self::TypeAlias(definition) => ra_ap_hir::GenericDef::from(*definition),
+            Self::Constant(definition) => ra_ap_hir::GenericDef::from(*definition),
+            Self::Static(definition) => ra_ap_hir::GenericDef::from(*definition),
+        };
+        generic.params(database)
+    }
 }
 
 /// One method call with exact AST call-site, inferred result type, and static dispatch target.

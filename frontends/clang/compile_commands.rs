@@ -15,12 +15,10 @@
 //! tree, or an unrelated system dependency's headers) and passes `-I` flags
 //! for all of it. Without them, libclang cannot resolve `#include "..."` /
 //! `#include <...>` directives that reach outside the single file's own
-//! directory: it treats the miss as a diagnostic, not a hard parse error
-//! ([`super::extract::extract_file`] does not currently surface parse
-//! diagnostics — see that function), so the practical effect is silent:
-//! declarations that depend on the missing header's types are skipped or
-//! degrade to [`crate::clang::oracle::OracleType::Inferred`], not an error a caller
-//! can see.
+//! directory: it treats the miss as a diagnostic, not a hard parse error, so
+//! the practical effect is silent: declarations that depend on the missing
+//! header's types are skipped or degrade to the bounded lane's unknown-type
+//! rows, not an error a caller can see.
 //!
 //! # What this does *not* do
 //!
@@ -106,7 +104,15 @@ impl CompileCommands {
                     .unwrap_or_default()
             });
             let stripped = filter_relevant_args(&raw_args, &entry.file);
-            let resolved = rewrite_relative_include_paths(&stripped, Path::new(&entry.directory));
+            // Canonicalize the working directory before anchoring relative
+            // include paths: the compilation root passed to libclang is
+            // canonical, so a symlinked or `..`-bearing database `directory`
+            // must resolve to the same spelling or every header under it would
+            // fall outside the root and degrade to an opaque system target.
+            let directory = Path::new(&entry.directory)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(&entry.directory));
+            let resolved = rewrite_relative_include_paths(&stripped, &directory);
             by_file.insert(canon, resolved);
         }
         Some(Self { by_file })
@@ -280,8 +286,10 @@ mod tests {
 
         // `-Iinclude` is relative to `directory` per the spec, so it must
         // come out rewritten to an absolute path, not the literal string —
-        // see `rewrite_relative_include_paths`.
-        let expected_include = format!("-I{}", dir.path().join("include").display());
+        // see `rewrite_relative_include_paths`. The anchor is the canonical
+        // directory so a symlinked temp path matches libclang's own spelling.
+        let canonical = dir.path().canonicalize().unwrap();
+        let expected_include = format!("-I{}", canonical.join("include").display());
         assert!(args.contains(&expected_include), "got {args:?}");
         assert!(args.contains(&"-DFOO=1".to_owned()), "got {args:?}");
         assert!(args.contains(&"-std=c11".to_owned()), "got {args:?}");
@@ -324,7 +332,8 @@ mod tests {
 
         let cc = CompileCommands::load(dir.path()).expect("database must load");
         let args = cc.args_for(&file_path).expect("lib.cpp must be listed");
-        let expected_include = format!("-I{}", dir.path().join("include").display());
+        let canonical = dir.path().canonicalize().unwrap();
+        let expected_include = format!("-I{}", canonical.join("include").display());
         assert!(args.contains(&expected_include), "got {args:?}");
         assert!(args.contains(&"-std=c++17".to_owned()), "got {args:?}");
     }

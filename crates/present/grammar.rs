@@ -266,8 +266,9 @@ impl CommandGrammar {
             | CommandId::Search
             | CommandId::Graph
             | CommandId::GraphQuery
-            | CommandId::Source
+            |             CommandId::Source
             | CommandId::Related
+            | CommandId::References
             | CommandId::Read
             | CommandId::Diff
             | CommandId::Explore
@@ -391,7 +392,7 @@ const LIMIT: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 35] = [
+pub const GRAMMARS: [CommandGrammar; 36] = [
     CommandGrammar {
         name: "packages",
         tool: "backend.packages",
@@ -459,6 +460,18 @@ pub const GRAMMARS: [CommandGrammar; 35] = [
         )],
         options: &[],
         when: "Use to widen from one declaration to its callers, implementers, and nearest neighbours in one call.",
+    },
+    CommandGrammar {
+        name: "references",
+        tool: "backend.references",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "coordinate",
+            ArgumentKind::Coordinate,
+            "Exact declaration coordinate whose uses are requested.",
+        )],
+        options: &[],
+        when: "Use to answer where is this symbol used: every row carries the relation kind, the authority class, and the exact source span that proves the use.",
     },
     CommandGrammar {
         name: "read",

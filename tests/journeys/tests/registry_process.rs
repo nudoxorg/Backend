@@ -118,6 +118,32 @@ fn unique_root() -> PathBuf {
     path
 }
 
+/// Derives this test's Unix socket endpoint the same way every production
+/// surface does, instead of placing it under `std::env::temp_dir()` directly.
+///
+/// Under `nix develop`, `TMPDIR` (and therefore `std::env::temp_dir()`) is a
+/// long per-shell path such as
+/// `/private/var/folders/.../T/nix-shell.XXXXXX/`. `unique_root`'s workspace
+/// directories live there and that is fine — ordinary paths have no length
+/// ceiling — but a Unix domain socket path is copied into the fixed-size
+/// `sockaddr_un.sun_path` buffer, which the kernel caps at 104 bytes on macOS
+/// and 108 on Linux (`crates/runtime/src/lib.rs`'s `SUN_PATH_CAPACITY`). A
+/// long `TMPDIR` prefix blows straight through that limit.
+/// `backend_runtime::derive_endpoint` exists precisely to avoid this: it
+/// hashes the workspace's identity down to a short, fixed-prefix name under
+/// `/tmp` (or `XDG_RUNTIME_DIR`), so the derived endpoint is unique per
+/// workspace and always short regardless of how long the surrounding
+/// temporary directory is.
+///
+/// This calls the plain derivation rather than `WorkspacePaths::discover`
+/// deliberately: `discover` honors `BACKEND_LOCALD_ENDPOINT` from the
+/// environment when no endpoint is given, and on a shared machine that
+/// variable may already name a real running daemon's socket — exactly the
+/// collision a per-test-unique endpoint must not risk.
+fn derive_endpoint(workspace: &Path) -> PathBuf {
+    backend_runtime::derive_endpoint(workspace)
+}
+
 fn authority_secret(root: &Path) -> PathBuf {
     let path = root.join("authority.secret");
     std::fs::write(&path, AUTHORITY_SECRET).expect("write authority secret");
@@ -264,9 +290,9 @@ fn cli_name(endpoint: &Path) -> Output {
 #[test]
 fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
     let root = unique_root();
-    let endpoint = root.join("locald.sock");
     let workspace = root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("create daemon workspace");
+    let endpoint = derive_endpoint(&workspace);
     let authority = authority_secret(&root);
     let archive = tar_archive("package/src/lib.rs", b"pub fn from_registry() {}\n");
     let (registry, server) = loopback_registry(archive);
@@ -323,4 +349,47 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
 
     drop(second);
     std::fs::remove_dir_all(root).expect("remove registry process fixture");
+}
+
+/// Proves the endpoint derivation used above fits the platform's Unix socket
+/// budget even though this journey's workspace directories live under a long
+/// `nix develop` `TMPDIR`.
+///
+/// This does not literally override the process-wide `TMPDIR`: doing so needs
+/// `std::env::set_var`, an `unsafe fn` under the 2024 edition, and this file
+/// denies unsafe code. Instead it builds a workspace under a deliberately
+/// long, deeply nested path modeled on `nix develop`'s real
+/// `/private/var/folders/.../T/nix-shell.XXXXXX/` prefix, and shows that
+/// `derive_endpoint` — which calls into `backend_runtime::WorkspacePaths`
+/// exactly as `remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart`
+/// does — neither inherits that prefix nor produces a path too long for
+/// `sockaddr_un.sun_path`.
+#[test]
+fn derived_endpoint_fits_sun_path_even_under_a_long_tmpdir() {
+    let simulated_tmpdir = std::env::temp_dir().join(
+        "nix-shell.simulated-very-long-shell-scoped-temporary-directory-for-this-fixture",
+    );
+    let workspace = simulated_tmpdir.join("backend-registry-process-fixture/workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace under simulated long TMPDIR");
+
+    let endpoint = derive_endpoint(&workspace);
+
+    assert!(
+        !endpoint.starts_with(std::env::temp_dir()),
+        "endpoint must not be derived from std::env::temp_dir(): {}",
+        endpoint.display()
+    );
+    // 104 is the stricter of the two `sockaddr_un.sun_path` budgets this
+    // journey may run under (macOS 104 bytes, Linux 108 bytes; see
+    // `crates/runtime/src/lib.rs`'s `SUN_PATH_CAPACITY`), so it is the bound
+    // this file — which has no access to that crate-private constant — can
+    // honestly check against.
+    assert!(
+        endpoint.as_os_str().len() <= 104,
+        "derived endpoint exceeds the sockaddr_un.sun_path budget: {} ({} bytes)",
+        endpoint.display(),
+        endpoint.as_os_str().len()
+    );
+
+    std::fs::remove_dir_all(&simulated_tmpdir).expect("remove simulated TMPDIR fixture");
 }

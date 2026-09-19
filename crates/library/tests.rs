@@ -1159,3 +1159,63 @@ fn semantic_diff_rejects_relation_evidence_attached_to_the_wrong_side() {
         Err(ProductAdmissionError::DiffShape)
     );
 }
+
+#[test]
+fn references_name_sites_from_compiler_facts_against_the_selected_view() {
+    let basis = Basis::new(view_state_root(&[]), object_version(b"source"));
+    let site_symbol = symbol_key("pkg::semantic::aa::caller");
+    let target_label = "pkg::semantic::bb::callee";
+    let rows = vec![
+        Row::new(RowId::Symbol(site_symbol), basis, "pkg::caller"),
+        Row::new(
+            RowId::Symbol(symbol_key("pkg::semantic::bb::callee")),
+            basis,
+            target_label,
+        ),
+    ];
+    let library = projection(rows);
+    let fact = ReferenceFact {
+        site: site_symbol,
+        target: SemanticLinkTarget::Local {
+            declaration: SemanticDeclarationIdentity {
+                family: [2; 16],
+                variant: [3; 16],
+            },
+        },
+        relation: SemanticLinkKind::Calls,
+        evidence: SemanticLinkEvidence {
+            confidence: SemanticConfidence::Compiler,
+            source: Some(SemanticSourceSpan {
+                file: ProductText::new("src/main.rs").expect("path"),
+                start: 40,
+                end: 46,
+            }),
+        },
+    };
+    let target = ProductText::new(target_label).expect("target");
+    let records = library
+        .references(&target, &[fact.clone()])
+        .expect("references");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].site.as_str(), "pkg::caller");
+    assert_eq!(records[0].relation, SemanticLinkKind::Calls);
+    let span = records[0].evidence.source.as_ref().expect("span");
+    assert_eq!((span.start, span.end), (40, 46));
+
+    // A fact citing a declaration absent from the view is refused, not
+    // silently dropped: a reference answer may never name an invisible row.
+    let orphan = ReferenceFact {
+        site: symbol_key("pkg::semantic::cc::absent"),
+        ..fact.clone()
+    };
+    assert!(matches!(
+        library.references(&target, &[orphan]),
+        Err(LibraryError::NotFound)
+    ));
+    // An unknown target is equally refused.
+    let missing = ProductText::new("pkg::semantic::dd::missing").expect("missing");
+    assert!(matches!(
+        library.references(&missing, &[fact]),
+        Err(LibraryError::NotFound)
+    ));
+}

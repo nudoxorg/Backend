@@ -6,10 +6,12 @@
 //! never by borrow. Name bytes stay inspectable at the collector boundary
 //! that produced them.
 
-use backend_semantic::ir::{EntityId, ProductChildRole, ProductConstructorFault, SemanticTypeFault};
 use backend_frontend_clang::legacy::{
     DeclarationId as ClangDeclarationId, SourceSpan as ClangSourceSpan, SymbolIdentity,
     TypeId as ClangTypeId, TypeKind as ClangTypeKind, TypeQualifiers as ClangTypeQualifiers,
+};
+use backend_semantic::ir::{
+    EntityId, ProductChildRole, ProductConstructorFault, SemanticTypeFault,
 };
 use backend_semantic::vocabulary::ProjectionFactLane;
 

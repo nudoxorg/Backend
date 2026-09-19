@@ -132,3 +132,66 @@ fn absent_database_is_an_explicit_typed_terminal() {
         Err(DatabaseError::Absent | DatabaseError::Native)
     ));
 }
+
+/// A C++ single-header entry must receive C++ arguments, never the C default.
+///
+/// This is the argument-discovery regression behind the real-package corpus
+/// failures: `nlohmann-json/single_include/nlohmann/json.hpp` and
+/// `catch2/single_include/catch2/catch.hpp` are the raw-largest sources of
+/// their packages, both `.hpp`, and libclang infers C++ from that extension —
+/// so the previous `-std=c11` default produced the fatal
+/// `invalid argument '-std=c11' not allowed with 'C++'` and libclang's
+/// `CXError_ASTReadError` before any declaration was visited.
+#[test]
+fn cpp_header_entry_defaults_to_cxx_arguments_and_flag_first_shape() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|_| TestError::Profile)?;
+    let root = dir.path().join("pkg-root");
+    std::fs::create_dir_all(root.join("single_include/pkg")).map_err(|_| TestError::Profile)?;
+    let header = root.join("single_include/pkg/pkg.hpp");
+    std::fs::write(&header, b"").map_err(|_| TestError::Profile)?;
+    let project = backend_frontend_clang::ClangProject::open(&root, &header)
+        .map_err(|_| TestError::Profile)?;
+    let arguments = project.arguments();
+
+    assert!(
+        arguments.first().is_some_and(|argument| argument.starts_with('-')),
+        "argument vector must be flag-first (no argv[0]): {arguments:?}"
+    );
+    assert!(
+        arguments.ends_with(&[
+            "-std=c++17".to_owned(),
+            "-x".to_owned(),
+            "c++".to_owned(),
+        ]),
+        "a .hpp entry must default to explicit C++ arguments: {arguments:?}"
+    );
+    assert!(
+        !arguments.iter().any(|argument| argument == "-std=c11"),
+        "a .hpp entry must never receive the C default: {arguments:?}"
+    );
+    Ok(())
+}
+
+/// An ambiguous `.h` entry keeps the C default: libclang infers C from that
+/// extension, and C projects legitimately select `.h` entries.
+#[test]
+fn ambiguous_h_entry_keeps_the_c_default() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|_| TestError::Profile)?;
+    let root = dir.path().join("pkg-root");
+    std::fs::create_dir_all(root.join("include")).map_err(|_| TestError::Profile)?;
+    let header = root.join("include/pkg.h");
+    std::fs::write(&header, b"").map_err(|_| TestError::Profile)?;
+    let project = backend_frontend_clang::ClangProject::open(&root, &header)
+        .map_err(|_| TestError::Profile)?;
+    let arguments = project.arguments();
+
+    assert!(
+        arguments.last().is_some_and(|argument| argument == "-std=c11"),
+        "a .h entry must keep the C default: {arguments:?}"
+    );
+    assert!(
+        !arguments.windows(2).any(|window| window == ["-x", "c++"]),
+        "a .h entry must not force the C++ dialect: {arguments:?}"
+    );
+    Ok(())
+}

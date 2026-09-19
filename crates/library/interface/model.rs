@@ -7,11 +7,11 @@ use crate::interface::{
     InputText, PackageCompileRequest, RetrievalCause, RetrievalRows, SnapshotFacts, SourceText,
     UnloadReceipt,
 };
-use backend_semantic::vocabulary::{FrontendError, LanguageProfile, Stage};
 use backend_execution::adaptive::{
     CapabilityDomain, CapabilityKind, ContentId, ExecutionPhase, Overload, Pin, PolicyError,
     RecoveryCause, ResourceBudget, RetryBudget,
 };
+use backend_semantic::vocabulary::{FrontendError, LanguageProfile, Stage};
 
 use crate::interface::CompilerTerminal;
 

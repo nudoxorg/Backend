@@ -25,6 +25,18 @@ mmap = ["dep:memmap2"]
 allocation-counter.workspace = true
 futures-executor.workspace = true
 serde_json.workspace = true
+# render_snapshot_corpus: the snapshot harness compiles real corpus packages
+# through the real per-language authorities (`compile_ir`) before rendering.
+# The C# authority image is produced by the vendored helper through `dotnet`
+# directly, so that lane needs no frontend crate.  Dev-dependencies only;
+# the library graph is unchanged.
+backend-engine = { path = "../engine" }
+backend-frontend-clang = { path = "../../frontends/clang" }
+backend-frontend-go = { path = "../../frontends/go" }
+backend-frontend-java = { path = "../../frontends/java" }
+backend-frontend-python = { path = "../../frontends/python" }
+backend-frontend-rust = { path = "../../frontends/rust" }
+backend-frontend-typescript = { path = "../../frontends/typescript" }
 
 [[bench]]
 name = "lexical-manifest"

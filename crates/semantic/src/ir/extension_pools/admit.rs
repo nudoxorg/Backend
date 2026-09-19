@@ -93,6 +93,83 @@ impl<'bytes> ExtensionPoolsLane<'bytes> {
                 });
             }
         }
+        let predicate_count = u32::try_from(self.free_predicates.len()).unwrap_or(u32::MAX);
+        for (ordinal, predicate) in self.free_predicates.iter().enumerate() {
+            let ordinal = u32::try_from(ordinal).unwrap_or(u32::MAX);
+            if predicate.subject >= type_count {
+                return Err(ExtensionPoolFault::FreePredicateSubject {
+                    predicate: ordinal,
+                    raw: predicate.subject,
+                    limit: type_count,
+                });
+            }
+            let bound_count = u32::try_from(self.type_parameter_bounds.len()).unwrap_or(u32::MAX);
+            let bound_end = predicate
+                .bounds
+                .start
+                .checked_add(predicate.bounds.length)
+                .ok_or(ExtensionPoolFault::FreePredicateBounds {
+                    predicate: ordinal,
+                    start: predicate.bounds.start,
+                    length: predicate.bounds.length,
+                    bound_count,
+                })?;
+            if usize::try_from(bound_end).map_or(true, |end| end > self.type_parameter_bounds.len())
+            {
+                return Err(ExtensionPoolFault::FreePredicateBounds {
+                    predicate: ordinal,
+                    start: predicate.bounds.start,
+                    length: predicate.bounds.length,
+                    bound_count,
+                });
+            }
+            for (position, bound) in self.type_parameter_bounds
+                [predicate.bounds.start as usize..bound_end as usize]
+                .iter()
+                .enumerate()
+            {
+                let bound_ordinal = predicate
+                    .bounds
+                    .start
+                    .checked_add(u32::try_from(position).unwrap_or(u32::MAX))
+                    .unwrap_or(u32::MAX);
+                match bound {
+                    ExtensionTypeParameterBound::Type(raw) if *raw >= type_count => {
+                        return Err(ExtensionPoolFault::BoundTypeReference {
+                            bound: bound_ordinal,
+                            raw: *raw,
+                            limit: type_count,
+                        });
+                    }
+                    ExtensionTypeParameterBound::Lifetime(name) if name.is_empty() => {
+                        return Err(ExtensionPoolFault::EmptyLifetime {
+                            bound: bound_ordinal,
+                        });
+                    }
+                    ExtensionTypeParameterBound::Type(_)
+                    | ExtensionTypeParameterBound::Lifetime(_) => {}
+                }
+            }
+        }
+        for (list, range) in self.free_predicate_lists.iter().enumerate() {
+            let list = u32::try_from(list).unwrap_or(u32::MAX);
+            let end = range.start.checked_add(range.length).ok_or(
+                ExtensionPoolFault::FreePredicateList {
+                    list,
+                    start: range.start,
+                    length: range.length,
+                    predicate_count,
+                },
+            )?;
+            if end > predicate_count {
+                return Err(ExtensionPoolFault::FreePredicateList {
+                    list,
+                    start: range.start,
+                    length: range.length,
+                    predicate_count,
+                });
+            }
+        }
         let element_count = u32::try_from(self.type_parameters.len()).unwrap_or(u32::MAX);
         for (list, range) in self.type_parameter_lists.iter().enumerate() {
             let list = u32::try_from(list).unwrap_or(u32::MAX);

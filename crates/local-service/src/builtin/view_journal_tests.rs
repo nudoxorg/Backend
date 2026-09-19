@@ -440,3 +440,225 @@ fn snapshot_compaction_retries_are_old_or_new_at_each_publish_boundary() {
         let _ = fs::remove_file(path);
     }
 }
+
+/// Stale-generation recovery laws.
+///
+/// The workspace root is a content hash of the selected relations, so it
+/// repeats: removing the last project returns the workspace to the root it
+/// had before that project was added.  The capability each snapshot is
+/// certified against additionally binds the current commit
+/// (`crates/engine/src/builtin/authority.rs:29-48`), so the older frame with
+/// the same root cannot be admitted under the newer commit's capability and
+/// the check in `crates/library/wire/claims.rs:452-458` rejects it.
+///
+/// Recovery used to decode that older frame and propagate its rejection, so
+/// the service refused to start — "view coverage: certificate producer
+/// observation does not match the admitted capability" — although a valid
+/// newer frame sat later in the same file.  A superseded frame is a stale
+/// cache entry and is skipped; only malformed bytes fail closed.
+///
+/// The assertions are on the recovered row labels, not on a row count: both
+/// generations are coherent views over the same basis, so a recovery that
+/// returned the wrong one would keep every count intact.
+mod stale_generation {
+    use super::*;
+
+    /// The workspace generations a project being added and removed produces.
+    struct Generations {
+        root: WorkspaceRoot,
+        other_root: WorkspaceRoot,
+        first: (ViewRoot, CoverageCapability),
+        newest: (ViewRoot, CoverageCapability),
+    }
+
+    /// Builds two capability generations that share one workspace root.
+    ///
+    /// The newest generation carries a distinctive row so a recovery that
+    /// returns the wrong frame is visible in content, not only in identity.
+    fn generations() -> Generations {
+        let genesis = super::super::super::genesis().expect("checked builtin genesis");
+        let label = "fixture:intervening-workspace";
+        let intent =
+            BuiltinIntent::add(backend_engine::package_key(label), label).expect("intent");
+        let other = super::super::super::test_head_for_intent(&intent).expect("second head");
+        assert_ne!(
+            genesis.root(),
+            other.root(),
+            "the two heads must really select different workspace roots"
+        );
+
+        let (first_view, _, first_capability) =
+            super::super::super::test_view_generation(&genesis).expect("first generation");
+        let (base, _, newest_capability) =
+            super::super::super::test_view_generation(&other).expect("newest generation");
+        assert_ne!(
+            first_capability, newest_capability,
+            "a new commit must mint a distinguishable capability"
+        );
+        let row = backend_engine::Row::new(
+            backend_engine::RowId::Symbol(backend_engine::symbol_key("removal::survivor")),
+            base.basis(),
+            "removal::survivor",
+        );
+        let prepared = base
+            .prepare(
+                backend_engine::ViewDelta::Upsert { row },
+                newest_capability.clone(),
+            )
+            .expect("prepare the newest row");
+        let (newest_view, _) = base.commit(prepared).expect("commit the newest row");
+
+        Generations {
+            root: genesis.root(),
+            other_root: other.root(),
+            first: (first_view, first_capability),
+            newest: (newest_view, newest_capability),
+        }
+    }
+
+    fn journal_path(label: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("backend-locald-stale-{label}-{stamp}.journal"))
+    }
+
+    /// Writes snapshot(root, first) then snapshot(other root) then
+    /// snapshot(root, newest): the file a removal leaves behind.
+    fn written(label: &str, generations: &Generations) -> (PathBuf, ViewJournal) {
+        let path = journal_path(label);
+        let mut journal = ViewJournal::open(&path).expect("open view journal");
+        let (first_view, _) = &generations.first;
+        let (newest_view, _) = &generations.newest;
+        journal
+            .persist(
+                generations.root,
+                first_view,
+                Cursor::for_view_root(first_view),
+                None,
+            )
+            .expect("persist the first generation for the returning root");
+        journal
+            .persist(
+                generations.other_root,
+                newest_view,
+                Cursor::for_view_root(newest_view),
+                None,
+            )
+            .expect("persist the intervening root");
+        journal
+            .persist(
+                generations.root,
+                newest_view,
+                Cursor::for_view_root(newest_view),
+                None,
+            )
+            .expect("persist the newest generation for the returning root");
+        (path, journal)
+    }
+
+    fn labels(view: &ViewRoot) -> Vec<String> {
+        view.rows().iter().map(|row| row.label.clone()).collect()
+    }
+
+    /// A returning workspace root recovers the frame certified against the
+    /// live capability instead of refusing to start on the superseded one.
+    #[test]
+    fn a_returning_root_recovers_its_newest_certified_frame() {
+        let generations = generations();
+        let (path, journal) = written("returning", &generations);
+        let (newest_view, newest_capability) = &generations.newest;
+
+        let recovered = journal
+            .load_for_workspace(generations.root, newest_capability)
+            .expect("a superseded same-root frame must not refuse recovery")
+            .expect("the newest frame for the returning root must be recovered");
+
+        assert_eq!(
+            labels(&recovered.view),
+            labels(newest_view),
+            "recovery must return the frame certified against the live \
+             capability, not the superseded frame that shares its root"
+        );
+        assert!(
+            labels(&recovered.view)
+                .iter()
+                .any(|label| label == "removal::survivor"),
+            "the recovered view must carry the newest generation's row, got {:?}",
+            labels(&recovered.view)
+        );
+        assert_eq!(
+            recovered.cursor,
+            Cursor::for_view_root(newest_view),
+            "the recovered cursor must be the newest frame's cursor"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    /// Loading under the superseded capability is a cache miss, not a fault.
+    #[test]
+    fn the_superseded_capability_reports_a_cache_miss_and_not_a_fault() {
+        let generations = generations();
+        let (path, journal) = written("superseded", &generations);
+        let (_, first_capability) = &generations.first;
+
+        let recovered = journal
+            .load_for_workspace(generations.root, first_capability)
+            .expect("a frame certified against another capability is a cache miss");
+
+        assert!(
+            recovered.is_none(),
+            "no frame is admissible under the superseded capability, so \
+             recovery must report the miss the caller rebuilds from"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    /// A journal whose only frame is an event still fails closed.
+    ///
+    /// Skipping the events of a superseded snapshot must not also swallow an
+    /// event that never had a snapshot: those bytes are malformed.
+    #[test]
+    fn an_event_without_any_snapshot_still_fails_closed() {
+        let head = super::super::super::genesis().expect("checked builtin genesis");
+        let capability = super::super::super::test_builtin_view_capability().expect("coverage");
+        let (base, cursor) = super::super::super::initial_view().expect("initial view");
+        let row = backend_engine::Row::new(
+            backend_engine::RowId::Symbol(backend_engine::symbol_key("orphan::row")),
+            base.basis(),
+            "orphan::row",
+        );
+        let prepared = base
+            .prepare(
+                backend_engine::ViewDelta::Upsert { row },
+                capability.clone(),
+            )
+            .expect("prepare orphan row");
+        let (target, delta) = base.clone().commit(prepared).expect("commit orphan row");
+        let event = CursorEvent::View {
+            delta: Box::new(delta),
+        };
+        assert_ne!(cursor, Cursor::for_view_root(&target));
+
+        let path = journal_path("orphan");
+        let journal = ViewJournal::open(&path).expect("open view journal");
+        let payload = encode_envelope(
+            head.root(),
+            Cursor::for_view_root(&target),
+            &target,
+            Some(&event),
+        )
+        .expect("encode an event envelope");
+        journal.append(EVENT, &payload).expect("append the event");
+
+        let error = journal
+            .load_for_workspace(head.root(), &capability)
+            .expect_err("an event with no snapshot is malformed and must fail closed");
+        assert!(
+            error.contains("event precedes its snapshot"),
+            "malformed bytes must still fail closed, got {error}"
+        );
+        let _ = fs::remove_file(path);
+    }
+}

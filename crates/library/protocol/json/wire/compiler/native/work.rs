@@ -1,11 +1,11 @@
 //! Defines json wire compiler native work behavior for `backend-library`, whose purpose is to decode and project the shared application vocabulary for external transports.
 //! This module owns the json wire compiler native work invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use backend_semantic::vocabulary::{InvalidUtf8Fact, NativeArtifactRole, NativeWorkPhase};
 use crate::interface::{
     NativeArtifactAction, NativeArtifactCause, NativeDirectoryCause, NativeWorkCause,
     NativeWorkCleanupCause,
 };
+use backend_semantic::vocabulary::{InvalidUtf8Fact, NativeArtifactRole, NativeWorkPhase};
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use super::{io::NativeIoFactRef, terminal::NativePrimaryCauseWire, worker::InvalidUtf8FactRef};

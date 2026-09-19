@@ -18,15 +18,15 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile_semantic,
 };
-use backend_semantic::ir::{EntityKind, ImageProvenance, PrimitiveType, TypeNode};
-use backend_frontend_rust::legacy::{
-    LoadError, RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
-};
 use backend_engine::publication::{
     OpenPublicationScratch, OpenPublishedError, PublicationScratch, PublishCompiledError,
     PublishControl, PublishedCompilation, binding::COMPILATION_BINDING_BYTES, open_published,
     publish_compiled,
 };
+use backend_frontend_rust::legacy::{
+    LoadError, RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+};
+use backend_semantic::ir::{EntityKind, ImageProvenance, PrimitiveType, TypeNode};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use backend_store::journal::{
     DurablePublisher, PublicationLimitError, PublicationLimits, PublicationOpenError,

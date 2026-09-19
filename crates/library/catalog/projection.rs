@@ -9,6 +9,7 @@ use crate::{
     RowId, SymbolKey, ViewRecipeId, ViewRevision, ViewRoot, ViewSnapshot, ViewStateRoot,
     view_identity_bytes,
 };
+use crate::{ReferenceFact, ReferenceRecord};
 use std::collections::BTreeSet;
 
 impl Library {
@@ -524,6 +525,64 @@ impl Library {
         // neighbors came from compiler links or the structural fallback is a
         // coverage/evidence fact, not a second client-visible query identity.
         self.snapshot_for(b"graph", rows, None, None, None)
+    }
+
+    /// Builds the find-references answer from compiler-verified occurrence
+    /// facts against this library's immutable view.
+    ///
+    /// This is the application-service seam for the occurrence plane, shaped
+    /// exactly like [`Library::graph_from_semantic_ids`]: the owner selects
+    /// the evidence from a compiler authority, while row-payload authority
+    /// stays here. Every site must name a declaration in this exact view, the
+    /// target must be present, and the bounded result contract holds, so a
+    /// reference answer can never cite a declaration the published view
+    /// cannot show.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::NotFound`] when the target or a site is absent
+    /// from the view, and [`LibraryError::InvalidQuery`] when the fact list
+    /// or a resolved coordinate violates its bound.
+    pub fn references(
+        &self,
+        target: &crate::ProductText,
+        facts: &[ReferenceFact],
+    ) -> Result<Box<[ReferenceRecord]>, LibraryError> {
+        let target_present = self
+            .view
+            .rows()
+            .iter()
+            .any(|row| row.label == target.as_str());
+        if !target_present {
+            return Err(LibraryError::NotFound);
+        }
+        if facts.len() > crate::MAX_PRODUCT_ROWS {
+            return Err(LibraryError::InvalidQuery(
+                "reference facts exceed the bounded result contract".to_owned(),
+            ));
+        }
+        let records = facts
+            .iter()
+            .map(|fact| {
+                let row = self
+                    .view
+                    .row(RowId::Symbol(fact.site))
+                    .ok_or(LibraryError::NotFound)?;
+                Ok(ReferenceRecord {
+                    site: crate::ProductText::new(row.label.clone()).map_err(|_| {
+                        LibraryError::InvalidQuery(
+                            "reference site coordinate violates the text bound".to_owned(),
+                        )
+                    })?,
+                    target: fact.target.clone(),
+                    relation: fact.relation,
+                    evidence: fact.evidence.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, LibraryError>>()?;
+        self.work.record_seek();
+        self.work.record_output(records.len());
+        Ok(records.into_boxed_slice())
     }
 
     /// Reads one bounded graph-neighborhood page.

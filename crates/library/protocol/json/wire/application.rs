@@ -1,13 +1,13 @@
 //! Defines json wire application behavior for `backend-library`, whose purpose is to decode and project the shared application vocabulary for external transports.
 //! This module owns the json wire application invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use backend_semantic::vocabulary::{Language, Stage};
-use backend_execution::adaptive::CapabilityDomain;
 use crate::interface::{
     CapabilityHealth, CapabilityTransition, Diagnostic, DiagnosticCode, DiagnosticDetail,
     DocSection, ExecutionReply, ExecutionState, GeneratedArtifact, ReplyBody, RetrievalCause,
     RetrievalMode, RetrievalPhase, RetrievalQueryCause, RetrievalRow, SignatureToken, TokenKind,
 };
+use backend_execution::adaptive::CapabilityDomain;
+use backend_semantic::vocabulary::{Language, Stage};
 use serde::Serialize;
 
 use super::{
@@ -351,9 +351,10 @@ impl From<DiagnosticDetail> for DiagnosticDetailWire {
                 rejected: Text(rejected),
             },
             DiagnosticDetail::Frontend(source) => match source {
-                backend_semantic::vocabulary::FrontendError::UnsupportedStage { language, stage } => {
-                    Self::UnsupportedStage { language, stage }
-                }
+                backend_semantic::vocabulary::FrontendError::UnsupportedStage {
+                    language,
+                    stage,
+                } => Self::UnsupportedStage { language, stage },
             },
             DiagnosticDetail::Operation(operation) => Self::Operation { value: operation.0 },
             DiagnosticDetail::Capability(capability) => Self::Capability {

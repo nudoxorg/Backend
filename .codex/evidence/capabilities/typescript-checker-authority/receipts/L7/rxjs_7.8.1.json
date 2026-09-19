@@ -2,7 +2,7 @@
   "class": "NonStandardLayout",
   "defect_class": "entry-resolution",
   "purl": "npm:rxjs@7.8.1",
-  "raw_error": "package has no declaration entry; searched [\"/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-typescript-corpus-16083-25/index.d.ts\", \"typesVersions:{\\\">=4.2\\\":{\\\"*\\\":[\\\"dist/types/*\\\"]}}\", \"/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-typescript-corpus-16083-25/index.d.ts\"]",
+  "raw_error": "retry exhausted; first=network request failed: TLS required, but transport is unsecured; second=network request failed: TLS required, but transport is unsecured",
   "schema": 1,
   "stage": "full-lifecycle",
   "verdict": "FAILED"

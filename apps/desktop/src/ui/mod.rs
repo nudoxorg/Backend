@@ -7,12 +7,16 @@
 //! say, not in how they are drawn, because both are assembled from the same
 //! tiles, chips, and text rungs.
 
+pub(crate) mod bar;
 pub(crate) mod button;
+pub(crate) mod chart;
 pub(crate) mod chip;
 pub(crate) mod fault;
 pub(crate) mod glyph;
 pub(crate) mod icon;
 pub(crate) mod prose;
+pub(crate) mod source;
 pub(crate) mod specimen;
 pub(crate) mod surface;
 pub(crate) mod text;
+pub(crate) mod tip;

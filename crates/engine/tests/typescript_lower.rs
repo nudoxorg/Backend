@@ -43,6 +43,7 @@ fn report(source: &[u8]) -> Report {
     Report {
         schema_version: 1,
         source_digest: digest,
+        declaration_file: false,
         diagnostics: Box::new([]),
         declarations: Box::new([]),
         references: Box::new([]),
@@ -240,6 +241,49 @@ fn declared_scalar_annotations_map_onto_lattice_records() {
         u32::from(PrimitiveShape::Bool)
     );
 }
+#[test]
+fn ambient_async_transform_index_signatures_keep_distinct_object_owners() {
+    const SOURCE: &[u8] = br#"
+export interface Dictionary<T> {
+    [key: string]: T;
+}
+export function transform<T, R, E = Error>(
+    arr: { [key: string]: T },
+    iteratee: (acc: { [key: string]: R }, item: T, key: string, callback: (error?: E) => void) => void,
+): void;
+export function transform<T, R, E = Error>(
+    arr: { [key: string]: T },
+    acc: { [key: string]: R },
+    iteratee: (acc: { [key: string]: R }, item: T, key: string, callback: (error?: E) => void) => void,
+): void;
+"#;
+    let mut authority = report(SOURCE);
+    authority.declaration_file = true;
+    let compiled = try_lower(SOURCE, Some(&authority)).expect("ambient index signatures lower");
+    let fields: Vec<_> = compiled
+        .ir
+        .items()
+        .filter(|item| item.kind() == ItemKind::Field)
+        .collect();
+    assert_eq!(fields.len(), 6);
+    let mut parents = Vec::new();
+    for field in fields {
+        assert_eq!(field.name(), b"[key: string]: ");
+        let parent = field.parent().expect("index signature owner");
+        assert!(!parents.contains(&parent));
+        parents.push(parent);
+        assert!(field.semantic_type().is_some());
+    }
+    let decoded = view(SOURCE, Some(&authority));
+    assert_eq!(
+        entities(&decoded)
+            .iter()
+            .filter(|(_, _, kind)| *kind == EntityKind::Field)
+            .count(),
+        6
+    );
+}
+
 #[test]
 fn mutually_recursive_interfaces_keep_diagonal_self_nominals_and_linked_members() {
     let v = view(
@@ -712,7 +756,7 @@ fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() {
     assert!(facts(&decoded).len() >= 2048);
 
     let source: &'static [u8] = Box::leak(
-        (0..16385)
+        (0..32769)
             .map(|index| format!("export const x{index} = 1;\n"))
             .collect::<String>()
             .into_bytes()
@@ -729,7 +773,7 @@ fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() {
                 },
             ..
         }) => {
-            assert_eq!(fact, 16_384);
+            assert_eq!(fact, 32_768);
             assert_eq!(name_len, 6);
             assert_eq!(cause, ProjectionAdmissionFault::Capacity);
         }
@@ -1173,4 +1217,80 @@ fn golden_lowered_facts_match_the_frozen_table() {
         }
     }
     assert_eq!(table.len(), 20);
+}
+
+#[test]
+fn wide_syntactic_associative_fold_keeps_members_ordered_and_shallow() {
+    use backend_semantic::ir::{ConcreteType, Ir, ObjectMember, PropertyKey, TypeExpr, TypeId};
+
+    fn build_source(operator: &str, count: usize) -> Vec<u8> {
+        let mut source = b"export type Wide = ".to_vec();
+        for index in 0..count {
+            if index != 0 {
+                // overwrite the placeholder separator with the operator
+                source.extend_from_slice(b" | ");
+                let at = source.len() - 3;
+                source[at..at + 3].copy_from_slice(operator.as_bytes());
+            }
+            source.extend_from_slice(format!("{{ p{index}: string }}").as_bytes());
+        }
+        source.extend_from_slice(b";");
+        source
+    }
+
+    fn flatten(
+        ir: &Ir,
+        id: TypeId,
+        out: &mut Vec<Vec<u8>>,
+        depth: u32,
+        max_depth: &mut u32,
+        label: &str,
+    ) {
+        *max_depth = (*max_depth).max(depth);
+        match ir.ty(id).unwrap() {
+            TypeExpr::Concrete(ConcreteType::Union(list))
+            | TypeExpr::Concrete(ConcreteType::Intersection(list)) => {
+                for member in ir.types(list).unwrap() {
+                    flatten(ir, *member, out, depth + 1, max_depth, label);
+                }
+            }
+            TypeExpr::Concrete(ConcreteType::Object(members)) => {
+                let members = ir.object_members(members).unwrap();
+                let ObjectMember::Property {
+                    key: PropertyKey::Named(atom),
+                    ..
+                } = members[0]
+                else {
+                    panic!("{label}: unexpected object member");
+                };
+                out.push(ir.atom(atom).unwrap().to_vec());
+            }
+            other => panic!("unexpected wide member for {label}: {other:?}"),
+        }
+    }
+
+    // 64 is the un-folded boundary; 65/130 exercise one fold; 4097 exercises
+    // two folds (65 chunks of 64). A wrong fold would truncate, reorder, or
+    // produce a linear-depth chain on any of these.
+    for operator in [" | ", " & "] {
+        for count in [64_usize, 65, 130, 4097] {
+            let label = format!("operator={operator:?} count={count}");
+            let source: &'static [u8] = Box::leak(build_source(operator, count).into_boxed_slice());
+            let authority = report(source);
+            let compiled = try_lower(source, Some(&authority)).unwrap();
+            let wide = compiled
+                .ir
+                .items()
+                .find(|item| item.name() == b"Wide")
+                .expect("wide alias item");
+            let root = wide.semantic_type().expect("wide alias type");
+            let mut members = Vec::new();
+            let mut max_depth = 0;
+            flatten(&compiled.ir, root, &mut members, 0, &mut max_depth, &label);
+            let expected: Vec<Vec<u8>> =
+                (0..count).map(|i| format!("p{i}").into_bytes()).collect();
+            assert_eq!(members, expected, "{label}");
+            assert!(max_depth <= 4, "{label} max_depth={max_depth}");
+        }
+    }
 }

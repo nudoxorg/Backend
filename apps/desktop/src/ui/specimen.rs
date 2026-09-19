@@ -109,7 +109,8 @@ fn signature_runs(theme: &Theme, signature: &Signature) -> Runs {
     }
 }
 
-fn style_for(theme: &Theme, kind: TokenKind, linked: bool) -> HighlightStyle {
+/// Returns the highlight for one token kind, underlined when it is a door.
+pub(crate) fn style_for(theme: &Theme, kind: TokenKind, linked: bool) -> HighlightStyle {
     let mut style = HighlightStyle {
         color: Some(ink_for(theme, kind)),
         ..HighlightStyle::default()
@@ -138,4 +139,32 @@ fn ink_for(theme: &Theme, kind: TokenKind) -> gpui::Hsla {
         TokenKind::Punctuation => theme.paint(Paint::TextFaint),
         TokenKind::Text => theme.paint(Paint::Text),
     }
+}
+
+/// Returns a signature flattened to one coloured line, not interactive.
+///
+/// A result row and a member row want the same colour the page specimen has,
+/// without a click target per token; this is the specimen's runs without its
+/// links.
+pub(crate) fn signature_line(theme: &Theme, signature: &Signature, budget: usize) -> StyledText {
+    let mut text = String::new();
+    let mut highlights = Vec::new();
+    let mut spent = 0_usize;
+    for token in signature.tokens() {
+        if spent >= budget {
+            text.push('…');
+            break;
+        }
+        let squeezed: String = token.text().split_whitespace().collect::<Vec<_>>().join(" ");
+        let piece = if token.text().starts_with(char::is_whitespace) && !text.is_empty() {
+            format!(" {squeezed}")
+        } else {
+            squeezed
+        };
+        let start = text.len();
+        text.push_str(&piece);
+        spent = spent.saturating_add(piece.chars().count());
+        highlights.push((start..text.len(), style_for(theme, token.kind(), false)));
+    }
+    StyledText::new(SharedString::from(text)).with_highlights(highlights)
 }

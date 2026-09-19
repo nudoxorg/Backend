@@ -89,3 +89,50 @@ pub(crate) fn single_line(block: Div) -> Div {
 pub(crate) fn elide(text: &str, budget: usize) -> SharedString {
     SharedString::from(crate::presentation::crumb::elide_middle(text, budget))
 }
+
+/// Returns one line of text with the matched spans emphasised.
+///
+/// The emphasis is a weight and an ink step, never a background: a result
+/// list that boxes every match reads as a form, while one that strengthens
+/// the matched letters reads as an answer.
+pub(crate) fn highlighted(
+    theme: &Theme,
+    text: &str,
+    needle: &str,
+    scale: TypeScale,
+) -> gpui::StyledText {
+    let ranges = match_ranges(text, needle);
+    let style = gpui::HighlightStyle {
+        color: Some(theme.paint(Paint::TextStrong)),
+        font_weight: Some(FontWeight::SEMIBOLD),
+        ..gpui::HighlightStyle::default()
+    };
+    let _ = scale;
+    gpui::StyledText::new(SharedString::from(text.to_owned()))
+        .with_highlights(ranges.into_iter().map(|range| (range, style)))
+}
+
+/// Returns the byte ranges of every case-insensitive occurrence of each word.
+pub(crate) fn match_ranges(text: &str, needle: &str) -> Vec<std::ops::Range<usize>> {
+    let lower = text.to_lowercase();
+    if lower.len() != text.len() {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    for word in needle.split_whitespace() {
+        let word = word.to_lowercase();
+        if word.is_empty() {
+            continue;
+        }
+        let mut from = 0;
+        while let Some(at) = lower.get(from..).and_then(|rest| rest.find(&word)) {
+            let start = from.saturating_add(at);
+            let end = start.saturating_add(word.len());
+            ranges.push(start..end);
+            from = end;
+        }
+    }
+    ranges.sort_by_key(|range| range.start);
+    ranges.dedup();
+    ranges
+}

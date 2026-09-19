@@ -9,12 +9,12 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use backend_semantic::registry::FullRegistry;
 use backend_execution::adaptive::{
     BundleFact, BundleState, CapabilityDomain, CapabilityKind, ContentId, ExecutionRequest,
     ExecutionTerminal, LatencyMicros, Pin, PlacementAction, PolicyDecision, PolicyInput,
     RemoteHealth, ResourceBudget, next_action,
 };
+use backend_semantic::registry::FullRegistry;
 use backend_version::observe::Probe;
 
 use crate::interface::{

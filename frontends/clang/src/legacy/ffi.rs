@@ -90,6 +90,9 @@ pub(crate) struct TranslationUnit {
     unit: CXTranslationUnit,
     main_file: CXFile,
     source_len: u32,
+    /// Compilation-database working directory used as the package root for
+    /// cross-file identities. Absent for synthetic profiles without a database.
+    compile_root: Option<CString>,
 }
 
 /// A source coordinate pair not yet narrowed to the canonical u32 representation.
@@ -189,6 +192,9 @@ pub(crate) fn parse(input: ClangInput<'_>) -> Result<TranslationUnit, CollectErr
             unit,
             main_file,
             source_len: canonical_source_len,
+            compile_root: input
+                .database_working_directory()
+                .map(|directory| directory.to_owned()),
         })
     }
 }
@@ -238,6 +244,30 @@ impl TranslationUnit {
     pub(crate) fn is_definition(cursor: CXCursor) -> bool {
         // SAFETY: cursor was supplied by this live translation unit.
         unsafe { clang_sys::clang_isCursorDefinition(cursor) != 0 }
+    }
+
+    /// Whether the lexically enclosing declaration of a cursor is a
+    /// definition. Parameter cursors ask their visiting declaration — the
+    /// prototype or definition being walked — rather than the committed
+    /// owner state, so definition-before-prototype and duplicate-prototype
+    /// orders attribute identically.
+    pub(crate) fn lexical_parent_is_definition(cursor: CXCursor) -> bool {
+        // SAFETY: cursor was supplied by this live translation unit.
+        let parent = unsafe { clang_sys::clang_getCursorLexicalParent(cursor) };
+        Self::is_definition(parent)
+    }
+
+    /// The extent of the lexically enclosing declaration, when it maps to
+    /// the main source file. Distinct visiting declarations have distinct
+    /// extents, so this separates prototype from definition parameter sets
+    /// even when they share an owner identity and flag.
+    pub(crate) fn lexical_parent_span(
+        &self,
+        cursor: CXCursor,
+    ) -> Result<Option<SourceSpan>, CollectError> {
+        // SAFETY: cursor was supplied by this live translation unit.
+        let parent = unsafe { clang_sys::clang_getCursorLexicalParent(cursor) };
+        self.cursor_span(parent)
     }
 
     pub(crate) fn is_declaration(kind: clang_sys::CXCursorKind) -> bool {
@@ -315,6 +345,36 @@ impl TranslationUnit {
                 cursor,
                 SPELLING_NAME_FIRST_PIECE,
                 SPELLING_NAME_OPTIONS_NONE,
+            )
+        };
+        self.range_span(range)
+    }
+
+    /// Maps a cursor's reference-name range to an exact main-source span.
+    ///
+    /// For a use cursor this is the written spelling of the referenced entity
+    /// at the site — the member token of a member access, the identifier of a
+    /// declaration reference — without nested-name qualifiers or template
+    /// arguments, requested as one contiguous piece. A call expression
+    /// degenerates: libclang returns the whole expression extent as its
+    /// reference-name range, so the caller treats a range identical to the
+    /// use extent as unusable and reads the cursor's spelling-name range
+    /// (exactly the callee token) instead. A cursor class with no written
+    /// name in the main source yields libclang's zero-length range, which
+    /// maps to `None`; the caller's final fallback keeps the whole use
+    /// extent so no reference is dropped by the narrowing.
+    pub(crate) fn reference_name_span(
+        &self,
+        cursor: CXCursor,
+    ) -> Result<Option<SourceSpan>, CollectError> {
+        // SAFETY: cursor was supplied by this live translation unit; the flag
+        // requests the name as one contiguous piece, and piece zero is the
+        // whole piece under that flag.
+        let range = unsafe {
+            clang_sys::clang_getCursorReferenceNameRange(
+                cursor,
+                REFERENCE_NAME_SINGLE_PIECE,
+                REFERENCE_NAME_PIECE_ZERO,
             )
         };
         self.range_span(range)
@@ -409,9 +469,31 @@ impl TranslationUnit {
         unsafe { clang_sys::clang_getPointeeType(type_) }
     }
 
+    /// Whether a C++ member pointer's owning class is a dependent
+    /// (template-parameter) class.
+    ///
+    /// libclang signals dependence through the documented negative layout
+    /// errors (`CXTypeLayoutError_Dependent`), and this query is the same
+    /// family the collector already runs on every type before its children,
+    /// so it is measured to be safe on exactly the inputs the direct class
+    /// query cannot survive.
+    pub(crate) fn member_pointer_class_is_dependent(type_: CXType) -> bool {
+        // SAFETY: type_ was obtained from this live translation unit.
+        let alignment = unsafe { clang_sys::clang_Type_getAlignOf(type_) };
+        alignment == i64::from(clang_sys::CXTypeLayoutError_Dependent)
+    }
+
     /// Returns the owning class type for a C++ member pointer. The direct
     /// libclang operation is the only authority for this operand; source
     /// spelling cannot distinguish overloads or nested owners reliably.
+    ///
+    /// The caller must first exclude dependent member pointers with
+    /// [`Self::member_pointer_class_is_dependent`]: for `T::*` under a
+    /// template parameter this libclang stores the class operand as a
+    /// nested-name-specifier rather than a type, and the direct query
+    /// dereferences that as a `Type*` — a hard native crash, measured on the
+    /// `catch2/single_include/catch2/catch.hpp` corpus entry, whose first
+    /// visited member pointer is the dependent `void (C::*)()`.
     pub(crate) fn member_pointer_class_type(type_: CXType) -> CXType {
         // SAFETY: type_ was obtained from this live translation unit.
         unsafe { clang_sys::clang_Type_getClassType(type_) }
@@ -520,6 +602,40 @@ impl TranslationUnit {
         // native_identity exactly once.
         let name = unsafe { clang_sys::clang_getFileName(file) };
         native_identity(name, b"nudox.clang.include.v1")
+    }
+
+    /// Returns the package-relative identity of the file declaring a cursor's target.
+    ///
+    /// Only a path that lives underneath the compilation root yields an
+    /// identity: an absolute system or store path can never become a stable
+    /// cross-fragment key, so those targets honestly report no file.
+    pub(crate) fn cursor_file_identity(&self, cursor: CXCursor) -> Option<SymbolIdentity> {
+        let root = self.compile_root.as_deref()?;
+        // SAFETY: cursor was supplied by this live translation unit.
+        let range = unsafe { clang_sys::clang_getCursorExtent(cursor) };
+        // SAFETY: range was obtained from this translation unit; the calls are pure native reads.
+        let location = unsafe { clang_sys::clang_getRangeStart(range) };
+        let mut file = ptr::null_mut();
+        let mut line = 0;
+        let mut column = 0;
+        let mut offset = 0;
+        // SAFETY: all output pointers are initialized local cells and location came from this TU.
+        unsafe {
+            clang_sys::clang_getExpansionLocation(
+                location,
+                &raw mut file,
+                &raw mut line,
+                &raw mut column,
+                &raw mut offset,
+            );
+        }
+        if file.is_null() {
+            return None;
+        }
+        // SAFETY: file belongs to this live translation unit and its name string is disposed by
+        // native_relative_identity exactly once.
+        let name = unsafe { clang_sys::clang_getFileName(file) };
+        native_relative_identity(name, root.to_bytes(), b"nudox.clang.file.v1")
     }
 
     pub(crate) fn imported_module_identity(cursor: CXCursor) -> Option<SymbolIdentity> {
@@ -654,6 +770,12 @@ const REQUIRED_APIS: [RequiredApi; 8] = [
 const SPELLING_NAME_FIRST_PIECE: c_uint = 0;
 /// Declares no libclang spelling-range expansion options.
 const SPELLING_NAME_OPTIONS_NONE: c_uint = 0;
+/// Requests a reference name as one contiguous piece: the whole written
+/// spelling of the referenced entity, never a split across pieces.
+const REFERENCE_NAME_SINGLE_PIECE: clang_sys::CXNameRefFlags =
+    clang_sys::CXNameRange_WantSinglePiece;
+/// Under the single-piece flag the one returned piece is piece zero.
+const REFERENCE_NAME_PIECE_ZERO: c_uint = 0;
 /// Keeps declarations from the preamble in the direct native cursor graph.
 const EXCLUDE_DECLARATIONS_FROM_PREAMBLE: c_int = 0;
 /// Suppresses libclang's direct stderr diagnostics; typed facts capture diagnostics instead.
@@ -728,6 +850,7 @@ impl RequiredApi {
                     && clang_sys::clang_Cursor_getSpellingNameRange::is_loaded()
                     && clang_sys::clang_getCursorSemanticParent::is_loaded()
                     && clang_sys::clang_getCursorReferenced::is_loaded()
+                    && clang_sys::clang_getCursorReferenceNameRange::is_loaded()
                     && clang_sys::clang_CXXMethod_isVirtual::is_loaded()
                     && clang_sys::clang_CXXMethod_isPureVirtual::is_loaded()
                     && clang_sys::clang_getOverriddenCursors::is_loaded()
@@ -780,12 +903,32 @@ impl RequiredApi {
 /// Produces the small fixed native command vector implied by one typed profile.
 fn parse_arguments(
     input: ClangInput<'_>,
-) -> Result<([*const c_char; crate::legacy::MAX_DATABASE_ARGUMENTS + 2], usize), CollectError> {
+) -> Result<
+    (
+        [*const c_char; crate::legacy::MAX_DATABASE_ARGUMENTS + 2],
+        usize,
+    ),
+    CollectError,
+> {
     let mut arguments = [ptr::null(); crate::legacy::MAX_DATABASE_ARGUMENTS + 2];
     let values = if let Some(values) = input.database_arguments() {
-        values.get(1..).ok_or(CollectError::Parse {
-            failure: ParseFailure::InvalidArguments,
-        })?
+        if values.is_empty() {
+            return Err(CollectError::Parse {
+                failure: ParseFailure::InvalidArguments,
+            });
+        }
+        // Only a leading compiler executable is positional. A real argv[0] is
+        // a program path and can never begin with `-`, while every flag does,
+        // so a prepared flag-first vector — system include arguments and
+        // per-extension defaults, exactly what `ClangProject::arguments`
+        // supplies — must survive intact. Dropping the first element
+        // unconditionally ate the leading `-isystem` flag, turned its include
+        // directory into a stray positional input, and shifted every
+        // following flag one slot left.
+        match values.first() {
+            Some(first) if !first.to_bytes().starts_with(b"-") => &values[1..],
+            _ => values,
+        }
     } else {
         &[
             c"-x",
@@ -893,6 +1036,76 @@ fn native_identity(string: CXString, domain: &[u8]) -> Option<SymbolIdentity> {
     identity
 }
 
+/// Hashes a native file name made relative to the compilation root, or `None`
+/// when the file lives outside that root. The path is never lossily converted:
+/// a non-UTF-8 native name simply yields no identity.
+fn native_relative_identity(
+    string: CXString,
+    root: &[u8],
+    domain: &[u8],
+) -> Option<SymbolIdentity> {
+    let pointer = unsafe { clang_sys::clang_getCString(string) };
+    let identity = if pointer.is_null() {
+        None
+    } else {
+        // SAFETY: libclang documents live CXString bytes as NUL-terminated until disposal.
+        let bytes = unsafe { CStr::from_ptr(pointer) }.to_bytes();
+        relative_path(bytes, root).and_then(|relative| {
+            (!relative.is_empty()).then(|| SymbolIdentity::from_native(domain, relative))
+        })
+    };
+    // SAFETY: string is owned by this function and has not been disposed before this point.
+    unsafe { clang_sys::clang_disposeString(string) };
+    identity
+}
+
+/// Strips one compilation-root prefix at a path-separator boundary, returning
+/// the package-relative tail.
+///
+/// The root is normalized by trimming every trailing separator, so a
+/// compilation database whose `directory` carries a trailing slash
+/// (`/work/pkg/`) still yields the same tail as the separator-free spelling.
+/// A path that is not a true separator-boundary descendant of the root — for
+/// example a source referencing a sibling of a non-ancestor build directory —
+/// yields `None` rather than a fabricated or partial tail.
+fn relative_path<'bytes>(path: &'bytes [u8], root: &[u8]) -> Option<&'bytes [u8]> {
+    let root = trim_trailing_separators(root);
+    if root.is_empty() {
+        return None;
+    }
+    let relative = path.strip_prefix(root)?;
+    let first = *relative.first()?;
+    if first != b'/' && first != b'\\' {
+        return None;
+    }
+    let relative = trim_leading_separators(relative);
+    (!relative.is_empty()).then_some(relative)
+}
+
+/// Trims every leading `/` or `\` from one native path tail.
+fn trim_leading_separators(mut bytes: &[u8]) -> &[u8] {
+    while let Some((first, rest)) = bytes.split_first() {
+        if *first == b'/' || *first == b'\\' {
+            bytes = rest;
+        } else {
+            break;
+        }
+    }
+    bytes
+}
+
+/// Trims every trailing `/` or `\` from one compilation root.
+fn trim_trailing_separators(mut bytes: &[u8]) -> &[u8] {
+    while let Some((last, rest)) = bytes.split_last() {
+        if *last == b'/' || *last == b'\\' {
+            bytes = rest;
+        } else {
+            break;
+        }
+    }
+    bytes
+}
+
 fn native_text(string: CXString) -> Result<String, DatabaseError> {
     let pointer = unsafe { clang_sys::clang_getCString(string) };
     let result = if pointer.is_null() {
@@ -905,4 +1118,54 @@ fn native_text(string: CXString) -> Result<String, DatabaseError> {
     };
     unsafe { clang_sys::clang_disposeString(string) };
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relative_path;
+
+    #[test]
+    fn relative_path_strips_only_a_boundary_prefixed_root() {
+        assert_eq!(
+            relative_path(b"/work/pkg/src/main.c", b"/work/pkg"),
+            Some(&b"src/main.c"[..])
+        );
+        assert_eq!(relative_path(b"/work/pkg", b"/work/pkg"), None);
+        assert_eq!(relative_path(b"/work/pkgx/src.c", b"/work/pkg"), None);
+        assert_eq!(relative_path(b"/nix/store/hash/src.c", b"/work/pkg"), None);
+        assert_eq!(relative_path(b"/work/pkg/src.c", b""), None);
+    }
+
+    #[test]
+    fn relative_path_normalizes_a_trailing_separator_root() {
+        assert_eq!(
+            relative_path(b"/work/pkg/src/main.c", b"/work/pkg/"),
+            Some(&b"src/main.c"[..])
+        );
+        assert_eq!(
+            relative_path(b"/work/pkg/src/main.c", b"/work/pkg//"),
+            Some(&b"src/main.c"[..])
+        );
+        assert_eq!(relative_path(b"/work/pkg", b"/work/pkg/"), None);
+    }
+
+    #[test]
+    fn relative_path_rejects_a_non_ancestor_build_directory() {
+        // A compilation database `directory` may be a build directory that is
+        // not an ancestor of the referenced source. No partial tail may be
+        // fabricated from the shared bytes.
+        assert_eq!(
+            relative_path(b"/work/pkg/src/x.c", b"/work/pkg/build"),
+            None
+        );
+        assert_eq!(relative_path(b"/work/other/x.c", b"/work/pkg/build"), None);
+        assert_eq!(
+            relative_path(b"/work/pkg/build/x.c", b"/work/pkg/build"),
+            Some(&b"x.c"[..])
+        );
+        assert_eq!(
+            relative_path(b"/work/pkg/build/src/x.c", b"/work/pkg/build"),
+            Some(&b"src/x.c"[..])
+        );
+    }
 }

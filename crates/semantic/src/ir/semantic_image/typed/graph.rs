@@ -655,6 +655,20 @@ pub(crate) fn for_each_edge(
                 }
             }
         }
+        TypedPlanNode::FreePredicates(id) => {
+            let values = ir.free_predicates(id).ok_or(missing_node(ir, node)?)?;
+            for (index, value) in values.iter().copied().enumerate() {
+                let index = list_index(node, index)?;
+                emit!(
+                    TypedEdgeRole::PredicateSubject(index),
+                    TypedPlanTarget::Node(TypedPlanNode::Type(value.subject)),
+                );
+                emit!(
+                    TypedEdgeRole::PredicateBound(index),
+                    TypedPlanTarget::Node(TypedPlanNode::TypeParameterBounds(value.bounds)),
+                );
+            }
+        }
     }
     Ok(())
 }

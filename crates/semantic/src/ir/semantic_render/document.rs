@@ -16,9 +16,10 @@ use crate::ir::{
     CSharpVersion, CStandard, CanonicalTypeRenderError, CanonicalTypeRenderLimits,
     CanonicalTypeRenderReference, ClangFacts, ClangStorageClass, Confidence, CxxStandard,
     DeclarationIdentity, DocFragment, DocId, EntityId, EntityListId, ExternalId, ExternalTarget,
-    FactAvailability, ForeignTargetOrigin, GoFacts, GoVersion, JavaFacts, JavaRelease,
-    LanguageProfile, ObjectMemberListId, ParentageAuthority, PythonFacts, PythonParameterKind,
-    PythonVersion, RustEdition, RustFacts, SemanticImageAuthority, SemanticReader, SourceSpan,
+    FactAvailability, ForeignTargetOrigin, FreePredicate, FreePredicateListId, GoFacts, GoVersion,
+    JavaFacts, JavaRelease, LanguageProfile, ObjectMemberListId, ParentageAuthority, PythonFacts,
+    PythonParameterKind, PythonVersion, RustEdition, RustFacts, SemanticImageAuthority,
+    SemanticReader, SourceSpan,
     TemplatePartListId, TupleElementListId, TypeId, TypeListId, TypeParameter, TypeParameterBound,
     TypeParameterBoundListId, TypeParameterInference, TypeParameterListId,
     TypeParameterPrimaryRequirement, TypeParameterRequirements, TypeScriptSource,
@@ -67,6 +68,8 @@ pub enum SemanticDocumentReference {
     TypeParameterList(TypeParameterListId),
     /// An ordered bound list owned by one generic parameter.
     TypeParameterBoundList(TypeParameterBoundListId),
+    /// An ordered Rust free-predicate list.
+    FreePredicateList(FreePredicateListId),
     /// A tuple/callable element list nested in a semantic type.
     TupleElements(TupleElementListId),
     /// An object-member list nested in a semantic type.
@@ -863,6 +866,48 @@ fn emit_rust_facts<Reader: SemanticReader + ?Sized>(
     emit_type_parameter_list(reader, entity, facts.where_clauses, type_limits, output)?;
     write_text(entity, output, ",macros=")?;
     emit_atom_list(reader, entity, facts.macros, output)?;
+    write_text(entity, output, ",const-defaults=")?;
+    emit_atom_list(reader, entity, facts.const_defaults, output)?;
+    write_text(entity, output, ",free-predicates=")?;
+    emit_free_predicate_list(reader, entity, facts.free_predicates, type_limits, output)?;
+    write_text(entity, output, ")")
+}
+
+fn emit_free_predicate_list<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    list: FreePredicateListId,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    let predicates =
+        reader
+            .free_predicates(list)
+            .ok_or(SemanticDocumentError::MissingReference {
+                entity,
+                reference: SemanticDocumentReference::FreePredicateList(list),
+            })?;
+    write_text(entity, output, "free-predicate-list(values=[")?;
+    for (index, predicate) in predicates.enumerate() {
+        if index != 0 {
+            write_text(entity, output, ",")?;
+        }
+        emit_free_predicate(reader, entity, predicate, type_limits, output)?;
+    }
+    write_text(entity, output, "])")
+}
+
+fn emit_free_predicate<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    predicate: FreePredicate,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    write_text(entity, output, "free-predicate(subject=")?;
+    emit_type_coordinate(reader, entity, predicate.subject, type_limits, output)?;
+    write_text(entity, output, ",bounds=")?;
+    emit_type_parameter_bound_list(reader, entity, predicate.bounds, type_limits, output)?;
     write_text(entity, output, ")")
 }
 

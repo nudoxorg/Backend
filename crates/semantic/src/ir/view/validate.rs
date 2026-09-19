@@ -514,6 +514,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                 type_lists: pools.type_list_count(),
                 entity_lists: pools.entity_list_count(),
                 atom_lists: pools.atom_list_count(),
+                free_predicates: pools.free_predicate_list_count(),
                 type_parameters: pools.type_parameter_list_bounds(),
             },
         );

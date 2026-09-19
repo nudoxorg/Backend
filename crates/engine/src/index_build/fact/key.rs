@@ -41,9 +41,9 @@ impl Deref for ExactEntityKey {
 #[cfg(test)]
 mod tests {
     use super::ExactEntityKey;
+    use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId, MAX_EXACT_ROWS};
     use backend_semantic::ir::EntityId;
     use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
-    use backend_semantic::index_core::{EntityArtifactIdentity, EntityDocumentId, MAX_EXACT_ROWS};
     use thiserror::Error;
 
     #[derive(Debug, Error)]

@@ -3,16 +3,19 @@
 //! bytes, every fact admission rejection must retain the exact offending fact
 //! and cause, and an empty fact set must retain its exact current schema form.
 use backend_semantic::ir::{
-    AtomListId, BuildError, ConcreteType, CorePayloadHash, EntityAuthorityFacts, EntityId,
-    EntityKind, EntityVersion, FactAvailability, FragmentView, NominalRef, Occurrence,
-    PackageLineage, ParentageAuthority, PrepareError, PreparedFragment, ReopenedTypeParameterList,
-    RustFacts, RustOwnership, SemanticCoreReader, SemanticImageView, SemanticReader,
-    SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, SourceIdentity,
-    TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId, TypeQuadPayload, TypeTriplePayload,
-    VariadicForm, Visibility, encode_full_semantic_image, full_semantic_image_len,
+    AtomListId, BuildError, ConcreteType, Confidence, CorePayloadHash, EntityAuthorityFacts,
+    EntityId, EntityKind, EntityVersion, FactAvailability, FragmentView, NominalRef, Occurrence,
+    PackageLineage, ParentageAuthority, PrepareError, PreparedFragment, PythonFacts,
+    PythonParameterKind, ReopenedTypeParameterList, RustFacts, RustOwnership, SemanticCoreReader,
+    SemanticImageView, SemanticReader, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord,
+    SemanticTypeTag, SourceIdentity, TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId,
+    TypeQuadPayload, TypeTriplePayload, VariadicForm, Visibility, encode_full_semantic_image,
+    full_semantic_image_len,
 };
 use backend_semantic::ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
-use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use backend_semantic::vocabulary::{
+    CompileRecipeFact, LanguageProfile, NativeTool, PythonVersion, RustEdition, Stage,
+};
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
@@ -1044,6 +1047,8 @@ fn admitted_generic_extensions_reopen_exact_empty_and_nonempty_ranges() -> Resul
         lifetimes: empty_atoms,
         where_clauses: TypeParameterListId::new(0),
         macros: empty_atoms,
+        const_defaults: empty_atoms,
+        free_predicates: backend_semantic::ir::FreePredicateListId::new(0),
     };
     facts
         .push(
@@ -1131,6 +1136,8 @@ fn rejected_generic_fact_is_byte_for_byte_transactional_before_a_valid_push()
             lifetimes: AtomListId::new(0),
             where_clauses: TypeParameterListId::new(parameter_start),
             macros: AtomListId::new(0),
+            const_defaults: AtomListId::new(0),
+            free_predicates: backend_semantic::ir::FreePredicateListId::new(0),
         })
     };
     let seed = || {
@@ -1452,8 +1459,8 @@ fn source_spans_keep_scope_path_while_image_provenance_keeps_content_identity()
     facts.attach_source_span(0, span).map_err(lane_fault)?;
 
     let lineage = PackageLineage::new("crates.io", "scope-fixture").map_err(|_| TestError::Tail)?;
-    let scope =
-        crate::driver::types::DeclarationScope::new(lineage, "src/lib.rs").map_err(|_| TestError::Tail)?;
+    let scope = crate::driver::types::DeclarationScope::new(lineage, "src/lib.rs")
+        .map_err(|_| TestError::Tail)?;
     let expected_source = identity()?;
     let ir = facts.build_ir(
         LanguageProfile::Rust(RustEdition::Rust2024),
@@ -2396,6 +2403,130 @@ fn identical_sibling_collision_and_root_unavailable_scope_remain_exact() -> Resu
         || owned_authority_projection(&unavailable)?[0].parentage != ParentageAuthority::Unavailable
     {
         return Err(TestError::Tail);
+    }
+    Ok(())
+}
+
+#[test]
+fn function_variants_frame_parameter_conventions_and_still_collide_on_twins()
+-> Result<(), TestError> {
+    fn python_extension(kind: PythonParameterKind) -> EmissionExtension {
+        EmissionExtension::Python(PythonFacts {
+            decorators: AtomListId::new(0),
+            parameter_kind: kind,
+            dynamic_confidence: Confidence::Syntactic,
+        })
+    }
+
+    fn python_versions(facts: &FactSet<'_>) -> Result<Vec<EntityVersion>, TestError> {
+        let profile = LanguageProfile::Python(PythonVersion::Python314);
+        let recipe = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            NativeTool::Python,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(SOURCE_BYTES),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"emission-seam-toolchain"),
+        );
+        let ir = facts.build_ir(
+            profile,
+            identity()?,
+            recipe,
+            crate::driver::types::DeclarationScope::fixture(),
+        )?;
+        Ok(ir.items().map(|item| item.version()).collect())
+    }
+
+    fn versions(kinds: [PythonParameterKind; 2]) -> Result<[EntityVersion; 2], TestError> {
+        let mut facts = FactSet::new();
+        facts
+            .push(SemanticFact::new(
+                EntityKind::Record,
+                b"Owner",
+                SemanticProductConstructor::PRODUCT,
+            ))
+            .map_err(rejected)?;
+        let mut functions = [0_u32; 2];
+        for (index, kind) in kinds.into_iter().enumerate() {
+            let parameter = u32::try_from(facts.len()).map_err(|_| TestError::Tail)?;
+            facts
+                .push(
+                    SemanticFact::new(
+                        EntityKind::Parameter,
+                        b"value",
+                        SemanticProductConstructor::PRODUCT,
+                    )
+                    .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+                    .with_extension(python_extension(kind)),
+                )
+                .map_err(rejected)?;
+            let function = u32::try_from(facts.len()).map_err(|_| TestError::Tail)?;
+            facts
+                .push(
+                    SemanticFact::new(
+                        EntityKind::Function,
+                        b"configure",
+                        SemanticProductConstructor::function(1, 0),
+                    )
+                    .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+                    .type_child(parameter, None, 0)
+                    .child(ProductChildRole::FunctionParameter, parameter)
+                    // Both overloads carry the identical function extension;
+                    // only the parameter child's convention differs.
+                    .with_extension(python_extension(PythonParameterKind::PositionalOrKeyword)),
+                )
+                .map_err(rejected)?;
+            facts.attach_parent(function, 0).map_err(lane_fault)?;
+            facts
+                .attach_parent(parameter, function)
+                .map_err(lane_fault)?;
+            functions[index] = function;
+        }
+        facts.mark_parentage_root(0).map_err(lane_fault)?;
+        let versions = python_versions(&facts)?;
+        let mut selected = [versions[0]; 2];
+        for (index, function) in functions.into_iter().enumerate() {
+            selected[index] = versions[function as usize];
+        }
+        Ok(selected)
+    }
+
+    let forward = versions([
+        PythonParameterKind::PositionalOrKeyword,
+        PythonParameterKind::KeywordOnly,
+    ])?;
+    let reversed = versions([
+        PythonParameterKind::KeywordOnly,
+        PythonParameterKind::PositionalOrKeyword,
+    ])?;
+    // Same name, same parent, identical parameter shape, and identical
+    // function extensions: only the parameter conventions differ, so the v2
+    // frame collided here.
+    if forward[0].identity() == forward[1].identity()
+        || forward[0].identity() != reversed[1].identity()
+        || forward[1].identity() != reversed[0].identity()
+    {
+        return Err(TestError::Tail);
+    }
+
+    // True twins remain the intended honest terminal: byte-identical
+    // functions with byte-identical parameters still collide.
+    let mut twins = FactSet::new();
+    for _ in 0..2 {
+        twins
+            .push(
+                SemanticFact::new(
+                    EntityKind::Function,
+                    b"configure",
+                    SemanticProductConstructor::PRODUCT,
+                )
+                .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)),
+            )
+            .map_err(rejected)?;
+    }
+    match python_versions(&twins) {
+        Err(TestError::Build(BuildError::DuplicateDeclarationIdentity { .. })) => {}
+        Err(error) => return Err(error),
+        Ok(_) => return Err(TestError::Tail),
     }
     Ok(())
 }

@@ -9,6 +9,7 @@
 #![warn(missing_docs)]
 
 mod cancel;
+mod containment;
 mod contract;
 mod embedding;
 mod errors;
@@ -84,8 +85,8 @@ pub use process::{
     VerifiedExecutable,
 };
 pub use profile::{
-    CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion,
-    RustEdition, TypeScriptSource, UnsupportedProfile,
+    CSharpVersion, CStandard, CxxStandard, GoVersion, LanguageProfile, PythonVersion, RustEdition,
+    TypeScriptSource, UnsupportedProfile,
 };
 pub use session::{
     Broken, Cold, ErasedSession, Handshaking, Pending, PersistentSession, Ready, RequestToken,
@@ -97,7 +98,7 @@ pub use session_cache::{
 };
 pub use supervisor::{ProcessSupervisor, RunningProcess};
 pub use syntax::{
-    DeclarationKind, GrammarVariant, SourceAnalysis, SourceDeclaration, SourceExcerpt,
+    Container, DeclarationKind, GrammarVariant, SourceAnalysis, SourceDeclaration, SourceExcerpt,
     SourceExcerptExtent, SourceLanguage, SourceLocation, SyntaxError, SyntaxFrontend,
 };
 

@@ -4,18 +4,14 @@
 //! One single-request local compiler specialization over explicit local ownership.
 
 use crate::driver::{
-    CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment, CompiledIr,
+    CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment,
     CompiledSemantic, DeclarationScope, PackageDeclarationScopeFault, ToolchainSelection,
-    compile_ir, compile_semantic as compile_fused_semantic,
+    compile_semantic as compile_fused_semantic,
 };
 use crate::publication::{
     OpenSemanticPublicationScratch, PublishControl, PublishedCompilation,
     SemanticImageArtifactFacts, SemanticPublicationScratch, open_published_semantic,
     open_semantic_generation, publish_semantic, semantic_generation_requirements,
-};
-use backend_semantic::registry::{AdapterRoute, FullRegistry};
-use backend_version::{
-    ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain,
 };
 use backend_library::interface::{
     CompilerCapability, CompilerReadiness, CompilerRequest as ApplicationCompilerRequest,
@@ -23,7 +19,13 @@ use backend_library::interface::{
     PackageDeclarationScopeCause, PackageSourceCause, PublicationAuthority,
     SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot, SourceAuthority,
 };
-use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError};
+use backend_semantic::registry::{AdapterRoute, FullRegistry};
+use backend_store::journal::{
+    DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError,
+};
+use backend_version::{
+    ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain,
+};
 use thiserror::Error;
 
 use crate::application::{
@@ -502,11 +504,12 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 MAX_PACKAGE_FRAGMENT_BYTES,
                 "compact fragment",
             )?;
-            let image_bytes = backend_semantic::ir::full_semantic_image_len(&compiled.ir).map_err(|_| {
-                PackageSemanticError::Capacity {
-                    lane: "semantic image",
-                }
-            })?;
+            let image_bytes =
+                backend_semantic::ir::full_semantic_image_len(&compiled.ir).map_err(|_| {
+                    PackageSemanticError::Capacity {
+                        lane: "semantic image",
+                    }
+                })?;
             semantic_bytes = checked_package_bytes(
                 semantic_bytes,
                 image_bytes,
@@ -706,56 +709,6 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         })
     }
 
-    /// Compiles into the queryable image derived from the same admitted fact
-    /// lane as durable generation. The returned owner may be borrowed by
-    /// renderers, graph queries, index projections, and IR-VCS for its
-    /// complete lifetime.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same closed application terminal as durable compilation
-    /// when routing, deadlines, native parsing, or semantic IR construction fail.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the application terminal deliberately retains exact native failure evidence"
-    )]
-    pub fn compile_semantic(
-        &mut self,
-        request: ApplicationCompilerRequest<'_>,
-    ) -> Result<CompiledIr, CompilerTerminal> {
-        let source = request_source(request).map_err(source_terminal)?;
-        let toolchain = self
-            .toolchain(request)
-            .map_err(|cause| toolchain_terminal(source, request, cause))?;
-        let deadline = self.config.control.deadline().map_err(|timeout| {
-            CompilerTerminal::DeadlineConstruction {
-                source,
-                language: request.profile.language(),
-                stage: request.stage,
-                timeout: *timeout,
-            }
-        })?;
-        compile_ir(
-            CompileRequest {
-                profile: request.profile,
-                stage: request.stage,
-                source: request.source.as_bytes(),
-                declaration_scope: DeclarationScope::standalone(request.profile),
-                toolchain,
-                authority: crate::driver::SemanticAuthorityInput::None,
-                control: CompileControl {
-                    deadline,
-                    cancelled: self.config.control.cancelled,
-                },
-            },
-            CompileScratch {
-                diagnostic_output: &mut self.scratch.diagnostic_output,
-                native_work: self.config.native_work_directory,
-            },
-        )
-        .map_err(compile_terminal)
-    }
-
     #[allow(
         clippy::result_large_err,
         reason = "this single outer application boundary retains source, recipe, and publication authorities inline; any emitted native diagnostic is already the only cold boxed fact"
@@ -886,7 +839,9 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 binding_output: &mut scratch.binding_output,
             },
         )
-        .map_err(|error| crate::application::terminal::semantic_publication_terminal(source, recipe, error))?;
+        .map_err(|error| {
+            crate::application::terminal::semantic_publication_terminal(source, recipe, error)
+        })?;
         drop(compiled);
 
         progress(PackageCompilePhase::Reopen);
@@ -901,20 +856,25 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 locality_output: &mut scratch.locality_output,
             },
         )
-        .map_err(|error| crate::application::terminal::semantic_reopen_terminal(source, recipe, error))?
+        .map_err(|error| {
+            crate::application::terminal::semantic_reopen_terminal(source, recipe, error)
+        })?
         .ok_or_else(|| crate::application::terminal::semantic_reopen_absent(source, recipe))?;
         let mut artifacts = opened.artifacts();
         let semantic = artifacts
             .next()
             .ok_or_else(|| crate::application::terminal::semantic_reopen_absent(source, recipe))?
-            .map_err(|error| crate::application::terminal::semantic_artifact_terminal(source, recipe, error))?;
-        let semantic_facts = semantic
-            .fragment
-            .facts
-            .semantic_image
-            .ok_or_else(|| crate::application::terminal::semantic_reopen_absent(source, recipe))?;
+            .map_err(|error| {
+                crate::application::terminal::semantic_artifact_terminal(source, recipe, error)
+            })?;
+        let semantic_facts =
+            semantic.fragment.facts.semantic_image.ok_or_else(|| {
+                crate::application::terminal::semantic_reopen_absent(source, recipe)
+            })?;
         if artifacts.next().is_some() {
-            return Err(crate::application::terminal::semantic_reopen_cardinality(source, recipe));
+            return Err(crate::application::terminal::semantic_reopen_cardinality(
+                source, recipe,
+            ));
         }
         let generated = generated(source, recipe, fragment, semantic_facts, &publication);
         self.retained_semantic_image = Some(generated.semantic_image);
@@ -1100,12 +1060,16 @@ fn checked_package_bytes(
     Ok(total)
 }
 
-const fn lineage_cause(cause: backend_semantic::ir::PackageLineageFault) -> PackageDeclarationScopeCause {
+const fn lineage_cause(
+    cause: backend_semantic::ir::PackageLineageFault,
+) -> PackageDeclarationScopeCause {
     match cause {
         backend_semantic::ir::PackageLineageFault::EmptyEcosystem => {
             PackageDeclarationScopeCause::EmptyEcosystem
         }
-        backend_semantic::ir::PackageLineageFault::EmptyName => PackageDeclarationScopeCause::EmptyPackage,
+        backend_semantic::ir::PackageLineageFault::EmptyName => {
+            PackageDeclarationScopeCause::EmptyPackage
+        }
         backend_semantic::ir::PackageLineageFault::SeparatorInEcosystem => {
             PackageDeclarationScopeCause::EcosystemSeparator
         }
@@ -1123,15 +1087,19 @@ const fn declaration_scope_cause(
 ) -> PackageDeclarationScopeCause {
     match cause {
         PackageDeclarationScopeFault::Lineage(cause) => lineage_cause(cause),
-        PackageDeclarationScopeFault::Declaration(backend_semantic::ir::DeclarationKeyFault::Path(
-            backend_semantic::ir::DeclarationPathFault::Empty,
-        )) => PackageDeclarationScopeCause::EmptySourcePath,
-        PackageDeclarationScopeFault::Declaration(backend_semantic::ir::DeclarationKeyFault::Path(
-            backend_semantic::ir::DeclarationPathFault::Backslash,
-        )) => PackageDeclarationScopeCause::SourceBackslash,
-        PackageDeclarationScopeFault::Declaration(backend_semantic::ir::DeclarationKeyFault::EmptyName) => {
-            PackageDeclarationScopeCause::EmptyPackage
-        }
+        PackageDeclarationScopeFault::Declaration(
+            backend_semantic::ir::DeclarationKeyFault::Path(
+                backend_semantic::ir::DeclarationPathFault::Empty,
+            ),
+        ) => PackageDeclarationScopeCause::EmptySourcePath,
+        PackageDeclarationScopeFault::Declaration(
+            backend_semantic::ir::DeclarationKeyFault::Path(
+                backend_semantic::ir::DeclarationPathFault::Backslash,
+            ),
+        ) => PackageDeclarationScopeCause::SourceBackslash,
+        PackageDeclarationScopeFault::Declaration(
+            backend_semantic::ir::DeclarationKeyFault::EmptyName,
+        ) => PackageDeclarationScopeCause::EmptyPackage,
     }
 }
 
@@ -1266,14 +1234,15 @@ const fn package_authority_projection(
     backend_semantic::vocabulary::AuthorityPhase,
     backend_semantic::vocabulary::AuthorityDiagnosticClass,
 ) {
-    use backend_semantic::vocabulary::{AuthorityDiagnosticClass as Class, AuthorityPhase as Phase};
+    use backend_semantic::vocabulary::{
+        AuthorityDiagnosticClass as Class, AuthorityPhase as Phase,
+    };
 
     match cause {
         PackageAuthorityError::SourceOutsidePackage { .. }
         | PackageAuthorityError::TypeScriptEntryPath { .. }
-        | PackageAuthorityError::RustToolchainExecutableMismatch { .. } => {
-            (Phase::Open, Class::Binding)
-        }
+        | PackageAuthorityError::RustToolchainExecutableMismatch { .. }
+        | PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
         PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),
         PackageAuthorityError::PythonPyrefly(_) => (Phase::TypeCheck, Class::Type),
         PackageAuthorityError::RustProject(_) | PackageAuthorityError::GoOracle(_) => {

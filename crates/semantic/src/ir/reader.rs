@@ -11,8 +11,9 @@ use core::slice;
 use crate::ir::{
     AtomId, AtomListId, CSharpExtension, CSharpFacts, ClangExtension, ClangFacts,
     DeclarationIdentity, DocFragment, DocId, EntityAuthorityFacts, EntityId, EntityListId,
-    EntityVersion, ExternalId, ExternalTarget, ForeignTargetOrigin, GoExtension, GoFacts,
-    ImageProvenance, Ir, JavaExtension, JavaFacts, LanguageExtensionColumnView, Link, LinkId,
+    EntityVersion, ExternalId, ExternalTarget, ForeignTargetOrigin, FreePredicate,
+    FreePredicateListId, GoExtension, GoFacts, ImageProvenance, Ir, JavaExtension, JavaFacts,
+    LanguageExtensionColumnView, Link, LinkId,
     LinkIter, LinkOccurrence, LinkOccurrenceId, LinkOccurrenceIter, ObjectMember,
     ObjectMemberListId, OccurrenceAuthorityFacts, PythonExtension, PythonFacts, RustExtension,
     RustFacts, SemanticImageAuthority, SourceSpan, TemplatePart, TemplatePartListId, TupleElement,
@@ -312,6 +313,9 @@ pub trait SemanticReader: SemanticCoreReader {
     type TypeParameterBounds<'image>: ExactSizeIterator<Item = TypeParameterBound> + FusedIterator
     where
         Self: 'image;
+    type FreePredicates<'image>: ExactSizeIterator<Item = FreePredicate> + FusedIterator
+    where
+        Self: 'image;
     type CanonicalTypes<'image>: ExactSizeIterator<Item = (TypeId, TypeExpr)> + FusedIterator
     where
         Self: 'image;
@@ -339,6 +343,8 @@ pub trait SemanticReader: SemanticCoreReader {
         &self,
         id: TypeParameterBoundListId,
     ) -> Option<Self::TypeParameterBounds<'_>>;
+
+    fn free_predicates(&self, id: FreePredicateListId) -> Option<Self::FreePredicates<'_>>;
 
     fn canonical_entities(&self) -> Self::CanonicalEntities<'_>;
     /// Enumerates every graph relation exactly once in canonical stable-key
@@ -598,6 +604,7 @@ impl SemanticReader for Ir {
     type TemplateParts<'image> = SemanticCursor<'image, TemplatePart>;
     type TypeParameters<'image> = SemanticCursor<'image, TypeParameter>;
     type TypeParameterBounds<'image> = SemanticCursor<'image, TypeParameterBound>;
+    type FreePredicates<'image> = SemanticCursor<'image, FreePredicate>;
     type CanonicalTypes<'image> = IrCanonicalTypes<'image>;
     type CanonicalExternals<'image> = IrCanonicalExternals<'image>;
 
@@ -653,6 +660,9 @@ impl SemanticReader for Ir {
         id: TypeParameterBoundListId,
     ) -> Option<Self::TypeParameterBounds<'_>> {
         Ir::type_parameter_bounds(self, id).map(|rows| rows.iter().copied())
+    }
+    fn free_predicates(&self, id: FreePredicateListId) -> Option<Self::FreePredicates<'_>> {
+        Ir::free_predicates(self, id).map(|rows| rows.iter().copied())
     }
 
     fn canonical_entities(&self) -> Self::CanonicalEntities<'_> {

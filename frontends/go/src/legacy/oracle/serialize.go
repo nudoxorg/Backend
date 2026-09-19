@@ -51,6 +51,13 @@ type Decl struct {
 	// the oracle could not find an enclosing AST node (should not happen
 	// for anything with a non-nil Pos).
 	Span *Span `json:"span,omitempty"`
+	// NameSpan is the byte range of the declaration's own identifier token
+	// — exactly `obj.Pos()` through `obj.End()`. The authority image carries
+	// it beside Span so an owner-relative occurrence span can name the
+	// declared entity itself (interface-satisfaction edges), and so a site
+	// can be verified against the identifier's exact source bytes. Nil when
+	// the object carries no valid position.
+	NameSpan *Span `json:"nameSpan,omitempty"`
 	// Underlying is the structural underlying type (kind == "type").
 	Underlying *Type `json:"underlying,omitempty"`
 	// Methods are the methods DECLARED on this named type.
@@ -100,37 +107,60 @@ type Decl struct {
 	Implements []*Type `json:"implements,omitempty"`
 }
 
-// Reference is a compiler-resolved use of one package-level function from
-// another — same-package or cross-package, and from a package-level function
-// OR a method body. Positions are byte offsets in the declaring source file.
+// Reference is a compiler-resolved use of one named object from another —
+// the go/types Uses table rendered as rows: package-scope variables,
+// constants, functions, and named types; methods; struct fields; and
+// imported package bindings, used as calls, reads/writes, type references,
+// or package-qualified identifiers. Positions are byte offsets in the
+// declaring source file, and they cover exactly the used identifier token.
 // Keeping this fact in the oracle (rather than rediscovering names in Rust)
 // preserves Go's lexical/type resolution and excludes strings and shadowed
 // identifiers.
 type Reference struct {
-	// Owner is the calling function or method's bare name.
+	// Owner is the enclosing declaration's bare name: the calling function
+	// or method for body uses, or the package-level type/const/var
+	// declaration whose spec contains the use (initializers, composite
+	// types, const expressions).
 	Owner string `json:"owner"`
 	// OwnerRecv is the bare receiver type name when Owner is a method
 	// (empty for a package-level function). Lets the Rust side key into
 	// GoId::Member instead of GoId::Item.
 	OwnerRecv string `json:"ownerRecv,omitempty"`
-	// Target is the called function's bare name. Only free (non-method)
-	// package-level functions are tracked as call targets — a call through a
-	// method selector (`x.Foo()`) is out of scope: resolving its receiver's
-	// declared/promoted method identity is a separate problem from a Uses
-	// table walk.
+	// Target is the used object's bare name.
 	Target string `json:"target"`
 	// TargetPkg is the target's defining package's import path, present only
 	// when it differs from the package this Reference was extracted from
-	// (empty for a same-package call). The oracle does not know — and does
-	// not need to know — whether that package is part of the same loaded
-	// module; the Rust side already computes exactly that set (`local` in
-	// `lower_into`) to route named-type references the same way, and reuses
-	// it here to decide between a same-Lowering-pass (`Intro`-eligible)
-	// reference and a genuinely external (`Foreign`) occurrence.
+	// (empty for a same-package target; the imported package's path for an
+	// import use). The oracle does not know — and does not need to know —
+	// whether that package is part of the same loaded module; the Rust side
+	// already computes exactly that set (`local` in `lower_into`) to route
+	// named-type references the same way, and reuses it here to decide
+	// between a same-Lowering-pass (`Intro`-eligible) reference and a
+	// genuinely external (`Foreign`) occurrence.
 	TargetPkg string `json:"targetPkg,omitempty"`
-	File      string `json:"file"`
-	Start     int    `json:"start"`
-	End       int    `json:"end"`
+	// Class is the used object's closed class: "" for a free function (the
+	// only class v3 rows ever carried, so v3 rows stay byte-identical),
+	// "method" for a method, "field" for a struct field, "var" for a
+	// package-level variable, "const" for a package-level constant, "type"
+	// for a named type or alias, and "pkg" for an imported package binding.
+	Class string `json:"class,omitempty"`
+	// Kind is the use's closed kind: "" for a call (again the v3 spelling,
+	// so pre-existing call rows keep their exact bytes), "read" for a value
+	// use — reads and writes alike, because go/types' Uses table records no
+	// lvalue distinction — "typeref" for a use of a named type in type
+	// position, and "import" for a use of an imported package binding.
+	Kind string `json:"kind,omitempty"`
+	// Recv is the receiver type's bare name for method and field targets
+	// (`Server` for `x.Close` on a *Server), empty for every other class.
+	// The Rust side keys same-package method and field targets through it;
+	// unresolvable combinations (promoted members, struct-literal keys)
+	// stay typed foreign keys exactly like unresolved external targets.
+	Recv string `json:"recv,omitempty"`
+	File string `json:"file"`
+	// Start and End are the used identifier token's byte extent — the
+	// NAME-TOKEN extent, never a wider expression.
+	Start int `json:"start"`
+	End   int `json:"end"`
 }
 
 // Method is a method attached to a named type (declared or promoted).

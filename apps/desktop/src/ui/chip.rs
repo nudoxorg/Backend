@@ -13,8 +13,8 @@ use crate::theme::palette::Paint;
 use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyView, App, AppContext as _, Div, ElementId, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    AnyView, App, Div, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use std::time::Duration;
 
@@ -147,69 +147,6 @@ fn word(theme: &Theme, text: &str, role: Paint) -> Div {
         .child(text.to_owned())
 }
 
-/// Returns a monospace tooltip holding one exact value, never abbreviated.
-///
-/// Anything this application shortens for display — a key tag, an elided path
-/// — carries one of these, so the complete spelling is always one hover away
-/// and the shortened form is never what a reader would copy.
-pub(crate) fn mono_tip(body: String, cx: &mut App) -> AnyView {
-    let theme = crate::theme::theme(cx);
-    cx.new(|_| MonoTip { theme, body }).into()
-}
-
-struct MonoTip {
-    theme: Theme,
-    body: String,
-}
-
-impl gpui::Render for MonoTip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        super::surface::raised(&self.theme)
-            .max_w(px(420.0))
-            .px(space(Space::Base))
-            .py(space(Space::Snug))
-            .child(
-                div()
-                    .font_family(self.theme.specimen())
-                    .text_size(type_size(TypeScale::Micro))
-                    .text_color(self.theme.paint(Paint::TextDim))
-                    .child(self.body.clone()),
-            )
-    }
-}
-
-fn explain(title: String, body: String, _window: &mut Window, cx: &mut App) -> AnyView {
-    let theme = crate::theme::theme(cx);
-    cx.new(|_| Tooltip { theme, title, body }).into()
-}
-
-struct Tooltip {
-    theme: Theme,
-    title: String,
-    body: String,
-}
-
-impl gpui::Render for Tooltip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        super::surface::raised(&self.theme)
-            .max_w(px(320.0))
-            .px(space(Space::Base))
-            .py(space(Space::Snug))
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .child(
-                div()
-                    .text_size(type_size(TypeScale::Tiny))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(self.theme.paint(Paint::TextStrong))
-                    .child(self.title.clone()),
-            )
-            .child(
-                div()
-                    .text_size(type_size(TypeScale::Tiny))
-                    .text_color(self.theme.paint(Paint::TextDim))
-                    .child(self.body.clone()),
-            )
-    }
+fn explain(title: String, body: String, window: &mut Window, cx: &mut App) -> AnyView {
+    super::tip::Tip::new(title).detail(body).build()(window, cx)
 }

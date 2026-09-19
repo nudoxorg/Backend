@@ -382,8 +382,10 @@ fn unix_subscription_admits_empty_success_and_rejects_mutated_cursor() {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
 
-    let path = std::env::temp_dir().join(format!(
-        "backend-desktop-test-{}-{}.sock",
+    // `/tmp`, not `temp_dir()`: under nix the latter is a per-shell path long
+    // enough to exceed `sockaddr_un`, which fails the bind before the test runs.
+    let path = std::path::PathBuf::from("/tmp").join(format!(
+        "nudox-t-{}-{}.sock",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

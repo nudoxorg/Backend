@@ -7,12 +7,13 @@
 use alloc::vec;
 
 use crate::ir::{
-    BorrowedTree, CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole,
-    CSharpReferenceKind, CSharpVersion, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts,
-    EntityVersion, FactAvailability, Ir, IrBuilder, ItemKind, LanguageExtensionInput,
-    LanguageProfile, ParentageAuthority, SemanticCoreReader, SemanticImageAuthority,
-    SemanticImageEncodeError, SemanticReader, TreeItemInput, TypeScriptSource, VariantFingerprint,
-    Visibility,
+    BorrowedTree, BuiltinType, CSharpFacts, CSharpMemberEffects, CSharpNullability,
+    CSharpPartialRole, CSharpReferenceKind, CSharpVersion, ConcreteType, CorePayloadHash,
+    DeclarationFamilyId, EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability,
+    FreePredicate, Ir, IrBuilder, ItemKind, LanguageExtensionInput, LanguageProfile,
+    ParentageAuthority, RustEdition, RustFacts, RustOwnership, SemanticCoreReader,
+    SemanticImageAuthority, SemanticImageEncodeError, SemanticReader, TreeItemInput,
+    TypeExpr, TypeParameterBound, TypeScriptSource, VariantFingerprint, Visibility,
 };
 
 use super::wire::{
@@ -371,5 +372,237 @@ fn full_image_rejects_noncanonical_extension_bindings_and_fact_pools()
             }
         ))
     ));
+    Ok(())
+}
+
+fn rust_free_predicate_image() -> Result<Ir, crate::ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    builder.set_language_profile(LanguageProfile::Rust(RustEdition::Rust2024))?;
+    let subject = builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::I32)))?;
+    let bound_type =
+        builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::Bool)))?;
+    let bound_lifetime = builder.intern_atom(b"'scope")?;
+    let bounds = builder.intern_type_parameter_bounds(&[
+        TypeParameterBound::Type(bound_type),
+        TypeParameterBound::Lifetime(bound_lifetime),
+    ])?;
+    let free_predicates =
+        builder.intern_free_predicates(&[FreePredicate { subject, bounds }])?;
+    let facts = RustFacts {
+        ownership: RustOwnership::SharedBorrow,
+        lifetimes: builder.intern_attributes(&[])?,
+        where_clauses: builder.intern_type_parameters(&[])?,
+        macros: builder.intern_attributes(&[])?,
+        const_defaults: builder.intern_attributes(&[])?,
+        free_predicates,
+    };
+    let item = TreeItemInput {
+        name: b"owner",
+        kind: ItemKind::Function,
+        visibility: Visibility::Public,
+        authority: EntityAuthorityFacts {
+            language_extension: FactAvailability::Captured,
+            ..authority()
+        },
+        parent: None,
+        semantic_type: None,
+        members: &[],
+        docs: &[],
+        attributes: &[],
+        source: None,
+        extension: Some(LanguageExtensionInput::Rust(&facts)),
+    };
+    let versions = [version(1)];
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions,
+        items: &[item],
+        links: &[],
+    })?;
+    builder.finish()
+}
+
+#[test]
+fn full_image_round_trips_a_rust_free_predicate() -> Result<(), crate::ir::BuildError> {
+    let ir = rust_free_predicate_image()?;
+    let bytes = encoded(&ir)?;
+    let view = SemanticImageView::reopen(&bytes).expect("full image reopens");
+    let facts = view
+        .rust_extension(EntityId::new(0))
+        .expect("reopened rust facts");
+    assert_eq!(facts.ownership, RustOwnership::SharedBorrow);
+    let predicates = view
+        .free_predicates(facts.free_predicates)
+        .expect("reopened free predicates");
+    let rows = predicates.collect::<alloc::vec::Vec<_>>();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        view.ty(rows[0].subject),
+        Some(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::I32)))
+    );
+    let bounds = view
+        .type_parameter_bounds(rows[0].bounds)
+        .expect("reopened predicate bounds")
+        .collect::<alloc::vec::Vec<_>>();
+    assert_eq!(bounds.len(), 2);
+    let TypeParameterBound::Type(first_bound) = bounds[0] else {
+        panic!("first predicate bound is not a type");
+    };
+    assert_eq!(
+        view.ty(first_bound),
+        Some(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::Bool)))
+    );
+    assert!(matches!(
+        bounds[1],
+        TypeParameterBound::Lifetime(atom) if view.atom(atom) == Some(&b"'scope"[..])
+    ));
+    Ok(())
+}
+
+/// Focused decode benchmark over a synthetic image of roughly ten thousand
+/// typed rows: `ENTITIES` distinct `Parameter`/`CPointer` type pairs plus one
+/// shared 512-row type-parameter list that every extension facts row points
+/// at (exactly the shape the audit's canonical extension digests sweep).  The
+/// grouped decode must complete the whole reopen + types + parameter sweep in
+/// bounded time; the former per-row linear edge scans made the same sweep
+/// quadratic in the list length.
+#[test]
+fn grouped_decode_sweeps_ten_thousand_typed_rows_in_bounded_time()
+-> Result<(), crate::ir::BuildError> {
+    use std::time::{Duration, Instant};
+
+    use crate::ir::{
+        CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole,
+        CSharpReferenceKind, CSharpVersion, LanguageExtensionInput, Mutability,
+        TypeParameterInference, TypeParameterKind,
+    };
+
+    const ENTITIES: usize = 4600;
+    const SHARED_PARAMETERS: usize = 512;
+
+    fn distinct_version(index: usize) -> crate::ir::EntityVersion {
+        let low = u8::try_from(index & 0xff).unwrap_or(1);
+        let high = u8::try_from((index >> 8) & 0xff).unwrap_or(1);
+        let mut family = [7_u8; 16];
+        family[0] = low;
+        family[1] = high;
+        let mut variant = [9_u8; 16];
+        variant[0] = low.wrapping_add(1);
+        variant[1] = high;
+        crate::ir::EntityVersion {
+            family: crate::ir::DeclarationFamilyId::from_raw(family),
+            variant: crate::ir::VariantFingerprint::from_raw(variant),
+            core_payload: crate::ir::CorePayloadHash::from_raw([11; 16]),
+        }
+    }
+
+    let mut builder = IrBuilder::new();
+    builder.set_language_profile(LanguageProfile::CSharp(CSharpVersion::CSharp14))?;
+    let lifetime = builder.intern_atom(b"'a")?;
+    let empty_bounds = builder.intern_type_parameter_bounds(&[])?;
+    let mixed_bounds =
+        builder.intern_type_parameter_bounds(&[TypeParameterBound::Lifetime(lifetime)])?;
+    let mut shared = alloc::vec::Vec::with_capacity(SHARED_PARAMETERS);
+    for index in 0..SHARED_PARAMETERS {
+        let spelling = alloc::format!("T{index}");
+        let name = builder.intern_atom(spelling.as_bytes())?;
+        shared.push(crate::ir::TypeParameter {
+            name,
+            bounds: if index % 2 == 0 { mixed_bounds } else { empty_bounds },
+            default: None,
+            variance: crate::ir::Variance::Covariant,
+            kind: TypeParameterKind::Type {
+                inference: TypeParameterInference::Ordinary,
+            },
+            requirements: crate::ir::TypeParameterRequirements::none(),
+        });
+    }
+    let constraints = builder.intern_type_parameters(&shared)?;
+    let facts = CSharpFacts {
+        nullability: CSharpNullability::Oblivious,
+        reference_kind: CSharpReferenceKind::Value,
+        constraints,
+        effects: CSharpMemberEffects {
+            is_async: false,
+            is_iterator: false,
+            is_extension: false,
+        },
+        attributes: builder.intern_attributes(&[])?,
+        partial: CSharpPartialRole::None,
+        xml_provenance: None,
+    };
+    let mut versions = alloc::vec::Vec::with_capacity(ENTITIES);
+    let mut items = alloc::vec::Vec::with_capacity(ENTITIES);
+    let mut spellings = alloc::vec::Vec::with_capacity(ENTITIES);
+    for index in 0..ENTITIES {
+        spellings.push(alloc::format!("synthetic-{index}"));
+    }
+    for index in 0..ENTITIES {
+        let spelling = spellings[index].as_bytes();
+        let parameter_spelling = alloc::format!("P{index}");
+        let parameter = builder.intern_atom(parameter_spelling.as_bytes())?;
+        let parameter_type = builder.intern_type(TypeExpr::Concrete(ConcreteType::Parameter(
+            parameter,
+        )))?;
+        let semantic_type = builder.intern_type(TypeExpr::Concrete(ConcreteType::CPointer {
+            target: parameter_type,
+        }))?;
+        versions.push(distinct_version(index));
+        items.push(TreeItemInput {
+            name: spelling,
+            kind: ItemKind::Function,
+            visibility: Visibility::Private,
+            authority: crate::ir::EntityAuthorityFacts {
+                semantic_type: FactAvailability::Captured,
+                language_extension: FactAvailability::Captured,
+                ..authority()
+            },
+            parent: None,
+            semantic_type: Some(semantic_type),
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: Some(LanguageExtensionInput::CSharp(&facts)),
+        });
+    }
+    let borrowed = crate::ir::BorrowedTree {
+        versions: &versions,
+        items: &items,
+        links: &[],
+    };
+    builder.add_borrowed_tree(borrowed)?;
+    let ir = builder.finish()?;
+
+    let started = Instant::now();
+    let bytes = encoded(&ir)?;
+    let view = SemanticImageView::reopen(&bytes).expect("synthetic full image reopens");
+    let type_rows = view.canonical_types().count();
+    let mut facts_rows = 0_usize;
+    let mut parameter_rows = 0_usize;
+    for (_, row_facts) in view.csharp_extensions() {
+        facts_rows += 1;
+        for row in view
+            .type_parameters(row_facts.constraints)
+            .expect("shared parameter list decodes")
+        {
+            std::hint::black_box(&row);
+            parameter_rows += 1;
+        }
+    }
+    let elapsed = started.elapsed();
+    eprintln!(
+        "grouped-decode benchmark: type_rows={type_rows} facts_rows={facts_rows} parameter_rows={parameter_rows} encoded_bytes={} elapsed_ms={}",
+        bytes.len(),
+        elapsed.as_millis(),
+    );
+    assert!(type_rows >= 9_000, "expected ~10k type rows, saw {type_rows}");
+    assert_eq!(facts_rows, ENTITIES);
+    assert_eq!(parameter_rows, ENTITIES * SHARED_PARAMETERS);
+    // Debug-profile CI headroom; the decode itself is single-pass and the
+    // former linear-scan decoder could not finish this sweep at all.
+    assert!(
+        elapsed < Duration::from_secs(60),
+        "grouped decode exceeded the bound: {elapsed:?}"
+    );
     Ok(())
 }

@@ -70,7 +70,17 @@ impl Output {
     /// own. The field was already there on a v1 binary; what it under-reports
     /// changed. `#[serde(default)]` cannot express that distinction, so the
     /// handshake is the only thing that can.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 3;
+    ///
+    /// v4 widens `references` from the free-function call graph to the full
+    /// go/types Uses map: every use of a keyable named object with a closed
+    /// `kind` (call/read/typeref/import), a closed object `class`, the
+    /// receiver type name for method and field targets, and the exact
+    /// NAME-TOKEN extent. The addition is byte-compatible — every pre-v4
+    /// call row carries an empty `kind`/`class`/`recv` and serializes
+    /// exactly as before — but a pre-v4 binary under-reports so massively
+    /// (zero type uses, method uses, field uses, imports) that the
+    /// handshake must fire. `Decl.NameSpan` also arrives with v4.
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 4;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,12 +148,16 @@ pub struct Package {
     pub references: Box<[Reference]>,
 }
 
-/// One resolved function-use edge in a package.
+/// One resolved named-object use edge in a package — the go/types Uses
+/// table rendered as rows. The v3 schema carried only free-function calls;
+/// v4 covers every use of a keyable object.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct Reference {
-    /// The calling function or method's bare name.
+    /// The enclosing declaration's bare name: the calling function or
+    /// method for body uses, or the package-level declaration whose spec
+    /// contains the use.
     pub owner: String,
 
     /// The bare receiver type name when `owner` is a method (empty for a
@@ -151,19 +165,38 @@ pub struct Reference {
     #[serde(default)]
     pub owner_recv: String,
 
-    /// The called function's bare name. Only free (non-method) package-level
-    /// functions are recorded as targets.
+    /// The used object's bare name.
     pub target: String,
 
     /// The target's defining package's import path, present only when it
     /// differs from the package this `Reference` was extracted from (empty
-    /// for a same-package call). See `oracle/go/serialize.go`'s doc comment
-    /// on the Go-side field for why routing (same-module `Intro`-eligible vs.
-    /// genuinely foreign) is decided on this side, not the oracle's.
+    /// for a same-package target; the imported package's path for an
+    /// import use). See `oracle/serialize.go`'s doc comment on the Go-side
+    /// field for why routing (same-module `Intro`-eligible vs. genuinely
+    /// foreign) is decided on this side, not the oracle's.
     #[serde(default)]
     pub target_pkg: String,
 
+    /// The used object's closed class. Empty for a free function (every v3
+    /// row); `method`, `field`, `var`, `const`, `type`, or `pkg` from v4
+    /// on.
+    #[serde(default)]
+    pub class: String,
+
+    /// The use's closed kind. Empty for a call (every v3 row); `read`
+    /// (value use, writes included — the Uses table records no lvalue
+    /// distinction), `typeref`, or `import` from v4 on.
+    #[serde(default)]
+    pub kind: String,
+
+    /// The receiver type's bare name for method and field targets
+    /// (`Server` for `x.Close` on a `*Server`), empty otherwise.
+    #[serde(default)]
+    pub recv: String,
+
     pub file: String,
+    /// The used identifier token's exact byte extent — the NAME-TOKEN
+    /// extent.
     pub start: usize,
     pub end: usize,
 }
@@ -246,6 +279,12 @@ pub struct Decl {
     /// `const`/`var`/`type` block — just that member's own spec).
     #[serde(default)]
     pub span: Option<Span>,
+
+    /// Byte range of the declaration's own identifier token (v4).  The
+    /// authority image carries it beside `span` so owner-relative
+    /// occurrence spans can name the declared entity itself.
+    #[serde(default)]
+    pub name_span: Option<Span>,
 
     /// Generic type parameters with constraints (`kind` type/func).
     #[serde(default)]
@@ -873,11 +912,34 @@ impl GoOracle {
         source: &std::path::Path,
         module: &std::path::Path,
     ) -> Result<Vec<u8>, OracleError> {
+        self.authority_image_with_mode("--authority-image", source, module)
+    }
+
+    /// Runs the authority-image producer for exactly the package that owns
+    /// `source`, resolving imports from the module rooted at `module`. Unlike
+    /// [`GoOracle::authority_image`], sibling packages are import context only
+    /// and are never serialized, so a module whose subpackages share a
+    /// declaration spelling cannot inject a coordinate-free collision into the
+    /// selected package's image.
+    pub fn authority_image_for_package(
+        &self,
+        source: &std::path::Path,
+        module: &std::path::Path,
+    ) -> Result<Vec<u8>, OracleError> {
+        self.authority_image_with_mode("--authority-image-package", source, module)
+    }
+
+    fn authority_image_with_mode(
+        &self,
+        mode: &str,
+        source: &std::path::Path,
+        module: &std::path::Path,
+    ) -> Result<Vec<u8>, OracleError> {
         let oracle_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/legacy/oracle");
         let override_bin = std::env::var("NUDOX_GO_ORACLE_BIN");
         let mut command = if let Ok(binary) = override_bin {
             let mut command = std::process::Command::new(binary);
-            command.arg("--authority-image").arg(source).arg(module);
+            command.arg(mode).arg(source).arg(module);
             command
         } else {
             let compiler = match std::env::var("COMPILER_GO_COMPILER") {
@@ -886,7 +948,7 @@ impl GoOracle {
             };
             let mut command = std::process::Command::new(compiler);
             command
-                .args(["run", ".", "--authority-image"])
+                .args(["run", ".", mode])
                 .arg(source)
                 .arg(module)
                 .current_dir(oracle_dir);

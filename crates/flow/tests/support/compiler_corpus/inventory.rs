@@ -13,10 +13,15 @@ pub(super) mod fleet_manifest;
 #[path = "inventory_resolve.rs"]
 mod inventory_resolve;
 use fleet_manifest::{
-    candidate_at, FLEET_CANDIDATE_LANES, FLEET_SELECTION, FLEET_SELECTION_SEED,
-    FLEET_SELECTION_TARGET, FLEET_PACKAGE_MINIMUM,
+    FLEET_CANDIDATE_LANES, FLEET_PACKAGE_MINIMUM, FLEET_SELECTION, FLEET_SELECTION_SEED,
+    FLEET_SELECTION_TARGET, candidate_at,
 };
 use inventory_resolve::resolve_package_source;
+
+// Corpus checkout lookups are shared with the authority fixture builders, so
+// the audit's Go selection and its staging post-pass agree on one rule for
+// what the corpus can satisfy.
+pub(super) use inventory_resolve::corpus_module_checkout_exact;
 
 /// The requested package audit is a 200+ row audit.  The count is derived from
 /// the versioned fleet manifest's seeded selection rather than from a frozen
@@ -44,16 +49,22 @@ impl PackageCoordinate {
         }
     }
 
-    pub(super) fn lineage(self) -> (&'static str, &'static str) {
+    pub(super) fn lineage(self) -> (String, String) {
         match self {
             Self::Purl(value) => {
                 let Some((ecosystem, package)) = value.split_once(':') else {
-                    return ("unknown", value);
+                    return ("unknown".to_string(), value.to_string());
                 };
                 let package = package.rsplit_once('@').map_or(package, |(name, _)| name);
-                (ecosystem, package)
+                if ecosystem == "maven" {
+                    // Maven coordinates are `group:artifact`; the lineage
+                    // render separator `:` cannot appear in the package
+                    // segment, so the segments are dot-joined.
+                    return (ecosystem.to_string(), package.replace(':', "."));
+                }
+                (ecosystem.to_string(), package.to_string())
             }
-            Self::Project(value) => ("clang", value),
+            Self::Project(value) => ("clang".to_string(), value.to_string()),
         }
     }
 }
@@ -109,7 +120,11 @@ impl SourceExtension {
                     || path
                         .file_name()
                         .and_then(|name| name.to_str())
-                        .is_some_and(|name| name.ends_with(".d.ts"))
+                        .is_some_and(|name| {
+                            name.ends_with(".d.ts")
+                                || name.ends_with(".d.mts")
+                                || name.ends_with(".d.cts")
+                        })
             }
             Self::Python => extension == "py",
             Self::Go => extension == "go",
@@ -262,6 +277,10 @@ pub(super) struct ResolvedPackageSource {
     pub(super) profile: LanguageProfile,
     pub(super) table: CorpusTable,
     pub(super) source_root: PathBuf,
+    /// The selected file's owning package directory. Authorities that stage
+    /// package context (the TypeScript checker) must scope to this directory,
+    /// never to the whole lane root.
+    pub(super) package_root: PathBuf,
     pub(super) path: PathBuf,
     pub(super) bytes: Vec<u8>,
     pub(super) identity: SourceIdentity,
@@ -510,8 +529,8 @@ pub(super) fn real_package_cases() -> impl Iterator<Item = RealPackageCase> {
         .copied()
         .enumerate()
         .map(|(ordinal, flat)| {
-            let (lane_index, local_index) = candidate_at(flat)
-                .expect("seeded fleet selection always addresses a manifest row");
+            let (lane_index, local_index) =
+                candidate_at(flat).expect("seeded fleet selection always addresses a manifest row");
             let lane = LANES[lane_index];
             let candidate = FLEET_CANDIDATE_LANES[lane_index][local_index];
             RealPackageCase {
@@ -671,6 +690,46 @@ pub(super) fn real_package_inputs() -> impl Iterator<Item = RealPackageInput> {
         Ok(source) => RealPackageInput::Source { case, source },
         Err(cause) => RealPackageInput::Unavailable { case, cause },
     })
+}
+
+/// Resolves exactly one frozen row by its selection ordinal.
+///
+/// The row worker process uses this so an isolated re-drive of one row never
+/// pays for resolving the rows before it. The resolution is byte-identical to
+/// [`real_package_inputs`]: same case, same resolver, same typed absence.
+pub(super) fn real_package_input_at(ordinal: usize) -> Option<RealPackageInput> {
+    let case = real_package_cases().nth(ordinal)?;
+    Some(match resolve_package_source(case) {
+        Ok(source) => RealPackageInput::Source { case, source },
+        Err(cause) => RealPackageInput::Unavailable { case, cause },
+    })
+}
+
+/// Development-only narrowing token for the real audit, read from
+/// `NUDOX_AUDIT_FILTER`. It is a reproduction aid: a single package can be
+/// driven without the full selection. A production run leaves it unset, and
+/// the audit's `expected` row count is derived from what the filter admitted,
+/// so narrowing can never make a partial run look complete.
+pub(super) fn audit_filter() -> Option<String> {
+    std::env::var("NUDOX_AUDIT_FILTER")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+/// True when one selected case matches the `NUDOX_AUDIT_FILTER` token. The
+/// token is either `Lane:needle` or a bare `needle`; the needle is a plain
+/// substring of the coordinate spelling, and an empty needle matches the whole
+/// lane.
+pub(super) fn audit_filter_matches(filter: &str, case: &RealPackageCase) -> bool {
+    let coordinate = case.coordinate.raw();
+    match filter.split_once(':') {
+        Some((lane, needle)) => {
+            let lane_matches =
+                lane.is_empty() || format!("{:?}", case.language).eq_ignore_ascii_case(lane);
+            lane_matches && (needle.is_empty() || coordinate.contains(needle))
+        }
+        None => coordinate.contains(filter),
+    }
 }
 
 /// Partition the source inventory without assigning any row to output
