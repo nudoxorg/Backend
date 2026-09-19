@@ -26,7 +26,7 @@ pub(crate) use crate::journal::{
 pub(crate) use crate::schema::{RecordId, WorkspaceLog};
 pub(crate) use backend_store::{
     FileStore, GcLimits, GcReport, GcRoot, GcRoots, ObjectId, RelationAdmissionRegistry,
-    SelectedHead, StoreError, TypedObject, UntrustedObjectId,
+    StoreError, TypedObject, UntrustedObjectId,
 };
 pub(crate) use backend_version::{
     CommitProvenance, ObjectClosure as VersionObjectClosure, WorkspaceRoot, commit_capability,

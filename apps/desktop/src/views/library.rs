@@ -7,6 +7,10 @@
 //! two ways in — a folder on this machine, or a registry coordinate — are the
 //! two facts the engine can act on, and validation happens before anything is
 //! submitted so a typo is answered in the field rather than by a failed job.
+//! Both ways in end at the same submit, so the picker is held to the same
+//! promise as the field: the form closes when an intent is on its way and at
+//! no other time, and a dialog that failed says so instead of looking like the
+//! reader's own cancel.
 //!
 //! Collapsed, the panel becomes a rail rather than nothing. A shelf that
 //! vanishes takes its state with it: a reader who folds the panel to read a
@@ -30,6 +34,7 @@ use gpui::{
     ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use gpui_elements::editable_text::text_input;
+use std::path::PathBuf;
 
 impl Workspace {
     /// Returns the left panel at its current animated width.
@@ -383,18 +388,15 @@ impl Workspace {
     }
 
     fn folder_button(theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        button::button(
-            theme,
-            "add-folder",
-            "Choose a folder on this Mac…",
-            button::Weight::Regular,
-        )
-        .w_full()
-        .justify_center()
-        .on_click(cx.listener(|_, _, _, cx| Self::choose_folder(cx)))
+        let label = format!("Choose a folder on {}…", project::this_machine());
+        button::button(theme, "add-folder", &label, button::Weight::Regular)
+            .w_full()
+            .justify_center()
+            .on_click(cx.listener(|_, _, _, cx| Self::choose_folder(cx)))
     }
 
     fn coordinate_field(&mut self, theme: &Theme) -> impl IntoElement {
+        let placeholder = format!("pkg:cargo/serde@1.0.0  or  {}", project::example_path());
         div()
             .w_full()
             .px(space(Space::Snug))
@@ -406,7 +408,7 @@ impl Workspace {
             .child(
                 text_input("add-coordinate")
                     .state(self.coordinate.downgrade())
-                    .placeholder("pkg:cargo/serde@1.0.0  or  /path/to/project")
+                    .placeholder(placeholder)
                     .placeholder_color(theme.paint(Paint::TextFaint))
                     .selection_color(theme.paint(Paint::GiltWash))
                     .caret_color(theme.paint(Paint::Gilt))
@@ -491,13 +493,26 @@ impl Workspace {
 
     fn submit_coordinate(&mut self, cx: &mut Context<Self>) {
         let text = self.coordinate.read(cx).as_str().trim().to_owned();
-        match validate(&text) {
+        self.submit_project(&text, cx);
+    }
+
+    /// Validates one folder or coordinate and submits it, or states the refusal.
+    ///
+    /// Every way into the add flow — the Index button, the Enter key, and the
+    /// folder picker — comes through here, so the form closes on exactly one
+    /// condition: an index intent is on its way. A form that closes on a
+    /// refusal has discarded the reader's text and explained nothing, which is
+    /// what "it just reloads and doesn't select anything" looks like from the
+    /// outside.
+    pub(super) fn submit_project(&mut self, text: &str, cx: &mut Context<Self>) {
+        match validate(text) {
             Ok(coordinate) => {
                 self.add_fault = None;
                 self.adding = false;
                 self.coordinate.update(cx, |field, cx| field.emplace("", cx));
                 self.catalog.update(cx, super::super::store::catalog::CatalogStore::clear);
                 self.index_project(coordinate, cx);
+                cx.notify();
             }
             Err(message) => {
                 self.add_fault = Some(message);
@@ -514,18 +529,56 @@ impl Workspace {
             prompt: None,
         });
         cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(chosen))) = paths.await else {
-                return;
+            let answered = match paths.await {
+                Ok(dialog) => dialog.map_err(|error| format!("The folder picker failed: {error}.")),
+                Err(_) => Err(PICKER_DROPPED.to_owned()),
             };
-            let Some(folder) = chosen.first().cloned() else {
-                return;
-            };
-            let _ = this.update(cx, |this, cx| {
-                this.adding = false;
-                this.index_project(folder.to_string_lossy().into_owned(), cx);
+            let _ = this.update(cx, |this, cx| match folder_choice(answered) {
+                FolderChoice::Chosen(folder) => {
+                    this.submit_project(&folder.to_string_lossy(), cx);
+                }
+                FolderChoice::Cancelled => {}
+                FolderChoice::Failed(message) => {
+                    this.add_fault = Some(message);
+                    cx.notify();
+                }
             });
         })
         .detach();
+    }
+}
+
+/// What the folder picker answered, cancellation separated from failure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum FolderChoice {
+    /// The reader chose this folder.
+    Chosen(PathBuf),
+    /// The reader dismissed the dialog. Nothing to say.
+    Cancelled,
+    /// The dialog could not answer; the sentence says what happened.
+    Failed(String),
+}
+
+/// The sentence shown when the picker's channel closed without an answer.
+pub(crate) const PICKER_DROPPED: &str =
+    "The folder picker closed without answering. Type or paste the path instead.";
+
+/// Separates a cancelled folder picker from a failed one.
+///
+/// [`gpui::App::prompt_for_paths`] returns a nested result that collapses three
+/// unrelated outcomes: the oneshot channel was dropped, the platform dialog
+/// failed, or the reader cancelled. Only the last one is silent. Treating all
+/// three alike leaves a reader who clicked the button unable to tell their own
+/// cancel from a crash, so the two failures are lifted into a sentence before
+/// they reach here and cancellation keeps its silence.
+pub(crate) fn folder_choice(answered: Result<Option<Vec<PathBuf>>, String>) -> FolderChoice {
+    match answered {
+        Ok(Some(paths)) => paths
+            .into_iter()
+            .next()
+            .map_or(FolderChoice::Cancelled, FolderChoice::Chosen),
+        Ok(None) => FolderChoice::Cancelled,
+        Err(message) => FolderChoice::Failed(message),
     }
 }
 
@@ -540,22 +593,56 @@ pub(super) const EXAMPLES: [&str; 3] = [
 ///
 /// # Errors
 /// Returns the sentence shown under the field when the text cannot be indexed.
-pub(super) fn validate(text: &str) -> Result<String, String> {
+pub(crate) fn validate(text: &str) -> Result<String, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err("Type a package coordinate, or choose a folder.".to_owned());
+        return Err(NOTHING_TYPED.to_owned());
     }
     if let Some(rest) = trimmed.strip_prefix("pkg:") {
         return validate_coordinate(trimmed, rest);
     }
-    let path = std::path::Path::new(trimmed);
+    let Err(refusal) = validate_folder(trimmed) else {
+        return Ok(trimmed.to_owned());
+    };
+    // Shift+Right-click → "Copy as path" is the ordinary way to obtain a path
+    // in Windows Explorer, and it wraps the result in double quotes; a shell
+    // copy wraps it in single ones. Either way the first character is a quote
+    // rather than a drive letter, `Path::is_absolute` is false, and the field
+    // refused a genuinely absolute path with "A local project needs an
+    // absolute path." — a sentence that is both wrong and impossible to act
+    // on. The quoted spelling is tried second so that a folder whose own name
+    // carries quotes still resolves as itself.
+    let Some(inner) = quoted(trimmed) else {
+        return Err(refusal);
+    };
+    if inner.is_empty() {
+        return Err(NOTHING_TYPED.to_owned());
+    }
+    if let Some(rest) = inner.strip_prefix("pkg:") {
+        return validate_coordinate(inner, rest);
+    }
+    validate_folder(inner)
+}
+
+/// The sentence shown when the field holds nothing that could be indexed.
+const NOTHING_TYPED: &str = "Type a package coordinate, or choose a folder.";
+
+fn validate_folder(candidate: &str) -> Result<String, String> {
+    let path = std::path::Path::new(candidate);
     if !path.is_absolute() {
         return Err("A local project needs an absolute path.".to_owned());
     }
     if !path.is_dir() {
         return Err("No folder exists at that path.".to_owned());
     }
-    Ok(trimmed.to_owned())
+    Ok(candidate.to_owned())
+}
+
+/// Returns what one matched pair of surrounding quotes encloses.
+fn quoted(trimmed: &str) -> Option<&str> {
+    let mut inner = trimmed.chars();
+    let (open, close) = (inner.next()?, inner.next_back()?);
+    (open == close && matches!(open, '"' | '\'')).then(|| inner.as_str().trim())
 }
 
 fn validate_coordinate(full: &str, rest: &str) -> Result<String, String> {

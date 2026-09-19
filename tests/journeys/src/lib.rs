@@ -55,9 +55,9 @@ use backend_store::{
 };
 use backend_version::{
     AuthorityScopeClaim, BasisBinding, CommitProvenance, CoverageWitness, IdContext, MapChange,
-    ObjectClosure as VersionObjectClosure, ObjectKey, ObjectVersion, ProducerObservationClaims,
-    ProducerObservationVerifier, Relation, RelationBinding, RelationState, Schema, ScopeRoot,
-    UntrustedId, UntrustedProducerObservation, WorkspaceManifest, admit_complete_scope,
+    ObjectClosure as VersionObjectClosure, ObjectKey, ObjectVersion, ProducerObservationVerifier,
+    Relation, RelationBinding, RelationState, Schema, ScopeRoot, UntrustedId,
+    UntrustedProducerObservation, WorkspaceManifest, admit_complete_scope,
     admit_producer_observation, commit_checked, prepare_delta, workspace_delta,
 };
 use std::collections::VecDeque;
@@ -66,31 +66,20 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-struct JourneyCoverageVerifier(ScopeRoot);
+struct JourneyCoverageVerifier;
 
 impl ProducerObservationVerifier for JourneyCoverageVerifier {
     type Error = &'static str;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
-        let scope = self.0;
-        let expected_identity = *scope.as_bytes();
-        let expected_evidence = scope.as_bytes();
-        if observation.producer_identity() != expected_identity
-            || observation.context() != expected_identity
-            || observation.scope_root() != scope
-            || observation.evidence() != expected_evidence
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
+        if observation.producer_identity() == *observation.scope_root().as_bytes()
+            && observation.context() == *observation.scope_root().as_bytes()
+            && observation.evidence() == observation.scope_root().as_bytes()
         {
-            return Err("invalid journey producer observation");
+            Ok(())
+        } else {
+            Err("invalid journey producer observation")
         }
-        Ok(ProducerObservationClaims::new(
-            expected_identity,
-            scope,
-            expected_identity,
-            *blake3::hash(expected_evidence).as_bytes(),
-        ))
     }
 }
 
@@ -104,7 +93,7 @@ fn library_coverage(object: backend_library::SemanticObject) -> CoverageCapabili
             *scope.as_bytes(),
             scope.as_bytes().to_vec(),
         ),
-        &JourneyCoverageVerifier(scope),
+        &JourneyCoverageVerifier,
     )
     .expect("journey producer observation");
     CoverageCapability::from_authorized_with_evidence(
@@ -263,7 +252,7 @@ fn complete_scope_equality_fixture(scope: u64) -> CoverageWitness {
             *observed.as_bytes(),
             observed.as_bytes().to_vec(),
         ),
-        &JourneyCoverageVerifier(observed),
+        &JourneyCoverageVerifier,
     )
     .expect("producer observation");
     CoverageWitness::Complete(
@@ -1127,7 +1116,7 @@ fn store_coverage() -> CoverageWitness {
             *observed.as_bytes(),
             observed.as_bytes().to_vec(),
         ),
-        &JourneyCoverageVerifier(observed),
+        &JourneyCoverageVerifier,
     )
     .expect("producer observation");
     CoverageWitness::Complete(
@@ -1503,7 +1492,7 @@ fn wire_request_for(
         work_key: WireIdentity::from_typed(&identity.work_key()),
         inputs: contract.inputs.iter().map(|input| input.wire).collect(),
         read_manifest: WireIdentity::from_typed(&identity.read_manifest),
-        scope: contract.semantic.expectation(&identity).scope,
+        scope: contract.semantic.scope(),
         authority: WireAuthorityPolicy {
             id: WireIdentity::from_typed(&identity.authority),
             minimum_epoch: contract.authority_epoch,
@@ -2353,18 +2342,10 @@ fn cli_and_mcp_framed_clients_share_one_locald_service_adapter() {
         .join()
         .unwrap_or_else(|_| panic!("mcp server thread"));
     assert_eq!(cli_reply, mcp_reply);
-    // The owner answers `Health` with a constant-size readiness report; the
-    // whole-view `Health` shape is the compatibility spelling a legacy peer
-    // may still send. Both are the same command, and this case is about the
-    // two transports agreeing, not about which of the two shapes arrived.
-    assert!(
-        matches!(
-            cli_reply.reply,
-            backend_library::CommandReply::Readiness(_) | backend_library::CommandReply::Health(_)
-        ),
-        "a framed health request answered with something other than health: {:?}",
-        cli_reply.reply
-    );
+    assert!(matches!(
+        cli_reply.reply,
+        backend_library::CommandReply::Health(_)
+    ));
 
     drop(service);
     std::fs::remove_dir_all(path).unwrap_or_else(|error| panic!("cleanup framed service: {error}"));

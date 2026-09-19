@@ -47,37 +47,37 @@ impl Supervisor {
 
     /// Records an admitted route.
     pub fn admitted(&self) {
-        increment(&self.admitted);
+        self.admitted.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records a rejected route.
     pub fn rejected(&self) {
-        increment(&self.rejected);
+        self.rejected.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records an accepted output.
     pub fn completed(&self) {
-        increment(&self.completed);
+        self.completed.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records a failed route.
     pub fn failed(&self) {
-        increment(&self.failed);
+        self.failed.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records a cancelled route.
     pub fn cancelled(&self) {
-        increment(&self.cancelled);
+        self.cancelled.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records a stale worker result.
     pub fn stale(&self) {
-        increment(&self.stale);
+        self.stale.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records a coalesced request.
     pub fn coalesced(&self) {
-        increment(&self.coalesced);
+        self.coalesced.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Reads all counters with relaxed ordering suitable for metrics.
@@ -93,12 +93,6 @@ impl Supervisor {
             coalesced: self.coalesced.load(Ordering::Relaxed),
         }
     }
-}
-
-fn increment(counter: &AtomicU64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        Some(current.saturating_add(1))
-    });
 }
 
 impl Default for Supervisor {

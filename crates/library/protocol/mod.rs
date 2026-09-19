@@ -1,38 +1,54 @@
-//! The `backend-library` crate exists to decode and project the shared application vocabulary for external transports.
-//! Its public types are the complete boundary; implementation details remain private.
-//! Callers compose capabilities through explicit authority, ownership, and failure values.
-//! Bounded transport decoding and presentation for thin CLI and MCP consumers.
+//! Strict, versioned transport contracts.
 //!
-//! This crate owns frame and JSON shape errors only. It forwards every accepted request unchanged to
-//! `backend-library`, which remains the sole owner of semantic validation and behavior.
+//! The wire grammar is split by responsibility so certificates, commands,
+//! replies, and events can evolve independently while retaining one public
+//! DTO surface.
 
-mod cli;
+mod admission;
+mod claims;
+mod codec;
 mod command;
-mod field;
-mod frame;
-mod human;
-mod index;
-mod json;
-pub mod mcp;
-mod source;
+mod event;
+mod event_dto;
+mod reply;
+mod reply_admission;
+mod subscription;
+mod subscription_snapshot;
+#[cfg(test)]
+mod tests;
 
-pub use cli::{
-    AdapterError, AdapterErrorCause, AdapterErrorCode, CANONICAL_CONTENT_ID_TEXT_BYTES,
-    CLI_COMMAND_SEPARATOR, CanonicalContentId, CanonicalContentIdDecodeError, MAX_CLI_ARGUMENTS,
-    collect_cli_arguments, decode_cli, decode_cli_command, source_input,
+pub use admission::{
+    MAX_COMMAND_TEXT, ReplyAdmissionError, RequestAdmissionError, admit_reply,
+    admit_reply_with_capability, admit_request, reply_memory_bound,
 };
-pub use field::AdapterField;
-pub use frame::{
-    MAX_FRAME_BYTES, MAX_HEADER_LINE_BYTES, MAX_HEADER_LINES, read_frame, read_frame_bounded,
-    write_frame, write_frame_bounded,
+pub use claims::{WireCertificate, WireClaim, WireSchema};
+pub use codec::{
+    command_request_id, decode_command_body, decode_reply_body, decode_reply_body_with_verifier,
+    encode_command_body,
 };
-pub use human::write_human;
-pub use index::{
-    MAX_UNTRUSTED_SOURCE_PATH_BYTES, UNTRUSTED_DOCUMENT_ID_BYTES, UntrustedDocumentId,
-    UntrustedDocumentIdError, UntrustedSourceSpan, UntrustedSourceSpanAuthorityError,
-    UntrustedSourceSpanError,
+pub use command::{CommandDto, ReplyDto, ViewDto};
+pub use event_dto::EventDto;
+pub use subscription::{SubscriptionDto, encode_compact_subscription};
+pub use subscription_snapshot::{
+    SnapshotHydrator, SnapshotPageClaim, SnapshotPageDto, encode_view_root_descriptor,
 };
-pub use json::{encode_cli_adapter_error, encode_cli_reply};
-pub use source::{
-    CliCommand, SourceEncodingError, SourceIngressPhase, SourceIngressRole, SourceIoFact,
+
+pub(crate) use command::{
+    CursorWire, EmptyWire, FrontierWire, TextWire, cursor_from_wire,
+    cursor_from_wire_with_capability, cursor_to_wire, ensure_version, frontier_from_wire,
+    frontier_from_wire_with_capability, frontier_to_wire, required_certificate,
 };
+pub(crate) use reply::{
+    BasisWire, CoverageWire, DeltaWire, ReplyEnvelope, RowIdWire, RowWire, SnapshotWire,
+    ViewRootWire, basis_from_wire, basis_from_wire_with_capability, basis_object, basis_to_wire,
+    coverage_from_wire, coverage_to_wire, freshness_from_wire, reply_from_wire,
+    reply_from_wire_with_verifier, row_from_wire, row_from_wire_against,
+    row_from_wire_against_with_capability, row_id_from_wire, row_id_to_wire, row_to_wire,
+    snapshot_from_wire, snapshot_to_wire, view_root_from_wire, view_root_to_wire,
+};
+
+pub(crate) use event::{EventEnvelopeWire, ViewEnvelopeWire, decode_event_with_certificate};
+pub use event::{decode_compact_view_event, encode_compact_view_event};
+
+/// Current transport DTO version.
+pub const DTO_VERSION: u16 = 2;

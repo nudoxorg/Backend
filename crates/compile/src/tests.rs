@@ -16,26 +16,6 @@ fn declaration_metadata_is_typed_and_canonical() -> Result<(), String> {
         DeclarationKind::Type
     );
     assert_eq!(
-        syntax::declaration_kind(SourceLanguage::Rust, "class", "struct_item"),
-        DeclarationKind::Struct
-    );
-    assert_eq!(
-        syntax::declaration_kind(SourceLanguage::Rust, "class", "enum_item"),
-        DeclarationKind::Enum
-    );
-    assert_eq!(
-        syntax::declaration_kind(SourceLanguage::Rust, "interface", "trait_item"),
-        DeclarationKind::Trait
-    );
-    assert_eq!(
-        syntax::declaration_kind(SourceLanguage::Java, "interface", "interface_declaration"),
-        DeclarationKind::Interface
-    );
-    assert_eq!(
-        syntax::declaration_kind(SourceLanguage::Clang, "class", "struct_specifier"),
-        DeclarationKind::Struct
-    );
-    assert_eq!(
         DeclarationKind::from_wire_tag(DeclarationKind::Method.wire_tag()),
         Some(DeclarationKind::Method)
     );
@@ -54,16 +34,6 @@ fn declaration_metadata_is_typed_and_canonical() -> Result<(), String> {
     assert_eq!(declaration.location().start_line(), 42);
     assert_eq!(declaration.line(), 42);
     Ok(())
-}
-
-#[test]
-fn source_excerpt_is_bounded_before_ownership_and_preserves_utf8_extent() {
-    let source = format!("{}é", "x".repeat(SourceExcerpt::MAX_BYTES));
-    let excerpt = SourceExcerpt::capture_bounded(&source);
-    assert_eq!(excerpt.text().map(str::len), Some(SourceExcerpt::MAX_BYTES));
-    assert_eq!(excerpt.extent(), Some(SourceExcerptExtent::Truncated));
-    let oversized = "x".repeat(SourceExcerpt::MAX_BYTES + 1);
-    assert!(SourceExcerpt::captured(&oversized, SourceExcerptExtent::Complete).is_err());
 }
 
 struct MockAuthority {
@@ -725,10 +695,6 @@ fn process_configuration_rejects_ambient_or_unbounded_inputs() -> Result<(), Box
         ProcessEnvironment::new(vec![("A\0".into(), "1".into())]),
         Err(ProcessError::InvalidEnvironment)
     );
-    assert_eq!(
-        ProcessEnvironment::new(vec![("A".into(), "x".repeat(64 * 1024 + 1))]),
-        Err(ProcessError::ConfigurationLimit)
-    );
     let environment = ProcessEnvironment::new(Vec::new())?;
     let process_limits = limits(1, 1, Duration::from_millis(10), 1)?;
     assert_eq!(
@@ -740,16 +706,6 @@ fn process_configuration_rejects_ambient_or_unbounded_inputs() -> Result<(), Box
             process_limits,
         ),
         Err(ProcessError::RelativePath)
-    );
-    assert_eq!(
-        SupervisedCommand::new(
-            PathBuf::from("/usr/bin/true"),
-            vec!["x".repeat(64 * 1024 + 1)],
-            PathBuf::from("/tmp"),
-            ProcessEnvironment::new(Vec::new())?,
-            process_limits,
-        ),
-        Err(ProcessError::ConfigurationLimit)
     );
     Ok(())
 }
@@ -1250,25 +1206,6 @@ fn executable_identity_rejects_same_path_replacement() -> Result<(), Box<dyn Err
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
     assert_eq!(process.run(), Err(ProcessError::ExecutableDrift));
     let _ = fs::remove_dir_all(workspace);
-    Ok(())
-}
-
-#[test]
-fn executable_identity_rejects_sparse_oversize_before_allocation() -> Result<(), Box<dyn Error>> {
-    let executable = std::env::temp_dir().join(format!(
-        "backend-compile-oversized-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos()
-    ));
-    let file = fs::File::create(&executable)?;
-    file.set_len(MAX_EXECUTABLE_BYTES + 1)?;
-    assert_eq!(
-        ExecutableIdentity::from_path(&executable),
-        Err(ProcessError::ExecutableLimit)
-    );
-    fs::remove_file(executable)?;
     Ok(())
 }
 

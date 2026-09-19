@@ -12,38 +12,10 @@ mod subscription;
 use crate::arrangement::{ProjectionArrangement, WorkCounters};
 use crate::{
     Basis, CommittedViewDelta, CoverageCapability, Cursor, Frontier, Lane, LibraryError,
-    PreparedViewDelta, QueryWork, Reason, RowId, ViewError, ViewProjection, ViewProjectionError,
-    ViewRoot, ViewSnapshot, ViewStateRoot, object_version, view_key, view_state_root,
+    PreparedViewDelta, QueryWork, Reason, ViewError, ViewProjection, ViewProjectionError, ViewRoot,
+    ViewStateRoot, object_version, view_key, view_state_root,
 };
 use std::sync::Arc;
-
-/// A search page whose explicit row order cannot be confused with the
-/// canonical identity order of its immutable view relation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RankedSearchSnapshot {
-    snapshot: ViewSnapshot,
-    order: Box<[RowId]>,
-}
-
-impl RankedSearchSnapshot {
-    /// Returns the canonical snapshot used for proof and cursor admission.
-    #[must_use]
-    pub const fn snapshot(&self) -> &ViewSnapshot {
-        &self.snapshot
-    }
-
-    /// Returns result identities in relevance order.
-    #[must_use]
-    pub fn order(&self) -> &[RowId] {
-        &self.order
-    }
-
-    /// Drops presentation order for compatibility command transports.
-    #[must_use]
-    pub fn into_snapshot(self) -> ViewSnapshot {
-        self.snapshot
-    }
-}
 
 /// Read-only library projection over one engine-published immutable view.
 ///

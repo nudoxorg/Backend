@@ -90,12 +90,17 @@ impl JobsStore {
         }
     }
 
-    /// Returns the coordinates of jobs that have no shelf row yet.
-    pub(crate) fn requested(&self) -> Vec<String> {
+    /// Returns every coordinate this window has asked to index, failures too.
+    ///
+    /// A failure needs a row to land on. The very first index of a project is
+    /// also the one most likely to fail — a path that no longer exists, a
+    /// service that is not running — and that project has never been on the
+    /// published shelf, so a projection that skipped failures had nothing to
+    /// mark and the refusal disappeared entirely.
+    fn projected(&self) -> Vec<String> {
         self.jobs
             .iter()
             .filter(|job| job.kind == JobKind::Index)
-            .filter(|job| !matches!(job.state, JobState::Failed(_)))
             .map(|job| job.coordinate.clone())
             .collect()
     }
@@ -114,8 +119,12 @@ impl JobsStore {
     /// what its reader just asked for, and a project whose index request was
     /// accepted a second ago belongs on the shelf marked `requested` rather
     /// than being invisible until the first rows land.
+    ///
+    /// A refused request gets that same row, marked failed. The row is
+    /// projected before the failure is applied precisely so a project the
+    /// engine has never heard of still has somewhere to say why.
     pub(crate) fn merge(&self, published: &Shelf) -> Shelf {
-        let mut merged = project::with_requested(published, &self.requested());
+        let mut merged = project::with_requested(published, &self.projected());
         for job in &self.jobs {
             if let JobState::Failed(fault) = &job.state {
                 merged = project::with_failure(&merged, &job.coordinate, fault.as_ref());
@@ -194,4 +203,28 @@ impl JobsStore {
 
 fn operand_for(coordinate: &str) -> Operand {
     Operand::Coordinate(Coordinate::new(coordinate))
+}
+
+#[cfg(test)]
+impl Job {
+    /// Builds one job in a chosen state, so projections can be proven pure.
+    pub(crate) fn fixture(kind: JobKind, coordinate: &str, state: JobState) -> Self {
+        Self {
+            coordinate: coordinate.to_owned(),
+            kind,
+            state,
+        }
+    }
+}
+
+#[cfg(test)]
+impl JobsStore {
+    /// Builds a store already holding these jobs, without touching a socket.
+    pub(crate) fn fixture(jobs: Vec<Job>) -> Self {
+        Self {
+            endpoint: Endpoint::new("/tmp/jobs-fixture.sock"),
+            jobs,
+            running: Vec::new(),
+        }
+    }
 }

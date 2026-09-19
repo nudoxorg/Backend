@@ -91,14 +91,14 @@ fn encode_record(record: &DispatchRecord, output: &mut Vec<u8>) {
         DispatchRecord::Published { key, ack } => {
             encode_key(output, *key);
             output.extend_from_slice(&ack.output_root);
-            encode_store_receipt(output, ack.store);
+            output.extend_from_slice(&ack.publication_root);
             output.extend_from_slice(&ack.owner_epoch.to_be_bytes());
             output.extend_from_slice(&ack.notification_cursor.to_be_bytes());
         }
         DispatchRecord::PublishedWithCursor { key, ack, cursor } => {
             encode_key(output, *key);
             output.extend_from_slice(&ack.output_root);
-            encode_store_receipt(output, ack.store);
+            output.extend_from_slice(&ack.publication_root);
             output.extend_from_slice(&ack.owner_epoch.to_be_bytes());
             output.extend_from_slice(&ack.notification_cursor.to_be_bytes());
             output.extend_from_slice(&cursor.waiter.to_be_bytes());
@@ -238,14 +238,14 @@ fn decode_accepted(reader: &mut Reader<'_>) -> Result<DispatchRecord, DispatchRe
 fn decode_published(reader: &mut Reader<'_>) -> Result<DispatchRecord, DispatchRecordError> {
     let key = reader.key()?;
     let output_root = reader.array()?;
-    let store = decode_store_receipt(reader)?;
+    let publication_root = reader.array()?;
     let owner_epoch = reader.u64()?;
     let notification_cursor = reader.u64()?;
     Ok(DispatchRecord::Published {
         key,
         ack: PublicationAck {
             output_root,
-            store,
+            publication_root,
             owner_epoch,
             notification_cursor,
         },
@@ -311,7 +311,7 @@ fn decode_published_with_cursor(
 ) -> Result<DispatchRecord, DispatchRecordError> {
     let key = reader.key()?;
     let output_root = reader.array()?;
-    let store = decode_store_receipt(reader)?;
+    let publication_root = reader.array()?;
     let owner_epoch = reader.u64()?;
     let notification_cursor = reader.u64()?;
     let waiter = reader.u64()?;
@@ -321,7 +321,7 @@ fn decode_published_with_cursor(
         key,
         ack: PublicationAck {
             output_root,
-            store,
+            publication_root,
             owner_epoch,
             notification_cursor,
         },
@@ -331,24 +331,6 @@ fn decode_published_with_cursor(
             cursor,
         },
     })
-}
-
-fn encode_store_receipt(output: &mut Vec<u8>, receipt: super::types::StorePublicationReceipt) {
-    output.extend_from_slice(&receipt.transaction());
-    output.extend_from_slice(&receipt.selected_sequence().to_be_bytes());
-    output.extend_from_slice(&receipt.target());
-    output.extend_from_slice(&receipt.workspace_root());
-}
-
-fn decode_store_receipt(
-    reader: &mut Reader<'_>,
-) -> Result<super::types::StorePublicationReceipt, DispatchRecordError> {
-    super::types::StorePublicationReceipt::from_parts(
-        reader.array()?,
-        reader.u64()?,
-        reader.array()?,
-        reader.array()?,
-    )
 }
 
 fn encode_key(output: &mut Vec<u8>, key: DispatchAttemptKey) {

@@ -203,41 +203,6 @@ impl ViewProjection {
     pub fn into_root(self) -> ViewRoot {
         self.root
     }
-
-    /// Applies one bounded contiguous event suffix while retaining every
-    /// explicit coverage state carried by the resulting root.
-    ///
-    /// # Errors
-    ///
-    /// Returns a cursor mismatch when the suffix does not chain or a checked
-    /// delta cannot apply to its predecessor.
-    pub fn apply_events(
-        self,
-        cursor: Cursor,
-        events: &[CursorEvent],
-    ) -> Result<Self, ViewProjectionError> {
-        let mut root = self.root;
-        let mut next = self.cursor;
-        for event in events {
-            let observed = next
-                .advance_event(event)
-                .map_err(|_| ViewProjectionError::CursorMismatch)?;
-            match event {
-                CursorEvent::Intent { .. } => {}
-                CursorEvent::View { delta } => {
-                    root = delta
-                        .clone()
-                        .apply_to(&root)
-                        .map_err(|_| ViewProjectionError::CursorMismatch)?;
-                }
-            }
-            next = observed;
-        }
-        if cursor != next {
-            return Err(ViewProjectionError::CursorMismatch);
-        }
-        Self::admit(root, cursor)
-    }
 }
 
 impl CompleteViewProjection {
@@ -330,7 +295,30 @@ impl CompleteViewProjection {
         cursor: Cursor,
         events: &[CursorEvent],
     ) -> Result<Self, ViewProjectionError> {
-        self.0.apply_events(cursor, events)?.complete()
+        let mut root = self.0.root;
+        let previous = self.0.cursor;
+        let mut next = previous;
+
+        for event in events {
+            let observed = next
+                .advance_event(event)
+                .map_err(|_| ViewProjectionError::CursorMismatch)?;
+            match event {
+                CursorEvent::Intent { .. } => {}
+                CursorEvent::View { delta } => {
+                    root = delta
+                        .clone()
+                        .apply_to(&root)
+                        .map_err(|_| ViewProjectionError::CursorMismatch)?;
+                }
+            }
+            next = observed;
+        }
+
+        if cursor != next {
+            return Err(ViewProjectionError::CursorMismatch);
+        }
+        CompleteViewProjection::admit(root, cursor)
     }
 }
 

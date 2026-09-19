@@ -128,7 +128,7 @@ impl MemorySource {
         }
         let mut seen = BTreeSet::new();
         let mut total = 0usize;
-        for row in &mut rows {
+        for row in &rows {
             normalize_row(row, limits, &mut total)?;
             if !seen.insert(row.key) {
                 return Err(Error::MalformedInput);

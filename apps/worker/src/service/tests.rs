@@ -11,19 +11,15 @@ use super::*;
 use backend_engine::{
     AttemptId, AuthorityEpoch, AuthorityExpectation, AuthorityScopeClaim, AuthorityVersion,
     Cancellation, CancellationId, CompleteSemanticCoverage, CoverageWitness,
-    ExecutionRequestExpectation, ExecutionScopeId, ExpectedIdentity, Fence, ObjectVersion,
-    OutputEquivalence, ProducerObservationClaims, RecipeId, RecipeSchema, RelationBinding,
-    ResourceEnvelope, Schema, SchemaDescriptor, ScopeRoot, SemanticCoverageAdmissionError,
-    SemanticCoverageBinding, SemanticCoverageState, SemanticCoverageValidator,
-    UntrustedProducerObservation, UntrustedSemanticCoverageClaim, VersionRange,
-    VersionedWorkIdentity, WireAuthorityPolicy, WireIdentity, WorkKey, WorkerError,
+    ExecutionRequestExpectation, ExpectedIdentity, Fence, ObjectVersion, OutputEquivalence,
+    RecipeId, RecipeSchema, RelationBinding, ResourceEnvelope, Schema, SchemaDescriptor, ScopeRoot,
+    SemanticCoverageAdmissionError, SemanticCoverageBinding, SemanticCoverageState,
+    SemanticCoverageValidator, UntrustedProducerObservation, UntrustedSemanticCoverageClaim,
+    VersionRange, VersionedWorkIdentity, WireAuthorityPolicy, WireIdentity, WorkKey, WorkerError,
     WorkspaceManifest, WorkspaceRootClaim, admit_producer_observation,
 };
 use std::io::{Read, Write};
-use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-const LEGACY_SCOPE_ONE: NonZeroU64 = NonZeroU64::MIN;
 
 struct FixtureCoverageProducer {
     scope: ScopeRoot,
@@ -32,21 +28,13 @@ struct FixtureCoverageProducer {
 impl backend_engine::ProducerObservationVerifier for FixtureCoverageProducer {
     type Error = &'static str;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
         if observation.producer_identity() == [0x71; 32]
             && observation.scope_root() == self.scope
             && observation.context() == [0x72; 32]
             && observation.evidence() == [0x73, 0x74]
         {
-            Ok(ProducerObservationClaims::new(
-                [0x71; 32],
-                self.scope,
-                [0x72; 32],
-                *backend_engine::blake3::hash(&[0x73, 0x74]).as_bytes(),
-            ))
+            Ok(())
         } else {
             Err("fixture producer rejected")
         }
@@ -326,7 +314,7 @@ impl JobAdmission<CancelRelation> for CancelAdmission {
             work_key: ExpectedIdentity::from_typed(&self.work_key),
             inputs: Vec::new(),
             read_manifest: ExpectedIdentity::from_typed(&self.read_manifest),
-            scope: ExecutionScopeId::from_legacy_ordinal(LEGACY_SCOPE_ONE),
+            scope: 1,
             authority: AuthorityExpectation::from_typed(
                 &self.authority,
                 AuthorityEpoch(1),
@@ -428,7 +416,7 @@ fn cancellation_fixture() -> (
         work_key: WireIdentity::from_typed(&identity.work_key()),
         inputs: Vec::new(),
         read_manifest: WireIdentity::from_typed(&read_manifest),
-        scope: ExecutionScopeId::from_legacy_ordinal(LEGACY_SCOPE_ONE),
+        scope: 1,
         authority: WireAuthorityPolicy {
             id: WireIdentity::from_typed(&authority),
             minimum_epoch: AuthorityEpoch(1),

@@ -131,33 +131,12 @@ pub(super) fn encode_row(value: &Row, out: &mut Vec<u8>) {
         None => out.push(0),
     }
     match &value.source {
-        crate::SourceAvailability::Captured(source) => {
+        Some(source) => {
             out.push(1);
             append_bytes(out, source.path().as_bytes());
             out.extend_from_slice(&source.start_line().to_be_bytes());
         }
-        crate::SourceAvailability::NotCaptured => out.push(0),
-        crate::SourceAvailability::NotHydrated => out.push(2),
-        crate::SourceAvailability::Unconfigured => out.push(3),
-    }
-    match &value.excerpt {
-        crate::SourceExcerpt::NotCaptured => out.push(0),
-        crate::SourceExcerpt::Captured {
-            text,
-            extent: crate::SourceExcerptExtent::Complete,
-        } => {
-            out.push(1);
-            append_bytes(out, text.as_bytes());
-        }
-        crate::SourceExcerpt::Captured {
-            text,
-            extent: crate::SourceExcerptExtent::Truncated,
-        } => {
-            out.push(2);
-            append_bytes(out, text.as_bytes());
-        }
-        crate::SourceExcerpt::NotHydrated => out.push(3),
-        crate::SourceExcerpt::Unconfigured => out.push(4),
+        None => out.push(0),
     }
 }
 
@@ -199,13 +178,8 @@ pub(super) fn encode_metadata(value: &ViewMetadata, out: &mut Vec<u8>) {
     for coverage in &value.coverage {
         match coverage {
             Coverage::Complete => out.push(0),
-            Coverage::Partial {
-                lane,
-                completed,
-                total,
-            } => {
+            Coverage::Partial { completed, total } => {
                 out.push(1);
-                out.push(lane_tag(*lane));
                 out.extend_from_slice(&completed.to_be_bytes());
                 out.extend_from_slice(&total.to_be_bytes());
             }
@@ -264,13 +238,8 @@ fn append_coverage(out: &mut Vec<u8>, coverage: &[Coverage]) {
     for value in coverage {
         match value {
             Coverage::Complete => out.push(0),
-            Coverage::Partial {
-                lane,
-                completed,
-                total,
-            } => {
+            Coverage::Partial { completed, total } => {
                 out.push(1);
-                out.push(lane_tag(*lane));
                 out.extend_from_slice(&completed.to_be_bytes());
                 out.extend_from_slice(&total.to_be_bytes());
             }
@@ -291,15 +260,6 @@ fn append_coverage(out: &mut Vec<u8>, coverage: &[Coverage]) {
                 });
             }
         }
-    }
-}
-
-const fn lane_tag(lane: crate::Lane) -> u8 {
-    match lane {
-        crate::Lane::Exact => 0,
-        crate::Lane::Names => 1,
-        crate::Lane::Graph => 2,
-        crate::Lane::Semantic => 3,
     }
 }
 

@@ -5,9 +5,9 @@ pub(super) use backend_flow::{
     AuthorityIdentity, EquivalenceIdentity, InputIdentity, ReadIdentity, RecipeIdentity,
 };
 pub(super) use backend_version::{
-    AuthorityScopeClaim, AuthorizedCompleteCoverage, ObjectVersion, ProducerObservationClaims,
-    ProducerObservationVerifier, Relation, ScopeRoot, UntrustedProducerObservation,
-    admit_complete_scope, admit_producer_observation, canonical_empty,
+    AuthorityScopeClaim, AuthorizedCompleteCoverage, ObjectVersion, ProducerObservationVerifier,
+    Relation, ScopeRoot, UntrustedProducerObservation, admit_complete_scope,
+    admit_producer_observation, canonical_empty,
 };
 pub(super) use std::collections::BTreeSet;
 
@@ -23,19 +23,12 @@ pub(super) struct FixtureProducerVerifier {
 impl ProducerObservationVerifier for FixtureProducerVerifier {
     type Error = FixtureProducerError;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
-        if observation.producer_identity() != self.expected_identity {
-            return Err(FixtureProducerError);
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
+        if observation.producer_identity() == self.expected_identity {
+            Ok(())
+        } else {
+            Err(FixtureProducerError)
         }
-        Ok(ProducerObservationClaims::new(
-            self.expected_identity,
-            observation.scope_root(),
-            observation.context(),
-            *blake3::hash(observation.evidence()).as_bytes(),
-        ))
     }
 }
 

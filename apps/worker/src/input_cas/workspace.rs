@@ -1,8 +1,8 @@
 //! Durable workspace admission and restart binding.
 
 use super::{
-    BoundedFileImage, CheckedWorkspaceManifest, File, InputCas, ReplicationError, Schema,
-    UntrustedWorkspaceManifest, WorkspaceRoot, Write, fs, hex,
+    CheckedWorkspaceManifest, File, InputCas, ReplicationError, Schema, UntrustedWorkspaceManifest,
+    WorkspaceRoot, Write, fs, hex,
 };
 
 impl<T: Schema> InputCas<T> {
@@ -128,38 +128,31 @@ impl<T: Schema> InputCas<T> {
         let Some(directory) = self.sink.root.as_ref() else {
             return Ok(());
         };
-        let bytes = match BoundedFileImage::read_optional(
-            &directory.join("WORKSPACE_MANIFEST"),
-            self.limits.max_frame,
-        )? {
-            Some(bytes) => bytes,
-            None => return Ok(()),
+        let bytes = match fs::read(directory.join("WORKSPACE_MANIFEST")) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(ReplicationError::Disconnected),
         };
-        let manifest = UntrustedWorkspaceManifest::decode_untrusted(bytes.as_slice())
+        let manifest = UntrustedWorkspaceManifest::decode_untrusted(&bytes)
             .map_err(|_| ReplicationError::CorruptFrame)?;
         if manifest.relations().len() != 1 || !manifest.basis().is_empty() {
             return Err(ReplicationError::IdentityMismatch);
         }
         let relation_digest = manifest.relations()[0].root();
         let relation_claim =
-            backend_engine::UntrustedId::<
-                backend_engine::ProductSemanticPublicationRelation,
-            >::from_wire(
+            backend_engine::UntrustedId::<backend_engine::ProductSourceRelation>::from_wire(
                 &relation_digest,
-                backend_engine::IdContext::relation::<
-                    backend_engine::ProductSemanticPublicationRelation,
-                >(),
+                backend_engine::IdContext::relation::<backend_engine::ProductSourceRelation>(),
             )
             .map_err(|_| ReplicationError::CorruptFrame)?;
-        let proof = BoundedFileImage::read_optional(
-            &directory.join(format!(".proof-{}", hex(relation_digest))),
-            64 * 1024,
-        )?
-        .ok_or(ReplicationError::Disconnected)?;
-        let persisted = backend_engine::PersistedTreeRoot::<
-            backend_engine::ProductSemanticPublicationRelation,
-        >::admit(relation_claim, proof.as_slice())
-        .map_err(|_| ReplicationError::CorruptFrame)?;
+        let proof = fs::read(directory.join(format!(".proof-{}", hex(relation_digest))))
+            .map_err(|_| ReplicationError::Disconnected)?;
+        let persisted =
+            backend_engine::PersistedTreeRoot::<backend_engine::ProductSourceRelation>::admit(
+                relation_claim,
+                &proof,
+            )
+            .map_err(|_| ReplicationError::CorruptFrame)?;
         let coverage =
             backend_engine::coverage_from_admitted_authority(authority, admitted_authority)
                 .map_err(|_| ReplicationError::IdentityMismatch)?;

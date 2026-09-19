@@ -156,16 +156,6 @@ impl WorkspaceClosure {
         for object in extra_objects {
             checked_objects.push(object.clone());
             retained_ids.push(object.id());
-            // A transition may path-copy more than one registered relation
-            // atomically.  The primary generic `R` frontier is already
-            // selected above; retain any additional typed relation nodes in
-            // the physical publication frontier as well.  Keeping them only
-            // in the logical closure index leaves the workspace manifest
-            // naming a relation root that was never installed in the durable
-            // relation CAS after a later auxiliary-object rebind.
-            if registry.contains_schema(object.schema()) {
-                publication_nodes.push(object.clone());
-            }
             if base.manifest.contains_object_id(object.id()) {
                 continue;
             }

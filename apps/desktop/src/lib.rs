@@ -1,31 +1,20 @@
-//! The Nudox desktop surface: a local-first reader for compiled code.
-//! It owns no durable state; the local service is the authority and this
-//! process holds one client session and one certified bounded subscription.
+//! Bounded desktop subscription adapter over immutable library view roots.
 //!
-//! The crate is layered so that everything except the views compiles and is
-//! tested without a window. `transport` and `reducer` admit the service's
-//! immutable view roots, `presentation` turns those values into the shapes a
-//! reader needs, `theme` and `motion` hold every colour and duration in the
-//! application, `ui` builds stateless elements from them, and `views` is the
-//! only layer that owns a window.
+//! The desktop keeps only the currently rendered root and a cursor. It never
+//! becomes an authoritative cache: every event is admitted against the exact
+//! prior root, and a gap or malformed transition requires a complete reset
+//! supplied by the daemon. The host GUI owns process startup and composes
+//! [`Model::try_new`] with [`Model::poll_transport`]; this crate stays a
+//! transport/reducer library and does not create a second UI process.
 
-#![deny(unsafe_code)]
-
+mod error;
 #[cfg(any(unix, windows))]
 mod host;
-mod motion;
-mod presentation;
-mod reducer;
-mod store;
-mod theme;
+mod model;
+#[cfg(any(unix, windows))]
+mod native;
+mod subscription;
 mod transport;
-#[cfg(any(unix, windows))]
-mod ui;
-#[cfg(any(unix, windows))]
-mod views;
-
-#[cfg(all(any(unix, windows), feature = "preview"))]
-mod preview;
 
 #[cfg(test)]
 mod tests;
@@ -41,20 +30,41 @@ pub use backend_replication::{
     LocalSubscriptionId, LocalSubscriptionOperation, LocalSubscriptionRequest,
     LocalSubscriptionResponse,
 };
+pub use error::ClientError;
 #[cfg(any(unix, windows))]
-pub use host::lease::{DesktopHost, HostError, HostMode};
-#[cfg(any(unix, windows))]
-pub use host::launch::main_entry;
-pub use reducer::model::{Model, poll};
-pub use transport::error::ClientError;
-pub use transport::limits::{ENDPOINT_ENV, MAX_ENDPOINT_PATH, MAX_EVENTS, MAX_FRAME, MAX_TEXT};
-pub use transport::subscription::{
+pub use host::{DesktopHost, HostMode};
+pub use model::{Model, poll};
+pub use subscription::{
     CertifiedSubscriptionTransport, LocalEngine, SubscriptionRequest, SubscriptionTransport,
     snapshot_page_from_bytes, snapshot_page_from_value,
 };
 #[cfg(any(unix, windows))]
-pub use transport::diff::diff_endpoint;
-#[cfg(any(unix, windows))]
-pub use transport::search::search_endpoint;
-#[cfg(any(unix, windows))]
-pub use transport::unix::UnixSubscriptionTransport;
+pub use transport::UnixSubscriptionTransport;
+
+/// Maximum events accepted in one interactive subscription batch.
+pub const MAX_EVENTS: usize = backend_library::MAX_SUBSCRIPTION_EVENTS;
+/// Maximum bytes in one subscription frame.
+pub const MAX_FRAME: usize = backend_replication::LOCAL_CONTROL_MAX_FRAME;
+/// Maximum bytes in a configured endpoint path.
+pub const MAX_TEXT: usize = 8 * 1024;
+/// Maximum path length accepted for a local Unix endpoint.
+///
+/// This matches the local daemon's configured path budget and keeps an
+/// invalid path from reaching the platform socket API.
+pub const MAX_ENDPOINT_PATH: usize = backend_replication::MAX_UNIX_ENDPOINT_PATH_BYTES;
+/// Environment variable naming the local daemon Unix endpoint.
+pub const ENDPOINT_ENV: &str = "BACKEND_LOCALD_ENDPOINT";
+
+/// Starts the native desktop application and its local owner.
+#[must_use]
+pub fn main_entry() -> std::process::ExitCode {
+    #[cfg(any(unix, windows))]
+    {
+        native::run()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        eprintln!("backend-desktop: this build requires a supported local transport");
+        std::process::ExitCode::from(69)
+    }
+}

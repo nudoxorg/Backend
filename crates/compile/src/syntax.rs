@@ -3,7 +3,6 @@
 use crate::{
     InputContentSchema, InputContentVersion, SyntaxProducerId, SyntaxProducerSchema, typed_of,
 };
-pub use backend_semantic::vocabulary::Language as SourceLanguage;
 use std::{collections::BTreeSet, fmt, num::NonZeroU32, path::Path, sync::Arc};
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator};
 
@@ -11,6 +10,74 @@ pub(crate) use crate::syntax_kind::declaration_kind;
 
 const MAX_DECLARATIONS: usize = 16_384;
 const MAX_TEXT_BYTES: usize = 4_096;
+
+/// Source-language family understood by the shared syntax frontend.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+pub enum SourceLanguage {
+    /// Rust source.
+    Rust = 0,
+    /// TypeScript or JavaScript source.
+    TypeScript = 1,
+    /// Python source.
+    Python = 2,
+    /// Go source.
+    Go = 3,
+    /// Java source.
+    Java = 4,
+    /// C# source.
+    CSharp = 5,
+    /// C-family source parsed through Clang.
+    Clang = 6,
+}
+
+impl SourceLanguage {
+    /// Every supported source-language family in canonical order.
+    pub const ALL: [Self; 7] = [
+        Self::Rust,
+        Self::TypeScript,
+        Self::Python,
+        Self::Go,
+        Self::Java,
+        Self::CSharp,
+        Self::Clang,
+    ];
+
+    /// Returns the stable lowercase language name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::TypeScript => "typescript",
+            Self::Python => "python",
+            Self::Go => "go",
+            Self::Java => "java",
+            Self::CSharp => "csharp",
+            Self::Clang => "clang",
+        }
+    }
+
+    /// Returns the stable one-byte wire tag.
+    #[must_use]
+    pub const fn wire_tag(self) -> u8 {
+        self as u8
+    }
+
+    /// Admits a stable one-byte wire tag.
+    #[must_use]
+    pub const fn from_wire_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0 => Some(Self::Rust),
+            1 => Some(Self::TypeScript),
+            2 => Some(Self::Python),
+            3 => Some(Self::Go),
+            4 => Some(Self::Java),
+            5 => Some(Self::CSharp),
+            6 => Some(Self::Clang),
+            _ => None,
+        }
+    }
+}
 
 /// Closed semantic declaration vocabulary shared by every source frontend.
 ///

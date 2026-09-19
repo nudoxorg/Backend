@@ -1,8 +1,8 @@
 //! Worker process startup hooks and explicit exit status mapping.
 
 use crate::listener::{
-    TcpExposure, TcpWorkerListener, TcpWorkerListenerConfig, UnixWorkerListener,
-    WorkerListenerConfig, WorkerListenerError, WorkerRunReport,
+    TcpWorkerListener, TcpWorkerListenerConfig, UnixWorkerListener, WorkerListenerConfig,
+    WorkerListenerError, WorkerRunReport,
 };
 use crate::protocol::{WorkerLimits, WorkerProtocolError};
 use crate::service::{JobAdmission, WorkerService};
@@ -40,9 +40,6 @@ pub struct WorkerProcessConfig {
     /// Optional authenticated cross-host TCP listener. When set, the Unix
     /// endpoint is not opened and may be left absent in the CLI.
     pub tcp_listen: Option<SocketAddr>,
-    /// Explicit acknowledgement that a routable TCP listener is protected by
-    /// an outer confidential transport.
-    pub tcp_exposure: TcpExposure,
 }
 
 impl WorkerProcessConfig {
@@ -57,7 +54,6 @@ impl WorkerProcessConfig {
         let mut profile = None;
         let mut authority_secret = None;
         let mut tcp_listen = None;
-        let mut tcp_exposure = TcpExposure::LoopbackOnly;
         let mut help = false;
         let mut args = args.into_iter();
         while let Some(argument) = args.next() {
@@ -87,9 +83,6 @@ impl WorkerProcessConfig {
                             "--tcp-listen requires a valid host:port address".to_owned(),
                         )
                     })?);
-                }
-                "--external-protected-transport" => {
-                    tcp_exposure = TcpExposure::ExternalProtected;
                 }
                 other => {
                     return Err(WorkerProcessError::Usage(format!(
@@ -152,7 +145,6 @@ impl WorkerProcessConfig {
             profile,
             authority_secret,
             tcp_listen,
-            tcp_exposure,
         })
     }
 }
@@ -245,7 +237,6 @@ where
             config.limits,
             address,
             backend_engine::TcpAuthority::new(authority),
-            config.tcp_exposure,
         );
     }
     let endpoint = config.endpoint.ok_or_else(|| {
@@ -268,7 +259,6 @@ fn run_with_tcp_service<E, S, R, A>(
     limits: WorkerLimits,
     address: SocketAddr,
     authority: backend_engine::TcpAuthority,
-    exposure: TcpExposure,
 ) -> Result<WorkerRunReport, WorkerProcessError>
 where
     E: PureRecipeExecutor,
@@ -280,7 +270,6 @@ where
         address,
         limits,
         authority,
-        exposure,
     };
     let mut listener = TcpWorkerListener::bind(worker, admission, listener_config)
         .map_err(WorkerProcessError::Listener)?;
@@ -350,7 +339,7 @@ pub fn main_entry() -> ExitCode {
 
 fn print_help() {
     println!(
-        "usage: backend-worker --endpoint PATH | --tcp-listen HOST:PORT [--external-protected-transport] [--profile builtin|builtin-echo] [--authority-secret-file PATH] [--max-frame BYTES] [--timeout-ms MS]"
+        "usage: backend-worker --endpoint PATH | --tcp-listen HOST:PORT [--profile builtin|builtin-echo] [--authority-secret-file PATH] [--max-frame BYTES] [--timeout-ms MS]"
     );
     println!("builtin is the checked production recipe; builtin-echo is a compatibility fixture");
 }

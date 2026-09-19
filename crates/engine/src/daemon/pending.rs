@@ -10,9 +10,9 @@
 use super::{DaemonError, PendingRemoteEnvelope, PendingRemoteKey, RemoteCorrelationKey};
 use backend_version::{
     AuthorityScopeClaim, CoverageWitness, Delta, DeltaWork, MapChange, ObjectVersion,
-    ProducerObservationClaims, ProducerObservationVerifier, Relation, RelationState, Schema,
-    ScopeRoot, StateRoot, UntrustedProducerObservation, admit_complete_scope,
-    admit_producer_observation, prepare_delta_with_state,
+    ProducerObservationVerifier, Relation, RelationState, Schema, ScopeRoot, StateRoot,
+    UntrustedProducerObservation, admit_complete_scope, admit_producer_observation,
+    prepare_delta_with_state,
 };
 use std::collections::BTreeMap;
 
@@ -66,18 +66,9 @@ impl PendingAttemptCoverageVerifier {
 impl ProducerObservationVerifier for PendingAttemptCoverageVerifier {
     type Error = &'static str;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
-        let expected = self.observation();
-        if observation == &expected {
-            Ok(ProducerObservationClaims::new(
-                expected.producer_identity(),
-                expected.scope_root(),
-                expected.context(),
-                *blake3::hash(expected.evidence()).as_bytes(),
-            ))
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
+        if observation == &self.observation() {
+            Ok(())
         } else {
             Err("pending-attempt authority observation mismatch")
         }

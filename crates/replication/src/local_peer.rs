@@ -16,9 +16,7 @@ pub use backend_platform::local::{LocalAddr, LocalListener, LocalStream};
 use backend_platform::win32::identity::UserSid;
 use std::path::Path;
 
-use backend_version::{
-    ProducerObservationClaims, ProducerObservationVerifier, UntrustedProducerObservation,
-};
+use backend_version::{ProducerObservationVerifier, UntrustedProducerObservation};
 
 /// Failure while obtaining Unix peer credentials.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -327,10 +325,7 @@ fn windows_endpoint_user(
 impl ProducerObservationVerifier for AuthenticatedLocalPeer {
     type Error = LocalPeerAuthenticationError;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
         if observation.scope_root().as_bytes() == &[0; 32]
             || observation.producer_identity() == [0; 32]
             || observation.context() == [0; 32]
@@ -339,12 +334,7 @@ impl ProducerObservationVerifier for AuthenticatedLocalPeer {
         {
             return Err(LocalPeerAuthenticationError::InvalidObservation);
         }
-        Ok(ProducerObservationClaims::new(
-            observation.producer_identity(),
-            observation.scope_root(),
-            observation.context(),
-            *blake3::hash(observation.evidence()).as_bytes(),
-        ))
+        Ok(())
     }
 }
 

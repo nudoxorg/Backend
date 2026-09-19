@@ -4,9 +4,9 @@
   "mapping": [
     {
       "source": "agent-control-dispatch",
-      "manifest": "/Users/mileswirht/Downloads/backend/tools/control/Cargo.toml",
-      "target": "tools/control (non-product)",
-      "rule": "Repository-agent work ledger and exact-base dispatch adapter; shares backend-version identities and backend-store publication but has zero runtime product dependents and is excluded from the 28-package product DAG."
+      "manifest": "/Users/mileswirht/Documents/ChatGPT/backend/implementation/crates/control/Cargo.toml",
+      "target": "control",
+      "rule": "New versioned agent-work ledger and exact-base dispatch adapter; shares backend-version identities and backend-store publication without importing product engine layers."
     },
     {
       "source": "compiler-application",

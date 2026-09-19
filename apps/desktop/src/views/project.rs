@@ -154,7 +154,10 @@ impl Workspace {
                 theme,
                 "Registry",
                 text::dim(theme)
-                    .child("This project is a folder on this Mac. No registry records it.")
+                    .child(format!(
+                        "This project is a folder on {}. No registry records it.",
+                        project::this_machine()
+                    ))
                     .into_any_element(),
             )
             .into_any_element();

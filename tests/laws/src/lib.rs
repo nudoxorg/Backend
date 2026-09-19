@@ -137,10 +137,10 @@ mod laws {
     };
     use backend_version::{
         AuthorityScopeClaim, ClosedRelationScope, CoverageWitness, MapChange, ObjectClosure,
-        ObjectVersion, ProducerObservationClaims, ProducerObservationVerifier, Relation,
-        RelationBinding, RelationState, ScopeRoot, UntrustedProducerObservation, WorkspaceManifest,
-        admit_complete_scope, admit_producer_observation, apply_delta, bind_scope_equality,
-        partial_coverage, prepare_delta,
+        ObjectVersion, ProducerObservationVerifier, Relation, RelationBinding, RelationState,
+        ScopeRoot, UntrustedProducerObservation, WorkspaceManifest, admit_complete_scope,
+        admit_producer_observation, apply_delta, bind_scope_equality, partial_coverage,
+        prepare_delta,
     };
     use proptest::prelude::*;
     use std::collections::{BTreeMap, BTreeSet};
@@ -235,7 +235,7 @@ mod laws {
                 *observed.as_bytes(),
                 observed.as_bytes().to_vec(),
             ),
-            &LawProducerVerifier(observed),
+            &LawProducerVerifier,
         )
         .unwrap_or_else(|_| panic!("matching producer observation"));
         CoverageWitness::Complete(
@@ -244,31 +244,20 @@ mod laws {
         )
     }
 
-    struct LawProducerVerifier(ScopeRoot);
+    struct LawProducerVerifier;
 
     impl ProducerObservationVerifier for LawProducerVerifier {
         type Error = &'static str;
 
-        fn verify(
-            &self,
-            observation: &UntrustedProducerObservation,
-        ) -> Result<ProducerObservationClaims, Self::Error> {
-            let scope = self.0;
-            let expected_identity = *scope.as_bytes();
-            let expected_evidence = scope.as_bytes();
-            if observation.producer_identity() != expected_identity
-                || observation.context() != expected_identity
-                || observation.scope_root() != scope
-                || observation.evidence() != expected_evidence
+        fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
+            if observation.producer_identity() == *observation.scope_root().as_bytes()
+                && observation.context() == *observation.scope_root().as_bytes()
+                && observation.evidence() == observation.scope_root().as_bytes()
             {
-                return Err("producer identity, context, or evidence mismatch");
+                Ok(())
+            } else {
+                Err("producer identity, context, or evidence mismatch")
             }
-            Ok(ProducerObservationClaims::new(
-                expected_identity,
-                scope,
-                expected_identity,
-                *blake3::hash(expected_evidence).as_bytes(),
-            ))
         }
     }
 
@@ -1659,24 +1648,6 @@ mod laws {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn coverage_and_signed_batch_fences_reject_mutants() {
-        struct MismatchedProducerClaims;
-
-        impl ProducerObservationVerifier for MismatchedProducerClaims {
-            type Error = core::convert::Infallible;
-
-            fn verify(
-                &self,
-                observation: &UntrustedProducerObservation,
-            ) -> Result<ProducerObservationClaims, Self::Error> {
-                Ok(ProducerObservationClaims::new(
-                    [0xd4; 32],
-                    observation.scope_root(),
-                    observation.context(),
-                    *blake3::hash(observation.evidence()).as_bytes(),
-                ))
-            }
-        }
-
         let complete = complete_scope_equality_fixture(7);
         let typed_claim = AuthorityScopeClaim::from_object_version(
             ObjectVersion::<FactorSchema>::from_value(&vec![7]),
@@ -1697,17 +1668,7 @@ mod laws {
             *typed_scope.as_bytes(),
             typed_scope.as_bytes().to_vec(),
         );
-        assert!(
-            admit_producer_observation(
-                valid_observation.clone(),
-                &LawProducerVerifier(typed_scope)
-            )
-            .is_ok()
-        );
-        assert!(matches!(
-            admit_producer_observation(valid_observation, &MismatchedProducerClaims),
-            Err(backend_version::ProducerObservationAdmissionError::ClaimsMismatch)
-        ));
+        assert!(admit_producer_observation(valid_observation, &LawProducerVerifier).is_ok());
         let wrong_producer = UntrustedProducerObservation::new(
             [0xa1; 32],
             typed_scope,
@@ -1715,7 +1676,7 @@ mod laws {
             typed_scope.as_bytes().to_vec(),
         );
         assert!(matches!(
-            admit_producer_observation(wrong_producer, &LawProducerVerifier(typed_scope)),
+            admit_producer_observation(wrong_producer, &LawProducerVerifier),
             Err(backend_version::ProducerObservationAdmissionError::Rejected(_))
         ));
         let wrong_context = UntrustedProducerObservation::new(
@@ -1725,7 +1686,7 @@ mod laws {
             typed_scope.as_bytes().to_vec(),
         );
         assert!(matches!(
-            admit_producer_observation(wrong_context, &LawProducerVerifier(typed_scope)),
+            admit_producer_observation(wrong_context, &LawProducerVerifier),
             Err(backend_version::ProducerObservationAdmissionError::Rejected(_))
         ));
         let wrong_evidence = UntrustedProducerObservation::new(
@@ -1735,7 +1696,7 @@ mod laws {
             vec![0xc3; 32],
         );
         assert!(matches!(
-            admit_producer_observation(wrong_evidence, &LawProducerVerifier(typed_scope)),
+            admit_producer_observation(wrong_evidence, &LawProducerVerifier),
             Err(backend_version::ProducerObservationAdmissionError::Rejected(_))
         ));
 
@@ -1748,7 +1709,7 @@ mod laws {
                 *wrong_scope.as_bytes(),
                 wrong_scope.as_bytes().to_vec(),
             ),
-            &LawProducerVerifier(wrong_scope),
+            &LawProducerVerifier,
         )
         .unwrap_or_else(|_| panic!("admit independently valid wrong scope"));
         assert!(matches!(

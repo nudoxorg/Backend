@@ -121,41 +121,7 @@ pub trait ProducerObservationVerifier {
     ///
     /// Returns the verifier's authority-specific rejection when any part of
     /// the observation is not backed by an admitted session.
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error>;
-}
-
-/// Claims independently established by a producer verifier.
-///
-/// This is deliberately not an admission receipt. The verifier reports only
-/// what its authority evidence established; `backend-version` compares every
-/// claim with the observed record before constructing opaque admitted state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProducerObservationClaims {
-    producer: [u8; ID_BYTES],
-    scope: ScopeRoot,
-    context: [u8; ID_BYTES],
-    evidence_digest: [u8; ID_BYTES],
-}
-
-impl ProducerObservationClaims {
-    /// Records the independently established producer observation facts.
-    #[must_use]
-    pub const fn new(
-        producer: [u8; ID_BYTES],
-        scope: ScopeRoot,
-        context: [u8; ID_BYTES],
-        evidence_digest: [u8; ID_BYTES],
-    ) -> Self {
-        Self {
-            producer,
-            scope,
-            context,
-            evidence_digest,
-        }
-    }
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error>;
 }
 
 /// Opaque version-owned observation admitted by an authority verifier.
@@ -421,15 +387,12 @@ pub fn bind_scope_equality(
 pub enum ProducerObservationAdmissionError<E> {
     /// The authority verifier rejected the producer output.
     Rejected(E),
-    /// Verifier evidence did not establish the complete observed record.
-    ClaimsMismatch,
 }
 
 impl<E: fmt::Display> fmt::Display for ProducerObservationAdmissionError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Rejected(error) => write!(f, "producer observation rejected: {error}"),
-            Self::ClaimsMismatch => f.write_str("producer observation claims did not match"),
         }
     }
 }
@@ -445,10 +408,7 @@ impl<E: fmt::Debug + fmt::Display> std::error::Error for ProducerObservationAdmi
 /// # Errors
 ///
 /// Returns [`ProducerObservationAdmissionError::Rejected`] when the authority
-/// verifier does not accept the producer/session output, or
-/// [`ProducerObservationAdmissionError::ClaimsMismatch`] when its established
-/// claims do not exactly bind the observed producer, scope, context, and
-/// evidence bytes.
+/// verifier does not accept the producer/session output.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "consuming the untrusted record transfers its verified evidence into the opaque capability"
@@ -457,17 +417,10 @@ pub fn admit_producer_observation<V: ProducerObservationVerifier>(
     observation: UntrustedProducerObservation,
     verifier: &V,
 ) -> Result<AdmittedProducerObservation, ProducerObservationAdmissionError<V::Error>> {
-    let claims = verifier
+    verifier
         .verify(&observation)
         .map_err(ProducerObservationAdmissionError::Rejected)?;
     let evidence_digest = *blake3::hash(observation.evidence()).as_bytes();
-    if claims.producer != observation.producer
-        || claims.scope != observation.scope
-        || claims.context != observation.context
-        || claims.evidence_digest != evidence_digest
-    {
-        return Err(ProducerObservationAdmissionError::ClaimsMismatch);
-    }
     Ok(AdmittedProducerObservation {
         scope: observation.scope,
         identity: ProducerObservationIdentity::from_parts(
@@ -528,14 +481,11 @@ impl AdmittedProducerObservation {
 /// struct Verifier;
 /// impl ProducerObservationVerifier for Verifier {
 ///     type Error = &'static str;
-///     fn verify(&self, observation: &UntrustedProducerObservation) -> Result<backend_version::ProducerObservationClaims, Self::Error> {
+///     fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
 ///         if observation.producer_identity() == [9; 32]
 ///             && observation.context() == [4; 32]
 ///             && observation.evidence() == [1, 2, 3]
-///         { Ok(backend_version::ProducerObservationClaims::new(
-///             [9; 32], observation.scope_root(), [4; 32],
-///             *blake3::hash(&[1, 2, 3]).as_bytes())) }
-///         else { Err("unadmitted producer output") }
+///         { Ok(()) } else { Err("unadmitted producer output") }
 ///     }
 /// }
 /// let authority_version = ObjectVersion::<Authority>::from_value(&7);
@@ -712,16 +662,6 @@ impl CoverageWitness {
             Self::Unavailable(_) => Coverage::Unavailable,
             Self::Unsupported(_) => Coverage::Unsupported,
         }
-    }
-
-    /// Returns whether independently checked producer claims authorized this
-    /// complete scope.
-    ///
-    /// This is deliberately stronger than [`Coverage::is_complete`], which
-    /// also describes untrusted wire labels awaiting admission.
-    #[must_use]
-    pub const fn is_authorized_complete(self) -> bool {
-        matches!(self, Self::Complete(_))
     }
 
     /// Returns the exact scope retained by this witness.

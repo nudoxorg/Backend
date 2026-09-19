@@ -14,7 +14,6 @@ mod demand;
 mod demand_lease;
 mod factor;
 mod materialized;
-pub mod operation;
 mod operators;
 mod types;
 

@@ -7,7 +7,7 @@ use backend_version::{
 };
 
 /// Protocol/schema version shared by view roots and transport cursors.
-pub const PROTOCOL_SCHEMA: u16 = 3;
+pub const PROTOCOL_SCHEMA: u16 = 2;
 
 /// Canonical schema for actor logical identities.
 pub struct ActorSchema;

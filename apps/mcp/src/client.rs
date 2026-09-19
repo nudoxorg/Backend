@@ -246,26 +246,18 @@ fn admit_request_basis_with_certificate(
         CommandReply::Error(message) => {
             Err(ClientError::Protocol(format!("daemon revision: {message}")))
         }
-        CommandReply::Failed(failure) => {
-            Err(ClientError::Protocol(format!("daemon revision: {failure}")))
-        }
         _ => Err(ClientError::Protocol(
             "daemon revision returned an invalid reply".to_owned(),
         )),
     }
 }
 
-pub(crate) fn request_basis(command: &Command) -> Option<ViewRevision> {
+fn request_basis(command: &Command) -> Option<ViewRevision> {
     match command {
         Command::Document(query) => Some(query.basis()),
         Command::Outline(query) => Some(query.basis()),
-        Command::PackagePage(page)
-        | Command::OutlinePage { page, .. }
-        | Command::GraphPage { page, .. } => Some(page.basis()),
         Command::Name(query) => Some(query.basis()),
         Command::Search(query) => Some(query.basis()),
-        Command::Graph(query) => Some(query.basis()),
-        Command::GraphQuery(query) => Some(query.page().basis()),
         _ => None,
     }
 }
@@ -296,9 +288,6 @@ fn admit_request_basis(
         }
         CommandReply::Error(message) => {
             Err(ClientError::Protocol(format!("daemon revision: {message}")))
-        }
-        CommandReply::Failed(failure) => {
-            Err(ClientError::Protocol(format!("daemon revision: {failure}")))
         }
         _ => Err(ClientError::Protocol(
             "daemon revision returned an invalid reply".to_owned(),

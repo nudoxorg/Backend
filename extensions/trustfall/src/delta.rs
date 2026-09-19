@@ -36,7 +36,7 @@ impl GraphState {
     pub fn new(
         binding: Binding,
         coverage: CoverageWitness,
-        mut rows: Vec<GraphRow>,
+        rows: Vec<GraphRow>,
         limits: Limits,
     ) -> Result<Self, Error> {
         let limits = limits.validate()?;
@@ -52,7 +52,7 @@ impl GraphState {
         let mut seen = BTreeSet::new();
         let mut total = 0usize;
         let mut entries = Vec::with_capacity(rows.len());
-        for row in &mut rows {
+        for row in &rows {
             normalize_row(row, limits, &mut total)?;
             if row.key == 0 || !seen.insert(row.key) {
                 return Err(Error::MalformedInput);
@@ -122,8 +122,8 @@ impl GraphState {
                 let before = self.state.get(&key).cloned();
                 match change {
                     GraphChange::Upsert { values, .. } => {
-                        let mut row = GraphRow { key, values };
-                        normalize_row(&mut row, self.limits, &mut total)?;
+                        let row = GraphRow { key, values };
+                        normalize_row(&row, self.limits, &mut total)?;
                         Ok(MapChange {
                             key,
                             before,
@@ -205,11 +205,13 @@ fn validate_graph_state(
     let mut count = 0usize;
     let mut total = 0usize;
     for (key, values) in state.iter() {
-        let mut row = GraphRow {
-            key: *key,
-            values: values.clone(),
-        };
-        normalize_row(&mut row, limits, &mut total)?;
+        // Validation runs after every incremental transition.  Do not clone
+        // each retained value vector merely to pass it through the public row
+        // normalizer: on a large graph that turns a one-row delta into an
+        // O(total retained bytes) allocation burst.  The relation state has
+        // already admitted the key/value ownership; this pass only needs to
+        // inspect the borrowed values against the same limits.
+        validate_values(*key, values, limits, &mut total)?;
         count = count.checked_add(1).ok_or(Error::SizeLimit)?;
     }
     if count > limits.max_rows {
@@ -219,24 +221,32 @@ fn validate_graph_state(
 }
 
 pub(crate) fn normalize_row(
-    row: &mut GraphRow,
+    row: &GraphRow,
     limits: Limits,
     total: &mut usize,
 ) -> Result<(), Error> {
-    if row.key == 0 {
+    validate_values(row.key, &row.values, limits, total)
+}
+
+fn validate_values(
+    key: u64,
+    values: &[String],
+    limits: Limits,
+    total: &mut usize,
+) -> Result<(), Error> {
+    if key == 0 {
         return Err(Error::MalformedInput);
     }
-    if row.values.len() > limits.max_fields_per_row {
+    if values.len() > limits.max_fields_per_row {
         return Err(Error::SizeLimit);
     }
-    if row
-        .values
+    if values
         .iter()
         .any(|value| value.len() > limits.max_field_bytes)
     {
         return Err(Error::SizeLimit);
     }
-    *total = row.values.iter().try_fold(*total, |sum, value| {
+    *total = values.iter().try_fold(*total, |sum, value| {
         sum.checked_add(value.len()).ok_or(Error::SizeLimit)
     })?;
     if *total > limits.max_total_bytes {

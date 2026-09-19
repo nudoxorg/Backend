@@ -20,13 +20,11 @@ pub use error::{
 pub use journal::DispatchJournal;
 pub use model::{
     AuthoritySnapshot, DispatchRecovery, DispatchRecoveryAction, DispatchRestartAuthority,
-    DispatchRestartDecision, OwnerRestartAuthority, PublicationRecoveryMode, RecoveredAttempt,
-    RestartAuthoritySnapshot,
+    DispatchRestartDecision, OwnerRestartAuthority, RecoveredAttempt, RestartAuthoritySnapshot,
 };
 pub use record::{
     AcceptedResultProof, DISPATCH_RECORD_VERSION, DispatchAttemptKey, DispatchCursor,
     DispatchJournalLimits, DispatchLog, DispatchPhase, DispatchRecord, DispatchRecordError,
     MAX_DISPATCH_CURSOR_BYTES, MAX_DISPATCH_PROOF_BYTES, MAX_DISPATCH_REQUEST_BYTES,
-    NotificationCursor, PublicationAck, RemoteAttemptIntent, StorePublicationReceipt,
-    TerminalState, TransferCheckpointRef,
+    NotificationCursor, PublicationAck, RemoteAttemptIntent, TerminalState, TransferCheckpointRef,
 };

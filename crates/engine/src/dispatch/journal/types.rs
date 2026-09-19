@@ -8,7 +8,7 @@ use crate::journal::JournalLimits;
 use std::fmt;
 
 /// Current dispatch-record grammar version.
-pub const DISPATCH_RECORD_VERSION: u8 = 2;
+pub const DISPATCH_RECORD_VERSION: u8 = 1;
 /// Maximum request bytes accepted by the codec.
 pub const MAX_DISPATCH_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum result-proof bytes accepted by the codec.
@@ -383,87 +383,11 @@ impl AcceptedResultProof {
 
 /// Owner acknowledgement that an accepted result is durably published.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StorePublicationReceipt {
-    transaction: [u8; 32],
-    selected_sequence: u64,
-    target: [u8; 32],
-    workspace_root: [u8; 32],
-}
-
-impl StorePublicationReceipt {
-    /// Derives an acknowledgement from the store's selected publication.
-    /// # Errors
-    ///
-    /// Returns an error when the selected descriptor is not workspace-bound.
-    pub fn from_selected_head(
-        head: backend_store::SelectedHead,
-    ) -> Result<Self, DispatchRecordError> {
-        let descriptor = head.descriptor();
-        let workspace = descriptor
-            .workspace()
-            .ok_or(DispatchRecordError::InvalidIdentifier)?;
-        Self::from_parts(
-            *descriptor.transaction().as_bytes(),
-            head.journal_sequence(),
-            descriptor.target(),
-            *workspace.root(),
-        )
-    }
-
-    pub(crate) fn from_parts(
-        transaction: [u8; 32],
-        selected_sequence: u64,
-        target: [u8; 32],
-        workspace_root: [u8; 32],
-    ) -> Result<Self, DispatchRecordError> {
-        if transaction == [0; 32]
-            || selected_sequence == 0
-            || target == [0; 32]
-            || workspace_root == [0; 32]
-            || target != workspace_root
-        {
-            return Err(DispatchRecordError::InvalidIdentifier);
-        }
-        Ok(Self {
-            transaction,
-            selected_sequence,
-            target,
-            workspace_root,
-        })
-    }
-
-    /// Returns the exact store transaction identity.
-    #[must_use]
-    pub const fn transaction(self) -> [u8; 32] {
-        self.transaction
-    }
-
-    /// Returns the store journal sequence of the paired PUBLISHED frame.
-    #[must_use]
-    pub const fn selected_sequence(self) -> u64 {
-        self.selected_sequence
-    }
-
-    /// Returns the store descriptor target.
-    #[must_use]
-    pub const fn target(self) -> [u8; 32] {
-        self.target
-    }
-
-    /// Returns the checked workspace root bound by the store descriptor.
-    #[must_use]
-    pub const fn workspace_root(self) -> [u8; 32] {
-        self.workspace_root
-    }
-}
-
-/// Owner acknowledgement that an accepted result is durably published.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublicationAck {
     /// Published output identity.
     pub output_root: [u8; 32],
-    /// Exact store transaction, selected sequence, target, and workspace root.
-    pub store: StorePublicationReceipt,
+    /// Owner root or transaction acknowledgement identity.
+    pub publication_root: [u8; 32],
     /// Owner epoch that acknowledged publication.
     pub owner_epoch: u64,
     /// Monotonic notification cursor at publication.

@@ -7,11 +7,10 @@
 
 use super::*;
 use backend_version::{
-    AuthorityScopeClaim, Coverage, CoverageWitness, ProducerObservationClaims,
-    ProducerObservationVerifier, RelationState, ScopeRoot, UntrustedProducerObservation,
-    WorkspaceManifest, WorkspaceRoot, admit_complete_scope, admit_producer_observation,
+    AuthorityScopeClaim, Coverage, CoverageWitness, ProducerObservationVerifier, RelationState,
+    ScopeRoot, UntrustedProducerObservation, WorkspaceManifest, WorkspaceRoot,
+    admit_complete_scope, admit_producer_observation,
 };
-use std::sync::Arc;
 
 struct FixtureCoverageVerifier {
     producer: [u8; 32],
@@ -23,22 +22,12 @@ struct FixtureCoverageVerifier {
 impl ProducerObservationVerifier for FixtureCoverageVerifier {
     type Error = ();
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
         (observation.producer_identity() == self.producer
             && observation.scope_root() == self.scope
             && observation.context() == self.context
             && observation.evidence() == self.evidence.as_slice())
-        .then(|| {
-            ProducerObservationClaims::new(
-                self.producer,
-                self.scope,
-                self.context,
-                *blake3::hash(&self.evidence).as_bytes(),
-            )
-        })
+        .then_some(())
         .ok_or(())
     }
 }
@@ -88,7 +77,7 @@ fn workspace() -> WorkspaceRoot {
     .root()
 }
 
-pub(crate) fn binding(ids: &[(u64, Vec<u8>)]) -> (Binding, CoverageWitness) {
+fn binding(ids: &[(u64, Vec<u8>)]) -> (Binding, CoverageWitness) {
     let coverage = authorized_coverage(&[7; 32]);
     let state = RelationState::<CandidateRelation>::from_entries(ids.iter().cloned(), coverage)
         .expect("state");
@@ -161,215 +150,6 @@ fn restarted_vector_index(
     )
     .expect("restarted source");
     VectorIndex::new(base, facts, source).expect("restarted index")
-}
-
-fn embedding_recipe() -> EmbeddingRecipe {
-    EmbeddingRecipe {
-        model: ModelVersion::from_value(&[8; 32]),
-        tokenizer: TokenizerVersion::from_value(&[9; 32]),
-        dimensions: std::num::NonZeroU32::new(2).expect("non-zero dimensions"),
-        metric: Metric::CosineDistance,
-        pooling: EmbeddingPooling::Mean,
-        normalization: EmbeddingNormalization::UnitL2,
-        encoding: EmbeddingEncoding::Float32,
-        query_treatment: TreatmentVersion::from_value(b"query: ".as_slice()),
-        document_treatment: TreatmentVersion::from_value(b"passage: ".as_slice()),
-    }
-}
-
-#[test]
-fn embedding_recipe_separates_query_and_document_treatment() {
-    let recipe = embedding_recipe();
-    let document =
-        DocumentVector::new(recipe, CandidateId(1), vec![0.6, 0.8]).expect("document vector");
-    let query = QueryVector::new(recipe, vec![0.0, 1.0]).expect("query vector");
-    assert_eq!(document.recipe().version(), query.recipe().version());
-    assert_eq!(document.point().values(), &[0.6, 0.8]);
-    assert_eq!(query.query().values(), &[0.0, 1.0]);
-
-    let changed = EmbeddingRecipe {
-        query_treatment: TreatmentVersion::from_value(b"search_query: ".as_slice()),
-        ..recipe
-    };
-    assert_ne!(recipe.version(), changed.version());
-    let mut legacy = Vec::new();
-    legacy.extend_from_slice(b"backend.qdrant.embedding-recipe.v1\0");
-    legacy.extend_from_slice(recipe.model.as_bytes());
-    legacy.extend_from_slice(recipe.tokenizer.as_bytes());
-    legacy.extend_from_slice(&recipe.dimensions.get().to_be_bytes());
-    legacy.extend_from_slice(&[
-        recipe.metric as u8,
-        recipe.pooling as u8,
-        recipe.normalization as u8,
-        recipe.encoding as u8,
-    ]);
-    legacy.extend_from_slice(recipe.query_treatment.as_bytes());
-    legacy.extend_from_slice(recipe.document_treatment.as_bytes());
-    assert_ne!(recipe.version(), Recipe::from_value(&legacy));
-    assert_eq!(
-        QueryVector::new(recipe, vec![1.0, 1.0]),
-        Err(Error::MalformedInput)
-    );
-}
-
-#[test]
-fn document_vectors_retain_shared_cached_coordinates() {
-    let recipe = embedding_recipe();
-    let coordinates: Arc<[f32]> = Arc::from([0.6, 0.8]);
-    let pointer = coordinates.as_ptr();
-    let document = DocumentVector::from_shared(recipe, CandidateId(1), coordinates)
-        .expect("shared document vector");
-
-    assert_eq!(document.point().values().as_ptr(), pointer);
-}
-
-#[derive(Clone)]
-struct RefillingSource {
-    coverage: CoverageWitness,
-}
-
-#[derive(Clone)]
-struct BoundedRequestSource {
-    coverage: CoverageWitness,
-}
-
-impl AnnSource for BoundedRequestSource {
-    type Error = Error;
-
-    fn fetch(&self, request: &VectorSearchRequest) -> Result<AnnPage, Self::Error> {
-        assert_eq!(request.limit, 4, "one result needs at most four candidates");
-        Ok(AnnPage {
-            schema: SchemaVersion::CURRENT,
-            binding: request.binding,
-            ids: vec![CandidateId(1)],
-            next: None,
-            coverage: self.coverage,
-            quality: SearchQuality::Exact,
-        })
-    }
-}
-
-#[test]
-fn vector_search_bounds_the_provider_page_to_the_refill_target() {
-    let (state, memory_index, model) = vector_overlay_fixture();
-    let facts = VectorFacts::new(state, model, Metric::EuclideanSquared, 2).expect("facts");
-    let index = VectorIndex::new(
-        memory_index.base().clone(),
-        facts.clone(),
-        BoundedRequestSource {
-            coverage: facts.coverage(),
-        },
-    )
-    .expect("index");
-    let query = VectorQuery::new(model, Metric::EuclideanSquared, vec![0.0, 0.0]).expect("query");
-    let result = index
-        .search(&query, 1, Limits::default())
-        .expect("bounded search");
-    assert_eq!(result.candidates.len(), 1);
-}
-
-impl AnnSource for RefillingSource {
-    type Error = Error;
-
-    fn fetch(&self, request: &VectorSearchRequest) -> Result<AnnPage, Self::Error> {
-        let offset = request.cursor.map_or(0, AnnCursor::offset);
-        let (ids, next) = match offset {
-            0 => (
-                vec![CandidateId(98), CandidateId(99)],
-                Some(AnnCursor::new(request.binding, 2)),
-            ),
-            2 => (vec![CandidateId(1), CandidateId(2)], None),
-            _ => return Err(Error::InvalidCursor),
-        };
-        Ok(AnnPage {
-            schema: SchemaVersion::CURRENT,
-            binding: request.binding,
-            ids,
-            next,
-            coverage: self.coverage,
-            quality: SearchQuality::Exact,
-        })
-    }
-}
-
-#[test]
-fn vector_search_refills_after_a_page_of_stale_provider_ids() {
-    let (state, memory_index, model) = vector_overlay_fixture();
-    let facts = VectorFacts::new(state, model, Metric::EuclideanSquared, 2).expect("facts");
-    let base = memory_index.base().clone();
-    let index = VectorIndex::new(
-        base,
-        facts.clone(),
-        RefillingSource {
-            coverage: facts.coverage(),
-        },
-    )
-    .expect("index");
-    let query = VectorQuery::new(model, Metric::EuclideanSquared, vec![0.0, 0.0]).expect("query");
-    let result = index
-        .search(
-            &query,
-            2,
-            Limits {
-                max_page: 2,
-                ..Limits::default()
-            },
-        )
-        .expect("refilled search");
-    assert_eq!(
-        result
-            .candidates
-            .iter()
-            .map(|candidate| candidate.id)
-            .collect::<Vec<_>>(),
-        vec![CandidateId(1), CandidateId(2)]
-    );
-}
-
-#[derive(Clone)]
-struct SubstitutingQuerySource {
-    coverage: CoverageWitness,
-}
-
-impl AnnSource for SubstitutingQuerySource {
-    type Error = Error;
-
-    fn fetch(&self, request: &VectorSearchRequest) -> Result<AnnPage, Self::Error> {
-        let other = VectorQuery::new(
-            request.query.model(),
-            request.query.metric(),
-            vec![7.0; request.query.values().len()],
-        )?;
-        let binding =
-            VectorQueryBinding::new(request.binding.base, &other, request.binding.requested)?;
-        Ok(AnnPage {
-            schema: SchemaVersion::CURRENT,
-            binding,
-            ids: vec![CandidateId(1)],
-            next: None,
-            coverage: self.coverage,
-            quality: SearchQuality::Exact,
-        })
-    }
-}
-
-#[test]
-fn provider_page_for_another_query_is_rejected_at_the_binding() {
-    let (state, memory_index, model) = vector_overlay_fixture();
-    let facts = VectorFacts::new(state, model, Metric::EuclideanSquared, 2).expect("facts");
-    let index = VectorIndex::new(
-        memory_index.base().clone(),
-        facts.clone(),
-        SubstitutingQuerySource {
-            coverage: facts.coverage(),
-        },
-    )
-    .expect("index");
-    let query = VectorQuery::new(model, Metric::EuclideanSquared, vec![0.0, 0.0]).expect("query");
-    assert!(matches!(
-        index.search(&query, 1, Limits::default()),
-        Err(AdapterError::Extension(Error::StaleRoot))
-    ));
 }
 
 #[test]

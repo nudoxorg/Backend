@@ -5,10 +5,8 @@ relation engine. Stable logical keys, immutable object versions, canonical
 relation roots, exact deltas, retained arrangements, replication, and local or
 remote execution all share the contracts in `backend-version`.
 
-The runtime product graph contains 28 packages: twelve shared crates, seven
-language frontends, four query/index adapters, and five app surfaces. The
-agent cutover controller lives under `tools/`, has zero product dependents, and
-is outside the runtime dependency graph. Historical source is kept in
+The product workspace contains thirteen shared crates, seven language frontends,
+four query/index adapters, and five app surfaces. Historical source is kept in
 external reference checkouts and the migration map; no legacy crate or owner
 remains in the product tree.
 

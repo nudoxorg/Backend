@@ -58,11 +58,10 @@ pub use journal::{
     DispatchJournalReplay, DispatchLog, DispatchPhase, DispatchRecord, DispatchRecordError,
     DispatchRecovery, DispatchRecoveryAction, DispatchRestartAuthority, DispatchRestartDecision,
     MAX_DISPATCH_CURSOR_BYTES, MAX_DISPATCH_PROOF_BYTES, MAX_DISPATCH_REQUEST_BYTES,
-    NotificationCursor, OwnerRestartAuthority, PublicationAck, PublicationRecoveryMode,
-    RESTART_ALREADY_FENCED, RESTART_AUTHORITY_REVOKED, RESTART_LEASE_EXPIRED,
-    RESTART_OWNER_TAKEOVER, RecoveredAttempt, RemoteAttemptIntent, RemoteDispatchJournal,
-    RemoteDispatchRecord, RestartAuthoritySnapshot, StorePublicationReceipt, TerminalState,
-    TransferCheckpointRef,
+    NotificationCursor, OwnerRestartAuthority, PublicationAck, RESTART_ALREADY_FENCED,
+    RESTART_AUTHORITY_REVOKED, RESTART_LEASE_EXPIRED, RESTART_OWNER_TAKEOVER, RecoveredAttempt,
+    RemoteAttemptIntent, RemoteDispatchJournal, RemoteDispatchRecord, RestartAuthoritySnapshot,
+    TerminalState, TransferCheckpointRef,
 };
 pub use protocol::{
     DispatchCompletion, DispatchPlan, DispatchTicket, ExpectedInput, FenceBinding, InFlightRemote,

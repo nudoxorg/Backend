@@ -31,20 +31,12 @@ struct TestCoverageVerifier;
 impl ProducerObservationVerifier for TestCoverageVerifier {
     type Error = &'static str;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
         if observation.producer_identity() == *observation.scope_root().as_bytes()
             && observation.context() == *observation.scope_root().as_bytes()
             && observation.evidence() == observation.scope_root().as_bytes()
         {
-            Ok(ProducerObservationClaims::new(
-                observation.producer_identity(),
-                observation.scope_root(),
-                observation.context(),
-                *blake3::hash(observation.evidence()).as_bytes(),
-            ))
+            Ok(())
         } else {
             Err("invalid test producer observation")
         }
@@ -213,7 +205,7 @@ fn names_documents_and_outlines_are_pinned_to_one_basis() {
     assert_eq!(
         library
             .document(DocumentQuery {
-                symbol: SymbolAddress::canonical(symbol),
+                symbol,
                 basis: revision.into(),
                 source: None,
             })
@@ -235,7 +227,7 @@ fn names_documents_and_outlines_are_pinned_to_one_basis() {
     assert!(
         library
             .document(DocumentQuery {
-                symbol: SymbolAddress::canonical(symbol),
+                symbol,
                 basis: view_state_root(&[("other".to_owned(), "root".to_owned())]).into(),
                 source: None,
             })
@@ -262,7 +254,7 @@ fn document_projection_uses_the_complete_row_document() {
     let revision = library.revision_root();
     let document = library
         .document(DocumentQuery {
-            symbol: SymbolAddress::canonical(symbol),
+            symbol,
             basis: revision.into(),
             source: None,
         })
@@ -291,21 +283,8 @@ fn graph_query_uses_the_retained_parent_child_arrangement() {
     ]);
     let revision = library.revision_root();
     let snapshot = library
-        .graph(GraphNeighborhoodQuery::new(parent, revision))
+        .graph(GraphQuery::new(parent, revision))
         .expect("graph neighborhood");
-    let selected_snapshot = library
-        .graph(GraphNeighborhoodQuery::selected(parent, revision))
-        .expect("selected graph neighborhood");
-    assert_eq!(selected_snapshot.root, snapshot.root);
-    assert!(
-        library
-            .graph(GraphNeighborhoodQuery::selected(
-                symbol_key("pkg::Absent"),
-                revision,
-            ))
-            .is_err(),
-        "an opaque selector must resolve through membership in the pinned view"
-    );
     let ids = snapshot
         .root
         .rows()
@@ -349,7 +328,6 @@ fn outlines_are_package_scoped_and_follow_parent_links() {
     let second_package = package_key("pkg-two");
     let first_root = symbol_key("pkg-one::Root");
     let first_child = symbol_key("pkg-one::Child");
-    let first_peer = symbol_key("pkg-one::Peer");
     let second_root = symbol_key("pkg-two::Root");
     let library = projection(vec![
         Row::new(RowId::Package(first_package), basis, "pkg-one"),
@@ -357,7 +335,6 @@ fn outlines_are_package_scoped_and_follow_parent_links() {
         Row::in_package(RowId::Symbol(first_child), basis, first_package, "Child")
             .with_parent(first_root),
         Row::in_package(RowId::Symbol(first_root), basis, first_package, "Root"),
-        Row::in_package(RowId::Symbol(first_peer), basis, first_package, "Peer"),
         Row::in_package(RowId::Symbol(second_root), basis, second_package, "Root"),
     ]);
     let revision = library.revision_root();
@@ -365,101 +342,14 @@ fn outlines_are_package_scoped_and_follow_parent_links() {
     let first = library
         .outline(OutlineQuery::new(first_package, revision))
         .expect("first package outline");
-    let root_node = first
-        .roots()
-        .find(|node| node.symbol == first_root)
-        .expect("first package root");
-    assert_eq!(root_node.children[0].symbol, first_child);
-    assert_eq!(first.roots().count(), 2);
-    assert!(first.roots().any(|node| node.symbol == first_peer));
-    assert_eq!(first.extent, OutlineExtent::Complete);
+    assert_eq!(first.root.symbol, first_root);
+    assert_eq!(first.root.children[0].symbol, first_child);
     assert!(
         library
             .outline(OutlineQuery::new(second_package, revision))
             .is_ok()
     );
     assert_eq!(first.root.children.len(), 1);
-}
-
-#[test]
-fn package_outline_and_graph_pages_share_root_and_query_bound_continuations() {
-    let (root, object) = source();
-    let basis = Basis::new(root, object);
-    let package_a = package_key("page-a");
-    let package_b = package_key("page-b");
-    let graph_root = symbol_key("page-a::Root");
-    let graph_child = symbol_key("page-a::Child");
-    let library = projection(vec![
-        Row::new(RowId::Package(package_a), basis, "page-a"),
-        Row::new(RowId::Package(package_b), basis, "page-b"),
-        Row::in_package(RowId::Symbol(graph_root), basis, package_a, "Root"),
-        Row::in_package(RowId::Symbol(graph_child), basis, package_a, "Child")
-            .with_parent(graph_root),
-    ]);
-    let request = PageRequest::new(
-        library.revision_root(),
-        QueryLimit::new(1).expect("page limit"),
-    );
-    let first = library.packages_page(request).expect("package page");
-    let next = match first.terminal {
-        PageTerminal::More(next) => Some(next),
-        PageTerminal::Complete | PageTerminal::Cancelled => None,
-    };
-    assert!(next.is_some(), "first package page must continue");
-    let Some(next) = next else {
-        return;
-    };
-    let wrong_query = CommandDto::new(
-        41,
-        Command::OutlinePage {
-            package: package_a,
-            page: request,
-        },
-    );
-    let package_reply = ReplyDto::new(41, CommandReply::ProjectionPage(first.clone()));
-    assert!(admit_reply(&wrong_query, &package_reply).is_err());
-
-    let inconsistent_terminal = ReplyDto::new(
-        42,
-        CommandReply::ProjectionPage(ProjectionPage {
-            snapshot: first.snapshot.clone(),
-            terminal: PageTerminal::Complete,
-        }),
-    );
-    let package_command = CommandDto::new(42, Command::PackagePage(request));
-    assert!(admit_reply(&package_command, &inconsistent_terminal).is_err());
-
-    let second = library
-        .packages_page(request.with_continuation(next))
-        .expect("second package page");
-    assert_eq!(second.terminal, PageTerminal::Complete);
-    let resumed_command =
-        CommandDto::new(43, Command::PackagePage(request.with_continuation(next)));
-    let resumed_reply = ReplyDto::new(43, CommandReply::ProjectionPage(second.clone()));
-    assert_eq!(admit_reply(&resumed_command, &resumed_reply), Ok(()));
-    assert_ne!(
-        first.snapshot.root.rows()[0].id,
-        second.snapshot.root.rows()[0].id
-    );
-
-    assert!(matches!(
-        library.outline_page(package_a, request.with_continuation(next)),
-        Err(LibraryError::CursorMismatch)
-    ));
-    let outline = library
-        .outline_page(package_a, request)
-        .expect("outline page");
-    assert!(matches!(outline.terminal, PageTerminal::More(_)));
-    let PageTerminal::More(outline_next) = outline.terminal else {
-        return;
-    };
-    assert!(
-        library
-            .outline_page(package_a, request.with_continuation(outline_next))
-            .is_ok()
-    );
-    let graph = library.graph_page(graph_root, request).expect("graph page");
-    assert!(matches!(graph.terminal, PageTerminal::More(_)));
 }
 
 #[test]
@@ -589,7 +479,6 @@ fn view_root_commitment_includes_basis_frontier_and_coverage() {
         main_frontier,
         vec![main_row],
         vec![Coverage::Partial {
-            lane: Lane::Semantic,
             completed: 1,
             total: 2,
         }],
@@ -706,7 +595,6 @@ fn forged_committed_coverage_and_frontier_are_rejected() {
 
     let mut coverage = committed.clone();
     coverage.coverage = vec![Coverage::Partial {
-        lane: Lane::Semantic,
         completed: 1,
         total: 2,
     }]
@@ -778,7 +666,6 @@ fn remove_reset_and_coverage_transitions_are_checked_and_consumed() {
         .prepare(
             ViewDelta::Coverage {
                 coverage: Coverage::Partial {
-                    lane: Lane::Semantic,
                     completed: 1,
                     total: 2,
                 },
@@ -790,7 +677,6 @@ fn remove_reset_and_coverage_transitions_are_checked_and_consumed() {
     assert_eq!(
         covered.coverage.last(),
         Some(&Coverage::Partial {
-            lane: Lane::Semantic,
             completed: 1,
             total: 2,
         })
@@ -801,7 +687,6 @@ fn remove_reset_and_coverage_transitions_are_checked_and_consumed() {
             .prepare(
                 ViewDelta::Coverage {
                     coverage: Coverage::Partial {
-                        lane: Lane::Semantic,
                         completed: 2,
                         total: 1,
                     },
@@ -834,63 +719,37 @@ fn query_results_keep_stable_row_identity_when_rank_changes() {
 }
 
 #[test]
-fn changed_documents_are_retested_and_local_only_matches_enter_search() {
-    let (source, object) = source();
-    let basis = Basis::new(source, object);
-    let replaced = RowId::Symbol(symbol_key("pkg::replaced"));
-    let retained = RowId::Symbol(symbol_key("pkg::retained"));
-    let local_only = RowId::Symbol(symbol_key("pkg::local-only"));
-    let mut old = Row::new(replaced, basis, "replaced");
-    old.document = vec![Fragment::Text("needle before edit".to_owned())].into_boxed_slice();
-    old.score = Some(100);
-    let mut still_matching = Row::new(retained, basis, "retained");
-    still_matching.document = vec![Fragment::Text("needle retained".to_owned())].into_boxed_slice();
-    still_matching.score = Some(50);
-    let library = projection(vec![old, still_matching]);
-    let first = library
-        .search_ranked(&Query::new(
-            "needle",
-            library.revision_root(),
-            QueryLimit::new(1).expect("bounded limit"),
-        ))
-        .expect("base search");
-    assert_eq!(first.order()[0], replaced);
-    let stale_cursor = first.snapshot().next.expect("base continuation");
+fn full_text_search_indexes_signature_and_document_projection() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let symbol = symbol_key("pkg::Documented");
+    let library = projection(vec![
+        Row::new(RowId::Symbol(symbol), basis, "Documented")
+            .with_signature("fn calculate_fibonacci() -> u64")
+            .with_document(
+                vec![Fragment::Text(
+                    "Calculates a sequence without exposing its implementation.".to_owned(),
+                )]
+                .into_boxed_slice(),
+            ),
+    ]);
+    let revision = library.revision_root();
 
-    let mut replaced_after_edit = Row::new(replaced, basis, "replaced");
-    replaced_after_edit.document =
-        vec![Fragment::Text("different documentation".to_owned())].into_boxed_slice();
-    replaced_after_edit.score = Some(1_000);
-    let mut inserted = Row::new(local_only, basis, "local-only");
-    inserted.document = vec![Fragment::Code("needle()".to_owned())].into_boxed_slice();
-    inserted.score = Some(500);
-    let mut overlay_changes = vec![
-        RowChange::Upsert(Box::new(replaced_after_edit)),
-        RowChange::Upsert(Box::new(inserted)),
-    ];
-    overlay_changes.sort_by_key(RowChange::id);
-    let (updated, _) = advance(
-        library,
-        ViewDelta::Patch {
-            changes: overlay_changes.into(),
-        },
-        capability(object),
-    );
-    let current = updated
-        .search_ranked(&Query::new(
-            "needle",
-            updated.revision_root(),
-            QueryLimit::default(),
-        ))
-        .expect("overlay-current search");
-    assert_eq!(current.order(), [local_only, retained]);
-    assert!(matches!(
-        updated.search(
-            &Query::new("needle", updated.revision_root(), QueryLimit::default())
-                .with_cursor(stale_cursor)
-        ),
-        Err(LibraryError::CursorMismatch)
-    ));
+    for text in ["fibonacci", "implementation"] {
+        let result = library
+            .search(&Query::new(text, revision, QueryLimit::default()))
+            .expect("full-text query");
+        assert_eq!(
+            result
+                .root
+                .rows()
+                .iter()
+                .map(|row| row.id)
+                .collect::<Vec<_>>(),
+            vec![RowId::Symbol(symbol)],
+            "search should include retained signature/document text: {text}"
+        );
+    }
 }
 
 #[test]
@@ -943,7 +802,7 @@ fn bounded_query_continuation_is_bound_to_the_snapshot_view() {
 }
 
 #[test]
-fn repeated_queries_seek_prebuilt_arrangements_and_sort_only_the_bounded_page() {
+fn repeated_queries_seek_prebuilt_arrangements_without_scanning_or_sorting() {
     let (basis, object) = source();
     let rows = (0..16)
         .map(|index| {
@@ -966,70 +825,9 @@ fn repeated_queries_seek_prebuilt_arrangements_and_sort_only_the_bounded_page() 
     let _ = library.names(&query).expect("second seek");
     let second = library.work_counters();
     assert_eq!(first.scan_rows, second.scan_rows);
-    assert!(first.sort_rows <= built.sort_rows + 5);
-    assert!(second.sort_rows <= first.sort_rows + 5);
+    assert_eq!(first.sort_rows, second.sort_rows);
     assert!(second.seek_probes > first.seek_probes);
     assert_eq!(second.output_rows, first.output_rows * 2);
-}
-
-#[test]
-fn one_scalar_query_seeks_its_posting_instead_of_scanning_the_corpus() {
-    let (basis, object) = source();
-    let mut rows = (0..10_000)
-        .map(|index| {
-            Row::new(
-                RowId::Symbol(symbol_key(&format!("pkg::z{index:05}"))),
-                Basis::new(basis, object),
-                format!("zeta {index:05}"),
-            )
-        })
-        .collect::<Vec<_>>();
-    rows.push(Row::new(
-        RowId::Symbol(symbol_key("pkg::quill")),
-        Basis::new(basis, object),
-        "quill",
-    ));
-    let library = projection(rows);
-    assert_eq!(library.arrangement.name_posting_candidates("q"), 1);
-
-    let query = NameQuery::new(
-        "q",
-        library.revision_root(),
-        QueryLimit::new(1).expect("limit"),
-    );
-    let result = library.names(&query).expect("short posting seek");
-    assert_eq!(result.root.rows().len(), 1);
-    assert_eq!(result.root.rows()[0].label, "quill");
-    let work = library.work_counters();
-    assert_eq!(work.scan_rows, 0);
-    assert_eq!(work.sort_rows, 1);
-}
-
-#[test]
-fn cold_index_build_does_not_retain_a_second_copy_of_all_rows() {
-    let (basis, object) = source();
-    let rows = (0..10_000)
-        .map(|index| {
-            Row::new(
-                RowId::Symbol(symbol_key(&format!("pkg::{index:05}"))),
-                Basis::new(basis, object),
-                format!("Name {index:05}"),
-            )
-        })
-        .collect();
-    let library = projection(rows);
-    assert!(!library.view.compatibility_rows_are_materialized());
-    assert_eq!(
-        library
-            .view
-            .row_ref(RowId::Symbol(symbol_key("pkg::00000")))
-            .map(|row| row.label.as_str()),
-        Some("Name 00000")
-    );
-    assert!(!library.view.compatibility_rows_are_materialized());
-
-    assert_eq!(library.view.rows().len(), 10_000);
-    assert!(library.view.compatibility_rows_are_materialized());
 }
 
 #[test]
@@ -1059,103 +857,4 @@ fn sequential_one_row_edits_do_not_retain_a_view_history_chain() {
     );
     let first_rows = view.rows().as_ptr();
     assert_eq!(view.rows().as_ptr(), first_rows);
-}
-
-#[test]
-fn semantic_diff_wire_preserves_typed_evidence_and_enforces_the_nested_bound() {
-    let identity = SemanticDeclarationIdentity {
-        family: [1; 16],
-        variant: [2; 16],
-    };
-    let evidence = SemanticLinkEvidence {
-        confidence: SemanticConfidence::Compiler,
-        source: Some(SemanticSourceSpan {
-            file: ProductText::new("src/lib.rs").expect("source path"),
-            start: 8,
-            end: 14,
-        }),
-    };
-    let delta = SemanticLinkDelta::Added {
-        from: identity,
-        target: SemanticLinkTarget::Foreign {
-            declaration: [3; 16],
-            variant: None,
-        },
-        relation: SemanticLinkKind::Calls,
-        evidence,
-    };
-    let row = DiffRecord {
-        label: ProductText::new("sample::call").expect("label"),
-        change: DeclarationChange::Added,
-        before: None,
-        after: Some(identity),
-        links: vec![delta.clone()].into_boxed_slice(),
-    };
-    let reply = SurfaceReply::Diff(vec![row].into_boxed_slice());
-    assert_eq!(reply.admit(CommandId::Diff), Ok(()));
-
-    let encoded = serde_json::to_vec(&ReplyDto::new(7, CommandReply::Surface(reply)))
-        .expect("encode typed diff");
-    let decoded: ReplyDto = serde_json::from_slice(&encoded).expect("decode typed diff");
-    let CommandReply::Surface(SurfaceReply::Diff(rows)) = decoded.reply else {
-        panic!("typed diff reply");
-    };
-    assert!(matches!(
-        rows[0].links.as_ref(),
-        [SemanticLinkDelta::Added {
-            from,
-            relation: SemanticLinkKind::Calls,
-            evidence: SemanticLinkEvidence {
-                confidence: SemanticConfidence::Compiler,
-                ..
-            },
-            ..
-        }] if *from == identity
-    ));
-
-    let oversized = DiffRecord {
-        label: ProductText::new("sample::call").expect("label"),
-        change: DeclarationChange::Added,
-        before: None,
-        after: Some(identity),
-        links: vec![delta; MAX_PRODUCT_ROWS].into_boxed_slice(),
-    };
-    assert_eq!(
-        SurfaceReply::Diff(vec![oversized].into_boxed_slice()).admit(CommandId::Diff),
-        Err(ProductAdmissionError::RowBound)
-    );
-}
-
-#[test]
-fn semantic_diff_rejects_relation_evidence_attached_to_the_wrong_side() {
-    let declared = SemanticDeclarationIdentity {
-        family: [1; 16],
-        variant: [2; 16],
-    };
-    let other = SemanticDeclarationIdentity {
-        family: [3; 16],
-        variant: [4; 16],
-    };
-    let row = DiffRecord {
-        label: ProductText::new("sample::call").expect("label"),
-        change: DeclarationChange::Added,
-        before: None,
-        after: Some(declared),
-        links: vec![SemanticLinkDelta::Added {
-            from: other,
-            target: SemanticLinkTarget::Local {
-                declaration: declared,
-            },
-            relation: SemanticLinkKind::Calls,
-            evidence: SemanticLinkEvidence {
-                confidence: SemanticConfidence::Compiler,
-                source: None,
-            },
-        }]
-        .into_boxed_slice(),
-    };
-    assert_eq!(
-        SurfaceReply::Diff(vec![row].into_boxed_slice()).admit(CommandId::Diff),
-        Err(ProductAdmissionError::DiffShape)
-    );
 }

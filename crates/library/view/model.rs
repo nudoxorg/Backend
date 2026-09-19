@@ -3,7 +3,7 @@
 use crate::canonical::{
     BranchKey, LogKey, PackageKey, SemanticObject, SymbolKey, ViewStateRoot, encode_id,
 };
-use backend_compile::{DeclarationKind, SourceExcerpt, SourceLocation};
+use backend_compile::{DeclarationKind, SourceLocation};
 use backend_version::{AuthorizedCompleteCoverage, CoverageWitness, ScopeRoot};
 use core::fmt;
 use std::sync::Arc;
@@ -190,8 +190,6 @@ pub enum Coverage {
     Complete,
     /// The lane completed only a bounded portion of its scope.
     Partial {
-        /// Lane whose bounded result is represented.
-        lane: Lane,
         /// Number of completed shards/lanes.
         completed: u16,
         /// Number of declared shards/lanes.
@@ -206,31 +204,6 @@ pub enum Coverage {
     },
 }
 
-impl Reason {
-    /// Returns whether this lane was never part of the declared scope.
-    ///
-    /// `Unconfigured` is the one reason that is a fact about the *deployment*
-    /// rather than about this revision's work: no timer, retry, or further
-    /// indexing will change it, and nothing was left undone. Every other
-    /// reason describes work that could have produced rows for this revision
-    /// and did not.
-    ///
-    /// A surface needs this distinction to answer "is this project ready" with
-    /// one word. Treating an unconfigured lane as a failure makes an owner
-    /// that has completed every lane it has report a fault forever, which is
-    /// the same fabricated state as reporting a partial fraction that can
-    /// never advance — it just fails in the other direction. The lane itself
-    /// must still be *shown* as unavailable with its reason; it simply must
-    /// not hold the summary word hostage.
-    #[must_use]
-    pub const fn is_outside_declared_scope(self) -> bool {
-        match self {
-            Self::Unconfigured => true,
-            Self::NoIndex | Self::Offline | Self::Cancelled | Self::Incomplete => false,
-        }
-    }
-}
-
 impl Coverage {
     /// Returns whether this coverage can claim completeness.
     #[must_use]
@@ -238,24 +211,10 @@ impl Coverage {
         matches!(self, Self::Complete)
     }
 
-    /// Returns whether this lane failed work it was asked to do.
-    ///
-    /// A lane the deployment never configured is unavailable but not failed;
-    /// see [`Reason::is_outside_declared_scope`].
-    #[must_use]
-    pub const fn is_failed_lane(self) -> bool {
-        match self {
-            Self::Unavailable { reason, .. } => !reason.is_outside_declared_scope(),
-            Self::Complete | Self::Partial { .. } => false,
-        }
-    }
-
     pub(super) fn is_valid(self) -> bool {
         match self {
             Self::Complete | Self::Unavailable { .. } => true,
-            Self::Partial {
-                completed, total, ..
-            } => completed <= total,
+            Self::Partial { completed, total } => completed <= total,
         }
     }
 }
@@ -295,10 +254,6 @@ pub struct Document {
     pub fragments: Box<[Fragment]>,
     /// Optional canonical signature text.
     pub signature: Option<String>,
-    /// Availability of the declaration's exact source coordinate.
-    pub location: SourceAvailability,
-    /// Bounded declaration source text with explicit availability and extent.
-    pub excerpt: SourceExcerpt,
 }
 
 impl Document {
@@ -315,8 +270,6 @@ impl Document {
             source: None,
             fragments: fragments.into(),
             signature: None,
-            location: SourceAvailability::NotCaptured,
-            excerpt: SourceExcerpt::NotCaptured,
         }
     }
 
@@ -337,20 +290,6 @@ impl Document {
     #[must_use]
     pub const fn source_basis(&self) -> Option<Basis> {
         self.source
-    }
-
-    /// Attaches the source availability copied from the projected row.
-    #[must_use]
-    pub fn with_location(mut self, location: SourceAvailability) -> Self {
-        self.location = location;
-        self
-    }
-
-    /// Attaches bounded source text copied from the projected row.
-    #[must_use]
-    pub fn with_excerpt(mut self, excerpt: SourceExcerpt) -> Self {
-        self.excerpt = excerpt;
-        self
     }
 
     /// Returns the deterministic document text projection.
@@ -392,52 +331,18 @@ pub struct Outline {
     pub source: Option<Basis>,
     /// Root outline node.
     pub root: OutlineNode,
-    /// Additional top-level declarations in packages whose outline is a forest.
-    pub additional_roots: Box<[OutlineNode]>,
-    /// Whether this bounded response contains the complete package outline.
-    pub extent: OutlineExtent,
-}
-
-/// Completeness of one bounded outline response.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum OutlineExtent {
-    /// Every retained node was included.
-    Complete,
-    /// At least one node was omitted by the node or depth bound.
-    Truncated,
 }
 
 impl Outline {
     /// Creates an outline bound to the exact source root used to answer it.
     #[must_use]
-    pub fn new(package: PackageKey, basis: ViewStateRoot, root: OutlineNode) -> Self {
+    pub const fn new(package: PackageKey, basis: ViewStateRoot, root: OutlineNode) -> Self {
         Self {
             package,
             basis,
             source: None,
             root,
-            additional_roots: Box::new([]),
-            extent: OutlineExtent::Complete,
         }
-    }
-
-    /// Attaches the remaining top-level declarations in canonical order.
-    #[must_use]
-    pub fn with_additional_roots(mut self, roots: impl Into<Box<[OutlineNode]>>) -> Self {
-        self.additional_roots = roots.into();
-        self
-    }
-
-    /// Marks whether the bounded response is complete.
-    #[must_use]
-    pub const fn with_extent(mut self, extent: OutlineExtent) -> Self {
-        self.extent = extent;
-        self
-    }
-
-    /// Iterates every top-level declaration without inventing a synthetic root.
-    pub fn roots(&self) -> impl Iterator<Item = &OutlineNode> {
-        core::iter::once(&self.root).chain(self.additional_roots.iter())
     }
 
     /// Binds this outline to the complete producer source basis.
@@ -513,31 +418,6 @@ pub enum RowState {
     Failed,
 }
 
-/// Per-row source evidence. Missing hydration is an ordinary availability state; malformed
-/// source identity remains a projection error and cannot be encoded here.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SourceAvailability {
-    /// The producer captured an exact source location.
-    Captured(SourceLocation),
-    /// The producer retained no source span for this declaration.
-    NotCaptured,
-    /// A source span exists, but its source bytes are not resident locally.
-    NotHydrated,
-    /// This deployment has no source provider for the row's origin.
-    Unconfigured,
-}
-
-impl SourceAvailability {
-    /// Returns the exact captured location, when locally usable.
-    #[must_use]
-    pub const fn captured(&self) -> Option<&SourceLocation> {
-        match self {
-            Self::Captured(location) => Some(location),
-            Self::NotCaptured | Self::NotHydrated | Self::Unconfigured => None,
-        }
-    }
-}
-
 /// Compact row projection, with content materialized separately when needed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Row {
@@ -564,9 +444,7 @@ pub struct Row {
     /// Typed declaration kind. Package/object rows intentionally have no kind.
     pub kind: Option<DeclarationKind>,
     /// Exact source path and one-based start line for this declaration.
-    pub source: SourceAvailability,
-    /// Bounded declaration source text with explicit availability and extent.
-    pub excerpt: SourceExcerpt,
+    pub source: Option<SourceLocation>,
 }
 
 impl Row {
@@ -585,8 +463,7 @@ impl Row {
             document: vec![Fragment::Text(label)].into_boxed_slice(),
             signature: None,
             kind: None,
-            source: SourceAvailability::NotCaptured,
-            excerpt: SourceExcerpt::NotCaptured,
+            source: None,
         }
     }
 
@@ -634,14 +511,7 @@ impl Row {
     /// Attaches the exact source location for this row.
     #[must_use]
     pub fn with_source(mut self, source: SourceLocation) -> Self {
-        self.source = SourceAvailability::Captured(source);
-        self
-    }
-
-    /// Attaches bounded declaration source text.
-    #[must_use]
-    pub fn with_excerpt(mut self, excerpt: SourceExcerpt) -> Self {
-        self.excerpt = excerpt;
+        self.source = Some(source);
         self
     }
 }

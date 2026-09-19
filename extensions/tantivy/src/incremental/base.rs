@@ -1,9 +1,8 @@
 //! Immutable lexical posting base.
 
-use super::plan::{PostingKey, terms_for};
+use super::plan::terms_for;
 use crate::delta::DocumentState;
 use crate::{Binding, Error};
-use backend_semantic::EntityId;
 use backend_version::CoverageWitness;
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
@@ -14,8 +13,8 @@ use std::sync::Arc;
 pub struct LexicalBase {
     binding: Binding,
     coverage: CoverageWitness,
-    documents: Arc<[EntityId]>,
-    postings: Arc<BTreeMap<PostingKey, Arc<[EntityId]>>>,
+    documents: Arc<[u64]>,
+    postings: Arc<BTreeMap<String, Arc<[u64]>>>,
     bytes: usize,
 }
 
@@ -33,16 +32,15 @@ impl LexicalBase {
         ) {
             return Err(Error::IncompleteCoverage);
         }
-        let mut postings: BTreeMap<PostingKey, BTreeSet<EntityId>> = BTreeMap::new();
+        let mut postings: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
         let mut documents = Vec::new();
         let mut bytes = 0usize;
         for (id, fields) in state.iter() {
             documents.push(id);
             for term in terms_for(fields) {
                 bytes = bytes
-                    .checked_add(term.field.len())
-                    .and_then(|size| size.checked_add(term.term.len()))
-                    .and_then(|size| size.checked_add(size_of::<EntityId>()))
+                    .checked_add(term.len())
+                    .and_then(|size| size.checked_add(size_of::<u64>()))
                     .ok_or(Error::SizeLimit)?;
                 postings.entry(term).or_default().insert(id);
             }
@@ -74,13 +72,14 @@ impl LexicalBase {
 
     /// Returns the immutable document key order.
     #[must_use]
-    pub fn documents(&self) -> &[EntityId] {
+    pub fn documents(&self) -> &[u64] {
         &self.documents
     }
 
     /// Returns one immutable posting list without allocating.
-    pub(crate) fn postings(&self) -> impl Iterator<Item = (&PostingKey, &[EntityId])> {
-        self.postings.iter().map(|(key, ids)| (key, ids.as_ref()))
+    #[must_use]
+    pub fn posting(&self, term: &str) -> Option<&[u64]> {
+        self.postings.get(term).map(AsRef::as_ref)
     }
 
     /// Returns the approximate retained posting bytes.

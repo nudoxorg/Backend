@@ -4,8 +4,8 @@ use super::super::DispatchError;
 use super::contract::{FenceBinding, RemoteDispatchContract, WorkerReceiptId};
 use backend_execution::{AttemptLease, OutputVersion, Scheduled};
 use backend_replication::{
-    AttemptId, AuthorityExpectation, CancellationId, ExecutionRequestExpectation, ExecutionScopeId,
-    ExpectedIdentity, ResourceEnvelope, WireAuthorityPolicy, WireIdentity, WireRecipeRequest,
+    AttemptId, AuthorityExpectation, CancellationId, ExecutionRequestExpectation, ExpectedIdentity,
+    ResourceEnvelope, WireAuthorityPolicy, WireIdentity, WireRecipeRequest,
 };
 use backend_version::Relation;
 
@@ -29,8 +29,6 @@ pub fn request_expectation<R: Relation>(
         .checked_add(1)
         .ok_or(DispatchError::InvalidAttempt)?;
     let attempt = AttemptId::new(attempt_number).map_err(|_| DispatchError::InvalidAttempt)?;
-    let scope = ExecutionScopeId::try_from(contract.semantic.scope())
-        .map_err(|_| DispatchError::IncompleteSemanticCoverage)?;
     let fence = FenceBinding::from_lease(schedule.lease())?;
     let cancellation = cancellation_id(schedule.lease())?;
     let inputs = contract.inputs.iter().map(|input| input.expected).collect();
@@ -40,7 +38,7 @@ pub fn request_expectation<R: Relation>(
         work_key: ExpectedIdentity::from_typed(&identity.work_key()),
         inputs,
         read_manifest: ExpectedIdentity::from_typed(&identity.read_manifest),
-        scope,
+        scope: contract.semantic.scope(),
         authority: AuthorityExpectation::from_typed(
             &identity.authority,
             contract.authority_epoch,
@@ -95,7 +93,7 @@ pub fn wire_request<R: Relation>(
         work_key: WireIdentity::from_typed(&identity.work_key()),
         inputs: contract.inputs.iter().map(|input| input.wire).collect(),
         read_manifest: WireIdentity::from_typed(&identity.read_manifest),
-        scope: expected.scope,
+        scope: contract.semantic.scope(),
         authority: WireAuthorityPolicy {
             id: WireIdentity::from_typed(&identity.authority),
             minimum_epoch: contract.authority_epoch,
@@ -118,22 +116,14 @@ pub fn worker_receipt_id(
     bytes: &[u8],
 ) -> WorkerReceiptId {
     let mut material = Vec::new();
-    material.extend_from_slice(b"backend.engine.worker-receipt.v3\0");
+    material.extend_from_slice(b"backend.engine.worker-receipt.v2\0");
     append_wire_identity(&mut material, request.recipe);
     append_wire_identity(&mut material, request.work_key);
-    material.extend_from_slice(&request.input_basis.as_bytes());
-    material.extend_from_slice(&(request.inputs.len() as u64).to_be_bytes());
-    for input in &request.inputs {
-        append_wire_identity(&mut material, *input);
-    }
     append_wire_identity(&mut material, request.read_manifest);
     material.extend_from_slice(&request.attempt.get().to_be_bytes());
     material.extend_from_slice(&request.fence.as_bytes());
     material.extend_from_slice(&request.cancellation.as_bytes());
-    material.extend_from_slice(&request.scope.as_bytes());
-    append_wire_identity(&mut material, request.authority.id);
-    material.extend_from_slice(&request.authority.minimum_epoch.0.to_be_bytes());
-    material.extend_from_slice(&request.authority.revocation_version.0.to_be_bytes());
+    material.extend_from_slice(&request.scope.to_be_bytes());
     append_resources(&mut material, request.resources);
     material.extend_from_slice(&output.to_bytes());
     material.extend_from_slice(&(bytes.len() as u64).to_be_bytes());

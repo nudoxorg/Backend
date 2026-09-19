@@ -9,58 +9,9 @@ use crate::{UntrustedObjectId, WirePack};
 use backend_version::SchemaIdentity;
 use std::sync::atomic::Ordering;
 use std::{
-    ffi::OsStr,
     fs::{File, OpenOptions},
     io::Write,
 };
-
-/// Removes crash-orphaned files only from the store writer's private temp namespace.
-pub(super) fn scavenge_store_temps(root: &Path) -> Result<usize, StoreError> {
-    let mut removed = 0usize;
-    for name in ["packs", "objects", "closures"] {
-        let directory = root.join(name);
-        let mut removed_here = false;
-        for entry in fs::read_dir(&directory).map_err(|error| io_error(&error))? {
-            let entry = entry.map_err(|error| io_error(&error))?;
-            if !is_store_temp_name(&entry.file_name()) {
-                continue;
-            }
-            let kind = entry.file_type().map_err(|error| io_error(&error))?;
-            if !kind.is_file() {
-                return Err(StoreError::Corrupt);
-            }
-            fs::remove_file(entry.path()).map_err(|error| io_error(&error))?;
-            removed = removed.checked_add(1).ok_or(StoreError::Bounds)?;
-            removed_here = true;
-        }
-        if removed_here {
-            sync_directory(&directory)?;
-        }
-    }
-    Ok(removed)
-}
-
-fn is_store_temp_name(name: &OsStr) -> bool {
-    let Some(name) = name.to_str() else {
-        return false;
-    };
-    let Some(body) = name
-        .strip_prefix('.')
-        .and_then(|name| name.strip_suffix(".tmp"))
-    else {
-        return false;
-    };
-    let mut parts = body.rsplitn(3, '.');
-    let (Some(counter), Some(process), Some(target)) = (parts.next(), parts.next(), parts.next())
-    else {
-        return false;
-    };
-    !target.is_empty()
-        && !process.is_empty()
-        && !counter.is_empty()
-        && process.bytes().all(|byte| byte.is_ascii_digit())
-        && counter.bytes().all(|byte| byte.is_ascii_digit())
-}
 
 /// Receipt returned after admitting one immutable object into the durable CAS.
 ///
@@ -164,29 +115,9 @@ fn write_immutable_with_status_inner(
 
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8], directory: &Path) -> Result<(), StoreError> {
     let (temporary, mut file) = create_temp(path)?;
-    #[cfg(test)]
-    if super::recovery::take_test_fault(5) {
-        return Err(StoreError::Io(
-            "injected post-temp-create failure".to_owned(),
-        ));
-    }
-    if let Err(error) = file.write_all(bytes) {
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
         let _ = fs::remove_file(&temporary);
         return Err(io_error(&error));
-    }
-    #[cfg(test)]
-    if super::recovery::take_test_fault(6) {
-        return Err(StoreError::Io(
-            "injected post-temp-write failure".to_owned(),
-        ));
-    }
-    if let Err(error) = file.sync_all() {
-        let _ = fs::remove_file(&temporary);
-        return Err(io_error(&error));
-    }
-    #[cfg(test)]
-    if super::recovery::take_test_fault(7) {
-        return Err(StoreError::Io("injected post-temp-sync failure".to_owned()));
     }
     if let Err(error) = fs::rename(&temporary, path) {
         let _ = fs::remove_file(&temporary);
@@ -200,12 +131,6 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], directory: &Path) -> Resul
         } else {
             Err(io_error(&error))
         };
-    }
-    #[cfg(test)]
-    if super::recovery::take_test_fault(8) {
-        return Err(StoreError::Io(
-            "injected post-head-rename failure".to_owned(),
-        ));
     }
     sync_directory(directory)
 }

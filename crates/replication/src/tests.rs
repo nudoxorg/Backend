@@ -2,15 +2,12 @@ use super::*;
 use backend_version::{
     AdmittedProducerObservation, AuthorityScopeClaim, CoverageWitness, IdAdmissionError, IdContext,
     ObjectClosure, ObjectKey as VersionObjectKey, ObjectVersion as VersionObjectVersion,
-    ProducerObservationClaims, ProducerObservationVerifier, RelationBinding, RelationState, Schema,
-    UntrustedId, UntrustedProducerObservation, admit_complete_scope, admit_producer_observation,
+    ProducerObservationVerifier, RelationBinding, RelationState, Schema, UntrustedId,
+    UntrustedProducerObservation, admit_complete_scope, admit_producer_observation,
     partial_coverage,
 };
 use std::io::{self, Cursor, Read, Write};
-use std::{cell::Cell, collections::BTreeMap, num::NonZeroU64, sync::Arc};
-
-const SCOPE_ONE: NonZeroU64 = NonZeroU64::MIN;
-const SCOPE_TWO: NonZeroU64 = NonZeroU64::MIN.saturating_add(1);
+use std::{cell::Cell, collections::BTreeMap, sync::Arc};
 
 struct TestAuthoritySchema;
 impl Schema for TestAuthoritySchema {
@@ -26,21 +23,11 @@ struct TestProducerVerifier;
 impl ProducerObservationVerifier for TestProducerVerifier {
     type Error = &'static str;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
         (observation.producer_identity() == [0x51; 32]
             && observation.context() == [0x52; 32]
             && observation.evidence() == b"test-producer")
-            .then(|| {
-                ProducerObservationClaims::new(
-                    [0x51; 32],
-                    observation.scope_root(),
-                    [0x52; 32],
-                    *blake3::hash(b"test-producer").as_bytes(),
-                )
-            })
+            .then_some(())
             .ok_or("test producer evidence")
     }
 }
@@ -288,7 +275,7 @@ fn execution_material() -> (
         work_key: ExpectedIdentity::from_typed(&work),
         inputs: vec![ExpectedIdentity::from_typed(&input)],
         read_manifest: ExpectedIdentity::from_typed(&reads),
-        scope: ExecutionScopeId::from_legacy_ordinal(SCOPE_ONE),
+        scope: 1,
         authority: authority_expected,
         resources,
         fence: must(Fence::new([1; 32])),
@@ -301,7 +288,7 @@ fn execution_material() -> (
         work_key: claim_typed_identity(&work),
         inputs: vec![claim_typed_identity(&input)],
         read_manifest: claim_typed_identity(&reads),
-        scope: ExecutionScopeId::from_legacy_ordinal(SCOPE_ONE),
+        scope: 1,
         authority: WireAuthorityPolicy {
             id: authority_claim.id,
             minimum_epoch: AuthorityEpoch(2),
@@ -354,26 +341,6 @@ fn execution_material() -> (
         receipt: claim_typed_identity(&receipt),
     };
     (expected, wire_request, result_expected, wire_result)
-}
-
-#[test]
-fn execution_scope_is_full_width_and_zero_is_rejected() {
-    let left = ExecutionScopeId::from_legacy_ordinal(SCOPE_ONE);
-    let right = ExecutionScopeId::from_legacy_ordinal(SCOPE_TWO);
-    assert_ne!(left, right);
-    assert_eq!(
-        ExecutionScopeId::new([0; 32]),
-        Err(ReplicationError::InvalidIdentifier)
-    );
-
-    assert_eq!(
-        ExecutionScopeId::try_from(0),
-        Err(ReplicationError::InvalidIdentifier)
-    );
-    assert_eq!(
-        ExecutionScopeId::try_from(0_u64),
-        Err(ReplicationError::InvalidIdentifier)
-    );
 }
 
 struct FixtureAttestationVerifier {
@@ -797,15 +764,7 @@ fn object_transfer_retains_schema_marker_for_same_bytes() {
 fn codec_is_versioned_bounded_and_local_streams_share_bytes() {
     let message = TransportMessage::Chunk(frame(0, 0, b"abc", ChunkChain([0; 32])));
     let encoded = must(message.encode(limits()));
-    assert_eq!(encoded[4], 3);
     assert_eq!(must(TransportMessage::decode(&encoded, limits())), message);
-
-    let mut legacy_v2 = encoded.clone();
-    legacy_v2[4] = 2;
-    assert_eq!(
-        TransportMessage::decode(&legacy_v2, limits()),
-        Err(ReplicationError::UnsupportedWireVersion)
-    );
 
     let mut bad_version = encoded.clone();
     bad_version[4] = u8::MAX;

@@ -14,7 +14,6 @@ backend-replication = { path = "../../crates/replication" }
 backend-semantic = { path = "../../crates/semantic" }
 backend-store = { path = "../../crates/store" }
 backend-version = { path = "../../crates/version" }
-blake3.workspace = true
 
 [lints]
 workspace = true

@@ -5,9 +5,7 @@ use crate::{ReplicationError, TransportLimits, TransportMessage};
 use super::primitives::Reader;
 
 const MAGIC: [u8; 4] = *b"RPL2";
-// Version 3 widens execution scope from an owner-local u64 to a canonical 32-byte identity.
-// Decoders reject v2 frames rather than guessing which scope grammar an execution payload used.
-const VERSION: u8 = 3;
+const VERSION: u8 = 2;
 const HEADER_BYTES: usize = 10;
 
 const TAG_CAPABILITIES: u8 = 1;

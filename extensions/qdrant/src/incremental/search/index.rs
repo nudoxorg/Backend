@@ -5,15 +5,13 @@ use super::provider::{
 };
 use super::quality::{combine_quality, quality_valid};
 use super::score::score;
-use crate::contracts::{CandidateSource, SearchQuality};
+use crate::contracts::CandidateSource;
 use crate::delta::CandidateDelta;
 use crate::incremental::limits::{OverlayLimits, RefreshKind};
 use crate::incremental::overlay::ExactOverlay;
 use crate::incremental::plan::{RefreshPlan, validate_delta};
-use crate::incremental::vector::{QueryVector, VectorFacts, VectorQuery};
+use crate::incremental::vector::{VectorFacts, VectorQuery};
 use crate::{AdapterError, Binding, Error, Limits, SchemaVersion};
-use backend_version::CoverageWitness;
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// A version-bound vector index with one ANN base and one exact overlay.
@@ -184,12 +182,12 @@ impl<S> VectorIndex<S> {
 }
 
 impl<S: AnnSource> VectorIndex<S> {
-    fn fetch_admitted_candidates(
+    fn fetch_admitted_page(
         &self,
         query: &VectorQuery,
         limit: usize,
         limits: Limits,
-    ) -> Result<(Vec<crate::CandidateId>, SearchQuality), AdapterError<S::Error>> {
+    ) -> Result<AnnPage, AdapterError<S::Error>> {
         let limits = limits.validate().map_err(AdapterError::Extension)?;
         if limit == 0 || limit > limits.max_page {
             return Err(AdapterError::Extension(Error::SizeLimit));
@@ -200,83 +198,50 @@ impl<S: AnnSource> VectorIndex<S> {
         {
             return Err(AdapterError::Extension(Error::DimensionMismatch));
         }
-        let target_candidates = limits
+        let provider_limit = limits
             .max_candidates
             .min(limit.saturating_mul(4).max(limit));
-        let query_binding =
-            super::provider::VectorQueryBinding::new(self.base.binding(), query, limit)
-                .map_err(AdapterError::Extension)?;
-        let mut cursor = None;
-        let mut seen = BTreeSet::new();
-        let mut admitted = Vec::with_capacity(target_candidates);
-        let mut quality = self.base.quality();
-        let mut scanned = 0_usize;
-        loop {
-            let page_limit = limits
-                .max_page
-                .min(limits.max_candidates.saturating_sub(scanned))
-                .min(target_candidates.saturating_sub(admitted.len()));
-            if page_limit == 0 {
-                break;
-            }
-            let request = VectorSearchRequest {
-                binding: query_binding,
+        let page = self
+            .source
+            .fetch(&VectorSearchRequest {
+                binding: self.base.binding(),
                 query: query.clone(),
-                limit: page_limit,
-                cursor,
-            };
-            let page = self
-                .source
-                .fetch(&request)
-                .map_err(AdapterError::Provider)?;
-            validate_page(&page, &request, &self.base, limits)?;
-            scanned = scanned
-                .checked_add(page.ids.len())
-                .ok_or(AdapterError::Extension(Error::SizeLimit))?;
-            if scanned > limits.max_candidates {
-                return Err(AdapterError::Extension(Error::SizeLimit));
-            }
-            quality = combine_quality(
-                quality,
-                page.quality,
-                self.base.binding().recipe,
-                self.base.model(),
-            )
-            .map_err(AdapterError::Extension)?;
-            for id in page.ids {
-                if !id.is_valid() || !seen.insert(id) {
-                    return Err(AdapterError::Extension(Error::MalformedInput));
-                }
-                if self.candidate_is_live(id)? {
-                    admitted.push(id);
-                }
-            }
-            cursor = page.next;
-            if admitted.len() >= target_candidates || cursor.is_none() {
-                break;
-            }
-        }
-        Ok((admitted, quality))
-    }
-
-    fn candidate_is_live(&self, id: crate::CandidateId) -> Result<bool, AdapterError<S::Error>> {
-        if self.overlay.as_deref().is_some_and(|overlay| {
-            overlay.tombstones().binary_search(&id).is_ok() && overlay.point(id).is_none()
-        }) {
-            return Ok(false);
-        }
-        if self
-            .overlay
-            .as_deref()
-            .and_then(|overlay| overlay.point(id))
-            .is_some()
+                limit: provider_limit,
+            })
+            .map_err(AdapterError::Provider)?;
+        if page.schema != SchemaVersion::CURRENT
+            || page.binding != self.base.binding()
+            || page.coverage != self.base.coverage()
+            || !matches!(page.coverage, backend_version::CoverageWitness::Complete(_))
+            || !quality_valid(page.quality, self.base.binding().recipe, self.base.model())
         {
-            return Ok(true);
+            return Err(AdapterError::Extension(
+                if page.schema != SchemaVersion::CURRENT {
+                    Error::SchemaDrift
+                } else if page.coverage != self.base.coverage()
+                    || !matches!(page.coverage, backend_version::CoverageWitness::Complete(_))
+                {
+                    Error::IncompleteCoverage
+                } else if page.binding != self.base.binding() {
+                    Error::StaleRoot
+                } else {
+                    Error::ApproximationMismatch
+                },
+            ));
         }
-        self.facts
-            .point(id)
-            .map(|point| point.is_some())
-            .map_err(AdapterError::Extension)
+        if page.ids.len() > provider_limit || page.ids.len() > limits.max_candidates {
+            return Err(AdapterError::Extension(Error::SizeLimit));
+        }
+        let expected_next = page.ids.len();
+        if let Some(next) = page.next
+            && (next.binding() != self.base.binding()
+                || next.offset() == 0
+                || next.offset() != expected_next
+                || next.offset() > limits.max_candidates)
+        {
+            return Err(AdapterError::Extension(Error::InvalidCursor));
+        }
+        Ok(page)
     }
 
     /// Searches immutable base, unions fresh exact points, filters tombstones,
@@ -292,7 +257,15 @@ impl<S: AnnSource> VectorIndex<S> {
         limit: usize,
         limits: Limits,
     ) -> Result<VectorSearchResult, AdapterError<S::Error>> {
-        let (mut ids, quality) = self.fetch_admitted_candidates(query, limit, limits)?;
+        let page = self.fetch_admitted_page(query, limit, limits)?;
+        let quality = combine_quality(
+            self.base.quality(),
+            page.quality,
+            self.base.binding().recipe,
+            self.base.model(),
+        )
+        .map_err(AdapterError::Extension)?;
+        let mut ids = page.ids;
         if ids.iter().any(|id| !id.is_valid()) {
             return Err(AdapterError::Extension(Error::MalformedInput));
         }
@@ -338,22 +311,6 @@ impl<S: AnnSource> VectorIndex<S> {
             quality,
         })
     }
-
-    /// Searches with a query-side embedding and checks its full recipe before provider I/O.
-    ///
-    /// # Errors
-    /// Returns an extension error on recipe mismatch or any error documented by [`Self::search`].
-    pub fn search_embedding(
-        &self,
-        query: &QueryVector,
-        limit: usize,
-        limits: Limits,
-    ) -> Result<VectorSearchResult, AdapterError<S::Error>> {
-        if query.recipe().version() != self.base.binding().recipe {
-            return Err(AdapterError::Extension(Error::ApproximationMismatch));
-        }
-        self.search(query.query(), limit, limits)
-    }
 }
 
 /// Typed refresh result for an existing provider index.
@@ -373,59 +330,15 @@ impl AnnSource for crate::MemorySource {
     fn fetch(&self, request: &VectorSearchRequest) -> Result<AnnPage, Self::Error> {
         let page = CandidateSource::fetch(
             self,
-            &crate::SearchRequest {
-                binding: request.binding.base,
-                cursor: request
-                    .cursor
-                    .map(|cursor| crate::Cursor::new(request.binding.base, cursor.offset())),
-                limit: request.limit,
-            },
+            &crate::SearchRequest::first(request.binding, request.limit),
         )?;
         Ok(AnnPage {
             schema: page.schema,
-            binding: request.binding,
+            binding: page.binding,
             ids: page.ids,
-            next: page
-                .next
-                .map(|cursor| super::provider::AnnCursor::new(request.binding, cursor.offset())),
+            next: page.next,
             coverage: page.coverage,
             quality: page.quality,
         })
     }
-}
-
-fn validate_page<E>(
-    page: &AnnPage,
-    request: &VectorSearchRequest,
-    base: &super::base::AnnBase,
-    limits: Limits,
-) -> Result<(), AdapterError<E>> {
-    if page.schema != SchemaVersion::CURRENT {
-        return Err(AdapterError::Extension(Error::SchemaDrift));
-    }
-    if page.binding != request.binding {
-        return Err(AdapterError::Extension(Error::StaleRoot));
-    }
-    if page.coverage != base.coverage() || !matches!(page.coverage, CoverageWitness::Complete(_)) {
-        return Err(AdapterError::Extension(Error::IncompleteCoverage));
-    }
-    if !quality_valid(page.quality, base.binding().recipe, base.model()) {
-        return Err(AdapterError::Extension(Error::ApproximationMismatch));
-    }
-    if page.ids.len() > request.limit || page.ids.len() > limits.max_candidates {
-        return Err(AdapterError::Extension(Error::SizeLimit));
-    }
-    let current = request.cursor.map_or(0, super::provider::AnnCursor::offset);
-    let expected = current
-        .checked_add(page.ids.len())
-        .ok_or(AdapterError::Extension(Error::SizeLimit))?;
-    if let Some(next) = page.next
-        && (next.binding() != request.binding
-            || next.offset() <= current
-            || next.offset() != expected
-            || next.offset() > limits.max_candidates)
-    {
-        return Err(AdapterError::Extension(Error::InvalidCursor));
-    }
-    Ok(())
 }

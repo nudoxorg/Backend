@@ -367,9 +367,8 @@ mod tests {
     };
     use backend_version::{
         AuthorityScopeClaim, AuthorizedCompleteCoverage, CoverageWitness, ObjectVersion,
-        ProducerObservationClaims, ProducerObservationVerifier, RelationState, ScopeRoot,
-        UntrustedProducerObservation, admit_complete_scope, admit_producer_observation,
-        partial_coverage,
+        ProducerObservationVerifier, RelationState, ScopeRoot, UntrustedProducerObservation,
+        admit_complete_scope, admit_producer_observation, partial_coverage,
     };
 
     #[derive(Debug)]
@@ -435,19 +434,9 @@ mod tests {
     impl ProducerObservationVerifier for ExactProducerObservation {
         type Error = &'static str;
 
-        fn verify(
-            &self,
-            observation: &UntrustedProducerObservation,
-        ) -> Result<ProducerObservationClaims, Self::Error> {
+        fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
             (observation == &self.0)
-                .then(|| {
-                    ProducerObservationClaims::new(
-                        self.0.producer_identity(),
-                        self.0.scope_root(),
-                        self.0.context(),
-                        *blake3::hash(self.0.evidence()).as_bytes(),
-                    )
-                })
+                .then_some(())
                 .ok_or("test producer observation mismatch")
         }
     }

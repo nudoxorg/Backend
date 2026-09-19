@@ -48,6 +48,11 @@ pub use incremental::{
     VectorIndex, VectorPoint, VectorQuery, VectorQueryBinding, VectorSearchRequest,
     VectorSearchResult,
 };
+pub use incremental::{
+    AnnBase, AnnPage, AnnSource, ExactOverlay, Metric, OverlayLimits, RefreshKind, RefreshOutcome,
+    RefreshPlan, ScoredCandidate, VectorFacts, VectorIndex, VectorPoint, VectorQuery,
+    VectorSearchRequest, VectorSearchResult,
+};
 pub use provider::{Adapter, MemorySource};
 
 #[cfg(test)]

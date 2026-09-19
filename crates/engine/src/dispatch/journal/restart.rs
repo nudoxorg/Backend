@@ -6,7 +6,7 @@ use super::error::{
 use super::journal::DispatchJournal;
 use super::model::{
     AuthoritySnapshot, DispatchRecoveryAction, DispatchRestartAuthority, DispatchRestartDecision,
-    PublicationRecoveryMode, RecoveredAttempt,
+    RecoveredAttempt,
 };
 use super::record::{
     DispatchAttemptKey, DispatchPhase, DispatchRecordError, NotificationCursor, TerminalState,
@@ -107,11 +107,6 @@ impl DispatchJournal {
                 return Ok(None);
             };
             return Ok(Some(DispatchRecoveryAction::PublishAccepted {
-                mode: if attempt.phase == DispatchPhase::PublicationPending {
-                    PublicationRecoveryMode::Reconcile
-                } else {
-                    PublicationRecoveryMode::Start
-                },
                 attempt,
                 proof,
             }));

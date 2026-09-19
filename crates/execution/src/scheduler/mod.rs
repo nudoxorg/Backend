@@ -10,7 +10,7 @@ mod request;
 mod route;
 
 pub use deadline::{DeadlineQueue, DeadlineQueueError};
-pub use engine::{RuntimeSnapshot, Scheduler};
+pub use engine::Scheduler;
 pub use guard::Scheduled;
 pub use outcome::{ScheduleError, ScheduleOutcome, ScheduleReceipt};
 pub use request::ScheduleRequest;

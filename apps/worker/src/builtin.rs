@@ -12,13 +12,13 @@ use crate::service::{JobAdmission, JobCancellation, WorkerJob, WorkerJobBindings
 use backend_engine::{
     AdmittedAuthority, AuthorityEpoch, AuthorityExpectation, AuthorityVersion,
     CompleteSemanticCoverage, CoverageWitness, DependencyManifest, ExecutionRequestExpectation,
-    ExecutionScopeId, ExpectedIdentity, IdContext, ImmutableObjectSchema, ObjectKey,
-    ObjectSummaryExpectation, ObjectVersion, OutputEquivalence, PureRecipeExecutor, ReadManifestId,
-    RecipeId, Relation, RelationState, RevocationVersion, RootSummaryExpectation,
-    SemanticCoverageAdmissionError, SemanticCoverageBinding, SemanticCoverageValidator,
-    SparseCoverage, TransportLimits, TransportMessage, UntrustedSemanticCoverageClaim,
-    WireAuthority, WireAuthorityPolicy, WireIdentity, WireRecipeRequest, WorkerCapabilities,
-    WorkerError, schema_object_key_identity_claim, schema_object_version_identity_claim,
+    ExpectedIdentity, IdContext, ImmutableObjectSchema, ObjectKey, ObjectSummaryExpectation,
+    ObjectVersion, OutputEquivalence, PureRecipeExecutor, ReadManifestId, RecipeId, Relation,
+    RelationState, RevocationVersion, RootSummaryExpectation, SemanticCoverageAdmissionError,
+    SemanticCoverageBinding, SemanticCoverageValidator, SparseCoverage, TransportLimits,
+    TransportMessage, UntrustedSemanticCoverageClaim, WireAuthority, WireAuthorityPolicy,
+    WireIdentity, WireRecipeRequest, WorkerCapabilities, WorkerError,
+    schema_object_key_identity_claim, schema_object_version_identity_claim,
 };
 use std::process::ExitCode;
 
@@ -35,12 +35,11 @@ fn address_hint(config: &WorkerProcessConfig) -> String {
 
 #[path = "builtin/profile.rs"]
 mod profile;
-pub(super) use backend_engine::builtin::ProductSemanticPublicationRelation as ProductRelation;
+pub(super) use backend_engine::builtin::ProductSourceRelation as ProductRelation;
 use profile::{
     BuiltinExecutor, BuiltinInputSchema, BuiltinProfile, BuiltinSemanticAuthority,
-    ProductInputLoader, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
-    execution_manifest, execution_resources, product_dependency_manifest, profile_descriptor,
-    profile_ids,
+    ProductInputLoader, ProductSourceRecord, execution_manifest, execution_resources,
+    product_dependency_manifest, profile_descriptor, profile_ids,
 };
 
 #[path = "builtin/admission.rs"]
@@ -48,11 +47,8 @@ mod admission;
 mod page_proof;
 use admission::BuiltinAdmission;
 
-fn semantic_publication_row_bytes(
-    key: &ProductSemanticPublicationKey,
-    value: &ProductSemanticPublicationRecord,
-) -> Vec<u8> {
-    let mut key_bytes = Vec::new();
+fn product_source_row_bytes(key: &[u8; 32], value: &ProductSourceRecord) -> Vec<u8> {
+    let mut key_bytes = Vec::with_capacity(32);
     ProductRelation::encode_key(key, &mut key_bytes);
     let mut value_bytes = Vec::new();
     ProductRelation::encode_value(value, &mut value_bytes);
@@ -154,7 +150,7 @@ fn builtin_workspace_root(
     relation: &RelationState<ProductRelation>,
     authority: AuthorityVersion,
 ) -> Result<backend_engine::WorkspaceRoot, WorkerProcessError> {
-    backend_engine::builtin::semantic_execution_input_basis(relation, authority)
+    backend_engine::builtin::execution_input_basis(relation, authority)
         .map_err(WorkerProcessError::Profile)
 }
 
@@ -162,6 +158,35 @@ fn relation_state(
     expanded: bool,
     authority: AuthorityVersion,
 ) -> Result<RelationState<ProductRelation>, WorkerError> {
-    backend_engine::semantic_publication_fixture_with_authority(expanded, authority)
-        .map_err(|_| WorkerError::Capability)
+    let expected =
+        AuthorityExpectation::from_typed(&authority, AuthorityEpoch(1), RevocationVersion(1));
+    let admitted = expected
+        .admit_capability(
+            WireAuthority::from_typed(&authority, AuthorityEpoch(1)),
+            RevocationVersion(1),
+        )
+        .map_err(|_| WorkerError::Capability)?;
+    let coverage = complete_coverage(authority, admitted)?;
+    let builtin =
+        ProductSourceRecord::new("backend-builtin").map_err(|_| WorkerError::Capability)?;
+    let entries = if expanded {
+        let extra =
+            ProductSourceRecord::new("backend-extra").map_err(|_| WorkerError::Capability)?;
+        vec![
+            (
+                backend_engine::package_key("backend-builtin").to_bytes(),
+                builtin,
+            ),
+            (
+                backend_engine::package_key("backend-extra").to_bytes(),
+                extra,
+            ),
+        ]
+    } else {
+        vec![(
+            backend_engine::package_key("backend-builtin").to_bytes(),
+            builtin,
+        )]
+    };
+    RelationState::from_entries(entries, coverage).map_err(|_| WorkerError::Capability)
 }

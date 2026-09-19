@@ -12,7 +12,4 @@ mod score;
 
 pub use base::AnnBase;
 pub use index::{RefreshOutcome, VectorIndex};
-pub use provider::{
-    AnnCursor, AnnPage, AnnSource, ScoredCandidate, VectorQueryBinding, VectorSearchRequest,
-    VectorSearchResult,
-};
+pub use provider::{AnnPage, AnnSource, ScoredCandidate, VectorSearchRequest, VectorSearchResult};

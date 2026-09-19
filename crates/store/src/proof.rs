@@ -63,62 +63,7 @@ pub struct RangeProof {
     pub end_proof: Option<KeyProof>,
 }
 
-macro_rules! verified_proof {
-    ($name:ident, $raw:ty) => {
-        #[derive(Clone, Debug, Eq, PartialEq)]
-        /// Proof bytes admitted against one exact canonical root.
-        pub struct $name {
-            proof: $raw,
-            root: StateRoot<RawRelation>,
-        }
-
-        impl $name {
-            /// Returns the root against which this proof was admitted.
-            #[must_use]
-            pub const fn root(&self) -> StateRoot<RawRelation> {
-                self.root
-            }
-
-            /// Borrows the authenticated observation.
-            #[must_use]
-            pub const fn proof(&self) -> &$raw {
-                &self.proof
-            }
-
-            /// Deliberately drops verified state for wire transport or mutation.
-            #[must_use]
-            pub fn into_observed(self) -> $raw {
-                self.proof
-            }
-        }
-    };
-}
-
-verified_proof!(VerifiedProof, Proof);
-verified_proof!(VerifiedKeyProof, KeyProof);
-verified_proof!(VerifiedRangeProof, RangeProof);
-
 impl Proof {
-    /// Consumes this untrusted observation and admits it against an exact root.
-    ///
-    /// On failure the unchanged observation is returned, so rejected wire
-    /// evidence cannot accidentally retain the verified type.
-    ///
-    /// # Errors
-    ///
-    /// Returns the unchanged observed proof when authentication fails.
-    #[allow(
-        clippy::result_large_err,
-        reason = "rejection deliberately returns the caller's complete proof without allocation"
-    )]
-    pub fn admit_root(self, root: StateRoot<RawRelation>) -> Result<VerifiedProof, Self> {
-        if self.verify_root(root) {
-            Ok(VerifiedProof { proof: self, root })
-        } else {
-            Err(self)
-        }
-    }
-
     /// Checks the observation against an in-memory map.
     #[must_use]
     pub fn verify(&self, map: &OrderedMap) -> bool {
@@ -141,24 +86,6 @@ impl Proof {
 }
 
 impl KeyProof {
-    /// Consumes this membership/nonmembership observation and admits it
-    /// against an exact canonical root.
-    ///
-    /// # Errors
-    ///
-    /// Returns the unchanged observed proof when authentication fails.
-    #[allow(
-        clippy::result_large_err,
-        reason = "rejection deliberately returns the caller's complete proof without allocation"
-    )]
-    pub fn admit_root(self, root: StateRoot<RawRelation>) -> Result<VerifiedKeyProof, Self> {
-        if self.verify_root(root) {
-            Ok(VerifiedKeyProof { proof: self, root })
-        } else {
-            Err(self)
-        }
-    }
-
     /// Returns whether this proof contains a value for its key.
     #[must_use]
     pub const fn is_membership(&self) -> bool {
@@ -194,24 +121,6 @@ impl KeyProof {
 }
 
 impl RangeProof {
-    /// Consumes this bounded-range observation and admits it against an exact
-    /// canonical root.
-    ///
-    /// # Errors
-    ///
-    /// Returns the unchanged observed proof when authentication fails.
-    #[allow(
-        clippy::result_large_err,
-        reason = "rejection deliberately returns the caller's complete proof without allocation"
-    )]
-    pub fn admit_root(self, root: StateRoot<RawRelation>) -> Result<VerifiedRangeProof, Self> {
-        if self.verify_root(root) {
-            Ok(VerifiedRangeProof { proof: self, root })
-        } else {
-            Err(self)
-        }
-    }
-
     /// Checks all returned entries and their authenticated leaves.
     #[must_use]
     pub fn verify_root(&self, root: StateRoot<RawRelation>) -> bool {

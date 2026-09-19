@@ -3,67 +3,14 @@
 use super::Library;
 use crate::arrangement::ArrangementPage;
 use crate::{
-    Cursor, Document, DocumentQuery, Freshness, Frontier, GraphNeighborhoodQuery, LibraryError,
-    NameQuery, Outline, OutlineExtent, OutlineNode, OutlineQuery, PackageKey, PageRequest,
-    PageTerminal, ProjectionPage, Query, QueryLimit, RankedSearchSnapshot, ReadManifest, Row,
-    RowId, SymbolKey, ViewRecipeId, ViewRevision, ViewRoot, ViewSnapshot, ViewStateRoot,
+    Cursor, Document, DocumentQuery, Freshness, Frontier, GraphQuery, LibraryError, NameQuery,
+    Outline, OutlineNode, OutlineQuery, PackageKey, Query, QueryLimit, ReadManifest, Row, RowId,
+    SymbolKey, ViewRecipeId, ViewRevision, ViewRoot, ViewSnapshot, ViewStateRoot,
     view_identity_bytes,
 };
 use std::collections::BTreeSet;
 
 impl Library {
-    /// Reads one root/query-bound package page.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::WrongBasis`] for a stale revision,
-    /// [`LibraryError::CursorMismatch`] for a foreign continuation, or
-    /// [`LibraryError::View`] when the bounded snapshot cannot be built.
-    pub fn packages_page(&self, page: PageRequest) -> Result<ProjectionPage, LibraryError> {
-        self.check_basis(page.basis())?;
-        let recipe_bytes = b"packages-page";
-        let recipe = self.query_recipe(recipe_bytes, None);
-        let limit = usize::from(page.limit().get());
-        let cursor = page.continuation().map(crate::PageContinuation::cursor);
-        let start = self.check_query_cursor(cursor, recipe, limit, |offset| {
-            self.arrangement.packages_page_from(offset, limit)
-        })?;
-        let result = self.arrangement.packages_page_from(start, limit);
-        self.projection_page(recipe_bytes, &result, start, limit)
-    }
-
-    /// Reads package outline membership as one bounded flat row page.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::WrongBasis`] for a stale revision,
-    /// [`LibraryError::NotFound`] for an unknown package,
-    /// [`LibraryError::CursorMismatch`] for a foreign continuation, or
-    /// [`LibraryError::View`] when the bounded snapshot cannot be built.
-    pub fn outline_page(
-        &self,
-        package: PackageKey,
-        page: PageRequest,
-    ) -> Result<ProjectionPage, LibraryError> {
-        self.check_basis(page.basis())?;
-        if !self.arrangement.has_package(package) {
-            return Err(LibraryError::NotFound);
-        }
-        let mut recipe_bytes = b"outline-page".to_vec();
-        recipe_bytes.extend_from_slice(package.as_bytes());
-        let recipe = self.query_recipe(&recipe_bytes, None);
-        let limit = usize::from(page.limit().get());
-        let cursor = page.continuation().map(crate::PageContinuation::cursor);
-        let start = self.check_query_cursor(cursor, recipe, limit, |offset| {
-            self.arrangement
-                .package_symbols_page_from(package, offset, limit)
-        })?;
-        let result = self
-            .arrangement
-            .package_symbols_page_from(package, start, limit);
-        self.projection_page(&recipe_bytes, &result, start, limit)
-    }
-
     /// Looks up one document under an exact source basis.
     ///
     /// # Errors
@@ -81,20 +28,15 @@ impl Library {
                 observed: source.root.into(),
             });
         }
-        let symbol = query
-            .resolve_symbol(&self.view)
-            .ok_or(LibraryError::NotFound)?;
         self.work.record_seek();
         let row = self
             .arrangement
-            .document(symbol)
-            .then(|| self.view.row(RowId::Symbol(symbol)))
+            .document(query.symbol)
+            .then(|| self.view.row(RowId::Symbol(query.symbol)))
             .flatten()
             .ok_or(LibraryError::NotFound)?;
-        let mut document = Document::new(symbol, basis, row.document.clone())
-            .with_source_basis(self.revision_basis())
-            .with_location(row.source.clone())
-            .with_excerpt(row.excerpt.clone());
+        let mut document = Document::new(query.symbol, basis, row.document.clone())
+            .with_source_basis(self.revision_basis());
         document.signature.clone_from(&row.signature);
         Ok(document)
     }
@@ -111,21 +53,12 @@ impl Library {
         self.work.record_seek();
         let limit = usize::from(query.limit.get());
         let start = self.check_query_cursor(query.cursor, recipe, limit, |offset| {
-            self.arrangement.names_page(
-                query.text(),
-                offset,
-                limit,
-                |id| self.view.row(id),
-                &self.work,
-            )
+            self.arrangement
+                .names_page(query.text(), offset, limit, |id| self.view.row(id))
         })?;
-        let page = self.arrangement.names_page(
-            query.text(),
-            start,
-            limit,
-            |id| self.view.row(id),
-            &self.work,
-        );
+        let page = self
+            .arrangement
+            .names_page(query.text(), start, limit, |id| self.view.row(id));
         if query.cursor.is_some() && page.ids.is_empty() {
             return Err(LibraryError::CursorMismatch);
         }
@@ -169,11 +102,9 @@ impl Library {
         if !self.arrangement.has_package(query.package) {
             return Err(LibraryError::NotFound);
         }
-        let symbol_page = self
+        let mut symbols = self
             .arrangement
-            .package_symbols_page(query.package, usize::from(QueryLimit::MAX));
-        let mut truncated = symbol_page.has_more;
-        let mut symbols = symbol_page
+            .package_symbols_page(query.package, usize::from(QueryLimit::MAX))
             .ids
             .iter()
             .filter_map(|&id| self.row_for_id(id))
@@ -201,48 +132,26 @@ impl Library {
         if symbols.is_empty() {
             return Err(LibraryError::NotFound);
         }
-        let mut roots = symbols
+        let root_index = symbols
             .iter()
-            .copied()
-            .filter(|symbol| {
+            .position(|symbol| {
                 self.row_for_id(RowId::Symbol(*symbol))
                     .is_some_and(|row| row.parent.is_none())
             })
-            .collect::<Vec<_>>();
-        if roots.is_empty() {
-            roots.push(symbols[0]);
-        }
-        let mut budget = usize::from(QueryLimit::MAX);
-        let mut nodes = Vec::new();
-        for symbol in roots {
-            if budget == 0 {
-                truncated = true;
-                break;
-            }
-            budget = budget.saturating_sub(1);
-            let mut path = BTreeSet::new();
-            path.insert(symbol);
-            nodes.push(OutlineNode {
+            .unwrap_or(0);
+        let symbol = symbols.remove(root_index);
+        let mut budget = usize::from(QueryLimit::MAX).saturating_sub(1);
+        let mut path = BTreeSet::new();
+        path.insert(symbol);
+        Ok(Outline::new(
+            query.package,
+            basis,
+            OutlineNode {
                 symbol,
-                children: self.outline_children(
-                    query.package,
-                    symbol,
-                    &mut budget,
-                    0,
-                    &mut path,
-                    &mut truncated,
-                ),
-            });
-        }
-        let root = nodes.remove(0);
-        Ok(Outline::new(query.package, basis, root)
-            .with_additional_roots(nodes)
-            .with_extent(if truncated {
-                OutlineExtent::Truncated
-            } else {
-                OutlineExtent::Complete
-            })
-            .with_source_basis(self.revision_basis()))
+                children: self.outline_children(query.package, symbol, &mut budget, 0, &mut path),
+            },
+        )
+        .with_source_basis(self.revision_basis()))
     }
 
     fn outline_children(
@@ -252,7 +161,6 @@ impl Library {
         budget: &mut usize,
         depth: usize,
         path: &mut BTreeSet<SymbolKey>,
-        truncated: &mut bool,
     ) -> Box<[OutlineNode]> {
         // Outline replies have no independent continuation shape, so enforce
         // a hard node/depth budget at the arrangement boundary. A malformed
@@ -260,13 +168,11 @@ impl Library {
         // unbounded recursion or a whole-view scan.
         const MAX_DEPTH: usize = 64;
         if *budget == 0 || depth >= MAX_DEPTH {
-            *truncated = true;
             return Box::new([]);
         }
         let page = self
             .arrangement
             .children_page(package, Some(parent), *budget);
-        *truncated |= page.has_more;
         let mut children = Vec::with_capacity(page.ids.len());
         for id in page.ids {
             if *budget == 0 {
@@ -283,7 +189,7 @@ impl Library {
                 continue;
             }
             *budget = (*budget).saturating_sub(1);
-            let nested = self.outline_children(package, symbol, budget, depth + 1, path, truncated);
+            let nested = self.outline_children(package, symbol, budget, depth + 1, path);
             path.remove(&symbol);
             children.push(OutlineNode {
                 symbol,
@@ -301,17 +207,6 @@ impl Library {
     /// [`LibraryError::InvalidQuery`] for empty search text, or
     /// [`LibraryError::View`] when the bounded snapshot cannot be constructed.
     pub fn search(&self, query: &Query) -> Result<ViewSnapshot, LibraryError> {
-        self.search_ranked(query)
-            .map(RankedSearchSnapshot::into_snapshot)
-    }
-
-    /// Searches while retaining relevance order separately from canonical
-    /// view-relation order.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same bounded query failures as the compatibility search.
-    pub fn search_ranked(&self, query: &Query) -> Result<RankedSearchSnapshot, LibraryError> {
         self.check_basis(query.basis)?;
         if query.text.trim().is_empty() {
             return Err(LibraryError::InvalidQuery(
@@ -322,21 +217,12 @@ impl Library {
         self.work.record_seek();
         let limit = usize::from(query.limit.get());
         let start = self.check_query_cursor(query.cursor, recipe, limit, |offset| {
-            self.arrangement.search_page(
-                query.text(),
-                offset,
-                limit,
-                |id| self.view.row(id),
-                &self.work,
-            )
+            self.arrangement
+                .search_page(query.text(), offset, limit, |id| self.view.row(id))
         })?;
-        let page = self.arrangement.search_page(
-            query.text(),
-            start,
-            limit,
-            |id| self.view.row(id),
-            &self.work,
-        );
+        let page = self
+            .arrangement
+            .search_page(query.text(), start, limit, |id| self.view.row(id));
         if query.cursor.is_some() && page.ids.is_empty() {
             return Err(LibraryError::CursorMismatch);
         }
@@ -346,7 +232,7 @@ impl Library {
             .filter_map(|&id| self.view.row(id))
             .collect::<Vec<_>>();
         self.work.record_output(rows.len());
-        let snapshot = self.snapshot_for(
+        self.snapshot_for(
             query.text.as_bytes(),
             rows,
             if page.has_more {
@@ -356,77 +242,6 @@ impl Library {
             },
             query.read_manifest.as_ref(),
             Some(start.saturating_add(limit)),
-        )?;
-        Ok(RankedSearchSnapshot {
-            snapshot,
-            order: page.ids.into_boxed_slice(),
-        })
-    }
-
-    /// Builds a search page from an owner-selected complete relevance order.
-    ///
-    /// This is the application-service seam for replaceable local search
-    /// engines. Every identity is resolved from this library's immutable view;
-    /// callers can choose relevance order but cannot inject row payloads or
-    /// escape the request's root, recipe, page, or continuation bounds.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::WrongBasis`] for a stale query,
-    /// [`LibraryError::InvalidQuery`] for invalid text or foreign/duplicate
-    /// identities, and [`LibraryError::CursorMismatch`] for an invalid page.
-    pub fn search_from_ranked_ids(
-        &self,
-        query: &Query,
-        ranked_ids: &[RowId],
-    ) -> Result<ViewSnapshot, LibraryError> {
-        self.check_basis(query.basis)?;
-        if query.text.trim().is_empty() {
-            return Err(LibraryError::InvalidQuery(
-                "search text is empty".to_owned(),
-            ));
-        }
-        let mut unique = BTreeSet::new();
-        if ranked_ids.len() > usize::try_from(self.view.row_count()).unwrap_or(usize::MAX)
-            || ranked_ids
-                .iter()
-                .any(|id| !unique.insert(*id) || self.view.row(*id).is_none())
-        {
-            return Err(LibraryError::InvalidQuery(
-                "ranked search identities are not a subset of the selected view".to_owned(),
-            ));
-        }
-        let recipe = self.query_recipe(query.text.as_bytes(), query.read_manifest.as_ref());
-        let limit = usize::from(query.limit.get());
-        let ranked_page = |start: usize| {
-            let mut ids = ranked_ids
-                .iter()
-                .copied()
-                .skip(start)
-                .take(limit.saturating_add(1))
-                .collect::<Vec<_>>();
-            let has_more = ids.len() > limit;
-            ids.truncate(limit);
-            ArrangementPage { ids, has_more }
-        };
-        let start = self.check_query_cursor(query.cursor, recipe, limit, ranked_page)?;
-        let page = ranked_page(start);
-        if query.cursor.is_some() && page.ids.is_empty() {
-            return Err(LibraryError::CursorMismatch);
-        }
-        let rows = page
-            .ids
-            .iter()
-            .filter_map(|&id| self.view.row(id))
-            .collect::<Vec<_>>();
-        self.work.record_seek();
-        self.work.record_output(rows.len());
-        self.snapshot_for(
-            query.text.as_bytes(),
-            rows,
-            page.has_more.then_some(self.cursor),
-            query.read_manifest.as_ref(),
-            page.has_more.then_some(start.saturating_add(limit)),
         )
     }
 
@@ -441,11 +256,9 @@ impl Library {
     /// Returns [`LibraryError::NotFound`] when the declaration is not in the
     /// accepted view, or [`LibraryError::View`] if the bounded snapshot cannot
     /// be constructed.
-    pub fn graph(&self, query: GraphNeighborhoodQuery) -> Result<ViewSnapshot, LibraryError> {
+    pub fn graph(&self, query: GraphQuery) -> Result<ViewSnapshot, LibraryError> {
         self.check_basis(query.basis())?;
-        let symbol = query
-            .resolve_symbol(&self.view)
-            .ok_or(LibraryError::NotFound)?;
+        let symbol = query.symbol();
         self.work.record_seek();
         let root_id = RowId::Symbol(symbol);
         let root = self.view.row(root_id).ok_or(LibraryError::NotFound)?;
@@ -472,152 +285,6 @@ impl Library {
             .collect::<Vec<_>>();
         self.work.record_output(rows.len());
         self.snapshot_for(b"graph", rows, None, None, None)
-    }
-
-    /// Builds a graph snapshot from compiler-proven semantic neighbor identities.
-    ///
-    /// The application owner may select graph edges from a richer authority such as a reopened
-    /// compiler image. This method keeps row payload authority here: every supplied identity must
-    /// be a member of this exact immutable view, the requested source must be present, and the
-    /// fixed graph result bound is checked before any result root is built.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError`] when the query basis differs, the source or a target is absent,
-    /// identities repeat, or the fixed result bound is exceeded.
-    pub fn graph_from_semantic_ids(
-        &self,
-        query: GraphNeighborhoodQuery,
-        ids: &[RowId],
-    ) -> Result<ViewSnapshot, LibraryError> {
-        self.check_basis(query.basis())?;
-        let source = RowId::Symbol(
-            query
-                .resolve_symbol(&self.view)
-                .ok_or(LibraryError::NotFound)?,
-        );
-        if ids.len() > 1 + usize::from(QueryLimit::MAX) || !ids.contains(&source) {
-            return Err(LibraryError::InvalidQuery(
-                "semantic graph identities violate the bounded source contract".to_owned(),
-            ));
-        }
-        let mut unique = BTreeSet::new();
-        let rows = ids
-            .iter()
-            .copied()
-            .map(|id| {
-                if !unique.insert(id) {
-                    return Err(LibraryError::InvalidQuery(
-                        "semantic graph contains a duplicate identity".to_owned(),
-                    ));
-                }
-                self.view.row(id).ok_or_else(|| {
-                    LibraryError::InvalidQuery(
-                        "semantic graph identity is absent from the selected view".to_owned(),
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.work.record_seek();
-        self.work.record_output(rows.len());
-        // The query recipe identifies the public graph operation. Whether its
-        // neighbors came from compiler links or the structural fallback is a
-        // coverage/evidence fact, not a second client-visible query identity.
-        self.snapshot_for(b"graph", rows, None, None, None)
-    }
-
-    /// Reads one bounded graph-neighborhood page.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::WrongBasis`] for a stale revision,
-    /// [`LibraryError::NotFound`] for an unknown symbol,
-    /// [`LibraryError::CursorMismatch`] for a foreign continuation, or
-    /// [`LibraryError::View`] when the bounded snapshot cannot be built.
-    pub fn graph_page(
-        &self,
-        symbol: SymbolKey,
-        page: PageRequest,
-    ) -> Result<ProjectionPage, LibraryError> {
-        self.check_basis(page.basis())?;
-        let root = self
-            .view
-            .row(RowId::Symbol(symbol))
-            .ok_or(LibraryError::NotFound)?;
-        let mut recipe_bytes = b"graph-page".to_vec();
-        recipe_bytes.extend_from_slice(symbol.as_bytes());
-        let recipe = self.query_recipe(&recipe_bytes, None);
-        let limit = usize::from(page.limit().get());
-        let cursor = page.continuation().map(crate::PageContinuation::cursor);
-        let start = self.check_query_cursor(cursor, recipe, limit, |offset| {
-            self.graph_page_ids(&root, symbol, offset, limit)
-        })?;
-        let result = self.graph_page_ids(&root, symbol, start, limit);
-        self.projection_page(&recipe_bytes, &result, start, limit)
-    }
-
-    fn graph_page_ids(
-        &self,
-        root: &Row,
-        symbol: SymbolKey,
-        start: usize,
-        limit: usize,
-    ) -> ArrangementPage {
-        let mut prefix = vec![RowId::Symbol(symbol)];
-        if let Some(parent) = root.parent {
-            let id = RowId::Symbol(parent);
-            if self.view.row(id).is_some() {
-                prefix.push(id);
-            }
-        }
-        prefix.sort_unstable();
-        prefix.dedup();
-        let prefix_len = prefix.len();
-        let mut ids = prefix
-            .into_iter()
-            .skip(start)
-            .take(limit.saturating_add(1))
-            .collect::<Vec<_>>();
-        let mut children_have_more = false;
-        if ids.len() <= limit
-            && let Some(package) = root.package
-        {
-            let child_start = start.saturating_sub(prefix_len);
-            let remaining = limit.saturating_add(1).saturating_sub(ids.len());
-            let children =
-                self.arrangement
-                    .children_page_from(package, Some(symbol), child_start, remaining);
-            children_have_more = children.has_more;
-            ids.extend(children.ids);
-        }
-        let has_more = children_have_more || ids.len() > limit;
-        ids.truncate(limit);
-        ArrangementPage { ids, has_more }
-    }
-
-    fn projection_page(
-        &self,
-        recipe: &[u8],
-        page: &ArrangementPage,
-        start: usize,
-        limit: usize,
-    ) -> Result<ProjectionPage, LibraryError> {
-        let rows = page
-            .ids
-            .iter()
-            .filter_map(|&id| self.view.row(id))
-            .collect::<Vec<_>>();
-        let snapshot = self.snapshot_for(
-            recipe,
-            rows,
-            page.has_more.then_some(self.cursor),
-            None,
-            page.has_more.then_some(start.saturating_add(limit)),
-        )?;
-        let terminal = snapshot.next.map_or(PageTerminal::Complete, |cursor| {
-            PageTerminal::More(crate::PageContinuation::from_cursor(cursor))
-        });
-        Ok(ProjectionPage { snapshot, terminal })
     }
 }
 

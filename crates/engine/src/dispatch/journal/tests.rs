@@ -35,11 +35,6 @@ fn owner_authority(epoch: u64, revocation: u64, cursor: u64) -> OwnerRestartAuth
     OwnerRestartAuthority::mint([2; 32], epoch, [3; 32], revocation, cursor)
 }
 
-fn store_receipt() -> StorePublicationReceipt {
-    StorePublicationReceipt::from_parts([7; 32], 11, [8; 32], [8; 32])
-        .unwrap_or_else(|error| panic!("{error}"))
-}
-
 #[test]
 fn every_record_has_a_round_trip_and_strict_version_tag() {
     let key = DispatchAttemptKey::new([1; 32], 1).unwrap_or_else(|error| panic!("{error}"));
@@ -64,7 +59,7 @@ fn every_record_has_a_round_trip_and_strict_version_tag() {
             key,
             ack: PublicationAck {
                 output_root: [6; 32],
-                store: store_receipt(),
+                publication_root: [8; 32],
                 owner_epoch: 7,
                 notification_cursor: 3,
             },
@@ -73,7 +68,7 @@ fn every_record_has_a_round_trip_and_strict_version_tag() {
             key,
             ack: PublicationAck {
                 output_root: [6; 32],
-                store: store_receipt(),
+                publication_root: [8; 32],
                 owner_epoch: 7,
                 notification_cursor: 3,
             },
@@ -108,7 +103,7 @@ fn every_record_has_a_round_trip_and_strict_version_tag() {
         let decoded =
             DispatchLog::decode(&bytes).unwrap_or_else(|error| panic!("decode failed: {error}"));
         assert_eq!(decoded, expected);
-        bytes[0] = DISPATCH_RECORD_VERSION.saturating_add(1);
+        bytes[0] = 2;
         assert!(matches!(
             DispatchLog::decode(&bytes),
             Err(JournalError::Record(_))
@@ -152,7 +147,7 @@ fn full_lifecycle_reopens_from_one_streaming_fold() {
             key,
             PublicationAck {
                 output_root: [6; 32],
-                store: store_receipt(),
+                publication_root: [8; 32],
                 owner_epoch: 7,
                 notification_cursor: 5,
             },
@@ -223,8 +218,7 @@ fn accepted_proof_survives_crash_after_synced_append() {
         .unwrap_or_else(|error| panic!("{error}"));
     assert!(matches!(
         actions.as_slice(),
-        [DispatchRecoveryAction::PublishAccepted { proof: found, mode: PublicationRecoveryMode::Start, .. }]
-            if found == &proof
+        [DispatchRecoveryAction::PublishAccepted { proof: found, .. }] if found == &proof
     ));
     let _ = std::fs::remove_file(path);
 }
@@ -251,76 +245,9 @@ fn publication_pending_restarts_as_a_proof_publication() {
         .unwrap_or_else(|error| panic!("{error}"));
     assert!(matches!(
         actions.as_slice(),
-        [DispatchRecoveryAction::PublishAccepted { proof: found, mode: PublicationRecoveryMode::Reconcile, .. }]
-            if found == &proof
+        [DispatchRecoveryAction::PublishAccepted { proof: found, .. }] if found == &proof
     ));
     let _ = std::fs::remove_file(log_path);
-}
-
-#[test]
-fn every_torn_publication_ack_suffix_recovers_as_reconciliation() {
-    let path = journal_path();
-    let (key, admitted) = intent(&path);
-    let (journal, _) = DispatchJournal::open(&path, DispatchJournalLimits::default())
-        .unwrap_or_else(|error| panic!("{error}"));
-    journal
-        .admit(admitted)
-        .unwrap_or_else(|error| panic!("{error}"));
-    let proof = AcceptedResultProof::new([6; 32], Box::<[u8]>::from([1, 2]), 4)
-        .unwrap_or_else(|error| panic!("{error}"));
-    journal
-        .accept_result(key, proof.clone())
-        .unwrap_or_else(|error| panic!("{error}"));
-    journal
-        .begin_publication(key)
-        .unwrap_or_else(|error| panic!("{error}"));
-    let durable_prefix = usize::try_from(
-        std::fs::metadata(&path)
-            .unwrap_or_else(|error| panic!("{error}"))
-            .len(),
-    )
-    .unwrap_or_else(|error| panic!("journal length does not fit usize: {error}"));
-    journal
-        .acknowledge_publication(
-            key,
-            PublicationAck {
-                output_root: [6; 32],
-                store: store_receipt(),
-                owner_epoch: 7,
-                notification_cursor: 0,
-            },
-        )
-        .unwrap_or_else(|error| panic!("{error}"));
-    drop(journal);
-    let complete = std::fs::read(&path).unwrap_or_else(|error| panic!("{error}"));
-
-    for cut in durable_prefix + 1..complete.len() {
-        std::fs::write(&path, &complete[..cut]).unwrap_or_else(|error| panic!("{error}"));
-        let (reopened, recovery) = DispatchJournal::open(&path, DispatchJournalLimits::default())
-            .unwrap_or_else(|error| panic!("cut {cut}: {error}"));
-        assert!(recovery.truncated_tail, "cut {cut}");
-        let actions = reopened
-            .restart(10, &owner_authority(7, 11, 0))
-            .unwrap_or_else(|error| panic!("cut {cut}: {error}"));
-        assert!(matches!(
-            actions.as_slice(),
-            [DispatchRecoveryAction::PublishAccepted {
-                mode: PublicationRecoveryMode::Reconcile,
-                proof: found,
-                ..
-            }] if found == &proof
-        ));
-        drop(reopened);
-    }
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
-fn store_publication_receipt_rejects_cross_root_composition() {
-    assert!(matches!(
-        StorePublicationReceipt::from_parts([7; 32], 11, [8; 32], [9; 32]),
-        Err(DispatchRecordError::InvalidIdentifier)
-    ));
 }
 
 #[test]
@@ -596,7 +523,7 @@ fn publication_cannot_precede_or_change_accepted_proof() {
             key,
             PublicationAck {
                 output_root: [6; 32],
-                store: store_receipt(),
+                publication_root: [8; 32],
                 owner_epoch: 7,
                 notification_cursor: 0,
             },
@@ -616,7 +543,7 @@ fn publication_cannot_precede_or_change_accepted_proof() {
             key,
             PublicationAck {
                 output_root: [7; 32],
-                store: store_receipt(),
+                publication_root: [8; 32],
                 owner_epoch: 7,
                 notification_cursor: 0,
             },
@@ -676,7 +603,7 @@ fn point_lookup_and_fenced_publication_do_not_clone_or_ack_a_replacement() {
 
     let ack = PublicationAck {
         output_root: [6; 32],
-        store: store_receipt(),
+        publication_root: [8; 32],
         owner_epoch: 7,
         notification_cursor: 5,
     };
@@ -816,7 +743,7 @@ fn fused_publication_cursor_survives_notification_crash() {
             [3; 32],
             PublicationAck {
                 output_root: [6; 32],
-                store: store_receipt(),
+                publication_root: [8; 32],
                 owner_epoch: 7,
                 notification_cursor: 23,
             },
@@ -896,7 +823,7 @@ fn every_lifecycle_transition_has_a_cooperative_abort_seam() {
                 key,
                 PublicationAck {
                     output_root: [6; 32],
-                    store: store_receipt(),
+                    publication_root: [8; 32],
                     owner_epoch: 7,
                     notification_cursor: 1,
                 },

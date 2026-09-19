@@ -331,35 +331,6 @@ where
         self.view_persistence = Some(persistence);
     }
 
-    fn subscription_reset(
-        &self,
-        credit: usize,
-        cursor: Cursor,
-        reason: CursorResetReason,
-    ) -> DaemonReply {
-        DaemonReply::Subscribed(Ok(SubscriptionReply::ResetWithRoot {
-            credit,
-            cursor: encode_cursor(cursor).into_boxed_slice(),
-            root: Box::new(self.library.view().clone()),
-            reason,
-        }))
-    }
-
-    fn finish_cursor_poll(
-        &mut self,
-        request_id: u64,
-        subscription: CursorSub,
-        reply: SubscriptionReply,
-    ) -> DaemonReply {
-        match self.retain_subscription(request_id, subscription) {
-            Ok(()) => {
-                let _ = self.unsubscribe(request_id);
-                DaemonReply::Subscribed(Ok(reply))
-            }
-            Err(error) => DaemonReply::Subscribed(Err(error)),
-        }
-    }
-
     /// Restores a checked view and its bounded event suffix after a process
     /// restart.  The suffix is retained with its exact base sequence, so a
     /// client can resume from any cursor that survived pruning; older cursors
@@ -431,20 +402,44 @@ where
         }
         let source = self.library.cursor();
         if cursor_bytes.is_empty() {
-            return self.subscription_reset(credit, source, CursorResetReason::Gap);
+            return DaemonReply::Subscribed(Ok(SubscriptionReply::ResetWithRoot {
+                credit,
+                cursor: encode_cursor(source).into_boxed_slice(),
+                root: Box::new(self.library.view().clone()),
+                reason: CursorResetReason::Gap,
+            }));
         }
-        let Some(cursor) = self.cursor_history.get(cursor_bytes).copied() else {
-            return self.subscription_reset(credit, source, CursorResetReason::Gap);
+        let cursor = if cursor_bytes.is_empty() {
+            source
+        } else if let Some(cursor) = self.cursor_history.get(cursor_bytes).copied() {
+            cursor
+        } else {
+            return DaemonReply::Subscribed(Ok(SubscriptionReply::ResetWithRoot {
+                credit,
+                cursor: encode_cursor(source).into_boxed_slice(),
+                root: Box::new(self.library.view().clone()),
+                reason: CursorResetReason::Gap,
+            }));
         };
         let Some(start_sequence) = cursor
             .sequence()
             .checked_sub(self.view_events_base_sequence)
         else {
-            return self.subscription_reset(credit, source, CursorResetReason::Pruned);
+            return DaemonReply::Subscribed(Ok(SubscriptionReply::ResetWithRoot {
+                credit,
+                cursor: encode_cursor(source).into_boxed_slice(),
+                root: Box::new(self.library.view().clone()),
+                reason: CursorResetReason::Pruned,
+            }));
         };
         let start = usize::try_from(start_sequence).unwrap_or(usize::MAX);
         if start > self.view_events.len() {
-            return self.subscription_reset(credit, source, CursorResetReason::Pruned);
+            return DaemonReply::Subscribed(Ok(SubscriptionReply::ResetWithRoot {
+                credit,
+                cursor: encode_cursor(source).into_boxed_slice(),
+                root: Box::new(self.library.view().clone()),
+                reason: CursorResetReason::Pruned,
+            }));
         }
         let mut sub = CursorSub::from_cursor(cursor, credit);
         let read = sub.read(
@@ -458,7 +453,17 @@ where
                 // typed empty batch and the client renews the lease by
                 // sending its cursor again. Do not retain a hidden lease for
                 // a one-shot request that has no stream handle.
-                self.finish_cursor_poll(request_id, sub, SubscriptionReply::Accepted { credit })
+                let reply = match self.retain_subscription(request_id, sub) {
+                    Ok(()) => DaemonReply::Subscribed(Ok(SubscriptionReply::Accepted { credit })),
+                    Err(error) => DaemonReply::Subscribed(Err(error)),
+                };
+                if matches!(
+                    &reply,
+                    DaemonReply::Subscribed(Ok(SubscriptionReply::Accepted { .. }))
+                ) {
+                    let _ = self.unsubscribe(request_id);
+                }
+                reply
             }
             Ok(CursorRead::Events { cursor, events })
                 if events.iter().any(|event| {
@@ -476,31 +481,47 @@ where
                     .sum::<usize>()
                     > backend_library::MAX_SNAPSHOT_PAGE_ROWS =>
             {
-                self.subscription_reset(credit, cursor, CursorResetReason::Pruned)
-            }
-            Ok(CursorRead::Events { cursor, events }) => self.finish_cursor_poll(
-                request_id,
-                sub,
-                SubscriptionReply::Events {
+                DaemonReply::Subscribed(Ok(SubscriptionReply::ResetWithRoot {
                     credit,
                     cursor: encode_cursor(cursor).into_boxed_slice(),
-                    events,
-                },
-            ),
+                    root: Box::new(self.library.view().clone()),
+                    reason: CursorResetReason::Pruned,
+                }))
+            }
+            Ok(CursorRead::Events { cursor, events }) => {
+                let reply = match self.retain_subscription(request_id, sub) {
+                    Ok(()) => DaemonReply::Subscribed(Ok(SubscriptionReply::Events {
+                        credit,
+                        cursor: encode_cursor(cursor).into_boxed_slice(),
+                        events,
+                    })),
+                    Err(error) => DaemonReply::Subscribed(Err(error)),
+                };
+                if let DaemonReply::Subscribed(Ok(SubscriptionReply::Events { .. })) = &reply {
+                    let _ = self.unsubscribe(request_id);
+                }
+                reply
+            }
             Ok(CursorRead::Reset {
                 cursor,
                 root,
                 reason,
-            }) => self.finish_cursor_poll(
-                request_id,
-                sub,
-                SubscriptionReply::ResetWithRoot {
-                    credit,
-                    cursor: encode_cursor(cursor).into_boxed_slice(),
-                    root,
-                    reason,
-                },
-            ),
+            }) => {
+                let reply = match self.retain_subscription(request_id, sub) {
+                    Ok(()) => DaemonReply::Subscribed(Ok(SubscriptionReply::ResetWithRoot {
+                        credit,
+                        cursor: encode_cursor(cursor).into_boxed_slice(),
+                        root,
+                        reason,
+                    })),
+                    Err(error) => DaemonReply::Subscribed(Err(error)),
+                };
+                if let DaemonReply::Subscribed(Ok(SubscriptionReply::ResetWithRoot { .. })) = &reply
+                {
+                    let _ = self.unsubscribe(request_id);
+                }
+                reply
+            }
             Err(_) => DaemonReply::Subscribed(Err(DaemonError::CursorInvalid)),
         }
     }

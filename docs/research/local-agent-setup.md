@@ -96,7 +96,7 @@ planning, interface CLI symbol size, and interface CLI CPU profile
 target declaration.
 
 Production agent dispatch has one durable owner: `backend-control` in
-`tools/control`. The `backend cutover control ...` commands are thin Nu
+`crates/control`. The `backend cutover control ...` commands are thin Nu
 adapters over its bounded JSON CLI; they admit checked work specifications,
 exact reusable receipts, fenced leases, evaluator/reviewer/Sol verdicts, and output-sensitive
 expiry/dependency transitions into the shared `backend-version`/`backend-store`

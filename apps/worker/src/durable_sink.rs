@@ -1,6 +1,6 @@
 //! Durable sink for the canonical receiving CAS.
 
-use super::{BoundedFileImage, CasGcBudget};
+use super::CasGcBudget;
 use backend_engine::{
     CanonicalDigest, ObjectKey, ObjectVersion, ReceivingCasSink, ReceivingCheckpoint,
     ReplicationError, Schema, StagedExtent, TransferId,
@@ -32,7 +32,6 @@ pub(super) struct DurableSink<T: Schema> {
     retained_bytes: u64,
     max_retained_objects: usize,
     max_retained_bytes: u64,
-    max_object_bytes: usize,
     reservations: BTreeMap<TransferId, Reservation<T>>,
     marker: PhantomData<fn() -> T>,
 }
@@ -50,13 +49,10 @@ impl<T: Schema> DurableSink<T> {
         path: impl AsRef<Path>,
         max_retained_objects: usize,
         max_retained_bytes: u64,
-        max_object_bytes: u64,
     ) -> Result<Self, ReplicationError> {
-        if max_retained_objects == 0 || max_retained_bytes == 0 || max_object_bytes == 0 {
+        if max_retained_objects == 0 || max_retained_bytes == 0 {
             return Err(ReplicationError::InvalidLimits);
         }
-        let max_object_bytes =
-            usize::try_from(max_object_bytes).map_err(|_| ReplicationError::InvalidLimits)?;
         let path = path.as_ref();
         fs::create_dir_all(path).map_err(|_| ReplicationError::Disconnected)?;
         #[cfg(unix)]
@@ -75,7 +71,6 @@ impl<T: Schema> DurableSink<T> {
             retained_bytes: 0,
             max_retained_objects,
             max_retained_bytes,
-            max_object_bytes,
             reservations: BTreeMap::new(),
             marker: PhantomData,
         };
@@ -308,10 +303,11 @@ impl<T: Schema> DurableSink<T> {
         if !path.is_file() {
             return Ok(None);
         }
-        let Some(bytes) = BoundedFileImage::read_optional(&path, self.max_object_bytes)? else {
-            return Ok(None);
-        };
-        let bytes: Arc<[u8]> = Arc::from(bytes.into_vec().into_boxed_slice());
+        let bytes: Arc<[u8]> = Arc::from(
+            fs::read(path)
+                .map_err(|_| ReplicationError::Disconnected)?
+                .into_boxed_slice(),
+        );
         if backend_engine::canonical_object_digest::<T>(bytes.len() as u64, [bytes.as_ref()])
             != version.to_bytes()
         {

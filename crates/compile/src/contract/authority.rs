@@ -6,9 +6,9 @@ use super::{
     ProducerId, SessionId, SessionKey, SessionSchema, ToolchainId, typed_of,
 };
 use backend_version::{
-    AuthorityScopeClaim, AuthorizedCompleteCoverage, CoverageWitness, ProducerObservationClaims,
-    ProducerObservationVerifier, Schema, ScopeRoot, UntrustedProducerObservation,
-    admit_complete_scope, admit_producer_observation,
+    AuthorityScopeClaim, AuthorizedCompleteCoverage, CoverageWitness, ProducerObservationVerifier,
+    Schema, ScopeRoot, UntrustedProducerObservation, admit_complete_scope,
+    admit_producer_observation,
 };
 use std::{fmt, sync::Arc};
 
@@ -94,10 +94,7 @@ impl CompleteAuthorityCoverage {
 impl ProducerObservationVerifier for AuthorityRegistry {
     type Error = AuthorityAdmissionError;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
         let expected_scope = ScopeRoot::from_bytes(self.manifest.to_bytes());
         if observation.producer_identity() != self.authority.digest().to_bytes()
             || observation.scope_root() != expected_scope
@@ -106,12 +103,7 @@ impl ProducerObservationVerifier for AuthorityRegistry {
         {
             return Err(AuthorityAdmissionError::EvidenceMismatch);
         }
-        Ok(ProducerObservationClaims::new(
-            self.authority.digest().to_bytes(),
-            expected_scope,
-            self.command.to_bytes(),
-            *blake3::hash(&self.evidence_bytes()).as_bytes(),
-        ))
+        Ok(())
     }
 }
 

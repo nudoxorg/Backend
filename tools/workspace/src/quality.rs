@@ -47,7 +47,7 @@ mod tests {
     fn root_manifest() -> String {
         r#"
 [workspace.lints.rust]
-unsafe_code = "deny"
+unsafe_code = "forbid"
 missing_docs = "warn"
 unreachable_pub = "warn"
 unused_lifetimes = "warn"
@@ -85,26 +85,6 @@ unwrap_used = "deny"
                     && lint == "unwrap_used"
                     && expected == "deny"
                     && observed.as_deref() == Some("warn")
-        )));
-    }
-
-    #[test]
-    fn workspace_forbid_unsafe_is_rejected_in_favor_of_deny() {
-        let mutated = root_manifest().replace(
-            "unsafe_code = \"deny\"",
-            "unsafe_code = \"forbid\"",
-        );
-        let violations = validate_workspace_lints(
-            &mutated,
-            &[("backend-demo".to_owned(), inherited_manifest())],
-        );
-        assert!(violations.iter().any(|violation| matches!(
-            violation,
-            Violation::MissingWorkspaceLint { table, lint, expected, observed }
-                if table == "workspace.lints.rust"
-                    && lint == "unsafe_code"
-                    && expected == "deny"
-                    && observed.as_deref() == Some("forbid")
         )));
     }
 

@@ -27,60 +27,6 @@ pub enum CommandId {
     Search,
     /// Read graph neighbors.
     Graph,
-    /// Execute one bounded structured graph query.
-    GraphQuery,
-    /// Read one declaration's captured source.
-    Source,
-    /// Read symbols related to one declaration.
-    Related,
-    /// Read several declaration documents.
-    Read,
-    /// Compare package declaration versions.
-    Diff,
-    /// Browse registry packages.
-    Explore,
-    /// Read one registry package profile.
-    Package,
-    /// Read packages depending on one registry package.
-    Dependents,
-    /// Read packages published by one owner.
-    Owner,
-    /// Search the local registry index.
-    IndexSearch,
-    /// Read recorded package versions.
-    PackageVersions,
-    /// Read immutable compiler generation history.
-    SemanticVersions,
-    /// Select an exact immutable compiler generation.
-    SelectSemanticVersion,
-    /// Read the latest package profile and history.
-    PackageProfile,
-    /// Follow one package for releases.
-    Subscribe,
-    /// Stop following one package.
-    Unsubscribe,
-    /// List followed packages.
-    Subscriptions,
-    /// Read new followed-package releases.
-    Releases,
-    /// List project folders.
-    Projects,
-    /// Create a project folder.
-    ProjectCreate,
-    /// Delete a project folder.
-    ProjectDelete,
-    /// Add a package to a project folder.
-    ProjectAdd,
-    /// Remove a package from a project folder.
-    ProjectRemove,
-    /// Reconcile a project with its lockfile.
-    ProjectSync,
-    /// Read the cross-surface session tree.
-    Tree,
-    /// Open a subject in the session tree.
-    TreeOpen,
-    /// Close a node or branch in the session tree.
-    TreeClose,
     /// Read engine health.
     Health,
     /// Read the constant-size current revision token.
@@ -97,110 +43,6 @@ pub struct RevisionReceipt {
     root: ViewStateRoot,
     cursor: Cursor,
     source: crate::SemanticObject,
-}
-
-/// Constant-size owner health report.
-///
-/// This retains the exact visible revision, source basis, cursor, coverage,
-/// and cardinality without transferring the view relation's rows.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HealthReport {
-    revision: RevisionReceipt,
-    basis: crate::Basis,
-    coverage: Box<[crate::Coverage]>,
-    row_count: u64,
-    capabilities: crate::CapabilityInventory,
-    progress: crate::IngestProgress,
-}
-
-impl HealthReport {
-    /// Captures health from one coherent owner root without cloning its rows.
-    #[must_use]
-    pub fn from_root(root: &ViewRoot, cursor: Cursor) -> Self {
-        Self {
-            revision: RevisionReceipt::new(root.root(), cursor, root.basis().object),
-            basis: root.basis(),
-            coverage: root.coverage().to_vec().into_boxed_slice(),
-            row_count: root.row_count(),
-            capabilities: crate::CapabilityInventory::explicitly_unavailable(),
-            progress: crate::IngestProgress::default(),
-        }
-    }
-
-    /// Replaces the empty baseline with the owner's observed ingest counts.
-    ///
-    /// Progress is additive on purpose. A report that carries no counts is a
-    /// report from a producer that does not publish them, which reads as an
-    /// empty [`crate::IngestProgress`] rather than as a project with no files;
-    /// the two are distinguished by the row count and coverage that every
-    /// report already carries.
-    #[must_use]
-    pub fn with_progress(mut self, progress: crate::IngestProgress) -> Self {
-        self.progress = progress;
-        self
-    }
-
-    /// Returns the owner's typed ingest counts for the visible revision.
-    #[must_use]
-    pub const fn progress(&self) -> &crate::IngestProgress {
-        &self.progress
-    }
-
-    /// Replaces the explicit baseline with owner-observed capability states.
-    #[must_use]
-    pub fn with_capabilities(mut self, capabilities: crate::CapabilityInventory) -> Self {
-        self.capabilities = capabilities;
-        self
-    }
-
-    /// Constructs a report after protocol admission of all identities.
-    #[must_use]
-    pub fn from_admitted_parts(
-        revision: RevisionReceipt,
-        basis: crate::Basis,
-        coverage: Box<[crate::Coverage]>,
-        row_count: u64,
-        capabilities: crate::CapabilityInventory,
-    ) -> Self {
-        Self {
-            revision,
-            basis,
-            coverage,
-            row_count,
-            capabilities,
-            progress: crate::IngestProgress::default(),
-        }
-    }
-
-    /// Returns the current visible revision and exact owner cursor.
-    #[must_use]
-    pub const fn revision(&self) -> RevisionReceipt {
-        self.revision
-    }
-
-    /// Returns the complete source basis observed by the projection.
-    #[must_use]
-    pub const fn basis(&self) -> crate::Basis {
-        self.basis
-    }
-
-    /// Returns typed coverage for every declared retrieval lane.
-    #[must_use]
-    pub fn coverage(&self) -> &[crate::Coverage] {
-        &self.coverage
-    }
-
-    /// Returns the number of rows committed by the visible root.
-    #[must_use]
-    pub const fn row_count(&self) -> u64 {
-        self.row_count
-    }
-
-    /// Returns the bounded executable capability inventory.
-    #[must_use]
-    pub const fn capabilities(&self) -> &crate::CapabilityInventory {
-        &self.capabilities
-    }
 }
 
 /// Opaque reference to an immutable visible view used as a query precondition.
@@ -386,80 +228,11 @@ impl Query {
     }
 }
 
-/// A declaration locator whose authority is recovered from the pinned view.
-///
-/// Canonical symbols carry their text-derived key. Selected symbols carry
-/// only the digest of a key that was already admitted from a producer reply;
-/// after a process hop that digest remains a selector until it is matched to
-/// a typed row in the exact query basis. It cannot be used to publish or mint
-/// a [`SymbolKey`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SymbolAddress {
-    /// A symbol key derived from its canonical text preimage.
-    Canonical(SymbolKey),
-    /// An opaque producer key selected from an admitted immutable view.
-    Selected([u8; 32]),
-}
-
-impl SymbolAddress {
-    /// Wraps a canonical text-derived symbol key.
-    #[must_use]
-    pub const fn canonical(symbol: SymbolKey) -> Self {
-        Self::Canonical(symbol)
-    }
-
-    /// Creates a view-selected address from a producer-admitted symbol key.
-    #[must_use]
-    pub const fn selected(symbol: SymbolKey) -> Self {
-        Self::Selected(symbol.to_bytes())
-    }
-
-    /// Retains an opaque wire claim as a selector without promoting it to a
-    /// publication-authoritative key.
-    #[must_use]
-    pub(crate) const fn from_selected_bytes(bytes: [u8; 32]) -> Self {
-        Self::Selected(bytes)
-    }
-
-    /// Returns the claimed bytes used for bounded wire encoding and lookup.
-    #[must_use]
-    pub const fn claimed_bytes(self) -> [u8; 32] {
-        match self {
-            Self::Canonical(symbol) => symbol.to_bytes(),
-            Self::Selected(bytes) => bytes,
-        }
-    }
-
-    /// Returns whether this address relies on membership in a selected view.
-    #[must_use]
-    pub const fn is_selected(self) -> bool {
-        matches!(self, Self::Selected(_))
-    }
-
-    /// Checks an admitted symbol against this locator.
-    #[must_use]
-    pub fn matches(self, symbol: SymbolKey) -> bool {
-        self.claimed_bytes() == symbol.to_bytes()
-    }
-
-    /// Resolves this locator against one exact admitted view.
-    ///
-    /// An opaque selector becomes a `SymbolKey` only by borrowing the typed
-    /// key from a row already present in `view`.
-    #[must_use]
-    pub fn resolve(self, view: &ViewRoot) -> Option<SymbolKey> {
-        match self {
-            Self::Canonical(symbol) => Some(symbol),
-            Self::Selected(bytes) => view.resolve_symbol_commitment(bytes),
-        }
-    }
-}
-
 /// Exact document lookup pinned to a source root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DocumentQuery {
-    /// Declaration address.
-    pub(crate) symbol: SymbolAddress,
+    /// Declaration identity.
+    pub(crate) symbol: SymbolKey,
     /// Source root expected by the caller.
     pub(crate) basis: ViewRevision,
     /// Complete source basis expected by the caller, when the request was
@@ -472,17 +245,7 @@ impl DocumentQuery {
     #[must_use]
     pub const fn new(symbol: SymbolKey, basis: ViewStateRoot) -> Self {
         Self {
-            symbol: SymbolAddress::canonical(symbol),
-            basis: ViewRevision(basis.to_bytes()),
-            source: None,
-        }
-    }
-
-    /// Creates a lookup for a producer-admitted row in the selected view.
-    #[must_use]
-    pub const fn selected(symbol: SymbolKey, basis: ViewStateRoot) -> Self {
-        Self {
-            symbol: SymbolAddress::selected(symbol),
+            symbol,
             basis: ViewRevision(basis.to_bytes()),
             source: None,
         }
@@ -496,16 +259,10 @@ impl DocumentQuery {
         self
     }
 
-    /// Returns the declaration locator.
+    /// Returns the declaration identity.
     #[must_use]
-    pub const fn symbol(&self) -> SymbolAddress {
+    pub const fn symbol(&self) -> SymbolKey {
         self.symbol
-    }
-
-    /// Resolves the declaration against the exact admitted view.
-    #[must_use]
-    pub fn resolve_symbol(&self, view: &ViewRoot) -> Option<SymbolKey> {
-        self.symbol.resolve(view)
     }
 
     /// Returns the exact source basis.
@@ -608,133 +365,27 @@ pub struct OutlineQuery {
 
 /// Graph-neighborhood lookup pinned to a source root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GraphNeighborhoodQuery {
-    /// Declaration address at the center of the neighborhood.
-    pub(crate) symbol: SymbolAddress,
+pub struct GraphQuery {
+    /// Declaration identity at the center of the neighborhood.
+    pub(crate) symbol: SymbolKey,
     /// Source root expected by the caller.
     pub(crate) basis: ViewRevision,
 }
 
-/// Opaque continuation for any bounded catalog projection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PageContinuation(Cursor);
-
-impl PageContinuation {
-    /// Wraps a root, recipe, and offset-bound cursor returned by a page.
-    #[must_use]
-    pub const fn from_cursor(cursor: Cursor) -> Self {
-        Self(cursor)
-    }
-
-    /// Returns the opaque cursor for transport encoding or a follow-up request.
-    #[must_use]
-    pub const fn cursor(self) -> Cursor {
-        self.0
-    }
-}
-
-/// Shared bounded page request used by packages, outlines, and graphs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PageRequest {
-    basis: ViewRevision,
-    limit: QueryLimit,
-    continuation: Option<PageContinuation>,
-}
-
-impl PageRequest {
-    /// Creates the first page request at an exact owner revision.
-    #[must_use]
-    pub fn new(basis: impl Into<ViewRevision>, limit: QueryLimit) -> Self {
-        Self {
-            basis: basis.into(),
-            limit,
-            continuation: None,
-        }
-    }
-
-    /// Resumes from a continuation returned by the preceding page.
-    #[must_use]
-    pub const fn with_continuation(mut self, continuation: PageContinuation) -> Self {
-        self.continuation = Some(continuation);
-        self
-    }
-
-    /// Returns the exact owner revision.
-    #[must_use]
-    pub const fn basis(self) -> ViewRevision {
-        self.basis
-    }
-
-    /// Returns the bounded page size.
-    #[must_use]
-    pub const fn limit(self) -> QueryLimit {
-        self.limit
-    }
-
-    /// Returns the opaque continuation, when resuming.
-    #[must_use]
-    pub const fn continuation(self) -> Option<PageContinuation> {
-        self.continuation
-    }
-}
-
-/// Terminal state of one bounded projection page.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PageTerminal {
-    /// The complete projection has been emitted.
-    Complete,
-    /// Another page follows at this root and query recipe.
-    More(PageContinuation),
-    /// Work was cancelled before another page could be produced.
-    Cancelled,
-}
-
-/// One bounded projection page with an explicit terminal state.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProjectionPage {
-    /// Immutable rows and freshness for this page.
-    pub snapshot: ViewSnapshot,
-    /// Explicit completion, continuation, or cancellation state.
-    pub terminal: PageTerminal,
-}
-
-impl GraphNeighborhoodQuery {
+impl GraphQuery {
     /// Creates an exact graph-neighborhood lookup.
     #[must_use]
     pub const fn new(symbol: SymbolKey, basis: ViewStateRoot) -> Self {
         Self {
-            symbol: SymbolAddress::canonical(symbol),
+            symbol,
             basis: ViewRevision(basis.to_bytes()),
         }
     }
 
-    /// Creates a graph lookup for a producer-admitted row in the selected view.
+    /// Returns the declaration identity.
     #[must_use]
-    pub const fn selected(symbol: SymbolKey, basis: ViewStateRoot) -> Self {
-        Self {
-            symbol: SymbolAddress::selected(symbol),
-            basis: ViewRevision(basis.to_bytes()),
-        }
-    }
-
-    /// Returns the declaration locator.
-    #[must_use]
-    pub const fn symbol(&self) -> SymbolAddress {
+    pub const fn symbol(&self) -> SymbolKey {
         self.symbol
-    }
-
-    /// Resolves the declaration against the exact admitted view.
-    #[must_use]
-    pub fn resolve_symbol(&self, view: &ViewRoot) -> Option<SymbolKey> {
-        self.symbol.resolve(view)
-    }
-
-    /// Replaces a view-selected locator with the typed key borrowed from that
-    /// same view while preserving the already checked query basis.
-    #[must_use]
-    pub const fn with_resolved_symbol(mut self, symbol: SymbolKey) -> Self {
-        self.symbol = SymbolAddress::canonical(symbol);
-        self
     }
 
     /// Returns the exact source root.
@@ -787,8 +438,6 @@ impl OutlineQuery {
 pub enum Command {
     /// List selected packages.
     Packages,
-    /// Read one bounded package page.
-    PackagePage(PageRequest),
     /// Append an add-package intent.
     Add {
         /// Package identity.
@@ -801,8 +450,6 @@ pub enum Command {
     },
     /// Read one document.
     Document(DocumentQuery),
-    /// Read one declaration's captured source through its exact document row.
-    Source(DocumentQuery),
     /// Compatibility spelling for document lookup.
     Show {
         /// Declaration identity.
@@ -810,13 +457,6 @@ pub enum Command {
     },
     /// Read one package outline.
     Outline(OutlineQuery),
-    /// Read package outline rows as a bounded flat page.
-    OutlinePage {
-        /// Package whose flat outline membership is paged.
-        package: PackageKey,
-        /// Shared root/query-bound paging request.
-        page: PageRequest,
-    },
     /// Resolve one canonical name.
     Name(NameQuery),
     /// Compatibility spelling for name resolution.
@@ -827,20 +467,7 @@ pub enum Command {
     /// Search names and document text.
     Search(Query),
     /// Read graph neighbors for one declaration.
-    Graph(GraphNeighborhoodQuery),
-    /// Read symbols related to one declaration.
-    Related(GraphNeighborhoodQuery),
-    /// Read graph-neighborhood rows as a bounded page.
-    GraphPage {
-        /// Declaration at the center of the graph neighborhood.
-        symbol: SymbolAddress,
-        /// Shared root/query-bound paging request.
-        page: PageRequest,
-    },
-    /// Execute or resume one structured graph query at an immutable revision.
-    GraphQuery(crate::GraphQueryRequest),
-    /// Execute one daemon-owned durable product-surface operation.
-    Surface(crate::SurfaceCommand),
+    Graph(GraphQuery),
     /// Read truthful health/coverage state.
     Health,
     /// Read a constant-size revision and subscription cursor.
@@ -852,20 +479,16 @@ impl Command {
     #[must_use]
     pub const fn id(&self) -> CommandId {
         match self {
-            Self::Packages | Self::PackagePage(_) => CommandId::Packages,
+            Self::Packages => CommandId::Packages,
             Self::Add { .. } => CommandId::Add,
             Self::Remove { .. } => CommandId::Remove,
             Self::Document(_) => CommandId::Document,
-            Self::Source(_) => CommandId::Source,
             Self::Show { .. } => CommandId::Show,
-            Self::Outline(_) | Self::OutlinePage { .. } => CommandId::Outline,
+            Self::Outline(_) => CommandId::Outline,
             Self::Name(_) => CommandId::Name,
             Self::Resolve { .. } => CommandId::Resolve,
             Self::Search(_) => CommandId::Search,
-            Self::Graph(_) | Self::GraphPage { .. } => CommandId::Graph,
-            Self::Related(_) => CommandId::Related,
-            Self::GraphQuery(_) => CommandId::GraphQuery,
-            Self::Surface(command) => command.id(),
+            Self::Graph(_) => CommandId::Graph,
             Self::Health => CommandId::Health,
             Self::Revision => CommandId::Revision,
         }
@@ -875,9 +498,9 @@ impl Command {
     #[must_use]
     pub const fn as_document_query(&self, basis: ViewStateRoot) -> Option<DocumentQuery> {
         match self {
-            Self::Document(query) | Self::Source(query) => Some(*query),
+            Self::Document(query) => Some(*query),
             Self::Show { symbol } => Some(DocumentQuery {
-                symbol: SymbolAddress::canonical(*symbol),
+                symbol: *symbol,
                 basis: ViewRevision(basis.to_bytes()),
                 source: None,
             }),
@@ -901,8 +524,6 @@ impl Command {
 pub enum CommandReply {
     /// Package shelf view.
     Packages(ViewSnapshot),
-    /// Shared bounded package/outline/graph page.
-    ProjectionPage(ProjectionPage),
     /// Accepted add intent.
     Added(crate::IntentId),
     /// Accepted remove intent.
@@ -921,78 +542,12 @@ pub enum CommandReply {
     Search(ViewSnapshot),
     /// Graph arrangement view.
     Graph(ViewSnapshot),
-    /// Bounded structured graph-query rows and terminal.
-    GraphQueryPage(crate::GraphQueryPage),
-    /// Result from one durable product-surface owner.
-    Surface(crate::SurfaceReply),
     /// Health/coverage view.
     Health(ViewRoot),
-    /// Constant-size health/readiness report for process boundaries.
-    Readiness(HealthReport),
     /// Constant-size current revision.
     Revision(RevisionReceipt),
     /// Typed transport-visible failure from a command/query boundary.
     Error(String),
-    /// Closed application failure that callers can handle without parsing prose.
-    Failed(CommandFailure),
-}
-
-/// Closed failures produced by the application-service boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CommandFailure {
-    /// The requested package, symbol, or document does not exist.
-    NotFound,
-    /// The request was pinned to a revision other than the owner's current revision.
-    WrongBasis {
-        /// Current owner revision.
-        expected: ViewRevision,
-        /// Revision supplied by the request.
-        observed: ViewRevision,
-    },
-    /// The query failed bounded semantic validation.
-    InvalidQuery(String),
-    /// The cursor belongs to another recipe, revision, or stream position.
-    CursorMismatch,
-    /// The retained view could not satisfy an invariant.
-    IncoherentView(String),
-    /// The owner cannot represent another event in its sequence space.
-    SequenceOverflow,
-    /// This operation must be submitted to the durable engine owner.
-    MutationRequiresOwner,
-}
-
-impl From<crate::LibraryError> for CommandFailure {
-    fn from(error: crate::LibraryError) -> Self {
-        match error {
-            crate::LibraryError::NotFound => Self::NotFound,
-            crate::LibraryError::WrongBasis { expected, observed } => Self::WrongBasis {
-                expected: expected.into(),
-                observed,
-            },
-            crate::LibraryError::View(error) => Self::IncoherentView(format!("{error:?}")),
-            crate::LibraryError::InvalidQuery(message) => Self::InvalidQuery(message),
-            crate::LibraryError::SequenceOverflow => Self::SequenceOverflow,
-            crate::LibraryError::CursorMismatch => Self::CursorMismatch,
-        }
-    }
-}
-
-impl core::fmt::Display for CommandFailure {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::NotFound => formatter.write_str("library record not found"),
-            Self::WrongBasis { .. } => {
-                formatter.write_str("query basis does not match the view revision")
-            }
-            Self::InvalidQuery(message) => write!(formatter, "invalid query: {message}"),
-            Self::CursorMismatch => formatter.write_str("cursor does not match the view"),
-            Self::IncoherentView(message) => write!(formatter, "incoherent view: {message}"),
-            Self::SequenceOverflow => formatter.write_str("event sequence overflowed"),
-            Self::MutationRequiresOwner => {
-                formatter.write_str("mutation requires the durable engine owner")
-            }
-        }
-    }
 }
 
 /// A materialized document/name/outline record used at a projection boundary.
@@ -1032,7 +587,7 @@ mod tests {
         assert_eq!(
             document.as_document_query(basis),
             Some(DocumentQuery {
-                symbol: SymbolAddress::canonical(symbol),
+                symbol,
                 basis: basis.into(),
                 source: None,
             })

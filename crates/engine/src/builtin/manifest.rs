@@ -1,9 +1,8 @@
 //! Canonical manifests, closure proofs, and product input bases.
 
 use super::{
-    BuiltinInputSchema, PRODUCT_RECIPE_BYTES, ProductSemanticPublicationRelation,
-    ProductSemanticPublicationSnapshot, ProductSourceRelation, ProductSourceSnapshot, ProfileIds,
-    authorized_coverage,
+    BuiltinInputSchema, PRODUCT_RECIPE_BYTES, ProductSourceRelation, ProductSourceSnapshot,
+    ProfileIds, authorized_coverage,
 };
 use backend_execution::AuthorityVersion;
 use backend_replication::WireIdentity;
@@ -253,82 +252,6 @@ pub fn execution_input_manifest(
     WorkspaceManifest::from_versions(
         1,
         vec![relation_binding],
-        Vec::new(),
-        authority,
-        CoverageWitness::Complete(coverage),
-    )
-    .map_err(|error| error.to_string())
-}
-
-/// Derives the workspace input basis for a checked semantic publication
-/// relation and execution authority.
-///
-/// # Errors
-/// Returns an error when relation coverage or authority admission fails.
-pub fn semantic_execution_input_basis(
-    relation: &RelationState<ProductSemanticPublicationRelation>,
-    authority: AuthorityVersion,
-) -> Result<WorkspaceRoot, String> {
-    semantic_execution_input_manifest(relation, authority).map(|manifest| manifest.root())
-}
-
-/// Derives the input basis from the owner-selected semantic publication plane.
-///
-/// # Errors
-/// Returns an error when the selected workspace authority and recipe authority
-/// differ or the checked relation cannot be rebound.
-pub fn semantic_execution_input_basis_from_snapshot(
-    source: &ProductSemanticPublicationSnapshot,
-    authority: AuthorityVersion,
-) -> Result<WorkspaceRoot, String> {
-    semantic_execution_input_manifest_from_snapshot(source, authority)
-        .map(|manifest| manifest.root())
-}
-
-/// Builds a checked one-relation workspace manifest for remote semantic
-/// execution from the owner-held lazy publication relation.
-///
-/// # Errors
-/// Returns an error when the selected workspace authority differs or the
-/// manifest cannot be admitted.
-pub fn semantic_execution_input_manifest_from_snapshot(
-    source: &ProductSemanticPublicationSnapshot,
-    authority: AuthorityVersion,
-) -> Result<backend_version::CheckedWorkspaceManifest, String> {
-    if *source.authority_bytes() != authority.to_bytes() {
-        return Err("semantic publication authority does not match recipe authority".to_owned());
-    }
-    let coverage = authorized_coverage(authority)?;
-    let relation_binding = RelationBinding::from_persisted_root(
-        &source.relation().root_handle(),
-        CoverageWitness::Complete(coverage),
-    );
-    WorkspaceManifest::from_versions(
-        1,
-        vec![relation_binding],
-        Vec::new(),
-        authority,
-        CoverageWitness::Complete(coverage),
-    )
-    .map_err(|error| error.to_string())
-}
-
-/// Builds a checked one-relation workspace manifest for a materialized
-/// semantic publication relation used by focused protocol fixtures.
-///
-/// # Errors
-/// Returns an error unless relation and authority coverage are complete.
-pub fn semantic_execution_input_manifest(
-    relation: &RelationState<ProductSemanticPublicationRelation>,
-    authority: AuthorityVersion,
-) -> Result<backend_version::CheckedWorkspaceManifest, String> {
-    if relation.coverage().state() != Coverage::Complete {
-        return Err("semantic execution requires complete relation transport coverage".to_owned());
-    }
-    let coverage = authorized_coverage(authority)?;
-    WorkspaceManifest::from_versions(
-        1,
-        vec![RelationBinding::from_state(relation)],
         Vec::new(),
         authority,
         CoverageWitness::Complete(coverage),

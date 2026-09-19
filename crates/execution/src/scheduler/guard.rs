@@ -39,8 +39,6 @@ pub struct Scheduled<R: Relation> {
     pub(super) bytes: u64,
     pub(super) manager: Arc<AttemptManager>,
     pub(super) deadlines: Arc<std::sync::Mutex<super::deadline::DeadlineQueue<WorkKey>>>,
-    pub(super) supervisor: Arc<crate::Supervisor>,
-    pub(super) telemetry: crate::Telemetry,
     pub(super) interned: Option<Interned>,
 }
 
@@ -301,13 +299,6 @@ impl<R: Relation> Drop for Scheduled<R> {
             state,
             crate::AttemptState::Active | crate::AttemptState::Expired
         ) {
-            self.supervisor.cancelled();
-            self.telemetry.record_with(|| crate::Observation {
-                family: crate::MetricFamily::Lifecycle,
-                outcome: crate::MetricOutcome::Cancelled,
-                latency: std::time::Duration::ZERO,
-                units: 1,
-            });
             if let Some(race) = &self.race {
                 race.cancel(HedgeSide::Local);
                 race.cancel(HedgeSide::Remote);

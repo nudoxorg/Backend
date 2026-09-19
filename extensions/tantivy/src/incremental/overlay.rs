@@ -1,9 +1,8 @@
 //! Exact lexical delta overlay and reverse term membership.
 
-use super::plan::{PostingKey, terms_for};
+use super::plan::terms_for;
 use crate::delta::DocumentDelta;
 use crate::{Binding, Error};
-use backend_semantic::EntityId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::sync::Arc;
@@ -13,11 +12,11 @@ use std::sync::Arc;
 pub struct LexicalOverlay {
     binding: Binding,
     /// Base rows hidden by a delete or replacement.
-    tombstones: Arc<[EntityId]>,
+    tombstones: Arc<[u64]>,
     /// New rows grouped by normalized term.
-    additions: Arc<BTreeMap<PostingKey, Arc<[EntityId]>>>,
+    additions: Arc<BTreeMap<String, Arc<[u64]>>>,
     /// Reverse membership makes overlay merges touch only affected terms.
-    memberships: Arc<BTreeMap<EntityId, Arc<[PostingKey]>>>,
+    memberships: Arc<BTreeMap<u64, Arc<[String]>>>,
     bytes: usize,
 }
 
@@ -80,12 +79,14 @@ impl LexicalOverlay {
 
     /// Returns the hidden base document identities.
     #[must_use]
-    pub fn tombstones(&self) -> &[EntityId] {
+    pub fn tombstones(&self) -> &[u64] {
         &self.tombstones
     }
 
-    pub(crate) fn postings(&self) -> impl Iterator<Item = (&PostingKey, &[EntityId])> {
-        self.additions.iter().map(|(key, ids)| (key, ids.as_ref()))
+    /// Returns additions for one normalized term without allocating.
+    #[must_use]
+    pub fn additions(&self, term: &str) -> Option<&[u64]> {
+        self.additions.get(term).map(AsRef::as_ref)
     }
 
     /// Returns retained overlay bytes.
@@ -98,22 +99,22 @@ impl LexicalOverlay {
         self.additions.len()
     }
 
-    pub(crate) fn document_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
+    pub(crate) fn document_ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.memberships.keys().copied()
     }
 }
 
 type OverlayParts = (
-    BTreeSet<EntityId>,
-    BTreeMap<PostingKey, Arc<[EntityId]>>,
-    BTreeMap<EntityId, Arc<[PostingKey]>>,
+    BTreeSet<u64>,
+    BTreeMap<String, Arc<[u64]>>,
+    BTreeMap<u64, Arc<[String]>>,
     usize,
 );
 
 fn build_overlay_parts(delta: &DocumentDelta) -> Result<OverlayParts, Error> {
     let mut tombstones = BTreeSet::new();
-    let mut additions: BTreeMap<PostingKey, BTreeSet<EntityId>> = BTreeMap::new();
-    let mut memberships: BTreeMap<EntityId, BTreeSet<PostingKey>> = BTreeMap::new();
+    let mut additions: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+    let mut memberships: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
     for change in delta.delta.changes() {
         let id = change.key;
         tombstones.insert(id);
@@ -138,22 +139,21 @@ fn build_overlay_parts(delta: &DocumentDelta) -> Result<OverlayParts, Error> {
 }
 
 fn overlay_bytes(
-    tombstones: &BTreeSet<EntityId>,
-    additions: &BTreeMap<PostingKey, BTreeSet<EntityId>>,
-    memberships: &BTreeMap<EntityId, BTreeSet<PostingKey>>,
+    tombstones: &BTreeSet<u64>,
+    additions: &BTreeMap<String, BTreeSet<u64>>,
+    memberships: &BTreeMap<u64, BTreeSet<String>>,
 ) -> Result<usize, Error> {
     let tombstone_bytes = tombstones
         .len()
-        .checked_mul(size_of::<EntityId>())
+        .checked_mul(size_of::<u64>())
         .ok_or(Error::SizeLimit)?;
     let posting_bytes = additions.iter().try_fold(0usize, |bytes, (term, ids)| {
         let ids_bytes = ids
             .len()
-            .checked_mul(size_of::<EntityId>())
+            .checked_mul(size_of::<u64>())
             .ok_or(Error::SizeLimit)?;
         bytes
-            .checked_add(term.field.len())
-            .and_then(|bytes| bytes.checked_add(term.term.len()))
+            .checked_add(term.len())
             .and_then(|bytes| bytes.checked_add(ids_bytes))
             .ok_or(Error::SizeLimit)
     })?;
@@ -164,23 +164,18 @@ fn overlay_bytes(
         |bytes, (_, terms)| {
             terms.iter().try_fold(
                 bytes
-                    .checked_add(size_of::<EntityId>())
+                    .checked_add(size_of::<u64>())
                     .ok_or(Error::SizeLimit)?,
-                |bytes, term| {
-                    bytes
-                        .checked_add(term.field.len())
-                        .and_then(|bytes| bytes.checked_add(term.term.len()))
-                        .ok_or(Error::SizeLimit)
-                },
+                |bytes, term| bytes.checked_add(term.len()).ok_or(Error::SizeLimit),
             )
         },
     )
 }
 
 fn update_posting(
-    additions: &mut BTreeMap<PostingKey, Arc<[EntityId]>>,
-    term: &PostingKey,
-    id: EntityId,
+    additions: &mut BTreeMap<String, Arc<[u64]>>,
+    term: &str,
+    id: u64,
     present: bool,
 ) {
     let mut ids = additions
@@ -195,27 +190,26 @@ fn update_posting(
         _ => {}
     }
     if !ids.is_empty() {
-        additions.insert(term.clone(), Arc::from(ids));
+        additions.insert(term.to_owned(), Arc::from(ids));
     }
 }
 
 fn shared_overlay_bytes(
-    tombstones: &[EntityId],
-    additions: &BTreeMap<PostingKey, Arc<[EntityId]>>,
-    memberships: &BTreeMap<EntityId, Arc<[PostingKey]>>,
+    tombstones: &[u64],
+    additions: &BTreeMap<String, Arc<[u64]>>,
+    memberships: &BTreeMap<u64, Arc<[String]>>,
 ) -> Result<usize, Error> {
     let tombstone_bytes = tombstones
         .len()
-        .checked_mul(size_of::<EntityId>())
+        .checked_mul(size_of::<u64>())
         .ok_or(Error::SizeLimit)?;
     let posting_bytes = additions.iter().try_fold(0usize, |bytes, (term, ids)| {
         let ids_bytes = ids
             .len()
-            .checked_mul(size_of::<EntityId>())
+            .checked_mul(size_of::<u64>())
             .ok_or(Error::SizeLimit)?;
         bytes
-            .checked_add(term.field.len())
-            .and_then(|bytes| bytes.checked_add(term.term.len()))
+            .checked_add(term.len())
             .and_then(|bytes| bytes.checked_add(ids_bytes))
             .ok_or(Error::SizeLimit)
     })?;
@@ -226,14 +220,9 @@ fn shared_overlay_bytes(
         |bytes, (_, terms)| {
             terms.iter().try_fold(
                 bytes
-                    .checked_add(size_of::<EntityId>())
+                    .checked_add(size_of::<u64>())
                     .ok_or(Error::SizeLimit)?,
-                |bytes, term| {
-                    bytes
-                        .checked_add(term.field.len())
-                        .and_then(|bytes| bytes.checked_add(term.term.len()))
-                        .ok_or(Error::SizeLimit)
-                },
+                |bytes, term| bytes.checked_add(term.len()).ok_or(Error::SizeLimit),
             )
         },
     )

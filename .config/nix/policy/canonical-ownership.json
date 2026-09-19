@@ -98,12 +98,12 @@
     },
     {
       "domain": "control-work-spec-wire",
-      "owner": "tools/control/src/spec.rs",
+      "owner": "crates/control/src/spec.rs",
       "encoder": "append_canonical"
     },
     {
       "domain": "control-record-wire",
-      "owner": "tools/control/src/record_codec.rs",
+      "owner": "crates/control/src/record_codec.rs",
       "encoder": "append_receipt_unchecked"
     },
     {

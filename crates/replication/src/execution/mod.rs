@@ -110,7 +110,7 @@ trait CanonicalWriter {
 
     fn write_semantic_coverage(&mut self, coverage: &WireSemanticCoverage) {
         self.write_identity(coverage.identity);
-        self.write(&coverage.scope.as_bytes());
+        self.write_u64(coverage.scope);
         self.write_identity(coverage.read_manifest);
         self.write_authority(coverage.authority);
     }
@@ -143,7 +143,7 @@ fn canonical_attestation_write<W: CanonicalWriter>(
     material: &AttestationMaterialView<'_>,
     output: &mut W,
 ) {
-    output.write(b"backend.replication.attestation.v2\0");
+    output.write(b"backend.replication.attestation.v1\0");
     output.write_u64(material.attempt.get());
     output.write(&material.cancellation.as_bytes());
     output.write_identity(material.recipe);
@@ -154,7 +154,7 @@ fn canonical_attestation_write<W: CanonicalWriter>(
         output.write_identity(*input);
     }
     output.write_identity(material.read_manifest);
-    output.write(&material.scope.as_bytes());
+    output.write_u64(material.scope);
     output.write_resources(material.resources);
     output.write(&material.fence.as_bytes());
     output.write_identity(material.output);

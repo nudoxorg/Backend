@@ -4,8 +4,7 @@ use super::{
     AcceptedResultProof, Daemon, DaemonError, DispatchAttemptKey, DispatchCompletion,
     DispatchError, DispatchPhase, DispatchTicket, JOURNAL_FALLBACK_SELECTED, NotificationCursor,
     OutputVersion, PendingRemoteKey, PublicationAck, QueueSized, Relation, RemoteAttemptIntent,
-    StorePublicationReceipt, TerminalState, TransferCheckpointRef, TransportMessage,
-    WireRecipeRequest, WorkspaceModel,
+    TerminalState, TransferCheckpointRef, TransportMessage, WireRecipeRequest, WorkspaceModel,
 };
 
 impl<M, V, A> Daemon<M, V, A>
@@ -194,14 +193,10 @@ where
         let Some(attempt) = journal.point(key).map_err(DaemonError::dispatch_journal)? else {
             return Ok(false);
         };
-        if let Some(publication) = attempt.publication {
-            let selected = StorePublicationReceipt::from_selected_head(
-                self.owner.selected_store_publication()?,
-            )
-            .map_err(|error| DaemonError::dispatch_journal(error.into()))?;
-            return Ok(
-                publication.output_root == proof.output_root && publication.store == selected
-            );
+        if attempt.publication.is_some() {
+            return Ok(attempt
+                .publication
+                .is_some_and(|publication| publication.output_root == proof.output_root));
         }
         if attempt.accepted.as_ref() != Some(proof)
             || !proof.has_staged_objects()
@@ -221,10 +216,7 @@ where
                 attempt.current_fence,
                 PublicationAck {
                     output_root: proof.output_root,
-                    store: StorePublicationReceipt::from_selected_head(
-                        self.owner.selected_store_publication()?,
-                    )
-                    .map_err(|error| DaemonError::dispatch_journal(error.into()))?,
+                    publication_root: *self.owner.head().root().as_bytes(),
                     owner_epoch: self.owner.lease().epoch(),
                     notification_cursor: cursor.sequence(),
                 },
@@ -285,10 +277,7 @@ where
         let cursor = self.library.cursor();
         let ack = PublicationAck {
             output_root: receipt.output().to_bytes(),
-            store: StorePublicationReceipt::from_selected_head(
-                self.owner.selected_store_publication()?,
-            )
-            .map_err(|error| DaemonError::dispatch_journal(error.into()))?,
+            publication_root: *self.owner.head().root().as_bytes(),
             owner_epoch: self.owner.lease().epoch(),
             notification_cursor: cursor.sequence(),
         };

@@ -95,7 +95,7 @@ pub(super) fn write_recipe_request(
         write_identity(writer, *input)?;
     }
     write_identity(writer, request.read_manifest)?;
-    writer.fixed(&request.scope.as_bytes())?;
+    writer.u64(request.scope)?;
     write_authority_policy(writer, request.authority)?;
     write_resources(writer, request.resources)?;
     write_fence(writer, request.fence)?;
@@ -121,7 +121,7 @@ pub(super) fn read_recipe_request(
         work_key,
         inputs,
         read_manifest: read_identity(reader)?,
-        scope: crate::ExecutionScopeId::new(reader.fixed()?)?,
+        scope: reader.u64()?,
         authority: read_authority_policy(reader)?,
         resources: read_resources(reader)?,
         fence: read_fence(reader)?,
@@ -135,7 +135,7 @@ pub(super) fn write_semantic_coverage(
     coverage: &WireSemanticCoverage,
 ) -> Result<(), ReplicationError> {
     write_identity(writer, coverage.identity)?;
-    writer.fixed(&coverage.scope.as_bytes())?;
+    writer.u64(coverage.scope)?;
     write_identity(writer, coverage.read_manifest)?;
     write_authority(writer, coverage.authority)
 }
@@ -145,7 +145,7 @@ pub(super) fn read_semantic_coverage(
 ) -> Result<WireSemanticCoverage, ReplicationError> {
     Ok(WireSemanticCoverage {
         identity: read_identity(reader)?,
-        scope: crate::ExecutionScopeId::new(reader.fixed()?)?,
+        scope: reader.u64()?,
         read_manifest: read_identity(reader)?,
         authority: read_authority(reader)?,
     })
@@ -167,7 +167,7 @@ pub(super) fn write_recipe_result(
     write_identity(writer, result.read_manifest)?;
     write_identity(writer, result.output)?;
     writer.bytes(&result.output_bytes)?;
-    writer.fixed(&result.scope.as_bytes())?;
+    writer.u64(result.scope)?;
     write_resources(writer, result.resources)?;
     write_coverage(writer, &result.byte_coverage)?;
     write_semantic_coverage(writer, &result.semantic_coverage)?;
@@ -203,7 +203,7 @@ pub(super) fn read_recipe_result(
     let output = read_identity(reader)?;
     let output_limit = usize::try_from(limits.max_object).unwrap_or(usize::MAX);
     let output_bytes = std::sync::Arc::new(reader.bytes(output_limit)?);
-    let scope = crate::ExecutionScopeId::new(reader.fixed()?)?;
+    let scope = reader.u64()?;
     let resources = read_resources(reader)?;
     let byte_coverage = read_coverage(
         reader,

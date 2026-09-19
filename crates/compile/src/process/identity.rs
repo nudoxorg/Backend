@@ -17,10 +17,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static EXECUTABLE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Maximum executable bytes retained while deriving a toolchain identity or
-/// constructing an immutable execution lease.
-pub const MAX_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FileStamp {
     length: u64,
@@ -90,9 +86,6 @@ impl ExecutableIdentity {
         if !before.is_file() {
             return Err(ProcessError::ExecutableUnavailable);
         }
-        if before.len() > MAX_EXECUTABLE_BYTES {
-            return Err(ProcessError::ExecutableLimit);
-        }
         let before_stamp = FileStamp::from_metadata(&before);
         #[cfg(unix)]
         {
@@ -113,7 +106,8 @@ impl ExecutableIdentity {
 
         file.seek(SeekFrom::Start(0))
             .map_err(|_| ProcessError::Io)?;
-        let bytes = read_bounded_executable(&mut file, before.len())?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(|_| ProcessError::Io)?;
         let after = file
             .metadata()
             .map_err(|_| ProcessError::ExecutableUnavailable)?;
@@ -305,7 +299,10 @@ impl ExecutableLease {
             return Err(ProcessError::ExecutableUnavailable);
         }
         let before_stamp = FileStamp::from_metadata(&before);
-        let bytes = read_bounded_executable(&mut source, before.len())?;
+        let mut bytes = Vec::new();
+        source
+            .read_to_end(&mut bytes)
+            .map_err(|_| ProcessError::Io)?;
         let after = source
             .metadata()
             .map_err(|_| ProcessError::ExecutableUnavailable)?;
@@ -364,7 +361,10 @@ impl ExecutableLease {
             return Err(ProcessError::ExecutableUnavailable);
         }
         let before_stamp = FileStamp::from_metadata(&before);
-        let bytes = read_bounded_executable(&mut source, before.len())?;
+        let mut bytes = Vec::new();
+        source
+            .read_to_end(&mut bytes)
+            .map_err(|_| ProcessError::Io)?;
         let after = source
             .metadata()
             .map_err(|_| ProcessError::ExecutableUnavailable)?;
@@ -426,26 +426,6 @@ impl ExecutableLease {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
-}
-
-fn read_bounded_executable(file: &mut File, declared: u64) -> Result<Vec<u8>, ProcessError> {
-    if declared > MAX_EXECUTABLE_BYTES {
-        return Err(ProcessError::ExecutableLimit);
-    }
-    file.seek(SeekFrom::Start(0))
-        .map_err(|_| ProcessError::Io)?;
-    let capacity = usize::try_from(declared).map_err(|_| ProcessError::ExecutableLimit)?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(capacity)
-        .map_err(|_| ProcessError::ExecutableLimit)?;
-    file.take(MAX_EXECUTABLE_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|_| ProcessError::Io)?;
-    if bytes.len() as u64 > MAX_EXECUTABLE_BYTES {
-        return Err(ProcessError::ExecutableLimit);
-    }
-    Ok(bytes)
 }
 
 fn private_temp_directory(label: &str) -> Result<PathBuf, ProcessError> {

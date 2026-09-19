@@ -336,15 +336,6 @@ impl NotificationCursor {
 }
 
 /// Safe action selected for one nonterminal attempt after restart.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PublicationRecoveryMode {
-    /// The accepted proof was durable, but publication was never marked as started.
-    Start,
-    /// Publication was marked in flight, so the store outcome must be reconciled first.
-    Reconcile,
-}
-
-/// Safe action selected for one nonterminal attempt after restart.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DispatchRecoveryAction {
     /// Rebind and resend the exact admitted request.
@@ -358,8 +349,6 @@ pub enum DispatchRecoveryAction {
         attempt: RecoveredAttempt,
         /// Proof that must remain available until the owner acknowledges.
         proof: AcceptedResultProof,
-        /// Whether recovery may start publication or must reconcile an ambiguous call.
-        mode: PublicationRecoveryMode,
     },
     /// Remote rights were fenced and local fallback is now authoritative.
     Fallback {

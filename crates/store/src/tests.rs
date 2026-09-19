@@ -1,5 +1,4 @@
 use super::*;
-use backend_version::SchemaIdentity;
 use std::io::Write as _;
 
 #[track_caller]
@@ -81,14 +80,9 @@ impl backend_version::ProducerObservationVerifier for FixtureCoverageVerifier {
 
     fn verify(
         &self,
-        observation: &backend_version::UntrustedProducerObservation,
-    ) -> Result<backend_version::ProducerObservationClaims, Self::Error> {
-        Ok(backend_version::ProducerObservationClaims::new(
-            observation.producer_identity(),
-            observation.scope_root(),
-            observation.context(),
-            *blake3::hash(observation.evidence()).as_bytes(),
-        ))
+        _observation: &backend_version::UntrustedProducerObservation,
+    ) -> Result<(), Self::Error> {
+        Ok(())
     }
 }
 
@@ -164,32 +158,11 @@ fn pack_gc() {
     let p = must(encode_pack(&a, LayoutId::from_bytes([1; 32]), 100));
     let id = p.id();
     let mut r = Residency::default();
-    let resident = must(r.admit(p));
-    assert_eq!(resident.id(), id);
-    let pin = present(r.pin_resident(resident));
-    assert_eq!(present(r.pinned(pin)).layout(), resident.layout());
+    r.admit(p);
+    let pin = present(r.pin(id));
     assert_eq!(r.collect(), 0);
     r.unpin(pin);
     assert_eq!(r.collect(), 1);
-}
-
-#[test]
-fn residency_is_first_write_wins_and_layout_binds_pack_identity() {
-    let map = checked_map([(b"a".to_vec(), v(1))]);
-    let first = must(encode_pack(&map, LayoutId::derive(b"first-layout"), 100));
-    let replay = first.clone();
-    let moved = must(encode_pack(&map, LayoutId::derive(b"second-layout"), 100));
-    assert_eq!(first.id(), moved.id());
-
-    let mut residency = Residency::default();
-    let resident = must(residency.admit(first));
-    assert_eq!(must(residency.admit(replay)), resident);
-    let Err(conflict) = residency.admit(moved) else {
-        std::panic::resume_unwind(Box::new("layout replacement was admitted"));
-    };
-    assert_eq!(conflict.existing(), resident);
-    assert_ne!(conflict.into_incoming().layout(), resident.layout());
-    assert!(residency.contains(resident.id()));
 }
 
 #[test]
@@ -696,13 +669,9 @@ fn large_proof_verifies_independently_and_rejects_leaf_tampering() {
     assert!(proof.leaf_entries.len() >= OrderedMap::LEAF_MIN);
     assert!(!proof.path.is_empty());
     assert!(proof.verify_root(map.state_root()));
-    let verified = must(proof.clone().admit_root(map.state_root()));
-    assert_eq!(verified.root(), map.state_root());
-    assert_eq!(verified.proof().key, b"k006000");
 
     let mut tampered = proof.clone();
     tampered.leaf_entries[0].1.value[0] ^= 1;
-    assert!(tampered.clone().admit_root(map.state_root()).is_err());
     assert!(!tampered.verify_root(map.state_root()));
 }
 
@@ -1174,127 +1143,6 @@ fn root_only_extension_tracks_all_checked_relation_roots_by_binding() {
 }
 
 #[test]
-fn root_only_extension_durably_writes_every_registered_relation_root() {
-    let old_raw = must(backend_version::RelationState::<RawRelation>::from_entries(
-        [(
-            b"raw".to_vec(),
-            RawValue {
-                value: b"old".to_vec(),
-                availability: 1,
-                references: Vec::new(),
-            },
-        )],
-        coverage(),
-    ));
-    let target_raw = must(backend_version::RelationState::<RawRelation>::from_entries(
-        [(
-            b"raw".to_vec(),
-            RawValue {
-                value: b"new".to_vec(),
-                availability: 1,
-                references: Vec::new(),
-            },
-        )],
-        coverage(),
-    ));
-    let auxiliary = must(
-        backend_version::RelationState::<AuxiliaryRelation>::from_entries([(1, 2)], coverage()),
-    );
-    let authority_value = 7u64;
-    let authority_key =
-        backend_version::ObjectKey::<TestCoverageSchema>::from_value(&authority_value);
-    let authority_version =
-        backend_version::ObjectVersion::<TestCoverageSchema>::from_value(&authority_value);
-    let authority_object = TypedObject::from_value(&authority_key, &authority_value);
-    let old_workspace = must(backend_version::CheckedWorkspaceManifest::from_versions(
-        1,
-        vec![
-            backend_version::RelationBinding::from_state(&auxiliary),
-            backend_version::RelationBinding::from_state(&old_raw),
-        ],
-        Vec::new(),
-        authority_version,
-        coverage(),
-    ));
-    let target_workspace = must(backend_version::CheckedWorkspaceManifest::from_versions(
-        1,
-        vec![
-            backend_version::RelationBinding::from_state(&auxiliary),
-            backend_version::RelationBinding::from_state(&target_raw),
-        ],
-        Vec::new(),
-        authority_version,
-        coverage(),
-    ));
-    let registry = must(RelationAdmissionRegistry::default().with_relation::<AuxiliaryRelation>());
-    let mut objects = vec![
-        must(TypedObject::from_relation_state(&old_raw)),
-        must(TypedObject::from_relation_state(&auxiliary)),
-        authority_object.clone(),
-    ];
-    objects.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));
-    let base = must(
-        WorkspaceClosure::from_checked_manifest_root_only_with_registry(
-            &old_workspace,
-            must(ClosureManifest::new(objects)),
-            &registry,
-        ),
-    );
-    let extended = must(WorkspaceClosure::extend_checked_nodes_with_registry(
-        &base,
-        &target_workspace,
-        target_raw.root(),
-        [target_raw.root_handle()],
-        [
-            must(TypedObject::from_relation_state(&auxiliary)),
-            authority_object,
-        ],
-        &registry,
-    ));
-
-    let path = std::env::temp_dir().join(format!(
-        "backend-store-root-only-multi-relation-{}-{}",
-        std::process::id(),
-        state_byte(67)
-    ));
-    let _ = std::fs::remove_dir_all(&path);
-    let store = must(FileStore::open_with_registry(
-        &path,
-        8 * 1024 * 1024,
-        registry,
-    ));
-    let map = checked_map([(b"pack".to_vec(), v(1))]);
-    let layout = LayoutId::derive(b"root-only-multi-relation-layout");
-    let pack = must(encode_pack(&map, layout, 8 * 1024 * 1024));
-    let pack_id = must(store.write_pack(&pack));
-    let publication = CheckedWorkspacePublication::new(
-        &target_workspace,
-        extended.manifest().clone(),
-        layout,
-        pack_id,
-        None,
-    )
-    .with_root_only();
-    let authority = must(store.acquire_publication_authority());
-    let published =
-        must(must(store.prepare_checked_workspace_publication(publication)).durable())
-            .publish_with_authority(&authority);
-    drop(must(published));
-
-    let reopened = must(FileStore::open_with_registry(
-        &path,
-        8 * 1024 * 1024,
-        must(RelationAdmissionRegistry::default().with_relation::<AuxiliaryRelation>()),
-    ));
-    let closure = must(reopened.read_closure(extended.manifest().id()));
-    assert!(closure.objects().iter().any(|object| {
-        object.schema() == SchemaIdentity::of_relation::<AuxiliaryRelation>()
-            && object.version() == auxiliary.root().as_bytes()
-    }));
-    must(std::fs::remove_dir_all(path));
-}
-
-#[test]
 fn closure_admission_rejects_forged_object_version() {
     let value = 17u64;
     let key = backend_version::ObjectKey::<TestCoverageSchema>::from_value(&value);
@@ -1435,7 +1283,7 @@ fn filesystem_complete_journal_corruption_is_rejected() {
 }
 
 #[test]
-fn complete_head_checkpoint_corruption_is_rejected() {
+fn corrupted_head_checkpoint_falls_back_to_journal_and_repairs() {
     let path = std::env::temp_dir().join(format!(
         "backend-store-head-checkpoint-{}-{}",
         std::process::id(),
@@ -1448,127 +1296,13 @@ fn complete_head_checkpoint_corruption_is_rejected() {
     let mut head = must(std::fs::read(path.join("HEAD")));
     head[0] ^= 1;
     must(std::fs::write(path.join("HEAD"), head));
-    assert!(matches!(
-        FileStore::open(&path, 8_192),
-        Err(StoreError::Corrupt)
-    ));
-    must(std::fs::remove_dir_all(path));
-}
-
-#[test]
-fn every_interrupted_head_temp_prefix_is_scavenged_without_hiding_other_files() {
-    let path = std::env::temp_dir().join(format!(
-        "backend-store-head-temp-cuts-{}-{}",
-        std::process::id(),
-        state_byte(31)
-    ));
-    let _ = std::fs::remove_dir_all(&path);
-    let store = must(FileStore::open(&path, 8_192));
-    let map = checked_map([(b"checkpoint".to_vec(), v(1))]);
-    must(store.publish(&map, LayoutId::derive(b"checkpoint-layout")));
-    drop(store);
-    let head = must(std::fs::read(path.join("HEAD")));
-    let unrelated = path.join(".HEAD.notes.tmp");
-    must(std::fs::write(&unrelated, b"not store-owned"));
-    for cut in 0..head.len() {
-        let temporary = path.join(format!(".HEAD.4242.{cut}.tmp"));
-        must(std::fs::write(&temporary, &head[..cut]));
-        let reopened = must(FileStore::open(&path, 8_192));
-        assert_eq!(
-            present(must(reopened.head())).descriptor().target(),
-            *map.state_root().as_bytes()
-        );
-        drop(reopened);
-        assert!(!temporary.exists());
-        assert!(unrelated.exists());
-    }
-    must(std::fs::remove_dir_all(path));
-}
-
-#[test]
-fn complete_corrupt_recognized_head_temp_is_rejected_and_retained() {
-    let path = std::env::temp_dir().join(format!(
-        "backend-store-head-temp-corrupt-{}-{}",
-        std::process::id(),
-        state_byte(32)
-    ));
-    let _ = std::fs::remove_dir_all(&path);
-    let store = must(FileStore::open(&path, 8_192));
-    let map = checked_map([(b"checkpoint".to_vec(), v(1))]);
-    must(store.publish(&map, LayoutId::derive(b"checkpoint-layout")));
-    drop(store);
-    let mut corrupt = must(std::fs::read(path.join("HEAD")));
-    let last = present(corrupt.len().checked_sub(1));
-    corrupt[last] ^= 1;
-    let temporary = path.join(".HEAD.4242.1.tmp");
-    must(std::fs::write(&temporary, corrupt));
-    assert!(matches!(
-        FileStore::open(&path, 8_192),
-        Err(StoreError::Corrupt)
-    ));
-    assert!(temporary.exists());
-    must(std::fs::remove_dir_all(path));
-}
-
-#[test]
-fn reopen_scavenges_only_store_owned_immutable_temps() {
-    let path = std::env::temp_dir().join(format!(
-        "backend-store-immutable-temp-{}-{}",
-        std::process::id(),
-        state_byte(33)
-    ));
-    let _ = std::fs::remove_dir_all(&path);
-    let store = must(FileStore::open(&path, 8_192));
-    drop(store);
-    for directory in ["packs", "objects", "closures"] {
-        let directory = path.join(directory);
-        let orphan = directory.join(".artifact.4242.7.tmp");
-        let unknown = directory.join("artifact.object.tmp");
-        must(std::fs::write(&orphan, b"interrupted bytes"));
-        must(std::fs::write(&unknown, b"future format"));
-    }
     let reopened = must(FileStore::open(&path, 8_192));
-    drop(reopened);
-    for directory in ["packs", "objects", "closures"] {
-        let directory = path.join(directory);
-        assert!(!directory.join(".artifact.4242.7.tmp").exists());
-        assert!(directory.join("artifact.object.tmp").exists());
-    }
+    assert_eq!(
+        present(must(reopened.recover())).state_root(),
+        map.state_root()
+    );
+    assert!(std::fs::read(path.join("HEAD")).is_ok());
     must(std::fs::remove_dir_all(path));
-}
-
-#[test]
-fn every_atomic_head_boundary_reopens_the_journal_selected_publication() {
-    for point in 5..=8 {
-        let path = std::env::temp_dir().join(format!(
-            "backend-store-head-boundary-{point}-{}-{}",
-            std::process::id(),
-            state_byte(40 + u64::from(point))
-        ));
-        let _ = std::fs::remove_dir_all(&path);
-        let store = must(FileStore::open(&path, 8_192));
-        let map = checked_map([(b"boundary".to_vec(), v(point))]);
-        let durable = must(must(store.prepare_map(&map, LayoutId::derive(b"boundary"))).durable());
-        durable::set_test_fault(point);
-        assert!(matches!(
-            durable.publish(),
-            Err(StoreError::PublishedWithSyncPending(_))
-        ));
-        drop(store);
-
-        let reopened = must(FileStore::open(&path, 8_192));
-        assert_eq!(
-            present(must(reopened.head())).descriptor().target(),
-            *map.state_root().as_bytes()
-        );
-        assert!(
-            must(std::fs::read_dir(&path))
-                .filter_map(Result::ok)
-                .all(|entry| !entry.file_name().to_string_lossy().starts_with(".HEAD."))
-        );
-        drop(reopened);
-        must(std::fs::remove_dir_all(path));
-    }
 }
 
 #[test]
@@ -1628,10 +1362,10 @@ fn completed_journal_faults_report_typed_sync_statuses() {
     let durable = must(must(store.prepare_map(&second, layout)).durable());
     durable::set_test_fault(4);
     let publish_error = durable.publish();
-    assert!(
-        matches!(publish_error, Err(StoreError::PublishedWithSyncPending(_))),
-        "unexpected HEAD fault result: {publish_error:?}"
-    );
+    assert!(matches!(
+        publish_error,
+        Err(StoreError::PublishedWithSyncPending(_))
+    ));
     assert_eq!(
         present(must(store.head())).descriptor().target(),
         *second.state_root().as_bytes()

@@ -1,10 +1,9 @@
 //! Attestation statements and semantic coverage proofs.
 
 use super::{
-    AttemptId, AuthorityExpectation, CancellationId, ExecutionScopeId, ExpectedIdentity, Fence,
-    ReplicationError, RevocationVersion, SparseCoverage, TransportLimits, WireAuthority,
-    WireAuthorityPolicy, WireIdentity, WorkspaceRootClaim, canonical_attestation_bytes,
-    canonical_attestation_write,
+    AttemptId, AuthorityExpectation, CancellationId, ExpectedIdentity, Fence, ReplicationError,
+    RevocationVersion, SparseCoverage, TransportLimits, WireAuthority, WireAuthorityPolicy,
+    WireIdentity, WorkspaceRootClaim, canonical_attestation_bytes, canonical_attestation_write,
 };
 
 /// A fixed width authentication or attestation statement.
@@ -150,7 +149,7 @@ pub struct WireSemanticCoverage {
     /// Opaque execution-owned coverage identity.
     pub identity: WireIdentity,
     /// Requested semantic scope.
-    pub scope: ExecutionScopeId,
+    pub scope: u64,
     /// Exact read manifest that defines the semantic dependency boundary.
     pub read_manifest: WireIdentity,
     /// Authority claim under which the scope was observed.
@@ -197,7 +196,7 @@ pub struct SemanticCoverageExpectation {
     /// Expected semantic coverage identity.
     pub identity: ExpectedIdentity,
     /// Expected requested scope.
-    pub scope: ExecutionScopeId,
+    pub scope: u64,
     /// Expected read manifest identity.
     pub read_manifest: ExpectedIdentity,
     /// Expected authority policy.
@@ -238,7 +237,7 @@ pub struct AttestationMaterial {
     /// Read-manifest claim.
     pub read_manifest: WireIdentity,
     /// Requested scope.
-    pub scope: ExecutionScopeId,
+    pub scope: u64,
     /// Full multidimensional resource envelope.
     pub resources: ResourceEnvelope,
     /// Exact attempt fence.
@@ -324,7 +323,7 @@ pub struct AttestationMaterialView<'a> {
     /// Read-manifest claim.
     pub read_manifest: WireIdentity,
     /// Requested scope.
-    pub scope: ExecutionScopeId,
+    pub scope: u64,
     /// Full multidimensional resource envelope.
     pub resources: ResourceEnvelope,
     /// Exact attempt fence.
@@ -425,9 +424,9 @@ impl AttestationMaterialView<'_> {
 }
 
 /// Domain-separated lanes for the shared authority statement grammar.
-pub const AUTHORITY_STATEMENT_DOMAIN: &[u8] = b"backend.engine.authority.statement.v2\0";
+pub const AUTHORITY_STATEMENT_DOMAIN: &[u8] = b"backend.engine.authority.statement.v1\0";
 /// Confirmation lane for the shared authority statement grammar.
-pub const AUTHORITY_CONFIRM_DOMAIN: &[u8] = b"backend.engine.authority.statement.v2/confirm\0";
+pub const AUTHORITY_CONFIRM_DOMAIN: &[u8] = b"backend.engine.authority.statement.v1/confirm\0";
 
 /// Caller-owned trust capability for authenticated execution statements.
 /// Implementations may perform local recomputation, signature verification,
