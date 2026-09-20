@@ -1,10 +1,10 @@
 //! Closure and input transfer phase of the owner remote state machine.
 
 use super::{
-    BuiltinAuthorityVerifier, BuiltinModel, BuiltinReplication, BuiltinSemanticRelation,
-    BuiltinValidator, TransportMessage, WireIdentity,
+    BuiltinAuthorityVerifier, BuiltinModel, BuiltinReplication, BuiltinValidator, ProductRelation,
+    TransportMessage, WireIdentity,
 };
-use crate::reconcile::{product_frames_for_version_from_source, semantic_input_frame};
+use crate::reconcile::{product_frames_for_version_from_source, product_input_frame};
 use backend_engine::ImmutableObjectSchema;
 
 impl BuiltinReplication {
@@ -340,7 +340,7 @@ impl BuiltinReplication {
                 .is_none_or(std::collections::BTreeSet::is_empty)
         {
             closure.input = Some(
-                semantic_input_frame(
+                product_input_frame(
                     closure.input_value,
                     closure.authority,
                     self.limits,
@@ -387,7 +387,7 @@ impl BuiltinReplication {
 }
 
 fn checked_missing_versions(
-    source: Option<&mut crate::reconcile::ProductPageSource<BuiltinSemanticRelation>>,
+    source: Option<&mut crate::reconcile::ProductPageSource<ProductRelation>>,
     missing: &[WireIdentity],
 ) -> Result<std::collections::BTreeSet<[u8; 32]>, crate::protocol::ProtocolError> {
     let source = source.ok_or(crate::protocol::ProtocolError::InvalidControl(

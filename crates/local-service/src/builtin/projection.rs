@@ -1,9 +1,7 @@
 //! Proof-bearing command replies and view subscription certificates.
 
 use super::BuiltinModelError;
-use backend_engine::{
-    Command, CommandReply, PageTerminal, RowId, ViewRoot, WireCertificate, WireClaim,
-};
+use backend_engine::{Command, CommandReply, RowId, ViewRoot, WireCertificate, WireClaim};
 
 pub(crate) fn reply_certificate(
     command: &Command,
@@ -24,9 +22,6 @@ pub(crate) fn reply_certificate(
             Some(owner_root),
             base,
         )?),
-        CommandReply::ProjectionPage(page) => Some(projection_page_certificate(
-            command, page, owner_root, base,
-        )?),
         CommandReply::Names(snapshot) | CommandReply::Search(snapshot) => {
             let text = match command {
                 Command::Name(query) => query.text().as_bytes(),
@@ -40,13 +35,20 @@ pub(crate) fn reply_certificate(
                 base,
             )?)
         }
-        CommandReply::Resolved(rows) => Some(view_commitment_certificate(
-            owner_root,
-            b"library-view-v1",
-            None,
-            rows,
-            base,
-        )?),
+        CommandReply::Resolved(rows) => {
+            // `resolve` lowers to the names arrangement and returns rows
+            // directly, so it has no snapshot envelope from which a receiver
+            // could recover the source basis. Seed the certificate from the
+            // owner root, which carries the exact basis, row, and fragment
+            // identities used to construct these rows.
+            let _ = rows;
+            Some(view_certificate(
+                owner_root,
+                b"library-view-v1",
+                None,
+                base,
+            )?)
+        }
         CommandReply::Graph(snapshot) => Some(view_certificate(
             &snapshot.root,
             &identity_preimage(&[
@@ -58,17 +60,17 @@ pub(crate) fn reply_certificate(
             Some(owner_root),
             base,
         )?),
-        CommandReply::Health(_) => {
-            return Err(BuiltinModelError(
-                "local service refused a legacy materialized health reply".to_owned(),
-            ));
-        }
-        CommandReply::Readiness(report) => Some(readiness_certificate(
-            report,
-            owner_root,
-            owner_cursor,
-            base,
-        )?),
+        CommandReply::Health(root) => Some(
+            view_certificate(root, b"library-view-v1", None, base)?.with_claim(WireClaim::Cursor {
+                recipe: backend_engine::encode_id(owner_cursor.recipe().as_bytes()),
+                version: backend_engine::encode_id(owner_cursor.version().as_bytes()),
+                branch: backend_engine::encode_id(owner_cursor.branch().as_bytes()),
+                log: backend_engine::encode_id(owner_cursor.log().as_bytes()),
+                schema: owner_cursor.schema(),
+                root: backend_engine::encode_id(owner_cursor.root().as_bytes()),
+                sequence: owner_cursor.sequence(),
+            }),
+        ),
         CommandReply::Revision(_) => Some(certificate_for_snapshot_page(
             owner_root,
             owner_cursor,
@@ -76,191 +78,20 @@ pub(crate) fn reply_certificate(
             &[],
             base,
         )?),
-        CommandReply::Document(document) | CommandReply::Page(document) => {
-            Some(document_certificate(document, owner_root, base)?)
+        CommandReply::Document(_) | CommandReply::Page(_) | CommandReply::Outline(_) => {
+            // Show/document/outline replies can arrive without a prior health
+            // request. Retain the producer's owner-root claims so a standalone
+            // client can admit their source basis and nested stable IDs.
+            Some(view_certificate(
+                owner_root,
+                b"library-view-v1",
+                None,
+                base,
+            )?)
         }
-        CommandReply::Outline(outline) => Some(outline_certificate(outline, owner_root, base)?),
-        CommandReply::GraphQueryPage(page) => {
-            Some(graph_query_certificate(command, page, owner_root, base)?)
-        }
-        CommandReply::Added(_)
-        | CommandReply::Removed(_)
-        | CommandReply::Error(_)
-        | CommandReply::Failed(_)
-        | CommandReply::Surface(_) => base,
+        CommandReply::Added(_) | CommandReply::Removed(_) | CommandReply::Error(_) => base,
     };
     Ok(certificate)
-}
-
-fn document_certificate(
-    document: &backend_engine::Document,
-    owner_root: &ViewRoot,
-    base: Option<WireCertificate>,
-) -> Result<WireCertificate, BuiltinModelError> {
-    let mut rows = vec![required_row(
-        owner_root,
-        RowId::Symbol(document.symbol),
-        "document symbol",
-    )?];
-    for fragment in &document.fragments {
-        let backend_engine::Fragment::Link { target, .. } = fragment else {
-            continue;
-        };
-        append_row_once_if_present(owner_root, RowId::Symbol(*target), &mut rows);
-    }
-    view_commitment_certificate(owner_root, b"library-view-v1", None, &rows, base)
-}
-
-fn outline_certificate(
-    outline: &backend_engine::Outline,
-    owner_root: &ViewRoot,
-    base: Option<WireCertificate>,
-) -> Result<WireCertificate, BuiltinModelError> {
-    let mut rows = vec![required_row(
-        owner_root,
-        RowId::Package(outline.package),
-        "outline package",
-    )?];
-    let mut pending = outline.roots().collect::<Vec<_>>();
-    while let Some(node) = pending.pop() {
-        append_required_row_once(
-            owner_root,
-            RowId::Symbol(node.symbol),
-            "outline symbol",
-            &mut rows,
-        )?;
-        pending.extend(node.children.iter());
-    }
-    view_commitment_certificate(owner_root, b"library-view-v1", None, &rows, base)
-}
-
-fn projection_page_certificate(
-    command: &Command,
-    page: &backend_engine::ProjectionPage,
-    owner_root: &ViewRoot,
-    base: Option<WireCertificate>,
-) -> Result<WireCertificate, BuiltinModelError> {
-    let recipe = paged_recipe(command)?;
-    let mut certificate = view_certificate(
-        &page.snapshot.root,
-        &identity_preimage(&[
-            b"query",
-            &recipe,
-            page.snapshot.root.basis().root.as_bytes(),
-            &[0],
-        ]),
-        Some(owner_root),
-        base,
-    )?;
-    if let PageTerminal::More(continuation) = page.terminal {
-        append_cursor_claim(&mut certificate, continuation.cursor());
-    }
-    Ok(certificate)
-}
-
-fn readiness_certificate(
-    report: &backend_engine::HealthReport,
-    owner_root: &ViewRoot,
-    owner_cursor: backend_engine::Cursor,
-    base: Option<WireCertificate>,
-) -> Result<WireCertificate, BuiltinModelError> {
-    let revision = report.revision();
-    if revision.root() != owner_root.root()
-        || revision.cursor() != owner_cursor
-        || report.basis() != owner_root.basis()
-        || report.coverage() != owner_root.coverage()
-        || report.row_count() != owner_root.row_count()
-    {
-        return Err(BuiltinModelError(
-            "health report does not describe the selected owner revision".to_owned(),
-        ));
-    }
-    let mut certificate =
-        view_commitment_certificate(owner_root, b"library-view-v1", None, &[], base)?;
-    append_cursor_claim(&mut certificate, owner_cursor);
-    Ok(certificate)
-}
-
-fn graph_query_certificate(
-    command: &Command,
-    page: &backend_engine::GraphQueryPage,
-    owner_root: &ViewRoot,
-    base: Option<WireCertificate>,
-) -> Result<WireCertificate, BuiltinModelError> {
-    let Command::GraphQuery(request) = command else {
-        return Err(BuiltinModelError(
-            "structured graph-query page does not match its command".to_owned(),
-        ));
-    };
-    if !page.revision.matches(owner_root.root()) || page.source != owner_root.basis().object {
-        return Err(BuiltinModelError(
-            "structured graph-query page does not match the selected owner revision".to_owned(),
-        ));
-    }
-    let mut certificate = base.ok_or_else(|| {
-        BuiltinModelError(
-            "structured graph-query request omitted its revision certificate".to_owned(),
-        )
-    })?;
-    if let PageTerminal::More(continuation) = page.terminal {
-        let cursor = continuation.cursor();
-        if cursor.recipe() != request.recipe() || cursor.root() != owner_root.root() {
-            return Err(BuiltinModelError(
-                "structured graph-query continuation does not match its request".to_owned(),
-            ));
-        }
-        add_certificate_claim(
-            &mut certificate,
-            WireClaim::KeyBytes {
-                schema: backend_engine::WireSchema::ViewRecipe,
-                id: backend_engine::encode_id(request.recipe().as_bytes()),
-                value: request.recipe_preimage(),
-            },
-        );
-        certificate.claims = certificate
-            .claims
-            .iter()
-            .filter(|claim| !matches!(claim, WireClaim::Cursor { .. }))
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        append_cursor_claim(&mut certificate, cursor);
-    }
-    Ok(certificate)
-}
-
-fn append_cursor_claim(certificate: &mut WireCertificate, cursor: backend_engine::Cursor) {
-    add_certificate_claim(
-        certificate,
-        WireClaim::Cursor {
-            recipe: backend_engine::encode_id(cursor.recipe().as_bytes()),
-            version: backend_engine::encode_id(cursor.version().as_bytes()),
-            branch: backend_engine::encode_id(cursor.branch().as_bytes()),
-            log: backend_engine::encode_id(cursor.log().as_bytes()),
-            schema: cursor.schema(),
-            root: backend_engine::encode_id(cursor.root().as_bytes()),
-            sequence: cursor.sequence(),
-        },
-    );
-}
-
-fn paged_recipe(command: &Command) -> Result<Vec<u8>, BuiltinModelError> {
-    match command {
-        Command::PackagePage(_) => Ok(b"packages-page".to_vec()),
-        Command::OutlinePage { package, .. } => {
-            let mut recipe = b"outline-page".to_vec();
-            recipe.extend_from_slice(package.as_bytes());
-            Ok(recipe)
-        }
-        Command::GraphPage { symbol, .. } => {
-            let mut recipe = b"graph-page".to_vec();
-            recipe.extend_from_slice(&symbol.claimed_bytes());
-            Ok(recipe)
-        }
-        _ => Err(BuiltinModelError(
-            "projection page reply does not match a paged command".to_owned(),
-        )),
-    }
 }
 
 fn identity_preimage(parts: &[&[u8]]) -> Vec<u8> {
@@ -280,28 +111,6 @@ fn view_certificate(
     root: &ViewRoot,
     recipe_preimage: &[u8],
     basis_root: Option<&ViewRoot>,
-    base: Option<WireCertificate>,
-) -> Result<WireCertificate, BuiltinModelError> {
-    let rows = root.rows();
-    view_certificate_with_rows(root, recipe_preimage, basis_root, rows, false, base)
-}
-
-fn view_commitment_certificate(
-    root: &ViewRoot,
-    recipe_preimage: &[u8],
-    basis_root: Option<&ViewRoot>,
-    rows: &[backend_engine::Row],
-    base: Option<WireCertificate>,
-) -> Result<WireCertificate, BuiltinModelError> {
-    view_certificate_with_rows(root, recipe_preimage, basis_root, rows, true, base)
-}
-
-fn view_certificate_with_rows(
-    root: &ViewRoot,
-    recipe_preimage: &[u8],
-    basis_root: Option<&ViewRoot>,
-    rows: &[backend_engine::Row],
-    commitment_only: bool,
     base: Option<WireCertificate>,
 ) -> Result<WireCertificate, BuiltinModelError> {
     let mut certificate = base.unwrap_or_default();
@@ -328,27 +137,17 @@ fn view_certificate_with_rows(
             .into_boxed_slice(),
         },
     );
-    if commitment_only {
-        add_certificate_claim(
-            &mut certificate,
-            WireClaim::RootCommitment {
-                schema: backend_engine::WireSchema::ViewRelation,
-                id: backend_engine::encode_id(root.root().as_bytes()),
-            },
-        );
-    } else {
-        let relation = root
-            .canonical_relation_bytes()
-            .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
-        add_certificate_claim(
-            &mut certificate,
-            WireClaim::Root {
-                schema: backend_engine::WireSchema::ViewRelation,
-                id: backend_engine::encode_id(root.root().as_bytes()),
-                canonical: relation.into_boxed_slice(),
-            },
-        );
-    }
+    let relation = root
+        .canonical_relation_bytes()
+        .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
+    add_certificate_claim(
+        &mut certificate,
+        WireClaim::Root {
+            schema: backend_engine::WireSchema::ViewRelation,
+            id: backend_engine::encode_id(root.root().as_bytes()),
+            canonical: relation.into_boxed_slice(),
+        },
+    );
     if root.basis().root != root.root() {
         if basis_root.is_some_and(|source| source.root() != root.basis().root) {
             return Err(BuiltinModelError(
@@ -404,7 +203,7 @@ fn view_certificate_with_rows(
             value: "library".to_owned(),
         },
     );
-    add_row_certificate_claims_for_rows(&mut certificate, basis_root.unwrap_or(root), rows);
+    add_row_certificate_claims_for_rows(&mut certificate, basis_root.unwrap_or(root), root.rows());
     Ok(certificate)
 }
 
@@ -626,40 +425,6 @@ pub(crate) fn certificate_for_compact_event(
     Ok(certificate)
 }
 
-fn required_row(
-    root: &ViewRoot,
-    id: RowId,
-    context: &str,
-) -> Result<backend_engine::Row, BuiltinModelError> {
-    root.row(id).ok_or_else(|| {
-        BuiltinModelError(format!(
-            "{context} is not present in the reply source revision"
-        ))
-    })
-}
-
-fn append_required_row_once(
-    root: &ViewRoot,
-    id: RowId,
-    context: &str,
-    rows: &mut Vec<backend_engine::Row>,
-) -> Result<(), BuiltinModelError> {
-    if rows.iter().any(|row| row.id == id) {
-        return Ok(());
-    }
-    rows.push(required_row(root, id, context)?);
-    Ok(())
-}
-
-fn append_row_once_if_present(root: &ViewRoot, id: RowId, rows: &mut Vec<backend_engine::Row>) {
-    if rows.iter().any(|row| row.id == id) {
-        return;
-    }
-    if let Some(row) = root.row(id) {
-        rows.push(row);
-    }
-}
-
 fn add_row_certificate_claims_for_rows(
     certificate: &mut WireCertificate,
     root: &ViewRoot,
@@ -667,125 +432,81 @@ fn add_row_certificate_claims_for_rows(
 ) {
     for row in rows {
         match row.id {
-            RowId::Package(package) => {
-                add_package_claim(certificate, package, &row.label);
-            }
+            RowId::Package(package) => add_certificate_claim(
+                certificate,
+                WireClaim::Key {
+                    schema: backend_engine::WireSchema::Package,
+                    id: backend_engine::encode_id(package.as_bytes()),
+                    value: row.label.clone(),
+                },
+            ),
             RowId::Symbol(symbol) => {
-                add_symbol_claim(certificate, symbol, &row.label);
+                add_certificate_claim(
+                    certificate,
+                    WireClaim::Key {
+                        schema: backend_engine::WireSchema::Symbol,
+                        id: backend_engine::encode_id(symbol.as_bytes()),
+                        value: row.label.clone(),
+                    },
+                );
+                add_row_id_commitment(certificate, row.id);
             }
             RowId::Object(_) => {}
         }
         if let Some(package) = row.package
             && let Some(label) = root.row_label(RowId::Package(package))
         {
-            add_package_claim(certificate, package, &label);
+            add_certificate_claim(
+                certificate,
+                WireClaim::Key {
+                    schema: backend_engine::WireSchema::Package,
+                    id: backend_engine::encode_id(package.as_bytes()),
+                    value: label,
+                },
+            );
         }
         if let Some(parent) = row.parent {
             if let Some(label) = root.row_label(RowId::Symbol(parent)) {
-                add_symbol_claim(certificate, parent, &label);
-            } else {
-                add_row_id_commitment(certificate, RowId::Symbol(parent));
+                add_certificate_claim(
+                    certificate,
+                    WireClaim::Key {
+                        schema: backend_engine::WireSchema::Symbol,
+                        id: backend_engine::encode_id(parent.as_bytes()),
+                        value: label,
+                    },
+                );
             }
+            add_certificate_claim(
+                certificate,
+                WireClaim::KeyCommitment {
+                    schema: backend_engine::WireSchema::Symbol,
+                    id: backend_engine::encode_id(parent.as_bytes()),
+                },
+            );
         }
-        for fragment in &row.document {
+        for fragment in row.document.iter() {
             let backend_engine::Fragment::Link { target, .. } = fragment else {
                 continue;
             };
             if root.row(RowId::Symbol(*target)).is_some() {
                 if let Some(label) = root.row_label(RowId::Symbol(*target)) {
-                    add_symbol_claim(certificate, *target, &label);
-                } else {
-                    add_row_id_commitment(certificate, RowId::Symbol(*target));
+                    add_certificate_claim(
+                        certificate,
+                        WireClaim::Key {
+                            schema: backend_engine::WireSchema::Symbol,
+                            id: backend_engine::encode_id(target.as_bytes()),
+                            value: label,
+                        },
+                    );
                 }
+                add_certificate_claim(
+                    certificate,
+                    WireClaim::KeyCommitment {
+                        schema: backend_engine::WireSchema::Symbol,
+                        id: backend_engine::encode_id(target.as_bytes()),
+                    },
+                );
             }
         }
-    }
-}
-
-fn add_package_claim(
-    certificate: &mut WireCertificate,
-    package: backend_engine::PackageKey,
-    label: &str,
-) {
-    if backend_engine::package_key(label) == package {
-        add_certificate_claim(
-            certificate,
-            WireClaim::Key {
-                schema: backend_engine::WireSchema::Package,
-                id: backend_engine::encode_id(package.as_bytes()),
-                value: label.to_owned(),
-            },
-        );
-    }
-    add_row_id_commitment(certificate, RowId::Package(package));
-}
-
-fn add_symbol_claim(
-    certificate: &mut WireCertificate,
-    symbol: backend_engine::SymbolKey,
-    label: &str,
-) {
-    if backend_engine::symbol_key(label) == symbol {
-        add_certificate_claim(
-            certificate,
-            WireClaim::Key {
-                schema: backend_engine::WireSchema::Symbol,
-                id: backend_engine::encode_id(symbol.as_bytes()),
-                value: label.to_owned(),
-            },
-        );
-    }
-    add_row_id_commitment(certificate, RowId::Symbol(symbol));
-}
-
-#[cfg(test)]
-#[allow(clippy::expect_used)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn commitment_certificate_size_is_independent_of_hidden_rows() {
-        let (empty, _) = super::super::initial_view().expect("initial view");
-        let capability = super::super::test_builtin_view_capability().expect("coverage");
-        let empty_certificate =
-            view_commitment_certificate(&empty, b"library-view-v1", None, &[], None)
-                .expect("empty certificate");
-
-        let mut large = empty;
-        for index in 0..256 {
-            let row = backend_engine::Row::new(
-                RowId::Symbol(backend_engine::symbol_key(&format!("bounded::{index:04}"))),
-                large.basis(),
-                format!("bounded::{index:04}"),
-            );
-            let prepared = large
-                .prepare(
-                    backend_engine::ViewDelta::Upsert { row },
-                    capability.clone(),
-                )
-                .expect("prepare row");
-            (large, _) = large.commit(prepared).expect("commit row");
-        }
-        let large_certificate =
-            view_commitment_certificate(&large, b"library-view-v1", None, &[], None)
-                .expect("large certificate");
-
-        assert_eq!(
-            empty_certificate.claims.len(),
-            large_certificate.claims.len()
-        );
-        assert!(large_certificate.claims.iter().any(|claim| matches!(
-            claim,
-            WireClaim::RootCommitment {
-                schema: backend_engine::WireSchema::ViewRelation,
-                id,
-            } if id == &backend_engine::encode_id(large.root().as_bytes())
-        )));
-        assert!(
-            !large_certificate
-                .claims
-                .iter()
-                .any(|claim| matches!(claim, WireClaim::Root { .. }))
-        );
     }
 }

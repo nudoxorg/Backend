@@ -8,27 +8,23 @@
 use super::profile_descriptor;
 use super::{
     Arc, AuthorityClaim, AuthorityEpoch, BuiltinAuthorityVerifier, BuiltinModel, BuiltinProfile,
-    BuiltinSemanticRelation, BuiltinValidator, ClosureRootOffer, CostSnapshot, DispatchAttemptKey,
+    BuiltinValidator, ClosureRootOffer, CostSnapshot, DeltaPlanner, DispatchAttemptKey,
     DispatchPlan, DispatchRecoveryAction, Duration, EngineStatus, ExpectedInput, Frame, Instant,
-    LocalCapability, LocalState, OutputVersion, PendingRemoteKey, PlacementClass,
-    ProfileDescriptor, ProfileIds, RebuildScope, Receiver, RefreshChoice, RefreshCost,
-    RelationState, RemoteAuthorityPolicy, RemoteCapability, RemoteDispatchContract, RemoteState,
-    ReplicationAdmission, ResourceEnvelope, ResourceVector, RevocationVersion, ScheduleRequest,
-    TransportLimits, TransportMessage, TryRecvError, UntrustedSemanticCoverageClaim,
-    VersionedWorkIdentity, WireAuthorityPolicy, WireIdentity, WireRecipeRequest, WorkspaceRoot,
-    connect_worker, daemon_replicate, execution_manifest, execution_resources, mpsc,
-    product_dependency_manifest, thread, validate_canonical_output,
+    LocalCapability, LocalState, OutputVersion, PendingRemoteKey, PlacementClass, ProductInput,
+    ProductRelation, ProductSourceDeltaFacts, ProductSourceSnapshot, ProfileDescriptor, ProfileIds,
+    RebuildScope, Receiver, RefreshChoice, RefreshCost, RelationState, RemoteAuthorityPolicy,
+    RemoteCapability, RemoteDispatchContract, RemoteState, ReplicationAdmission, ResourceEnvelope,
+    ResourceVector, RevocationVersion, ScheduleRequest, TransportLimits, TransportMessage,
+    TryRecvError, UntrustedSemanticCoverageClaim, VersionedWorkIdentity, WireAuthorityPolicy,
+    WireIdentity, WireRecipeRequest, WorkspaceRoot, connect_worker, daemon_replicate,
+    execution_input_basis, execution_manifest, execution_resources, mpsc,
+    product_dependency_manifest, product_input_version, product_source_fixture_with_authority,
+    thread, validate_canonical_output,
 };
 use backend_engine::{
-    ProductSemanticPublicationSnapshot, SemanticPublicationInput, SemanticPublicationProjection,
-    SemanticPublicationProjectionBuilder, WorkspaceRelationNodePage,
-    semantic_publication_output_bytes,
+    ProductProjection, ProductProjectionBuilder, WorkspaceRelationNodePage, product_output_bytes,
 };
-#[cfg(test)]
-use std::num::NonZeroU64;
 
-#[cfg(test)]
-const LEGACY_SCOPE_ONE: NonZeroU64 = NonZeroU64::MIN;
 #[path = "replication/admission.rs"]
 mod admission;
 #[path = "replication/closure.rs"]
@@ -46,8 +42,8 @@ use reconnect::ReconnectCircuit;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct RefreshObservation {
-    pub(super) prior: backend_engine::StateRoot<BuiltinSemanticRelation>,
-    pub(super) target: backend_engine::StateRoot<BuiltinSemanticRelation>,
+    pub(super) prior: backend_engine::StateRoot<ProductRelation>,
+    pub(super) target: backend_engine::StateRoot<ProductRelation>,
     pub(super) choice: RefreshChoice,
     pub(super) source_changed: bool,
 }
@@ -55,7 +51,7 @@ pub(super) struct RefreshObservation {
 fn output_for_relation(
     ids: ProfileIds,
     _input_basis: WorkspaceRoot,
-    _relation: &RelationState<BuiltinSemanticRelation>,
+    _relation: &RelationState<ProductRelation>,
 ) -> Vec<u8> {
     ids.output_prefix.to_vec()
 }
@@ -67,27 +63,21 @@ fn output_for_relation(
 fn output_for_snapshot(
     ids: ProfileIds,
     input_basis: WorkspaceRoot,
-    snapshot: &ProductSemanticPublicationSnapshot,
+    snapshot: &ProductSourceSnapshot,
 ) -> Result<Vec<u8>, String> {
     let projection = project_snapshot(snapshot)?;
-    Ok(semantic_publication_output_bytes(
-        ids,
-        input_basis,
-        projection,
-    ))
+    Ok(product_output_bytes(ids, input_basis, projection))
 }
 
 /// Streams one checked workspace relation in canonical order. Only a bounded
 /// page and a depth-first frontier are retained; the source relation is never
 /// materialized as a second map or row vector.
-fn project_snapshot(
-    snapshot: &ProductSemanticPublicationSnapshot,
-) -> Result<SemanticPublicationProjection, String> {
+fn project_snapshot(snapshot: &ProductSourceSnapshot) -> Result<ProductProjection, String> {
     const PAGE_ROWS: usize = 256;
     let relation = snapshot.relation();
     let root = relation.root_node().map_err(|error| error.to_string())?;
     let expected_rows = root.row_count();
-    let mut builder = SemanticPublicationProjectionBuilder::new();
+    let mut builder = ProductProjectionBuilder::new();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         let mut offset = 0_usize;
@@ -133,14 +123,8 @@ fn project_snapshot(
         stack.extend(children.into_iter().rev());
     }
     let projection = builder.finish(relation.root());
-    if projection
-        .published()
-        .saturating_add(projection.unavailable())
-        != expected_rows
-    {
-        return Err(
-            "semantic publication projection row count does not match its admitted root".to_owned(),
-        );
+    if projection.projects().saturating_add(projection.files()) != expected_rows {
+        return Err("product projection row count does not match its admitted root".to_owned());
     }
     Ok(projection)
 }
@@ -180,9 +164,10 @@ pub(super) struct BuiltinReplication {
     /// earlier session.
     next_correlation: u64,
     /// Checked source refresh planner shared by local and remote routes.
+    delta_planner: DeltaPlanner,
     /// Last source root observed by this profile. This is a bounded routing
     /// hint; the owner catalog remains the authority for reusable output.
-    last_relation_root: Option<backend_engine::StateRoot<BuiltinSemanticRelation>>,
+    last_relation_root: Option<backend_engine::StateRoot<ProductRelation>>,
     /// Correlation and deadline index for owner-retained remote tickets.
     /// The index keeps result admission and expiry independent of product
     /// payload size and makes replacement attempts generation-safe.
@@ -203,38 +188,38 @@ struct PendingProduct {
     input_basis: WorkspaceRoot,
     /// Shared checked head used to re-open the source relation only if the
     /// owner has to execute a local fallback.
-    snapshot: ProductSemanticPublicationSnapshot,
+    snapshot: ProductSourceSnapshot,
 }
 
 #[derive(Debug)]
 struct PendingDispatch {
-    plan: DispatchPlan<BuiltinSemanticRelation>,
+    plan: DispatchPlan<ProductRelation>,
     contract: RemoteDispatchContract,
-    identity: VersionedWorkIdentity<BuiltinSemanticRelation>,
+    identity: VersionedWorkIdentity<ProductRelation>,
     ids: ProfileIds,
     input_basis: WorkspaceRoot,
     /// Shared checked head retained instead of cloning every relation row.
-    snapshot: ProductSemanticPublicationSnapshot,
+    snapshot: ProductSourceSnapshot,
 }
 
 #[derive(Debug)]
 struct RemotePlanRequest {
-    plan: DispatchPlan<BuiltinSemanticRelation>,
+    plan: DispatchPlan<ProductRelation>,
     contract: RemoteDispatchContract,
-    identity: VersionedWorkIdentity<BuiltinSemanticRelation>,
+    identity: VersionedWorkIdentity<ProductRelation>,
     ids: ProfileIds,
     input_basis: WorkspaceRoot,
-    snapshot: ProductSemanticPublicationSnapshot,
+    snapshot: ProductSourceSnapshot,
 }
 
 #[derive(Debug)]
 struct ClosurePlanRequest {
-    plan: DispatchPlan<BuiltinSemanticRelation>,
+    plan: DispatchPlan<ProductRelation>,
     contract: RemoteDispatchContract,
-    identity: VersionedWorkIdentity<BuiltinSemanticRelation>,
+    identity: VersionedWorkIdentity<ProductRelation>,
     ids: ProfileIds,
     input_basis: WorkspaceRoot,
-    snapshot: ProductSemanticPublicationSnapshot,
+    snapshot: ProductSourceSnapshot,
     expected_root: backend_engine::MerkleRoot,
 }
 
@@ -255,8 +240,8 @@ impl From<PendingDispatch> for RemotePlanRequest {
 struct PendingClosure {
     correlation: u64,
     expected_root: backend_engine::MerkleRoot,
-    source: Option<crate::reconcile::ProductPageSource<BuiltinSemanticRelation>>,
-    input_value: SemanticPublicationInput,
+    source: Option<crate::reconcile::ProductPageSource<ProductRelation>>,
+    input_value: ProductInput,
     input_version: [u8; 32],
     authority: AuthorityClaim,
     frames: Option<Vec<Frame>>,
@@ -292,6 +277,7 @@ impl BuiltinReplication {
             reconnect: None,
             reconnect_circuit: ReconnectCircuit::new(Instant::now()),
             next_correlation: 1,
+            delta_planner: DeltaPlanner::new(4),
             last_relation_root: None,
             pending: PendingIndex::default(),
             pending_dispatch: None,
@@ -306,11 +292,26 @@ impl BuiltinReplication {
     /// a warm remote may serve that explicitly expensive scope.
     pub(super) fn refresh_choice(
         &self,
-        source: Option<&ProductSemanticPublicationSnapshot>,
-        root: backend_engine::StateRoot<BuiltinSemanticRelation>,
+        source: Option<&ProductSourceSnapshot>,
+        root: backend_engine::StateRoot<ProductRelation>,
     ) -> Result<RefreshObservation, String> {
         let prior = self.last_relation_root.unwrap_or(root);
         let source_changed = prior != root;
+        let adjacent = source.is_some_and(|source| source.transition().binds(prior, root));
+        let facts = if adjacent {
+            source
+                .map(ProductSourceSnapshot::delta_facts)
+                .unwrap_or_default()
+        } else {
+            ProductSourceDeltaFacts::default()
+        };
+        let changed_items = if prior == root {
+            0
+        } else {
+            usize::try_from(facts.changed_items).map_err(|_| "change count overflow".to_owned())?
+        };
+        let delta_plan = self.delta_planner.plan(&prior, &root, changed_items);
+        let scope = delta_plan.scope().unwrap_or(RebuildScope::Item);
         let row_count = if let Some(source) = source {
             source.retention_facts().relation_rows
         } else {
@@ -320,23 +321,19 @@ impl BuiltinReplication {
             .checked_mul(96)
             .ok_or_else(|| "rebuild cost overflow".to_owned())?;
         let cost = RefreshCost {
-            // The workspace transition may contain source and publication
-            // deltas. Until the owner exposes per-relation semantic work, a
-            // changed semantic root is explicitly a full semantic rebuild.
-            delta_bytes: if source_changed { u64::MAX } else { 0 },
+            delta_bytes: if prior == root || facts.changed_items != 0 {
+                facts.changed_bytes
+            } else {
+                u64::MAX
+            },
             rebuild_bytes,
-            delta_work: if source_changed { u64::MAX } else { 0 },
+            delta_work: facts.changed_nodes,
             rebuild_work: row_count,
-        };
-        let choice = if source_changed {
-            RefreshChoice::Rebuild(RebuildScope::Product)
-        } else {
-            backend_engine::choose_refresh(cost, RebuildScope::Item)
         };
         Ok(RefreshObservation {
             prior,
             target: root,
-            choice,
+            choice: backend_engine::choose_refresh(cost, scope),
             source_changed,
         })
     }
@@ -349,7 +346,7 @@ impl BuiltinReplication {
     /// durable reuse hit before route admission.
     fn placement_for_refresh(
         observation: RefreshObservation,
-        retention: backend_engine::SemanticPublicationRetentionFacts,
+        retention: backend_engine::ProductSourceRetentionFacts,
     ) -> PlacementClass {
         let local_arrangement_ready =
             retention.relation_rows != 0 && retention.retained_objects != 0;
@@ -417,20 +414,14 @@ mod tests {
     }
 
     fn roots() -> (
-        backend_engine::StateRoot<BuiltinSemanticRelation>,
-        backend_engine::StateRoot<BuiltinSemanticRelation>,
+        backend_engine::StateRoot<ProductRelation>,
+        backend_engine::StateRoot<ProductRelation>,
     ) {
         let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
-        let first = backend_engine::semantic_publication_fixture_with_authority(
-            false,
-            profile.ids.authority,
-        )
-        .expect("first semantic relation");
-        let second = backend_engine::semantic_publication_fixture_with_authority(
-            true,
-            profile.ids.authority,
-        )
-        .expect("second semantic relation");
+        let first = product_source_fixture_with_authority(false, profile.ids.authority)
+            .expect("first source relation");
+        let second = product_source_fixture_with_authority(true, profile.ids.authority)
+            .expect("second source relation");
         (first.root(), second.root())
     }
 
@@ -457,7 +448,7 @@ mod tests {
                 TransportLimits::default().max_inputs.saturating_add(1)
             ],
             read_manifest: WireIdentity::from_typed(&identity.read_manifest),
-            scope: backend_engine::ExecutionScopeId::from_legacy_ordinal(LEGACY_SCOPE_ONE),
+            scope: 1,
             authority: WireAuthorityPolicy {
                 id: WireIdentity::from_typed(&identity.authority),
                 minimum_epoch: AuthorityEpoch(1),

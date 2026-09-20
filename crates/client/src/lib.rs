@@ -6,18 +6,14 @@
 #![forbid(unsafe_code)]
 
 use backend_library::{
-    Command, CommandDto, CommandFailure, CommandReply, CoverageCapability, DiffRecord,
-    DocumentQuery, GraphNeighborhoodQuery, GraphQueryPage, GraphQueryRequest, GraphValue,
-    HealthReport, NameQuery, OutlineQuery, PackageReference, PageContinuation, PageRequest,
-    PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto, RequestAdmissionError,
-    SemanticGenerationId, SemanticLanguageProfile, SemanticVersionRecord, SurfaceCommand,
-    SurfaceReply, SymbolAddress, SymbolKey, ViewProjectionError, ViewRoot, ViewStateRoot,
-    WireCertificate, WireClaim, WireSchema, encode_id, package_key, symbol_key,
+    Command, CommandDto, CommandReply, CoverageCapability, DocumentQuery, GraphQuery, NameQuery,
+    OutlineQuery, Query, QueryLimit, ReplyAdmissionError, ReplyDto, RequestAdmissionError,
+    ViewProjectionError, ViewRoot, ViewStateRoot, WireCertificate, WireClaim, WireSchema,
+    encode_id, package_key, symbol_key,
 };
 use backend_replication::{
     LocalControlError, LocalControlLimits, ReplicationError, read_frame, write_frame,
 };
-use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -35,8 +31,6 @@ pub enum ClientError {
     Protocol(String),
     /// A bounded transport allocation was rejected.
     Transport(ReplicationError),
-    /// The application service rejected an admitted command.
-    CommandFailed(CommandFailure),
     /// A successful view reply was not coherent.
     IncoherentView,
     /// A reply was based on a different materialized revision.
@@ -65,7 +59,6 @@ impl fmt::Display for ClientError {
             Self::Io(message) => write!(formatter, "local endpoint: {message}"),
             Self::Protocol(message) => write!(formatter, "protocol: {message}"),
             Self::Transport(error) => write!(formatter, "transport: {error}"),
-            Self::CommandFailed(failure) => write!(formatter, "command failed: {failure}"),
             Self::IncoherentView => formatter.write_str("daemon returned an incoherent view"),
             Self::BasisMismatch { .. } => {
                 formatter.write_str("daemon reply is based on a different revision")
@@ -140,13 +133,13 @@ impl<E: LocalEngine + ?Sized> CertifiedCommandTransport for InProcessTransport<'
 }
 
 /// One authenticated Unix command connection.
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 pub struct UnixCommandTransport {
-    stream: backend_replication::LocalStream,
+    stream: std::os::unix::net::UnixStream,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 impl UnixCommandTransport {
     /// Connects and authenticates the local endpoint owner.
     ///
@@ -156,7 +149,7 @@ impl UnixCommandTransport {
         let endpoint = backend_replication::UnixEndpointRef::new(path.as_ref())
             .map_err(|_| ClientError::Transport(ReplicationError::MessageTooLarge))?;
         let path = endpoint.as_path();
-        let stream = backend_replication::LocalStream::connect(path)
+        let stream = std::os::unix::net::UnixStream::connect(path)
             .map_err(|error| ClientError::Io(error.to_string()))?;
         let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, path)
             .map_err(|error| {
@@ -171,7 +164,7 @@ impl UnixCommandTransport {
 
     /// Wraps a connected stream for tests and embedded transports.
     #[must_use]
-    pub fn from_stream(stream: backend_replication::LocalStream) -> Self {
+    pub fn from_stream(stream: std::os::unix::net::UnixStream) -> Self {
         let _ = configure(&stream);
         Self { stream, peer: None }
     }
@@ -202,7 +195,7 @@ impl UnixCommandTransport {
     }
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 impl CommandTransport for UnixCommandTransport {
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
         let body = encode_request(&request)?;
@@ -213,7 +206,7 @@ impl CommandTransport for UnixCommandTransport {
     }
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 impl CertifiedCommandTransport for UnixCommandTransport {
     fn request_with_certificate(
         &mut self,
@@ -238,16 +231,15 @@ impl CertifiedCommandTransport for UnixCommandTransport {
 /// The session obtains the current immutable root and its producer proof only
 /// for commands that need freshness. Callers never assemble basis flags or
 /// identity certificates themselves.
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 pub struct Session {
     transport: UnixCommandTransport,
     next_request_id: u64,
-    continuations: BTreeMap<backend_library::Cursor, WireCertificate>,
 }
 
 /// One admitted health revision retained long enough to build a dependent
 /// query request without copying the view.
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 pub struct Revision {
     /// Current immutable product view root.
     pub root: ViewStateRoot,
@@ -255,7 +247,7 @@ pub struct Revision {
     cursor: backend_library::Cursor,
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 impl Revision {
     /// Returns the exact owner cursor paired with this immutable root.
     #[must_use]
@@ -264,7 +256,7 @@ impl Revision {
     }
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 impl Session {
     /// Connects one revision-aware session.
     ///
@@ -274,7 +266,6 @@ impl Session {
         Ok(Self {
             transport: UnixCommandTransport::connect(path)?,
             next_request_id: 1,
-            continuations: BTreeMap::new(),
         })
     }
 
@@ -283,7 +274,7 @@ impl Session {
     /// # Errors
     /// Returns an error when the bounded revision reply fails transport or proof admission.
     pub fn revision(&mut self) -> Result<Revision, ClientError> {
-        let reply = self.send_success(Command::Revision, None)?;
+        let reply = self.send(Command::Revision, None)?;
         let certificate = reply.certificate().cloned().ok_or_else(|| {
             ClientError::Protocol("revision reply omitted its certificate".to_owned())
         })?;
@@ -292,14 +283,6 @@ impl Session {
                 "revision reply changed shape".to_owned(),
             ));
         };
-        // The producer-root claim proves this revision while decoding the
-        // reply. Dependent request codecs intentionally accept only a root
-        // commitment, so retain the admitted identity in that narrower form
-        // instead of requiring callers to reconstruct an authority claim.
-        let certificate = certificate.with_claim_once(WireClaim::RootCommitment {
-            schema: WireSchema::ViewRelation,
-            id: encode_id(receipt.root().as_bytes()),
-        });
         Ok(Revision {
             root: receipt.root(),
             certificate,
@@ -307,26 +290,16 @@ impl Session {
         })
     }
 
-    /// Reads the owner's constant-size health and readiness state.
-    ///
-    /// A legacy peer may still send a complete health view. The client lowers
-    /// that compatibility reply into the same bounded report at this boundary.
+    /// Hydrates the complete current view for callers that explicitly need
+    /// every row, such as an in-process graph query engine.
     ///
     /// # Errors
-    /// Returns an error when the health reply fails admission or changes shape.
-    pub fn health(&mut self) -> Result<HealthReport, ClientError> {
-        health_from_reply(self.send_success(Command::Health, None)?)
-    }
-
-    /// Hydrates a legacy peer's complete health view.
-    ///
-    /// # Errors
-    /// Returns an error when the complete compatibility view fails admission.
+    /// Returns an error when the complete health snapshot cannot be admitted.
     pub fn view(&mut self) -> Result<ViewRoot, ClientError> {
-        let reply = self.send_success(Command::Health, None)?;
+        let reply = self.send(Command::Health, None)?;
         let CommandReply::Health(view) = reply.reply else {
             return Err(ClientError::Protocol(
-                "legacy health reply changed shape".to_owned(),
+                "health reply changed shape".to_owned(),
             ));
         };
         Ok(view)
@@ -337,24 +310,7 @@ impl Session {
     /// # Errors
     /// Returns an error when the request or reply fails admission.
     pub fn packages(&mut self) -> Result<ReplyDto, ClientError> {
-        self.send_success(Command::Packages, None)
-    }
-
-    /// Reads one bounded package page at the current immutable revision.
-    ///
-    /// # Errors
-    /// Returns an error when revision, limit, transport, or reply admission fails.
-    pub fn package_page(
-        &mut self,
-        limit: u16,
-        continuation: Option<PageContinuation>,
-    ) -> Result<ReplyDto, ClientError> {
-        let revision = self.revision()?;
-        let page = page_request(revision.root, limit, continuation)?;
-        self.send_success(
-            Command::PackagePage(page),
-            Some(self.page_certificate(revision.certificate, continuation)),
-        )
+        self.send(Command::Packages, None)
     }
 
     /// Indexes or refreshes one project path.
@@ -397,7 +353,7 @@ impl Session {
         let revision = self.revision()?;
         let limit = QueryLimit::new(limit)
             .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
-        self.send_success(
+        self.send(
             Command::Search(Query::new(text, revision.root, limit)),
             Some(revision.certificate),
         )
@@ -411,7 +367,7 @@ impl Session {
         let revision = self.revision()?;
         let limit = QueryLimit::new(limit)
             .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
-        self.send_success(
+        self.send(
             Command::Name(NameQuery::new(text, revision.root, limit)),
             Some(revision.certificate),
         )
@@ -429,42 +385,8 @@ impl Session {
             id: encode_id(symbol.as_bytes()),
             value: coordinate.to_owned(),
         });
-        self.send_success(
+        self.send(
             Command::Document(DocumentQuery::new(symbol, revision.root)),
-            Some(certificate),
-        )
-    }
-
-    /// Reads a document for a producer-admitted symbol selected from a prior
-    /// result row. The opaque wire locator is resolved again against the exact
-    /// current view before the owner executes the query.
-    ///
-    /// # Errors
-    /// Returns an error when the revision changed, the symbol is absent, or
-    /// request/reply admission fails.
-    pub fn document_symbol(&mut self, symbol: SymbolKey) -> Result<ReplyDto, ClientError> {
-        let revision = self.revision()?;
-        let certificate = selected_symbol_certificate(revision.certificate, symbol);
-        self.send_success(
-            Command::Document(DocumentQuery::selected(symbol, revision.root)),
-            Some(certificate),
-        )
-    }
-
-    /// Reads captured source for one declaration coordinate.
-    ///
-    /// # Errors
-    /// Returns an error when the revision, coordinate, transport, or reply fails admission.
-    pub fn source(&mut self, coordinate: &str) -> Result<ReplyDto, ClientError> {
-        let revision = self.revision()?;
-        let symbol = symbol_key(coordinate);
-        let certificate = revision.certificate.with_claim_once(WireClaim::Key {
-            schema: WireSchema::Symbol,
-            id: encode_id(symbol.as_bytes()),
-            value: coordinate.to_owned(),
-        });
-        self.send_success(
-            Command::Source(DocumentQuery::new(symbol, revision.root)),
             Some(certificate),
         )
     }
@@ -481,33 +403,9 @@ impl Session {
             id: encode_id(package.as_bytes()),
             value: coordinate.to_owned(),
         });
-        self.send_success(
+        self.send(
             Command::Outline(OutlineQuery::new(package, revision.root)),
             Some(certificate),
-        )
-    }
-
-    /// Reads one bounded flat outline page at the current immutable revision.
-    ///
-    /// # Errors
-    /// Returns an error when revision, coordinate, limit, transport, or reply admission fails.
-    pub fn outline_page(
-        &mut self,
-        coordinate: &str,
-        limit: u16,
-        continuation: Option<PageContinuation>,
-    ) -> Result<ReplyDto, ClientError> {
-        let revision = self.revision()?;
-        let package = package_key(coordinate);
-        let certificate = revision.certificate.with_claim_once(WireClaim::Key {
-            schema: WireSchema::Package,
-            id: encode_id(package.as_bytes()),
-            value: coordinate.to_owned(),
-        });
-        let page = page_request(revision.root, limit, continuation)?;
-        self.send_success(
-            Command::OutlinePage { package, page },
-            Some(self.page_certificate(certificate, continuation)),
         )
     }
 
@@ -523,222 +421,10 @@ impl Session {
             id: encode_id(symbol.as_bytes()),
             value: coordinate.to_owned(),
         });
-        self.send_success(
-            Command::Graph(GraphNeighborhoodQuery::new(symbol, revision.root)),
+        self.send(
+            Command::Graph(GraphQuery::new(symbol, revision.root)),
             Some(certificate),
         )
-    }
-
-    /// Reads incoming and outgoing relations for one declaration coordinate.
-    ///
-    /// # Errors
-    /// Returns an error when the revision, coordinate, transport, or reply fails admission.
-    pub fn related(&mut self, coordinate: &str) -> Result<ReplyDto, ClientError> {
-        let revision = self.revision()?;
-        let symbol = symbol_key(coordinate);
-        let certificate = revision.certificate.with_claim_once(WireClaim::Key {
-            schema: WireSchema::Symbol,
-            id: encode_id(symbol.as_bytes()),
-            value: coordinate.to_owned(),
-        });
-        self.send_success(
-            Command::Related(GraphNeighborhoodQuery::new(symbol, revision.root)),
-            Some(certificate),
-        )
-    }
-
-    /// Reads a graph neighborhood for a producer-admitted selected symbol.
-    ///
-    /// # Errors
-    /// Returns an error when the revision changed, the symbol is absent, or
-    /// request/reply admission fails.
-    pub fn graph_symbol(&mut self, symbol: SymbolKey) -> Result<ReplyDto, ClientError> {
-        let revision = self.revision()?;
-        let certificate = selected_symbol_certificate(revision.certificate, symbol);
-        self.send_success(
-            Command::Graph(GraphNeighborhoodQuery::selected(symbol, revision.root)),
-            Some(certificate),
-        )
-    }
-
-    /// Reads incoming and outgoing relations for a producer-admitted symbol.
-    ///
-    /// # Errors
-    /// Returns an error when the revision changed, the symbol is absent, or
-    /// request/reply admission fails.
-    pub fn related_symbol(&mut self, symbol: SymbolKey) -> Result<ReplyDto, ClientError> {
-        let revision = self.revision()?;
-        let certificate = selected_symbol_certificate(revision.certificate, symbol);
-        self.send_success(
-            Command::Related(GraphNeighborhoodQuery::selected(symbol, revision.root)),
-            Some(certificate),
-        )
-    }
-
-    /// Reads one bounded graph-neighborhood page at the current immutable revision.
-    ///
-    /// # Errors
-    /// Returns an error when revision, coordinate, limit, transport, or reply admission fails.
-    pub fn graph_page(
-        &mut self,
-        coordinate: &str,
-        limit: u16,
-        continuation: Option<PageContinuation>,
-    ) -> Result<ReplyDto, ClientError> {
-        let revision = self.revision()?;
-        let symbol = symbol_key(coordinate);
-        let certificate = revision.certificate.with_claim_once(WireClaim::Key {
-            schema: WireSchema::Symbol,
-            id: encode_id(symbol.as_bytes()),
-            value: coordinate.to_owned(),
-        });
-        let page = page_request(revision.root, limit, continuation)?;
-        self.send_success(
-            Command::GraphPage {
-                symbol: SymbolAddress::canonical(symbol),
-                page,
-            },
-            Some(self.page_certificate(certificate, continuation)),
-        )
-    }
-
-    /// Reads a bounded graph page for a producer-admitted selected symbol.
-    ///
-    /// # Errors
-    /// Returns an error when the revision, selected symbol, limit, transport,
-    /// continuation, or reply fails admission.
-    pub fn graph_page_symbol(
-        &mut self,
-        symbol: SymbolKey,
-        limit: u16,
-        continuation: Option<PageContinuation>,
-    ) -> Result<ReplyDto, ClientError> {
-        let revision = self.revision()?;
-        let certificate = selected_symbol_certificate(revision.certificate, symbol);
-        let page = page_request(revision.root, limit, continuation)?;
-        self.send_success(
-            Command::GraphPage {
-                symbol: SymbolAddress::selected(symbol),
-                page,
-            },
-            Some(self.page_certificate(certificate, continuation)),
-        )
-    }
-
-    /// Executes or resumes one bounded structured graph query remotely.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when query admission, revision, transport, proof, or
-    /// reply-shape validation fails.
-    pub fn graph_query(
-        &mut self,
-        query: String,
-        variables: BTreeMap<String, GraphValue>,
-        limit: u16,
-        continuation: Option<PageContinuation>,
-        cancel: bool,
-    ) -> Result<GraphQueryPage, ClientError> {
-        let revision = self.revision()?;
-        let limit = QueryLimit::new(limit)
-            .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
-        let mut request = GraphQueryRequest::new(query, variables, revision.root, limit)
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
-        if let Some(continuation) = continuation {
-            request = request.with_continuation(continuation);
-        }
-        if cancel {
-            request = request.cancelled();
-        }
-        let reply = self.send_success(
-            Command::GraphQuery(request),
-            Some(self.page_certificate(revision.certificate, continuation)),
-        )?;
-        let CommandReply::GraphQueryPage(page) = reply.reply else {
-            return Err(ClientError::Protocol(
-                "graph query reply changed shape".to_owned(),
-            ));
-        };
-        Ok(page)
-    }
-
-    /// Executes one typed daemon-owned product command.
-    ///
-    /// # Errors
-    /// Returns an error when request admission, transport, or reply-shape admission fails.
-    pub fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
-        let expected = command.id();
-        let reply = self.send_success(Command::Surface(command), None)?;
-        let CommandReply::Surface(reply) = reply.reply else {
-            return Err(ClientError::Protocol(
-                "surface reply changed shape".to_owned(),
-            ));
-        };
-        reply
-            .admit(expected)
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
-        Ok(reply)
-    }
-
-    /// Compares two indexed package versions through their complete semantic
-    /// compiler publications.
-    ///
-    /// # Errors
-    /// Returns an error when request admission, transport, or the typed diff
-    /// reply contract fails.
-    pub fn diff(
-        &mut self,
-        from: PackageReference,
-        to: PackageReference,
-    ) -> Result<Box<[DiffRecord]>, ClientError> {
-        match self.surface(SurfaceCommand::Diff { from, to })? {
-            SurfaceReply::Diff(rows) => Ok(rows),
-            _ => Err(ClientError::Protocol(
-                "semantic diff reply changed shape".to_owned(),
-            )),
-        }
-    }
-
-    /// Lists immutable compiler generations retained for one exact package.
-    ///
-    /// # Errors
-    /// Returns an error when package syntax, transport, or semantic history
-    /// reply admission fails.
-    pub fn semantic_versions(
-        &mut self,
-        package: PackageReference,
-    ) -> Result<Box<[SemanticVersionRecord]>, ClientError> {
-        match self.surface(SurfaceCommand::SemanticVersions { package })? {
-            SurfaceReply::SemanticVersions(records) => Ok(records),
-            _ => Err(ClientError::Protocol(
-                "semantic versions reply changed shape".to_owned(),
-            )),
-        }
-    }
-
-    /// Selects one exact retained compiler generation for product projection.
-    ///
-    /// # Errors
-    /// Returns an error when the target profile, generation, transport, or
-    /// owner reply fails admission.
-    pub fn select_semantic_version(
-        &mut self,
-        package: PackageReference,
-        coordinate: backend_library::PackageCoordinate,
-        profile: SemanticLanguageProfile,
-        generation: SemanticGenerationId,
-    ) -> Result<SemanticVersionRecord, ClientError> {
-        match self.surface(SurfaceCommand::SelectSemanticVersion {
-            package,
-            coordinate,
-            profile,
-            generation,
-        })? {
-            SurfaceReply::SemanticVersionSelected(record) => Ok(record),
-            _ => Err(ClientError::Protocol(
-                "semantic version selection reply changed shape".to_owned(),
-            )),
-        }
     }
 
     fn send(
@@ -762,126 +448,11 @@ impl Session {
         command: Command,
         certificate: Option<WireCertificate>,
     ) -> Result<ReplyDto, ClientError> {
-        let reply = require_command_success(self.send(command, certificate)?)?;
-        self.remember_continuation(&reply);
+        let reply = self.send(command, certificate)?;
+        if let CommandReply::Error(message) = &reply.reply {
+            return Err(ClientError::Protocol(message.clone()));
+        }
         Ok(reply)
-    }
-
-    fn page_certificate(
-        &self,
-        mut certificate: WireCertificate,
-        continuation: Option<PageContinuation>,
-    ) -> WireCertificate {
-        let Some(continuation) = continuation else {
-            return certificate;
-        };
-        if let Some(previous) = self.continuations.get(&continuation.cursor()) {
-            for claim in previous
-                .claims
-                .iter()
-                .filter(|claim| claim_describes_cursor(claim, continuation.cursor()))
-            {
-                certificate = certificate.with_claim_once(claim.clone());
-            }
-        }
-        with_page_continuation_claim(certificate, Some(continuation))
-    }
-
-    fn remember_continuation(&mut self, reply: &ReplyDto) {
-        let terminal = match &reply.reply {
-            CommandReply::ProjectionPage(page) => page.terminal,
-            CommandReply::GraphQueryPage(page) => page.terminal,
-            _ => return,
-        };
-        let PageTerminal::More(continuation) = terminal else {
-            return;
-        };
-        let Some(certificate) = reply.certificate().cloned() else {
-            return;
-        };
-        self.continuations.clear();
-        self.continuations
-            .insert(continuation.cursor(), certificate);
-    }
-}
-
-fn claim_describes_cursor(claim: &WireClaim, cursor: backend_library::Cursor) -> bool {
-    let recipe = encode_id(cursor.recipe().as_bytes());
-    let version = encode_id(cursor.version().as_bytes());
-    let branch = encode_id(cursor.branch().as_bytes());
-    let log = encode_id(cursor.log().as_bytes());
-    let root = encode_id(cursor.root().as_bytes());
-    match claim {
-        WireClaim::Key { schema, id, .. } | WireClaim::KeyBytes { schema, id, .. } => {
-            (*schema == WireSchema::ViewRecipe && id == &recipe)
-                || (*schema == WireSchema::Branch && id == &branch)
-                || (*schema == WireSchema::Log && id == &log)
-        }
-        WireClaim::Version { schema, id, .. } => {
-            *schema == WireSchema::ViewVersion && id == &version
-        }
-        WireClaim::Root { schema, id, .. } => *schema == WireSchema::ViewRelation && id == &root,
-        WireClaim::KeyCommitment { .. }
-        | WireClaim::RootCommitment { .. }
-        | WireClaim::Intent { .. }
-        | WireClaim::Delta { .. }
-        | WireClaim::Cursor { .. }
-        | WireClaim::Coverage { .. } => false,
-    }
-}
-
-fn page_request(
-    basis: ViewStateRoot,
-    limit: u16,
-    continuation: Option<PageContinuation>,
-) -> Result<PageRequest, ClientError> {
-    let limit = QueryLimit::new(limit)
-        .ok_or_else(|| ClientError::Protocol("page limit is outside its bound".to_owned()))?;
-    let page = PageRequest::new(basis, limit);
-    Ok(continuation.map_or(page, |continuation| page.with_continuation(continuation)))
-}
-
-fn with_page_continuation_claim(
-    certificate: WireCertificate,
-    continuation: Option<PageContinuation>,
-) -> WireCertificate {
-    let Some(continuation) = continuation else {
-        return certificate;
-    };
-    let cursor = continuation.cursor();
-    certificate.with_claim_once(WireClaim::Cursor {
-        recipe: encode_id(cursor.recipe().as_bytes()),
-        version: encode_id(cursor.version().as_bytes()),
-        branch: encode_id(cursor.branch().as_bytes()),
-        log: encode_id(cursor.log().as_bytes()),
-        schema: cursor.schema(),
-        root: encode_id(cursor.root().as_bytes()),
-        sequence: cursor.sequence(),
-    })
-}
-
-fn health_from_reply(reply: ReplyDto) -> Result<HealthReport, ClientError> {
-    let legacy_cursor = reply.health_cursor();
-    match reply.reply {
-        CommandReply::Readiness(report) => Ok(report),
-        CommandReply::Health(root) => {
-            let cursor = legacy_cursor.ok_or_else(|| {
-                ClientError::Protocol("legacy health reply omitted its cursor".to_owned())
-            })?;
-            Ok(HealthReport::from_root(&root, cursor))
-        }
-        _ => Err(ClientError::Protocol(
-            "health reply changed shape".to_owned(),
-        )),
-    }
-}
-
-fn require_command_success(reply: ReplyDto) -> Result<ReplyDto, ClientError> {
-    match &reply.reply {
-        CommandReply::Failed(failure) => Err(ClientError::CommandFailed(failure.clone())),
-        // `Error` remains decodable for peers using the pre-typed reply schema.
-        CommandReply::Error(message) => Err(ClientError::Protocol(message.clone())),
-        _ => Ok(reply),
     }
 }
 
@@ -893,16 +464,8 @@ fn key_certificate(schema: WireSchema, id: &[u8; 32], value: &str) -> WireCertif
     })
 }
 
-#[cfg(any(unix, windows))]
-fn selected_symbol_certificate(certificate: WireCertificate, symbol: SymbolKey) -> WireCertificate {
-    certificate.with_claim_once(WireClaim::KeyCommitment {
-        schema: WireSchema::Symbol,
-        id: encode_id(symbol.as_bytes()),
-    })
-}
-
-#[cfg(any(unix, windows))]
-fn configure(stream: &backend_replication::LocalStream) -> Result<(), ClientError> {
+#[cfg(unix)]
+fn configure(stream: &std::os::unix::net::UnixStream) -> Result<(), ClientError> {
     let timeout = Some(Duration::from_secs(30));
     stream
         .set_read_timeout(timeout)
@@ -949,9 +512,7 @@ fn read_body(reader: &mut impl Read) -> Result<Vec<u8>, ClientError> {
 /// Returns an error when request text or encoded memory exceeds its contract.
 pub fn admit_request(request: &CommandDto) -> Result<(), ClientError> {
     backend_library::admit_request(request).map_err(|error| match error {
-        RequestAdmissionError::EmptyText | RequestAdmissionError::InvalidSurface => {
-            ClientError::Protocol(error.to_string())
-        }
+        RequestAdmissionError::EmptyText => ClientError::Protocol(error.to_string()),
         RequestAdmissionError::TextTooLarge => {
             ClientError::Transport(ReplicationError::MessageTooLarge)
         }
@@ -1007,90 +568,5 @@ fn map_reply(error: ReplyAdmissionError) -> ClientError {
                 "view projection requires producer-admitted complete coverage".to_owned(),
             ),
         },
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::expect_used)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn typed_command_failure_survives_the_client_boundary() {
-        let reply = ReplyDto::new(
-            7,
-            CommandReply::Failed(CommandFailure::MutationRequiresOwner),
-        );
-
-        assert_eq!(
-            require_command_success(reply),
-            Err(ClientError::CommandFailed(
-                CommandFailure::MutationRequiresOwner
-            ))
-        );
-    }
-
-    #[test]
-    fn legacy_error_reply_remains_compatible() {
-        let reply = ReplyDto::new(7, CommandReply::Error("legacy failure".to_owned()));
-
-        assert_eq!(
-            require_command_success(reply),
-            Err(ClientError::Protocol("legacy failure".to_owned()))
-        );
-    }
-
-    #[test]
-    fn bounded_readiness_is_the_primary_health_reply() {
-        let library = backend_library::Library::new();
-        let reply = library.execute_dto(CommandDto::new(9, Command::Health));
-
-        let report = health_from_reply(reply).expect("typed readiness");
-        assert_eq!(report.row_count(), 0);
-        assert_eq!(report.revision().root(), library.revision_root());
-    }
-
-    #[test]
-    fn legacy_full_health_view_lowers_to_a_bounded_report() {
-        let library = backend_library::Library::new();
-        let reply = ReplyDto::health(9, library.view().clone(), library.cursor());
-
-        let report = health_from_reply(reply).expect("legacy health");
-        assert_eq!(report.row_count(), 0);
-        assert_eq!(report.revision().root(), library.revision_root());
-    }
-
-    #[test]
-    fn page_requests_preserve_opaque_continuations() {
-        let basis = backend_library::view_state_root(&[]);
-        let continuation = PageContinuation::from_cursor(backend_library::Cursor::new());
-        let page = page_request(basis, 7, Some(continuation)).expect("page request");
-
-        assert_eq!(page.limit().get(), 7);
-        assert_eq!(page.continuation(), Some(continuation));
-        assert!(page_request(basis, 0, None).is_err());
-    }
-
-    #[test]
-    fn follow_up_page_request_carries_its_opaque_cursor_claim() {
-        let basis = backend_library::view_state_root(&[]);
-        let continuation = PageContinuation::from_cursor(backend_library::Cursor::new());
-        let page = page_request(basis, 3, Some(continuation)).expect("page request");
-        let certificate = with_page_continuation_claim(
-            WireCertificate::new().with_claim(WireClaim::RootCommitment {
-                schema: WireSchema::ViewRelation,
-                id: encode_id(basis.as_bytes()),
-            }),
-            Some(continuation),
-        );
-        let request = CommandDto::new(11, Command::PackagePage(page)).with_certificate(certificate);
-        let encoded = serde_json::to_value(&request).expect("encode page request");
-        assert!(
-            encoded["certificate"]["claims"]
-                .as_array()
-                .expect("certificate claims")
-                .iter()
-                .any(|claim| claim["kind"] == "cursor")
-        );
     }
 }

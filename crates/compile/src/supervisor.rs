@@ -447,7 +447,10 @@ fn terminate_process_group(pid: u32) -> Result<(), ProcessError> {
         // exists. The absolute path keeps a `taskkill` earlier on `PATH` from
         // standing in for the system tool, as `/bin/kill` does on Unix.
         let executable = std::env::var_os("SystemRoot")
-            .map_or_else(|| std::path::PathBuf::from(r"C:\Windows"), std::path::PathBuf::from)
+            .map_or_else(
+                || std::path::PathBuf::from(r"C:\Windows"),
+                std::path::PathBuf::from,
+            )
             .join("System32")
             .join("taskkill.exe");
         if executable.is_file() {

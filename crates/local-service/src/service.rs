@@ -114,7 +114,7 @@ where
     fn allocate_lease(&mut self, request_id: u64, cursor: &[u8]) -> LocalSubscriptionId {
         loop {
             self.next_lease_nonce = self.next_lease_nonce.wrapping_add(1);
-            let mut hasher = blake3::Hasher::new();
+            let mut hasher = backend_engine::blake3::Hasher::new();
             hasher.update(b"backend-locald-subscription-lease\0");
             hasher.update(&request_id.to_be_bytes());
             hasher.update(&self.next_lease_nonce.to_be_bytes());
@@ -802,8 +802,7 @@ where
             EngineRequest::Subscribe { cursor, .. } => Some(cursor.clone()),
             EngineRequest::Replicate(_)
             | EngineRequest::Complete(_)
-            | EngineRequest::Subscription(_)
-            | EngineRequest::Shutdown => None,
+            | EngineRequest::Subscription(_) => None,
         };
         let request = match request {
             EngineRequest::Replicate(message) => {
@@ -819,13 +818,6 @@ where
             }
             EngineRequest::Subscription(subscription) => {
                 return self.durable_subscription(request_id, subscription);
-            }
-            // The listener answers a lifecycle request before it reaches any
-            // owner. Reaching here means a host wired a service without one.
-            EngineRequest::Shutdown => {
-                return Err(ProtocolError::InvalidControl(
-                    "shutdown is a listener lifecycle request",
-                ));
             }
         };
         let receiver = self

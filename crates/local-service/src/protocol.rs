@@ -5,21 +5,6 @@
 //! CLI and MCP) or an engine envelope.  Replication payloads inside an engine
 //! envelope are encoded by `backend-replication` through the re-exports of
 //! `backend-engine`; this module does not define a second replication codec.
-//!
-//! # The lifecycle envelope
-//!
-//! One operation is not engine state and not a library command: asking a
-//! daemon to stop. It is carried by a separate fixed-width `LDL1` envelope
-//! defined here rather than as a new `LDC2` control tag, because `LDC2` is the
-//! shared replication grammar and a lifecycle verb has no meaning to a peer
-//! that replicates. The envelope is
-//! `LDL1 | version:u8 | tag:u8 | request_id:u64` — fourteen bytes, no
-//! variable-length field, nothing to bound beyond its exact size. Its magic
-//! cannot collide with `LDC2` control payloads or with JSON command DTOs.
-//!
-//! A shutdown request is answered by the listener's own stop capability (see
-//! [`crate::listener`]), never by the workspace owner, and is acknowledged
-//! with an ordinary [`EngineStatus::Accepted`] response.
 
 use backend_engine::{
     LOCAL_CONTROL_HEADER_BYTES, LocalControlError, LocalControlLimits, LocalControlRequest,
@@ -39,14 +24,6 @@ pub const MAX_ERROR: usize = backend_engine::LOCAL_CONTROL_MAX_ERROR;
 pub const CONTROL_MAGIC: [u8; 4] = backend_engine::LOCAL_CONTROL_MAGIC;
 /// The current local control envelope version.
 pub const CONTROL_VERSION: u8 = backend_engine::LOCAL_CONTROL_VERSION;
-/// The locald lifecycle envelope magic.
-pub const LIFECYCLE_MAGIC: [u8; 4] = *b"LDL1";
-/// The current locald lifecycle envelope version.
-pub const LIFECYCLE_VERSION: u8 = 1;
-/// Exact byte length of a lifecycle envelope.
-pub const LIFECYCLE_BYTES: usize = 14;
-
-const LIFECYCLE_TAG_SHUTDOWN: u8 = 1;
 
 /// Limits applied before a local endpoint allocates or blocks on a payload.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -125,13 +102,6 @@ pub enum EngineRequest {
     },
     /// A leased subscription lifecycle operation.
     Subscription(LocalSubscriptionRequest),
-    /// A request that the daemon retire itself.
-    ///
-    /// This is a listener lifecycle operation: it stops accepting clients,
-    /// drains the ones already connected, closes the workspace owner, and
-    /// unlinks the endpoint. It never reaches the owner adapter and never
-    /// mutates durable state.
-    Shutdown,
 }
 
 /// Untrusted fields echoed by a completion sender.
@@ -174,8 +144,6 @@ pub enum Operation {
     Complete,
     /// Cursor subscription.
     Subscribe,
-    /// Daemon lifecycle control.
-    Shutdown,
 }
 
 impl RequestFrame {
@@ -190,7 +158,6 @@ impl RequestFrame {
                 EngineRequest::Subscribe { .. } | EngineRequest::Subscription(_) => {
                     Operation::Subscribe
                 }
-                EngineRequest::Shutdown => Operation::Shutdown,
             },
         }
     }
@@ -388,13 +355,6 @@ pub fn decode_request(payload: &[u8], limits: FrameLimits) -> Result<RequestFram
             "empty command frame".to_owned(),
         ));
     }
-    if is_lifecycle(payload) {
-        let (request_id, request) = decode_lifecycle_request(payload)?;
-        return Ok(RequestFrame::Engine {
-            request_id,
-            request: Box::new(request),
-        });
-    }
     if backend_engine::is_local_control(payload) {
         let (request_id, request) = decode_engine_request(payload, limits)?;
         return Ok(RequestFrame::Engine {
@@ -403,42 +363,6 @@ pub fn decode_request(payload: &[u8], limits: FrameLimits) -> Result<RequestFram
         });
     }
     Ok(RequestFrame::Command(payload.to_vec().into_boxed_slice()))
-}
-
-/// Reports whether a payload carries the locald lifecycle envelope.
-#[must_use]
-pub fn is_lifecycle(payload: &[u8]) -> bool {
-    payload.get(..LIFECYCLE_MAGIC.len()) == Some(LIFECYCLE_MAGIC.as_slice())
-}
-
-/// Encodes one lifecycle envelope body. The result is the body of the outer
-/// frame; call [`frame`] before writing it to a stream.
-fn encode_lifecycle(request_id: u64, tag: u8) -> Vec<u8> {
-    let mut output = Vec::with_capacity(LIFECYCLE_BYTES);
-    output.extend_from_slice(&LIFECYCLE_MAGIC);
-    output.push(LIFECYCLE_VERSION);
-    output.push(tag);
-    output.extend_from_slice(&request_id.to_be_bytes());
-    output
-}
-
-/// Decodes one lifecycle envelope after an exact-size and version check.
-fn decode_lifecycle_request(payload: &[u8]) -> Result<(u64, EngineRequest), ProtocolError> {
-    if payload.len() != LIFECYCLE_BYTES {
-        return Err(ProtocolError::InvalidControl("lifecycle envelope size"));
-    }
-    if payload.get(4) != Some(&LIFECYCLE_VERSION) {
-        return Err(ProtocolError::InvalidControl("lifecycle envelope version"));
-    }
-    let request_id = payload
-        .get(6..LIFECYCLE_BYTES)
-        .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
-        .map(u64::from_be_bytes)
-        .ok_or(ProtocolError::Truncated)?;
-    match payload.get(5) {
-        Some(&LIFECYCLE_TAG_SHUTDOWN) => Ok((request_id, EngineRequest::Shutdown)),
-        _ => Err(ProtocolError::InvalidControl("lifecycle operation tag")),
-    }
 }
 
 /// Encodes one local engine operation payload. The result is the body of the
@@ -454,13 +378,7 @@ pub fn encode_engine_request(
     limits: FrameLimits,
 ) -> Result<Vec<u8>, ProtocolError> {
     limits.validate()?;
-    if matches!(request, EngineRequest::Shutdown) {
-        return Ok(encode_lifecycle(request_id, LIFECYCLE_TAG_SHUTDOWN));
-    }
     let raw = match request {
-        EngineRequest::Shutdown => {
-            return Err(ProtocolError::InvalidControl("lifecycle operation tag"));
-        }
         EngineRequest::Replicate(message) => LocalControlRequest::Replicate {
             request_id,
             payload: message
@@ -737,65 +655,6 @@ mod tests {
             decoded,
             EngineRequest::Subscribe { credit: 3, .. }
         ));
-    }
-
-    #[test]
-    fn the_lifecycle_envelope_round_trips_and_never_shadows_another_grammar() {
-        let limits = limits();
-        let encoded =
-            encode_engine_request(9, &EngineRequest::Shutdown, limits).expect("encode shutdown");
-        assert_eq!(encoded.len(), LIFECYCLE_BYTES);
-        assert!(is_lifecycle(&encoded));
-        assert!(
-            !backend_engine::is_local_control(&encoded),
-            "the lifecycle magic must not be admitted by the replication grammar"
-        );
-        match decode_request(&encoded, limits).expect("decode shutdown") {
-            RequestFrame::Engine {
-                request_id,
-                request,
-            } => {
-                assert_eq!(request_id, 9);
-                assert!(matches!(*request, EngineRequest::Shutdown));
-            }
-            other => panic!("lifecycle frame decoded as {other:?}"),
-        }
-        assert_eq!(
-            RequestFrame::Engine {
-                request_id: 9,
-                request: Box::new(EngineRequest::Shutdown),
-            }
-            .operation(),
-            Operation::Shutdown
-        );
-    }
-
-    #[test]
-    fn a_malformed_lifecycle_envelope_is_rejected_before_it_reaches_an_owner() {
-        let limits = limits();
-        let mut truncated =
-            encode_engine_request(1, &EngineRequest::Shutdown, limits).expect("encode shutdown");
-        truncated.pop();
-        assert_eq!(
-            decode_request(&truncated, limits).map(|_| ()),
-            Err(ProtocolError::InvalidControl("lifecycle envelope size"))
-        );
-
-        let mut wrong_version =
-            encode_engine_request(1, &EngineRequest::Shutdown, limits).expect("encode shutdown");
-        wrong_version[4] = LIFECYCLE_VERSION.wrapping_add(1);
-        assert_eq!(
-            decode_request(&wrong_version, limits).map(|_| ()),
-            Err(ProtocolError::InvalidControl("lifecycle envelope version"))
-        );
-
-        let mut unknown_tag =
-            encode_engine_request(1, &EngineRequest::Shutdown, limits).expect("encode shutdown");
-        unknown_tag[5] = 0xfe;
-        assert_eq!(
-            decode_request(&unknown_tag, limits).map(|_| ()),
-            Err(ProtocolError::InvalidControl("lifecycle operation tag"))
-        );
     }
 
     #[test]

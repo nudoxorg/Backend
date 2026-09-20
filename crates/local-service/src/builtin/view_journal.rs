@@ -11,7 +11,6 @@ use backend_engine::{
     Boundary, CoverageCapability, Cursor, CursorEvent, Faults, Freshness, MAX_SUBSCRIPTION_EVENTS,
     ViewDto, ViewPersistence, ViewRoot, ViewSnapshot, WorkspaceRoot,
 };
-use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -42,7 +41,6 @@ pub(super) struct RecoveredView {
 pub(super) struct ViewJournal {
     path: PathBuf,
     faults: Arc<Faults>,
-    workspace: Cell<Option<[u8; 32]>>,
 }
 
 impl ViewJournal {
@@ -55,11 +53,7 @@ impl ViewJournal {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(io_error)?;
         }
-        Ok(Self {
-            path,
-            faults,
-            workspace: Cell::new(None),
-        })
+        Ok(Self { path, faults })
     }
 
     fn load_scoped(
@@ -146,7 +140,6 @@ impl ViewJournal {
                 _ => Err("view journal has an unknown record kind".to_owned()),
             }
         })?;
-        self.workspace.set(Some(expected_workspace));
         let Some((view, cursor, _workspace_root)) = state else {
             return Ok(None);
         };
@@ -321,7 +314,7 @@ impl ViewJournal {
             .trip(Boundary::Rename)
             .map_err(|error| error.to_string())?;
         if let Some(parent) = self.path.parent() {
-            backend_platform::durability::open_directory(parent)
+            File::open(parent)
                 .and_then(|directory| directory.sync_all())
                 .map_err(io_error)?;
         }
@@ -333,7 +326,7 @@ impl ViewJournal {
 
     fn sync_parent_dir(&self) -> Result<(), String> {
         if let Some(parent) = self.path.parent() {
-            backend_platform::durability::open_directory(parent)
+            File::open(parent)
                 .and_then(|directory| directory.sync_all())
                 .map_err(io_error)?;
         }
@@ -373,7 +366,7 @@ impl ViewJournal {
                 .map_err(|_| "view journal length".to_owned())?,
         );
         if stored_length != u64::try_from(payload.len()).unwrap_or(u64::MAX)
-            || frame[18..50] != *blake3::hash(payload).as_bytes()
+            || frame[18..50] != *backend_engine::blake3::hash(payload).as_bytes()
         {
             return Ok(false);
         }
@@ -448,7 +441,7 @@ impl ViewJournal {
                 }
                 return Err(io_error(error));
             }
-            let actual = blake3::hash(&payload);
+            let actual = backend_engine::blake3::hash(&payload);
             if header[18..50] != *actual.as_bytes() {
                 if end == length {
                     self.truncate(
@@ -477,7 +470,7 @@ impl ViewJournal {
         // make the next startup take a different journal history.
         file.sync_all().map_err(io_error)?;
         if let Some(parent) = self.path.parent() {
-            backend_platform::durability::open_directory(parent)
+            File::open(parent)
                 .and_then(|directory| directory.sync_all())
                 .map_err(io_error)?;
         }
@@ -493,17 +486,7 @@ impl ViewPersistence for ViewJournal {
         cursor: Cursor,
         event: Option<&CursorEvent>,
     ) -> Result<(), String> {
-        let workspace = workspace_root.to_bytes();
-        if self.workspace.get() != Some(workspace) {
-            // A workspace HEAD change starts a new independently recoverable
-            // view generation. An event is relative to the prior in-memory
-            // view, whose snapshot is certified for another workspace root;
-            // retain the checked target as the first snapshot for this root.
-            self.persist_snapshot(workspace_root, cursor, view)?;
-            self.workspace.set(Some(workspace));
-            return Ok(());
-        }
-        let result = match event {
+        match event {
             Some(CursorEvent::View { delta })
                 if matches!(delta.delta(), backend_engine::ViewDelta::Reset { .. }) =>
             {
@@ -523,11 +506,7 @@ impl ViewPersistence for ViewJournal {
             Some(CursorEvent::Intent { .. }) | None => {
                 self.persist_snapshot(workspace_root, cursor, view)
             }
-        };
-        if result.is_ok() {
-            self.workspace.set(Some(workspace));
         }
-        result
     }
 }
 
@@ -696,7 +675,7 @@ fn write_frame(file: &mut File, kind: u8, payload: &[u8]) -> Result<(), String> 
             .to_be_bytes(),
     )
     .map_err(io_error)?;
-    file.write_all(blake3::hash(payload).as_bytes())
+    file.write_all(backend_engine::blake3::hash(payload).as_bytes())
         .map_err(io_error)?;
     file.write_all(payload).map_err(io_error)
 }

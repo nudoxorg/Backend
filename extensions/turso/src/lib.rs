@@ -14,8 +14,9 @@ use backend_library::{
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const MAX_AUDIT_ROOTS: i64 = 128;
+const REBUILD_BATCH_ROWS: usize = 512;
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS backend_projection_meta (
@@ -41,6 +42,8 @@ CREATE INDEX IF NOT EXISTS backend_projection_rows_label
     ON backend_projection_rows(label);
 CREATE INDEX IF NOT EXISTS backend_projection_rows_package
     ON backend_projection_rows(package_id, parent_id, row_id);
+CREATE INDEX IF NOT EXISTS backend_projection_rows_fts
+    ON backend_projection_rows USING fts (label, signature, document);
 CREATE TABLE IF NOT EXISTS backend_projection_commits (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     root BLOB NOT NULL UNIQUE,
@@ -67,6 +70,16 @@ ON CONFLICT(row_id) DO UPDATE SET
     document = excluded.document
 WHERE backend_projection_rows.content_hash != excluded.content_hash
 ";
+
+const UPSERT_COLUMNS: &str = "INSERT INTO backend_projection_rows (\
+    row_id, row_kind, content_hash, state, label, score, \
+    package_id, parent_id, signature, document) VALUES ";
+const UPSERT_CONFLICT: &str = " ON CONFLICT(row_id) DO UPDATE SET \
+    row_kind=excluded.row_kind, content_hash=excluded.content_hash, \
+    state=excluded.state, label=excluded.label, score=excluded.score, \
+    package_id=excluded.package_id, parent_id=excluded.parent_id, \
+    signature=excluded.signature, document=excluded.document \
+    WHERE backend_projection_rows.content_hash != excluded.content_hash";
 
 /// Durable path used by the product composition.
 pub const FILE_NAME: &str = "projection.turso";
@@ -107,6 +120,11 @@ pub enum ProjectionError {
     StaleTransition,
     /// A view size exceeded the SQL integer domain.
     RowCountOverflow,
+    /// Persisted projection metadata is structurally invalid.
+    CorruptMetadata {
+        /// Name of the malformed metadata field.
+        field: &'static str,
+    },
 }
 
 impl fmt::Display for ProjectionError {
@@ -127,6 +145,9 @@ impl fmt::Display for ProjectionError {
                 formatter.write_str("Turso projection transition has the wrong base root")
             }
             Self::RowCountOverflow => formatter.write_str("projection row count overflows i64"),
+            Self::CorruptMetadata { field } => {
+                write!(formatter, "projection metadata field {field} is invalid")
+            }
         }
     }
 }
@@ -169,20 +190,17 @@ impl TursoProjection {
         let text = path
             .to_str()
             .ok_or_else(|| ProjectionError::NonUtf8Path(path.to_path_buf()))?;
-        let database = turso::Builder::new_local(text).build().await?;
+        let database = turso::Builder::new_local(text)
+            .experimental_index_method(true)
+            .build()
+            .await?;
         let connection = database.connect()?;
         connection.execute_batch(SCHEMA).await?;
         let projection = Self {
             _database: database,
             connection,
         };
-        if let Some(metadata) = projection.metadata().await?
-            && metadata.schema_version != SCHEMA_VERSION
-        {
-            return Err(ProjectionError::Schema {
-                found: metadata.schema_version,
-            });
-        }
+        let _ = projection.metadata().await?;
         Ok(projection)
     }
 
@@ -199,22 +217,38 @@ impl TursoProjection {
         &mut self,
         view: &ViewRoot,
     ) -> Result<ProjectionUpdate, ProjectionError> {
-        if let Some(metadata) = self.metadata().await?
+        let expected_metadata = self.metadata().await?;
+        if let Some(metadata) = expected_metadata.as_ref()
             && metadata.root.as_slice() == view.root().as_bytes()
             && metadata.view_version.as_slice() == view.version().as_bytes()
         {
             return Ok(ProjectionUpdate::Reused {
-                rows: u64::try_from(metadata.row_count).unwrap_or(0),
+                rows: metadata.row_count.cast_unsigned(),
             });
         }
 
         let row_count =
             i64::try_from(view.row_count()).map_err(|_| ProjectionError::RowCountOverflow)?;
         let tx = self.connection.transaction().await?;
+        // `metadata` was read before opening the transaction. Re-check it from
+        // the transaction snapshot before deleting rows so a second process
+        // cannot publish a stale complete root after the first read raced a
+        // writer. A failed fence rolls the whole rebuild back.
+        let observed = read_metadata(&tx).await?;
+        if !metadata_matches(observed.as_ref(), expected_metadata.as_ref()) {
+            return Err(ProjectionError::StaleTransition);
+        }
         tx.execute("DELETE FROM backend_projection_rows", ())
             .await?;
-        for row in view.rows() {
-            upsert_row(&tx, row).await?;
+        for rows in view.rows().chunks(REBUILD_BATCH_ROWS) {
+            upsert_rows(&tx, rows).await?;
+        }
+        // Each SQL statement creates one immutable Tantivy segment. Compact
+        // the bounded rebuild batches once before publishing the root fence;
+        // hot one-row deltas remain append-only and avoid global maintenance.
+        if view.row_count() > REBUILD_BATCH_ROWS as u64 {
+            tx.execute("OPTIMIZE INDEX backend_projection_rows_fts", ())
+                .await?;
         }
         tx.execute(
             "INSERT INTO backend_projection_meta \
@@ -264,8 +298,11 @@ impl TursoProjection {
     ///
     /// # Errors
     ///
-    /// Returns [`ProjectionError::StaleTransition`] when the chain is empty,
-    /// discontinuous, or starts at a different cached root.
+    /// Returns [`ProjectionError::StaleTransition`] when an empty chain has no
+    /// initialized projection, when a nonempty chain is discontinuous, or when
+    /// it starts at a different cached root. A chain whose target fence is
+    /// already committed is replay-safe and returns
+    /// [`ProjectionUpdate::Reused`].
     pub async fn apply_all(
         &mut self,
         deltas: &[CommittedViewDelta],
@@ -276,7 +313,7 @@ impl TursoProjection {
                 .await?
                 .ok_or(ProjectionError::StaleTransition)?;
             return Ok(ProjectionUpdate::Reused {
-                rows: u64::try_from(metadata.row_count).unwrap_or(0),
+                rows: metadata.row_count.cast_unsigned(),
             });
         };
         let last = deltas.last().ok_or(ProjectionError::StaleTransition)?;
@@ -295,6 +332,13 @@ impl TursoProjection {
         let Some(metadata) = self.metadata().await? else {
             return Err(ProjectionError::StaleTransition);
         };
+        if metadata.root.as_slice() == last.target_root().as_bytes()
+            && metadata.view_version.as_slice() == last.target_version().as_bytes()
+        {
+            return Ok(ProjectionUpdate::Reused {
+                rows: metadata.row_count.cast_unsigned(),
+            });
+        }
         if metadata.root.as_slice() != first.base_root().as_bytes()
             || metadata.view_version.as_slice() != first.base_version().as_bytes()
         {
@@ -354,48 +398,46 @@ impl TursoProjection {
     ///
     /// Returns an error when query execution or metadata decoding fails.
     pub async fn search(&self, text: &str, limit: u32) -> Result<RootedRows, ProjectionError> {
-        let metadata = self
-            .metadata()
+        // Metadata and rows must come from one SQLite snapshot. Reading the
+        // fence first and the rows second lets another process commit between
+        // the two queries, yielding rows labelled with the wrong root.
+        let tx = self.connection.unchecked_transaction().await?;
+        let metadata = read_metadata(&tx)
             .await?
             .ok_or(ProjectionError::StaleTransition)?;
-        let pattern = format!("%{}%", escape_like(text));
-        let mut rows = self
-            .connection
-            .query(
-                "SELECT row_id FROM backend_projection_rows \
-                 WHERE label LIKE ?1 ESCAPE '\\' OR signature LIKE ?1 ESCAPE '\\' \
-                 OR document LIKE ?1 ESCAPE '\\' ORDER BY row_id LIMIT ?2",
-                turso::params![pattern, i64::from(limit)],
-            )
-            .await?;
+        let query = fts_query(text);
+        let mut rows = match query {
+            Some(query) => {
+                tx.query(
+                    "SELECT row_id FROM backend_projection_rows \
+                     WHERE (label, signature, document) MATCH ?1 \
+                     ORDER BY row_id LIMIT ?2",
+                    turso::params![query, i64::from(limit)],
+                )
+                .await?
+            }
+            None => {
+                tx.query(
+                    "SELECT row_id FROM backend_projection_rows ORDER BY row_id LIMIT ?1",
+                    [i64::from(limit)],
+                )
+                .await?
+            }
+        };
         let mut ids = Vec::new();
         while let Some(row) = rows.next().await? {
             ids.push(row.get::<String>(0)?);
         }
+        let root = metadata.root.into_boxed_slice();
+        tx.commit().await?;
         Ok(RootedRows {
-            root: metadata.root.into_boxed_slice(),
+            root,
             ids: ids.into_boxed_slice(),
         })
     }
 
     async fn metadata(&self) -> Result<Option<Metadata>, ProjectionError> {
-        let mut rows = self
-            .connection
-            .query(
-                "SELECT schema_version, root, view_version, row_count \
-                 FROM backend_projection_meta WHERE singleton=1",
-                (),
-            )
-            .await?;
-        let Some(row) = rows.next().await? else {
-            return Ok(None);
-        };
-        Ok(Some(Metadata {
-            schema_version: row.get(0)?,
-            root: row.get(1)?,
-            view_version: row.get(2)?,
-            row_count: row.get(3)?,
-        }))
+        read_metadata(&self.connection).await
     }
 }
 
@@ -408,11 +450,59 @@ pub struct RootedRows {
     pub ids: Box<[String]>,
 }
 
+#[derive(Debug, Eq, PartialEq)]
 struct Metadata {
     schema_version: i64,
     root: Vec<u8>,
     view_version: Vec<u8>,
     row_count: i64,
+}
+
+async fn read_metadata(
+    connection: &turso::Connection,
+) -> Result<Option<Metadata>, ProjectionError> {
+    let mut rows = connection
+        .query(
+            "SELECT schema_version, root, view_version, row_count \
+             FROM backend_projection_meta WHERE singleton=1",
+            (),
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(None);
+    };
+    let metadata = Metadata {
+        schema_version: row.get(0)?,
+        root: row.get(1)?,
+        view_version: row.get(2)?,
+        row_count: row.get(3)?,
+    };
+    if metadata.schema_version != SCHEMA_VERSION {
+        return Err(ProjectionError::Schema {
+            found: metadata.schema_version,
+        });
+    }
+    validate_metadata(&metadata)?;
+    Ok(Some(metadata))
+}
+
+fn validate_metadata(metadata: &Metadata) -> Result<(), ProjectionError> {
+    if metadata.root.len() != 32 {
+        return Err(ProjectionError::CorruptMetadata { field: "root" });
+    }
+    if metadata.view_version.len() != 32 {
+        return Err(ProjectionError::CorruptMetadata {
+            field: "view_version",
+        });
+    }
+    if metadata.row_count < 0 {
+        return Err(ProjectionError::CorruptMetadata { field: "row_count" });
+    }
+    Ok(())
+}
+
+fn metadata_matches(left: Option<&Metadata>, right: Option<&Metadata>) -> bool {
+    left == right
 }
 
 async fn apply_delta(
@@ -451,6 +541,31 @@ async fn apply_delta(
 }
 
 async fn upsert_row(connection: &turso::Connection, row: &Row) -> turso::Result<u64> {
+    connection.execute(UPSERT_ROW, row_values(row)).await
+}
+
+async fn upsert_rows(connection: &turso::Connection, rows: &[Row]) -> turso::Result<u64> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let mut sql = String::with_capacity(
+        UPSERT_COLUMNS.len() + UPSERT_CONFLICT.len() + rows.len().saturating_mul(23),
+    );
+    sql.push_str(UPSERT_COLUMNS);
+    for index in 0..rows.len() {
+        if index != 0 {
+            sql.push(',');
+        }
+        sql.push_str("(?,?,?,?,?,?,?,?,?,?)");
+    }
+    sql.push_str(UPSERT_CONFLICT);
+    let values = rows.iter().flat_map(row_values).collect::<Vec<_>>();
+    connection
+        .execute(&sql, turso::params_from_iter(values))
+        .await
+}
+
+fn row_values(row: &Row) -> [turso::Value; 10] {
     let (kind, id) = row_identity(row.id);
     let state = match row.state {
         RowState::Ready => 0_i64,
@@ -470,23 +585,18 @@ async fn upsert_row(connection: &turso::Connection, row: &Row) -> turso::Result<
     let signature = row.signature.as_ref().map_or(turso::Value::Null, |value| {
         turso::Value::Text(value.clone())
     });
-    connection
-        .execute(
-            UPSERT_ROW,
-            turso::params![
-                id,
-                kind,
-                row_hash(row).as_bytes().as_slice(),
-                state,
-                row.label.as_str(),
-                score,
-                package,
-                parent,
-                signature,
-                render_document(&row.document)
-            ],
-        )
-        .await
+    [
+        turso::Value::Text(id),
+        turso::Value::Integer(kind),
+        turso::Value::Blob(row_hash(row).as_bytes().to_vec()),
+        turso::Value::Integer(state),
+        turso::Value::Text(row.label.clone()),
+        score,
+        package,
+        parent,
+        signature,
+        turso::Value::Text(render_document(&row.document)),
+    ]
 }
 
 async fn record_commit(
@@ -613,25 +723,27 @@ fn render_document(fragments: &[Fragment]) -> String {
     output
 }
 
-fn escape_like(text: &str) -> String {
-    text.replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
+fn fts_query(text: &str) -> Option<String> {
+    let tokens = text
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    (!tokens.is_empty()).then(|| tokens.join(" AND "))
 }
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use backend_library::{
-        AuthorityScopeClaim, ProducerObservationClaims, ProducerObservationVerifier,
-    };
+    use backend_library::{AuthorityScopeClaim, ProducerObservationVerifier};
     use backend_library::{
         Basis, Coverage, CoverageCapability, Frontier, RowId, ViewDelta, ViewRoot,
         admit_complete_scope, admit_producer_observation, branch_key, log_key, object_version,
         package_key, view_key, view_state_root,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
@@ -643,16 +755,8 @@ mod tests {
         fn verify(
             &self,
             observation: &backend_library::UntrustedProducerObservation,
-        ) -> Result<ProducerObservationClaims, Self::Error> {
-            if observation != &self.0 {
-                return Err("mismatch");
-            }
-            Ok(ProducerObservationClaims::new(
-                self.0.producer_identity(),
-                self.0.scope_root(),
-                self.0.context(),
-                *blake3::hash(self.0.evidence()).as_bytes(),
-            ))
+        ) -> Result<(), Self::Error> {
+            (observation == &self.0).then_some(()).ok_or("mismatch")
         }
     }
 
@@ -734,8 +838,18 @@ mod tests {
                     .unwrap_or_else(|error| panic!("apply: {error}")),
                 ProjectionUpdate::Advanced { changed_rows: 1 }
             );
+            // A retried transport receipt is safe to replay after the target
+            // fence has committed. The projection must not re-run its row
+            // mutation or force a rebuild just because the base is now old.
+            assert_eq!(
+                projection
+                    .apply(&committed)
+                    .await
+                    .unwrap_or_else(|error| panic!("replay apply: {error}")),
+                ProjectionUpdate::Reused { rows: 1 }
+            );
             let found = projection
-                .search("work", 10)
+                .search("workspace", 10)
                 .await
                 .unwrap_or_else(|error| panic!("search: {error}"));
             assert_eq!(found.root.as_ref(), next.root().as_bytes());
@@ -752,6 +866,99 @@ mod tests {
                     .unwrap_or_else(|error| panic!("reopen synchronize: {error}")),
                 ProjectionUpdate::Reused { rows: 1 }
             );
+            std::fs::remove_file(&path)
+                .unwrap_or_else(|error| panic!("remove projection: {error}"));
+        });
+    }
+
+    #[test]
+    #[ignore = "bounded Turso/Tantivy projection stress probe"]
+    fn stress_fts_projection_reports_build_query_and_delta_costs() {
+        futures_executor::block_on(async {
+            const ROWS: usize = 20_000;
+            let path = path();
+            let empty = root(Vec::new());
+            let package = package_key("stress");
+            let rows = (0..ROWS)
+                .map(|index| {
+                    let marker = if index == ROWS - 1 {
+                        " singular-needle"
+                    } else {
+                        ""
+                    };
+                    Row::in_package(
+                        RowId::Symbol(backend_library::symbol_key(&format!(
+                            "stress::symbol_{index:05}"
+                        ))),
+                        empty.basis(),
+                        package,
+                        format!("symbol_{index:05}"),
+                    )
+                    .with_signature(format!("fn symbol_{index:05}()"))
+                    .with_document(vec![Fragment::Text(format!(
+                        "indexed package documentation common-token{marker}"
+                    ))])
+                })
+                .collect::<Vec<_>>();
+            let view = root(rows);
+            let mut projection = TursoProjection::open(&path)
+                .await
+                .unwrap_or_else(|error| panic!("open: {error}"));
+            let started = Instant::now();
+            let update = projection
+                .synchronize(&view)
+                .await
+                .unwrap_or_else(|error| panic!("synchronize: {error}"));
+            let build_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            assert_eq!(update, ProjectionUpdate::Rebuilt { rows: ROWS as u64 });
+
+            let started = Instant::now();
+            let rare = projection
+                .search("singular needle", 10)
+                .await
+                .unwrap_or_else(|error| panic!("rare search: {error}"));
+            let rare_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            assert_eq!(rare.ids.len(), 1);
+
+            let started = Instant::now();
+            let common = projection
+                .search("common token", 25)
+                .await
+                .unwrap_or_else(|error| panic!("common search: {error}"));
+            let common_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            assert_eq!(common.ids.len(), 25);
+
+            let replacement = Row::in_package(
+                RowId::Symbol(backend_library::symbol_key("stress::symbol_10000")),
+                view.basis(),
+                package,
+                "symbol_10000",
+            )
+            .with_document(vec![Fragment::Text("changed edge".to_owned())]);
+            let prepared = view
+                .prepare(
+                    ViewDelta::Upsert { row: replacement },
+                    capability(view.basis().object),
+                )
+                .unwrap_or_else(|error| panic!("prepare: {error:?}"));
+            let (_, committed) = view
+                .commit(prepared)
+                .unwrap_or_else(|error| panic!("commit: {error:?}"));
+            let started = Instant::now();
+            let update = projection
+                .apply(&committed)
+                .await
+                .unwrap_or_else(|error| panic!("apply: {error}"));
+            let delta_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            assert_eq!(update, ProjectionUpdate::Advanced { changed_rows: 1 });
+
+            let bytes = std::fs::metadata(&path)
+                .unwrap_or_else(|error| panic!("metadata: {error}"))
+                .len();
+            eprintln!(
+                "turso_fts_stress rows={ROWS} build_ms={build_ms:.2} rare_ms={rare_ms:.3} common_ms={common_ms:.3} one_row_delta_ms={delta_ms:.3} database_bytes={bytes}"
+            );
+            drop(projection);
             std::fs::remove_file(&path)
                 .unwrap_or_else(|error| panic!("remove projection: {error}"));
         });

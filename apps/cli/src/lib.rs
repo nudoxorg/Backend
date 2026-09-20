@@ -39,9 +39,7 @@ pub use protocol::{
     decode_reply_with_certificate, decode_request, decode_request_against,
     decode_request_with_certificate, encode_request, frame, unframe,
 };
-pub use render::{EXIT_IO, EXIT_OK, EXIT_REFUSED, EXIT_USAGE};
-pub use run::Answer;
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 pub use transport::UnixCommandTransport;
 pub use transport::{CertifiedCommandTransport, CommandTransport, InProcessTransport, LocalEngine};
 

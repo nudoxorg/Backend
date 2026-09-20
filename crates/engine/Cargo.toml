@@ -8,7 +8,6 @@ publish = false
 [dependencies]
 backend-execution = { path = "../execution" }
 backend-flow = { path = "../flow" }
-backend-platform = { path = "../platform" }
 backend-replication = { path = "../replication" }
 backend-semantic = { path = "../semantic" }
 backend-store = { path = "../store" }
@@ -19,7 +18,7 @@ backend-library = { path = "../library" }
 serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1.4", default-features = false, features = ["std", "fs", "net", "process"] }
+rustix = { version = "1.1.4", default-features = false, features = ["std", "net", "process"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "dragonfly", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
 nix = { version = "0.30.1", default-features = false, features = ["socket", "user"] }

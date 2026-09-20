@@ -1,7 +1,6 @@
 //! Exact lexical relation state and delta admission.
 
 use crate::{Binding, Error, IndexRelation, Limits};
-use backend_semantic::EntityId;
 use backend_version::{CoverageWitness, Delta as VersionDelta, MapChange, RelationState};
 use std::collections::BTreeSet;
 
@@ -11,19 +10,19 @@ pub enum DocumentChange {
     /// Inserts or replaces a complete document.
     Add {
         /// Stable logical document key.
-        id: EntityId,
+        id: u64,
         /// Field/value pairs.
         fields: Vec<(String, String)>,
     },
     /// Removes an existing document.
     Delete {
         /// Stable logical document key.
-        id: EntityId,
+        id: u64,
     },
 }
 
 impl DocumentChange {
-    pub(crate) fn id(&self) -> EntityId {
+    pub(crate) fn id(&self) -> u64 {
         match self {
             Self::Add { id, .. } | Self::Delete { id } => *id,
         }
@@ -60,7 +59,7 @@ impl DocumentState {
     pub fn new(
         binding: Binding,
         coverage: CoverageWitness,
-        documents: Vec<(EntityId, Vec<(String, String)>)>,
+        documents: Vec<(u64, Vec<(String, String)>)>,
         limits: Limits,
     ) -> Result<Self, Error> {
         let limits = limits.validate()?;
@@ -70,13 +69,17 @@ impl DocumentState {
         ) {
             return Err(Error::IncompleteCoverage);
         }
+        if documents.len() > limits.max_documents {
+            return Err(Error::SizeLimit);
+        }
         let mut seen = BTreeSet::new();
         let mut entries = Vec::with_capacity(documents.len());
+        let mut total = 0usize;
         for (id, fields) in documents {
-            if !seen.insert(id) {
+            if id == 0 || !seen.insert(id) {
                 return Err(Error::MalformedInput);
             }
-            let fields = normalize_fields(fields, limits, &mut 0)?;
+            let fields = normalize_fields(fields, limits, &mut total)?;
             entries.push((id, fields));
         }
         entries.sort_by_key(|(id, _)| *id);
@@ -106,7 +109,7 @@ impl DocumentState {
     }
 
     /// Returns visible documents in canonical key order.
-    pub fn iter(&self) -> impl Iterator<Item = (EntityId, &[(String, String)])> {
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &[(String, String)])> {
         self.state
             .iter()
             .map(|(id, fields)| (*id, fields.as_slice()))
@@ -120,8 +123,11 @@ impl DocumentState {
     /// size violations, or stale before-values.
     pub fn prepare_delta(&self, changes: Vec<DocumentChange>) -> Result<DocumentDelta, Error> {
         let mut changes = changes;
-        if changes.len() > self.limits.max_delta_documents {
+        if changes.len() > self.limits.max_documents {
             return Err(Error::SizeLimit);
+        }
+        if changes.iter().any(|change| change.id() == 0) {
+            return Err(Error::MalformedInput);
         }
         changes.sort_by_key(DocumentChange::id);
         if changes
@@ -217,8 +223,17 @@ fn validate_document_state(
     state: &RelationState<IndexRelation>,
     limits: Limits,
 ) -> Result<(), Error> {
-    for (_, fields) in state.iter() {
-        let _ = normalize_fields(fields.clone(), limits, &mut 0)?;
+    let mut count = 0usize;
+    let mut total = 0usize;
+    for (id, fields) in state.iter() {
+        if *id == 0 {
+            return Err(Error::MalformedInput);
+        }
+        let _ = normalize_fields(fields.clone(), limits, &mut total)?;
+        count = count.checked_add(1).ok_or(Error::SizeLimit)?;
+    }
+    if count > limits.max_documents {
+        return Err(Error::SizeLimit);
     }
     Ok(())
 }

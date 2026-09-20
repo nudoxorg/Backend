@@ -6,14 +6,14 @@
 //! on the peer.  The resulting token is deliberately affine and cannot be
 //! serialized or reconstructed from wire fields.
 
-#[cfg(unix)]
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
 #[cfg(any(unix, windows))]
 use backend_platform::local::LocalStream as UnixStream;
 #[cfg(any(unix, windows))]
 pub use backend_platform::local::{LocalAddr, LocalListener, LocalStream};
 #[cfg(windows)]
 use backend_platform::win32::identity::UserSid;
+#[cfg(unix)]
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::Path;
 
 use backend_version::{ProducerObservationVerifier, UntrustedProducerObservation};

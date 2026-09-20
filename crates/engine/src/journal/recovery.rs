@@ -3,9 +3,9 @@
 use super::frame::read_frame_at_path;
 use super::scan::{collect_recovery, repair_tail, scan_path};
 use super::{
-    HashChainJournal, JournalCheckpoint, JournalCodec, JournalError, JournalFrame, JournalFrameRef,
-    JournalLimits, JournalReceipt, JournalRecovery, JournalScan, JournalState, Mutex, OpenOptions,
-    Path, containing_directory, validate_limits,
+    File, HashChainJournal, JournalCheckpoint, JournalCodec, JournalError, JournalFrame,
+    JournalFrameRef, JournalLimits, JournalReceipt, JournalRecovery, JournalScan, JournalState,
+    Mutex, OpenOptions, Path, containing_directory, validate_limits,
 };
 
 impl<D: JournalCodec> HashChainJournal<D> {
@@ -39,8 +39,7 @@ impl<D: JournalCodec> HashChainJournal<D> {
         let (recovery, scan) = collect_recovery::<D>(&path, limits, None)?;
         repair_tail(&path, &scan)?;
         if !existed {
-            backend_platform::durability::open_directory(containing_directory(&path))?
-                .sync_all()?;
+            File::open(containing_directory(&path))?.sync_all()?;
         }
         let next_sequence = recovery.last_sequence.map_or(Ok(0), |sequence| {
             sequence.checked_add(1).ok_or(JournalError::Bounds)
@@ -105,8 +104,7 @@ impl<D: JournalCodec> HashChainJournal<D> {
         let scan = scan_path(&path, limits, None, visitor)?;
         repair_tail(&path, &scan)?;
         if !existed {
-            backend_platform::durability::open_directory(containing_directory(&path))?
-                .sync_all()?;
+            File::open(containing_directory(&path))?.sync_all()?;
         }
         let next_sequence = scan.last_sequence.map_or(Ok(0), |sequence| {
             sequence.checked_add(1).ok_or(JournalError::Bounds)
@@ -299,8 +297,7 @@ impl<D: JournalCodec> HashChainJournal<D> {
                 if length != scan.valid_offset {
                     return Err(JournalError::Corrupt("tail repair"));
                 }
-                backend_platform::durability::open_directory(containing_directory(&self.path))?
-                    .sync_all()?;
+                File::open(containing_directory(&self.path))?.sync_all()?;
                 Ok(())
             })()
         {

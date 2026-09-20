@@ -2,7 +2,6 @@
 
 use crate::delta::DocumentChange;
 use crate::{Authority, Limits, Query, Recipe, Root};
-use backend_semantic::EntityId;
 use backend_version::{
     ClosedRelationScope, Coverage, CoverageWitness, DeltaError, ScopeRoot, partial_coverage,
 };
@@ -138,7 +137,7 @@ pub fn materialize_with_limits(
     if !matches!(coverage, CoverageWitness::Complete(_)) {
         return Err(Error::IncompleteCoverage);
     }
-    if changes.len() > limits.max_delta_documents {
+    if changes.len() > limits.max_documents {
         return Err(Error::SizeLimit);
     }
     changes.sort_by_key(DocumentChange::id);
@@ -150,6 +149,9 @@ pub fn materialize_with_limits(
     }
     let mut total = 0usize;
     for change in &mut changes {
+        if change.id() == 0 {
+            return Err(Error::MalformedInput);
+        }
         if let DocumentChange::Add { fields, .. } = change {
             *fields = crate::delta::normalize_fields(std::mem::take(fields), limits, &mut total)?;
         }
@@ -173,7 +175,7 @@ pub fn query(
     materialization: &Materialization,
     root: Root,
     terms: &[&str],
-) -> Result<Vec<EntityId>, Error> {
+) -> Result<Vec<u64>, Error> {
     if materialization.root != root {
         return Err(Error::StaleRoot);
     }
@@ -203,16 +205,16 @@ pub fn query(
     Ok(docs
         .into_iter()
         .filter_map(|(id, fields)| {
+            let hay = fields
+                .iter()
+                .map(|(_, value)| value.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase();
             query
                 .terms
                 .iter()
-                .all(|term| {
-                    fields.iter().any(|(_, value)| {
-                        value
-                            .split_ascii_whitespace()
-                            .any(|token| token.eq_ignore_ascii_case(term))
-                    })
-                })
+                .all(|term| hay.contains(term))
                 .then_some(id)
         })
         .collect())

@@ -1,12 +1,12 @@
 //! Changed-frontier overlay and deterministic node construction helpers.
 
 use super::{
-    CanonicalNode, CanonicalRelation, CheckedCanonicalRoot, ChildCommitment, CommittedChild,
-    DEFAULT_CUT_POLICY, IdContext, LazyTreeError, NodeError, RewriteResult, TreeNodeLoader,
-    UntrustedId, anchored_cut_points_children, anchored_cut_points_items,
-    canonical_branch_from_commitments, canonical_empty, canonical_leaf,
+    CanonicalNode, CanonicalRelation, CanonicalRootAdmissionError, CheckedCanonicalRoot,
+    ChildCommitment, CommittedChild, DEFAULT_CUT_POLICY, IdContext, LazyTreeError, NodeError,
+    RewriteResult, TreeNodeLoader, UntrustedId, admit_canonical_root_claim,
+    anchored_cut_points_children, anchored_cut_points_items, canonical_branch_from_commitments,
+    canonical_empty, canonical_leaf,
 };
-use crate::{CanonicalRootAdmissionError, admit_canonical_root_claim};
 use std::collections::BTreeMap;
 
 /// Checked-node write overlay used only while building a multi-key lazy

@@ -34,12 +34,17 @@ fn accept_within(listener: &LocalListener) -> (LocalStream, LocalAddr) {
 fn a_stream_round_trips_and_reports_both_addresses_like_unix() {
     let path = endpoint("roundtrip");
     let listener = LocalListener::bind(&path).expect("bind");
-    listener.set_nonblocking(true).expect("nonblocking listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
     let mut client = LocalStream::connect(&path).expect("connect");
     let (server, address) = accept_within(&listener);
     server.set_nonblocking(false).expect("blocking stream");
 
-    assert!(address.is_unnamed(), "an accepted client never bound a path");
+    assert!(
+        address.is_unnamed(),
+        "an accepted client never bound a path"
+    );
     let peer = client.peer_addr().expect("client peer address");
     assert!(!peer.is_unnamed());
     assert_eq!(peer.as_pathname(), Some(path.as_path()));
@@ -59,7 +64,9 @@ fn a_stream_round_trips_and_reports_both_addresses_like_unix() {
 fn both_ends_of_a_connection_identify_the_current_user() {
     let path = endpoint("peer-user");
     let listener = LocalListener::bind(&path).expect("bind");
-    listener.set_nonblocking(true).expect("nonblocking listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
     let client = LocalStream::connect(&path).expect("connect");
     let (server, _) = accept_within(&listener);
 
@@ -82,7 +89,10 @@ fn an_endpoint_is_classified_owned_restricted_and_still_connectable() {
 
     restrict_to_current_user(&path).expect("restrict endpoint");
     let owner = file_owner(&path).expect("endpoint owner");
-    assert!(is_owned_by_current_user(&owner).expect("owner check"), "{owner:?}");
+    assert!(
+        is_owned_by_current_user(&owner).expect("owner check"),
+        "{owner:?}"
+    );
     let _client = LocalStream::connect(&path).expect("connect after restricting");
 
     drop(listener);
@@ -98,7 +108,10 @@ fn a_regular_file_is_not_an_endpoint_and_can_be_made_private() {
     restrict_to_current_user(&path).expect("restrict file");
     let file = std::fs::File::open(&path).expect("open for reading");
     let owner = owner_of(&file).expect("owner through a read handle");
-    assert!(is_owned_by_current_user(&owner).expect("owner check"), "{owner:?}");
+    assert!(
+        is_owned_by_current_user(&owner).expect("owner check"),
+        "{owner:?}"
+    );
     drop(file);
     assert_eq!(std::fs::read(&path).expect("read back").len(), 32);
     std::fs::remove_file(&path).expect("remove file");
@@ -135,7 +148,9 @@ fn a_dead_endpoint_refuses_like_unix_and_can_be_removed() {
 fn a_read_deadline_expires_instead_of_blocking() {
     let path = endpoint("deadline");
     let listener = LocalListener::bind(&path).expect("bind");
-    listener.set_nonblocking(true).expect("nonblocking listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
     let mut client = LocalStream::connect(&path).expect("connect");
     let (_server, _) = accept_within(&listener);
     client

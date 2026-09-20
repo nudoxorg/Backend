@@ -1,5 +1,4 @@
 use super::*;
-use crate::builtin::BuiltinIntent;
 use backend_engine::{Cursor, CursorEvent};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -56,79 +55,6 @@ fn roundtrip_retains_nonempty_view_and_exact_owner_binding() {
     assert_eq!(recovered.cursor, cursor);
     assert_eq!(recovered.view.root(), view.root());
     assert!(recovered.view.row_count() > 0);
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn workspace_head_change_starts_with_a_snapshot_before_any_view_event() {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("test clock")
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("backend-locald-view-rollover-{stamp}.journal"));
-    let old_head = super::super::genesis().expect("checked builtin genesis");
-    let label = "fixture:next-workspace";
-    let intent = BuiltinIntent::add(backend_engine::package_key(label), label).expect("intent");
-    let relation = super::super::workspace_relation(Some(&intent)).expect("source relation");
-    let semantic = super::super::semantic_relation().expect("semantic relation");
-    let new_workspace = super::super::workspace_manifest(&relation, &semantic)
-        .expect("new manifest")
-        .root();
-    assert_ne!(old_head.root(), new_workspace);
-
-    let capability = super::super::test_builtin_view_capability().expect("coverage");
-    let (base, cursor) = super::super::initial_view().expect("initial view");
-    let row = backend_engine::Row::new(
-        backend_engine::RowId::Symbol(backend_engine::symbol_key("rollover::row")),
-        base.basis(),
-        "rollover::row",
-    );
-    let prepared = base
-        .prepare(
-            backend_engine::ViewDelta::Upsert { row },
-            capability.clone(),
-        )
-        .expect("prepare rollover");
-    let (target, delta) = base.clone().commit(prepared).expect("commit rollover");
-    let event = CursorEvent::View {
-        delta: Box::new(delta),
-    };
-    let mut journal = ViewJournal::open(&path).expect("open view journal");
-    journal
-        .persist(old_head.root(), &base, cursor, None)
-        .expect("persist old snapshot");
-    journal
-        .persist(
-            new_workspace,
-            &target,
-            Cursor::for_view_root(&target),
-            Some(&event),
-        )
-        .expect("persist new workspace view");
-    let recovered = journal
-        .load_for_workspace(new_workspace, &capability)
-        .expect("load new workspace view")
-        .expect("new workspace snapshot");
-    assert_eq!(recovered.view, target);
-    assert!(recovered.events.is_empty());
-
-    // Reopening must preserve the rollover boundary. The old workspace head
-    // is a cache miss, while the new head recovers the compact snapshot and
-    // never attempts to replay the event that preceded it.
-    drop(journal);
-    let reopened = ViewJournal::open(&path).expect("reopen rollover journal");
-    assert!(
-        reopened
-            .load_for_workspace(old_head.root(), &capability)
-            .expect("load old workspace after reopen")
-            .is_none()
-    );
-    let recovered = reopened
-        .load_for_workspace(new_workspace, &capability)
-        .expect("load new workspace after reopen")
-        .expect("new workspace snapshot after reopen");
-    assert_eq!(recovered.view, target);
-    assert!(recovered.events.is_empty());
     let _ = fs::remove_file(path);
 }
 

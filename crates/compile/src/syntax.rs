@@ -6,77 +6,26 @@ use crate::{
 use std::{collections::BTreeSet, fmt, num::NonZeroU32, path::Path, sync::Arc};
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator};
 
-pub(crate) use crate::syntax_kind::declaration_kind;
-
 const MAX_DECLARATIONS: usize = 16_384;
 const MAX_TEXT_BYTES: usize = 4_096;
 
-/// Source-language family understood by the shared syntax frontend.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[repr(u8)]
+/// Closed language identity used by source records and frontend selection.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum SourceLanguage {
     /// Rust source.
-    Rust = 0,
-    /// TypeScript or JavaScript source.
-    TypeScript = 1,
+    Rust,
     /// Python source.
-    Python = 2,
+    Python,
+    /// TypeScript, TSX, or JavaScript source.
+    TypeScript,
     /// Go source.
-    Go = 3,
+    Go,
     /// Java source.
-    Java = 4,
+    Java,
     /// C# source.
-    CSharp = 5,
-    /// C-family source parsed through Clang.
-    Clang = 6,
-}
-
-impl SourceLanguage {
-    /// Every supported source-language family in canonical order.
-    pub const ALL: [Self; 7] = [
-        Self::Rust,
-        Self::TypeScript,
-        Self::Python,
-        Self::Go,
-        Self::Java,
-        Self::CSharp,
-        Self::Clang,
-    ];
-
-    /// Returns the stable lowercase language name.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Rust => "rust",
-            Self::TypeScript => "typescript",
-            Self::Python => "python",
-            Self::Go => "go",
-            Self::Java => "java",
-            Self::CSharp => "csharp",
-            Self::Clang => "clang",
-        }
-    }
-
-    /// Returns the stable one-byte wire tag.
-    #[must_use]
-    pub const fn wire_tag(self) -> u8 {
-        self as u8
-    }
-
-    /// Admits a stable one-byte wire tag.
-    #[must_use]
-    pub const fn from_wire_tag(tag: u8) -> Option<Self> {
-        match tag {
-            0 => Some(Self::Rust),
-            1 => Some(Self::TypeScript),
-            2 => Some(Self::Python),
-            3 => Some(Self::Go),
-            4 => Some(Self::Java),
-            5 => Some(Self::CSharp),
-            6 => Some(Self::Clang),
-            _ => None,
-        }
-    }
+    CSharp,
+    /// C, C++, Objective-C, or header source.
+    Clang,
 }
 
 /// Closed semantic declaration vocabulary shared by every source frontend.
@@ -230,95 +179,6 @@ pub struct SourceLocation {
     start_line: NonZeroU32,
 }
 
-/// Completeness of a bounded declaration source excerpt.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum SourceExcerptExtent {
-    /// The complete declaration text fits in the retained bound.
-    Complete,
-    /// The declaration text continues beyond the retained UTF-8 prefix.
-    Truncated,
-}
-
-/// Explicit availability of bounded declaration source text.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum SourceExcerpt {
-    /// Source text was retained with an explicit completeness result.
-    Captured {
-        /// Bounded UTF-8 declaration text.
-        text: Arc<str>,
-        /// Whether the retained text is complete.
-        extent: SourceExcerptExtent,
-    },
-    /// The producer did not capture declaration source text.
-    NotCaptured,
-    /// Source text exists but is not resident in this process.
-    NotHydrated,
-    /// This deployment has no source-text provider.
-    Unconfigured,
-}
-
-impl SourceExcerpt {
-    /// Maximum source bytes retained for one declaration.
-    pub const MAX_BYTES: usize = 4_096;
-
-    /// Admits already-bounded captured source text.
-    ///
-    /// # Errors
-    /// Returns an error when the text is empty or exceeds [`Self::MAX_BYTES`].
-    pub fn captured(text: &str, extent: SourceExcerptExtent) -> Result<Self, String> {
-        if text.is_empty() || text.len() > Self::MAX_BYTES {
-            return Err("source excerpt is empty or oversized".to_owned());
-        }
-        Ok(Self::Captured {
-            text: Arc::from(text),
-            extent,
-        })
-    }
-
-    /// Captures a bounded UTF-8 prefix without allocating the unbounded input.
-    #[must_use]
-    pub fn capture_bounded(source: &str) -> Self {
-        if source.is_empty() {
-            return Self::NotCaptured;
-        }
-        let end = bounded_excerpt_end(source);
-        Self::Captured {
-            text: Arc::from(&source[..end]),
-            extent: if end == source.len() {
-                SourceExcerptExtent::Complete
-            } else {
-                SourceExcerptExtent::Truncated
-            },
-        }
-    }
-
-    /// Returns retained text when captured.
-    #[must_use]
-    pub fn text(&self) -> Option<&str> {
-        match self {
-            Self::Captured { text, .. } => Some(text),
-            Self::NotCaptured | Self::NotHydrated | Self::Unconfigured => None,
-        }
-    }
-
-    /// Returns completeness when source text was captured.
-    #[must_use]
-    pub const fn extent(&self) -> Option<SourceExcerptExtent> {
-        match self {
-            Self::Captured { extent, .. } => Some(*extent),
-            Self::NotCaptured | Self::NotHydrated | Self::Unconfigured => None,
-        }
-    }
-}
-
-fn bounded_excerpt_end(source: &str) -> usize {
-    let mut end = source.len().min(SourceExcerpt::MAX_BYTES);
-    while !source.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
-    end
-}
-
 impl SourceLocation {
     /// Maximum admitted source path bytes.
     pub const MAX_PATH_BYTES: usize = 4_096;
@@ -366,6 +226,51 @@ impl SourceLocation {
     }
 }
 
+impl SourceLanguage {
+    /// Returns the stable product and wire name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::Python => "python",
+            Self::TypeScript => "typescript",
+            Self::Go => "go",
+            Self::Java => "java",
+            Self::CSharp => "csharp",
+            Self::Clang => "clang",
+        }
+    }
+
+    /// Returns the stable source-record tag.
+    #[must_use]
+    pub const fn wire_tag(self) -> u8 {
+        match self {
+            Self::Rust => 1,
+            Self::Python => 2,
+            Self::TypeScript => 3,
+            Self::Go => 4,
+            Self::Java => 5,
+            Self::CSharp => 6,
+            Self::Clang => 7,
+        }
+    }
+
+    /// Admits a stable source-record tag.
+    #[must_use]
+    pub const fn from_wire_tag(tag: u8) -> Option<Self> {
+        match tag {
+            1 => Some(Self::Rust),
+            2 => Some(Self::Python),
+            3 => Some(Self::TypeScript),
+            4 => Some(Self::Go),
+            5 => Some(Self::Java),
+            6 => Some(Self::CSharp),
+            7 => Some(Self::Clang),
+            _ => None,
+        }
+    }
+}
+
 /// One bounded declaration selected by a grammar's semantic tags query.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceDeclaration {
@@ -374,7 +279,6 @@ pub struct SourceDeclaration {
     location: SourceLocation,
     signature: String,
     documentation: String,
-    source_excerpt: SourceExcerpt,
 }
 
 impl SourceDeclaration {
@@ -441,7 +345,6 @@ impl SourceDeclaration {
             location,
             signature: signature.into(),
             documentation: documentation.into(),
-            source_excerpt: SourceExcerpt::NotCaptured,
         };
         if value.name.is_empty()
             || [
@@ -486,19 +389,6 @@ impl SourceDeclaration {
     #[must_use]
     pub const fn line(&self) -> u32 {
         self.location.start_line()
-    }
-
-    /// Attaches bounded source text retained by the parser.
-    #[must_use]
-    pub fn with_source_excerpt(mut self, source_excerpt: SourceExcerpt) -> Self {
-        self.source_excerpt = source_excerpt;
-        self
-    }
-
-    /// Returns explicit source-text availability and completeness.
-    #[must_use]
-    pub const fn source_excerpt(&self) -> &SourceExcerpt {
-        &self.source_excerpt
     }
 
     /// Returns the compact source signature.
@@ -588,9 +478,6 @@ pub struct SyntaxFrontend {
 }
 
 impl SyntaxFrontend {
-    /// Maximum aggregate source-excerpt bytes retained by one analysis.
-    pub const MAX_EXCERPT_BYTES: usize = 1024 * 1024;
-
     /// Creates a frontend from an explicit, bump-on-change contract and grammar variants.
     ///
     /// # Errors
@@ -665,16 +552,12 @@ impl SyntaxFrontend {
             .set_language(&variant.language)
             .map_err(|error| SyntaxError::Parser(error.to_string()))?;
         let tree = parser.parse(source, None).ok_or(SyntaxError::Cancelled)?;
-        if tree.root_node().has_error() {
-            return Err(SyntaxError::MalformedSource(self.language));
-        }
         let mut declarations = Vec::new();
         declarations.push(module_declaration(path, self.language)?);
         let names = variant.tags.capture_names();
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&variant.tags, tree.root_node(), source);
         let mut seen = BTreeSet::new();
-        let mut excerpt_bytes = 0usize;
         while let Some(query_match) = matches.next() {
             let definition = query_match.captures().iter().find_map(|capture| {
                 let capture_name = names.get(capture.index as usize)?;
@@ -694,24 +577,14 @@ impl SyntaxFrontend {
             if name.is_empty() || !seen.insert((line, kind, name.to_owned())) {
                 continue;
             }
-            let declaration_source = node_text(definition, text);
-            excerpt_bytes = excerpt_bytes
-                .checked_add(bounded_excerpt_end(declaration_source))
-                .ok_or(SyntaxError::TooManySourceBytes)?;
-            if excerpt_bytes > Self::MAX_EXCERPT_BYTES {
-                return Err(SyntaxError::TooManySourceBytes);
-            }
-            declarations.push(
-                SourceDeclaration::at_path(
-                    path.display().to_string(),
-                    bounded(name),
-                    declaration_kind(self.language, kind, definition.kind()),
-                    line,
-                    declaration_signature(definition, text),
-                    declaration_documentation(definition, text),
-                )?
-                .with_source_excerpt(SourceExcerpt::capture_bounded(declaration_source)),
-            );
+            declarations.push(SourceDeclaration::at_path(
+                path.display().to_string(),
+                bounded(name),
+                bounded(kind),
+                line,
+                declaration_signature(definition, text),
+                declaration_documentation(definition, text),
+            )?);
             if declarations.len() > MAX_DECLARATIONS {
                 return Err(SyntaxError::TooManyDeclarations);
             }
@@ -743,12 +616,8 @@ pub enum SyntaxError {
     Parser(String),
     /// Parsing was cancelled by the parser runtime.
     Cancelled,
-    /// The grammar produced an error node, so declaration facts are unsafe to publish.
-    MalformedSource(SourceLanguage),
     /// The source exceeded the bounded declaration budget.
     TooManyDeclarations,
-    /// Retained source excerpts exceeded the aggregate analysis bound.
-    TooManySourceBytes,
     /// A selected declaration violated the bounded source contract.
     Declaration(String),
 }
@@ -766,11 +635,7 @@ impl fmt::Display for SyntaxError {
             Self::Query(error) => write!(formatter, "invalid semantic tags query: {error}"),
             Self::Parser(error) => write!(formatter, "parser setup failed: {error}"),
             Self::Cancelled => formatter.write_str("source parsing was cancelled"),
-            Self::MalformedSource(language) => {
-                write!(formatter, "{} source is malformed", language.name())
-            }
             Self::TooManyDeclarations => formatter.write_str("source declaration set is oversized"),
-            Self::TooManySourceBytes => formatter.write_str("source excerpt set is oversized"),
             Self::Declaration(error) => formatter.write_str(error),
         }
     }

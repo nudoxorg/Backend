@@ -187,7 +187,6 @@ pub(crate) fn product_frames_for_version_from_source<R: CanonicalRelation>(
 /// This is the pending-ticket path: the ticket retains the checked root
 /// identity, so it does not need to clone or keep a full relation state while
 /// closure pages are in flight.
-#[cfg(test)]
 pub(crate) fn product_input_frame(
     input: backend_engine::ProductInput,
     authority: AuthorityClaim,
@@ -199,36 +198,6 @@ pub(crate) fn product_input_frame(
     let bytes = backend_engine::product_input_bytes(&input);
     let key = ObjectKey::<ImmutableObjectSchema>::from_value(&bytes);
     let version = backend_engine::product_input_version(&input);
-    let frame = Frame::new(
-        transfer,
-        key,
-        version,
-        ChunkParts {
-            object_len: bytes.len() as u64,
-            offset: 0,
-            sequence: 0,
-            previous_chain: backend_engine::ChunkChain([0; 32]),
-            payload: bytes,
-        },
-        authority,
-    )?;
-    frame.validate(limits)?;
-    Ok(frame)
-}
-
-/// Builds the immutable recipe input frame for an admitted compiler semantic
-/// publication relation root.
-pub(crate) fn semantic_input_frame(
-    input: backend_engine::SemanticPublicationInput,
-    authority: AuthorityClaim,
-    limits: TransportLimits,
-    transfer: u64,
-) -> Result<Frame, ReplicationError> {
-    limits.validate()?;
-    let transfer = TransferId::new(transfer)?;
-    let bytes = backend_engine::semantic_input_bytes(input);
-    let key = ObjectKey::<ImmutableObjectSchema>::from_value(&bytes);
-    let version = backend_engine::semantic_input_version(input);
     let frame = Frame::new(
         transfer,
         key,
@@ -279,18 +248,13 @@ mod tests {
         fn verify(
             &self,
             observation: &backend_engine::UntrustedProducerObservation,
-        ) -> Result<backend_engine::ProducerObservationClaims, Self::Error> {
+        ) -> Result<(), Self::Error> {
             if observation.producer_identity() == [0x72; 32]
                 && observation.scope_root() == self.scope
                 && observation.context() == [0x73; 32]
                 && observation.evidence() == [0x74, 0x75]
             {
-                Ok(backend_engine::ProducerObservationClaims::new(
-                    observation.producer_identity(),
-                    observation.scope_root(),
-                    observation.context(),
-                    *blake3::hash(observation.evidence()).as_bytes(),
-                ))
+                Ok(())
             } else {
                 Err("fixture producer rejected")
             }

@@ -1,6 +1,6 @@
 //! Shared command transport exports for the MCP surface.
 
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 pub use backend_client::UnixCommandTransport;
 pub use backend_client::{
     CertifiedCommandTransport, CommandTransport, InProcessTransport, LocalEngine,

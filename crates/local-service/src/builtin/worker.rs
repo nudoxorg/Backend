@@ -2,8 +2,8 @@
 
 use super::{AsyncWorkerTransport, Duration, ProcessError, TransportLimits};
 use std::net::{SocketAddr, TcpStream};
-#[cfg(any(unix, windows))]
-use backend_engine::LocalStream as UnixStream;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 
 /// Connects to a configured worker and completes the transport handshake.
 ///
@@ -44,26 +44,26 @@ pub(super) fn connect_worker(
             })?;
         return Ok(Box::new(transport));
     }
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(not(unix))]
     {
         let _ = (endpoint, secret, capabilities, timeout, limits);
         return Err(ProcessError::Profile(
             "worker Unix transport is unavailable on this platform".to_owned(),
         ));
     }
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
     let stream = UnixStream::connect(endpoint).map_err(|error| {
         ProcessError::Profile(format!(
             "connect worker endpoint {}: {error}",
             endpoint.display()
         ))
     })?;
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
     let stream = crate::worker_transport::authenticate_unix(stream, timeout)
         .map_err(|error| ProcessError::Profile(format!("authenticate worker peer: {error}")))?;
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
     let transport = AsyncWorkerTransport::new(stream, capabilities, limits, timeout)
         .map_err(|error| ProcessError::Profile(format!("configure worker transport: {error}")))?;
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
     return Ok(Box::new(transport));
 }

@@ -34,7 +34,7 @@ pub(crate) use backend_version::{
 };
 pub(crate) use std::collections::BTreeMap;
 pub(crate) use std::fmt;
-pub(crate) use std::fs::{self, OpenOptions};
+pub(crate) use std::fs::{self, File, OpenOptions};
 pub(crate) use std::io;
 pub(crate) use std::path::{Path, PathBuf};
 pub(crate) use std::sync::atomic::AtomicU64;

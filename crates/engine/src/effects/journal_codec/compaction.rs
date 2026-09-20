@@ -17,7 +17,7 @@ use crate::effects::state::EffectError;
 use crate::fault::Boundary;
 use crate::journal::{HashChainJournal, JournalCheckpoint, JournalLimits};
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, File};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
@@ -166,7 +166,7 @@ impl<E: EffectSpec, C: EffectCodec<E>> JournalEffectPersistence<E, C> {
             self.faults
                 .trip(Boundary::DirSync)
                 .map_err(EffectError::Injected)?;
-            backend_platform::durability::open_directory(parent)
+            File::open(parent)
                 .and_then(|directory| directory.sync_all())
                 .map_err(|error| EffectError::Persistence(error.to_string()))?;
             Ok(())

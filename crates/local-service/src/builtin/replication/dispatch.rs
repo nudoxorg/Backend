@@ -6,19 +6,17 @@
 
 use super::{
     AuthorityClaim, AuthorityEpoch, BuiltinAuthorityVerifier, BuiltinModel, BuiltinProfile,
-    BuiltinReplication, BuiltinSemanticRelation, BuiltinValidator, ClosurePlanRequest,
-    ClosureRootOffer, CostSnapshot, DispatchPlan, EngineStatus, ExpectedInput, LocalCapability,
-    LocalState, OutputVersion, PendingClosure, PendingDispatch, PendingProduct, PlacementClass,
-    RebuildScope, RefreshChoice, RelationState, RemoteAuthorityPolicy, RemoteCapability,
-    RemoteDispatchContract, RemotePlanRequest, RemoteState, ResourceEnvelope, ResourceVector,
-    RevocationVersion, ScheduleRequest, TransportMessage, UntrustedSemanticCoverageClaim,
-    VersionedWorkIdentity, WireAuthorityPolicy, WireIdentity, WireRecipeRequest,
-    execution_resources, output_for_relation, output_for_snapshot, product_dependency_manifest,
-    validate_canonical_output,
+    BuiltinReplication, BuiltinValidator, ClosurePlanRequest, ClosureRootOffer, CostSnapshot,
+    DispatchPlan, EngineStatus, ExpectedInput, LocalCapability, LocalState, OutputVersion,
+    PendingClosure, PendingDispatch, PendingProduct, PlacementClass, ProductRelation,
+    ProductSourceSnapshot, RebuildScope, RefreshChoice, RelationState, RemoteAuthorityPolicy,
+    RemoteCapability, RemoteDispatchContract, RemotePlanRequest, RemoteState, ResourceEnvelope,
+    ResourceVector, RevocationVersion, ScheduleRequest, TransportMessage,
+    UntrustedSemanticCoverageClaim, VersionedWorkIdentity, WireAuthorityPolicy, WireIdentity,
+    WireRecipeRequest, execution_input_basis, execution_resources, output_for_relation,
+    output_for_snapshot, product_dependency_manifest, product_input_version,
+    product_source_fixture_with_authority, validate_canonical_output,
 };
-use std::num::NonZeroU64;
-
-const LEGACY_SCOPE_ONE: NonZeroU64 = NonZeroU64::MIN;
 
 impl BuiltinReplication {
     #[expect(
@@ -41,65 +39,63 @@ impl BuiltinReplication {
         let profile = self.profile.kind;
         let ids = self.profile.ids;
         let snapshot = daemon.engine().daemon().owner().snapshot();
-        let semantic_snapshot = (profile == BuiltinProfile::Product)
-            .then(|| backend_engine::ProductSemanticPublicationSnapshot::from_workspace(&snapshot))
+        let source_snapshot = (profile == BuiltinProfile::Product)
+            .then(|| ProductSourceSnapshot::from_workspace(&snapshot))
             .transpose()
             .map_err(|error| {
                 crate::protocol::ProtocolError::InvalidCommand(format!(
-                    "open selected semantic publication plane: {error}"
+                    "open selected product source: {error}"
                 ))
             })?;
         if profile == BuiltinProfile::Product
-            && semantic_snapshot
+            && source_snapshot
                 .as_ref()
                 .is_none_or(|source| source.authority_bytes() != ids.authority.as_bytes())
         {
             return Err(crate::protocol::ProtocolError::InvalidCommand(
-                "selected semantic publication authority does not match the recipe authority"
+                "selected workspace authority does not match the product recipe authority"
                     .to_owned(),
             ));
         }
         let relation = match profile {
             BuiltinProfile::Product => None,
             BuiltinProfile::EchoFixture => Some(
-                backend_engine::semantic_publication_fixture_with_authority(false, ids.authority)
+                product_source_fixture_with_authority(false, ids.authority)
                     .map_err(crate::protocol::ProtocolError::InvalidCommand)?,
             ),
         };
-        let relation_root = semantic_snapshot
+        let relation_root = source_snapshot
             .as_ref()
-            .map(backend_engine::ProductSemanticPublicationSnapshot::relation_root)
+            .map(ProductSourceSnapshot::relation_root)
             .or_else(|| relation.as_ref().map(RelationState::root))
             .ok_or(crate::protocol::ProtocolError::InvalidControl(
-                "missing selected semantic publication relation",
+                "missing selected product relation",
             ))?;
         let input_basis = match profile {
             BuiltinProfile::Product => {
-                let source = semantic_snapshot.as_ref().ok_or(
-                    crate::protocol::ProtocolError::InvalidControl(
-                        "missing semantic publication plane",
-                    ),
+                let source = source_snapshot.as_ref().ok_or(
+                    crate::protocol::ProtocolError::InvalidControl("missing product source"),
                 )?;
-                backend_engine::semantic_execution_input_basis_from_snapshot(source, ids.authority)
+                backend_engine::execution_input_basis_from_source(source, ids.authority)
                     .map_err(crate::protocol::ProtocolError::InvalidCommand)?
             }
-            BuiltinProfile::EchoFixture => backend_engine::semantic_execution_input_basis(
+            BuiltinProfile::EchoFixture => execution_input_basis(
                 relation
                     .as_ref()
                     .ok_or(crate::protocol::ProtocolError::InvalidControl(
-                        "missing echo semantic relation",
+                        "missing echo relation",
                     ))?,
                 ids.authority,
             )
             .map_err(crate::protocol::ProtocolError::InvalidCommand)?,
         };
         let refresh = self
-            .refresh_choice(semantic_snapshot.as_ref(), relation_root)
+            .refresh_choice(source_snapshot.as_ref(), relation_root)
             .map_err(crate::protocol::ProtocolError::InvalidCommand)?;
         let placement = if profile == BuiltinProfile::Product {
-            let retention = semantic_snapshot
+            let retention = source_snapshot
                 .as_ref()
-                .map(backend_engine::ProductSemanticPublicationSnapshot::retention_facts)
+                .map(ProductSourceSnapshot::retention_facts)
                 .unwrap_or_default();
             Self::placement_for_refresh(refresh, retention)
         } else {
@@ -118,18 +114,17 @@ impl BuiltinReplication {
         let read_claim = WireIdentity::from_typed(&identity.read_manifest);
         let work_claim = WireIdentity::from_typed(&identity.work_key());
         let authority_claim = WireIdentity::from_typed(&identity.authority);
-        let expected_input = if ids.include_basis {
-            let source = semantic_snapshot.as_ref().ok_or(
-                crate::protocol::ProtocolError::InvalidControl(
-                    "missing semantic publication plane",
-                ),
-            )?;
-            vec![ExpectedInput::from_typed(
-                &backend_engine::semantic_input_version(source.input()),
-            )]
-        } else {
-            Vec::new()
-        };
+        let expected_input =
+            if ids.include_basis {
+                let source = source_snapshot.as_ref().ok_or(
+                    crate::protocol::ProtocolError::InvalidControl("missing product source"),
+                )?;
+                vec![ExpectedInput::from_typed(&product_input_version(
+                    &source.input(),
+                ))]
+            } else {
+                Vec::new()
+            };
         let resources = execution_resources(ids);
         let expected_authority = WireAuthorityPolicy {
             id: authority_claim,
@@ -142,9 +137,7 @@ impl BuiltinReplication {
             Some("work identity")
         } else if request.read_manifest != read_claim {
             Some("read manifest")
-        } else if request.scope
-            != backend_engine::ExecutionScopeId::from_legacy_ordinal(LEGACY_SCOPE_ONE)
-        {
+        } else if request.scope != 1 {
             Some("scope")
         } else if request.inputs.len() != expected_input.len()
             || request
@@ -222,7 +215,7 @@ impl BuiltinReplication {
             LocalState::Ready,
             now,
             expires_at,
-            &|candidate: &VersionedWorkIdentity<BuiltinSemanticRelation>, state| {
+            &|candidate: &VersionedWorkIdentity<ProductRelation>, state| {
                 if *candidate == identity && state == LocalState::Ready {
                     Ok(())
                 } else {
@@ -236,7 +229,7 @@ impl BuiltinReplication {
             &negotiated,
             now,
             expires_at,
-            &|candidate: &VersionedWorkIdentity<BuiltinSemanticRelation>,
+            &|candidate: &VersionedWorkIdentity<ProductRelation>,
               capabilities: &backend_engine::NegotiatedCapabilities| {
                 if *candidate == identity
                     && capabilities
@@ -297,11 +290,11 @@ impl BuiltinReplication {
             DispatchPlan::Scheduled(schedule)
                 if schedule.decision() == backend_engine::PlacementDecision::Local
         ) {
-            let bytes = match (profile, semantic_snapshot.as_ref(), relation.as_ref()) {
+            let bytes = match (profile, source_snapshot.as_ref(), relation.as_ref()) {
                 (BuiltinProfile::Product, Some(snapshot), _) => {
                     output_for_snapshot(ids, input_basis, snapshot).map_err(|error| {
                         crate::protocol::ProtocolError::InvalidCommand(format!(
-                            "project local semantic publications: {error}"
+                            "project local product source: {error}"
                         ))
                     })?
                 }
@@ -339,13 +332,13 @@ impl BuiltinReplication {
 
         // Remote execution is the product closure path. It must retain the
         // owner-admitted lazy source all the way through page production.
-        let semantic_snapshot =
-            semantic_snapshot.ok_or(crate::protocol::ProtocolError::InvalidControl(
-                "remote product dispatch requires checked semantic publications",
+        let source_snapshot =
+            source_snapshot.ok_or(crate::protocol::ProtocolError::InvalidControl(
+                "remote product dispatch requires a checked source snapshot",
             ))?;
         let expected_root = crate::reconcile::ProductPageSource::from_workspace(
             input_basis,
-            semantic_snapshot.relation().clone(),
+            source_snapshot.relation().clone(),
         )
         .map_err(|error| {
             crate::protocol::ProtocolError::InvalidCommand(format!(
@@ -362,7 +355,7 @@ impl BuiltinReplication {
                     identity,
                     ids,
                     input_basis,
-                    snapshot: semantic_snapshot,
+                    snapshot: source_snapshot,
                 },
             )
         } else {
@@ -374,7 +367,7 @@ impl BuiltinReplication {
                     identity,
                     ids,
                     input_basis,
-                    snapshot: semantic_snapshot,
+                    snapshot: source_snapshot,
                     expected_root,
                 },
             )
@@ -456,12 +449,10 @@ impl BuiltinReplication {
         self.next_correlation = self.next_correlation.checked_add(1).ok_or(
             crate::protocol::ProtocolError::InvalidControl("closure correlation space exhausted"),
         )?;
-        let workspace_manifest = backend_engine::semantic_execution_input_manifest_from_snapshot(
-            &snapshot,
-            ids.authority,
-        )
-        .map_err(crate::protocol::ProtocolError::InvalidCommand)?
-        .encode();
+        let workspace_manifest =
+            backend_engine::execution_input_manifest_from_source(&snapshot, ids.authority)
+                .map_err(crate::protocol::ProtocolError::InvalidCommand)?
+                .encode();
         let offer = ClosureRootOffer {
             correlation,
             workspace: backend_engine::WorkspaceRootClaim::from_bytes(*input_basis.as_bytes()),
@@ -477,7 +468,7 @@ impl BuiltinReplication {
             )
             .map_err(|error| crate::protocol::ProtocolError::InvalidCommand(error.to_string()))?;
         let input_value = snapshot.input();
-        let input_version = backend_engine::semantic_input_version(input_value).to_bytes();
+        let input_version = product_input_version(&input_value).to_bytes();
         self.pending_dispatch = Some(PendingDispatch {
             plan,
             contract,

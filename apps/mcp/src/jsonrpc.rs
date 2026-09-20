@@ -1,114 +1,68 @@
-//! Standards-compliant MCP JSON-RPC over the shared presentation model.
-//!
-//! This surface owns three things and no more: the protocol handshake, the
-//! projection of the shared command registry into MCP's tool vocabulary
-//! ([`tools`]), and the resources an agent attaches to its context
-//! ([`resources`]). What a command *is* lives in [`backend_library::COMMANDS`],
-//! what it *takes* lives in `backend_present::GRAMMARS`, which round trips it
-//! needs lives in `backend_present::answer`, and what the answer *reads like*
-//! lives in `backend_present::markdown`. The CLI reaches all four the same way,
-//! which is what makes `backend --format markdown` and a `tools/call` text
-//! block byte-identical rather than merely similar.
-//!
-//! Two rules decide every `tools/call` result:
-//!
-//! * the text block is `markdown::answer`, and `structuredContent` is
-//!   `answer_value` — the same typed DTO the CLI's `--format json` emits;
-//! * `isError` is true exactly when the answer is a [`Fault`], and the fault is
-//!   rendered in the shared three-line grammar with its affordance as the exact
-//!   next tool call an agent can paste back.
+//! Standards-compliant MCP JSON-RPC surface over one admitted product session.
 
-use backend_client::{ClientError, Session};
+use backend_client::Session;
+use backend_extension_trustfall::{FieldValue, TransparentValue, execute_view_query};
 use backend_library::{
-    GraphQueryPage, GraphValue, HealthReport, PageTerminal, ReplyDto, SurfaceCommand, SurfaceReply,
-    ViewStateRoot, encode_id,
+    CommandReply, Document, Fragment, OutlineNode, ReplyDto, Row, RowId, ViewRoot, ViewSnapshot,
+    encode_id,
 };
-use backend_present::{
-    Answer, Engine, Fault, Invocation, Probe, Request, answer_value, fault_value, grammar_for_tool,
-    lower, markdown,
-};
+use futures_util::StreamExt as _;
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
-
-mod codec;
-mod resources;
-mod tools;
-use codec::{
-    empty_cursor, error_reply, limit, no_extra, object, query_variables, read_line, string, success,
-    valid_id, write_message,
-};
-use tools::{QUERY_TOOL, SURFACE_TOOL, list_tools};
 
 const STABLE_PROTOCOL: &str = "2025-11-25";
 const CANDIDATE_PROTOCOL: &str = "2026-07-28";
 const SERVER_NAME: &str = "backend";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Whatever this server reads product answers from.
-///
-/// It is the shared driver's [`Engine`] plus the one capability that is not a
-/// registry row: the typed Trustfall lane behind `backend.query`.
-pub(super) trait Product: Engine {
-    fn graph_query(
-        &mut self,
-        query: String,
-        variables: std::collections::BTreeMap<String, GraphValue>,
-        limit: u16,
-    ) -> Result<GraphQueryPage, ClientError>;
+trait Product {
+    fn revision(&mut self) -> Result<ViewRoot, String>;
+    fn packages(&mut self) -> Result<ReplyDto, String>;
+    fn index(&mut self, coordinate: &str) -> Result<ReplyDto, String>;
+    fn remove(&mut self, coordinate: &str) -> Result<ReplyDto, String>;
+    fn search(&mut self, text: &str, limit: u16) -> Result<ReplyDto, String>;
+    fn names(&mut self, text: &str, limit: u16) -> Result<ReplyDto, String>;
+    fn document(&mut self, coordinate: &str) -> Result<ReplyDto, String>;
+    fn outline(&mut self, coordinate: &str) -> Result<ReplyDto, String>;
+    fn graph(&mut self, coordinate: &str) -> Result<ReplyDto, String>;
 }
 
-/// One connected local daemon session, seen as this server's product.
-///
-/// The newtype exists because both the trait and the session are foreign to
-/// this crate. Its bodies carry no judgement: every arm forwards one probe to
-/// the matching session method, and every decision about which probes an answer
-/// needs is made once, in the shared driver.
-pub(super) struct SessionProduct(Session);
-
-impl SessionProduct {
-    pub(super) const fn new(session: Session) -> Self {
-        Self(session)
-    }
-}
-
-impl Engine for SessionProduct {
-    fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
-        self.0.revision().map(|revision| revision.root)
+impl Product for Session {
+    fn revision(&mut self) -> Result<ViewRoot, String> {
+        Session::view(self).map_err(|error| error.to_string())
     }
 
-    fn health(&mut self) -> Result<HealthReport, ClientError> {
-        self.0.health()
+    fn packages(&mut self) -> Result<ReplyDto, String> {
+        Session::packages(self).map_err(|error| error.to_string())
     }
 
-    fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
-        match probe {
-            Probe::Packages => self.0.packages(),
-            Probe::Index(path) => self.0.index(path),
-            Probe::Remove(path) => self.0.remove(path),
-            Probe::Document(at) => self.0.document(at),
-            Probe::Source(at) => self.0.source(at),
-            Probe::Related(at) => self.0.related(at),
-            Probe::Graph(at) => self.0.graph(at),
-            Probe::Search { text, limit } => self.0.search(text, limit),
-            Probe::Names { text, limit } => self.0.names(text, limit),
-            Probe::Outline(path) => self.0.outline(path),
-            Probe::OutlinePage { path, limit } => self.0.outline_page(path, limit, None),
-        }
+    fn index(&mut self, coordinate: &str) -> Result<ReplyDto, String> {
+        Session::index(self, coordinate).map_err(|error| error.to_string())
     }
 
-    fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
-        self.0.surface(command)
+    fn remove(&mut self, coordinate: &str) -> Result<ReplyDto, String> {
+        Session::remove(self, coordinate).map_err(|error| error.to_string())
     }
-}
 
-impl Product for SessionProduct {
-    fn graph_query(
-        &mut self,
-        query: String,
-        variables: std::collections::BTreeMap<String, GraphValue>,
-        limit: u16,
-    ) -> Result<GraphQueryPage, ClientError> {
-        self.0.graph_query(query, variables, limit, None, false)
+    fn search(&mut self, text: &str, limit: u16) -> Result<ReplyDto, String> {
+        Session::search(self, text, limit).map_err(|error| error.to_string())
+    }
+
+    fn names(&mut self, text: &str, limit: u16) -> Result<ReplyDto, String> {
+        Session::names(self, text, limit).map_err(|error| error.to_string())
+    }
+
+    fn document(&mut self, coordinate: &str) -> Result<ReplyDto, String> {
+        Session::document(self, coordinate).map_err(|error| error.to_string())
+    }
+
+    fn outline(&mut self, coordinate: &str) -> Result<ReplyDto, String> {
+        Session::outline(self, coordinate).map_err(|error| error.to_string())
+    }
+
+    fn graph(&mut self, coordinate: &str) -> Result<ReplyDto, String> {
+        Session::graph(self, coordinate).map_err(|error| error.to_string())
     }
 }
 
@@ -119,7 +73,7 @@ pub(super) fn serve_stdio(
     reader: &mut impl BufRead,
     writer: &mut impl Write,
 ) -> io::Result<()> {
-    let mut server = Server::new(SessionProduct::new(session), project);
+    let mut server = Server::new(session, project);
     loop {
         let Some(line) = read_line(reader)? else {
             return Ok(());
@@ -130,36 +84,24 @@ pub(super) fn serve_stdio(
     }
 }
 
-pub(super) struct Server<P> {
+struct Server<P> {
     product: P,
     project: String,
-    handshake: HandshakeState,
+    initialized: bool,
     protocol: &'static str,
 }
 
-/// MCP's initialization handshake is a protocol state, not a boolean.
-///
-/// Keeping the acknowledgement phase distinct prevents an unsolicited
-/// `notifications/initialized` message from granting access before the
-/// server has admitted an `initialize` request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HandshakeState {
-    AwaitInitialize,
-    AwaitInitializedNotification,
-    Ready,
-}
-
 impl<P: Product> Server<P> {
-    pub(super) fn new(product: P, project: String) -> Self {
+    fn new(product: P, project: String) -> Self {
         Self {
             product,
             project,
-            handshake: HandshakeState::AwaitInitialize,
+            initialized: false,
             protocol: STABLE_PROTOCOL,
         }
     }
 
-    pub(super) fn handle(&mut self, input: &[u8]) -> Option<Value> {
+    fn handle(&mut self, input: &[u8]) -> Option<Value> {
         let value: Value = match serde_json::from_slice(input) {
             Ok(value) => value,
             Err(error) => {
@@ -187,29 +129,19 @@ impl<P: Product> Server<P> {
         let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
 
         if id.is_none() {
-            if method == "notifications/initialized"
-                && self.handshake == HandshakeState::AwaitInitializedNotification
-            {
-                self.handshake = HandshakeState::Ready;
+            if method == "notifications/initialized" {
+                self.initialized = true;
             }
             return None;
         }
 
         if method == "initialize" {
-            if self.handshake != HandshakeState::AwaitInitialize {
-                return Some(error_reply(
-                    response_id,
-                    -32600,
-                    "Initialize request is not valid in the current state",
-                    None,
-                ));
-            }
             return Some(match self.initialize(&params) {
                 Ok(result) => success(response_id, result),
                 Err(error) => error.into_reply(response_id),
             });
         }
-        if self.handshake != HandshakeState::Ready {
+        if !self.initialized {
             return Some(error_reply(
                 response_id,
                 -32002,
@@ -217,24 +149,22 @@ impl<P: Product> Server<P> {
                 None,
             ));
         }
-        Some(match self.route(method, &params) {
+
+        let result = match method {
+            "ping" => Ok(json!({})),
+            "tools/list" => list_tools(&params),
+            "tools/call" => self.call_tool(&params),
+            "resources/list" => self.list_resources(&params),
+            "resources/templates/list" => list_resource_templates(&params),
+            "resources/read" => self.read_resource(&params),
+            "prompts/list" => list_prompts(&params),
+            "prompts/get" => self.get_prompt(&params),
+            _ => Err(RpcError::new(-32601, "Method not found")),
+        };
+        Some(match result {
             Ok(result) => success(response_id, result),
             Err(error) => error.into_reply(response_id),
         })
-    }
-
-    fn route(&mut self, method: &str, params: &Value) -> Result<Value, RpcError> {
-        match method {
-            "ping" => Ok(json!({})),
-            "tools/list" => list_tools(params),
-            "tools/call" => self.call_tool(params),
-            "resources/list" => resources::list_resources(&mut self.product, params),
-            "resources/templates/list" => resources::list_resource_templates(params),
-            "resources/read" => resources::read_resource(&mut self.product, params),
-            "prompts/list" => list_prompts(params),
-            "prompts/get" => self.get_prompt(params),
-            _ => Err(RpcError::new(-32601, "Method not found")),
-        }
     }
 
     fn initialize(&mut self, params: &Value) -> Result<Value, RpcError> {
@@ -244,7 +174,7 @@ impl<P: Product> Server<P> {
             CANDIDATE_PROTOCOL => CANDIDATE_PROTOCOL,
             _ => STABLE_PROTOCOL,
         };
-        self.handshake = HandshakeState::AwaitInitializedNotification;
+        self.initialized = true;
         Ok(json!({
             "protocolVersion": self.protocol,
             "capabilities": {
@@ -257,7 +187,7 @@ impl<P: Product> Server<P> {
                 "title": "Backend Code Intelligence",
                 "version": SERVER_VERSION
             },
-            "instructions": INSTRUCTIONS
+            "instructions": "The current project is indexed automatically. Use backend.search to find declarations, then backend.document or backend.graph with the returned coordinate. Every result is pinned to an immutable local revision."
         }))
     }
 
@@ -270,61 +200,128 @@ impl<P: Product> Server<P> {
             Some(Value::Object(arguments)) => arguments,
             Some(_) => return Err(RpcError::invalid("arguments must be an object")),
         };
-        if name == QUERY_TOOL {
-            return self.query_tool(arguments);
-        }
-        if name == SURFACE_TOOL {
-            return self.surface_tool(arguments);
-        }
-        let Some(grammar) = grammar_for_tool(name) else {
-            return Err(RpcError::new(-32602, "Unknown tool"));
+        let reply = match name {
+            "backend.status" => {
+                no_extra(arguments, &[])?;
+                let view = self.product.revision().map_err(RpcError::tool)?;
+                return Ok(tool_result(status_value(&view, &self.project), false));
+            }
+            "backend.projects" => {
+                no_extra(arguments, &[])?;
+                self.product.packages()
+            }
+            "backend.index" => {
+                no_extra(arguments, &["path"])?;
+                let path = optional_string(arguments, "path")?.unwrap_or(&self.project);
+                self.product.index(path)
+            }
+            "backend.remove" => {
+                no_extra(arguments, &["path"])?;
+                let path = optional_string(arguments, "path")?.unwrap_or(&self.project);
+                self.product.remove(path)
+            }
+            "backend.search" => {
+                no_extra(arguments, &["query", "limit"])?;
+                self.product
+                    .search(required_string(arguments, "query")?, limit(arguments)?)
+            }
+            "backend.names" => {
+                no_extra(arguments, &["query", "limit"])?;
+                self.product.names(
+                    optional_string(arguments, "query")?.unwrap_or(""),
+                    limit(arguments)?,
+                )
+            }
+            "backend.document" => {
+                no_extra(arguments, &["coordinate"])?;
+                self.product
+                    .document(required_string(arguments, "coordinate")?)
+            }
+            "backend.outline" => {
+                no_extra(arguments, &["path"])?;
+                let path = optional_string(arguments, "path")?.unwrap_or(&self.project);
+                self.product.outline(path)
+            }
+            "backend.graph" => {
+                no_extra(arguments, &["coordinate"])?;
+                self.product
+                    .graph(required_string(arguments, "coordinate")?)
+            }
+            "backend.query" => {
+                no_extra(arguments, &["query", "variables", "limit"])?;
+                let query = required_string(arguments, "query")?;
+                let variables = query_variables(arguments)?;
+                let limit = usize::from(limit(arguments)?);
+                let view = self.product.revision().map_err(RpcError::tool)?;
+                let revision = encode_id(view.root().as_bytes());
+                let stream = execute_view_query(view, query, variables)
+                    .map_err(|error| RpcError::invalid(error.to_string()))?;
+                let rows = futures_executor::block_on(stream.take(limit).collect::<Vec<_>>());
+                return Ok(tool_result(
+                    json!({
+                        "revision": revision,
+                        "rows": rows.into_iter().map(query_row_value).collect::<Vec<_>>()
+                    }),
+                    false,
+                ));
+            }
+            _ => return Err(RpcError::new(-32602, "Unknown tool")),
         };
-        let planned = Invocation::from_json(grammar, arguments)
-            .and_then(|invocation| lower(&invocation, &self.project));
-        Ok(match planned {
-            Ok(request) => match backend_present::answer(&mut self.product, &request) {
-                Ok(answer) => rendered(&answer),
-                Err(fault) => refused(&fault),
-            },
-            Err(fault) => refused(&fault),
-        })
+        match reply {
+            Ok(reply) => {
+                let (value, is_error) = reply_value(reply);
+                Ok(tool_result(value, is_error))
+            }
+            Err(error) => Ok(tool_result(json!({ "error": error }), true)),
+        }
     }
 
-    fn query_tool(&mut self, arguments: &Map<String, Value>) -> Result<Value, RpcError> {
-        no_extra(arguments, &["query", "variables", "limit"])?;
-        let query = string(arguments, "query")?.to_owned();
-        let variables = query_variables(arguments)?;
-        Ok(
-            match self.product.graph_query(query.clone(), variables, limit(arguments)?) {
-                Ok(page) => graph_page_result(&page),
-                Err(error) => refused(&Fault::from_client_error(
-                    &error,
-                    backend_present::Operand::Text(query),
-                )),
-            },
-        )
+    fn list_resources(&mut self, params: &Value) -> Result<Value, RpcError> {
+        empty_cursor(params)?;
+        let view = self.product.revision().map_err(RpcError::tool)?;
+        let mut resources = vec![json!({
+            "uri": "backend://workspace/current",
+            "name": "current-workspace",
+            "title": "Current indexed workspace",
+            "description": "Immutable revision, project count, and declaration count.",
+            "mimeType": "application/json"
+        })];
+        resources.extend(view.rows().iter().filter_map(|row| match row.id {
+            RowId::Package(_) => Some(json!({
+                "uri": format!("backend://outline/{}", percent_encode(&row.label)),
+                "name": row.label,
+                "title": display_name(&row.label),
+                "description": "Version-pinned project outline.",
+                "mimeType": "application/json"
+            })),
+            RowId::Symbol(_) | RowId::Object(_) => None,
+        }));
+        Ok(json!({ "resources": resources }))
     }
 
-    fn surface_tool(&mut self, arguments: &Map<String, Value>) -> Result<Value, RpcError> {
-        no_extra(arguments, &["command"])?;
-        let encoded = arguments
-            .get("command")
-            .cloned()
-            .ok_or_else(|| RpcError::invalid("command must be a tagged surface object"))?;
-        let command = serde_json::from_value::<SurfaceCommand>(encoded)
-            .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
-        command
-            .admit()
-            .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
-        let reply = self
-            .product
-            .surface(command)
-            .map_err(|error| RpcError::tool(error.to_string()))?;
-        let view = backend_present::product_view(&reply);
+    fn read_resource(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let params = object(params)?;
+        let uri = string(params, "uri")?;
+        let value = if uri == "backend://workspace/current" {
+            let view = self.product.revision().map_err(RpcError::tool)?;
+            status_value(&view, &self.project)
+        } else if let Some(coordinate) = uri.strip_prefix("backend://document/") {
+            let coordinate = percent_decode(coordinate)?;
+            let reply = self.product.document(&coordinate).map_err(RpcError::tool)?;
+            reply_value(reply).0
+        } else if let Some(coordinate) = uri.strip_prefix("backend://outline/") {
+            let coordinate = percent_decode(coordinate)?;
+            let reply = self.product.outline(&coordinate).map_err(RpcError::tool)?;
+            reply_value(reply).0
+        } else {
+            return Err(RpcError::new(-32002, "Resource not found"));
+        };
         Ok(json!({
-            "content": [{ "type": "text", "text": markdown::product(&view) }],
-            "structuredContent": { "surface": reply },
-            "isError": false
+            "contents": [{
+                "uri": uri,
+                "mimeType": "application/json",
+                "text": serde_json::to_string_pretty(&value).map_err(|error| RpcError::tool(error.to_string()))?
+            }]
         }))
     }
 
@@ -339,112 +336,24 @@ impl<P: Product> Server<P> {
             .and_then(|arguments| arguments.get("query"))
             .and_then(Value::as_str)
             .unwrap_or("the relevant implementation");
-        let view = Engine::revision(&mut self.product)
-            .map_err(|error| RpcError::tool(error.to_string()))?;
+        let view = self.product.revision().map_err(RpcError::tool)?;
         Ok(json!({
             "description": "Explore the current immutable code index.",
             "messages": [{
                 "role": "user",
                 "content": {
                     "type": "text",
-                    "text": format!(
-                        "Explore {query} in the indexed project. Search broadly, open the most relevant declarations, inspect their graph neighbors, and ground the answer in revision {}.",
-                        abbreviate(view.as_bytes())
-                    )
+                    "text": format!("Explore {query} in the indexed project. Search broadly, open the most relevant declarations, inspect their graph neighbors, and ground the answer in revision {}.", short_root(&view))
                 }
             }]
         }))
     }
 }
 
-const INSTRUCTIONS: &str = "Every tool is one row of one command registry, grouped by domain in \
-tools/list. Read backend://workspace/current first: it says in four lines which lanes are ready \
-and which are simply not configured, so a thin answer is never mistaken for an empty one. Then \
-backend.search or backend.outline to find a coordinate, and backend.document to read it — a \
-coordinate returned by any tool is accepted verbatim by every other. Answers are Markdown in the \
-text block and the same typed values in structuredContent. A refusal names the exact operand it \
-refused and the next tool call to make.";
-
-/// Returns the readable head of one stable identity.
-fn abbreviate(bytes: &[u8; 32]) -> String {
-    encode_id(bytes).chars().take(12).collect()
-}
-
-/// Renders one answer: Markdown for a reader, the typed DTO for a program.
-fn rendered(answer: &Answer) -> Value {
-    json!({
-        "content": [{ "type": "text", "text": markdown::answer(answer) }],
-        "structuredContent": answer_value(answer),
-        "isError": false
-    })
-}
-
-/// Renders one fault in the shared three-line grammar.
-fn refused(fault: &Fault) -> Value {
-    json!({
-        "content": [{ "type": "text", "text": markdown::fault(fault) }],
-        "structuredContent": fault_value(fault),
-        "isError": true
-    })
-}
-
-fn graph_page_result(page: &GraphQueryPage) -> Value {
-    let value = graph_query_page_value(page);
-    json!({
-        "content": [{ "type": "text", "text": graph_page_text(page) }],
-        "structuredContent": value,
-        "isError": false
-    })
-}
-
-fn graph_page_text(page: &GraphQueryPage) -> String {
-    let mut out = format!(
-        "~query {} row(s) · {} · revision {}\n",
-        page.rows.len(),
-        terminal_name(page.terminal),
-        abbreviate(page.revision.as_bytes())
-    );
-    for row in &page.rows {
-        let fields = row
-            .fields()
-            .iter()
-            .map(|(name, value)| format!("{name}={}", scalar_text(value)))
-            .collect::<Vec<_>>();
-        out.push_str(&fields.join("  "));
-        out.push('\n');
-    }
-    if page.terminal != PageTerminal::Complete {
-        out.push_str("… raise `limit` or narrow the query to see the rest\n");
-    }
-    out
-}
-
-fn scalar_text(value: &GraphValue) -> String {
-    match value {
-        GraphValue::String(text) => text.clone(),
-        GraphValue::Null => "·".to_owned(),
-        other => graph_value(other).to_string(),
-    }
-}
-
-const fn terminal_name(terminal: PageTerminal) -> &'static str {
-    match terminal {
-        PageTerminal::Complete => "complete",
-        PageTerminal::More(_) => "limit_reached",
-        PageTerminal::Cancelled => "cancelled",
-    }
-}
-
-/// Lifts one answer for a resource read, where a fault has no `isError` to go in.
-fn answer_for(engine: &mut dyn Engine, request: &Request) -> Result<Answer, RpcError> {
-    backend_present::answer(engine, request).map_err(|fault| RpcError::from_fault(&fault))
-}
-
 #[derive(Debug)]
 struct RpcError {
     code: i64,
     message: &'static str,
-    kind: &'static str,
     detail: Option<String>,
 }
 
@@ -453,7 +362,6 @@ impl RpcError {
         Self {
             code,
             message,
-            kind: "json_rpc",
             detail: None,
         }
     }
@@ -462,7 +370,6 @@ impl RpcError {
         Self {
             code: -32602,
             message: "Invalid params",
-            kind: "invalid_params",
             detail: Some(detail.into()),
         }
     }
@@ -471,18 +378,7 @@ impl RpcError {
         Self {
             code: -32603,
             message: "Backend request failed",
-            kind: "transport",
             detail: Some(detail.into()),
-        }
-    }
-
-    /// Lowers one shared fault into the JSON-RPC error a resource read reports.
-    fn from_fault(fault: &Fault) -> Self {
-        Self {
-            code: if fault.slug().is_usage() { -32602 } else { -32603 },
-            message: "Backend request failed",
-            kind: fault.slug().as_str(),
-            detail: Some(markdown::fault(fault)),
         }
     }
 
@@ -491,10 +387,72 @@ impl RpcError {
             id,
             self.code,
             self.message,
-            self.detail
-                .map(|detail| json!({ "kind": self.kind, "detail": detail })),
+            self.detail.map(|detail| json!({ "detail": detail })),
         )
     }
+}
+
+fn list_tools(params: &Value) -> Result<Value, RpcError> {
+    empty_cursor(params)?;
+    let text = |description: &str| json!({ "type": "string", "description": description });
+    let limit = json!({ "type": "integer", "minimum": 1, "maximum": 1000, "default": 50 });
+    Ok(json!({ "tools": [
+        tool("backend.status", "Workspace status", "Read the current immutable revision and index counts.", &json!({}), &[], true, false),
+        tool("backend.projects", "Indexed projects", "List projects in the current workspace revision.", &json!({}), &[], true, false),
+        tool("backend.search", "Search code", "Search declaration names, signatures, and documentation. Returned coordinates can be passed directly to other tools.", &json!({ "query": text("Text to find."), "limit": limit }), &["query"], true, false),
+        tool("backend.names", "Find names", "Find declaration names in the current immutable revision.", &json!({ "query": text("Optional name prefix or substring."), "limit": limit }), &[], true, false),
+        tool("backend.document", "Read declaration", "Read the signature and documentation for an exact coordinate returned by search.", &json!({ "coordinate": text("Exact declaration coordinate.") }), &["coordinate"], true, false),
+        tool("backend.outline", "Project outline", "Read the declaration tree for a project path.", &json!({ "path": text("Project path; defaults to the active project.") }), &[], true, false),
+        tool("backend.graph", "Declaration graph", "Read the bounded graph neighborhood for an exact declaration coordinate.", &json!({ "coordinate": text("Exact declaration coordinate.") }), &["coordinate"], true, false),
+        tool("backend.query", "Query the code graph", "Run a typed Trustfall query over the current immutable revision. Starting edges are Item, Project, and Declaration; fields include coordinate, name, kind, signature, documentation, revision, project, parent, children, related, and sameProject.", &json!({ "query": text("Trustfall query text."), "variables": { "type": "object", "description": "Scalar or list query variables.", "additionalProperties": true }, "limit": limit }), &["query"], true, false),
+        tool("backend.index", "Refresh project index", "Incrementally index changed files. Unchanged versioned objects are reused.", &json!({ "path": text("Project path; defaults to the active project.") }), &[], false, false),
+        tool("backend.remove", "Remove project", "Remove a project and its file frontier from this local workspace.", &json!({ "path": text("Project path; defaults to the active project.") }), &[], false, true)
+    ] }))
+}
+
+fn tool(
+    name: &str,
+    title: &str,
+    description: &str,
+    properties: &Value,
+    required: &[&str],
+    read_only: bool,
+    destructive: bool,
+) -> Value {
+    json!({
+        "name": name,
+        "title": title,
+        "description": description,
+        "inputSchema": { "type": "object", "properties": properties, "required": required, "additionalProperties": false },
+        "outputSchema": { "type": "object", "additionalProperties": true },
+        "annotations": {
+            "title": title,
+            "readOnlyHint": read_only,
+            "destructiveHint": destructive,
+            "idempotentHint": true,
+            "openWorldHint": false
+        }
+    })
+}
+
+fn list_resource_templates(params: &Value) -> Result<Value, RpcError> {
+    empty_cursor(params)?;
+    Ok(json!({ "resourceTemplates": [
+        {
+            "uriTemplate": "backend://document/{coordinate}",
+            "name": "declaration-document",
+            "title": "Declaration document",
+            "description": "A version-pinned declaration selected by an exact coordinate.",
+            "mimeType": "application/json"
+        },
+        {
+            "uriTemplate": "backend://outline/{path}",
+            "name": "project-outline",
+            "title": "Project outline",
+            "description": "A version-pinned outline selected by project path.",
+            "mimeType": "application/json"
+        }
+    ] }))
 }
 
 fn list_prompts(params: &Value) -> Result<Value, RpcError> {
@@ -507,28 +465,366 @@ fn list_prompts(params: &Value) -> Result<Value, RpcError> {
     }] }))
 }
 
-fn graph_value(value: &GraphValue) -> Value {
-    match value {
-        GraphValue::Null => Value::Null,
-        GraphValue::Boolean(value) => Value::Bool(*value),
-        GraphValue::Signed(value) => (*value).into(),
-        GraphValue::Unsigned(value) => (*value).into(),
-        GraphValue::Float(_) => value.as_float().map_or(Value::Null, Value::from),
-        GraphValue::String(value) => Value::String(value.clone()),
-        GraphValue::List(values) => Value::Array(values.iter().map(graph_value).collect()),
+fn tool_result(value: Value, is_error: bool) -> Value {
+    let text = serde_json::to_string_pretty(&value)
+        .unwrap_or_else(|_| "Backend result could not be rendered".to_owned());
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "structuredContent": object_value(value),
+        "isError": is_error
+    })
+}
+
+fn query_variables(
+    arguments: &Map<String, Value>,
+) -> Result<BTreeMap<String, FieldValue>, RpcError> {
+    match arguments.get("variables") {
+        None | Some(Value::Null) => Ok(BTreeMap::new()),
+        Some(Value::Object(variables)) => variables
+            .iter()
+            .map(|(name, value)| query_value(value).map(|value| (name.clone(), value)))
+            .collect(),
+        Some(_) => Err(RpcError::invalid("variables must be an object")),
     }
 }
 
-fn graph_query_page_value(page: &GraphQueryPage) -> Value {
+fn query_value(value: &Value) -> Result<FieldValue, RpcError> {
+    match value {
+        Value::Null => Ok(FieldValue::Null),
+        Value::Bool(value) => Ok((*value).into()),
+        Value::Number(value) => value
+            .as_i64()
+            .map(FieldValue::Int64)
+            .or_else(|| value.as_u64().map(FieldValue::Uint64))
+            .or_else(|| value.as_f64().map(FieldValue::Float64))
+            .ok_or_else(|| RpcError::invalid("query variable number is not finite")),
+        Value::String(value) => Ok(value.as_str().into()),
+        Value::Array(values) => values
+            .iter()
+            .map(query_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map(|values| FieldValue::List(values.into())),
+        Value::Object(_) => Err(RpcError::invalid(
+            "query variables may be scalars or lists, not objects",
+        )),
+    }
+}
+
+fn query_row_value(row: backend_extension_trustfall::ViewQueryRow) -> Value {
+    Value::Object(
+        row.into_iter()
+            .map(|(name, value)| {
+                let value =
+                    serde_json::to_value(TransparentValue::from(value)).unwrap_or(Value::Null);
+                (name.to_string(), value)
+            })
+            .collect(),
+    )
+}
+
+fn object_value(value: Value) -> Value {
+    match value {
+        Value::Object(_) => value,
+        other => json!({ "value": other }),
+    }
+}
+
+fn reply_value(reply: ReplyDto) -> (Value, bool) {
+    match reply.reply {
+        CommandReply::Packages(snapshot) => (snapshot_value("projects", &snapshot), false),
+        CommandReply::Names(snapshot) => (snapshot_value("names", &snapshot), false),
+        CommandReply::Search(snapshot) => (snapshot_value("search", &snapshot), false),
+        CommandReply::Graph(snapshot) => (snapshot_value("graph", &snapshot), false),
+        CommandReply::Resolved(rows) => (
+            json!({ "rows": rows.iter().map(row_value).collect::<Vec<_>>() }),
+            false,
+        ),
+        CommandReply::Added(intent) => (json!({ "indexed": encode_id(intent.as_bytes()) }), false),
+        CommandReply::Removed(intent) => {
+            (json!({ "removed": encode_id(intent.as_bytes()) }), false)
+        }
+        CommandReply::Document(document) | CommandReply::Page(document) => {
+            (document_value(&document), false)
+        }
+        CommandReply::Outline(outline) => (
+            json!({
+                "project": encode_id(outline.package.as_bytes()),
+                "revision": encode_id(outline.basis.as_bytes()),
+                "root": outline_node_value(&outline.root)
+            }),
+            false,
+        ),
+        CommandReply::Health(view) => (status_value(&view, ""), false),
+        CommandReply::Revision(receipt) => (
+            serde_json::json!({
+                "revision": encode_id(receipt.root().as_bytes()),
+                "sequence": receipt.cursor().sequence(),
+            }),
+            false,
+        ),
+        CommandReply::Error(message) => (json!({ "error": message }), true),
+    }
+}
+
+fn snapshot_value(kind: &str, snapshot: &ViewSnapshot) -> Value {
     json!({
-        "answer": "query",
-        "revision": encode_id(page.revision.as_bytes()),
-        "rows": page.rows.iter().map(|row| Value::Object(
-            row.fields().iter().map(|(name, value)| (name.clone(), graph_value(value))).collect()
-        )).collect::<Vec<_>>(),
-        "terminal": terminal_name(page.terminal),
-        "emitted": page.rows.len()
+        "kind": kind,
+        "revision": encode_id(snapshot.root.root().as_bytes()),
+        "freshness": format!("{:?}", snapshot.freshness).to_lowercase(),
+        "rows": snapshot.root.rows().iter().map(row_value).collect::<Vec<_>>(),
+        "next": snapshot.next.map(|_| "available")
     })
+}
+
+fn row_value(row: &Row) -> Value {
+    json!({
+        "id": row.id.stable_key(),
+        "kind": match row.id { RowId::Package(_) => "project", RowId::Symbol(_) => "declaration", RowId::Object(_) => "object" },
+        "coordinate": row.label,
+        "name": display_name(&row.label),
+        "signature": row.signature,
+        "documentation": fragments_text(&row.document),
+        "score": row.score,
+        "revision": encode_id(row.basis.root.as_bytes())
+    })
+}
+
+fn document_value(document: &Document) -> Value {
+    json!({
+        "symbol": encode_id(document.symbol.as_bytes()),
+        "revision": encode_id(document.basis.as_bytes()),
+        "signature": document.signature,
+        "documentation": fragments_text(&document.fragments)
+    })
+}
+
+fn outline_node_value(node: &OutlineNode) -> Value {
+    json!({
+        "symbol": encode_id(node.symbol.as_bytes()),
+        "children": node.children.iter().map(outline_node_value).collect::<Vec<_>>()
+    })
+}
+
+fn status_value(view: &ViewRoot, project: &str) -> Value {
+    let (projects, declarations) =
+        view.rows()
+            .iter()
+            .fold((0usize, 0usize), |counts, row| match row.id {
+                RowId::Package(_) => (counts.0.saturating_add(1), counts.1),
+                RowId::Symbol(_) => (counts.0, counts.1.saturating_add(1)),
+                RowId::Object(_) => counts,
+            });
+    json!({
+        "revision": encode_id(view.root().as_bytes()),
+        "project": project,
+        "projects": projects,
+        "declarations": declarations
+    })
+}
+
+fn fragments_text(fragments: &[Fragment]) -> String {
+    let mut output = String::new();
+    for fragment in fragments {
+        match fragment {
+            Fragment::Text(text) | Fragment::Code(text) => output.push_str(text),
+            Fragment::Link { label, .. } => output.push_str(label),
+            Fragment::Break => output.push('\n'),
+        }
+    }
+    output
+}
+
+fn short_root(view: &ViewRoot) -> String {
+    encode_id(view.root().as_bytes())[..12].to_owned()
+}
+
+fn display_name(coordinate: &str) -> &str {
+    coordinate.rsplit("::").next().unwrap_or(coordinate)
+}
+
+fn success(id: Value, result: Value) -> Value {
+    let mut reply = Map::with_capacity(3);
+    reply.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
+    reply.insert("id".to_owned(), id);
+    reply.insert("result".to_owned(), result);
+    Value::Object(reply)
+}
+
+fn error_reply(id: Value, code: i64, message: &str, data: Option<Value>) -> Value {
+    let mut error = json!({ "code": code, "message": message });
+    if let Some(data) = data {
+        error["data"] = data;
+    }
+    let mut reply = Map::with_capacity(3);
+    reply.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
+    reply.insert("id".to_owned(), id);
+    reply.insert("error".to_owned(), error);
+    Value::Object(reply)
+}
+
+fn valid_id(id: &Value) -> bool {
+    matches!(id, Value::String(_) | Value::Number(_))
+}
+
+fn object(value: &Value) -> Result<&Map<String, Value>, RpcError> {
+    value
+        .as_object()
+        .ok_or_else(|| RpcError::invalid("params must be an object"))
+}
+
+fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str, RpcError> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| RpcError::invalid(format!("{key} must be a non-empty string")))
+}
+
+fn required_string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str, RpcError> {
+    string(object, key)
+}
+
+fn optional_string<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+) -> Result<Option<&'a str>, RpcError> {
+    match object.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value)),
+        Some(_) => Err(RpcError::invalid(format!(
+            "{key} must be a non-empty string"
+        ))),
+    }
+}
+
+fn limit(arguments: &Map<String, Value>) -> Result<u16, RpcError> {
+    match arguments.get("limit") {
+        None => Ok(50),
+        Some(value) => value
+            .as_u64()
+            .and_then(|value| u16::try_from(value).ok())
+            .filter(|value| (1..=1000).contains(value))
+            .ok_or_else(|| RpcError::invalid("limit must be an integer from 1 through 1000")),
+    }
+}
+
+fn no_extra(arguments: &Map<String, Value>, allowed: &[&str]) -> Result<(), RpcError> {
+    if let Some(key) = arguments
+        .keys()
+        .find(|key| !allowed.contains(&key.as_str()))
+    {
+        Err(RpcError::invalid(format!("unknown argument: {key}")))
+    } else {
+        Ok(())
+    }
+}
+
+fn empty_cursor(params: &Value) -> Result<(), RpcError> {
+    let params = object(params)?;
+    if params.get("cursor").is_some_and(|value| !value.is_null()) {
+        Err(RpcError::invalid(
+            "this bounded list has no continuation cursor",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            output.push(char::from(byte));
+        } else {
+            output.push('%');
+            output.push(hex_digit(byte >> 4));
+            output.push(hex_digit(byte & 0x0f));
+        }
+    }
+    output
+}
+
+fn percent_decode(value: &str) -> Result<String, RpcError> {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%' {
+            let high = bytes.get(at + 1).and_then(|byte| hex_value(*byte));
+            let low = bytes.get(at + 2).and_then(|byte| hex_value(*byte));
+            let (Some(high), Some(low)) = (high, low) else {
+                return Err(RpcError::invalid(
+                    "resource URI has invalid percent encoding",
+                ));
+            };
+            output.push(high * 16 + low);
+            at += 3;
+        } else {
+            output.push(bytes[at]);
+            at += 1;
+        }
+    }
+    String::from_utf8(output).map_err(|_| RpcError::invalid("resource URI is not UTF-8"))
+}
+
+const fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        _ => (b'A' + value - 10) as char,
+    }
+}
+
+const fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn read_line(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
+    let mut output = Vec::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return if output.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(output))
+            };
+        }
+        let end = available.iter().position(|byte| *byte == b'\n');
+        let take = end.map_or(available.len(), |position| position + 1);
+        if output.len().saturating_add(take) > crate::MAX_FRAME.saturating_add(1) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "MCP message exceeds the bounded frame",
+            ));
+        }
+        output.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if end.is_some() {
+            output.pop();
+            if output.last() == Some(&b'\r') {
+                output.pop();
+            }
+            return Ok(Some(output));
+        }
+    }
+}
+
+fn write_message(writer: &mut impl Write, value: &Value) -> io::Result<()> {
+    let body = serde_json::to_vec(value).map_err(io::Error::other)?;
+    if body.len() > crate::MAX_FRAME {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "MCP response exceeds the bounded frame",
+        ));
+    }
+    writer.write_all(&body)?;
+    writer.write_all(b"\n")?;
+    writer.flush()
 }
 
 #[cfg(test)]

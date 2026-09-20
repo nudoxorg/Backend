@@ -1,6 +1,6 @@
 //! MCP process startup, stdio framing, and endpoint composition.
 
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 use crate::UnixCommandTransport;
 use crate::{
     MAX_ENDPOINT_PATH, decode_request, dispatch_frame_with_transport, error_frame,
@@ -8,8 +8,6 @@ use crate::{
 };
 use backend_replication::{LocalControlError, read_frame as read_local_frame};
 use std::io::{self, BufReader, Read, Write};
-#[cfg(any(unix, windows))]
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -17,8 +15,6 @@ use std::process::ExitCode;
 enum Mode {
     Mcp,
     Framed,
-    #[cfg(any(unix, windows))]
-    Http(crate::http::LoopbackBind),
 }
 
 struct Options {
@@ -62,13 +58,11 @@ pub fn main_entry() -> ExitCode {
     match options.mode {
         Mode::Mcp => json_rpc_main(&options.paths),
         Mode::Framed => framed_main(&options.paths),
-        #[cfg(any(unix, windows))]
-        Mode::Http(bind) => crate::http::main_entry(&options.paths, bind),
     }
 }
 
 fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
     let result = (|| {
         let endpoint = backend_runtime::ensure_locald(paths).map_err(|error| error.to_string())?;
         let project = paths
@@ -90,7 +84,7 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
         )
         .map_err(|error| error.to_string())
     })();
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(not(unix))]
     let result: Result<(), String> =
         Err("local Unix endpoint transport is unavailable on this platform".to_owned());
     match result {
@@ -103,7 +97,7 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
 }
 
 fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
     let (mut transport, connect_error) = match backend_runtime::ensure_locald(session) {
         Ok(path) => match UnixCommandTransport::connect(path) {
             Ok(transport) => (Some(transport), None),
@@ -111,7 +105,7 @@ fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
         },
         Err(error) => (None, Some(error.to_string())),
     };
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(not(unix))]
     let (mut transport, connect_error): (Option<()>, Option<String>) = (
         None,
         Some("local Unix endpoint transport is unavailable on this platform".to_owned()),
@@ -134,7 +128,7 @@ fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
             }
         };
         let request_is_valid = decode_request(&input).is_ok();
-        #[cfg(any(unix, windows))]
+        #[cfg(unix)]
         let output = match transport.as_mut() {
             Some(transport) => match dispatch_frame_with_transport(transport, &input) {
                 Ok(output) => output,
@@ -150,7 +144,7 @@ fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
                     .unwrap_or("local endpoint unavailable"),
             ),
         };
-        #[cfg(not(any(unix, windows)))]
+        #[cfg(not(unix))]
         let output = {
             let _ = &mut transport;
             error_frame_for_input(
@@ -185,21 +179,6 @@ fn options_from_args(args: impl IntoIterator<Item = String>) -> Result<Options, 
         if argument == "--framed" {
             mode = Mode::Framed;
             continue;
-        }
-        if argument == "--http" {
-            #[cfg(any(unix, windows))]
-            {
-                let address = args
-                    .next()
-                    .ok_or_else(|| "--http requires a loopback socket address".to_owned())?;
-                let address = address
-                    .parse::<SocketAddr>()
-                    .map_err(|error| format!("--http: invalid socket address: {error}"))?;
-                mode = Mode::Http(crate::http::LoopbackBind::new(address)?);
-                continue;
-            }
-            #[cfg(not(any(unix, windows)))]
-            return Err("--http requires Unix local transport support".to_owned());
         }
         if matches!(argument.as_str(), "--help" | "-h") {
             println!(

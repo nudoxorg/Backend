@@ -46,7 +46,7 @@ pub(super) fn repair_tail<D: JournalDomain>(
     if repair.metadata()?.len() != scan.valid_offset {
         return Err(JournalError::Corrupt("tail repair"));
     }
-    backend_platform::durability::open_directory(containing_directory(path))?.sync_all()?;
+    File::open(containing_directory(path))?.sync_all()?;
     Ok(())
 }
 

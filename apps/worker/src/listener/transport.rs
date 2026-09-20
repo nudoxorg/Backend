@@ -9,7 +9,7 @@ use std::time::Duration;
 
 #[cfg(any(unix, windows))]
 pub(super) fn configure_stream(
-    stream: &backend_engine::LocalStream,
+    stream: &backend_platform::LocalStream,
     timeout: Duration,
 ) -> Result<(), WorkerListenerError> {
     stream
@@ -51,8 +51,8 @@ pub(super) fn clear_active_tcp_stream(active_stream: &Mutex<Option<TcpStream>>) 
 
 #[cfg(any(unix, windows))]
 pub(super) fn set_active_stream(
-    active_stream: &Mutex<Option<backend_engine::LocalStream>>,
-    stream: &backend_engine::LocalStream,
+    active_stream: &Mutex<Option<backend_platform::LocalStream>>,
+    stream: &backend_platform::LocalStream,
 ) {
     if let Ok(clone) = stream.try_clone()
         && let Ok(mut active) = active_stream.lock()
@@ -62,7 +62,7 @@ pub(super) fn set_active_stream(
 }
 
 #[cfg(any(unix, windows))]
-pub(super) fn clear_active_stream(active_stream: &Mutex<Option<backend_engine::LocalStream>>) {
+pub(super) fn clear_active_stream(active_stream: &Mutex<Option<backend_platform::LocalStream>>) {
     if let Ok(mut active) = active_stream.lock() {
         *active = None;
     }
@@ -83,7 +83,7 @@ pub(super) fn prepare_socket_path(path: &Path) -> Result<(), WorkerListenerError
     if !is_endpoint_file(&metadata) {
         return Err(WorkerListenerError::EndpointOccupied);
     }
-    match backend_engine::LocalStream::connect(path) {
+    match backend_platform::LocalStream::connect(path) {
         Ok(_) => Err(WorkerListenerError::AlreadyRunning),
         Err(error)
             if matches!(

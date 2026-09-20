@@ -104,7 +104,7 @@ pub trait PeerPolicy: Send + Sync + 'static {
     ///
     /// # Errors
     /// Returns an error when the peer is not authorized.
-    fn authorize(&self, stream: &backend_engine::LocalStream) -> Result<(), PeerPolicyError>;
+    fn authorize(&self, stream: &backend_platform::LocalStream) -> Result<(), PeerPolicyError>;
 }
 
 /// Portable worker peer policy.
@@ -112,7 +112,7 @@ pub trait PeerPolicy: Send + Sync + 'static {
 pub struct FilesystemPeerPolicy;
 
 impl PeerPolicy for FilesystemPeerPolicy {
-    fn authorize(&self, stream: &backend_engine::LocalStream) -> Result<(), PeerPolicyError> {
+    fn authorize(&self, stream: &backend_platform::LocalStream) -> Result<(), PeerPolicyError> {
         let address = stream
             .peer_addr()
             .map_err(|error| PeerPolicyError::Io(error.kind()))?;
@@ -176,14 +176,14 @@ where
     R: Relation + Send,
     A: JobAdmission<R>,
 {
-    listener: backend_engine::LocalListener,
+    listener: backend_platform::LocalListener,
     worker: Option<WorkerService<E, S>>,
     admission: A,
     config: WorkerListenerConfig,
     path: PathBuf,
     stop: AtomicBool,
     peer_policy: Arc<dyn PeerPolicy>,
-    active_stream: Arc<Mutex<Option<backend_engine::LocalStream>>>,
+    active_stream: Arc<Mutex<Option<backend_platform::LocalStream>>>,
     report: WorkerRunReport,
     relation: PhantomData<fn() -> R>,
 }
@@ -458,7 +458,7 @@ where
     ) -> Result<Self, WorkerListenerError> {
         config.validate()?;
         prepare_socket_path(&config.path)?;
-        let listener = backend_engine::LocalListener::bind(&config.path)
+        let listener = backend_platform::LocalListener::bind(&config.path)
             .map_err(|error| WorkerListenerError::Io(error.kind()))?;
         set_private_socket_permissions(&config.path)?;
         listener

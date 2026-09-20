@@ -19,3 +19,5 @@ pub mod durability;
 pub mod local;
 #[cfg(windows)]
 pub mod win32;
+
+pub use local::{LocalAddr, LocalListener, LocalStream};

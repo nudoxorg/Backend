@@ -10,8 +10,6 @@ mod embedded;
 pub mod listener;
 pub mod process;
 pub mod protocol;
-/// Durable registry acquisition is an engine effect composed by local-service.
-pub use backend_engine::registry;
 pub(crate) mod reconcile;
 pub mod service;
 pub(crate) mod worker_transport;
@@ -24,22 +22,19 @@ use backend_engine::{
 use std::fmt;
 use std::path::Path;
 
-pub use embedded::{EmbeddedLocalService, ServiceStart, start_or_attach};
+pub use embedded::EmbeddedLocalService;
 pub use listener::{
-    DEFAULT_IDLE_TIMEOUT, FilesystemPeerPolicy, ListenerConfig, ListenerError, ListenerShutdown,
-    PeerPolicy, PeerPolicyError, RunReport, UnixListenerService,
+    FilesystemPeerPolicy, ListenerConfig, ListenerError, ListenerShutdown, PeerPolicy,
+    PeerPolicyError, RunReport, UnixListenerService,
 };
 pub use process::{
     AUTHORITY_SECRET_ENV, ENDPOINT_ENV, PROFILE_ENV, ProcessConfig, ProcessError,
-    REGISTRY_AUTH_ENV, REGISTRY_AUTH_FILE_ENV, REGISTRY_ECOSYSTEM_ENV, REGISTRY_ENDPOINT_ENV,
-    REGISTRY_NATIVE_ENV, REGISTRY_OFFLINE_ENV, RegistryConfig, WORKER_ENDPOINT_ENV, WORKSPACE_ENV,
-    main_entry, run_process, run_with_owner,
+    WORKER_ENDPOINT_ENV, WORKSPACE_ENV, main_entry, run_process, run_with_owner,
 };
 pub use protocol::{
-    CompletionClaim, EngineRequest, EngineStatus, FrameLimits, LIFECYCLE_BYTES, LIFECYCLE_MAGIC,
-    LIFECYCLE_VERSION, Operation, ProtocolError, RequestFrame, ResponseFrame,
-    decode_engine_request, decode_request, decode_response, encode_engine_request, encode_response,
-    frame, is_lifecycle, read_frame, unframe, write_frame,
+    CompletionClaim, EngineRequest, EngineStatus, FrameLimits, Operation, ProtocolError,
+    RequestFrame, ResponseFrame, decode_engine_request, decode_request, decode_response,
+    encode_engine_request, encode_response, frame, read_frame, unframe, write_frame,
 };
 pub use service::{
     CompletionAdmission, LocaldOwner, LocaldService, NoCompletionAdmission, NoReplicationAdmission,

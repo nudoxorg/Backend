@@ -10,17 +10,6 @@ publish = false
 backend-version = { path = "../../crates/version" }
 backend-execution = { path = "../../crates/execution" }
 backend-replication = { path = "../../crates/replication" }
-backend-semantic = { path = "../../crates/semantic" }
-arrayvec = { workspace = true, features = ["serde"] }
-blake3.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-ureq.workspace = true
-
-[dev-dependencies]
-allocation-counter.workspace = true
-flate2.workspace = true
 
 [lints]
 workspace = true

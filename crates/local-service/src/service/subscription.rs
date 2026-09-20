@@ -80,9 +80,7 @@ pub(super) fn snapshot_page(
     })?;
     SnapshotPageDto::from_owner(cursor, descriptor, page, reason)
         .map(|page| page.with_certificate(certificate))
-        .map_err(|error| {
-            ProtocolError::InvalidCommand(format!("subscription reset page admission: {error}"))
-        })
+        .map_err(|_| ProtocolError::InvalidControl("subscription reset page encoding"))
 }
 
 fn encode_subscription_events<M, V, A>(
@@ -203,9 +201,8 @@ fn encode_subscription_reset(
         ViewPageCursor::first(root),
         page_credit,
     )?;
-    let output = backend_engine::encode_snapshot_page_dto(&page).map_err(|error| {
-        ProtocolError::InvalidCommand(format!("subscription reset page encoding: {error}"))
-    })?;
+    let output = backend_engine::encode_snapshot_page_dto(&page)
+        .map_err(|_| ProtocolError::InvalidControl("subscription reset page encoding"))?;
     Ok(EngineStatus::AcceptedPayload(output.into_boxed_slice()))
 }
 
