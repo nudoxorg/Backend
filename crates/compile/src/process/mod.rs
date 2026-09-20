@@ -6,9 +6,7 @@ mod limits;
 mod receipt;
 
 pub use command::{ProcessStdin, Stdin, StdinSpec, SupervisedCommand};
-pub use identity::{
-    ExecutableIdentity, MAX_EXECUTABLE_BYTES, ToolchainArtifact, VerifiedExecutable,
-};
+pub use identity::{ExecutableIdentity, ToolchainArtifact, VerifiedExecutable};
 pub use limits::{ProcessEnvironment, ProcessLimits};
 pub use receipt::{ProcessReceipt, ProcessTerminal};
 

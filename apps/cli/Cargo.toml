@@ -16,10 +16,8 @@ path = "src/lib.rs"
 [dependencies]
 backend-client = { path = "../../crates/client" }
 backend-library = { path = "../../crates/library" }
-backend-present = { path = "../../crates/present" }
 backend-replication = { path = "../../crates/replication" }
 backend-runtime = { path = "../../crates/runtime" }
-serde.workspace = true
 serde_json.workspace = true
 
 [lints]

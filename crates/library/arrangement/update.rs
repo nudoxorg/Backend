@@ -4,8 +4,7 @@ use super::{
     ArrangementError, ChildRowKey, ChildrenRelation, ChildrenTree, DocumentIndexRelation,
     NameIndexRelation, NameKey, NamePostingKey, NamePostingRelation, NamePostingTree,
     PackageIndexRelation, PackageRowKey, PackageSymbolsRelation, PackageSymbolsTree,
-    ProjectionArrangement, SearchPostingKey, SearchPostingRelation, SearchPostingTree,
-    UnscopedIndexRelation, WorkCounters, search_grams, searchable_text,
+    ProjectionArrangement, UnscopedIndexRelation, WorkCounters, trigrams,
 };
 use crate::{CommittedViewDelta, Row, RowChange, RowId, ViewDelta, ViewRoot};
 use backend_flow::MaterializedIndex;
@@ -21,7 +20,6 @@ impl ProjectionArrangement {
             unscoped_symbols: None,
             names: None,
             name_postings: None,
-            search_postings: None,
             package_symbols: None,
             children: None,
         }
@@ -29,7 +27,7 @@ impl ProjectionArrangement {
 
     pub(crate) fn build(view: &ViewRoot, work: &WorkCounters) -> Result<Self, ArrangementError> {
         let arrangement = Self::build_inner(view)?;
-        work.record_indexed(usize::try_from(view.row_count()).unwrap_or(usize::MAX));
+        work.record_indexed(view.rows().len());
         Ok(arrangement)
     }
 
@@ -105,6 +103,7 @@ impl ProjectionArrangement {
     }
 
     fn build_inner(view: &ViewRoot) -> Result<Self, ArrangementError> {
+        let rows = view.rows();
         let coverage = view.relation_coverage();
         let frontier = view.flow_frontier().frontier();
         let mut documents = Vec::new();
@@ -112,11 +111,10 @@ impl ProjectionArrangement {
         let mut unscoped_symbols = Vec::new();
         let mut names = Vec::new();
         let mut name_postings = Vec::new();
-        let mut search_postings = Vec::new();
         let mut package_symbols = Vec::new();
         let mut children = Vec::new();
 
-        for row in view.iter_rows() {
+        for row in rows {
             match row.id {
                 RowId::Package(_) => packages.push(row.id),
                 RowId::Symbol(_) => {
@@ -126,16 +124,16 @@ impl ProjectionArrangement {
                     }
                     let key = name_key(row);
                     names.push(key.clone());
-                    for gram in search_grams(&key.normalized) {
+                    // Search spans the complete retained row projection,
+                    // rather than only the display name.  Keeping grams for
+                    // the signature and documentation makes the selective
+                    // posting seek a sound candidate filter for full-text
+                    // queries; the query path still verifies the complete
+                    // projection before returning a row.
+                    for gram in trigrams(&super::searchable_text(row)) {
                         name_postings.push(NamePostingKey {
                             gram,
                             id: Some(key.id),
-                        });
-                    }
-                    for gram in search_grams(&searchable_text(row)) {
-                        search_postings.push(SearchPostingKey {
-                            gram,
-                            id: Some(row.id),
                         });
                     }
                     if let Some(package) = row.package {
@@ -159,8 +157,6 @@ impl ProjectionArrangement {
         names.sort_unstable();
         name_postings.sort_unstable();
         name_postings.dedup();
-        search_postings.sort_unstable();
-        search_postings.dedup();
         package_symbols.sort_unstable();
         package_symbols.dedup();
         children.sort_unstable();
@@ -189,11 +185,6 @@ impl ProjectionArrangement {
             )?),
             name_postings: Some(unit_tree::<NamePostingRelation>(
                 name_postings,
-                coverage,
-                frontier.clone(),
-            )?),
-            search_postings: Some(unit_tree::<SearchPostingRelation>(
-                search_postings,
                 coverage,
                 frontier.clone(),
             )?),
@@ -233,11 +224,6 @@ impl ProjectionArrangement {
                 .advance(frontier.clone())
                 .map_err(|_| ArrangementError(TreeError::InvalidRoot))?,
         );
-        next.search_postings = Some(
-            required(self.search_postings.as_ref())?
-                .advance(frontier.clone())
-                .map_err(|_| ArrangementError(TreeError::InvalidRoot))?,
-        );
         next.package_symbols = Some(
             required(self.package_symbols.as_ref())?
                 .advance(frontier.clone())
@@ -263,7 +249,6 @@ impl ProjectionArrangement {
         let packages = required(self.packages.as_ref())?;
         let names = required(self.names.as_ref())?;
         let name_postings = required(self.name_postings.as_ref())?;
-        let search_postings = required(self.search_postings.as_ref())?;
         let package_symbols = required(self.package_symbols.as_ref())?;
         let children = required(self.children.as_ref())?;
 
@@ -308,13 +293,6 @@ impl ProjectionArrangement {
         let new_name = new.filter(|row| matches!(row.id, RowId::Symbol(_)));
         next.name_postings = Some(update_name_postings(
             name_postings,
-            old_name,
-            new_name,
-            frontier.clone(),
-            work,
-        )?);
-        next.search_postings = Some(update_search_postings(
-            search_postings,
             old_name,
             new_name,
             frontier.clone(),
@@ -387,8 +365,7 @@ fn update_name_postings(
 ) -> Result<NamePostingTree, ArrangementError> {
     let mut changes = BTreeMap::new();
     if let Some(old) = old {
-        let normalized = old.label.to_lowercase();
-        for gram in search_grams(&normalized) {
+        for gram in trigrams(&super::searchable_text(old)) {
             changes.insert(
                 NamePostingKey {
                     gram,
@@ -399,43 +376,9 @@ fn update_name_postings(
         }
     }
     if let Some(new) = new {
-        let normalized = new.label.to_lowercase();
-        for gram in search_grams(&normalized) {
+        for gram in trigrams(&super::searchable_text(new)) {
             changes.insert(
                 NamePostingKey {
-                    gram,
-                    id: Some(new.id),
-                },
-                Some(()),
-            );
-        }
-    }
-    apply_changes(tree, changes, frontier, work)
-}
-
-fn update_search_postings(
-    tree: &SearchPostingTree,
-    old: Option<&Row>,
-    new: Option<&Row>,
-    frontier: backend_flow::Frontier,
-    work: &WorkCounters,
-) -> Result<SearchPostingTree, ArrangementError> {
-    let mut changes = BTreeMap::new();
-    if let Some(old) = old {
-        for gram in search_grams(&searchable_text(old)) {
-            changes.insert(
-                SearchPostingKey {
-                    gram,
-                    id: Some(old.id),
-                },
-                None,
-            );
-        }
-    }
-    if let Some(new) = new {
-        for gram in search_grams(&searchable_text(new)) {
-            changes.insert(
-                SearchPostingKey {
                     gram,
                     id: Some(new.id),
                 },

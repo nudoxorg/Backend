@@ -81,8 +81,6 @@ pub enum ProcessError {
     InvalidProgram,
     /// The configured executable could not be read as a stable artifact.
     ExecutableUnavailable,
-    /// The configured executable exceeded the identity byte budget.
-    ExecutableLimit,
     /// The configured executable changed while it was being admitted.
     ExecutableDrift,
     /// A declared toolchain artifact did not match its command identity.
@@ -95,8 +93,6 @@ pub enum ProcessError {
     DuplicateEnvironment,
     /// An environment key or value contained a forbidden NUL byte.
     InvalidEnvironment,
-    /// Arguments or explicit environment exceeded the process configuration budget.
-    ConfigurationLimit,
     /// The temporary output file could not be created.
     TemporaryFile,
     /// A process could not be started.
@@ -129,7 +125,6 @@ impl fmt::Display for ProcessError {
             Self::RelativePath => "process paths must be absolute",
             Self::InvalidProgram => "process program path is invalid",
             Self::ExecutableUnavailable => "process executable is unavailable",
-            Self::ExecutableLimit => "process executable exceeded its identity byte budget",
             Self::ExecutableDrift => "process executable changed during admission",
             Self::IdentityMismatch => "process toolchain identity does not match executable",
             Self::ZeroLimit => "process limits must be non-zero",
@@ -138,7 +133,6 @@ impl fmt::Display for ProcessError {
             }
             Self::DuplicateEnvironment => "process environment contains a duplicate key",
             Self::InvalidEnvironment => "process environment contains an invalid byte",
-            Self::ConfigurationLimit => "process configuration exceeded its bounded budget",
             Self::TemporaryFile => "process output file could not be created",
             Self::SpawnFailure => "authority process could not be started",
             Self::Io => "authority process I/O failed",

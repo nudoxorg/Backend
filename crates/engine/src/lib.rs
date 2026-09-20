@@ -16,25 +16,16 @@
 pub use blake3;
 pub use serde_json;
 
-pub mod application;
 pub mod builtin;
-pub mod capability;
 pub mod daemon;
 pub mod dispatch;
-pub mod driver;
 pub mod effects;
 pub mod fault;
-pub mod index_build;
-pub mod index_publish;
 pub mod journal;
 pub mod platform;
-pub mod publication;
 pub mod queue;
-pub mod registry;
-pub mod retrieval;
 pub mod schema;
 pub mod tcp;
-pub mod telemetry;
 pub mod worker;
 pub mod workspace;
 
@@ -42,15 +33,14 @@ pub use backend_execution::{
     Admission, AdmissionError, AdmissionRequest, AttemptError, AttemptFence, AttemptLease,
     AttemptManager, AuthorityVersion, AuthorityVersionSchema, Budget, CancelHandle, Cancellation,
     CompletionCost, CostObservation, CostSnapshot, DeltaPlan, DeltaPlanner, Envelope,
-    EnvelopeBudgets, ExportStatus, FamilySnapshot, HedgeError, HedgeRace, HedgeSide, InternError,
-    Interned, LocalCapability, LocalState, MetricFamily, MetricOutcome, Observation,
-    ObservationError, OutputAdmission, OutputAdmissionError, OutputEquivalence, OutputSchema,
-    OutputVersion, PlacementClass, PlacementDecision, ReadManifestId, ReadManifestSchema,
-    RebuildScope, RecipeId, RecipeSchema, RefreshChoice, RefreshCost, RemoteCapability,
-    RemoteState, ResourceVector, ResultCoverage, ResultReceipt, ReuseContext, RuntimeSnapshot,
+    EnvelopeBudgets, HedgeError, HedgeRace, HedgeSide, InternError, Interned, LocalCapability,
+    LocalState, ObservationError, OutputAdmission, OutputAdmissionError, OutputEquivalence,
+    OutputSchema, OutputVersion, PlacementClass, PlacementDecision, ReadManifestId,
+    ReadManifestSchema, RebuildScope, RecipeId, RecipeSchema, RefreshChoice, RefreshCost,
+    RemoteCapability, RemoteState, ResourceVector, ResultCoverage, ResultReceipt, ReuseContext,
     ScheduleError, ScheduleOutcome, ScheduleReceipt, ScheduleRequest, Scheduled, Scheduler,
-    Telemetry, TelemetryExporter, TelemetrySnapshot, UntrustedResultReceipt, VersionedWorkIdentity,
-    WorkInterner, WorkKey, WorkKeySchema, choose_refresh,
+    UntrustedResultReceipt, VersionedWorkIdentity, WorkInterner, WorkKey, WorkKeySchema,
+    choose_refresh,
 };
 pub use backend_replication::{
     AdmittedAuthority, AdmittedChunk, AttemptId, Attestation, AttestationClass,
@@ -59,8 +49,8 @@ pub use backend_replication::{
     CanonicalDigest, CapabilityManifest, ChunkChain, ChunkChainDigest, ChunkParts,
     ClosureNeedRequest, ClosureObjectRequest, ClosurePageRequest, ClosurePageResponse,
     ClosureRootAck, ClosureRootOffer, ClosureSync, ClosureSyncCursor, ClosureSyncPage,
-    ExecutionRequestExpectation, ExecutionResultExpectation, ExecutionScopeId, ExpectedIdentity,
-    Fence, Frame, ImmutableObjectSchema, LOCAL_CONTROL_HEADER_BYTES, LOCAL_CONTROL_MAGIC,
+    ExecutionRequestExpectation, ExecutionResultExpectation, ExpectedIdentity, Fence, Frame,
+    ImmutableObjectSchema, LOCAL_CONTROL_HEADER_BYTES, LOCAL_CONTROL_MAGIC,
     LOCAL_CONTROL_MAX_CURSOR, LOCAL_CONTROL_MAX_ERROR, LOCAL_CONTROL_MAX_FRAME,
     LOCAL_CONTROL_VERSION, LocalControlClient, LocalControlError, LocalControlLimits,
     LocalControlRequest, LocalControlResponse, LocalSubscriptionId, LocalSubscriptionOperation,
@@ -91,35 +81,18 @@ pub use backend_replication::{FramedStream, FramedStreamError};
 // so an application cannot accidentally grow a second direct dependency edge
 // into one of the lower crates.
 pub use backend_library::{
-    Basis, BranchKey, CURSOR_CONTROL_BYTES, CURSOR_SCHEMA, CapabilityAuthority, CapabilityFamily,
-    CapabilityId, CapabilityInventory, CapabilityLifecycle, CapabilityStatus, CapabilityTarget,
-    CapabilityUnavailable, Command, CommandDto, CommandFailure, CommandReply, CommittedViewDelta,
-    CompleteViewProjection, Coverage as ViewCoverage, CoverageCapability, Cursor, CursorEvent,
-    CursorResetReason, DTO_VERSION, DeclarationChange, DeclarationRecord, DiffRecord, Document,
-    EmbeddingCapabilityRecipe, EmbeddingEncoding, EmbeddingMetric, EmbeddingNormalization,
-    EmbeddingPooling, EmbeddingRecipeId, EmbeddingSource, EventDto, Fragment, Freshness, Frontier,
-    FaultRows, GraphNeighborhoodQuery, GraphQueryControl, GraphQueryPage, GraphQueryRequest,
-    GraphQueryRow,
-    GraphValue, HealthReport, IngestProgress, IntentId, Lane, LanguageOracleTask, LanguageRows,
-    LogKey, MAX_PRODUCT_ROWS, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES, MAX_SNAPSHOT_PAGE_ROWS,
-    MAX_SUBSCRIPTION_EVENTS, MAX_VIEW_PATCH_ROWS, Outline,
-    PackageAuthorityIdentity, PackageCoordinate as ProductPackageCoordinate, PackageKey,
-    PackageReference, PageContinuation, PageRequest, PageTerminal, ProductAdmissionError,
-    ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector, ProjectionPage, Query,
-    QueryLimit, Reason, RegistryEcosystem, RegistryMetadata, RegistryPackageRecord, ReleaseRecord,
-    ReplyDto, Row, RowChange, RowId, SemanticConfidence, SemanticDeclarationIdentity,
-    SourceLanguage as ProductSourceLanguage,
-    SemanticGenerationId, SemanticLanguageProfile, SemanticLinkDelta, SemanticLinkEvidence,
-    SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan, SemanticVersionRecord,
-    SnapshotHydrator, SnapshotPageClaim, SnapshotPageDto, SubscriptionDto, SubscriptionRecord,
-    SurfaceCommand, SurfaceReply, SymbolAddress, SymbolKey, TreeNodeId as ProductTreeNodeId,
-    TreeNodeRecord, TreeOpener, TreeSubject, ViewDelta, ViewDto, ViewPageCursor, ViewPageError,
+    Basis, BranchKey, CURSOR_CONTROL_BYTES, CURSOR_SCHEMA, Command, CommandDto, CommandReply,
+    CommittedViewDelta, CompleteViewProjection, Coverage as ViewCoverage, CoverageCapability,
+    Cursor, CursorEvent, CursorResetReason, DTO_VERSION, EventDto, Fragment, Freshness, Frontier,
+    IntentId, Lane, LogKey, MAX_SNAPSHOT_PAGE_ROWS, MAX_SUBSCRIPTION_EVENTS, MAX_VIEW_PATCH_ROWS,
+    PackageKey, Reason, ReplyDto, Row, RowChange, RowId, SnapshotHydrator, SnapshotPageClaim,
+    SnapshotPageDto, SubscriptionDto, ViewDelta, ViewDto, ViewPageCursor, ViewPageError,
     ViewProjection, ViewProjectionError, ViewRecipeId, ViewRelation, ViewRoot, ViewRootDescriptor,
     ViewRootDescriptorClaim, ViewSnapshot, ViewSnapshotPage, ViewStateRoot, ViewVersion,
-    WireCertificate, WireClaim, WireSchema, command_request_id, compiler_authority_recipe,
-    decode_compact_view_event, encode_compact_subscription, encode_compact_view_event, encode_id,
-    encode_view_root_descriptor, intent_id, object_version, package_key, protocol_version,
-    symbol_key, view_identity_bytes, view_key, view_state_root, view_version_preimage,
+    WireCertificate, WireClaim, WireSchema, command_request_id, decode_compact_view_event,
+    encode_compact_subscription, encode_compact_view_event, encode_id, encode_view_root_descriptor,
+    intent_id, object_version, package_key, protocol_version, symbol_key, view_identity_bytes,
+    view_key, view_state_root, view_version_preimage,
 };
 pub use backend_store::{
     ClosureManifest, FileStore, GcLimits, GcReport, GcRoot, GcRoots, ObjectId,
@@ -130,14 +103,14 @@ pub use backend_version::{
     CanonicalNodeView, CanonicalRelation, CheckedCanonicalRoot, CheckedCommit,
     CheckedWorkspaceManifest, CheckedWorkspaceTransition, Commit, CommitProvenance, Coverage,
     CoverageWitness, IdContext, LazyPreparedUpdate, LazyTree, MapChange, ObjectClosure, ObjectKey,
-    ObjectVersion, PersistedTreeRoot, ProducerObservationClaims, ProducerObservationVerifier,
-    Relation, RelationBinding, RelationDecodeError, RelationState, RelationTransition, Schema,
-    ScopeRoot, StateRoot, TreeChange, TreeNodeChildren, TreeNodeClosure, TreeNodeClosureWork,
-    TreeNodeHandle, TreeNodeId, TreeNodeLoader, TreeNodeView, UntrustedId,
-    UntrustedProducerObservation, UntrustedWorkspaceDelta, UntrustedWorkspaceManifest,
-    WorkspaceDelta, WorkspaceManifest, WorkspaceRoot, admit_canonical_root,
-    admit_canonical_root_claim, admit_complete_scope, admit_producer_observation, canonical_empty,
-    commit_capability, commit_checked, partial_coverage, prepare_delta,
+    ObjectVersion, PersistedTreeRoot, ProducerObservationVerifier, Relation, RelationBinding,
+    RelationDecodeError, RelationState, RelationTransition, Schema, ScopeRoot, StateRoot,
+    TreeChange, TreeNodeChildren, TreeNodeClosure, TreeNodeClosureWork, TreeNodeHandle, TreeNodeId,
+    TreeNodeLoader, TreeNodeView, UntrustedId, UntrustedProducerObservation,
+    UntrustedWorkspaceDelta, UntrustedWorkspaceManifest, WorkspaceDelta, WorkspaceManifest,
+    WorkspaceRoot, admit_canonical_root, admit_canonical_root_claim, admit_complete_scope,
+    admit_producer_observation, canonical_empty, commit_capability, commit_checked,
+    partial_coverage, prepare_delta,
 };
 // Semantic recipe/read types are re-exported through the composition crate so
 // process applications retain the exact one-edge dependency rule.  Keep the
@@ -148,34 +121,24 @@ pub use backend_semantic::{
     Recipe as SemanticRecipe, RecipeSpec as SemanticRecipeSpec, ScopedRead,
 };
 pub use builtin::{
-    BuiltinInputSchema, DeclarationKind, DeclarationRetention, ECHO_AUTHORITY_BYTES,
-    ECHO_EQUIVALENCE_BYTES,
+    BuiltinInputSchema, DeclarationKind, ECHO_AUTHORITY_BYTES, ECHO_EQUIVALENCE_BYTES,
     ECHO_OUTPUT_BYTES, ECHO_READ_BYTES, ECHO_RECIPE_BYTES, ECHO_WITNESS_BYTES,
     PRODUCT_AUTHORITY_BYTES, PRODUCT_EQUIVALENCE_BYTES, PRODUCT_EXECUTION_MEMORY_BYTES,
     PRODUCT_EXECUTION_NODE_BUDGET, PRODUCT_OUTPUT_BODY_BYTES, PRODUCT_OUTPUT_BYTES,
-    PRODUCT_RECIPE_BYTES, PRODUCT_WITNESS_BYTES, ProductClosureManifestClaim, ProductInput,
-    ProductProjection, ProductProjectionBuilder, ProductSemanticPublicationKey,
-    ProductSemanticPublicationRecord, ProductSemanticPublicationRelation,
-    ProductSemanticPublicationSnapshot, ProductSourceDeltaFacts, ProductSourceRecord,
-    ProductSourceRelation, ProductSourceRetentionFacts, ProductSourceSnapshot,
-    ProductSourceTransition, Profile, ProfileDescriptor, ProfileIds, RetainedDeclarations,
-    SEMANTIC_OUTPUT_BODY_BYTES,
-    SemanticPublicationInput, SemanticPublicationProjection, SemanticPublicationProjectionBuilder,
-    SemanticPublicationRetentionFacts, SemanticPublicationSelection,
-    SemanticPublicationSelectionError, SourceDeclaration, SourceLanguage, SourceLocation,
-    SourceUnavailableReason,
+    PRODUCT_RECIPE_BYTES, PRODUCT_WITNESS_BYTES, ProductClosureManifestClaim,
+    ProductDependencyKind, ProductInput, ProductProjection, ProductProjectionBuilder,
+    ProductSourceDeltaFacts, ProductSourceRecord, ProductSourceRelation,
+    ProductSourceRetentionFacts, ProductSourceSnapshot, ProductSourceTransition, Profile,
+    ProfileDescriptor, ProfileIds, SourceDeclaration, SourceLanguage, SourceLocation,
     WorkspaceViewProducerAdmission, admit_product_closure_manifest, canonical_relation_row,
     coverage_from_admitted_authority, echo_row_bytes, execution_input_basis,
     execution_input_basis_from_source, execution_input_manifest,
     execution_input_manifest_from_source, execution_manifest, execution_resources,
-    product_closure_manifest, product_closure_root, product_dependency_manifest,
-    product_input_bytes, product_input_claim, product_input_version, product_output_bytes,
+    product_closure_manifest, product_closure_root, product_dependency_key,
+    product_dependency_manifest, product_dependency_source_key, product_input_bytes,
+    product_input_claim, product_input_version, product_output_bytes, product_package_key,
     product_read_manifest, product_source_file_key, product_source_fixture,
     product_source_fixture_with_authority, profile_descriptor, profile_ids, profile_output_len,
-    semantic_execution_input_basis, semantic_execution_input_basis_from_snapshot,
-    semantic_execution_input_manifest, semantic_execution_input_manifest_from_snapshot,
-    semantic_input_bytes, semantic_input_claim, semantic_input_version,
-    semantic_publication_fixture_with_authority, semantic_publication_output_bytes,
     validate_semantic_claim, validate_semantic_manifest,
 };
 
@@ -191,16 +154,6 @@ pub use builtin::{
 /// envelope.
 pub fn decode_command_dto(bytes: &[u8]) -> Result<CommandDto, String> {
     serde_json::from_slice(bytes).map_err(|error| error.to_string())
-}
-
-/// Decodes a command using the local durable owner's admitted cursor.
-///
-/// # Errors
-///
-/// Returns an error when the command or its owner-bound continuation claims
-/// fail admission.
-pub fn decode_command_dto_for_owner(bytes: &[u8], owner: Cursor) -> Result<CommandDto, String> {
-    backend_library::decode_command_body_for_owner(bytes, owner)
 }
 
 /// Decodes one strict library reply DTO at the process boundary.
@@ -347,12 +300,11 @@ pub use worker::{
 pub use workspace::{
     DerivedOutputEntry, DerivedOutputPublication, Durable, DurablePublication, HeadExpectation,
     OwnerLease, PersistedTransition, Prepared, PreparedPublication, PreparedTransition,
-    PublicationStatus, Published, PublishedPublication, RelationIdentity, RelationKeyPrefix,
-    TransactionId, TransactionSchema, TransactionVersion, TransitionWork, WorkspaceError,
-    WorkspaceGcPin, WorkspaceHead, WorkspaceModel, WorkspaceOwner, WorkspaceRecord,
-    WorkspaceRelationChild, WorkspaceRelationError, WorkspaceRelationFault,
-    WorkspaceRelationHandle, WorkspaceRelationNodeHandle, WorkspaceRelationNodePage,
-    WorkspaceRelationRejection, WorkspaceSnapshot,
+    PublicationStatus, Published, PublishedPublication, TransactionId, TransactionSchema,
+    TransactionVersion, TransitionWork, WorkspaceError, WorkspaceGcPin, WorkspaceHead,
+    WorkspaceModel, WorkspaceOwner, WorkspaceRecord, WorkspaceRelationChild,
+    WorkspaceRelationError, WorkspaceRelationHandle, WorkspaceRelationNodeHandle,
+    WorkspaceRelationNodePage, WorkspaceSnapshot,
 };
 
 /// Generic engine composition around one daemon owner.

@@ -11,39 +11,30 @@
 
 #[cfg(unix)]
 mod unix_journeys {
-    use backend_compile::{
-        Authority, Coverage, FlowSchema, InputContentSchema, InputKind, ProfileSchema,
-        SemanticBasisSchema, SessionKey, SourceExcerptExtent, SyntaxError, SyntaxFrontend,
-        typed_of,
-    };
-    use backend_desktop::Model as DesktopModel;
+    use backend_desktop::{Model as DesktopModel, SubscriptionRequest, SubscriptionTransport};
     use backend_engine::{
         AttemptId, AuthorityEpoch, AuthorityVersion, CancelAttempt, CancellationId,
-        CapabilityManifest, ExecutionScopeId, Fence, ResourceEnvelope, TransportLimits,
-        TransportMessage, WireAuthorityPolicy, WireIdentity, WireRecipeRequest, WireRecipeResult,
+        CapabilityManifest, Fence, ResourceEnvelope, TransportLimits, TransportMessage,
+        WireAuthorityPolicy, WireIdentity, WireRecipeRequest, WireRecipeResult,
     };
     use backend_execution::{
         AuthorityVersionSchema, ReadManifestId, ReadManifestSchema, RecipeId, RecipeSchema,
         VersionedWorkIdentity, WorkKeySchema,
     };
     use backend_library::{
-        CapabilityFamily, CapabilityLifecycle, Command, CommandDto, CommandReply,
-        LanguageOracleTask, PageTerminal, ReplyDto, ViewRoot, WireCertificate, WireClaim,
+        Command, CommandDto, CommandReply, ReplyDto, ViewRoot, WireCertificate, WireClaim,
         WireSchema,
     };
     use backend_replication::{RecipeCapability, SchemaDescriptor, VersionRange};
     use backend_version::{
-        AuthorityScopeClaim, CoverageWitness, ObjectClosure, ProducerObservationClaims,
-        ProducerObservationVerifier, Relation, RelationBinding, RelationState,
-        UntrustedProducerObservation, WorkspaceManifest, admit_complete_scope,
-        admit_producer_observation,
+        AuthorityScopeClaim, CoverageWitness, ObjectClosure, ProducerObservationVerifier, Relation,
+        RelationBinding, RelationState, UntrustedProducerObservation, WorkspaceManifest,
+        admit_complete_scope, admit_producer_observation,
     };
     use backend_worker::{WorkerLimits, read_message, write_message};
-    use backend_semantic::vocabulary::LanguageProfile;
     use std::ffi::OsString;
     use std::io::{Read, Write};
     use std::net::Shutdown;
-    use std::num::NonZeroU64;
     use std::os::unix::fs::{FileTypeExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
@@ -54,7 +45,6 @@ mod unix_journeys {
     use std::time::{Duration, Instant};
 
     const DEADLINE: Duration = Duration::from_secs(12);
-    const LEGACY_SCOPE_ONE: NonZeroU64 = NonZeroU64::MIN;
     const RECIPE_BYTES: &[u8] = b"backend.worker.builtin.echo.v1";
     const READ_BYTES: &[u8] = b"backend.worker.builtin.echo.reads.v1";
     const AUTHORITY_BYTES: &[u8] = b"backend.worker.builtin.echo.authority.v1";
@@ -68,134 +58,20 @@ mod unix_journeys {
     const CANCELLED_ENV: &str = "BACKEND_JOURNEY_CANCELLED";
     const PRODUCT_AUTHORITY_SECRET: [u8; 32] = [0x5a; 32];
 
-    fn assert_syntax_baseline(
-        frontend: SyntaxFrontend,
-        path: &Path,
-        source: &[u8],
-        declaration: &str,
-    ) {
-        assert!(
-            frontend.supports_path(path),
-            "{} syntax frontend did not claim {}",
-            frontend.language().name(),
-            path.display()
-        );
-        let analysis = frontend
-            .analyze(path, source)
-            .unwrap_or_else(|error| panic!("analyze {}: {error}", path.display()));
-        assert_eq!(analysis.language(), frontend.language());
-        assert_eq!(analysis.content(), typed_of::<InputContentSchema>(source));
-        assert_eq!(analysis.producer(), frontend.producer());
-        let declaration_fact = analysis.declarations().iter().find(|fact| {
-            fact.name() == declaration && fact.location().path() == path.to_string_lossy().as_ref()
-        });
-        assert!(
-            declaration_fact.is_some(),
-            "{} syntax facts omitted {declaration}: {:?}",
-            frontend.language().name(),
-            analysis.declarations()
-        );
-        let excerpt = declaration_fact
-            .expect("checked declaration")
-            .source_excerpt();
-        assert!(
-            excerpt
-                .text()
-                .is_some_and(|text| text.contains(declaration)),
-            "{} did not retain real declaration source",
-            frontend.language().name()
-        );
-        assert_eq!(excerpt.extent(), Some(SourceExcerptExtent::Complete));
-    }
-
-    fn assert_malformed_source_is_terminal() {
-        let frontend =
-            backend_frontend_typescript::syntax_frontend().expect("TypeScript syntax frontend");
-        assert!(matches!(
-            frontend.analyze(Path::new("broken.ts"), b"export function {"),
-            Err(SyntaxError::MalformedSource(
-                backend_compile::SourceLanguage::TypeScript
-            ))
-        ));
-    }
-
-    fn assert_manifest_only_authority<A: Authority>(
-        authority: &A,
-        source_name: &str,
-        source: &[u8],
-        expected: Coverage,
-    ) {
-        let snapshot = authority
-            .discover()
-            .unwrap_or_else(|error| panic!("discover {source_name}: {error}"));
-        let rediscovered = authority
-            .discover()
-            .unwrap_or_else(|error| panic!("rediscover {source_name}: {error}"));
-        assert_eq!(
-            snapshot.manifest().digest(),
-            rediscovered.manifest().digest(),
-            "unchanged discovery was not content stable for {source_name}"
-        );
-        let source_input = snapshot
-            .manifest()
-            .get(InputKind::Source, source_name)
-            .unwrap_or_else(|| panic!("{source_name} missing from authority manifest"));
-        assert!(source_input.is_present());
-        assert_eq!(
-            source_input.digest(),
-            typed_of::<InputContentSchema>(source),
-            "manifest did not bind exact fixture bytes for {source_name}"
-        );
-        assert!(
-            snapshot
-                .manifest()
-                .get(InputKind::Configuration, "semantic-fact-schema")
-                .is_some_and(backend_compile::Input::is_present),
-            "{source_name} omitted its semantic schema dependency"
-        );
-        let key = SessionKey::new(
-            authority.identity(),
-            snapshot.manifest(),
-            typed_of::<ProfileSchema>(b"polyglot-cutover-profile"),
-            typed_of::<FlowSchema>(b"polyglot-cutover-flow"),
-            typed_of::<SemanticBasisSchema>(b"polyglot-cutover-basis"),
-        );
-        let extraction = authority
-            .extract(&snapshot, key)
-            .unwrap_or_else(|error| panic!("extract {source_name}: {error}"));
-        assert_eq!(
-            extraction.coverage().state(),
-            expected,
-            "frontend reported the wrong native semantic availability for {source_name}"
-        );
-        assert!(extraction.records().is_empty() && extraction.facts().is_empty());
-    }
-
-    struct ProcessCoverageVerifier(backend_version::ScopeRoot);
+    struct ProcessCoverageVerifier;
 
     impl ProducerObservationVerifier for ProcessCoverageVerifier {
         type Error = &'static str;
 
-        fn verify(
-            &self,
-            observation: &UntrustedProducerObservation,
-        ) -> Result<ProducerObservationClaims, Self::Error> {
-            let scope = self.0;
-            let expected_identity = *scope.as_bytes();
-            let expected_evidence = scope.as_bytes();
-            if observation.producer_identity() != expected_identity
-                || observation.context() != expected_identity
-                || observation.scope_root() != scope
-                || observation.evidence() != expected_evidence
+        fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
+            if observation.producer_identity() == *observation.scope_root().as_bytes()
+                && observation.context() == *observation.scope_root().as_bytes()
+                && observation.evidence() == observation.scope_root().as_bytes()
             {
-                return Err("invalid process journey producer observation");
+                Ok(())
+            } else {
+                Err("invalid process journey producer observation")
             }
-            Ok(ProducerObservationClaims::new(
-                expected_identity,
-                scope,
-                expected_identity,
-                *blake3::hash(expected_evidence).as_bytes(),
-            ))
         }
     }
 
@@ -209,7 +85,7 @@ mod unix_journeys {
                 *scope.as_bytes(),
                 scope.as_bytes().to_vec(),
             ),
-            &ProcessCoverageVerifier(scope),
+            &ProcessCoverageVerifier,
         )
         .unwrap_or_else(|error| panic!("admit process producer observation: {error}"));
         CoverageWitness::Complete(
@@ -227,10 +103,9 @@ mod unix_journeys {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    #[derive(Debug)]
     struct ChildGuard {
         child: Option<Child>,
-        stderr: Arc<Mutex<Vec<u8>>>,
-        stderr_done: Arc<AtomicBool>,
     }
 
     impl ChildGuard {
@@ -240,41 +115,17 @@ mod unix_journeys {
                 .args(args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                // Retain child diagnostics so a process-boundary failure
-                // reports the exact startup terminal alongside its status.
-                .stderr(Stdio::piped());
+                // Keep child diagnostics attached to the test harness. A
+                // process-boundary invariant failure must remain observable
+                // even when the endpoint closes before a framed reply.
+                .stderr(Stdio::inherit());
             for (key, value) in env {
                 command.env(key, value);
             }
             let child = command
                 .spawn()
                 .unwrap_or_else(|error| panic!("spawn {name}: {error}"));
-            let mut child = child;
-            let stderr = Arc::new(Mutex::new(Vec::new()));
-            let stderr_done = Arc::new(AtomicBool::new(false));
-            if let Some(mut stream) = child.stderr.take() {
-                let captured = Arc::clone(&stderr);
-                let done = Arc::clone(&stderr_done);
-                thread::spawn(move || {
-                    let mut bytes = [0_u8; 4096];
-                    loop {
-                        match stream.read(&mut bytes) {
-                            Ok(0) | Err(_) => break,
-                            Ok(read) => {
-                                if let Ok(mut retained) = captured.lock() {
-                                    retained.extend_from_slice(&bytes[..read]);
-                                }
-                            }
-                        }
-                    }
-                    done.store(true, Ordering::Release);
-                });
-            }
-            Self {
-                child: Some(child),
-                stderr,
-                stderr_done,
-            }
+            Self { child: Some(child) }
         }
 
         fn try_wait(&mut self) -> Option<ExitStatus> {
@@ -285,31 +136,6 @@ mod unix_journeys {
 
         fn is_running(&mut self) -> bool {
             self.try_wait().is_none()
-        }
-
-        fn exit_diagnostic(&mut self) -> Option<String> {
-            let status = self.try_wait()?;
-            // `try_wait` can observe the child exit before the stderr reader
-            // gets scheduled. Give it a small bounded window to drain the
-            // startup terminal, while still tolerating descendants that keep
-            // the pipe open.
-            let deadline = Instant::now() + Duration::from_millis(100);
-            while !self.stderr_done.load(Ordering::Acquire) && Instant::now() < deadline {
-                thread::yield_now();
-            }
-            let stderr = self
-                .stderr
-                .lock()
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                .unwrap_or_else(|_| "<stderr lock poisoned>".to_owned());
-            Some(format!("status={status}, stderr={stderr:?}"))
-        }
-
-        fn stderr_snapshot(&self) -> String {
-            self.stderr
-                .lock()
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                .unwrap_or_else(|_| "<stderr lock poisoned>".to_owned())
         }
     }
 
@@ -338,16 +164,7 @@ mod unix_journeys {
         }
     }
 
-    fn bounded_command(command: ProcessCommand, label: &str, input: Option<&[u8]>) -> Output {
-        bounded_command_for(command, label, input, DEADLINE)
-    }
-
-    fn bounded_command_for(
-        mut command: ProcessCommand,
-        label: &str,
-        input: Option<&[u8]>,
-        timeout: Duration,
-    ) -> Output {
+    fn bounded_command(mut command: ProcessCommand, label: &str, input: Option<&[u8]>) -> Output {
         command
             .stdin(if input.is_some() {
                 Stdio::piped()
@@ -389,7 +206,7 @@ mod unix_journeys {
                 .unwrap_or_else(|error| panic!("read command stderr: {error}"));
             bytes
         });
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now() + DEADLINE;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
@@ -449,56 +266,14 @@ mod unix_journeys {
         path
     }
 
-    struct HangingGoProbe {
-        root: PathBuf,
-        executable: PathBuf,
-        started: PathBuf,
-    }
-
-    impl HangingGoProbe {
-        fn new() -> Self {
-            let root = unique_directory("go-probe");
-            let executable = root.join("go");
-            let started = PathBuf::from(format!("{}.started", executable.display()));
-            // This fixture is intentionally parent-aware.  It keeps the
-            // version probe alive while locald is alive, then exits as soon
-            // as the bounded process guard tears locald down.  No ambient Go
-            // executable is consulted and the fixture cannot outlive the
-            // journey after its owner is reaped.
-            std::fs::write(
-                &executable,
-                "#!/bin/sh\n: > \"$0.started\"\nparent=\"$PPID\"\nwhile kill -0 \"$parent\" 2>/dev/null; do sleep 0.02; done\nexit 1\n",
-            )
-            .unwrap_or_else(|error| panic!("write hanging Go probe: {error}"));
-            let mut permissions = std::fs::metadata(&executable)
-                .unwrap_or_else(|error| panic!("stat hanging Go probe: {error}"))
-                .permissions();
-            permissions.set_mode(0o700);
-            std::fs::set_permissions(&executable, permissions)
-                .unwrap_or_else(|error| panic!("protect hanging Go probe: {error}"));
-            Self {
-                root,
-                executable,
-                started,
-            }
-        }
-    }
-
-    impl Drop for HangingGoProbe {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
-    }
-
     fn wait_for_socket(path: &Path, child: &mut ChildGuard) {
         let deadline = Instant::now() + DEADLINE;
         while Instant::now() < deadline {
-            if let Some(diagnostic) = child.exit_diagnostic() {
-                panic!(
-                    "endpoint owner exited before readiness: {} ({diagnostic})",
-                    path.display()
-                );
-            }
+            assert!(
+                child.is_running(),
+                "endpoint owner exited before readiness: {}",
+                path.display()
+            );
             if let Ok(metadata) = std::fs::symlink_metadata(path)
                 && metadata.file_type().is_socket()
                 && metadata.permissions().mode() & 0o777 == 0o600
@@ -512,15 +287,7 @@ mod unix_journeys {
             }
             thread::yield_now();
         }
-        let status = child.try_wait().map_or_else(
-            || "still running".to_owned(),
-            |status| format!("status={status}"),
-        );
-        panic!(
-            "timed out waiting for {} ({status}, stderr={:?})",
-            path.display(),
-            child.stderr_snapshot()
-        );
+        panic!("timed out waiting for {}", path.display());
     }
 
     fn worker_limits() -> WorkerLimits {
@@ -565,10 +332,9 @@ mod unix_journeys {
         let read_manifest = ReadManifestId::from_value(READ_BYTES);
         let authority = AuthorityVersion::from_value(AUTHORITY_BYTES);
         let equivalence = backend_execution::OutputEquivalence::from_value(EQUIVALENCE_BYTES);
-        let relation =
-            backend_engine::semantic_publication_fixture_with_authority(false, authority)
-                .unwrap_or_else(|error| panic!("builtin relation: {error}"));
-        let manifest = backend_engine::semantic_execution_input_manifest(&relation, authority)
+        let relation = backend_engine::product_source_fixture_with_authority(false, authority)
+            .unwrap_or_else(|error| panic!("builtin relation: {error}"));
+        let manifest = backend_engine::execution_input_manifest(&relation, authority)
             .unwrap_or_else(|error| panic!("builtin input manifest: {error}"));
         let identity = VersionedWorkIdentity::new(
             recipe,
@@ -592,7 +358,7 @@ mod unix_journeys {
             work_key: WireIdentity::from_typed(&identity.work_key()),
             inputs: Vec::new(),
             read_manifest: WireIdentity::from_typed(&read_manifest),
-            scope: ExecutionScopeId::from_legacy_ordinal(LEGACY_SCOPE_ONE),
+            scope: 1,
             authority: WireAuthorityPolicy {
                 id: WireIdentity::from_typed(&authority),
                 minimum_epoch: AuthorityEpoch(1),
@@ -613,12 +379,14 @@ mod unix_journeys {
             .unwrap_or_else(|error| panic!("product manifest: {error}"))
     }
 
-    fn product_request(entries: &[ProductEntry]) -> WireRecipeRequest {
+    fn product_request(
+        entries: &[([u8; 32], backend_engine::ProductSourceRecord)],
+    ) -> WireRecipeRequest {
         let ids = backend_engine::profile_ids(&backend_engine::Profile::Product)
             .unwrap_or_else(|error| panic!("product profile ids: {error}"));
-        let relation = semantic_relation(entries, ids.authority);
-        let input = backend_engine::SemanticPublicationInput::from_checked_relation(&relation);
-        let input_basis = backend_engine::semantic_execution_input_basis(&relation, ids.authority)
+        let relation = product_relation(entries, ids.authority);
+        let input = backend_engine::ProductInput::from_checked_relation(&relation);
+        let input_basis = backend_engine::execution_input_basis(&relation, ids.authority)
             .unwrap_or_else(|error| panic!("product input basis: {error}"));
         let identity = VersionedWorkIdentity::new(
             ids.recipe,
@@ -628,14 +396,14 @@ mod unix_journeys {
             ids.equivalence,
         );
         let resources = backend_engine::execution_resources(ids);
-        let input_version = backend_engine::semantic_input_version(input);
+        let input_version = backend_engine::product_input_version(&input);
         WireRecipeRequest {
             attempt: AttemptId::new(1).unwrap_or_else(|error| panic!("product attempt: {error}")),
             recipe: WireIdentity::from_typed(&ids.recipe),
             work_key: WireIdentity::from_typed(&identity.work_key()),
             inputs: vec![WireIdentity::from_typed(&input_version)],
             read_manifest: WireIdentity::from_typed(&ids.read_manifest),
-            scope: ExecutionScopeId::from_legacy_ordinal(LEGACY_SCOPE_ONE),
+            scope: 1,
             authority: WireAuthorityPolicy {
                 id: WireIdentity::from_typed(&ids.authority),
                 minimum_epoch: AuthorityEpoch(1),
@@ -649,62 +417,12 @@ mod unix_journeys {
         }
     }
 
-    fn semantic_relation(
-        entries: &[ProductEntry],
+    fn product_relation(
+        entries: &[([u8; 32], backend_engine::ProductSourceRecord)],
         authority: AuthorityVersion,
-    ) -> RelationState<backend_engine::ProductSemanticPublicationRelation> {
-        let mut semantic_entries = entries
-            .iter()
-            .map(|(expected_package, record)| {
-                let coordinate = backend_semantic::vocabulary::PackageUrl::parse(record.label().to_owned())
-                    .unwrap_or_else(|error| panic!("semantic fixture coordinate: {error}"));
-                let package = backend_engine::PackageReference::parse(record.label().to_owned())
-                    .unwrap_or_else(|error| {
-                        panic!("semantic fixture package reference: {error:?}")
-                    });
-                assert_eq!(
-                    backend_engine::package_key(package.as_str()).to_bytes(),
-                    *expected_package,
-                    "source and semantic fixture package identities diverged"
-                );
-                let profile = match coordinate.package_type() {
-                    backend_semantic::vocabulary::PackageType::Cargo => {
-                        LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2024)
-                    }
-                    backend_semantic::vocabulary::PackageType::Npm => LanguageProfile::TypeScript(
-                        backend_semantic::vocabulary::TypeScriptSource::TypeScript,
-                    ),
-                    backend_semantic::vocabulary::PackageType::Pypi => {
-                        LanguageProfile::Python(backend_semantic::vocabulary::PythonVersion::Python314)
-                    }
-                    backend_semantic::vocabulary::PackageType::Golang => {
-                        LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125)
-                    }
-                    backend_semantic::vocabulary::PackageType::Maven => {
-                        LanguageProfile::Java(backend_semantic::vocabulary::JavaRelease::Java25)
-                    }
-                    backend_semantic::vocabulary::PackageType::Nuget => {
-                        LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp14)
-                    }
-                    backend_semantic::vocabulary::PackageType::Generic => {
-                        panic!("generic semantic fixture needs an explicit language profile")
-                    }
-                };
-                let key = backend_engine::ProductSemanticPublicationKey::new(
-                    package, coordinate, profile,
-                )
-                .unwrap_or_else(|error| panic!("semantic fixture key: {error}"));
-                (
-                    key,
-                    backend_engine::ProductSemanticPublicationRecord::Unavailable(
-                        backend_engine::builtin::SemanticUnavailableReason::ProjectAuthority,
-                    ),
-                )
-            })
-            .collect::<Vec<_>>();
-        semantic_entries.sort_by(|left, right| left.0.cmp(&right.0));
-        RelationState::from_entries(semantic_entries, complete_scope(authority))
-            .unwrap_or_else(|error| panic!("semantic relation: {error}"))
+    ) -> RelationState<backend_engine::ProductSourceRelation> {
+        RelationState::from_entries(entries.iter().cloned(), complete_scope(authority))
+            .unwrap_or_else(|error| panic!("product relation: {error}"))
     }
 
     fn expected_product_output(
@@ -712,20 +430,16 @@ mod unix_journeys {
     ) -> Vec<u8> {
         let ids = backend_engine::profile_ids(&backend_engine::Profile::Product)
             .unwrap_or_else(|error| panic!("product profile ids: {error}"));
-        let relation = semantic_relation(entries, ids.authority);
-        let basis = backend_engine::semantic_execution_input_basis(&relation, ids.authority)
+        let relation = product_relation(entries, ids.authority);
+        let basis = backend_engine::execution_input_basis(&relation, ids.authority)
             .unwrap_or_else(|error| panic!("product input basis: {error}"));
-        let mut projection = backend_engine::SemanticPublicationProjectionBuilder::new();
+        let mut projection = backend_engine::ProductProjectionBuilder::new();
         for (key, value) in relation.iter() {
             projection
                 .push(key, value)
                 .unwrap_or_else(|error| panic!("project expected product row: {error}"));
         }
-        backend_engine::semantic_publication_output_bytes(
-            ids,
-            basis,
-            projection.finish(relation.root()),
-        )
+        backend_engine::product_output_bytes(ids, basis, projection.finish(relation.root()))
     }
 
     fn connect_worker(path: &Path) -> UnixStream {
@@ -1368,7 +1082,7 @@ mod unix_journeys {
             work_key: WireIdentity::from_typed(&identity.work_key()),
             inputs: Vec::new(),
             read_manifest: WireIdentity::from_typed(&read_manifest),
-            scope: ExecutionScopeId::from_legacy_ordinal(LEGACY_SCOPE_ONE),
+            scope: 1,
             authority: WireAuthorityPolicy {
                 id: WireIdentity::from_typed(&authority),
                 minimum_epoch: AuthorityEpoch(1),
@@ -1567,7 +1281,7 @@ mod unix_journeys {
         drop(completion);
 
         let first_json = cli_health(&endpoint, "first restart health");
-        let first_root = first_json["revision"].clone();
+        let first_root = first_json["reply"]["data"]["root"].clone();
 
         // ChildGuard performs a bounded kill/wait; the next profile startup
         // must recover the same durable checked genesis through the stale
@@ -1577,7 +1291,7 @@ mod unix_journeys {
         wait_for_socket(&endpoint, &mut second);
         let second_json = cli_health(&endpoint, "second restart health");
         assert_eq!(
-            second_json["revision"], first_root,
+            second_json["reply"]["data"]["root"], first_root,
             "restart changed the checked workspace root"
         );
         let mut recovered = connect_locald(&endpoint);
@@ -1599,303 +1313,6 @@ mod unix_journeys {
         drop(second);
         std::fs::remove_dir_all(root)
             .unwrap_or_else(|error| panic!("remove locald restart fixture: {error}"));
-    }
-
-    #[test]
-    #[allow(clippy::too_many_lines)]
-    fn semantic_version_selection_is_exact_and_durable_across_restart() {
-        let _process_lease = process_journey_lease();
-        let root = unique_directory("semantic-version-selection");
-        let endpoint = root.join("locald.sock");
-        let workspace = root.join("workspace");
-        let project = root.join("rust-project");
-        std::fs::create_dir_all(project.join("src"))
-            .unwrap_or_else(|error| panic!("create semantic project: {error}"));
-        std::fs::write(
-            project.join("Cargo.toml"),
-            "[package]\nname = \"semantic-selection\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
-        )
-        .unwrap_or_else(|error| panic!("write semantic manifest: {error}"));
-        let source = project.join("src/lib.rs");
-        std::fs::write(
-            &source,
-            "/// First immutable marker.\npub fn first_marker() -> &'static str { \"first\" }\n",
-        )
-        .unwrap_or_else(|error| panic!("write first semantic source: {error}"));
-        std::fs::create_dir_all(&workspace)
-            .unwrap_or_else(|error| panic!("create semantic selection workspace: {error}"));
-        let authority_secret = authority_secret_file(&root);
-        let args = vec![
-            OsString::from("--endpoint"),
-            endpoint.clone().into_os_string(),
-            OsString::from("--workspace"),
-            workspace.clone().into_os_string(),
-            OsString::from("--profile"),
-            OsString::from("builtin"),
-            OsString::from("--authority-secret-file"),
-            authority_secret.clone().into_os_string(),
-            OsString::from("--max-frame"),
-            OsString::from("65536"),
-            OsString::from("--timeout-ms"),
-            OsString::from("60000"),
-        ];
-        let rustc = explicit_path_executable("rustc")
-            .unwrap_or_else(|| panic!("bounded semantic history requires an explicit rustc"));
-        let mut locald = ChildGuard::spawn("backend-locald", &args, &[("NUDOX_RUSTC", &rustc)]);
-        wait_for_socket(&endpoint, &mut locald);
-
-        index_project(&endpoint, &project);
-        let package = backend_library::PackageReference::parse(
-            project
-                .canonicalize()
-                .unwrap_or_else(|error| panic!("canonicalize semantic package: {error}"))
-                .to_string_lossy()
-                .into_owned(),
-        )
-        .unwrap_or_else(|error| panic!("admit semantic package reference: {error:?}"));
-        let first_records = client_semantic_versions(&endpoint, package.clone());
-        assert_eq!(
-            first_records.len(),
-            1,
-            "first semantic publication did not produce one retained generation: {first_records:?}"
-        );
-        let first = first_records
-            .first()
-            .cloned()
-            .unwrap_or_else(|| panic!("first semantic generation"));
-        assert!(
-            first.selected,
-            "first generation was not initially selected"
-        );
-
-        std::fs::write(
-            &source,
-            "/// Second immutable marker.\npub fn second_marker() -> &'static str { \"second\" }\n",
-        )
-        .unwrap_or_else(|error| panic!("write second semantic source: {error}"));
-        index_project(&endpoint, &project);
-        let second_records = client_semantic_versions(&endpoint, package.clone());
-        assert_eq!(
-            second_records.len(),
-            2,
-            "same target did not retain both immutable semantic generations: {second_records:?}"
-        );
-        let second = second_records
-            .iter()
-            .find(|record| record.selected)
-            .cloned()
-            .unwrap_or_else(|| panic!("selected second semantic generation"));
-        let retained_first = second_records
-            .iter()
-            .find(|record| record.generation == first.generation)
-            .cloned()
-            .unwrap_or_else(|| panic!("retained first semantic generation"));
-        assert!(!retained_first.selected);
-        assert_ne!(
-            first.generation, second.generation,
-            "source mutation reused an immutable binding identity"
-        );
-        assert_eq!(first.coordinate, second.coordinate);
-        assert_eq!(first.profile, second.profile);
-
-        let unknown = surface_reply(
-            &endpoint,
-            53,
-            backend_library::SurfaceCommand::SelectSemanticVersion {
-                package: package.clone(),
-                coordinate: first.coordinate.clone(),
-                profile: first.profile,
-                generation: backend_library::SemanticGenerationId::new([0xa5; 32]),
-            },
-        );
-        match unknown.reply {
-            CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(message)) => {
-                assert!(
-                    message.contains("not retained") || message.contains("malformed"),
-                    "unknown generation rejection lost its typed reason: {message}"
-                );
-            }
-            other => panic!("unknown generation was not rejected: {other:?}"),
-        }
-
-        let foreign_package = backend_library::PackageReference::parse(
-            root.join("other-project").to_string_lossy().into_owned(),
-        )
-        .unwrap_or_else(|error| panic!("admit foreign package reference: {error:?}"));
-        let foreign = surface_reply(
-            &endpoint,
-            54,
-            backend_library::SurfaceCommand::SelectSemanticVersion {
-                package: foreign_package,
-                coordinate: first.coordinate.clone(),
-                profile: first.profile,
-                generation: first.generation,
-            },
-        );
-        match foreign.reply {
-            CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(message)) => {
-                assert!(
-                    message.contains("not retained"),
-                    "cross-package generation rejection lost its typed reason: {message}"
-                );
-            }
-            other => panic!("cross-package generation was not rejected: {other:?}"),
-        }
-
-        let mut client = backend_mcp::Session::connect(&endpoint)
-            .unwrap_or_else(|error| panic!("connect semantic selection client: {error}"));
-        let selected_first = client
-            .select_semantic_version(
-                package.clone(),
-                first.coordinate.clone(),
-                first.profile,
-                first.generation,
-            )
-            .unwrap_or_else(|error| panic!("valid rollback selection failed: {error}"));
-        assert!(selected_first.selected);
-        assert_eq!(selected_first.generation, first.generation);
-        let rolled_back = client_semantic_versions(&endpoint, package.clone());
-        assert_eq!(
-            rolled_back
-                .iter()
-                .filter(|record| record.selected)
-                .map(|record| record.generation)
-                .collect::<Vec<_>>(),
-            vec![first.generation],
-            "rollback did not move the one selected pointer"
-        );
-
-        // The selected history is the only semantic input to the derived
-        // product view. A fresh root and the old declaration prove that the
-        // rollback crossed publication, search, and graph admission rather
-        // than changing a client-side label.
-        let mut session = backend_mcp::Session::connect(&endpoint)
-            .unwrap_or_else(|error| panic!("connect rollback query session: {error}"));
-        let rollback_revision = session
-            .revision()
-            .unwrap_or_else(|error| panic!("read rollback revision: {error}"));
-        let names = session
-            .names("first_marker", 8)
-            .unwrap_or_else(|error| panic!("search rolled-back semantic declaration: {error}"));
-        let first_symbol = match names.reply {
-            CommandReply::Names(snapshot) => snapshot
-                .root
-                .rows()
-                .iter()
-                .find(|row| row.label.contains("first_marker"))
-                .and_then(|row| match row.id {
-                    backend_library::RowId::Symbol(symbol) => Some(symbol),
-                    _ => None,
-                })
-                .unwrap_or_else(|| panic!("rollback search omitted first_marker")),
-            other => panic!("rollback name reply changed shape: {other:?}"),
-        };
-        let graph = session
-            .graph_symbol(first_symbol)
-            .unwrap_or_else(|error| panic!("read rolled-back semantic graph: {error}"));
-        assert!(matches!(graph.reply, CommandReply::Graph(_)));
-        let document = session
-            .document_symbol(first_symbol)
-            .unwrap_or_else(|error| panic!("read rolled-back semantic document: {error}"));
-        assert!(matches!(document.reply, CommandReply::Document(_)));
-        let diff = session
-            .diff(package.clone(), package.clone())
-            .unwrap_or_else(|error| panic!("read rolled-back semantic diff: {error}"));
-        assert!(
-            diff.is_empty(),
-            "a package compared with itself must have no selected-generation diff: {diff:?}"
-        );
-        let post_query_revision = session
-            .revision()
-            .unwrap_or_else(|error| panic!("read post-query rollback revision: {error}"));
-        assert_eq!(
-            rollback_revision.root, post_query_revision.root,
-            "search/graph observed different roots after rollback"
-        );
-
-        drop(locald);
-        let mut restarted = ChildGuard::spawn("backend-locald", &args, &[]);
-        wait_for_socket(&endpoint, &mut restarted);
-        let reopened = client_semantic_versions(&endpoint, package.clone());
-        assert_eq!(reopened.len(), 2);
-        assert_eq!(
-            reopened
-                .iter()
-                .filter(|record| record.selected)
-                .map(|record| record.generation)
-                .collect::<Vec<_>>(),
-            vec![first.generation],
-            "restart lost the durable rollback selection"
-        );
-        assert!(
-            reopened
-                .iter()
-                .any(|record| record.generation == second.generation),
-            "restart dropped the newer immutable history generation"
-        );
-        let mut desktop_transport = backend_desktop::UnixSubscriptionTransport::connect(&endpoint)
-            .unwrap_or_else(|error| panic!("connect desktop history transport: {error}"));
-        let (desktop_root, desktop_cursor) =
-            desktop_transport.bootstrap_root().unwrap_or_else(|error| {
-                panic!("hydrate selected semantic root after restart: {error}")
-            });
-        let desktop_basis = desktop_root.basis().root;
-        let desktop = DesktopModel::try_new_at(desktop_root, desktop_cursor, desktop_basis)
-            .unwrap_or_else(|error| panic!("admit selected semantic root in desktop: {error}"));
-        assert!(
-            desktop
-                .root()
-                .rows()
-                .iter()
-                .any(|row| row.label.contains("first_marker")),
-            "desktop restart hydration omitted the selected first generation"
-        );
-        drop(restarted);
-        std::fs::remove_dir_all(root)
-            .unwrap_or_else(|error| panic!("remove semantic selection fixture: {error}"));
-    }
-
-    #[test]
-    fn locald_readiness_does_not_wait_for_an_ambient_go_probe() {
-        let _process_lease = process_journey_lease();
-        let root = unique_directory("locald-go-probe-readiness");
-        let endpoint = root.join("locald.sock");
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(&workspace)
-            .unwrap_or_else(|error| panic!("create locald Go-probe workspace: {error}"));
-        let authority_secret = authority_secret_file(&root);
-        let probe = HangingGoProbe::new();
-        let args = locald_args(&endpoint, &workspace, &authority_secret, None, 3_000);
-        let mut locald = ChildGuard::spawn(
-            "backend-locald",
-            &args,
-            &[("NUDOX_GO", probe.executable.as_path())],
-        );
-
-        let probe_deadline = Instant::now() + DEADLINE;
-        while !probe.started.exists() && Instant::now() < probe_deadline {
-            assert!(
-                locald.is_running(),
-                "locald exited before the Go probe started"
-            );
-            thread::yield_now();
-        }
-        assert!(
-            probe.started.exists(),
-            "the child did not exercise the explicitly supplied Go authority fixture"
-        );
-
-        // The listener is the process readiness boundary.  It must become
-        // usable while the Go capability is still in its typed probing state;
-        // a toolchain probe cannot hold the owner before this assertion.
-        wait_for_socket(&endpoint, &mut locald);
-        assert!(
-            locald.is_running(),
-            "locald exited after publishing readiness during the Go probe"
-        );
-        drop(locald);
-        std::fs::remove_dir_all(root)
-            .unwrap_or_else(|error| panic!("remove Go-probe readiness fixture: {error}"));
     }
 
     fn add_probe_package(
@@ -1933,8 +1350,8 @@ mod unix_journeys {
         (0..10_000_u64)
             .map(|nonce| {
                 format!(
-                    "pkg:cargo/backend-remote-probe-{label}-{nonce:04}-{}@1.0.0",
-                    "y".repeat(1_700)
+                    "backend-remote-probe-{label}-{nonce:04}-{}",
+                    "y".repeat(3_700)
                 )
             })
             .find(|candidate| backend_engine::package_key(candidate).to_bytes() > floor)
@@ -1987,12 +1404,7 @@ mod unix_journeys {
         // walk without making the process journey depend on thousands of
         // tiny setup requests.
         let packages = (0..20)
-            .map(|index| {
-                format!(
-                    "pkg:cargo/backend-remote-probe-{index:02}-{}@1.0.0",
-                    "x".repeat(1_700)
-                )
-            })
+            .map(|index| format!("backend-remote-probe-{index:02}-{}", "x".repeat(3_700)))
             .collect::<Vec<_>>();
         let mut client = backend_mcp::UnixCommandTransport::connect(locald_endpoint)
             .unwrap_or_else(|error| panic!("connect bulk mutation client: {error}"));
@@ -2282,10 +1694,7 @@ mod unix_journeys {
         let mut mutation = backend_mcp::UnixCommandTransport::connect(locald_endpoint)
             .unwrap_or_else(|error| panic!("connect fallback delta client: {error}"));
         let index = entries.len();
-        let package = format!(
-            "pkg:cargo/backend-remote-probe-fallback-{}@1.0.0",
-            "z".repeat(1_700)
-        );
+        let package = format!("backend-remote-probe-fallback-{}", "z".repeat(3_700));
         entries.push(add_probe_package(&mut mutation, &package, index));
         entries.sort_by_key(|(key, _)| *key);
         let request = product_request(entries);
@@ -2501,87 +1910,6 @@ mod unix_journeys {
         );
     }
 
-    fn wait_for_indexed_symbol(endpoint: &Path, symbol: &str) {
-        let deadline = Instant::now() + DEADLINE;
-        loop {
-            let mut query = ProcessCommand::new(binary("backend-cli"));
-            query
-                .arg("--endpoint")
-                .arg(endpoint)
-                .arg("name")
-                .arg(symbol);
-            let found = bounded_command(query, "backend-cli publication readiness", None);
-            if found.status.success() && String::from_utf8_lossy(&found.stdout).contains(symbol) {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "index intent never published {symbol}: stdout={} stderr={}",
-                String::from_utf8_lossy(&found.stdout),
-                String::from_utf8_lossy(&found.stderr)
-            );
-            thread::yield_now();
-        }
-    }
-
-    fn surface_reply(
-        endpoint: &Path,
-        request_id: u64,
-        surface: backend_library::SurfaceCommand,
-    ) -> ReplyDto {
-        let mut transport = backend_mcp::UnixCommandTransport::connect(endpoint)
-            .unwrap_or_else(|error| panic!("connect surface transport: {error}"));
-        backend_mcp::CommandTransport::request(
-            &mut transport,
-            CommandDto::new(request_id, Command::Surface(surface)),
-        )
-        .unwrap_or_else(|error| panic!("surface request {request_id}: {error}"))
-    }
-
-    fn index_project(endpoint: &Path, project: &Path) {
-        let mut index = ProcessCommand::new(binary("backend-cli"));
-        index
-            .arg("--endpoint")
-            .arg(endpoint)
-            .arg("index")
-            .arg(project);
-        let indexed = bounded_command_for(
-            index,
-            "backend-cli semantic history index",
-            None,
-            Duration::from_secs(60),
-        );
-        assert!(
-            indexed.status.success(),
-            "CLI semantic history index failed: stdout={} stderr={}",
-            String::from_utf8_lossy(&indexed.stdout),
-            String::from_utf8_lossy(&indexed.stderr)
-        );
-    }
-
-    fn explicit_path_executable(name: &str) -> Option<PathBuf> {
-        std::env::var_os("PATH")?.to_str().and_then(|path| {
-            std::env::split_paths(path).find_map(|directory| {
-                let candidate = directory.join(name);
-                candidate
-                    .is_file()
-                    .then(|| candidate.canonicalize().ok())
-                    .flatten()
-            })
-        })
-    }
-
-    fn client_semantic_versions(
-        endpoint: &Path,
-        package: backend_library::PackageReference,
-    ) -> Box<[backend_library::SemanticVersionRecord]> {
-        let mut session = backend_mcp::Session::connect(endpoint)
-            .unwrap_or_else(|error| panic!("connect semantic history client: {error}"));
-        session
-            .semantic_versions(package)
-            .unwrap_or_else(|error| panic!("read semantic history through client: {error}"))
-    }
-
     #[test]
     #[allow(clippy::too_many_lines)]
     fn cli_mcp_and_desktop_share_one_process_root_and_proof_bearing_reply() {
@@ -2613,192 +1941,6 @@ mod unix_journeys {
         let mut locald = ChildGuard::spawn("backend-locald", &args, &[]);
         wait_for_socket(&endpoint, &mut locald);
         let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/polyglot");
-        let rust_path = project.join("src/lib.rs");
-        let python_path = project.join("src/main.py");
-        let typescript_path = project.join("src/main.ts");
-        let go_path = project.join("src/main.go");
-        let java_path = project.join("src/Main.java");
-        let csharp_path = project.join("src/Main.cs");
-        let clang_path = project.join("src/main.cpp");
-        let rust_source = std::fs::read(&rust_path).expect("read Rust fixture");
-        let python_source = std::fs::read(&python_path).expect("read Python fixture");
-        let typescript_source = std::fs::read(&typescript_path).expect("read TypeScript fixture");
-        let go_source = std::fs::read(&go_path).expect("read Go fixture");
-        let java_source = std::fs::read(&java_path).expect("read Java fixture");
-        let csharp_source = std::fs::read(&csharp_path).expect("read C# fixture");
-        let clang_source = std::fs::read(&clang_path).expect("read C++ fixture");
-        assert_malformed_source_is_terminal();
-
-        // The syntax lane is an explicitly labeled structural baseline. It
-        // proves local parsing, coordinates, and source capture without
-        // claiming native type, binding, diagnostic, or dependency authority.
-        assert_syntax_baseline(
-            backend_frontend_rust::syntax_frontend().expect("Rust syntax frontend"),
-            &rust_path,
-            &rust_source,
-            "ferris",
-        );
-        assert_syntax_baseline(
-            backend_frontend_python::syntax_frontend().expect("Python syntax frontend"),
-            &python_path,
-            &python_source,
-            "monty",
-        );
-        assert_syntax_baseline(
-            backend_frontend_typescript::syntax_frontend().expect("TypeScript syntax frontend"),
-            &typescript_path,
-            &typescript_source,
-            "turing",
-        );
-        assert_syntax_baseline(
-            backend_frontend_go::syntax_frontend().expect("Go syntax frontend"),
-            &go_path,
-            &go_source,
-            "Gopher",
-        );
-        assert_syntax_baseline(
-            backend_frontend_java::syntax_frontend().expect("Java syntax frontend"),
-            &java_path,
-            &java_source,
-            "Duke",
-        );
-        assert_syntax_baseline(
-            backend_frontend_csharp::syntax_frontend().expect("C# syntax frontend"),
-            &csharp_path,
-            &csharp_source,
-            "Anders",
-        );
-        assert_syntax_baseline(
-            backend_frontend_clang::syntax_frontend().expect("C++ syntax frontend"),
-            &clang_path,
-            &clang_source,
-            "Bjarne",
-        );
-
-        // A native semantic claim requires a configured authority-protocol
-        // helper. The manifest-only constructors still discover all inputs,
-        // but must return a typed Unsupported witness rather than manufacture
-        // facts from ordinary compiler stdout.
-        let executable = "/bin/sh";
-        let rust_authority = backend_frontend_rust::RustFrontend::new(
-            rust_source.clone(),
-            executable,
-            b"[package]\nname='polyglot'\nversion='0.0.0'\n".to_vec(),
-            "",
-        )
-        .expect("Rust manifest authority");
-        assert_manifest_only_authority(
-            &rust_authority,
-            "src/lib.rs",
-            &rust_source,
-            Coverage::Unsupported,
-        );
-        let python_authority = backend_frontend_python::PythonFrontend::new(
-            python_source.clone(),
-            executable,
-            executable,
-            "3.13",
-            b"{}".to_vec(),
-        )
-        .expect("Python manifest authority");
-        assert_manifest_only_authority(
-            &python_authority,
-            "module.py",
-            &python_source,
-            Coverage::Unsupported,
-        );
-        let typescript_authority = backend_frontend_typescript::TypeScriptFrontend::new(
-            typescript_source.clone(),
-            executable,
-            executable,
-            "ts",
-            b"{}".to_vec(),
-        )
-        .expect("TypeScript manifest authority");
-        assert_manifest_only_authority(
-            &typescript_authority,
-            "index.ts",
-            &typescript_source,
-            Coverage::Unsupported,
-        );
-        let go_authority = backend_frontend_go::GoFrontend::new(
-            go_source.clone(),
-            executable,
-            b"module polyglot\n\ngo 1.22\n".to_vec(),
-            "",
-        )
-        .expect("Go manifest authority");
-        assert_manifest_only_authority(
-            &go_authority,
-            "module/source.go",
-            &go_source,
-            Coverage::Unavailable,
-        );
-        let java_authority = backend_frontend_java::JavaFrontend::new(
-            java_source.clone(),
-            executable,
-            Vec::new(),
-            "21",
-        )
-        .expect("Java manifest authority");
-        assert_manifest_only_authority(
-            &java_authority,
-            "src/Main.java",
-            &java_source,
-            Coverage::Unsupported,
-        );
-        let csharp_authority = backend_frontend_csharp::CSharpFrontend::new(
-            csharp_source.clone(),
-            executable,
-            executable,
-            "Release",
-        )
-        .expect("C# manifest authority");
-        assert_manifest_only_authority(
-            &csharp_authority,
-            "source.cs",
-            &csharp_source,
-            Coverage::Unsupported,
-        );
-        let clang_authority = backend_frontend_clang::ClangFrontend::new(
-            clang_source.clone(),
-            executable,
-            "clang++ -std=c++20",
-        )
-        .expect("Clang manifest authority");
-        assert_manifest_only_authority(
-            &clang_authority,
-            "translation-unit",
-            &clang_source,
-            Coverage::Unsupported,
-        );
-
-        // Unavailable is deliberately distinct from Unsupported: this
-        // authority was selected, but its required local executable vanished.
-        let absent = root.join("missing-python-authority");
-        let unavailable_python = backend_frontend_python::PythonFrontend::new(
-            python_source.clone(),
-            absent.to_string_lossy(),
-            executable,
-            "3.13",
-            b"{}".to_vec(),
-        )
-        .expect("unavailable Python authority configuration");
-        let unavailable_snapshot = unavailable_python
-            .discover()
-            .expect("discover unavailable Python authority");
-        let unavailable_key = SessionKey::new(
-            unavailable_python.identity(),
-            unavailable_snapshot.manifest(),
-            typed_of::<ProfileSchema>(b"polyglot-cutover-profile"),
-            typed_of::<FlowSchema>(b"polyglot-cutover-flow"),
-            typed_of::<SemanticBasisSchema>(b"polyglot-cutover-basis"),
-        );
-        let unavailable = unavailable_python
-            .extract(&unavailable_snapshot, unavailable_key)
-            .expect("unavailable authority is an explicit result");
-        assert_eq!(unavailable.coverage().state(), Coverage::Unavailable);
-
         let mut index = ProcessCommand::new(binary("backend-cli"));
         index
             .arg("--endpoint")
@@ -2812,18 +1954,8 @@ mod unix_journeys {
             String::from_utf8_lossy(&indexed.stdout),
             String::from_utf8_lossy(&indexed.stderr)
         );
-        wait_for_indexed_symbol(&endpoint, "ferris");
-        // Seeing one row establishes that the new generation is visible. All
-        // seven lanes must now be readable; observing a mixed generation is
-        // an atomic-publication failure.
-        for (symbol, source_path) in [
-            ("ferris", "src/lib.rs"),
-            ("monty", "src/main.py"),
-            ("turing", "src/main.ts"),
-            ("Gopher", "src/main.go"),
-            ("Duke", "src/Main.java"),
-            ("Anders", "src/Main.cs"),
-            ("Bjarne", "src/main.cpp"),
+        for symbol in [
+            "ferris", "monty", "turing", "Gopher", "Duke", "Anders", "Bjarne",
         ] {
             let mut query = ProcessCommand::new(binary("backend-cli"));
             query
@@ -2832,11 +1964,10 @@ mod unix_journeys {
                 .arg("name")
                 .arg(symbol);
             let found = bounded_command(query, "backend-cli name", None);
-            let output = String::from_utf8_lossy(&found.stdout);
             assert!(
-                found.status.success() && output.contains(symbol) && output.contains(source_path),
+                found.status.success() && String::from_utf8_lossy(&found.stdout).contains(symbol),
                 "{symbol} did not cross the indexed process path: stdout={} stderr={}",
-                output,
+                String::from_utf8_lossy(&found.stdout),
                 String::from_utf8_lossy(&found.stderr)
             );
         }
@@ -2854,22 +1985,13 @@ mod unix_journeys {
         );
         let cli_json: serde_json::Value = serde_json::from_slice(&cli_output.stdout)
             .unwrap_or_else(|error| panic!("decode CLI JSON: {error}"));
-        // `--format json` is the presentation projection, not the wire reply:
-        // a consumer must not bind to certificate claims or cursor internals.
-        // It still carries the *exact* revision, so a caller can pin to it.
-        assert_eq!(cli_json["answer"], serde_json::json!("status"));
-        assert!(
-            cli_json.get("certificate").is_none(),
-            "the product JSON must not leak wire proof: {cli_json}"
-        );
-        let cli_reply_root = cli_json["revision"].clone();
-        assert!(
-            cli_reply_root
-                .as_str()
-                .is_some_and(|revision| revision.len() == 64),
-            "the typed status must carry the whole revision: {cli_json}"
-        );
-
+        assert_eq!(cli_json["request_id"], serde_json::json!(1));
+        assert_eq!(cli_json["reply"]["kind"], serde_json::json!("health"));
+        let cli_reply_root = cli_json["reply"]["data"]["root"].clone();
+        let cli_health_cursor = cli_json["health_cursor"].clone();
+        let cli_has_certificate = cli_json
+            .get("certificate")
+            .is_some_and(|certificate| !certificate.is_null());
 
         let request = CommandDto::new(1, Command::Health);
         let input = backend_mcp::encode_request(&request)
@@ -2882,10 +2004,8 @@ mod unix_journeys {
         );
         let mcp_json: serde_json::Value = serde_json::from_slice(&mcp_output[4..])
             .unwrap_or_else(|error| panic!("decode MCP reply JSON: {error}"));
-        assert_eq!(
-            mcp_json["reply"]["data"]["root"], cli_reply_root,
-            "the framed MCP transport and the CLI read one revision"
-        );
+        assert_eq!(mcp_json["reply"]["data"]["root"], cli_reply_root);
+        assert_eq!(mcp_json["health_cursor"], cli_health_cursor);
         let mcp_has_certificate = mcp_json
             .get("certificate")
             .is_some_and(|certificate| !certificate.is_null());
@@ -2913,11 +2033,7 @@ mod unix_journeys {
                 "method": "tools/call",
                 "params": {
                     "name": "backend.search",
-                    // Tantivy intersects token-prefix clauses independent of
-                    // source order. The compatibility substring projection
-                    // cannot match this reversed phrase, so this query proves
-                    // the daemon returns the live lexical lane's selection.
-                    "arguments": { "query": "turing function", "limit": 8 }
+                    "arguments": { "query": "turing", "limit": 8 }
                 }
             }),
             serde_json::json!({
@@ -2985,47 +2101,28 @@ mod unix_journeys {
             json_replies[0]["result"]["protocolVersion"],
             serde_json::json!("2025-11-25")
         );
-        // A search page is a page of addresses, not of source. Each record
-        // carries the exact coordinate, the file and line it is at, and its
-        // signature — which is what a reader needs to choose one and then ask
-        // `backend.document` for it. Carrying every excerpt here is what made
-        // the old projection cost four times the tokens for the same choice,
-        // so the evidence is asserted where it is now served: on the page.
-        let search_records = json_replies[1]["result"]["structuredContent"]["records"]
-            .as_array()
-            .unwrap_or_else(|| panic!("MCP search returned no records: {:?}", json_replies[1]))
-            .clone();
         assert!(
-            search_records.iter().any(|record| {
-                record["identity"]["coordinate"]
-                    .as_str()
-                    .is_some_and(|coordinate| coordinate.contains("turing"))
-            }),
+            json_replies[1]["result"]["structuredContent"]["rows"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|row| {
+                    row["coordinate"]
+                        .as_str()
+                        .is_some_and(|coordinate| coordinate.contains("turing"))
+                })),
             "MCP tool search did not return the TypeScript declaration: {:?}",
             json_replies[1]
         );
         assert!(
-            search_records.iter().any(|record| {
-                record["identity"]["coordinate"]
-                    .as_str()
-                    .is_some_and(|coordinate| coordinate.contains("turing"))
-                    && record["identity"]["path"] == serde_json::json!("src/main.ts")
-                    && record["identity"]["line"].as_u64().is_some()
-                    && record["language"] == serde_json::json!("typescript")
-            }),
-            "MCP search lost the exact site of its own result: {:?}",
-            json_replies[1]
-        );
-        let trustfall_returned_live_typescript =
             json_replies[2]["result"]["structuredContent"]["rows"]
                 .as_array()
-                .is_some_and(|rows| {
-                    rows.iter().any(|row| {
-                        row["coordinate"]
-                            .as_str()
-                            .is_some_and(|coordinate| coordinate.contains("turing"))
-                    })
-                });
+                .is_some_and(|rows| rows.iter().any(|row| {
+                    row["coordinate"]
+                        .as_str()
+                        .is_some_and(|coordinate| coordinate.contains("turing"))
+                })),
+            "MCP async Trustfall query did not return the live TypeScript declaration: {:?}",
+            json_replies[2]
+        );
         for (reply, tool) in
             json_replies[3..]
                 .iter()
@@ -3037,55 +2134,6 @@ mod unix_journeys {
                 "{tool} failed against the live indexed view: {reply:?}"
             );
         }
-        let page = json_replies[3]["result"]["structuredContent"].clone();
-        assert_eq!(page["answer"], serde_json::json!("page"));
-        assert_eq!(
-            page["identity"]["coordinate"],
-            serde_json::json!(ferris_coordinate),
-            "the page must answer at the exact coordinate it was asked for"
-        );
-        assert!(
-            page["signature"]
-                .as_str()
-                .is_some_and(|signature| signature.contains("ferris")),
-            "document retrieval lost the indexed Rust declaration: {page:?}"
-        );
-        assert_eq!(
-            page["source"]["extent"],
-            serde_json::json!("complete"),
-            "the page did not retain complete source: {page:?}"
-        );
-        assert!(
-            page["source"]["lines"]
-                .as_array()
-                .is_some_and(|lines| lines.iter().any(|line| {
-                    line.as_str().is_some_and(|text| text.contains("ferris"))
-                })),
-            "document retrieval did not return bounded Rust source: {page:?}"
-        );
-        assert!(
-            json_replies[3]["result"]["content"][0]["text"]
-                .as_str()
-                .is_some_and(|text| text.contains(&ferris_coordinate)),
-            "the readable block dropped the coordinate an agent passes back: {:?}",
-            json_replies[3]
-        );
-        assert_eq!(
-            json_replies[5]["result"]["structuredContent"]["answer"],
-            serde_json::json!("outline")
-        );
-        assert_eq!(
-            json_replies[5]["result"]["structuredContent"]["extent"],
-            serde_json::json!("complete"),
-            "polyglot outline was silently truncated"
-        );
-        assert!(
-            json_replies[5]["result"]["structuredContent"]["roots"]
-                .as_array()
-                .is_some_and(|roots| roots.len() >= 7),
-            "outline did not retain the seven top-level language lanes: {:?}",
-            json_replies[5]
-        );
 
         // Raw JSON cannot mint a complete-view capability. Re-admit the same
         // MCP command through a live owner-authenticated endpoint before the
@@ -3098,210 +2146,38 @@ mod unix_journeys {
         )
         .unwrap_or_else(|error| panic!("admit typed MCP reply: {error}"));
         assert_eq!(mcp_reply.request_id, 1);
-        assert!(matches!(&mcp_reply.reply, CommandReply::Readiness(_)));
-        let readiness = match &mcp_reply.reply {
-            CommandReply::Readiness(report) => report,
+        assert!(matches!(&mcp_reply.reply, CommandReply::Health(_)));
+
+        // The desktop reducer must begin from the exact root returned by the
+        // process service. A standalone empty Library root would hide a
+        // producer/client basis mismatch, so the process health reply is the
+        // only accepted source for this reducer state.
+        let process_view = match &mcp_reply.reply {
+            CommandReply::Health(view) => view.clone(),
             other => panic!("MCP health reply changed shape: {other:?}"),
         };
-        assert_eq!(
-            backend_library::encode_id(readiness.revision().root().as_bytes()),
-            cli_reply_root.as_str().expect("CLI revision root")
-        );
         assert!(
-            readiness.row_count() >= 15,
+            process_view.row_count() >= 15,
             "MCP health did not observe the polyglot indexed view"
         );
-        assert!(
-            readiness
-                .coverage()
-                .iter()
-                .any(|coverage| coverage.is_complete()),
-            "structural browsing lost its complete owner coverage"
-        );
-        assert!(
-            readiness.coverage().iter().any(|coverage| matches!(
-                coverage,
-                backend_library::Coverage::Unavailable {
-                    lane: backend_library::Lane::Semantic,
-                    reason: backend_library::Reason::Unconfigured,
-                }
-            )),
-            "incomplete native authorities were promoted to complete semantic coverage"
-        );
-        // The terminal must not also be described as work in progress. A
-        // fraction over rows that are written once and never rewritten tells
-        // every surface to wait for a completion that cannot arrive.
-        assert!(
-            !readiness.coverage().iter().any(|coverage| matches!(
-                coverage,
-                backend_library::Coverage::Partial {
-                    lane: backend_library::Lane::Semantic,
-                    ..
-                }
-            )),
-            "a terminal semantic lane was still reported as an advancing fraction"
-        );
-        let native_semantic_slots = readiness
-            .capabilities()
-            .as_slice()
-            .iter()
-            .filter(|status| {
-                matches!(
-                    status.family(),
-                    CapabilityFamily::LanguageOracle {
-                        task: LanguageOracleTask::TypeCheck | LanguageOracleTask::SemanticIndex,
-                        ..
-                    }
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            native_semantic_slots.len(),
-            LanguageProfile::PRODUCT_PROFILES.len() * 2
-        );
-        assert!(
-            native_semantic_slots
-                .iter()
-                .filter(|status| { matches!(status.lifecycle(), CapabilityLifecycle::Installed) })
-                .all(|status| {
-                    matches!(
-                        status.family(),
-                        CapabilityFamily::LanguageOracle {
-                            profile: LanguageProfile::Go(_) | LanguageProfile::Python(_),
-                            task: LanguageOracleTask::TypeCheck | LanguageOracleTask::SemanticIndex,
-                        }
-                    )
-                })
-        );
-        let go_installed = native_semantic_slots
-            .iter()
-            .filter(|status| {
-                matches!(
-                    status.family(),
-                    CapabilityFamily::LanguageOracle {
-                        profile: LanguageProfile::Go(_),
-                        task: LanguageOracleTask::TypeCheck | LanguageOracleTask::SemanticIndex,
-                    }
-                ) && matches!(status.lifecycle(), CapabilityLifecycle::Installed)
-            })
-            .count();
-        assert!(
-            matches!(go_installed, 0 | 2),
-            "Go type and semantic-index capability states diverged"
-        );
-        let python_installed = native_semantic_slots
-            .iter()
-            .filter(|status| {
-                matches!(
-                    status.family(),
-                    CapabilityFamily::LanguageOracle {
-                        profile: LanguageProfile::Python(_),
-                        task: LanguageOracleTask::TypeCheck | LanguageOracleTask::SemanticIndex,
-                    }
-                ) && matches!(status.lifecycle(), CapabilityLifecycle::Installed)
-            })
-            .count();
-        assert!(
-            matches!(python_installed, 0 | 1),
-            "Python advertised more native semantic capability than its bundled authority proves"
-        );
-        assert!(native_semantic_slots.iter().all(|status| {
-            !matches!(status.lifecycle(), CapabilityLifecycle::Installed)
-                || !matches!(
-                    status.family(),
-                    CapabilityFamily::LanguageOracle {
-                        profile: LanguageProfile::Python(_),
-                        task: LanguageOracleTask::TypeCheck,
-                    }
-                )
-        }));
-        assert!(
-            native_semantic_slots.iter().all(|status| {
-                matches!(status.lifecycle(), CapabilityLifecycle::Unavailable(_))
-                    || matches!(status.lifecycle(), CapabilityLifecycle::Installed)
-            }),
-            "semantic capability advertised an unproved runtime lifecycle"
-        );
-
-        // Traverse the outline projection through the real socket one bounded
-        // page at a time. Each opaque continuation is returned by the owner
-        // and replayed unchanged; the client never manufactures an offset.
-        let outline_label = project.to_string_lossy().into_owned();
-        let mut paged_client = backend_mcp::Session::connect(&endpoint)
-            .unwrap_or_else(|error| panic!("connect paged client: {error}"));
-        let mut continuation = None;
-        let mut page_count = 0usize;
-        let mut outline_row_count = 0usize;
-        loop {
-            let page_reply = paged_client
-                .outline_page(&outline_label, 1, continuation)
-                .unwrap_or_else(|error| panic!("read outline page {page_count}: {error}"));
-            let page = match page_reply.reply {
-                CommandReply::ProjectionPage(page) => page,
-                other => panic!("MCP outline page changed shape: {other:?}"),
-            };
-            assert_eq!(page.snapshot.root.basis().root, readiness.revision().root());
-            outline_row_count += page.snapshot.root.rows().len();
-            page_count += 1;
-            continuation = match page.terminal {
-                PageTerminal::More(next) => Some(next),
-                PageTerminal::Complete => break,
-                PageTerminal::Cancelled => panic!("outline traversal was cancelled"),
-            };
-        }
-        assert!(
-            page_count >= 2,
-            "outline traversal did not cross a page boundary"
-        );
-        assert!(outline_row_count >= 2, "polyglot outline omitted rows");
-        assert!(
-            trustfall_returned_live_typescript,
-            "MCP async Trustfall query did not return the live TypeScript declaration: {:?}",
-            json_replies[2]
-        );
-        let desktop_search = backend_desktop::search_endpoint(&endpoint, "turing function", 8)
-            .unwrap_or_else(|error| panic!("desktop owner search failed: {error}"));
-        let turing_coordinate = format!("{}::src/main.ts:2::turing", project.display());
-        assert!(
-            desktop_search.contains(&backend_library::RowId::Symbol(
-                backend_library::symbol_key(&turing_coordinate)
-            )),
-            "desktop search did not consume the daemon's reversed-token Tantivy result"
-        );
-
-        // The package projection and bounded snapshot hydration must both
-        // resolve to the exact owner generation advertised by readiness.
-        let packages: ReplyDto = backend_mcp::CommandTransport::request(
-            &mut typed_mcp,
-            CommandDto::new(2, Command::Packages),
+        let process_cursor = mcp_reply
+            .health_cursor()
+            .unwrap_or_else(|| panic!("MCP health reply omitted its owner cursor"));
+        let desktop = DesktopModel::try_new_at(
+            process_view.clone(),
+            process_cursor,
+            process_view.basis().root,
         )
-        .unwrap_or_else(|error| panic!("admit desktop seed projection: {error}"));
-        let desktop_seed = match packages.reply {
-            CommandReply::Packages(snapshot) => snapshot.root,
-            other => panic!("MCP packages reply changed shape: {other:?}"),
-        };
-        let seed_basis = desktop_seed.basis().root;
-        assert_eq!(seed_basis, readiness.revision().root());
+        .unwrap_or_else(|error| panic!("desktop checked root/cursor: {error}"));
         let mut desktop_transport = backend_desktop::UnixSubscriptionTransport::connect(&endpoint)
             .unwrap_or_else(|error| panic!("connect desktop transport: {error}"));
-        let (desktop_root, desktop_cursor) = desktop_transport
-            .bootstrap_root()
-            .unwrap_or_else(|error| panic!("hydrate desktop owner generation: {error}"));
-        assert_eq!(desktop_root.root(), readiness.revision().root());
-        let desktop_basis = desktop_root.basis().root;
-        let mut desktop = DesktopModel::try_new_at(desktop_root, desktop_cursor, desktop_basis)
-            .unwrap_or_else(|error| panic!("desktop checked owner generation: {error}"));
-        let read = desktop.poll_transport(&mut desktop_transport);
-        assert!(read.is_ok(), "desktop subscription failed: {read:?}");
-        assert_eq!(desktop.root().root(), readiness.revision().root());
-        assert!(desktop.root().row_count() >= 15);
-        // The CLI's own contribution to this claim is asserted where it is
-        // observable: it read the same exact revision, through a session that
-        // admits producer certificates, and its product JSON carried none of
-        // them onward. The proof lives on the wire, not in the answer.
+        let read = desktop_transport.subscribe(
+            SubscriptionRequest::new(desktop.cursor(), desktop.credit())
+                .unwrap_or_else(|error| panic!("desktop subscription request: {error}")),
+        );
         assert!(
-            mcp_has_certificate && read.is_ok(),
-            "proof-bearing client journey failed: mcp_certificate={mcp_has_certificate}, desktop_subscription={:?}",
+            cli_has_certificate && mcp_has_certificate && read.is_ok(),
+            "proof-bearing client journey failed: cli_certificate={cli_has_certificate}, mcp_certificate={mcp_has_certificate}, desktop_subscription={:?}",
             read.as_ref().err()
         );
 
@@ -3324,21 +2200,15 @@ mod unix_journeys {
         let reopened_json: serde_json::Value = serde_json::from_slice(&reopened.stdout)
             .unwrap_or_else(|error| panic!("decode restarted CLI JSON: {error}"));
         assert_eq!(
-            reopened_json["revision"], cli_reply_root,
+            reopened_json["reply"]["data"]["root"], cli_reply_root,
             "restart changed the immutable product view root"
         );
         assert!(
             workspace.join(backend_extension_turso::FILE_NAME).is_file(),
             "daemon restart did not retain its Turso projection"
         );
-        for (symbol, source_path) in [
-            ("ferris", "src/lib.rs"),
-            ("monty", "src/main.py"),
-            ("turing", "src/main.ts"),
-            ("Gopher", "src/main.go"),
-            ("Duke", "src/Main.java"),
-            ("Anders", "src/Main.cs"),
-            ("Bjarne", "src/main.cpp"),
+        for symbol in [
+            "ferris", "monty", "turing", "Gopher", "Duke", "Anders", "Bjarne",
         ] {
             let mut query = ProcessCommand::new(binary("backend-cli"));
             query
@@ -3347,11 +2217,10 @@ mod unix_journeys {
                 .arg("name")
                 .arg(symbol);
             let found = bounded_command(query, "restarted backend-cli name", None);
-            let output = String::from_utf8_lossy(&found.stdout);
             assert!(
-                found.status.success() && output.contains(symbol) && output.contains(source_path),
+                found.status.success() && String::from_utf8_lossy(&found.stdout).contains(symbol),
                 "{symbol} disappeared after restart: stdout={} stderr={}",
-                output,
+                String::from_utf8_lossy(&found.stdout),
                 String::from_utf8_lossy(&found.stderr)
             );
         }

@@ -5,23 +5,18 @@
 //! fences, local/remote route selection, and affine resource guards.
 #![forbid(unsafe_code)]
 
-/// Bounded, deterministic local-first placement policy.
-pub mod adaptive;
 mod admission;
 mod attempt;
 mod cancel;
 mod placement;
 mod planner;
-/// Snapshot-pinned horizontal routing, planning, and deterministic merge.
-pub mod routing;
 mod scheduler;
 mod supervisor;
-mod telemetry;
 mod types;
 
 pub use admission::{
-    Admission, AdmissionDimension, AdmissionError, AdmissionRequest, Budget, Envelope,
-    EnvelopeBudgets, ImpossibleAdmission, Reservation, ResourceVector,
+    Admission, AdmissionError, AdmissionRequest, Budget, Envelope, EnvelopeBudgets, Reservation,
+    ResourceVector,
 };
 pub use attempt::{
     AttemptError, AttemptFence, AttemptLease, AttemptManager, AttemptState,
@@ -42,14 +37,10 @@ pub use planner::{
     DeltaPlan, DeltaPlanner, RebuildScope, RefreshChoice, RefreshCost, choose_refresh,
 };
 pub use scheduler::{
-    DeadlineQueue, DeadlineQueueError, RouteReservations, RuntimeSnapshot, ScheduleError,
-    ScheduleOutcome, ScheduleReceipt, ScheduleRequest, Scheduled, Scheduler,
+    DeadlineQueue, DeadlineQueueError, RouteReservations, ScheduleError, ScheduleOutcome,
+    ScheduleReceipt, ScheduleRequest, Scheduled, Scheduler,
 };
 pub use supervisor::{Supervisor, SupervisorSnapshot};
-pub use telemetry::{
-    ExportStatus, FamilySnapshot, MetricFamily, MetricOutcome, Observation, Telemetry,
-    TelemetryExporter, TelemetrySnapshot,
-};
 pub use types::{
     AdmittedWork, AuthorityVersion, AuthorityVersionSchema, CompletionReceipt, InternError,
     Interned, OutputEquivalence, OutputEquivalenceSchema, OutputSchema, OutputVersion,
@@ -677,47 +668,6 @@ mod tests {
             NonZeroU64::new(1),
         )?;
         assert!(published.reusable().is_some());
-        Ok(())
-    }
-
-    #[test]
-    fn scheduler_reports_admission_completion_and_abandonment() -> TestResult {
-        let telemetry = Telemetry::enabled();
-        let scheduler = Scheduler::new(Budget {
-            operations: 2,
-            bytes: 1024,
-            ..Budget::zero()
-        })
-        .with_telemetry(telemetry.clone());
-
-        let completed_identity = identity(41)?;
-        let completed = scheduler.schedule(schedule_request(completed_identity)?)?;
-        let completed_receipt = receipt(completed_identity, completed.lease(), b"complete")?;
-        scheduler.complete(completed, &completed_receipt, 0)?;
-
-        let abandoned = scheduler.schedule(schedule_request(identity(42)?)?)?;
-        drop(abandoned);
-
-        let lifecycle = telemetry.snapshot().family(MetricFamily::Lifecycle);
-        let queue = telemetry.snapshot().family(MetricFamily::Queue);
-        assert_eq!(lifecycle.completed, 1);
-        assert_eq!(lifecycle.cancelled, 1);
-        assert_eq!(queue.completed, 2);
-        assert_eq!(queue.units, 2);
-        assert_eq!(
-            scheduler.supervisor_snapshot(),
-            SupervisorSnapshot {
-                admitted: 2,
-                completed: 1,
-                cancelled: 1,
-                ..SupervisorSnapshot::default()
-            }
-        );
-        let runtime = scheduler.runtime_snapshot();
-        assert_eq!(runtime.capacity.interactive.operations, 2);
-        assert_eq!(runtime.available.interactive.operations, 2);
-        assert_eq!(runtime.live_work, 0);
-        assert_eq!(runtime.live_followers, 0);
         Ok(())
     }
 

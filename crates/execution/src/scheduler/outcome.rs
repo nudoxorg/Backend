@@ -129,8 +129,6 @@ pub enum ScheduleError {
     Coalesced,
     /// A local fallback deadline has not elapsed yet.
     FallbackNotDue,
-    /// The fixed live-deadline table has no free coordinate.
-    DeadlineCapacity,
     /// No local fallback reservation is available.
     FallbackUnavailable,
     /// A capability or cost snapshot was bound to a different work key.

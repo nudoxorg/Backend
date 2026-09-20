@@ -2,9 +2,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use backend_version::{
-    AuthorityScopeClaim, CoverageAdmissionError, ObjectVersion, ProducerObservationClaims,
-    ProducerObservationVerifier, Schema, ScopeRoot, UntrustedProducerObservation,
-    admit_complete_scope, admit_producer_observation,
+    AuthorityScopeClaim, CoverageAdmissionError, ObjectVersion, ProducerObservationVerifier,
+    Schema, UntrustedProducerObservation, admit_complete_scope, admit_producer_observation,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -64,36 +63,13 @@ impl Schema for PublicationScope {
     }
 }
 
-struct PublicationVerifier {
-    producer: [u8; 32],
-    scope: ScopeRoot,
-    context: [u8; 32],
-    evidence_digest: [u8; 32],
-}
+struct PublicationVerifier;
 
 impl ProducerObservationVerifier for PublicationVerifier {
     type Error = CoverageAdmissionError;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
-        if observation.producer_identity() != self.producer
-            || observation.scope_root() != self.scope
-            || observation.context() != self.context
-            || *blake3::hash(observation.evidence()).as_bytes() != self.evidence_digest
-        {
-            return Err(CoverageAdmissionError::ScopeMismatch {
-                declared: self.scope,
-                observed: observation.scope_root(),
-            });
-        }
-        Ok(ProducerObservationClaims::new(
-            self.producer,
-            self.scope,
-            self.context,
-            self.evidence_digest,
-        ))
+    fn verify(&self, _: &UntrustedProducerObservation) -> Result<(), Self::Error> {
+        Ok(())
     }
 }
 
@@ -106,14 +82,8 @@ fn publication_coverage() -> CoverageWitness {
         [3; 32],
         claim.scope_root().as_bytes().to_vec(),
     );
-    let verifier = PublicationVerifier {
-        producer: [0x77; 32],
-        scope: claim.scope_root(),
-        context: [3; 32],
-        evidence_digest: *blake3::hash(claim.scope_root().as_bytes()).as_bytes(),
-    };
-    let admitted =
-        admit_producer_observation(observation, &verifier).expect("publication observation");
+    let admitted = admit_producer_observation(observation, &PublicationVerifier)
+        .expect("publication observation");
     CoverageWitness::Complete(admit_complete_scope(claim, admitted).expect("matching scope"))
 }
 

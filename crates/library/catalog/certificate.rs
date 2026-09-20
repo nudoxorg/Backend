@@ -159,16 +159,3 @@ pub(super) fn producer_certificate_for_revision(
             }),
     )
 }
-
-/// Emits the constant-size claims needed for a row-free readiness report.
-pub(super) fn producer_certificate_for_readiness(
-    root: &ViewRoot,
-    cursor: Cursor,
-) -> Option<WireCertificate> {
-    producer_certificate_for_revision(root, cursor).map(|certificate| {
-        certificate.with_claim(WireClaim::RootCommitment {
-            schema: WireSchema::ViewRelation,
-            id: encode_id(root.basis().root.as_bytes()),
-        })
-    })
-}

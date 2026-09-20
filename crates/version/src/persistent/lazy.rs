@@ -2,9 +2,10 @@
 
 use crate::tree::{anchored_cut_points_children, anchored_cut_points_items};
 use crate::{
-    CanonicalNode, CanonicalRelation, CheckedCanonicalRoot, ChildCommitment, CommittedChild,
-    DEFAULT_CUT_POLICY, IdContext, MapChange, NodeError, PersistentTree, TreeChange, TreeError,
-    UntrustedId, canonical_branch_from_commitments, canonical_empty, canonical_leaf,
+    CanonicalNode, CanonicalRelation, CanonicalRootAdmissionError, CheckedCanonicalRoot,
+    ChildCommitment, CommittedChild, DEFAULT_CUT_POLICY, IdContext, MapChange, NodeError,
+    PersistentTree, StateRoot, TreeChange, TreeError, UntrustedId, admit_canonical_root_claim,
+    canonical_branch_from_commitments, canonical_empty, canonical_leaf,
 };
 use std::{borrow::Borrow, cell::Cell};
 
@@ -12,12 +13,10 @@ use super::TreeNodeLoader;
 
 #[path = "lazy/helpers.rs"]
 mod helpers;
-mod types;
 use helpers::{
     OverlayLoader, child_claim, child_node_from_result, committed_child, leaf_probe_cuts,
     make_branches, make_leaves,
 };
-pub use types::{LazyPreparedUpdate, LazyTreePage, LazyTreeWork, PersistedTreeRoot};
 
 /// Error while opening or path copying a lazily loaded canonical tree.
 #[derive(Debug, Eq, PartialEq)]
@@ -44,12 +43,166 @@ impl<E: std::fmt::Display> std::fmt::Display for LazyTreeError<E> {
 }
 impl<E: std::fmt::Debug + std::fmt::Display> std::error::Error for LazyTreeError<E> {}
 
+/// Explicit work performed by one lazy update.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LazyTreeWork {
+    /// Number of authenticated nodes fetched from the loader.
+    pub loaded_nodes: usize,
+    /// Number of canonical nodes emitted into the changed frontier.
+    pub rebuilt_nodes: usize,
+    /// Number of extra nodes created by split propagation.
+    pub split_nodes: usize,
+    /// Number of logical entries removed.
+    pub removed_entries: usize,
+    /// Total bytes in the changed frontier.
+    pub emitted_bytes: usize,
+}
+
 struct RewriteResult<R: CanonicalRelation> {
     roots: Vec<CanonicalNode<R>>,
     changed: Vec<CanonicalNode<R>>,
     split_nodes: usize,
     removed_entries: usize,
     change: MapChange<R>,
+}
+
+/// A checked target root produced by a lazy path copy.
+#[derive(Debug)]
+pub struct LazyPreparedUpdate<R: CanonicalRelation> {
+    base: StateRoot<R>,
+    target: CheckedCanonicalRoot<R>,
+    changed: Vec<CanonicalNode<R>>,
+    work: LazyTreeWork,
+    changes: Vec<MapChange<R>>,
+}
+
+/// A bounded page read from a lazily opened canonical relation.
+#[derive(Debug)]
+pub struct LazyTreePage<R: CanonicalRelation> {
+    entries: Vec<(R::Key, R::Value)>,
+    next: Option<R::Key>,
+}
+
+impl<R: CanonicalRelation> LazyTreePage<R> {
+    /// Returns the owned rows in canonical key order.
+    #[must_use]
+    pub fn entries(&self) -> &[(R::Key, R::Value)] {
+        &self.entries
+    }
+
+    /// Returns the last emitted key when another page remains.
+    #[must_use]
+    pub fn next(&self) -> Option<&R::Key> {
+        self.next.as_ref()
+    }
+}
+
+/// Owned proof that one persisted relation root has passed canonical admission.
+///
+/// This handle carries the root node and schema-bound evidence without any
+/// logical rows. It is the safe handoff between closure admission and a
+/// store-backed [`LazyTree`].
+#[derive(Debug)]
+pub struct PersistedTreeRoot<R: CanonicalRelation> {
+    evidence: CheckedCanonicalRoot<R>,
+}
+
+impl<R: CanonicalRelation> Clone for PersistedTreeRoot<R> {
+    fn clone(&self) -> Self {
+        Self {
+            evidence: self.evidence.clone(),
+        }
+    }
+}
+
+impl<R: CanonicalRelation> PersistedTreeRoot<R> {
+    /// Reuses a canonical root already admitted by a typed node loader.
+    #[must_use]
+    pub const fn from_checked(evidence: CheckedCanonicalRoot<R>) -> Self {
+        Self { evidence }
+    }
+
+    /// Admits canonical root bytes against an untrusted relation-root claim.
+    ///
+    /// # Errors
+    /// Returns a canonical grammar, schema, or digest admission error.
+    pub fn admit(claim: UntrustedId<R>, bytes: &[u8]) -> Result<Self, CanonicalRootAdmissionError> {
+        Ok(Self {
+            evidence: admit_canonical_root_claim(claim, bytes)?,
+        })
+    }
+
+    /// Returns the admitted typed state root.
+    #[must_use]
+    pub const fn root(&self) -> StateRoot<R> {
+        self.evidence.root()
+    }
+    /// Returns the schema identity proven by the relation marker.
+    #[must_use]
+    pub const fn schema(&self) -> crate::SchemaIdentity {
+        crate::SchemaIdentity::new(R::DOMAIN, R::TYPE, R::VERSION)
+    }
+    /// Returns the admitted canonical node evidence.
+    #[must_use]
+    pub const fn evidence(&self) -> &CheckedCanonicalRoot<R> {
+        &self.evidence
+    }
+}
+
+impl<R: CanonicalRelation> LazyPreparedUpdate<R> {
+    /// Returns the exact root opened before the update.
+    #[must_use]
+    pub const fn base(&self) -> StateRoot<R> {
+        self.base
+    }
+    /// Returns the checked target root descriptor.
+    #[must_use]
+    pub const fn target(&self) -> &CheckedCanonicalRoot<R> {
+        &self.target
+    }
+    /// Consumes the update and returns its checked target descriptor.
+    #[must_use]
+    pub fn into_target(self) -> CheckedCanonicalRoot<R> {
+        self.target
+    }
+
+    /// Returns an owned persisted-root handoff for storage publication.
+    #[must_use]
+    pub fn target_root(&self) -> PersistedTreeRoot<R> {
+        PersistedTreeRoot {
+            evidence: self.target.clone(),
+        }
+    }
+
+    /// Clones the exact single-key transition prepared by this path copy.
+    ///
+    /// The clone is cheap for the canonical byte body and is intended for a
+    /// storage adapter that must publish the changed frontier before it
+    /// consumes this capability.
+    #[must_use]
+    pub fn delta(&self) -> super::super::delta::Delta<R> {
+        super::super::delta::Delta::from_parts(self.base, self.target.root(), self.changes.clone())
+    }
+
+    /// Consumes this path-copy update and returns its exact typed delta.
+    ///
+    /// The target node remains separately available through
+    /// [`Self::into_target`] when a storage adapter needs to write the
+    /// changed frontier before selecting the new root.
+    #[must_use]
+    pub fn into_delta(self) -> super::super::delta::Delta<R> {
+        super::super::delta::Delta::from_parts(self.base, self.target.root(), self.changes)
+    }
+    /// Borrows newly encoded nodes in child-to-root order for store CAS.
+    #[must_use]
+    pub fn changed_nodes(&self) -> &[CanonicalNode<R>] {
+        &self.changed
+    }
+    /// Returns bounded loader, rebuild, split, and byte counters.
+    #[must_use]
+    pub const fn work(&self) -> LazyTreeWork {
+        self.work
+    }
 }
 
 /// A lazily opened canonical root with a store supplied node loader.

@@ -143,8 +143,8 @@ fn worker_listener_rejects_a_peer_before_recipe_admission() {
     let client = std::thread::spawn(move || {
         let _ = std::os::unix::net::UnixStream::connect(client_socket);
     });
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline && listener.report().failures == 0 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline && listener.report().failures == 0 {
         let _ = listener
             .run_once()
             .unwrap_or_else(|error| panic!("run once: {error}"));
@@ -180,15 +180,13 @@ fn worker_listener_sets_private_mode_and_handles_canonical_capabilities() {
     };
     let worker = WorkerService::new(capabilities, DummyExecutor, manifest(), config.limits)
         .unwrap_or_else(|error| panic!("worker: {error}"));
-    let telemetry = backend_engine::Telemetry::enabled();
     let mut listener = UnixWorkerListener::<
         DummyExecutor,
         NoAttestationSigner,
         TestRelation,
         NoJobAdmission,
     >::bind(worker, NoJobAdmission, config)
-    .unwrap_or_else(|error| panic!("bind: {error}"))
-    .with_telemetry(telemetry.clone());
+    .unwrap_or_else(|error| panic!("bind: {error}"));
     let client_socket = socket.clone();
     let client = std::thread::spawn(move || {
         let mut stream = std::os::unix::net::UnixStream::connect(client_socket)
@@ -213,8 +211,8 @@ fn worker_listener_sets_private_mode_and_handles_canonical_capabilities() {
         response.extend_from_slice(&body);
         response
     });
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline && listener.report().frames == 0 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline && listener.report().frames == 0 {
         let _ = listener
             .run_once()
             .unwrap_or_else(|error| panic!("run once: {error}"));
@@ -228,12 +226,6 @@ fn worker_listener_sets_private_mode_and_handles_canonical_capabilities() {
         .unwrap_or_else(|error| panic!("decode response: {error}"));
     assert!(matches!(decoded, TransportMessage::Capabilities(_)));
     assert_eq!(listener.report().frames, 1);
-    let transport = telemetry
-        .snapshot()
-        .family(backend_engine::MetricFamily::Transport);
-    assert_eq!(transport.completed, 1);
-    assert_eq!(transport.failed, 0);
-    assert_eq!(transport.units, 1);
     drop(listener);
     assert!(!socket.exists());
 }
@@ -246,7 +238,6 @@ fn tcp_listener_authenticates_capabilities_and_rejects_wrong_key() {
         address: "127.0.0.1:0".parse().expect("loopback address"),
         limits,
         authority: backend_engine::TcpAuthority::new(secret),
-        exposure: TcpExposure::LoopbackOnly,
     };
     let capabilities = WorkerCapabilities {
         recipes: vec![RecipeId::from_value(b"worker-listener-test")],
@@ -285,8 +276,8 @@ fn tcp_listener_authenticates_capabilities_and_rejects_wrong_key() {
         .expect("capability request");
         read_message(&mut stream, limits).expect("capability response")
     });
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while listener.report().frames == 0 && Instant::now() < deadline {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while listener.report().frames == 0 && std::time::Instant::now() < deadline {
         let _ = listener.run_once().expect("run once");
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -301,8 +292,8 @@ fn tcp_listener_authenticates_capabilities_and_rejects_wrong_key() {
     let wrong_client = std::thread::spawn(move || {
         backend_engine::TcpAuthority::new([0x2a_u8; 32]).client_handshake(&mut wrong)
     });
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while listener.report().failures == 0 && Instant::now() < deadline {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while listener.report().failures == 0 && std::time::Instant::now() < deadline {
         let _ = listener.run_once().expect("run wrong-key once");
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -326,8 +317,8 @@ fn tcp_listener_authenticates_capabilities_and_rejects_wrong_key() {
         .expect("reconnect capability request");
         read_message(&mut stream, limits).expect("reconnect capability response")
     });
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while listener.report().frames < 2 && Instant::now() < deadline {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while listener.report().frames < 2 && std::time::Instant::now() < deadline {
         let _ = listener.run_once().expect("run reconnect once");
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -337,18 +328,4 @@ fn tcp_listener_authenticates_capabilities_and_rejects_wrong_key() {
     ));
     assert_eq!(listener.report().frames, 2);
     listener.shutdown();
-}
-
-#[test]
-fn routable_tcp_requires_explicit_outer_confidentiality() {
-    let config = TcpWorkerListenerConfig {
-        address: "0.0.0.0:0".parse().expect("routable address"),
-        limits: limits(),
-        authority: backend_engine::TcpAuthority::new([7_u8; 32]),
-        exposure: TcpExposure::LoopbackOnly,
-    };
-    assert!(matches!(
-        config.validate(),
-        Err(WorkerListenerError::ConfidentialityRequired)
-    ));
 }

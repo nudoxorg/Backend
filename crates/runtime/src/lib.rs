@@ -29,9 +29,6 @@
 
 extern crate alloc;
 
-/// Bounded physical-credit admission and one-owner execution.
-pub mod server;
-
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, OpenOptions};

@@ -13,9 +13,6 @@ use std::{
     time::Duration,
 };
 
-const MAX_ARGUMENTS: usize = 256;
-const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
-
 /// Explicit standard-input policy for a supervised process.
 ///
 /// A command never inherits the parent's standard input.  [`Self::Bytes`]
@@ -121,14 +118,6 @@ impl SupervisedCommand {
         if program.file_name().is_none_or(std::ffi::OsStr::is_empty) {
             return Err(ProcessError::InvalidProgram);
         }
-        let argument_bytes = args
-            .iter()
-            .try_fold(0_usize, |total, argument| total.checked_add(argument.len()));
-        if args.len() > MAX_ARGUMENTS
-            || argument_bytes.is_none_or(|bytes| bytes > MAX_ARGUMENT_BYTES)
-        {
-            return Err(ProcessError::ConfigurationLimit);
-        }
         if args.iter().any(|arg| arg.as_bytes().contains(&0)) {
             return Err(ProcessError::Protocol);
         }
@@ -164,7 +153,7 @@ impl SupervisedCommand {
         clippy::too_many_arguments,
         reason = "the native command boundary keeps every authority input explicit"
     )]
-    pub(crate) fn for_authority(
+    pub fn for_authority(
         program: PathBuf,
         args: Vec<String>,
         environment: ProcessEnvironment,
@@ -217,6 +206,40 @@ impl SupervisedCommand {
         Ok(command)
     }
 
+    /// Alias for [`Self::for_authority`] using constructor terminology.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ProcessError`] when the delegated authority command fails
+    /// validation.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the native command boundary keeps every authority input explicit"
+    )]
+    pub fn from_authority(
+        program: PathBuf,
+        args: Vec<String>,
+        environment: ProcessEnvironment,
+        workspace: PathBuf,
+        stdin: ProcessStdin,
+        toolchain: ToolchainId,
+        session_key: Option<SessionKey>,
+        protocol: ProtocolDescriptor,
+        limits: ProcessLimits,
+    ) -> Result<Self, ProcessError> {
+        Self::for_authority(
+            program,
+            args,
+            environment,
+            workspace,
+            stdin,
+            toolchain,
+            session_key,
+            protocol,
+            limits,
+        )
+    }
+
     /// Replaces standard input while retaining all other checked command
     /// fields.
     ///
@@ -240,7 +263,7 @@ impl SupervisedCommand {
     ///
     /// Returns a [`ProcessError`] when the authority binding or standard input
     /// fails validation.
-    pub(crate) fn bind_authority(
+    pub fn bind_authority(
         mut self,
         stdin: ProcessStdin,
         toolchain: ToolchainId,

@@ -5,50 +5,22 @@
 //! relation transitions, and atomic workspace history.  The public surface is
 //! re-exported here as a small facade; implementation details stay in the
 //! focused modules beside this file.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 mod coverage;
 mod delta;
-/// Canonical bounded frame writing into caller-owned storage.
-pub mod frame;
 mod ids;
-/// Domain-separated logical/object/state/workspace identities.
-pub mod identity;
-/// Canonical object descriptors, providers, and residency vocabulary.
-#[allow(unsafe_code, reason = "zerocopy derives emit unsafe impls for plain-old-data wire types")]
-pub mod object;
-/// Allocation-free, caller-owned observability probes.
-pub mod observe;
 mod persistent;
-/// Canonical value/batch schema and complete encoding contracts.
-#[allow(unsafe_code, reason = "zerocopy derives emit unsafe impls for plain-old-data wire types")]
-pub mod schema;
 mod tree;
 mod workspace;
-
-pub use identity::{
-    ArtifactHasher, ArtifactId, ArtifactIdDecodeError, CONTENT_PAYLOAD_BYTES, ContentAuthority, ContentAuthorityError,
-    ContentHasher, ContentId, ContentIdDecodeError, ContentRoutingWord, Domain, DomainCode,
-    DomainTag, Encoding, EncodingCode, EncodingTag, FixedCanonicalRecord, GenerationHasher,
-    GenerationId, HASH_BYTES, IndexSnapshotIdentityError, TAG_BYTES, CapabilityDomain,
-    CompilationTargetDomain, CompilePublicationDomain, CompilePublicationEncoding,
-    CompileRecipeDomain, ConfigurationDomain, DeclarationFamilyDomain, DeclarationKeyDomain,
-    DeclarationVariantDomain, DependencySetDomain, ForeignDeclarationDomain, FrameEncoding,
-    IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexPackDomain, IndexPackEncoding,
-    IndexSnapshotDomain, IndexSnapshotId, IndexVectorSegmentDomain, IrFragmentDomain,
-    IrFragmentEncoding, IrFragmentRangeEncoding, IrManifestDomain, IrManifestEncoding,
-    IrSemanticImageDomain, IrSemanticImageEncoding, LocalitySortedEncoding, ObjectDomain,
-    ObjectPackEncoding, OperationDomain, RootDomain, SemanticScopeDomain, SourceFactDomain,
-    StageKeyDomain, ToolchainDomain, derive_index_snapshot,
-};
 
 pub use coverage::{
     AdmittedProducerObservation, AuthorityScopeClaim, AuthorizedCompleteCoverage,
     ClosedRelationScope, Coverage, CoverageAdmissionError, CoverageWitness,
-    ProducerObservationAdmissionError, ProducerObservationClaims, ProducerObservationIdentity,
-    ProducerObservationVerifier, ScopeEqualityBinding, ScopeRoot, UntrustedCompleteCoverage,
-    UntrustedCoverageScope, UntrustedProducerObservation, admit_complete_scope,
-    admit_producer_observation, bind_scope_equality, partial_coverage,
+    ProducerObservationAdmissionError, ProducerObservationIdentity, ProducerObservationVerifier,
+    ScopeEqualityBinding, ScopeRoot, UntrustedCompleteCoverage, UntrustedCoverageScope,
+    UntrustedProducerObservation, admit_complete_scope, admit_producer_observation,
+    bind_scope_equality, partial_coverage,
 };
 pub use delta::{
     BoundDelta, CheckedStateObject, CheckedStateObjectRef, Delta, DeltaError, DeltaView, DeltaWork,

@@ -33,67 +33,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-/// Bytes admitted by file type and byte length before a durable grammar
-/// decoder observes them.
-pub(super) struct BoundedFileImage(Vec<u8>);
-
-impl BoundedFileImage {
-    pub(super) fn read_optional(
-        path: &Path,
-        maximum: usize,
-    ) -> Result<Option<Self>, ReplicationError> {
-        #[cfg(unix)]
-        let file = {
-            use rustix::fs::{Mode, OFlags, open};
-            match open(
-                path,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            ) {
-                Ok(file) => File::from(file),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(_) => return Err(ReplicationError::Disconnected),
-            }
-        };
-        #[cfg(not(unix))]
-        let file = match File::open(path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err(ReplicationError::Disconnected),
-        };
-        let metadata = file
-            .metadata()
-            .map_err(|_| ReplicationError::Disconnected)?;
-        if !metadata.is_file() {
-            return Err(ReplicationError::CorruptFrame);
-        }
-        if metadata.len() > maximum as u64 {
-            return Err(ReplicationError::MessageTooLarge);
-        }
-        let length =
-            usize::try_from(metadata.len()).map_err(|_| ReplicationError::MessageTooLarge)?;
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(length)
-            .map_err(|_| ReplicationError::Backpressure)?;
-        file.take((maximum as u64).saturating_add(1))
-            .read_to_end(&mut bytes)
-            .map_err(|_| ReplicationError::Disconnected)?;
-        if bytes.len() > maximum {
-            return Err(ReplicationError::MessageTooLarge);
-        }
-        Ok(Some(Self(bytes)))
-    }
-
-    pub(super) fn as_slice(&self) -> &[u8] {
-        &self.0
-    }
-
-    pub(super) fn into_vec(self) -> Vec<u8> {
-        self.0
-    }
-}
-
 const MAX_ACTIVE_SESSIONS: usize = 64;
 const MAX_RETAINED_OBJECTS: usize = 8_192;
 const MAX_RETAINED_BYTES: u64 = 256 * 1024 * 1024;
@@ -197,24 +136,17 @@ impl<T: Schema> InputCas<T> {
         // the next successful root publication.
         let (durable_root_claim, root_epoch) =
             read_root_lease(&path.join("ROOT_LEASE"), marker_root)?;
-        let workspace_manifest_bytes = match BoundedFileImage::read_optional(
-            &path.join("WORKSPACE_MANIFEST"),
-            limits.max_frame,
-        )? {
-            Some(bytes) => {
-                UntrustedWorkspaceManifest::decode_untrusted(bytes.as_slice())
+        let workspace_manifest_bytes = match fs::read(path.join("WORKSPACE_MANIFEST")) {
+            Ok(bytes) => {
+                UntrustedWorkspaceManifest::decode_untrusted(&bytes)
                     .map_err(|_| ReplicationError::CorruptFrame)?;
-                Some(bytes.into_vec())
+                Some(bytes)
             }
-            None => None,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => return Err(ReplicationError::Disconnected),
         };
         let (max_retained_objects, max_retained_bytes) = retention_budget(limits);
-        let sink = DurableSink::open_with_budget(
-            path,
-            max_retained_objects,
-            max_retained_bytes,
-            limits.max_object,
-        )?;
+        let sink = DurableSink::open_with_budget(path, max_retained_objects, max_retained_bytes)?;
         let mut cas = Self {
             sink,
             active: BTreeMap::new(),
@@ -257,9 +189,10 @@ impl<T: Schema> InputCas<T> {
 }
 
 fn read_workspace_claim(path: &Path) -> Result<Option<[u8; 32]>, ReplicationError> {
-    let bytes = match BoundedFileImage::read_optional(path, 32)? {
-        Some(bytes) => bytes.into_vec(),
-        None => return Ok(None),
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(ReplicationError::Disconnected),
     };
     let bytes: [u8; 32] = bytes
         .try_into()
@@ -270,9 +203,10 @@ fn read_workspace_claim(path: &Path) -> Result<Option<[u8; 32]>, ReplicationErro
 fn read_root_marker(
     path: &Path,
 ) -> Result<Option<backend_engine::MerkleRootClaim>, ReplicationError> {
-    let bytes = match BoundedFileImage::read_optional(path, 4 + 32)? {
-        Some(bytes) => bytes.into_vec(),
-        None => return Ok(None),
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(ReplicationError::Disconnected),
     };
     if bytes.len() != 4 + 32 {
         return Err(ReplicationError::CorruptFrame);
@@ -293,9 +227,9 @@ fn read_root_lease(
     path: &Path,
     root: Option<backend_engine::MerkleRootClaim>,
 ) -> Result<(Option<backend_engine::MerkleRootClaim>, u64), ReplicationError> {
-    let bytes = match BoundedFileImage::read_optional(path, 4 + 32 + 8)? {
-        Some(bytes) => bytes.into_vec(),
-        None => {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return if root.is_none() {
                 Ok((None, 0))
             } else {
@@ -304,6 +238,7 @@ fn read_root_lease(
                 Err(ReplicationError::CorruptFrame)
             };
         }
+        Err(_) => return Err(ReplicationError::Disconnected),
     };
     if bytes.len() != 4 + 32 + 8 {
         return Err(ReplicationError::CorruptFrame);
@@ -439,75 +374,6 @@ mod tests {
             Err(ReplicationError::CorruptFrame)
         ));
         let _ = fs::remove_dir_all(path);
-    }
-
-    #[test]
-    fn oversized_workspace_manifest_is_rejected_before_body_allocation() {
-        let path = temp_directory("oversized-manifest");
-        fs::create_dir_all(&path).expect("create manifest directory");
-        let manifest = File::create(path.join("WORKSPACE_MANIFEST")).expect("create manifest");
-        manifest
-            .set_len(TransportLimits::default().max_frame as u64 + 1)
-            .expect("make sparse oversized manifest");
-        assert!(matches!(
-            InputCas::<ImmutableObjectSchema>::open(&path, TransportLimits::default()),
-            Err(ReplicationError::MessageTooLarge)
-        ));
-        let _ = fs::remove_dir_all(path);
-    }
-
-    #[test]
-    fn oversized_durable_object_is_rejected_before_body_allocation() {
-        let path = temp_directory("oversized-object");
-        let limits = TransportLimits::default();
-        let mut cas = InputCas::<ImmutableObjectSchema>::open(&path, limits).expect("open CAS");
-        let expected = ObjectVersion::<ImmutableObjectSchema>::from_value(b"small-object");
-        let object = File::create(path.join(hex(expected.to_bytes()))).expect("create object");
-        object
-            .set_len(limits.max_object + 1)
-            .expect("make sparse oversized object");
-
-        assert!(matches!(
-            cas.get(expected),
-            Err(ReplicationError::MessageTooLarge)
-        ));
-        let _ = fs::remove_dir_all(path);
-    }
-
-    #[test]
-    fn oversized_node_proof_is_rejected_before_body_allocation() {
-        let path = temp_directory("oversized-proof");
-        let cas = InputCas::<ImmutableObjectSchema>::open(&path, TransportLimits::default())
-            .expect("open CAS");
-        let digest = [4_u8; 32];
-        let proof =
-            File::create(path.join(format!(".proof-{}", hex(digest)))).expect("create proof");
-        proof.set_len(64 * 1024 + 1).expect("make sparse proof");
-
-        assert!(matches!(
-            cas.node_proof(digest),
-            Err(ReplicationError::MessageTooLarge)
-        ));
-        let _ = fs::remove_dir_all(path);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn durable_marker_symlinks_are_never_followed() {
-        use std::os::unix::fs::{PermissionsExt as _, symlink};
-
-        let path = temp_directory("marker-symlink");
-        fs::create_dir_all(&path).expect("create marker directory");
-        let outside = path.with_extension("outside");
-        fs::write(&outside, [8_u8; 32]).expect("write outside marker");
-        fs::set_permissions(&outside, fs::Permissions::from_mode(0o600))
-            .expect("protect outside marker");
-        symlink(&outside, path.join("WORKSPACE")).expect("link marker");
-        assert!(
-            InputCas::<ImmutableObjectSchema>::open(&path, TransportLimits::default()).is_err()
-        );
-        let _ = fs::remove_dir_all(path);
-        let _ = fs::remove_file(outside);
     }
 
     #[test]

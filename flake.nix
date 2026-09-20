@@ -1,13 +1,13 @@
-# Root workspace entrypoint for the backend reproducible development control
-# plane. It reuses the small, independently evaluable Nix modules under
-# `.config/nix` and pins the workspace root so pure derivations beside the
-# Cargo sources are visible.
+# Workspace-root entrypoint for the pinned control-plane flake.
+#
+# The implementation source is kept below .config, but the flake itself must
+# be rooted beside Cargo.toml so pure evaluation includes the workspace
+# inputs used by backend-control and the verification checks.
 {
-  description = "Backend workspace development and validation environment";
-
-  # These pins repeat `.config/flake.nix` exactly so both entrypoints resolve
-  # the same locked inputs. Keep them in lockstep; `flake.lock` mirrors
-  # `.config/flake.lock`.
+  description = "Backend reproducible development control plane";
+  # Flake input declarations must be a literal set for pure evaluation. Keep
+  # these pins aligned with the checked-in control-plane pin record at
+  # .config/nix/inputs.nix.
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/0bb7ec54c8483066ec9d7720e780a5caa71f8612";
     fenix = {
@@ -23,7 +23,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
-
   outputs =
     inputs:
     import ./.config/nix {

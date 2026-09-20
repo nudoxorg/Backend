@@ -6,7 +6,6 @@
 //! only after the complete authenticated subtree (including its object
 //! receipts) has been committed.
 
-use crate::input_cas::BoundedFileImage;
 use backend_engine::ReplicationError;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -39,8 +38,7 @@ impl DurableNodeIndex {
         let target = root.join(format!(".node-{}", hex(digest)));
         // A marker is complete only when its contents are the exact digest.
         // This is one direct, bounded lookup and never enumerates the index.
-        BoundedFileImage::read_optional(&target, 32)
-            .is_ok_and(|bytes| bytes.is_some_and(|bytes| bytes.as_slice() == digest.as_slice()))
+        fs::read(target).is_ok_and(|bytes| bytes.as_slice() == digest.as_slice())
     }
 
     pub(super) fn record(&mut self, digest: [u8; 32]) -> Result<(), ReplicationError> {

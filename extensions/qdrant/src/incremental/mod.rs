@@ -16,10 +16,7 @@ pub use limits::{OverlayLimits, RefreshKind};
 pub use overlay::ExactOverlay;
 pub use plan::RefreshPlan;
 pub use search::{
-    AnnBase, AnnCursor, AnnPage, AnnSource, RefreshOutcome, ScoredCandidate, VectorIndex,
-    VectorQueryBinding, VectorSearchRequest, VectorSearchResult,
+    AnnBase, AnnPage, AnnSource, RefreshOutcome, ScoredCandidate, VectorIndex, VectorSearchRequest,
+    VectorSearchResult,
 };
-pub use vector::{
-    DocumentVector, EmbeddingEncoding, EmbeddingNormalization, EmbeddingPooling, EmbeddingRecipe,
-    Metric, QueryVector, VectorFacts, VectorPoint, VectorQuery,
-};
+pub use vector::{Metric, VectorFacts, VectorPoint, VectorQuery};

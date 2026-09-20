@@ -2,8 +2,9 @@
 """Deterministic native authority fixture for cold and persistent tests.
 
 The fixture implements the compile-owned BCF session framing and BCN semantic
-envelope. Values model each frontend's admitted helper contract while keeping
-the transport behavior deterministic.
+envelope. It deliberately returns six recognized record families so tests can
+prove that the Rust frontend materializes structured facts instead of hashing
+one compiler stream.
 """
 
 import struct
@@ -12,7 +13,14 @@ import time
 
 
 def envelope(language, session, manifest, authority, revision):
-    records = semantic_records(language)
+    records = [
+        (1, b"main", b"decl"),
+        (2, b"main", b"i32"),
+        (3, b"main->i32", b"ref"),
+        (4, b"warn", b"ok"),
+        (5, b"std", b"present"),
+        (6, b"missing", b"absent"),
+    ]
     language = language.encode("utf-8")
     out = bytearray(b"BCN\0" + struct.pack(">HBBI", 1, 0, 0, len(records)))
     out.extend(session)
@@ -25,55 +33,6 @@ def envelope(language, session, manifest, authority, revision):
         out.extend(key)
         out.extend(value)
     return bytes(out)
-
-
-def semantic_records(language):
-    if language == "clang":
-        return [
-            (1, b"main", b"kind=function;definition=definition;storage=none;virtuality=non-virtual"),
-            (2, b"main", b"kind=builtin;const=false;volatile=false;restrict=false"),
-            (3, b"main->i32", b"reference-local"),
-            (4, b"warn", b"severity=warning;message=fixture"),
-            (5, b"std", b"present"),
-            (6, b"missing", b"absent"),
-        ]
-    if language in ("java", "csharp"):
-        version = f"{language}-semantic-v1".encode()
-        return [
-            (1, b"main", b"\0".join((version, b"class", b"fixture", b"main()", b"fixture declaration"))),
-            (2, b"main", b"\0".join((version, b"main", b"i32"))),
-            (3, b"main->i32", b"\0".join((version, b"main", b"i32", b"0", b"1"))),
-            (4, b"warn", b"\0".join((version, b"warning", b"fixture", b"0", b"1", b"fixture diagnostic"))),
-            (5, b"std", b"\0".join((version, b"package", b"std", b"present"))),
-            (6, b"missing", b"\0".join((version, b"package", b"missing", b"absent"))),
-        ]
-    if language == "python":
-        return [
-            (1, b"main", b'{"owner":"fixture","name":"main","kind":"function","span":{"start":0,"end":1},"signature":"main()","documentation":null,"class_form":null,"parameters":[],"annotations":[]}'),
-            (2, b"main", b'{"owner":"main","site":"return","span":{"start":0,"end":1},"inferred":"int"}'),
-            (3, b"main->int", b'{"owner":"main","target":"int","span":{"start":0,"end":1},"resolution":"local","module":null}'),
-            (4, b"warn", b'{"severity":"warning","code":"fixture","span":{"start":0,"end":1},"message":"fixture diagnostic"}'),
-            (5, b"std", b'{"binding":"std","module":"std","span":{"start":0,"end":1}}'),
-            (6, b"missing", b'{"binding":"missing","module":"missing","span":{"start":0,"end":1}}'),
-        ]
-    if language == "go":
-        version = b"go-semantic-v1"
-        return [
-            (1, b"main", b"\0".join((version, b"function", b"fixture", b"func()", b"fixture declaration", b"0", b"1"))),
-            (2, b"main", b"\0".join((version, b"main", b"func()"))),
-            (3, b"main->go/builtin/int", b"\0".join((version, b"main", b"go/builtin/int", b"0", b"1", b"foreign"))),
-            (4, b"warn", b"\0".join((version, b"warning", b"fixture", b"0", b"1", b"fixture diagnostic"))),
-            (5, b"go/std", b"\0".join((version, b"package", b"std", b"present"))),
-            (6, b"go/missing", b"\0".join((version, b"package", b"missing", b"absent"))),
-        ]
-    return [
-        (1, b"main", b"decl"),
-        (2, b"main", b"i32"),
-        (3, b"main->i32", b"ref"),
-        (4, b"warn", b"ok"),
-        (5, b"std", b"present"),
-        (6, b"missing", b"absent"),
-    ]
 
 
 def frame_length(header):

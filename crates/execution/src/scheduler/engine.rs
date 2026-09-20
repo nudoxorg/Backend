@@ -1,36 +1,12 @@
 //! Scheduler construction, local-first entry points, and diagnostics.
 
-use super::deadline::{DeadlineQueue, DeadlineQueueError};
+use super::deadline::DeadlineQueue;
 use super::guard::Scheduled;
 use super::outcome::{ScheduleError, ScheduleOutcome};
 use super::request::ScheduleRequest;
-use crate::{
-    Admission, AttemptManager, Budget, EnvelopeBudgets, OutputLookup, Supervisor,
-    SupervisorSnapshot, Telemetry, TelemetrySnapshot, WorkInterner,
-};
+use crate::{Admission, AttemptManager, Budget, EnvelopeBudgets, OutputLookup, WorkInterner};
 use backend_version::Relation;
 use std::sync::Arc;
-
-/// Structural and historical runtime state captured without materializing work entries.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RuntimeSnapshot {
-    /// Configured capacity in each isolated policy envelope.
-    pub capacity: EnvelopeBudgets,
-    /// Capacity that can still be admitted in each envelope.
-    pub available: EnvelopeBudgets,
-    /// Distinct work keys currently retained by the coalescing table.
-    pub live_work: usize,
-    /// Followers waiting on current leaders.
-    pub live_followers: usize,
-    /// Current fallback deadlines.
-    pub live_deadlines: usize,
-    /// Deadline heap entries, including stale entries awaiting bounded cleanup.
-    pub deadline_heap_entries: usize,
-    /// Eventually consistent scheduler lifecycle history.
-    pub lifecycle: SupervisorSnapshot,
-    /// Eventually consistent fixed-cardinality operation counters.
-    pub telemetry: TelemetrySnapshot,
-}
 
 /// Local-first scheduler owning admission, attempt fences, coalescing, and
 /// validated output lookup.
@@ -40,8 +16,6 @@ pub struct Scheduler {
     pub(super) lookup: Arc<OutputLookup>,
     pub(super) interner: Arc<WorkInterner>,
     pub(super) deadlines: Arc<std::sync::Mutex<DeadlineQueue<crate::WorkKey>>>,
-    pub(super) supervisor: Arc<Supervisor>,
-    pub(super) telemetry: Telemetry,
 }
 
 impl std::fmt::Debug for Scheduler {
@@ -55,7 +29,7 @@ impl std::fmt::Debug for Scheduler {
                 "deadline_entries",
                 &self.deadlines.lock().map_or(0, |queue| queue.live_len()),
             )
-            .finish_non_exhaustive()
+            .finish()
     }
 }
 
@@ -124,68 +98,6 @@ impl Scheduler {
             lookup,
             interner,
             deadlines: Arc::new(std::sync::Mutex::new(DeadlineQueue::new())),
-            supervisor: Arc::new(Supervisor::new()),
-            telemetry: Telemetry::disabled(),
-        }
-    }
-
-    /// Creates a scheduler whose complete deadline storage is reserved up front.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DeadlineQueueError`] before the scheduler becomes visible when the configured
-    /// bound is zero or its fixed backing allocation cannot be reserved.
-    pub fn try_with_components_and_deadline_capacity(
-        admission: Admission,
-        attempts: Arc<AttemptManager>,
-        lookup: Arc<OutputLookup>,
-        interner: Arc<WorkInterner>,
-        deadline_capacity: usize,
-    ) -> Result<Self, DeadlineQueueError> {
-        let deadlines = DeadlineQueue::with_capacity(deadline_capacity)?;
-        Ok(Self {
-            admission,
-            attempts,
-            lookup,
-            interner,
-            deadlines: Arc::new(std::sync::Mutex::new(deadlines)),
-            supervisor: Arc::new(Supervisor::new()),
-            telemetry: Telemetry::disabled(),
-        })
-    }
-
-    /// Installs bounded telemetry shared with the process owner.
-    #[must_use]
-    pub fn with_telemetry(mut self, telemetry: Telemetry) -> Self {
-        self.telemetry = telemetry;
-        self
-    }
-
-    /// Returns scheduler lifecycle counters.
-    #[must_use]
-    pub fn supervisor_snapshot(&self) -> SupervisorSnapshot {
-        self.supervisor.snapshot()
-    }
-
-    /// Returns an eventually consistent telemetry snapshot.
-    #[must_use]
-    pub fn telemetry_snapshot(&self) -> TelemetrySnapshot {
-        self.telemetry.snapshot()
-    }
-
-    /// Captures structural capacity and fixed-size history without walking queued work.
-    #[must_use]
-    pub fn runtime_snapshot(&self) -> RuntimeSnapshot {
-        let (live_deadlines, deadline_heap_entries) = self.deadline_queue_lengths();
-        RuntimeSnapshot {
-            capacity: self.admission.budgets(),
-            available: self.admission.available_envelopes(),
-            live_work: self.interner.len(),
-            live_followers: self.interner.follower_len(),
-            live_deadlines,
-            deadline_heap_entries,
-            lifecycle: self.supervisor.snapshot(),
-            telemetry: self.telemetry.snapshot(),
         }
     }
 

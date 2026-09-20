@@ -1,11 +1,9 @@
 //! Durable page-need and receipt progress.
 
 use super::{
-    BoundedFileImage, File, InputCas, MAX_RETAINED_OBJECTS, OpenOptions, Path, Read,
-    ReplicationError, Schema, Seek, SeekFrom, WireIdentity, Write, fs, hex,
+    File, InputCas, MAX_RETAINED_OBJECTS, OpenOptions, Path, Read, ReplicationError, Schema, Seek,
+    SeekFrom, WireIdentity, Write, fs, hex,
 };
-
-const MAX_CLAIM_JOURNAL_BYTES: usize = MAX_RETAINED_OBJECTS * 32;
 
 impl<T: Schema> InputCas<T> {
     fn remember_root_claim(
@@ -56,9 +54,10 @@ impl<T: Schema> InputCas<T> {
             return Ok(());
         };
         let path = directory.join(format!(".claims-{}", hex(root.digest().as_bytes())));
-        let existing = match BoundedFileImage::read_optional(&path, MAX_CLAIM_JOURNAL_BYTES)? {
-            Some(bytes) => bytes.into_vec(),
-            None => Vec::new(),
+        let existing = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(_) => return Err(ReplicationError::Disconnected),
         };
         if existing.len() % 32 != 0 {
             return Err(ReplicationError::CorruptFrame);
@@ -196,9 +195,8 @@ impl<T: Schema> InputCas<T> {
         let temporary = directory.join(format!(".input-{}.part", hex(root.digest().as_bytes())));
         let target = directory.join(format!(".input-{}", hex(root.digest().as_bytes())));
         if target.is_file() {
-            let existing = BoundedFileImage::read_optional(&target, 32)?
-                .ok_or(ReplicationError::Disconnected)?;
-            if existing.as_slice() != claim.as_bytes() {
+            let existing = fs::read(&target).map_err(|_| ReplicationError::Disconnected)?;
+            if existing != claim.as_bytes() {
                 return Err(ReplicationError::CorruptFrame);
             }
             return Ok(());
@@ -234,9 +232,10 @@ impl<T: Schema> InputCas<T> {
             return Ok(None);
         };
         let path = directory.join(format!(".input-{}", hex(root.digest().as_bytes())));
-        let bytes = match BoundedFileImage::read_optional(&path, 32)? {
-            Some(bytes) => bytes.into_vec(),
-            None => return Ok(None),
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(ReplicationError::Disconnected),
         };
         let bytes: [u8; 32] = bytes
             .try_into()
@@ -257,9 +256,6 @@ impl<T: Schema> InputCas<T> {
         cursor: u32,
         max: usize,
     ) -> Result<(Vec<WireIdentity>, Option<u32>), ReplicationError> {
-        if max > self.limits.max_objects || max > MAX_RETAINED_OBJECTS {
-            return Err(ReplicationError::CoverageLimit);
-        }
         let root_digest = root.digest().as_bytes();
         let Some(directory) = self.sink.root.as_ref() else {
             let values = self
@@ -352,9 +348,10 @@ impl<T: Schema> InputCas<T> {
             return Ok(false);
         };
         let path = directory.join(format!(".need-{}", hex(root.digest().as_bytes())));
-        let bytes = match BoundedFileImage::read_optional(&path, MAX_CLAIM_JOURNAL_BYTES)? {
-            Some(bytes) => bytes.into_vec(),
-            None => return Ok(false),
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => return Err(ReplicationError::Disconnected),
         };
         if bytes.len() % 32 != 0 {
             return Err(ReplicationError::CorruptFrame);
@@ -395,9 +392,10 @@ impl<T: Schema> InputCas<T> {
             (None, None) => {}
         }
         let path = directory.join(format!(".need-{}", hex(root.digest().as_bytes())));
-        let bytes = match BoundedFileImage::read_optional(&path, MAX_CLAIM_JOURNAL_BYTES)? {
-            Some(bytes) => bytes.into_vec(),
-            None => return Ok(true),
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+            Err(_) => return Err(ReplicationError::Disconnected),
         };
         if bytes.len() % 32 != 0 {
             return Err(ReplicationError::CorruptFrame);
@@ -487,9 +485,10 @@ fn read_counter(path: &Path) -> Result<u64, ReplicationError> {
 }
 
 fn read_optional_counter(path: &Path) -> Result<Option<u64>, ReplicationError> {
-    let bytes = match BoundedFileImage::read_optional(path, 8)? {
-        Some(bytes) => bytes.into_vec(),
-        None => return Ok(None),
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(ReplicationError::Disconnected),
     };
     let bytes: [u8; 8] = bytes
         .try_into()

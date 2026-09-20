@@ -9,7 +9,7 @@ use super::{
     JournalTail, PUBLISHED_TAG, Path, SelectedHead, StoreError, io_error, read_hash, read_u64,
 };
 use crate::digest;
-use std::{ffi::OsStr, fs};
+use std::fs;
 
 impl FileStore {
     pub(in crate::durable) fn write_head(&self, head: &SelectedHead) -> Result<(), StoreError> {
@@ -59,58 +59,19 @@ pub(super) fn read_head(path: &Path) -> Result<Option<JournalCheckpoint>, StoreE
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(io_error(&error)),
     };
-    if bytes.len() != HEAD_BYTES || !bytes.starts_with(HEAD_MAGIC) {
-        return Err(StoreError::Corrupt);
+    if bytes.len() < HEAD_BYTES {
+        // A head rename can be interrupted before its final bytes become
+        // visible. The journal remains authoritative and will rewrite it.
+        return Ok(None);
     }
-    decode_head(&bytes).map(Some)
-}
-
-/// Removes only temporary HEAD artifacts in the store-owned namespace.
-///
-/// A valid complete temp must authenticate against the journal. A partial
-/// temp is recognizable by its private numeric filename and is safe to drop:
-/// atomic rename guarantees those bytes were never a visible checkpoint.
-pub(super) fn scavenge_head_temps(root: &Path, tail: &JournalTail) -> Result<usize, StoreError> {
-    let mut removed = 0usize;
-    for entry in fs::read_dir(root).map_err(|error| io_error(&error))? {
-        let entry = entry.map_err(|error| io_error(&error))?;
-        if !is_head_temp_name(&entry.file_name()) {
-            continue;
-        }
-        let path = entry.path();
-        let bytes = fs::read(&path).map_err(|error| io_error(&error))?;
-        if bytes.len() == HEAD_BYTES {
-            let checkpoint = decode_head(&bytes)?;
-            validate_head_record(&root.join("journal"), tail, &checkpoint.head)?;
-        }
-        fs::remove_file(&path).map_err(|error| io_error(&error))?;
-        removed = removed.checked_add(1).ok_or(StoreError::Bounds)?;
+    if bytes.len() > HEAD_BYTES || !bytes.starts_with(HEAD_MAGIC) {
+        return Ok(None);
     }
-    if removed != 0 {
-        super::sync_directory(root)?;
+    match decode_head(&bytes) {
+        Ok(checkpoint) => Ok(Some(checkpoint)),
+        Err(StoreError::Io(message)) => Err(StoreError::Io(message)),
+        Err(_) => Ok(None),
     }
-    Ok(removed)
-}
-
-fn is_head_temp_name(name: &OsStr) -> bool {
-    let Some(name) = name.to_str() else {
-        return false;
-    };
-    let Some(body) = name
-        .strip_prefix(".HEAD.")
-        .and_then(|name| name.strip_suffix(".tmp"))
-    else {
-        return false;
-    };
-    let mut parts = body.split('.');
-    matches!(
-        (parts.next(), parts.next(), parts.next()),
-        (Some(process), Some(counter), None)
-            if !process.is_empty()
-                && !counter.is_empty()
-                && process.bytes().all(|byte| byte.is_ascii_digit())
-                && counter.bytes().all(|byte| byte.is_ascii_digit())
-    )
 }
 
 fn decode_head(bytes: &[u8]) -> Result<JournalCheckpoint, StoreError> {

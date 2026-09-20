@@ -5,7 +5,6 @@
 //! process execution, coverage admission, and semantic-facet mapping.
 
 use crate::contract::AuthorityRegistry;
-use crate::native_semantic::{NativeSemanticAdapter, NativeSemanticRequest};
 use crate::{
     AuthorityError, AuthorityIdentity, CoverageWitness, DiscoverySnapshot, ExecutableIdentity,
     Extraction, FactKeySchema, FactKind, FactRecord, FactValueSchema, InputManifestId,
@@ -14,42 +13,29 @@ use crate::{
     PreparedRequest, ProcessEnvironment, ProcessLimits, ProcessStdin, ProtocolDescriptor,
     ScopeRoot, SessionKey, SupervisedCommand, ToolchainId, UntrustedCoverageScope,
 };
-use backend_semantic::FacetKind;
+use backend_semantic::{FacetKind, FacetValue, FacetValueSchema};
+use backend_version::ObjectVersion;
 use std::{
-    fmt,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
-struct CompatibilitySemanticAdapter;
-
-impl NativeSemanticAdapter for CompatibilitySemanticAdapter {
-    type Parsed<'record> = &'record crate::NativeRecord;
-    type Admitted<'record> = &'record crate::NativeRecord;
-    type Error = std::convert::Infallible;
-
-    fn parse<'record>(
-        &'record self,
-        record: &'record crate::NativeRecord,
-    ) -> Result<Self::Parsed<'record>, Self::Error> {
-        Ok(record)
-    }
-
-    fn admit<'record>(
-        &'record self,
-        parsed: Self::Parsed<'record>,
-    ) -> Result<Self::Admitted<'record>, Self::Error> {
-        Ok(parsed)
-    }
-
-    fn lower<'record>(
-        &'record self,
-        admitted: Self::Admitted<'record>,
-    ) -> FactRecord<FactKeySchema, FactValueSchema> {
-        record_to_fact(admitted)
-    }
-}
+/// Semantic families represented by the normalized native envelope.
+///
+/// This witness lives with the envelope and extraction protocol so every
+/// language leaf binds discovery and request manifests to the same semantic
+/// schema. A change to the normalized facet vocabulary therefore invalidates
+/// every native authority session together, without compiling a private copy
+/// of the helper in each leaf.
+const NATIVE_FACETS: [FacetKind; 6] = [
+    FacetKind::Source,
+    FacetKind::Entity,
+    FacetKind::Facet,
+    FacetKind::Type,
+    FacetKind::Edge,
+    FacetKind::Configuration,
+];
 
 /// Returns the checked default limit set shared by native lanes.
 ///
@@ -60,6 +46,36 @@ impl NativeSemanticAdapter for CompatibilitySemanticAdapter {
 pub fn default_native_limits() -> Result<ProcessLimits, AuthorityError> {
     ProcessLimits::new(256 * 1024, 64 * 1024, Duration::from_secs(10), 320 * 1024)
         .map_err(|error| AuthorityError::Discovery(error.to_string()))
+}
+
+/// Returns the canonical semantic schema witness used by every native leaf.
+///
+/// The witness includes the normalized facet vocabulary and its value-schema
+/// version. It is intended for input manifests and native requests; callers
+/// must not use a plain string or a digest-only claim for this fence.
+#[must_use]
+pub fn native_semantic_evidence() -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(2 + NATIVE_FACETS.len() * 2);
+    bytes.push(backend_version::CANONICAL_VERSION);
+    bytes.push(<FacetValueSchema as backend_version::Schema>::VERSION);
+    for facet in NATIVE_FACETS {
+        bytes.extend_from_slice(&facet.tag().to_be_bytes());
+    }
+    let value = FacetValue::new(FacetKind::Facet, bytes);
+    ObjectVersion::<FacetValueSchema>::from_value(&value)
+        .to_bytes()
+        .to_vec()
+}
+
+/// Builds the semantic schema witness input shared by native requests.
+///
+/// # Errors
+///
+/// Returns [`AuthorityError`] when the bounded native input contract rejects
+/// the witness (which should only happen if protocol limits are tightened
+/// below this fixed-size value).
+pub fn native_semantic_input() -> Result<NativeRequestInput, AuthorityError> {
+    native_input("semantic-fact-schema", native_semantic_evidence())
 }
 
 /// Returns canonical evidence for an executable or helper path.
@@ -96,13 +112,6 @@ pub struct NativeTemplate {
     helper: PathBuf,
     toolchain: PathBuf,
     protocol: ProtocolDescriptor,
-    failure: HelperFailure,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HelperFailure {
-    Fault,
-    Unavailable,
 }
 
 /// A native request image prepared once and borrowed through execution.
@@ -233,226 +242,6 @@ impl NativeTemplate {
             helper,
             toolchain: toolchain_path,
             protocol,
-            failure: HelperFailure::Fault,
-        })
-    }
-
-    /// Builds the source-distributed Go helper under its verified toolchain.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AuthorityError`] when either path is relative, the workspace
-    /// is unavailable, or the resulting command violates process policy.
-    pub fn go_source(
-        language: &str,
-        helper: impl Into<PathBuf>,
-        interpreter: impl Into<PathBuf>,
-        toolchain: ToolchainId,
-        protocol: ProtocolDescriptor,
-        limits: ProcessLimits,
-    ) -> Result<Self, AuthorityError> {
-        let helper = helper.into();
-        let interpreter = interpreter.into();
-        if !helper.is_absolute() || !interpreter.is_absolute() {
-            return Err(AuthorityError::Discovery(
-                "native authority helper and interpreter must be absolute".into(),
-            ));
-        }
-        let cache = std::env::temp_dir().join("backend-go-helper-cache");
-        let canonical_interpreter = std::fs::canonicalize(&interpreter)
-            .map_err(|error| AuthorityError::Discovery(format!("resolve Go toolchain: {error}")))?;
-        let go_root = canonical_interpreter
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| AuthorityError::Discovery("Go toolchain has no GOROOT".into()))?;
-        let workspace = if helper.is_dir() {
-            helper.clone()
-        } else {
-            helper
-                .parent()
-                .map(Path::to_path_buf)
-                .ok_or_else(|| AuthorityError::Discovery("Go helper has no parent".into()))?
-        };
-        let environment = ProcessEnvironment::new(vec![
-            ("BACKEND_NATIVE_LANGUAGE".into(), language.to_owned()),
-            (
-                "BACKEND_NATIVE_PROTOCOL".into(),
-                protocol.version().to_string(),
-            ),
-            (
-                "BACKEND_NATIVE_TOOLCHAIN".into(),
-                interpreter.to_string_lossy().into_owned(),
-            ),
-            ("LANG".into(), "C".into()),
-            ("LC_ALL".into(), "C".into()),
-            ("HOME".into(), cache.to_string_lossy().into_owned()),
-            (
-                "GOCACHE".into(),
-                cache.join("build").to_string_lossy().into_owned(),
-            ),
-            (
-                "GOPATH".into(),
-                cache.join("path").to_string_lossy().into_owned(),
-            ),
-            ("GOROOT".into(), go_root.to_string_lossy().into_owned()),
-            ("GOPROXY".into(), "off".into()),
-            ("GOSUMDB".into(), "off".into()),
-            ("GOTOOLCHAIN".into(), "local".into()),
-            ("GOFLAGS".into(), "-mod=vendor -p=2".into()),
-        ])
-        .map_err(|error| AuthorityError::Discovery(error.to_string()))?;
-        let command = SupervisedCommand::for_authority(
-            interpreter.clone(),
-            vec![
-                "run".into(),
-                ".".into(),
-                "--backend-native-authority".into(),
-                language.to_owned(),
-            ],
-            environment,
-            workspace,
-            ProcessStdin::null(),
-            toolchain,
-            None,
-            protocol,
-            limits,
-        )
-        .map_err(|error| AuthorityError::Discovery(error.to_string()))?;
-        Ok(Self {
-            command,
-            helper,
-            toolchain: interpreter,
-            protocol,
-            failure: HelperFailure::Unavailable,
-        })
-    }
-
-    /// Builds a source-distributed Java helper under a verified Java runtime.
-    ///
-    /// # Errors
-    /// Returns [`AuthorityError`] when either path is relative or the command
-    /// violates the bounded process policy.
-    pub fn java_source(
-        language: &str,
-        helper: impl Into<PathBuf>,
-        runtime: impl Into<PathBuf>,
-        toolchain: ToolchainId,
-        protocol: ProtocolDescriptor,
-        limits: ProcessLimits,
-    ) -> Result<Self, AuthorityError> {
-        let helper = helper.into();
-        let runtime = runtime.into();
-        if !helper.is_absolute() || !runtime.is_absolute() {
-            return Err(AuthorityError::Discovery(
-                "native authority helper and runtime must be absolute".into(),
-            ));
-        }
-        let workspace = helper
-            .parent()
-            .map(Path::to_path_buf)
-            .ok_or_else(|| AuthorityError::Discovery("Java helper has no parent".into()))?;
-        let environment = ProcessEnvironment::new(vec![
-            ("BACKEND_NATIVE_LANGUAGE".into(), language.to_owned()),
-            (
-                "BACKEND_NATIVE_PROTOCOL".into(),
-                protocol.version().to_string(),
-            ),
-            (
-                "BACKEND_NATIVE_TOOLCHAIN".into(),
-                runtime.to_string_lossy().into_owned(),
-            ),
-            ("LANG".into(), "C".into()),
-            ("LC_ALL".into(), "C".into()),
-        ])
-        .map_err(|error| AuthorityError::Discovery(error.to_string()))?;
-        let command = SupervisedCommand::for_authority(
-            runtime.clone(),
-            vec![
-                helper.to_string_lossy().into_owned(),
-                "--backend-native-authority".into(),
-                language.to_owned(),
-            ],
-            environment,
-            workspace,
-            ProcessStdin::null(),
-            toolchain,
-            None,
-            protocol,
-            limits,
-        )
-        .map_err(|error| AuthorityError::Discovery(error.to_string()))?;
-        Ok(Self {
-            command,
-            helper,
-            toolchain: runtime,
-            protocol,
-            failure: HelperFailure::Unavailable,
-        })
-    }
-
-    /// Builds a source-distributed script helper under a verified interpreter.
-    ///
-    /// # Errors
-    /// Returns [`AuthorityError`] when either path is relative or the command
-    /// violates the bounded process policy.
-    pub fn script_source(
-        language: &str,
-        helper: impl Into<PathBuf>,
-        interpreter: impl Into<PathBuf>,
-        toolchain: ToolchainId,
-        protocol: ProtocolDescriptor,
-        limits: ProcessLimits,
-    ) -> Result<Self, AuthorityError> {
-        let helper = helper.into();
-        let interpreter = interpreter.into();
-        if !helper.is_absolute() || !interpreter.is_absolute() {
-            return Err(AuthorityError::Discovery(
-                "native authority helper and interpreter must be absolute".into(),
-            ));
-        }
-        let workspace = helper
-            .parent()
-            .map(Path::to_path_buf)
-            .ok_or_else(|| AuthorityError::Discovery("script helper has no parent".into()))?;
-        let environment = ProcessEnvironment::new(vec![
-            ("BACKEND_NATIVE_LANGUAGE".into(), language.to_owned()),
-            (
-                "BACKEND_NATIVE_PROTOCOL".into(),
-                protocol.version().to_string(),
-            ),
-            (
-                "BACKEND_NATIVE_TOOLCHAIN".into(),
-                interpreter.to_string_lossy().into_owned(),
-            ),
-            ("LANG".into(), "C".into()),
-            ("LC_ALL".into(), "C".into()),
-            ("PYTHONHASHSEED".into(), "0".into()),
-            ("PYTHONDONTWRITEBYTECODE".into(), "1".into()),
-        ])
-        .map_err(|error| AuthorityError::Discovery(error.to_string()))?;
-        let command = SupervisedCommand::for_authority(
-            interpreter.clone(),
-            vec![
-                "-I".into(),
-                helper.to_string_lossy().into_owned(),
-                "--backend-native-authority".into(),
-                language.to_owned(),
-            ],
-            environment,
-            workspace,
-            ProcessStdin::null(),
-            toolchain,
-            None,
-            protocol,
-            limits,
-        )
-        .map_err(|error| AuthorityError::Discovery(error.to_string()))?;
-        Ok(Self {
-            command,
-            helper,
-            toolchain: interpreter,
-            protocol,
-            failure: HelperFailure::Unavailable,
         })
     }
 
@@ -484,10 +273,6 @@ impl NativeTemplate {
     #[must_use]
     pub const fn persistent(&self) -> bool {
         self.protocol.supports_persistent()
-    }
-
-    const fn failure_is_unavailable(&self) -> bool {
-        matches!(self.failure, HelperFailure::Unavailable)
     }
 
     fn verify_toolchain(&self) -> Result<(), AuthorityError> {
@@ -573,51 +358,6 @@ pub fn extract_native(
         key,
         template,
         &NativeRequestImage::borrowed(&request),
-        &CompatibilitySemanticAdapter,
-    )
-}
-
-/// Extracts through a language-owned `parse -> admit -> lower` boundary.
-///
-/// This is the product semantic entry point. The compatibility entry point
-/// remains for protocol migration tests, while production frontends supply a
-/// decoder that proves their concrete semantic payload before facts enter the
-/// canonical store.
-///
-/// # Errors
-///
-/// Returns [`AuthorityError`] when request admission, native execution, or
-/// language-specific semantic admission fails.
-pub fn extract_native_with_adapter<A: NativeSemanticAdapter>(
-    request: NativeSemanticRequest<'_>,
-    adapter: &A,
-) -> Result<Extraction, AuthorityError> {
-    let NativeSemanticRequest {
-        identity,
-        language,
-        snapshot,
-        key,
-        template,
-        inputs,
-        current_manifest,
-    } = request;
-    if snapshot.manifest().digest() != current_manifest {
-        return Err(AuthorityError::Extraction(
-            "native authority snapshot does not match current frontend inputs".into(),
-        ));
-    }
-    if !key.matches(&identity, snapshot.manifest()) {
-        return Err(AuthorityError::InvalidSessionKey);
-    }
-    let request = native_request(language, key, inputs)?;
-    extract_native_encoded(
-        identity,
-        language,
-        snapshot,
-        key,
-        template,
-        &NativeRequestImage::borrowed(&request),
-        adapter,
     )
 }
 
@@ -692,7 +432,6 @@ pub fn extract_native_cached(
         key,
         Some(template),
         &NativeRequestImage::shared(invocation.shared_bytes()),
-        &CompatibilitySemanticAdapter,
     );
     if matches!(
         &result,
@@ -743,14 +482,13 @@ pub fn prepare_native_invocation<'a>(
         .map_err(|error| map_preparation_error(&error))
 }
 
-fn extract_native_encoded<A: NativeSemanticAdapter>(
+fn extract_native_encoded(
     identity: AuthorityIdentity,
     language: &str,
     snapshot: &DiscoverySnapshot,
     key: SessionKey,
     template: Option<&NativeTemplate>,
     request: &NativeRequestImage<'_>,
-    adapter: &A,
 ) -> Result<Extraction, AuthorityError> {
     if !key.matches(&identity, snapshot.manifest()) {
         return Err(AuthorityError::InvalidSessionKey);
@@ -801,9 +539,6 @@ fn extract_native_encoded<A: NativeSemanticAdapter>(
             ));
         }
     } else if !matches!(observation.exit(), NativeExit::Success(Some(0) | None)) {
-        if template.failure_is_unavailable() {
-            return unavailable(identity, snapshot);
-        }
         return Err(AuthorityError::Extraction(format!(
             "native authority exited unsuccessfully: {:?}",
             observation.exit()
@@ -823,7 +558,7 @@ fn extract_native_encoded<A: NativeSemanticAdapter>(
             AuthorityError::Extraction(format!("malformed native authority output: {error}"))
         })?
     };
-    admit_envelope(&registry, language, key, envelope, adapter)
+    admit_envelope(&registry, language, key, envelope)
 }
 
 /// Returns a manifest-bound unavailable result.
@@ -892,12 +627,11 @@ fn map_preparation_error(error: &PreparationError) -> AuthorityError {
     AuthorityError::Extraction(error.to_string())
 }
 
-fn admit_envelope<A: NativeSemanticAdapter>(
+fn admit_envelope(
     registry: &AuthorityRegistry,
     language: &str,
     key: SessionKey,
     envelope: NativeEnvelope,
-    adapter: &A,
 ) -> Result<Extraction, AuthorityError> {
     let envelope = envelope
         .admit(key, registry.authority(), language, registry.revision())
@@ -905,8 +639,8 @@ fn admit_envelope<A: NativeSemanticAdapter>(
     let records = envelope
         .records()
         .iter()
-        .map(|record| lower_record(adapter, record))
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(record_to_fact)
+        .collect::<Vec<_>>();
     match envelope.coverage() {
         NativeCoverage::Complete => registry.admit_native_records(key, &envelope, records),
         NativeCoverage::Partial => Extraction::bound_records(
@@ -918,19 +652,6 @@ fn admit_envelope<A: NativeSemanticAdapter>(
         )
         .map_err(|error| AuthorityError::Extraction(error.to_string())),
     }
-}
-
-fn lower_record<A: NativeSemanticAdapter>(
-    adapter: &A,
-    record: &crate::NativeRecord,
-) -> Result<FactRecord<FactKeySchema, FactValueSchema>, AuthorityError> {
-    let parsed = adapter.parse(record).map_err(semantic_admission_error)?;
-    let admitted = adapter.admit(parsed).map_err(semantic_admission_error)?;
-    Ok(adapter.lower(admitted))
-}
-
-fn semantic_admission_error(error: impl fmt::Display) -> AuthorityError {
-    AuthorityError::Extraction(format!("native semantic admission failed: {error}"))
 }
 
 fn partial_from_scope(manifest: InputManifestId) -> CoverageWitness {

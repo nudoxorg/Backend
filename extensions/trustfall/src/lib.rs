@@ -18,7 +18,6 @@ mod delta;
 mod identity;
 mod provider;
 mod query;
-pub mod server;
 
 pub use admission::{AdapterError, Error, Projection, QueryInput, execute, incomplete_coverage};
 pub use arrangement::{
@@ -33,14 +32,9 @@ pub use identity::{
 };
 pub use provider::{Adapter, GraphPage, GraphSource, MemorySource, QueryRequest, QueryResult};
 pub use query::{
-    BoundSemanticQueryRow, CompilerExternalTargetEvidence, CompilerSemanticEvidence,
-    PackageScopeEvidence, QueryError as SemanticQueryError, SemanticQueryCancelHandle,
-    SemanticQueryCancellation, SemanticQueryCorpus, SemanticQueryEvent, SemanticQueryEvidence,
-    SemanticQueryFact, SemanticQueryIdentity, SemanticQueryPresentation, SemanticQueryRequest,
-    SemanticQueryStream, SemanticQueryTerminal, StructuralFallbackEvidence, execute_semantic_query,
-    schema as semantic_query_schema,
+    QueryError as ViewQueryError, ViewQueryStream, execute_view_query, schema as view_schema,
 };
-pub use trustfall::{FieldValue, QueryResult as SemanticQueryRow, TransparentValue};
+pub use trustfall::{FieldValue, QueryResult as ViewQueryRow, TransparentValue};
 
 #[cfg(test)]
 mod tests;

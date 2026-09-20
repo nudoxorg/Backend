@@ -4,9 +4,7 @@ use super::base::LexicalBase;
 use super::overlay::LexicalOverlay;
 use super::plan::{OverlayLimits, RefreshKind, RefreshPlan, validate_delta_binding};
 use crate::delta::{DocumentDelta, DocumentState};
-use crate::{Binding, Cursor, Error, Query, RankedHit, Relevance};
-use backend_semantic::EntityId;
-use std::collections::BTreeMap;
+use crate::{Binding, Cursor, Error, Query};
 use std::sync::Arc;
 
 /// A version-bound lexical view with immutable base and bounded exact overlay.
@@ -111,7 +109,7 @@ impl LexicalView {
     ///
     /// Returns a query validation error when the query exceeds the declared
     /// query limits.
-    pub fn search(&self, query: &Query) -> Result<Vec<RankedHit>, Error> {
+    pub fn search(&self, query: &Query) -> Result<Vec<u64>, Error> {
         query.validate(crate::Limits::default())?;
         if query.terms.is_empty() {
             let overlay = self.overlay.as_deref();
@@ -129,39 +127,14 @@ impl LexicalView {
                 ids.sort_unstable();
                 ids.dedup();
             }
-            return Ok(ids
-                .into_iter()
-                .map(|document| RankedHit {
-                    document,
-                    relevance: Relevance::all_documents(),
-                })
-                .collect());
+            return Ok(ids);
         }
-        let mut candidates = self.posting(query.terms[0].as_str(), query)?;
+        let mut candidates = self.posting(query.terms[0].as_str());
         for term in query.terms.iter().skip(1) {
-            let posting = self.posting(term, query)?;
-            let mut intersection = BTreeMap::new();
-            for (document, relevance) in candidates {
-                if let Some(next) = posting.get(&document) {
-                    intersection.insert(document, relevance.combine(*next)?);
-                }
-            }
-            candidates = intersection;
+            let posting = self.posting(term);
+            candidates.retain(|id| posting.binary_search(id).is_ok());
         }
-        let mut hits = candidates
-            .into_iter()
-            .map(|(document, relevance)| RankedHit {
-                document,
-                relevance,
-            })
-            .collect::<Vec<_>>();
-        hits.sort_unstable_by(|left, right| {
-            right
-                .relevance
-                .cmp(&left.relevance)
-                .then_with(|| left.document.cmp(&right.document))
-        });
-        Ok(hits)
+        Ok(candidates)
     }
 
     /// Executes one bounded page without rebuilding a provider adapter.
@@ -183,60 +156,47 @@ impl LexicalView {
         }
         query.validate(limits)?;
         if let Some(cursor) = cursor
-            && (cursor.binding() != self.binding() || cursor.query() != query.version)
+            && (cursor.binding() != self.binding()
+                || cursor.query() != query.version
+                || cursor.offset() > limits.max_documents)
         {
             return Err(Error::InvalidCursor);
         }
-        let hits = self.search(query)?;
+        let ids = self.search(query)?;
         let offset = cursor.map_or(0, Cursor::offset);
-        if offset > hits.len() {
+        if offset > ids.len() {
             return Err(Error::InvalidCursor);
         }
         let end = offset
-            .checked_add(limit)
+            .checked_add(limit.min(limits.max_documents.saturating_sub(offset)))
             .ok_or(Error::SizeLimit)?
-            .min(hits.len());
+            .min(ids.len());
         Ok(crate::QueryResult {
             binding: self.binding(),
             query: query.version,
             coverage: self.base.coverage(),
-            hits: hits[offset..end].to_vec(),
-            next: (end < hits.len()).then(|| Cursor::new(self.binding(), query.version, end)),
+            ids: ids[offset..end].to_vec(),
+            next: (end < ids.len() && end < limits.max_documents)
+                .then(|| Cursor::new(self.binding(), query.version, end)),
         })
     }
 
-    fn posting(&self, term: &str, query: &Query) -> Result<BTreeMap<EntityId, Relevance>, Error> {
+    fn posting(&self, term: &str) -> Vec<u64> {
         let overlay = self.overlay.as_deref();
-        let mut ranked: BTreeMap<EntityId, Relevance> = BTreeMap::new();
-        for (key, ids) in self.base.postings() {
-            if !key.selected_by(term, query.match_mode, &query.fields, query.case) {
-                continue;
-            }
-            let relevance = Relevance::new(term.len(), key.term.len(), key.field_weight(), 1)?;
-            for id in ids {
-                if overlay.is_none_or(|value| value.tombstones().binary_search(id).is_err()) {
-                    ranked
-                        .entry(*id)
-                        .and_modify(|current| *current = (*current).max(relevance))
-                        .or_insert(relevance);
-                }
+        let base = self.base.posting(term).unwrap_or_default();
+        let additions = overlay
+            .and_then(|value| value.additions(term))
+            .unwrap_or_default();
+        let mut ids = Vec::with_capacity(base.len().saturating_add(additions.len()));
+        for id in base {
+            if overlay.is_none_or(|value| value.tombstones().binary_search(id).is_err()) {
+                ids.push(*id);
             }
         }
-        if let Some(overlay) = overlay {
-            for (key, ids) in overlay.postings() {
-                if !key.selected_by(term, query.match_mode, &query.fields, query.case) {
-                    continue;
-                }
-                let relevance = Relevance::new(term.len(), key.term.len(), key.field_weight(), 1)?;
-                for id in ids {
-                    ranked
-                        .entry(*id)
-                        .and_modify(|current| *current = (*current).max(relevance))
-                        .or_insert(relevance);
-                }
-            }
-        }
-        Ok(ranked)
+        ids.extend_from_slice(additions);
+        ids.sort_unstable();
+        ids.dedup();
+        ids
     }
 }
 

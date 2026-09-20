@@ -3,7 +3,7 @@
 # Generated artifacts are ignored by their conventional root-local names.
 
 /.local/
-**/.backend/
+/.backend/
 /.DS_Store
 /result
 /result-*

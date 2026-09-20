@@ -249,13 +249,6 @@ impl Scheduler {
         let fence = scheduled.lease.fence();
         let ordinal = scheduled.lease.ordinal();
         let decision = scheduled.decision;
-        self.supervisor.completed();
-        self.telemetry.record_with(|| crate::Observation {
-            family: crate::MetricFamily::Lifecycle,
-            outcome: crate::MetricOutcome::Completed,
-            latency: std::time::Duration::ZERO,
-            units: u64::try_from(receipt.canonical_bytes_capacity()).unwrap_or(u64::MAX),
-        });
         let reusable = dependency_generation.map(|generation| {
             let reuse_context = ReuseContext::from_receipt(receipt, generation);
             crate::ReusableOutput::from_parts(reuse_context, output, receipt.canonical_bytes_arc())

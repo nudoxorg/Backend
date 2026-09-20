@@ -1,10 +1,10 @@
 //! Root leases, retention budgets, and durable mark-and-sweep for the input CAS.
 
 use super::{
-    Arc, BTreeSet, BoundedFileImage, CasGcBudget, InputCas, MAX_GC_BYTES_PER_CALL,
-    MAX_GC_FILES_PER_CALL, MAX_RETAINED_OBJECTS, MAX_RETAINED_SIDECAR_BYTES, MAX_RETAINED_SIDECARS,
-    ObjectVersion, OpenOptions, Path, ReplicationError, Schema, WireIdentity, Write, decode_hex,
-    digest_file, fs, hex, is_object_name,
+    Arc, BTreeSet, CasGcBudget, InputCas, MAX_GC_BYTES_PER_CALL, MAX_GC_FILES_PER_CALL,
+    MAX_RETAINED_OBJECTS, MAX_RETAINED_SIDECAR_BYTES, MAX_RETAINED_SIDECARS, ObjectVersion,
+    OpenOptions, Path, ReplicationError, Schema, WireIdentity, Write, decode_hex, digest_file, fs,
+    hex, is_object_name,
 };
 
 /// Result of one bounded input-CAS mark and sweep.
@@ -211,9 +211,8 @@ impl<T: Schema> InputCas<T> {
         };
         let root_name = hex(root_digest);
         let claims_path = directory.join(format!(".claims-{root_name}"));
-        match BoundedFileImage::read_optional(&claims_path, MAX_RETAINED_OBJECTS * 32)? {
-            Some(bytes) => {
-                let bytes = bytes.as_slice();
+        match fs::read(&claims_path) {
+            Ok(bytes) => {
                 if bytes.len() % 32 != 0 || bytes.len() / 32 > MAX_RETAINED_OBJECTS {
                     return Err(ReplicationError::CoverageLimit);
                 }
@@ -224,23 +223,23 @@ impl<T: Schema> InputCas<T> {
                     claims.insert(claim);
                 }
             }
-            None => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(ReplicationError::Disconnected),
         }
         let input_path = directory.join(format!(".input-{root_name}"));
-        match BoundedFileImage::read_optional(&input_path, 32)? {
-            Some(bytes) => {
+        match fs::read(&input_path) {
+            Ok(bytes) => {
                 let claim: [u8; 32] = bytes
-                    .as_slice()
                     .try_into()
                     .map_err(|_| ReplicationError::CorruptFrame)?;
                 claims.insert(claim);
             }
-            None => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(ReplicationError::Disconnected),
         }
         let need_path = directory.join(format!(".need-{root_name}"));
-        match BoundedFileImage::read_optional(&need_path, MAX_RETAINED_OBJECTS * 32)? {
-            Some(bytes) => {
-                let bytes = bytes.as_slice();
+        match fs::read(&need_path) {
+            Ok(bytes) => {
                 if bytes.len() % 32 != 0 || bytes.len() / 32 > MAX_RETAINED_OBJECTS {
                     return Err(ReplicationError::CoverageLimit);
                 }
@@ -251,7 +250,8 @@ impl<T: Schema> InputCas<T> {
                     claims.insert(claim);
                 }
             }
-            None => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(ReplicationError::Disconnected),
         }
         Ok(claims)
     }
@@ -385,9 +385,8 @@ impl<T: Schema> InputCas<T> {
         let temporary = directory.join(format!(".proof-{}.part", hex(digest)));
         let target = directory.join(format!(".proof-{}", hex(digest)));
         if target.is_file() {
-            let existing = BoundedFileImage::read_optional(&target, 64 * 1024)?
-                .ok_or(ReplicationError::Disconnected)?;
-            if existing.as_slice() != proof {
+            let existing = fs::read(&target).map_err(|_| ReplicationError::Disconnected)?;
+            if existing != proof {
                 return Err(ReplicationError::CorruptFrame);
             }
             return Ok(());
@@ -415,7 +414,12 @@ impl<T: Schema> InputCas<T> {
             return Ok(None);
         };
         let path = directory.join(format!(".proof-{}", hex(digest)));
-        Ok(BoundedFileImage::read_optional(&path, 64 * 1024)?.map(BoundedFileImage::into_vec))
+        match fs::read(path) {
+            Ok(bytes) if bytes.len() <= 64 * 1024 => Ok(Some(bytes)),
+            Ok(_) => Err(ReplicationError::MessageTooLarge),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(ReplicationError::Disconnected),
+        }
     }
 
     /// Returns an immutable warm input without copying it when cached.
@@ -479,12 +483,11 @@ impl<T: Schema> InputCas<T> {
         if !path.is_file() {
             return Ok(None);
         }
-        let maximum = usize::try_from(self.limits.max_object)
-            .map_err(|_| ReplicationError::MessageTooLarge)?;
-        let Some(bytes) = BoundedFileImage::read_optional(&path, maximum)? else {
-            return Ok(None);
-        };
-        let bytes: Arc<[u8]> = Arc::from(bytes.into_vec().into_boxed_slice());
+        let bytes: Arc<[u8]> = Arc::from(
+            fs::read(path)
+                .map_err(|_| ReplicationError::Disconnected)?
+                .into_boxed_slice(),
+        );
         let typed_claim = backend_engine::UntrustedId::<T>::from_wire(
             &claim.as_bytes(),
             backend_engine::IdContext::schema::<T>(),

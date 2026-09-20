@@ -4,7 +4,7 @@ use crate::canonical::{
     BranchKey, Frontier, LogKey, ViewRecipeId, ViewStateRoot, ViewVersion, branch_key, log_key,
     view_key, view_state_root, view_version,
 };
-use crate::{CommittedViewDelta, ViewRoot};
+use crate::{CommittedViewDelta, Coverage, ViewRoot};
 
 /// Product schema version carried by cursors created by this crate.
 pub const CURSOR_SCHEMA: u16 = crate::canonical::PROTOCOL_SCHEMA;
@@ -519,7 +519,13 @@ impl CursorSub {
         if !reset_root.is_coherent() {
             return Err(CursorError::InvalidResetRoot);
         }
-        if reset_root.capability().is_none() || reset_root.coverage().is_empty() {
+        if reset_root.capability().is_none()
+            || !reset_root
+                .coverage()
+                .iter()
+                .copied()
+                .all(Coverage::is_complete)
+        {
             return Err(CursorError::InvalidResetRoot);
         }
         if source.recipe != self.cursor.recipe {
@@ -630,17 +636,12 @@ mod tests {
         fn verify(
             &self,
             observation: &crate::UntrustedProducerObservation,
-        ) -> Result<crate::ProducerObservationClaims, Self::Error> {
+        ) -> Result<(), Self::Error> {
             if observation.producer_identity() == *observation.scope_root().as_bytes()
                 && observation.context() == *observation.scope_root().as_bytes()
                 && observation.evidence() == observation.scope_root().as_bytes()
             {
-                Ok(crate::ProducerObservationClaims::new(
-                    observation.producer_identity(),
-                    observation.scope_root(),
-                    observation.context(),
-                    *blake3::hash(observation.evidence()).as_bytes(),
-                ))
+                Ok(())
             } else {
                 Err("invalid test producer observation")
             }

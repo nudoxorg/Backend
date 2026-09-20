@@ -2,8 +2,8 @@
 
 use super::{
     BuiltinAdmission, IdContext, ImmutableObjectSchema, ObjectKey, ObjectVersion, ProductRelation,
-    Relation, WorkerError, complete_coverage, schema_object_version_identity_claim,
-    semantic_publication_row_bytes,
+    Relation, WorkerError, complete_coverage, product_source_row_bytes,
+    schema_object_version_identity_claim,
 };
 
 impl BuiltinAdmission {
@@ -177,8 +177,8 @@ impl BuiltinAdmission {
                         .get(offset.saturating_add(index))
                         .ok_or(WorkerError::InputProof("relation leaf offset"))?;
                     let mut key_bytes = Vec::new();
-                    ProductRelation::encode_key(key, &mut key_bytes);
-                    let row = semantic_publication_row_bytes(key, value);
+                    key_bytes.extend_from_slice(key);
+                    let row = product_source_row_bytes(key, value);
                     let version = ObjectVersion::<ImmutableObjectSchema>::from_value(&row);
                     let key_id = ObjectKey::<ImmutableObjectSchema>::from_value(&row);
                     if entry.key != key_bytes

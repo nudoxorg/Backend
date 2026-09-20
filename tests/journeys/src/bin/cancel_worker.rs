@@ -9,9 +9,9 @@
 
 use backend_engine::{
     AuthorityEpoch, AuthorityExpectation, AuthorityVersion, Blake3WorkerSigner, CapabilityManifest,
-    CompleteSemanticCoverage, ExecutionRequestExpectation, ExecutionScopeId, ExpectedIdentity,
-    OutputEquivalence, PreparedOutput, PureRecipeExecutor, PureWorkContext, ReadManifestId,
-    ResourceEnvelope, RevocationVersion, SemanticCoverageAdmissionError, SemanticCoverageBinding,
+    CompleteSemanticCoverage, ExecutionRequestExpectation, ExpectedIdentity, OutputEquivalence,
+    PreparedOutput, PureRecipeExecutor, PureWorkContext, ReadManifestId, ResourceEnvelope,
+    RevocationVersion, SemanticCoverageAdmissionError, SemanticCoverageBinding,
     SemanticCoverageState, SemanticCoverageValidator, TransportLimits,
     UntrustedSemanticCoverageClaim, VersionRange, WireAuthority, WireAuthorityPolicy, WireIdentity,
     WireRecipeRequest, WorkKey, WorkerCapabilities, WorkerError,
@@ -20,18 +20,14 @@ use backend_execution::{
     AuthorityVersionSchema, ReadManifestSchema, RecipeId, RecipeSchema, WorkKeySchema,
 };
 use backend_version::{
-    AuthorityScopeClaim, CoverageWitness, ObjectClosure, ProducerObservationClaims,
-    ProducerObservationVerifier, Relation, RelationBinding, RelationState, StateRoot,
-    UntrustedProducerObservation, WorkspaceManifest, admit_complete_scope,
-    admit_producer_observation,
+    AuthorityScopeClaim, CoverageWitness, ObjectClosure, ProducerObservationVerifier, Relation,
+    RelationBinding, RelationState, StateRoot, UntrustedProducerObservation, WorkspaceManifest,
+    admit_complete_scope, admit_producer_observation,
 };
 use backend_worker::{
     JobAdmission, WorkerJob, WorkerJobBindings, WorkerProcessConfig, WorkerService,
 };
 use std::marker::PhantomData;
-use std::num::NonZeroU64;
-
-const LEGACY_SCOPE_ONE: NonZeroU64 = NonZeroU64::MIN;
 
 const RECIPE_BYTES: &[u8] = b"backend.journey.cancel.recipe.v1";
 const READ_BYTES: &[u8] = b"backend.journey.cancel.reads.v1";
@@ -40,31 +36,20 @@ const EQUIVALENCE_BYTES: &[u8] = b"backend.journey.cancel.equivalence.v1";
 const WITNESS_BYTES: &[u8] = b"backend.journey.cancel.semantic.v1";
 const AUTHORITY_SECRET: [u8; 32] = [0x33; 32];
 
-struct CancelCoverageVerifier(backend_version::ScopeRoot);
+struct CancelCoverageVerifier;
 
 impl ProducerObservationVerifier for CancelCoverageVerifier {
     type Error = &'static str;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
-        let scope = self.0;
-        let expected_identity = *scope.as_bytes();
-        let expected_evidence = scope.as_bytes();
-        if observation.producer_identity() != expected_identity
-            || observation.context() != expected_identity
-            || observation.scope_root() != scope
-            || observation.evidence() != expected_evidence
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
+        if observation.producer_identity() == *observation.scope_root().as_bytes()
+            && observation.context() == *observation.scope_root().as_bytes()
+            && observation.evidence() == observation.scope_root().as_bytes()
         {
-            return Err("invalid cancellation journey producer observation");
+            Ok(())
+        } else {
+            Err("invalid cancellation journey producer observation")
         }
-        Ok(ProducerObservationClaims::new(
-            expected_identity,
-            scope,
-            expected_identity,
-            *blake3::hash(expected_evidence).as_bytes(),
-        ))
     }
 }
 
@@ -78,7 +63,7 @@ fn complete_scope(authority: AuthorityVersion) -> CoverageWitness {
             *scope.as_bytes(),
             scope.as_bytes().to_vec(),
         ),
-        &CancelCoverageVerifier(scope),
+        &CancelCoverageVerifier,
     )
     .unwrap_or_else(|error| panic!("admit cancellation producer observation: {error}"));
     CoverageWitness::Complete(
@@ -232,7 +217,7 @@ impl CancelAdmission {
             || request.work_key != work_claim
             || request.input_basis.as_bytes() != self.input_basis.to_bytes()
             || !request.inputs.is_empty()
-            || request.scope != ExecutionScopeId::from_legacy_ordinal(LEGACY_SCOPE_ONE)
+            || request.scope != 1
             || request.authority != expected_authority
         {
             return Err(WorkerError::Capability);
@@ -259,7 +244,7 @@ impl CancelAdmission {
             work_key: ExpectedIdentity::from_typed(&self.work_key),
             inputs: Vec::new(),
             read_manifest: ExpectedIdentity::from_typed(&self.read_manifest),
-            scope: ExecutionScopeId::from_legacy_ordinal(LEGACY_SCOPE_ONE),
+            scope: 1,
             authority: self.authority_expectation,
             resources: request.resources,
             fence: request.fence,

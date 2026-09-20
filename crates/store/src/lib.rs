@@ -6,9 +6,6 @@
 //! structural edits rebuild only the canonical materialization needed for the
 //! new key sequence and reuse equal immutable nodes from the map's CAS.
 #![forbid(unsafe_code)]
-
-extern crate alloc;
-
 pub(crate) use backend_version::{
     CommittedChild, DEFAULT_CUT_POLICY, DeltaId, Relation, StateRoot,
     canonical_branch_from_commitments, canonical_empty, canonical_leaf,
@@ -39,21 +36,6 @@ mod proof;
 mod residency;
 mod tree;
 
-/// Pure wanted/have planning and typed readiness publication.
-pub mod hydration;
-/// Durable generation publication journal and recovery.
-pub mod journal;
-/// Bounded first-write-wins immutable object storage in caller-selected memory.
-pub mod memory;
-/// Canonical packed generation roots, closure selection, and structural diffs.
-pub mod root;
-/// Indexed immutable object-pack writing and allocation-free borrowing.
-pub mod object_pack;
-/// Structural validation witnesses and allocation-free borrowed frame views.
-pub mod view;
-/// Generic durable workflow event reduction, records, and recovery.
-pub mod workflow;
-
 pub use backend_version::CoverageWitness;
 pub use canonical::{RawRelation, RawValue, StoredValue};
 pub use closure::{
@@ -75,10 +57,8 @@ pub use durable::{
 pub use pack::{
     LayoutId, Pack, PackId, WirePack, admit_pack, decode_pack, decode_wire_pack, encode_pack,
 };
-pub use proof::{
-    KeyProof, Proof, ProofLevel, RangeProof, VerifiedKeyProof, VerifiedProof, VerifiedRangeProof,
-};
-pub use residency::{Pin, Residency, ResidencyConflict, ResidentPack};
+pub use proof::{KeyProof, Proof, ProofLevel, RangeProof};
+pub use residency::{Pin, Residency};
 pub use tree::{OrderedMap, OrderedMapIter};
 
 pub(crate) use canonical::{

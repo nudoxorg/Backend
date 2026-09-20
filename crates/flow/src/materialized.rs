@@ -328,9 +328,8 @@ mod tests {
     use super::*;
     use crate::{Epoch, Time};
     use backend_version::{
-        AuthorityScopeClaim, MapChange, ObjectVersion, ProducerObservationClaims,
-        ProducerObservationVerifier, Schema, ScopeRoot, UntrustedProducerObservation,
-        admit_complete_scope, admit_producer_observation,
+        AuthorityScopeClaim, MapChange, ObjectVersion, ProducerObservationVerifier, Schema,
+        ScopeRoot, UntrustedProducerObservation, admit_complete_scope, admit_producer_observation,
     };
 
     struct TestScope;
@@ -340,21 +339,13 @@ mod tests {
     impl ProducerObservationVerifier for TestScopeVerifier {
         type Error = &'static str;
 
-        fn verify(
-            &self,
-            observation: &UntrustedProducerObservation,
-        ) -> Result<ProducerObservationClaims, Self::Error> {
+        fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
             if observation.producer_identity() == [0x71; 32]
                 && observation.scope_root() == self.0
                 && observation.context() == *self.0.as_bytes()
                 && observation.evidence() == self.0.as_bytes()
             {
-                Ok(ProducerObservationClaims::new(
-                    [0x71; 32],
-                    self.0,
-                    *self.0.as_bytes(),
-                    *blake3::hash(self.0.as_bytes()).as_bytes(),
-                ))
+                Ok(())
             } else {
                 Err("materialized producer observation mismatch")
             }

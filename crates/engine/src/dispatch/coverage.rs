@@ -1,7 +1,7 @@
 //! Untrusted semantic coverage claims and authority admitted capabilities.
 
 use backend_replication::{
-    AuthorityEpoch, AuthorityExpectation, ExecutionScopeId, ExpectedIdentity, RevocationVersion,
+    AuthorityEpoch, AuthorityExpectation, ExpectedIdentity, RevocationVersion,
     SemanticCoverageExpectation, WireAuthority, WireIdentity,
 };
 use backend_semantic::DependencyManifest;
@@ -307,22 +307,14 @@ impl UntrustedSemanticCoverageClaim {
     }
 
     /// Converts this witness into an untrusted wire claim.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SemanticCoverageAdmissionError::InvalidScope`] when the
-    /// producer supplied the reserved zero legacy scope.
-    pub fn wire(
-        &self,
-    ) -> Result<backend_replication::WireSemanticCoverage, SemanticCoverageAdmissionError> {
-        let scope = ExecutionScopeId::try_from(self.scope)
-            .map_err(|_| SemanticCoverageAdmissionError::InvalidScope)?;
-        Ok(backend_replication::WireSemanticCoverage {
+    #[must_use]
+    pub fn wire(&self) -> backend_replication::WireSemanticCoverage {
+        backend_replication::WireSemanticCoverage {
             identity: WireIdentity::from_typed(&self.identity),
-            scope,
+            scope: self.scope,
             read_manifest: WireIdentity::from_typed(&self.read_manifest),
             authority: WireAuthority::from_typed(&self.authority, self.authority_epoch),
-        })
+        }
     }
 }
 
@@ -475,7 +467,6 @@ impl std::error::Error for SemanticCoverageAdmissionError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompleteSemanticCoverage {
     claim: UntrustedSemanticCoverageClaim,
-    scope_id: ExecutionScopeId,
     dependency_manifest: Option<Arc<DependencyManifest>>,
 }
 
@@ -515,8 +506,9 @@ impl CompleteSemanticCoverage {
         if !claim.state.is_complete() {
             return Err(SemanticCoverageAdmissionError::Incomplete);
         }
-        let scope_id = ExecutionScopeId::try_from(claim.scope)
-            .map_err(|_| SemanticCoverageAdmissionError::InvalidScope)?;
+        if claim.scope == 0 {
+            return Err(SemanticCoverageAdmissionError::InvalidScope);
+        }
         if !claim.binds(identity) {
             return Err(SemanticCoverageAdmissionError::BindingMismatch);
         }
@@ -524,7 +516,6 @@ impl CompleteSemanticCoverage {
         validator.validate(&binding, &claim)?;
         Ok(Self {
             claim,
-            scope_id,
             dependency_manifest: None,
         })
     }
@@ -550,8 +541,9 @@ impl CompleteSemanticCoverage {
         if !claim.state.is_complete() {
             return Err(SemanticCoverageAdmissionError::Incomplete);
         }
-        let scope_id = ExecutionScopeId::try_from(claim.scope)
-            .map_err(|_| SemanticCoverageAdmissionError::InvalidScope)?;
+        if claim.scope == 0 {
+            return Err(SemanticCoverageAdmissionError::InvalidScope);
+        }
         if !claim.binds(identity) {
             return Err(SemanticCoverageAdmissionError::BindingMismatch);
         }
@@ -564,7 +556,6 @@ impl CompleteSemanticCoverage {
         validator.validate_manifest(&binding, &claim, &manifest)?;
         Ok(Self {
             claim,
-            scope_id,
             dependency_manifest: Some(Arc::new(manifest)),
         })
     }
@@ -647,7 +638,7 @@ impl CompleteSemanticCoverage {
     ) -> SemanticCoverageExpectation {
         SemanticCoverageExpectation {
             identity: ExpectedIdentity::from_typed(&self.claim.identity),
-            scope: self.scope_id,
+            scope: self.claim.scope,
             read_manifest: ExpectedIdentity::from_typed(&identity.read_manifest),
             authority: AuthorityExpectation::from_typed(
                 &identity.authority,
@@ -665,7 +656,7 @@ impl CompleteSemanticCoverage {
     pub fn replication_expectation(&self) -> SemanticCoverageExpectation {
         SemanticCoverageExpectation {
             identity: ExpectedIdentity::from_typed(&self.claim.identity),
-            scope: self.scope_id,
+            scope: self.claim.scope,
             read_manifest: ExpectedIdentity::from_typed(&self.claim.read_manifest),
             authority: AuthorityExpectation::from_typed(
                 &self.claim.authority,
@@ -678,12 +669,7 @@ impl CompleteSemanticCoverage {
     /// Converts this capability into an untrusted wire claim.
     #[must_use]
     pub fn wire(&self) -> backend_replication::WireSemanticCoverage {
-        backend_replication::WireSemanticCoverage {
-            identity: WireIdentity::from_typed(&self.claim.identity),
-            scope: self.scope_id,
-            read_manifest: WireIdentity::from_typed(&self.claim.read_manifest),
-            authority: WireAuthority::from_typed(&self.claim.authority, self.claim.authority_epoch),
-        }
+        self.claim.wire()
     }
 }
 

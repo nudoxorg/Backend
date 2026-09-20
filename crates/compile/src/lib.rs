@@ -10,17 +10,14 @@
 
 mod cancel;
 mod contract;
-mod embedding;
 mod errors;
 mod frame;
 mod native;
 mod native_adapter;
 mod native_protocol;
-mod native_semantic;
 mod pool;
 mod prepared;
 mod process;
-mod profile;
 mod session;
 mod session_cache;
 mod supervisor;
@@ -44,10 +41,6 @@ pub use contract::{
     SyntaxProducerId, SyntaxProducerSchema, ToolchainId, ToolchainSchema, partial_coverage,
     typed_of,
 };
-pub use embedding::{
-    EmbeddingArtifact, EmbeddingArtifactId, EmbeddingCoordinates, EmbeddingExecutable,
-    EmbeddingExecutableError, EmbeddingInvocation, EmbeddingNormalization, EmbeddingPurpose,
-};
 pub use errors::{FrameError, PoolError, ProcessError, UnsupportedLimit};
 pub use frame::{
     FrameKind, MAX_FRAME_BYTES, PROTOCOL_VERSION, SessionFrame, SessionFrameVersion,
@@ -59,9 +52,9 @@ pub use native::{
 };
 pub use native_adapter::{
     NativeTemplate, PreparedNativeInvocation, default_native_limits, extract_native,
-    extract_native_cached, extract_native_checked, extract_native_with_adapter,
-    native_executable_evidence, native_executable_id, native_input, native_request,
-    prepare_native_invocation, unavailable_extraction,
+    extract_native_cached, extract_native_checked, native_executable_evidence,
+    native_executable_id, native_input, native_request, native_semantic_evidence,
+    native_semantic_input, prepare_native_invocation, unavailable_extraction,
 };
 pub use native_protocol::{
     Bound, EnvelopeState, MAX_NATIVE_INPUTS, MAX_NATIVE_KEY_BYTES, MAX_NATIVE_PAYLOAD_BYTES,
@@ -69,23 +62,14 @@ pub use native_protocol::{
     NativeCoverage, NativeEnvelope, NativeProtocolError, NativeRecord, NativeRecordKind,
     NativeRequest, NativeRequestInput, Unbound,
 };
-pub use native_semantic::{
-    NativeSemanticAdapter, NativeSemanticRequest, native_helper_evidence, native_semantic_evidence,
-    native_semantic_input,
-};
 pub use pool::{BufferLease, BufferPool, PoolStats};
 pub use prepared::{
     PreparationCache, PreparationCacheConfig, PreparationCacheStats, PreparationError,
     PreparationKey, PreparedCompilationCache, PreparedRequest,
 };
 pub use process::{
-    ExecutableIdentity, MAX_EXECUTABLE_BYTES, ProcessEnvironment, ProcessLimits, ProcessReceipt,
-    ProcessStdin, ProcessTerminal, Stdin, StdinSpec, SupervisedCommand, ToolchainArtifact,
-    VerifiedExecutable,
-};
-pub use profile::{
-    CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion,
-    RustEdition, TypeScriptSource, UnsupportedProfile,
+    ExecutableIdentity, ProcessEnvironment, ProcessLimits, ProcessReceipt, ProcessStdin,
+    ProcessTerminal, Stdin, StdinSpec, SupervisedCommand, ToolchainArtifact, VerifiedExecutable,
 };
 pub use session::{
     Broken, Cold, ErasedSession, Handshaking, Pending, PersistentSession, Ready, RequestToken,
@@ -97,8 +81,8 @@ pub use session_cache::{
 };
 pub use supervisor::{ProcessSupervisor, RunningProcess};
 pub use syntax::{
-    DeclarationKind, GrammarVariant, SourceAnalysis, SourceDeclaration, SourceExcerpt,
-    SourceExcerptExtent, SourceLanguage, SourceLocation, SyntaxError, SyntaxFrontend,
+    DeclarationKind, GrammarVariant, SourceAnalysis, SourceDeclaration, SourceLanguage,
+    SourceLocation, SyntaxError, SyntaxFrontend,
 };
 
 #[cfg(test)]

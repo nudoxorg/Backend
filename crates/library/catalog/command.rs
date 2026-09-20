@@ -1,10 +1,7 @@
 //! Typed command dispatch for the versioned catalog.
 
 use super::Library;
-use super::certificate::{
-    producer_certificate_for_health, producer_certificate_for_readiness,
-    producer_certificate_for_revision,
-};
+use super::certificate::{producer_certificate_for_health, producer_certificate_for_revision};
 use crate::{
     Command, CommandDto, CommandReply, DocumentQuery, LibraryError, NameQuery, QueryLimit,
     ReplyDto, Row,
@@ -37,26 +34,18 @@ impl Library {
                 )
                 .map(CommandReply::Packages)
             }
-            Command::PackagePage(page) => {
-                self.packages_page(page).map(CommandReply::ProjectionPage)
-            }
-            Command::Add { .. } | Command::Remove { .. } | Command::Surface(_) => Ok(
-                CommandReply::Failed(crate::CommandFailure::MutationRequiresOwner),
-            ),
-            Command::Document(query) | Command::Source(query) => {
-                self.document(query).map(CommandReply::Document)
-            }
+            Command::Add { .. } | Command::Remove { .. } => Ok(CommandReply::Error(
+                "durable intents must be submitted through the engine owner".to_owned(),
+            )),
+            Command::Document(query) => self.document(query).map(CommandReply::Document),
             Command::Show { symbol } => self
                 .document(DocumentQuery {
-                    symbol: crate::SymbolAddress::canonical(symbol),
+                    symbol,
                     basis: basis.into(),
                     source: None,
                 })
                 .map(CommandReply::Document),
             Command::Outline(query) => self.outline(query).map(CommandReply::Outline),
-            Command::OutlinePage { package, page } => self
-                .outline_page(package, page)
-                .map(CommandReply::ProjectionPage),
             Command::Name(query) => self.names(&query).map(CommandReply::Names),
             Command::Resolve { text } => self
                 .names(&NameQuery::new(text, basis, QueryLimit::default()))
@@ -64,23 +53,8 @@ impl Library {
                     CommandReply::Resolved(snapshot.root.rows().to_vec().into_boxed_slice())
                 }),
             Command::Search(query) => self.search(&query).map(CommandReply::Search),
-            Command::Graph(query) | Command::Related(query) => {
-                self.graph(query).map(CommandReply::Graph)
-            }
-            Command::GraphPage { symbol, page } => symbol
-                .resolve(&self.view)
-                .ok_or(LibraryError::NotFound)
-                .and_then(|symbol| self.graph_page(symbol, page))
-                .map(CommandReply::ProjectionPage),
-            Command::GraphQuery(_) => {
-                Ok(CommandReply::Failed(crate::CommandFailure::InvalidQuery(
-                    "structured graph queries require an execution owner".to_owned(),
-                )))
-            }
-            Command::Health => Ok(CommandReply::Readiness(crate::HealthReport::from_root(
-                &self.view,
-                self.cursor,
-            ))),
+            Command::Graph(query) => self.graph(query).map(CommandReply::Graph),
+            Command::Health => Ok(CommandReply::Health((*self.view).clone())),
             Command::Revision => Ok(CommandReply::Revision(crate::RevisionReceipt::new(
                 self.view.root(),
                 self.cursor,
@@ -95,13 +69,10 @@ impl Library {
         let request_id = request.request_id;
         let reply = match self.execute(request.command) {
             Ok(reply) => reply,
-            Err(error) => CommandReply::Failed(error.into()),
+            Err(error) => CommandReply::Error(error.to_string()),
         };
         let dto = match reply {
             CommandReply::Health(root) => ReplyDto::health(request_id, root, self.cursor),
-            CommandReply::Readiness(report) => {
-                ReplyDto::new(request_id, CommandReply::Readiness(report))
-            }
             CommandReply::Revision(receipt) => {
                 ReplyDto::new(request_id, CommandReply::Revision(receipt))
             }
@@ -112,10 +83,6 @@ impl Library {
                 .health_cursor()
                 .and_then(|cursor| producer_certificate_for_health(root, cursor))
                 .map_or(dto.clone(), |certificate| dto.with_certificate(certificate)),
-            CommandReply::Readiness(_) => {
-                producer_certificate_for_readiness(&self.view, self.cursor)
-                    .map_or(dto.clone(), |certificate| dto.with_certificate(certificate))
-            }
             CommandReply::Revision(receipt) => {
                 producer_certificate_for_revision(&self.view, receipt.cursor())
                     .map_or(dto.clone(), |certificate| dto.with_certificate(certificate))

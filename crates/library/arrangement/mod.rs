@@ -18,8 +18,7 @@ use schema::{
     ChildRowKey, ChildrenRelation, ChildrenTree, DocumentIndexRelation, DocumentTree,
     NameIndexRelation, NameKey, NamePostingKey, NamePostingRelation, NamePostingTree, NameTree,
     PackageIndexRelation, PackageRowKey, PackageSymbolsRelation, PackageSymbolsTree, PackageTree,
-    SearchPostingKey, SearchPostingRelation, SearchPostingTree, UnscopedIndexRelation,
-    UnscopedTree, search_grams, searchable_text,
+    UnscopedIndexRelation, UnscopedTree, searchable_text, trigrams,
 };
 
 /// Structural work observed by one immutable library projection.
@@ -78,10 +77,6 @@ impl WorkCounters {
         self.output_rows.fetch_add(rows as u64, Ordering::Relaxed);
     }
 
-    pub(crate) fn record_sort(&self, rows: usize) {
-        self.sort_rows.fetch_add(rows as u64, Ordering::Relaxed);
-    }
-
     pub(crate) fn snapshot(&self) -> QueryWork {
         QueryWork {
             indexed_rows: self.indexed_rows.load(Ordering::Relaxed),
@@ -124,7 +119,6 @@ pub(crate) struct ProjectionArrangement {
     unscoped_symbols: Option<UnscopedTree>,
     names: Option<NameTree>,
     name_postings: Option<NamePostingTree>,
-    search_postings: Option<SearchPostingTree>,
     package_symbols: Option<PackageSymbolsTree>,
     children: Option<ChildrenTree>,
 }

@@ -11,7 +11,6 @@ use crate::{
 };
 use backend_version::Relation;
 use std::sync::Arc;
-use std::time::Instant;
 
 fn local_fallback_valid<R: Relation>(request: &ScheduleRequest<R>, key: crate::WorkKey) -> bool {
     request
@@ -115,18 +114,19 @@ impl Scheduler {
             .start(request.identity, request.epoch, request.now)
             .map_err(ScheduleError::Attempt)?;
         if let Some(deadline) = fallback_deadline {
-            let deadline_result = self
+            let deadline_failed = self
                 .deadlines
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .schedule(key, deadline);
-            if deadline_result.is_err() {
+                .schedule(key, deadline)
+                .is_err();
+            if deadline_failed {
                 let _ = self.attempts.transition(
                     lease.key(),
                     lease.fence(),
                     crate::AttemptState::Cancelled,
                 );
-                return Err(ScheduleError::DeadlineCapacity);
+                return Err(ScheduleError::Admission(AdmissionError::Overflow));
             }
         }
         let race = (decision == PlacementDecision::Hedge).then(|| Arc::new(HedgeRace::new().0));
@@ -148,8 +148,6 @@ impl Scheduler {
             bytes: request.bytes,
             manager: Arc::clone(&self.attempts),
             deadlines: Arc::clone(&self.deadlines),
-            supervisor: Arc::clone(&self.supervisor),
-            telemetry: self.telemetry.clone(),
             interned: Some(interned),
         })))
     }
@@ -256,59 +254,20 @@ impl Scheduler {
         request: ScheduleRequest<R>,
         reuse_context: Option<&crate::ReuseContext>,
     ) -> Result<ScheduleOutcome<R>, ScheduleError> {
-        let started = Instant::now();
-        let result = self.schedule_or_reuse_inner(&request, reuse_context);
-        self.record_schedule_result(started, &result);
-        result
-    }
-
-    fn schedule_or_reuse_inner<R: Relation>(
-        &self,
-        request: &ScheduleRequest<R>,
-        reuse_context: Option<&crate::ReuseContext>,
-    ) -> Result<ScheduleOutcome<R>, ScheduleError> {
         let key = request.identity.work_key();
-        Self::validate_request(request, key)?;
+        Self::validate_request(&request, key)?;
         if let Some(context) = reuse_context
             && let Some(output) = self.lookup.lookup(key, context)
         {
             return Ok(ScheduleOutcome::Reused(output));
         }
-        let decision = Self::choose_decision(request)?;
+        let decision = Self::choose_decision(&request)?;
         // Coalesce live work before consuming scarce route resources. The
         // follower handle is released on drop; only a leader can complete.
         let interned = self.intern_work(key)?;
         if !interned.is_leader() {
             return Ok(ScheduleOutcome::Waiting(interned));
         }
-        self.schedule_leader(request, key, decision, interned)
-    }
-
-    fn record_schedule_result<R: Relation>(
-        &self,
-        started: Instant,
-        result: &Result<ScheduleOutcome<R>, ScheduleError>,
-    ) {
-        let outcome = match result {
-            Ok(ScheduleOutcome::Scheduled(_)) => {
-                self.supervisor.admitted();
-                crate::MetricOutcome::Completed
-            }
-            Ok(ScheduleOutcome::Waiting(_)) => {
-                self.supervisor.coalesced();
-                crate::MetricOutcome::Completed
-            }
-            Ok(ScheduleOutcome::Reused(_)) => crate::MetricOutcome::Completed,
-            Err(_) => {
-                self.supervisor.rejected();
-                crate::MetricOutcome::Rejected
-            }
-        };
-        self.telemetry.record_with(|| crate::Observation {
-            family: crate::MetricFamily::Queue,
-            outcome,
-            latency: started.elapsed(),
-            units: 1,
-        });
+        self.schedule_leader(&request, key, decision, interned)
     }
 }

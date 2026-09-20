@@ -13,7 +13,6 @@ use backend_version::{
     Coverage as BackendCoverage, CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope,
     prepare_delta_with_state,
 };
-use std::cmp::Ordering;
 use std::ops::Bound;
 use std::sync::{Arc, OnceLock};
 
@@ -219,59 +218,14 @@ impl ViewRoot {
             .as_ref()
     }
 
-    /// Streams canonical rows without populating the compatibility cache.
-    ///
-    /// Internal index builders use this borrowed traversal during cold load,
-    /// keeping the persistent relation as the sole retained row owner.
-    pub(crate) fn iter_rows(&self) -> impl Iterator<Item = &Row> {
-        self.relation
-            .iter()
-            .filter_map(|(key, value)| match (key, value) {
-                (ViewEntryKey::Row(_), ViewEntry::Row(row)) => Some(row),
-                _ => None,
-            })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn compatibility_rows_are_materialized(&self) -> bool {
-        self.rows_cache.get().is_some()
-    }
-
     /// Looks up one row by stable identity without materializing the complete
     /// compatibility slice.
     #[must_use]
     pub fn row(&self, id: RowId) -> Option<Row> {
-        self.row_ref(id).cloned()
-    }
-
-    /// Borrows one row by stable identity without cloning its retained text
-    /// or populating the complete compatibility slice.
-    #[must_use]
-    pub fn row_ref(&self, id: RowId) -> Option<&Row> {
         match self.relation.get(&ViewEntryKey::Row(id)) {
-            Some(ViewEntry::Row(row)) => Some(row),
+            Some(ViewEntry::Row(row)) => Some(row.clone()),
             _ => None,
         }
-    }
-
-    /// Resolves an opaque symbol selector by membership in this exact view.
-    ///
-    /// The claimed digest is never promoted directly. The canonical row
-    /// slice is ordered by [`RowId`], so the lookup borrows the already typed
-    /// key from a matching row in logarithmic time.
-    #[must_use]
-    pub fn resolve_symbol_commitment(&self, claimed: [u8; 32]) -> Option<crate::SymbolKey> {
-        self.rows()
-            .binary_search_by(|row| match row.id {
-                RowId::Package(_) => Ordering::Less,
-                RowId::Symbol(symbol) => symbol.as_bytes().cmp(&claimed),
-                RowId::Object(_) => Ordering::Greater,
-            })
-            .ok()
-            .and_then(|index| match self.rows()[index].id {
-                RowId::Symbol(symbol) => Some(symbol),
-                RowId::Package(_) | RowId::Object(_) => None,
-            })
     }
 
     /// Looks up only the canonical display label for one row.
@@ -281,7 +235,7 @@ impl ViewRoot {
     /// checkable without materializing the complete compatibility row slice.
     #[must_use]
     pub fn row_label(&self, id: RowId) -> Option<String> {
-        self.row_ref(id).map(|row| row.label.clone())
+        self.row(id).map(|row| row.label)
     }
 
     /// Returns the canonical relation-node bytes whose commitment is
@@ -733,17 +687,12 @@ mod tests {
         fn verify(
             &self,
             observation: &crate::UntrustedProducerObservation,
-        ) -> Result<crate::ProducerObservationClaims, Self::Error> {
+        ) -> Result<(), Self::Error> {
             if observation.producer_identity() == *observation.scope_root().as_bytes()
                 && observation.context() == *observation.scope_root().as_bytes()
                 && observation.evidence() == observation.scope_root().as_bytes()
             {
-                Ok(crate::ProducerObservationClaims::new(
-                    observation.producer_identity(),
-                    observation.scope_root(),
-                    observation.context(),
-                    *blake3::hash(observation.evidence()).as_bytes(),
-                ))
+                Ok(())
             } else {
                 Err("invalid test producer observation")
             }

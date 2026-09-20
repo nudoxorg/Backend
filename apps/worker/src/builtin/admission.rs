@@ -3,19 +3,15 @@
 use super::{
     AdmittedAuthority, AuthorityEpoch, AuthorityExpectation, AuthorityVersion, BuiltinInputSchema,
     BuiltinProfile, BuiltinSemanticAuthority, CompleteSemanticCoverage,
-    ExecutionRequestExpectation, ExecutionScopeId, ExpectedIdentity, IdContext,
-    ImmutableObjectSchema, InputCas, JobAdmission, JobCancellation, ObjectKey,
-    ObjectSummaryExpectation, ObjectVersion, OutputEquivalence, ProductRelation, ReadManifestId,
-    RecipeId, RevocationVersion, RootSummaryExpectation, TransportLimits, TransportMessage,
-    UntrustedSemanticCoverageClaim, WireAuthority, WireAuthorityPolicy, WireIdentity,
-    WireRecipeRequest, WorkerError, WorkerJob, WorkerJobBindings, WorkerProcessError,
-    builtin_workspace_root, product_dependency_manifest, profile_ids, relation_state,
-    schema_object_key_identity_claim, schema_object_version_identity_claim,
-    semantic_publication_row_bytes,
+    ExecutionRequestExpectation, ExpectedIdentity, IdContext, ImmutableObjectSchema, InputCas,
+    JobAdmission, JobCancellation, ObjectKey, ObjectSummaryExpectation, ObjectVersion,
+    OutputEquivalence, ProductRelation, ReadManifestId, RecipeId, RevocationVersion,
+    RootSummaryExpectation, TransportLimits, TransportMessage, UntrustedSemanticCoverageClaim,
+    WireAuthority, WireAuthorityPolicy, WireIdentity, WireRecipeRequest, WorkerError, WorkerJob,
+    WorkerJobBindings, WorkerProcessError, builtin_workspace_root, product_dependency_manifest,
+    product_source_row_bytes, profile_ids, relation_state, schema_object_key_identity_claim,
+    schema_object_version_identity_claim,
 };
-use std::num::NonZeroU64;
-
-const LEGACY_SCOPE_ONE: NonZeroU64 = NonZeroU64::MIN;
 
 #[derive(Debug)]
 pub(super) struct BuiltinAdmission {
@@ -187,7 +183,7 @@ impl BuiltinAdmission {
             Some("workspace")
         } else if request.inputs != expected_wire_inputs {
             Some("input identity")
-        } else if request.scope != ExecutionScopeId::from_legacy_ordinal(LEGACY_SCOPE_ONE) {
+        } else if request.scope != 1 {
             Some("scope")
         } else if request.authority != expected_authority {
             Some("authority")
@@ -234,7 +230,7 @@ impl BuiltinAdmission {
             work_key: ExpectedIdentity::from_typed(&work_key),
             inputs: expected_inputs,
             read_manifest: ExpectedIdentity::from_typed(&self.read_manifest),
-            scope: ExecutionScopeId::from_legacy_ordinal(LEGACY_SCOPE_ONE),
+            scope: 1,
             authority: self.authority_expectation,
             resources: request.resources,
             fence: request.fence,
@@ -517,7 +513,7 @@ impl JobAdmission<ProductRelation> for BuiltinAdmission {
         let mut objects = relation
             .iter()
             .map(|(key, value)| {
-                let row = semantic_publication_row_bytes(key, value);
+                let row = product_source_row_bytes(key, value);
                 let object_key = ObjectKey::<ImmutableObjectSchema>::from_value(&row);
                 let object_version = ObjectVersion::<ImmutableObjectSchema>::from_value(&row);
                 ObjectSummaryExpectation {

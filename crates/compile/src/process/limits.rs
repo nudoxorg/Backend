@@ -3,9 +3,6 @@
 use crate::{ProcessError, UnsupportedLimit};
 use std::time::Duration;
 
-const MAX_ENVIRONMENT_VARIABLES: usize = 128;
-const MAX_ENVIRONMENT_BYTES: usize = 64 * 1024;
-
 /// Process environment policy.  Only these sorted variables are passed to an
 /// authority; ambient process environment is never inherited.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,14 +18,6 @@ impl ProcessEnvironment {
     /// Returns [`ProcessError::DuplicateEnvironment`] for duplicate keys or
     /// [`ProcessError::InvalidEnvironment`] for malformed names or values.
     pub fn new(mut variables: Vec<(String, String)>) -> Result<Self, ProcessError> {
-        let bytes = variables.iter().try_fold(0_usize, |total, (key, value)| {
-            total.checked_add(key.len())?.checked_add(value.len())
-        });
-        if variables.len() > MAX_ENVIRONMENT_VARIABLES
-            || bytes.is_none_or(|bytes| bytes > MAX_ENVIRONMENT_BYTES)
-        {
-            return Err(ProcessError::ConfigurationLimit);
-        }
         variables.sort();
         if variables
             .windows(2)

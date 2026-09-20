@@ -21,9 +21,8 @@ use std::fmt;
 
 pub use input_cas::{CasGcLimits, CasGcReport, CasRootLease, InputCas};
 pub use listener::{
-    FilesystemPeerPolicy, PeerPolicy, PeerPolicyError, TcpExposure, TcpWorkerListener,
-    TcpWorkerListenerConfig, UnixWorkerListener, WorkerListenerConfig, WorkerListenerError,
-    WorkerRunReport,
+    FilesystemPeerPolicy, PeerPolicy, PeerPolicyError, TcpWorkerListener, TcpWorkerListenerConfig,
+    UnixWorkerListener, WorkerListenerConfig, WorkerListenerError, WorkerRunReport,
 };
 pub use process::{
     AUTHORITY_SECRET_ENV, PROFILE_ENV, WorkerProcessConfig, WorkerProcessError, main_entry,

@@ -1,262 +1,17 @@
 //! C and C++ native authority adapter.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use backend_compile::{
-    Authority, AuthorityError, AuthorityIdentity, DiscoverySnapshot, Extraction, FactKeySchema,
-    FactKind, FactRecord, FactValueSchema, Input, InputKind, InputManifest, NativeRecord,
-    NativeRecordKind, NativeRequestInput, NativeSemanticAdapter, NativeSemanticRequest,
-    NativeTemplate, ProcessLimits, ProtocolDescriptor, SessionKey, SupervisedCommand,
-    default_native_limits, extract_native_with_adapter, native_input, native_semantic_evidence,
-    native_semantic_input, typed_of,
+    Authority, AuthorityError, AuthorityIdentity, DiscoverySnapshot, Extraction, Input, InputKind,
+    InputManifest, NativeRequestInput, NativeTemplate, ProcessLimits, ProtocolDescriptor,
+    SessionKey, SupervisedCommand, default_native_limits, extract_native_checked, native_input,
+    native_semantic_evidence, native_semantic_input, typed_of,
 };
-use std::{fmt, path::Path};
-
-mod authority;
-mod compile_commands;
-mod extract;
-mod oracle;
-mod system_includes;
-
-#[path = "src/legacy/mod.rs"]
-pub mod legacy;
-
-pub use authority::{
-    ClangAuthorityError, ClangProject, analyze_file, analyze_source, native_records,
-};
-pub use oracle::{
-    ClangOracle, OracleAlias, OracleDiagnostic, OracleEnum, OracleField, OracleFnMod,
-    OracleFunction, OracleGenericParam, OracleNamespace, OracleParam, OracleReceiver, OracleRecord,
-    OracleType, OracleVar, OracleVariant, OracleVisibility, Reference, Usr,
-};
+use std::path::Path;
 
 const LANGUAGE: &str = "clang";
 
-struct ClangSemanticAdapter;
-
-#[derive(Clone, Copy)]
-struct ParsedClangRecord<'record> {
-    kind: NativeRecordKind,
-    key: &'record str,
-    value: &'record str,
-}
-
-#[derive(Clone, Copy)]
-struct AdmittedClangRecord<'record>(ParsedClangRecord<'record>);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ClangSemanticError {
-    NonUtf8Value,
-    EmptyValue,
-    InvalidDeclaration,
-    InvalidType,
-    InvalidEdge,
-    InvalidDiagnostic,
-    InvalidDependencyState,
-}
-
-impl fmt::Display for ClangSemanticError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::NonUtf8Value => "Clang semantic value is not UTF-8",
-            Self::EmptyValue => "Clang semantic value is empty",
-            Self::InvalidDeclaration => "Clang declaration omits its closed semantic state",
-            Self::InvalidType => "Clang type omits its structural or qualifier state",
-            Self::InvalidEdge => "Clang semantic edge is malformed or has an unknown relation",
-            Self::InvalidDiagnostic => "Clang diagnostic has no severity",
-            Self::InvalidDependencyState => "Clang dependency state is invalid",
-        })
-    }
-}
-
-impl std::error::Error for ClangSemanticError {}
-
-impl NativeSemanticAdapter for ClangSemanticAdapter {
-    type Parsed<'record> = ParsedClangRecord<'record>;
-    type Admitted<'record> = AdmittedClangRecord<'record>;
-    type Error = ClangSemanticError;
-
-    fn parse<'record>(
-        &'record self,
-        record: &'record NativeRecord,
-    ) -> Result<Self::Parsed<'record>, Self::Error> {
-        let value =
-            std::str::from_utf8(record.value()).map_err(|_| ClangSemanticError::NonUtf8Value)?;
-        Ok(ParsedClangRecord {
-            kind: record.kind(),
-            key: record.key(),
-            value,
-        })
-    }
-
-    fn admit<'record>(
-        &'record self,
-        parsed: Self::Parsed<'record>,
-    ) -> Result<Self::Admitted<'record>, Self::Error> {
-        if parsed.value.is_empty() {
-            return Err(ClangSemanticError::EmptyValue);
-        }
-        match parsed.kind {
-            NativeRecordKind::Declaration if !valid_declaration(parsed.value) => {
-                return Err(ClangSemanticError::InvalidDeclaration);
-            }
-            NativeRecordKind::Type if !valid_type(parsed.value) => {
-                return Err(ClangSemanticError::InvalidType);
-            }
-            NativeRecordKind::Edge if !valid_edge(parsed.key, parsed.value) => {
-                return Err(ClangSemanticError::InvalidEdge);
-            }
-            NativeRecordKind::Diagnostic if !valid_diagnostic(parsed.value) => {
-                return Err(ClangSemanticError::InvalidDiagnostic);
-            }
-            NativeRecordKind::Dependency if parsed.value != "present" => {
-                return Err(ClangSemanticError::InvalidDependencyState);
-            }
-            NativeRecordKind::NegativeDependency if parsed.value != "absent" => {
-                return Err(ClangSemanticError::InvalidDependencyState);
-            }
-            _ => {}
-        }
-        Ok(AdmittedClangRecord(parsed))
-    }
-
-    fn lower<'record>(
-        &'record self,
-        admitted: Self::Admitted<'record>,
-    ) -> FactRecord<FactKeySchema, FactValueSchema> {
-        let record = admitted.0;
-        FactRecord::new(
-            fact_kind(record.kind),
-            record.key.as_bytes().to_vec(),
-            record.value.as_bytes().to_vec(),
-        )
-    }
-}
-
-const fn fact_kind(kind: NativeRecordKind) -> FactKind {
-    match kind {
-        NativeRecordKind::Declaration => FactKind::Declaration,
-        NativeRecordKind::Type => FactKind::Type,
-        NativeRecordKind::Edge => FactKind::Edge,
-        NativeRecordKind::Diagnostic => FactKind::Diagnostic,
-        NativeRecordKind::Dependency => FactKind::Dependency,
-        NativeRecordKind::NegativeDependency => FactKind::NegativeDependency,
-    }
-}
-
-fn cells(value: &str) -> impl Iterator<Item = (&str, &str)> {
-    value.split(';').filter_map(|cell| cell.split_once('='))
-}
-
-fn has_cell(value: &str, name: &str, accepted: &[&str]) -> bool {
-    cells(value).any(|(key, value)| key == name && accepted.contains(&value))
-}
-
-fn valid_declaration(value: &str) -> bool {
-    has_cell(
-        value,
-        "kind",
-        &[
-            "namespace",
-            "macro",
-            "record",
-            "enum",
-            "enumerator",
-            "function",
-            "method",
-            "constructor",
-            "destructor",
-            "field",
-            "variable",
-            "parameter",
-            "template-parameter",
-            "type-alias",
-            "template",
-            "unknown",
-        ],
-    ) && has_cell(value, "definition", &["declaration", "definition"])
-        && has_cell(
-            value,
-            "storage",
-            &[
-                "none",
-                "auto",
-                "static",
-                "extern",
-                "register",
-                "thread-local",
-            ],
-        )
-        && has_cell(
-            value,
-            "virtuality",
-            &["non-virtual", "virtual", "pure-virtual"],
-        )
-}
-
-fn valid_type(value: &str) -> bool {
-    has_cell(
-        value,
-        "kind",
-        &[
-            "unknown",
-            "builtin",
-            "named",
-            "pointer",
-            "block-pointer",
-            "member-pointer",
-            "lvalue-reference",
-            "rvalue-reference",
-            "array",
-            "function",
-            "template-parameter",
-            "template-specialization",
-            "anonymous-record",
-        ],
-    ) && has_cell(value, "const", &["true", "false"])
-        && has_cell(value, "volatile", &["true", "false"])
-        && has_cell(value, "restrict", &["true", "false"])
-        && cells(value).all(|(key, value)| match key {
-            "size-bits" | "align-bits" | "array-length" => value.parse::<u64>().is_ok(),
-            _ => true,
-        })
-}
-
-fn valid_edge(key: &str, value: &str) -> bool {
-    let relation = cells(value)
-        .find_map(|(name, relation)| (name == "relation").then_some(relation))
-        .unwrap_or(value);
-    key.split_once("->")
-        .is_some_and(|(source, target)| !source.is_empty() && !target.is_empty())
-        && matches!(
-            relation,
-            "owner"
-                | "pointee"
-                | "element"
-                | "result"
-                | "parameter"
-                | "member-owner"
-                | "template-argument"
-                | "reference-local"
-                | "reference-foreign"
-                | "reference-unresolved"
-                | "include"
-                | "import"
-                | "override"
-                | "documentation-link"
-        )
-}
-
-fn valid_diagnostic(value: &str) -> bool {
-    has_cell(
-        value,
-        "severity",
-        &["ignored", "note", "warning", "error", "fatal"],
-    )
-}
-
 /// Builds the zero-toolchain local C-family syntax frontend.
-///
-/// This structural baseline never claims native semantic authority.
 ///
 /// # Errors
 /// Returns an error when the embedded grammar query cannot be admitted.
@@ -497,17 +252,14 @@ impl Authority for ClangFrontend {
             self.helper.as_deref().unwrap_or("unsupported"),
             &self.command,
         )?;
-        extract_native_with_adapter(
-            NativeSemanticRequest::new(
-                self.identity(),
-                LANGUAGE,
-                snapshot,
-                key,
-                self.template.as_ref(),
-                fields,
-                self.manifest()?.digest(),
-            ),
-            &ClangSemanticAdapter,
+        extract_native_checked(
+            self.identity(),
+            LANGUAGE,
+            snapshot,
+            key,
+            self.template.as_ref(),
+            fields,
+            self.manifest()?.digest(),
         )
     }
 }
@@ -543,7 +295,7 @@ fn validate_absolute(path: &str, label: &str) -> Result<(), AuthorityError> {
     Ok(())
 }
 
-fn discovery<E: fmt::Display>(error: E) -> AuthorityError {
+fn discovery<E: std::fmt::Display>(error: E) -> AuthorityError {
     AuthorityError::Discovery(error.to_string())
 }
 

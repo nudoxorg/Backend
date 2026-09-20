@@ -2,9 +2,9 @@
 
 use super::{
     AdmittedExecutionResult, AttemptId, Attestation, AttestationMaterial, AttestationMaterialView,
-    AttestationVerifier, CancellationId, ExecutionRequestExpectation, ExecutionScopeId,
-    ExpectedIdentity, Fence, PublishableExecutionResult, ReplicationError, ResourceEnvelope,
-    RevocationVersion, SemanticCoverageExpectation, SparseCoverage, TransportLimits, WireAuthority,
+    AttestationVerifier, CancellationId, ExecutionRequestExpectation, ExpectedIdentity, Fence,
+    PublishableExecutionResult, ReplicationError, ResourceEnvelope, RevocationVersion,
+    SemanticCoverageExpectation, SparseCoverage, TransportLimits, WireAuthority,
     WireAuthorityPolicy, WireIdentity, WireSemanticCoverage, WorkspaceRootClaim,
 };
 use std::{mem::size_of, sync::Arc};
@@ -157,7 +157,7 @@ pub struct WireRecipeResult {
     /// admission, and lower receipt publication retain one allocation.
     pub output_bytes: Arc<Vec<u8>>,
     /// Scope echoed from the request.
-    pub scope: ExecutionScopeId,
+    pub scope: u64,
     /// Full resource envelope echoed from the request.
     pub resources: ResourceEnvelope,
     /// Byte/range coverage for the output bytes. This never claims semantic

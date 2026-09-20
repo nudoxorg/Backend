@@ -14,31 +14,30 @@ use std::{
 use std::sync::Mutex;
 
 #[cfg(test)]
-static TEST_FAULT: Mutex<Vec<(std::thread::ThreadId, u8)>> = Mutex::new(Vec::new());
+static TEST_FAULT: Mutex<Option<(std::thread::ThreadId, u8)>> = Mutex::new(None);
 
 #[cfg(test)]
 pub(crate) fn set_test_fault(point: u8) {
     if let Ok(mut fault) = TEST_FAULT.lock() {
-        let owner = std::thread::current().id();
-        fault.retain(|(thread, _)| *thread != owner);
-        fault.push((owner, point));
+        *fault = Some((std::thread::current().id(), point));
     }
 }
 
 #[cfg(test)]
-pub(super) fn take_test_fault(point: u8) -> bool {
+fn take_test_fault(point: u8) -> bool {
     let Ok(mut fault) = TEST_FAULT.lock() else {
         return false;
     };
     let current = std::thread::current().id();
-    let Some(index) = fault
-        .iter()
-        .position(|(owner, pending)| *owner == current && *pending == point)
-    else {
-        return false;
-    };
-    fault.remove(index);
-    true
+    if fault
+        .as_ref()
+        .is_some_and(|(owner, pending)| *owner == current && *pending == point)
+    {
+        *fault = None;
+        true
+    } else {
+        false
+    }
 }
 
 /// The fixed-memory journal state retained by an open [`FileStore`].
@@ -84,17 +83,6 @@ pub(super) struct JournalState {
     pub(super) selected: Option<SelectedHead>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RecoveredHead {
-    Empty,
-    Current(SelectedHead),
-    RepairMissing(SelectedHead),
-    RepairInterrupted {
-        selected: SelectedHead,
-        orphaned_temps: usize,
-    },
-}
-
 pub(super) fn base_matches(
     current: Option<&PublicationDescriptor>,
     expected: Option<PublicationBase>,
@@ -123,7 +111,6 @@ pub(super) fn descriptor_matches_base(
 
 impl FileStore {
     pub(super) fn read_state(&self) -> Result<JournalState, StoreError> {
-        super::objects::scavenge_store_temps(&self.root)?;
         let head_file = head::read_head(&self.root.join("HEAD"))?;
         if let Some(receipt) = head_file {
             let mut cached = self.journal_tail.lock().map_err(|_| StoreError::Corrupt)?;
@@ -136,36 +123,12 @@ impl FileStore {
         if let Some(head) = head {
             head::validate_head_record(&self.root.join("journal"), &tail, &head)?;
         }
-        let orphaned_temps = head::scavenge_head_temps(&self.root, &tail)?;
-        let recovered = match (tail.selected, head) {
-            (None, None) if orphaned_temps == 0 => RecoveredHead::Empty,
-            (None, None | Some(_)) => return Err(StoreError::Corrupt),
-            (Some(selected), Some(observed)) if selected == observed && orphaned_temps == 0 => {
-                RecoveredHead::Current(selected)
+        if let Some(head) = tail.selected {
+            if head_file.map(|receipt| receipt.head) != Some(head) {
+                self.write_head(&head)?;
             }
-            (Some(selected), Some(observed)) if selected == observed => {
-                RecoveredHead::RepairInterrupted {
-                    selected,
-                    orphaned_temps,
-                }
-            }
-            (Some(selected), _) if orphaned_temps == 0 => RecoveredHead::RepairMissing(selected),
-            (Some(selected), _) => RecoveredHead::RepairInterrupted {
-                selected,
-                orphaned_temps,
-            },
-        };
-        match recovered {
-            RecoveredHead::RepairMissing(selected) => self.write_head(&selected)?,
-            RecoveredHead::RepairInterrupted {
-                selected,
-                orphaned_temps,
-            } => {
-                debug_assert_ne!(orphaned_temps, 0);
-                self.write_head(&selected)?;
-            }
-            RecoveredHead::Current(selected) => debug_assert_eq!(tail.selected, Some(selected)),
-            RecoveredHead::Empty => {}
+        } else if head.is_some() {
+            return Err(StoreError::Corrupt);
         }
         Ok(JournalState {
             selected: tail.selected,

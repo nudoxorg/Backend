@@ -14,7 +14,7 @@ use super::{
 };
 use crate::dispatch::{
     AcceptedResultProof, DispatchPhase, NotificationCursor, PublicationAck, RemoteAttemptIntent,
-    StorePublicationReceipt, TransferCheckpointRef,
+    TransferCheckpointRef,
 };
 use backend_execution::OutputVersion;
 use backend_replication::WireRecipeResult;

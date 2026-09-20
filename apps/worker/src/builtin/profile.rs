@@ -5,18 +5,17 @@ use super::{
     SemanticCoverageBinding, SemanticCoverageValidator, SparseCoverage,
     UntrustedSemanticCoverageClaim, WorkerError,
 };
-use crate::input_cas::BoundedFileImage;
 use backend_engine::{
-    IdContext, PRODUCT_EXECUTION_MEMORY_BYTES, SemanticPublicationProjectionBuilder,
-    TreeNodeLoader, UntrustedId, semantic_publication_output_bytes,
+    IdContext, PRODUCT_EXECUTION_MEMORY_BYTES, ProductProjectionBuilder, TreeNodeLoader,
+    UntrustedId, product_output_bytes,
 };
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
 pub(super) use backend_engine::builtin::{
-    BuiltinInputSchema, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
-    Profile as BuiltinProfile, ProfileIds, execution_manifest, execution_resources,
-    product_dependency_manifest, profile_descriptor, profile_ids,
+    BuiltinInputSchema, ProductSourceRecord, Profile as BuiltinProfile, ProfileIds,
+    execution_manifest, execution_resources, product_dependency_manifest, profile_descriptor,
+    profile_ids,
 };
 
 /// Read-only adapter over canonical relation proofs retained by the worker's
@@ -53,13 +52,12 @@ impl TreeNodeLoader<super::ProductRelation> for ProductInputLoader {
             return Err("product relation proof has the wrong identity context");
         }
         let digest = *claim.as_bytes();
-        let proof = BoundedFileImage::read_optional(&self.proof_path(digest), 64 * 1024)
-            .map_err(|_| "product relation proof exceeds its canonical bound")?
-            .ok_or("product relation proof is absent from the warm CAS")?;
-        if proof.as_slice().is_empty() {
+        let proof = std::fs::read(self.proof_path(digest))
+            .map_err(|_| "product relation proof is absent from the warm CAS")?;
+        if proof.is_empty() || proof.len() > 64 * 1024 {
             return Err("product relation proof exceeds its canonical bound");
         }
-        backend_engine::admit_canonical_root_claim(claim, proof.as_slice())
+        backend_engine::admit_canonical_root_claim(claim, &proof)
             .map_err(|_| "product relation proof failed canonical admission")
     }
 }
@@ -133,7 +131,7 @@ impl BuiltinExecutor {
         // Keep only typed child claims in the depth-first frontier. Canonical
         // node bytes are loaded and admitted one at a time from the warm CAS,
         // and rows feed the shared fixed-state accumulator immediately.
-        let mut projection = SemanticPublicationProjectionBuilder::new();
+        let mut projection = ProductProjectionBuilder::new();
         let mut node = Some(root);
         let mut frontier = Vec::new();
         loop {
@@ -155,7 +153,7 @@ impl BuiltinExecutor {
                 for (key, value) in &entries {
                     projection
                         .push(key, value)
-                        .map_err(|_| WorkerError::InputProof("semantic publication row"))?;
+                        .map_err(|_| WorkerError::InputProof("product row projection"))?;
                 }
                 continue;
             }
@@ -173,16 +171,10 @@ impl BuiltinExecutor {
             }
         }
         let projection = projection.finish(source);
-        if projection
-            .published()
-            .saturating_add(projection.unavailable())
-            != expected_rows
-        {
-            return Err(WorkerError::InputProof(
-                "semantic publication relation row count",
-            ));
+        if projection.projects().saturating_add(projection.files()) != expected_rows {
+            return Err(WorkerError::InputProof("product relation row count"));
         }
-        Ok(semantic_publication_output_bytes(
+        Ok(product_output_bytes(
             self.ids,
             invocation.input_basis,
             projection,

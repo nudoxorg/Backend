@@ -3,8 +3,8 @@
 use crate::workspace::WorkspaceSnapshot;
 use backend_version::{
     AdmittedProducerObservation, AuthorityScopeClaim, CoverageWitness, ObjectVersion,
-    ProducerObservationClaims, ProducerObservationVerifier, Schema, ScopeRoot,
-    UntrustedProducerObservation, WorkspaceRoot, admit_complete_scope, admit_producer_observation,
+    ProducerObservationVerifier, Schema, ScopeRoot, UntrustedProducerObservation, WorkspaceRoot,
+    admit_complete_scope, admit_producer_observation,
 };
 use std::sync::Arc;
 
@@ -86,18 +86,9 @@ impl WorkspaceViewProducerAdmission {
 impl ProducerObservationVerifier for WorkspaceViewProducerAdmission {
     type Error = &'static str;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
-        let expected = self.observation();
-        if observation == &expected {
-            Ok(ProducerObservationClaims::new(
-                expected.producer_identity(),
-                expected.scope_root(),
-                expected.context(),
-                *blake3::hash(expected.evidence()).as_bytes(),
-            ))
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
+        if observation == &self.observation() {
+            Ok(())
         } else {
             Err("workspace producer observation does not match admitted source")
         }
@@ -147,22 +138,14 @@ impl<T: Schema> BuiltinCoverageVerifier<T> {
 impl<T: Schema> ProducerObservationVerifier for BuiltinCoverageVerifier<T> {
     type Error = &'static str;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
         let expected = self.observation();
         if observation.producer_identity() == expected.producer_identity()
             && observation.scope_root() == expected.scope_root()
             && observation.context() == expected.context()
             && observation.evidence() == expected.evidence()
         {
-            Ok(ProducerObservationClaims::new(
-                expected.producer_identity(),
-                expected.scope_root(),
-                expected.context(),
-                *blake3::hash(expected.evidence()).as_bytes(),
-            ))
+            Ok(())
         } else {
             Err("builtin authority observation mismatch")
         }

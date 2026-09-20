@@ -1,150 +1,17 @@
 //! TypeScript OXC/checker native authority adapter.
 #![forbid(unsafe_code)]
 
-mod authority;
-mod checker;
-mod coordinate;
-mod error;
-mod package;
-
-#[path = "src/legacy/mod.rs"]
-pub mod legacy;
-
-pub use authority::{
-    OxcDeclaration, OxcDeclarationKind, OxcModule, SyntaxMappedModifier, analyze,
-    syntax_mapped_modifier, with_analysis,
-};
-pub use checker::{
-    BoundDeclaration, BoundNarrowing, BoundReference, Checker, CheckerError, CheckerIndex,
-    Declaration, ExplicitTypeScriptChecker, LiteralBase, MappedModifier, Narrowing, ObjectMember,
-    Origin, Parameter, Reference, Report, TemplatePart, TypeScriptCheckerProgram,
-    TypeScriptCheckerProgramError, TypeScriptCheckerProgramView, TypeScriptModuleRoot,
-    TypeScriptModuleRootView, TypeTree, source_digest,
-};
-pub use coordinate::{CoordinateError, Utf8Span, Utf8ToUtf16Cursor, Utf16Span};
-pub use error::{OxcAuthorityError, OxcAuthorityError as AuthorityError};
-pub use package::{
-    LocatedPackage, MAX_TARBALL_MEMBERS, MAX_TARBALL_UNCOMPRESSED_BYTES, PackageError, PackagePurl,
-    PackagePurlError, RegistryMetadata, TarballMember, TarballMemberKind, decode_packument,
-    locate_package, read_tarball,
-};
-
 use backend_compile::{
-    Authority, AuthorityError as CompileAuthorityError, AuthorityIdentity, DiscoverySnapshot,
-    Extraction, FactKeySchema, FactKind, FactRecord, FactValueSchema, Input, InputKind,
-    InputManifest, NativeRecord, NativeRecordKind, NativeRequestInput, NativeSemanticAdapter,
-    NativeSemanticRequest, NativeTemplate, ProcessLimits, ProtocolDescriptor, SessionKey,
-    SupervisedCommand, TypeScriptSource, default_native_limits, extract_native_with_adapter,
-    native_input, native_semantic_evidence, native_semantic_input, typed_of,
+    Authority, AuthorityError, AuthorityIdentity, DiscoverySnapshot, Extraction, Input, InputKind,
+    InputManifest, NativeRequestInput, NativeTemplate, ProcessLimits, ProtocolDescriptor,
+    SessionKey, SupervisedCommand, default_native_limits, extract_native_checked, native_input,
+    native_semantic_evidence, native_semantic_input, typed_of,
 };
-use std::{fmt, path::Path};
+use std::path::Path;
 
 const LANGUAGE: &str = "typescript";
 
-struct TypeScriptSemanticAdapter;
-
-#[derive(Clone, Copy)]
-struct ParsedTypeScriptRecord<'record> {
-    kind: NativeRecordKind,
-    key: &'record str,
-    value: &'record str,
-}
-
-#[derive(Clone, Copy)]
-struct AdmittedTypeScriptRecord<'record>(ParsedTypeScriptRecord<'record>);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TypeScriptSemanticError {
-    NonUtf8Value,
-    EmptyValue,
-    InvalidEdge,
-    InvalidDependencyState,
-}
-
-impl fmt::Display for TypeScriptSemanticError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::NonUtf8Value => "TypeScript semantic value is not UTF-8",
-            Self::EmptyValue => "TypeScript semantic value is empty",
-            Self::InvalidEdge => "TypeScript semantic edge has no source and target",
-            Self::InvalidDependencyState => "TypeScript dependency state is invalid",
-        })
-    }
-}
-
-impl std::error::Error for TypeScriptSemanticError {}
-
-impl NativeSemanticAdapter for TypeScriptSemanticAdapter {
-    type Parsed<'record> = ParsedTypeScriptRecord<'record>;
-    type Admitted<'record> = AdmittedTypeScriptRecord<'record>;
-    type Error = TypeScriptSemanticError;
-
-    fn parse<'record>(
-        &'record self,
-        record: &'record NativeRecord,
-    ) -> Result<Self::Parsed<'record>, Self::Error> {
-        let value = std::str::from_utf8(record.value())
-            .map_err(|_| TypeScriptSemanticError::NonUtf8Value)?;
-        Ok(ParsedTypeScriptRecord {
-            kind: record.kind(),
-            key: record.key(),
-            value,
-        })
-    }
-
-    fn admit<'record>(
-        &'record self,
-        parsed: Self::Parsed<'record>,
-    ) -> Result<Self::Admitted<'record>, Self::Error> {
-        if parsed.value.is_empty() {
-            return Err(TypeScriptSemanticError::EmptyValue);
-        }
-        match parsed.kind {
-            NativeRecordKind::Edge
-                if parsed
-                    .key
-                    .split_once("->")
-                    .is_none_or(|(source, target)| source.is_empty() || target.is_empty()) =>
-            {
-                Err(TypeScriptSemanticError::InvalidEdge)
-            }
-            NativeRecordKind::Dependency if parsed.value != "present" => {
-                Err(TypeScriptSemanticError::InvalidDependencyState)
-            }
-            NativeRecordKind::NegativeDependency if parsed.value != "absent" => {
-                Err(TypeScriptSemanticError::InvalidDependencyState)
-            }
-            _ => Ok(AdmittedTypeScriptRecord(parsed)),
-        }
-    }
-
-    fn lower<'record>(
-        &'record self,
-        admitted: Self::Admitted<'record>,
-    ) -> FactRecord<FactKeySchema, FactValueSchema> {
-        let record = admitted.0;
-        FactRecord::new(
-            fact_kind(record.kind),
-            record.key.as_bytes().to_vec(),
-            record.value.as_bytes().to_vec(),
-        )
-    }
-}
-
-const fn fact_kind(kind: NativeRecordKind) -> FactKind {
-    match kind {
-        NativeRecordKind::Declaration => FactKind::Declaration,
-        NativeRecordKind::Type => FactKind::Type,
-        NativeRecordKind::Edge => FactKind::Edge,
-        NativeRecordKind::Diagnostic => FactKind::Diagnostic,
-        NativeRecordKind::Dependency => FactKind::Dependency,
-        NativeRecordKind::NegativeDependency => FactKind::NegativeDependency,
-    }
-}
-
 /// Builds the zero-toolchain local TypeScript, TSX, and JavaScript syntax frontend.
-///
-/// This structural baseline never claims native semantic authority.
 ///
 /// # Errors
 /// Returns an error when an embedded grammar query cannot be admitted.
@@ -184,7 +51,7 @@ pub struct TypeScriptFrontend {
     source: Vec<u8>,
     node: String,
     typescript: String,
-    profile: TypeScriptSource,
+    profile: String,
     package: Vec<u8>,
     template: Option<NativeTemplate>,
 }
@@ -204,18 +71,16 @@ impl TypeScriptFrontend {
         typescript: impl Into<String>,
         profile: impl Into<String>,
         package: Vec<u8>,
-    ) -> Result<Self, CompileAuthorityError> {
+    ) -> Result<Self, AuthorityError> {
         let node = node.into();
         let typescript = typescript.into();
-        let profile = profile.into();
-        let profile = parse_profile(&profile)?;
         validate_absolute(&node, "Node executable")?;
         validate_absolute(&typescript, "TypeScript authority helper")?;
         Ok(Self {
             source,
             node,
             typescript,
-            profile,
+            profile: profile.into(),
             package,
             template: None,
         })
@@ -231,7 +96,7 @@ impl TypeScriptFrontend {
         typescript: impl Into<String>,
         profile: impl Into<String>,
         package: Vec<u8>,
-    ) -> Result<Self, CompileAuthorityError> {
+    ) -> Result<Self, AuthorityError> {
         Self::with_mode_and_limits(
             source,
             node,
@@ -253,7 +118,7 @@ impl TypeScriptFrontend {
         typescript: impl Into<String>,
         profile: impl Into<String>,
         package: Vec<u8>,
-    ) -> Result<Self, CompileAuthorityError> {
+    ) -> Result<Self, AuthorityError> {
         Self::with_mode_and_limits(
             source,
             node,
@@ -276,7 +141,7 @@ impl TypeScriptFrontend {
         profile: impl Into<String>,
         package: Vec<u8>,
         limits: ProcessLimits,
-    ) -> Result<Self, CompileAuthorityError> {
+    ) -> Result<Self, AuthorityError> {
         Self::with_mode_and_limits(source, node, typescript, profile, package, false, limits)
     }
 
@@ -291,7 +156,7 @@ impl TypeScriptFrontend {
         profile: impl Into<String>,
         package: Vec<u8>,
         limits: ProcessLimits,
-    ) -> Result<Self, CompileAuthorityError> {
+    ) -> Result<Self, AuthorityError> {
         Self::with_mode_and_limits(source, node, typescript, profile, package, true, limits)
     }
 
@@ -303,11 +168,10 @@ impl TypeScriptFrontend {
         package: Vec<u8>,
         persistent: bool,
         limits: ProcessLimits,
-    ) -> Result<Self, CompileAuthorityError> {
+    ) -> Result<Self, AuthorityError> {
         let node = node.into();
         let typescript = typescript.into();
         let profile = profile.into();
-        let profile = parse_profile(&profile)?;
         validate_absolute(&node, "Node executable")?;
         validate_absolute(&typescript, "TypeScript authority helper")?;
         let template = NativeTemplate::new(
@@ -355,7 +219,7 @@ impl TypeScriptFrontend {
         Path::new(&self.typescript)
     }
 
-    fn manifest(&self) -> Result<InputManifest, CompileAuthorityError> {
+    fn manifest(&self) -> Result<InputManifest, AuthorityError> {
         InputManifest::new(vec![
             Input::new(InputKind::Source, "index.ts", &self.source).map_err(discovery)?,
             Input::new(
@@ -373,7 +237,7 @@ impl TypeScriptFrontend {
             Input::new(
                 InputKind::Configuration,
                 "ts-profile",
-                self.profile.name().as_bytes(),
+                self.profile.as_bytes(),
             )
             .map_err(discovery)?,
             Input::new(InputKind::Dependency, "package-snapshot", &self.package)
@@ -394,13 +258,13 @@ impl TypeScriptFrontend {
 impl Authority for TypeScriptFrontend {
     fn identity(&self) -> AuthorityIdentity {
         AuthorityIdentity {
-            producer: typed_of(b"backend-frontend-typescript-v4"),
+            producer: typed_of(b"backend-frontend-typescript-v3"),
             toolchain: backend_compile::native_executable_id(Path::new(&self.node)),
-            contract: typed_of(b"native-semantic-adapter-v2/typescript"),
+            contract: typed_of(b"native-fact-envelope-v1/typescript"),
         }
     }
 
-    fn discover(&self) -> Result<DiscoverySnapshot, CompileAuthorityError> {
+    fn discover(&self) -> Result<DiscoverySnapshot, AuthorityError> {
         Ok(DiscoverySnapshot::new(self.manifest()?, 0))
     }
 
@@ -408,25 +272,22 @@ impl Authority for TypeScriptFrontend {
         &self,
         snapshot: &DiscoverySnapshot,
         key: SessionKey,
-    ) -> Result<Extraction, CompileAuthorityError> {
+    ) -> Result<Extraction, AuthorityError> {
         let fields = request_inputs(
             &self.source,
             &self.node,
             &self.typescript,
-            self.profile,
+            &self.profile,
             &self.package,
         )?;
-        extract_native_with_adapter(
-            NativeSemanticRequest::new(
-                self.identity(),
-                LANGUAGE,
-                snapshot,
-                key,
-                self.template.as_ref(),
-                fields,
-                self.manifest()?.digest(),
-            ),
-            &TypeScriptSemanticAdapter,
+        extract_native_checked(
+            self.identity(),
+            LANGUAGE,
+            snapshot,
+            key,
+            self.template.as_ref(),
+            fields,
+            self.manifest()?.digest(),
         )
     }
 }
@@ -435,12 +296,12 @@ fn request_inputs(
     source: &[u8],
     node: &str,
     typescript: &str,
-    profile: TypeScriptSource,
+    profile: &str,
     package: &[u8],
-) -> Result<Vec<NativeRequestInput>, CompileAuthorityError> {
+) -> Result<Vec<NativeRequestInput>, AuthorityError> {
     Ok(vec![
         native_input("index.ts", source.to_vec())?,
-        native_input("ts-profile", profile.name().as_bytes().to_vec())?,
+        native_input("ts-profile", profile.as_bytes().to_vec())?,
         native_input("package-snapshot", package.to_vec())?,
         native_input(
             "node",
@@ -455,21 +316,17 @@ fn request_inputs(
     ])
 }
 
-fn validate_absolute(path: &str, label: &str) -> Result<(), CompileAuthorityError> {
+fn validate_absolute(path: &str, label: &str) -> Result<(), AuthorityError> {
     if !Path::new(path).is_absolute() {
-        return Err(CompileAuthorityError::Discovery(format!(
+        return Err(AuthorityError::Discovery(format!(
             "{label} must be absolute"
         )));
     }
     Ok(())
 }
 
-fn parse_profile(profile: &str) -> Result<TypeScriptSource, CompileAuthorityError> {
-    TypeScriptSource::try_from(profile).map_err(discovery)
-}
-
-fn discovery<E: fmt::Display>(error: E) -> CompileAuthorityError {
-    CompileAuthorityError::Discovery(error.to_string())
+fn discovery<E: std::fmt::Display>(error: E) -> AuthorityError {
+    AuthorityError::Discovery(error.to_string())
 }
 
 /// Honest native authority session capability.
@@ -479,33 +336,4 @@ pub struct SessionCapability {
     pub reset_key: backend_compile::SessionId,
     /// Whether a configured helper advertises persistent sessions.
     pub persistent: bool,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::error::Error;
-
-    #[test]
-    fn semantic_adapter_rejects_unproved_edge_shape() -> Result<(), Box<dyn Error>> {
-        let record = NativeRecord::new(NativeRecordKind::Edge, "source", b"reference".to_vec())?;
-        let parsed = TypeScriptSemanticAdapter.parse(&record)?;
-        assert!(matches!(
-            TypeScriptSemanticAdapter.admit(parsed),
-            Err(TypeScriptSemanticError::InvalidEdge)
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn semantic_adapter_lowers_only_admitted_types() -> Result<(), Box<dyn Error>> {
-        let record = NativeRecord::new(NativeRecordKind::Type, "answer", b"number".to_vec())?;
-        let parsed = TypeScriptSemanticAdapter.parse(&record)?;
-        let admitted = TypeScriptSemanticAdapter.admit(parsed)?;
-        let fact = TypeScriptSemanticAdapter.lower(admitted);
-        assert_eq!(fact.kind(), FactKind::Type);
-        assert_eq!(fact.key_bytes(), b"answer");
-        assert_eq!(fact.value(), b"number");
-        Ok(())
-    }
 }

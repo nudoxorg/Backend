@@ -8,6 +8,7 @@ use crate::{
 };
 use backend_replication::{LocalControlError, read_frame as read_local_frame};
 use std::io::{self, BufReader, Read, Write};
+#[cfg(any(unix, windows))]
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -133,8 +134,33 @@ fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
             }
         };
         let request_is_valid = decode_request(&input).is_ok();
-        let (output, dispatched) = framed_reply(transport.as_mut(), &input, connect_error.as_deref());
-        if !request_is_valid || !dispatched {
+        #[cfg(any(unix, windows))]
+        let output = match transport.as_mut() {
+            Some(transport) => match dispatch_frame_with_transport(transport, &input) {
+                Ok(output) => output,
+                Err(error) => {
+                    failed = true;
+                    error_frame_for_input(&input, error.to_string())
+                }
+            },
+            None => error_frame_for_input(
+                &input,
+                connect_error
+                    .as_deref()
+                    .unwrap_or("local endpoint unavailable"),
+            ),
+        };
+        #[cfg(not(any(unix, windows)))]
+        let output = {
+            let _ = &mut transport;
+            error_frame_for_input(
+                &input,
+                connect_error
+                    .as_deref()
+                    .unwrap_or("local endpoint unavailable"),
+            )
+        };
+        if !request_is_valid {
             failed = true;
         }
         if stdout.write_all(&output).is_err() || stdout.flush().is_err() {
@@ -148,45 +174,6 @@ fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
         ExitCode::SUCCESS
     }
 }
-
-/// Answers one framed request, saying whether the daemon actually answered it.
-///
-/// The two platform arms differ only in whether a transport can exist at all,
-/// so the decision that matters — a dispatch failure and a missing endpoint are
-/// both failures, and both still owe the caller a correlated reply — is written
-/// once here rather than twice inside the loop.
-#[cfg(any(unix, windows))]
-fn framed_reply(
-    transport: Option<&mut UnixCommandTransport>,
-    input: &[u8],
-    connect_error: Option<&str>,
-) -> (Vec<u8>, bool) {
-    let Some(transport) = transport else {
-        return (
-            error_frame_for_input(input, connect_error.unwrap_or(NO_ENDPOINT)),
-            false,
-        );
-    };
-    match dispatch_frame_with_transport(transport, input) {
-        Ok(output) => (output, true),
-        Err(error) => (error_frame_for_input(input, error.to_string()), false),
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn framed_reply(
-    transport: Option<&mut ()>,
-    input: &[u8],
-    connect_error: Option<&str>,
-) -> (Vec<u8>, bool) {
-    let _ = transport;
-    (
-        error_frame_for_input(input, connect_error.unwrap_or(NO_ENDPOINT)),
-        false,
-    )
-}
-
-const NO_ENDPOINT: &str = "local endpoint unavailable";
 
 fn options_from_args(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
     let mut endpoint = None;
@@ -216,7 +203,7 @@ fn options_from_args(args: impl IntoIterator<Item = String>) -> Result<Options, 
         }
         if matches!(argument.as_str(), "--help" | "-h") {
             println!(
-                "usage: backend-mcp [--project PATH] [--workspace PATH] [--endpoint PATH] [--framed | --http 127.0.0.1:PORT]"
+                "usage: backend-mcp [--project PATH] [--workspace PATH] [--endpoint PATH] [--framed]"
             );
             std::process::exit(0);
         }

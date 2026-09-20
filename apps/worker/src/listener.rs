@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[path = "listener/transport.rs"]
 mod transport;
@@ -42,19 +42,6 @@ pub struct TcpWorkerListenerConfig {
     pub limits: crate::protocol::WorkerLimits,
     /// Credential required by the mutual authority handshake.
     pub authority: backend_engine::TcpAuthority,
-    /// Confidentiality policy for the MAC-authenticated, plaintext record
-    /// stream.
-    pub exposure: TcpExposure,
-}
-
-/// Network exposure admitted for a worker TCP listener.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TcpExposure {
-    /// Bind only to an operating-system loopback address.
-    LoopbackOnly,
-    /// The caller asserts that an outer confidential transport such as a
-    /// mutually authenticated tunnel protects this listener.
-    ExternalProtected,
 }
 
 impl TcpWorkerListenerConfig {
@@ -64,11 +51,7 @@ impl TcpWorkerListenerConfig {
     pub fn validate(&self) -> Result<(), WorkerListenerError> {
         self.limits
             .validate()
-            .map_err(WorkerListenerError::Protocol)?;
-        if self.exposure == TcpExposure::LoopbackOnly && !self.address.ip().is_loopback() {
-            return Err(WorkerListenerError::ConfidentialityRequired);
-        }
-        Ok(())
+            .map_err(WorkerListenerError::Protocol)
     }
 }
 
@@ -202,7 +185,6 @@ where
     peer_policy: Arc<dyn PeerPolicy>,
     active_stream: Arc<Mutex<Option<backend_engine::LocalStream>>>,
     report: WorkerRunReport,
-    telemetry: backend_engine::Telemetry,
     relation: PhantomData<fn() -> R>,
 }
 
@@ -223,7 +205,6 @@ where
     stop: AtomicBool,
     active_stream: Arc<Mutex<Option<TcpStream>>>,
     report: WorkerRunReport,
-    telemetry: backend_engine::Telemetry,
     relation: PhantomData<fn() -> R>,
 }
 
@@ -273,22 +254,8 @@ where
             stop: AtomicBool::new(false),
             active_stream: Arc::new(Mutex::new(None)),
             report: WorkerRunReport::default(),
-            telemetry: backend_engine::Telemetry::disabled(),
             relation: PhantomData,
         })
-    }
-
-    /// Installs bounded telemetry shared with the process owner.
-    #[must_use]
-    pub fn with_telemetry(mut self, telemetry: backend_engine::Telemetry) -> Self {
-        self.telemetry = telemetry;
-        self
-    }
-
-    /// Returns an eventually consistent telemetry snapshot.
-    #[must_use]
-    pub fn telemetry_snapshot(&self) -> backend_engine::TelemetrySnapshot {
-        self.telemetry.snapshot()
     }
 
     /// Returns the actual bound address, including an OS-selected port.
@@ -353,13 +320,11 @@ where
                         }
                     };
                     self.report.connections = self.report.connections.saturating_add(1);
-                    let started = Instant::now();
                     let result = self
                         .worker
                         .as_mut()
                         .ok_or(WorkerListenerError::WorkerConsumed)?
                         .serve_stream_socket(&mut stream, &mut self.admission);
-                    record_transport(&self.telemetry, started, &result);
                     clear_active_tcp_stream(&self.active_stream);
                     match result {
                         Ok(frames) => {
@@ -417,13 +382,11 @@ where
             }
         };
         self.report.connections = self.report.connections.saturating_add(1);
-        let started = Instant::now();
         let result = self
             .worker
             .as_mut()
             .ok_or(WorkerListenerError::WorkerConsumed)?
             .serve_stream_socket(&mut stream, &mut self.admission);
-        record_transport(&self.telemetry, started, &result);
         clear_active_tcp_stream(&self.active_stream);
         match result {
             Ok(frames) => self.report.frames = self.report.frames.saturating_add(frames),
@@ -511,22 +474,8 @@ where
             peer_policy,
             active_stream: Arc::new(Mutex::new(None)),
             report: WorkerRunReport::default(),
-            telemetry: backend_engine::Telemetry::disabled(),
             relation: PhantomData,
         })
-    }
-
-    /// Installs bounded telemetry shared with the process owner.
-    #[must_use]
-    pub fn with_telemetry(mut self, telemetry: backend_engine::Telemetry) -> Self {
-        self.telemetry = telemetry;
-        self
-    }
-
-    /// Returns an eventually consistent telemetry snapshot.
-    #[must_use]
-    pub fn telemetry_snapshot(&self) -> backend_engine::TelemetrySnapshot {
-        self.telemetry.snapshot()
     }
 
     /// Returns the bound endpoint path.
@@ -575,13 +524,11 @@ where
                     }
                     set_active_stream(&self.active_stream, &stream);
                     self.report.connections = self.report.connections.saturating_add(1);
-                    let started = Instant::now();
                     let result = self
                         .worker
                         .as_mut()
                         .ok_or(WorkerListenerError::WorkerConsumed)?
                         .serve_stream_socket(&mut stream, &mut self.admission);
-                    record_transport(&self.telemetry, started, &result);
                     clear_active_stream(&self.active_stream);
                     match result {
                         Ok(frames) => {
@@ -620,13 +567,11 @@ where
                 configure_stream(&stream, self.config.limits.io_timeout)?;
                 set_active_stream(&self.active_stream, &stream);
                 self.report.connections = self.report.connections.saturating_add(1);
-                let started = Instant::now();
                 let result = self
                     .worker
                     .as_mut()
                     .ok_or(WorkerListenerError::WorkerConsumed)?
                     .serve_stream_socket(&mut stream, &mut self.admission);
-                record_transport(&self.telemetry, started, &result);
                 clear_active_stream(&self.active_stream);
                 match result {
                     Ok(frames) => self.report.frames = self.report.frames.saturating_add(frames),
@@ -651,25 +596,6 @@ where
             })
             .ok_or(WorkerListenerError::WorkerConsumed)
     }
-}
-
-fn record_transport<E>(
-    telemetry: &backend_engine::Telemetry,
-    started: Instant,
-    result: &Result<usize, E>,
-) {
-    telemetry.record_with(|| backend_engine::Observation {
-        family: backend_engine::MetricFamily::Transport,
-        outcome: if result.is_ok() {
-            backend_engine::MetricOutcome::Completed
-        } else {
-            backend_engine::MetricOutcome::Failed
-        },
-        latency: started.elapsed(),
-        units: result
-            .as_ref()
-            .map_or(0, |frames| u64::try_from(*frames).unwrap_or(u64::MAX)),
-    });
 }
 
 #[cfg(any(unix, windows))]
@@ -718,9 +644,6 @@ pub enum WorkerListenerError {
     Protocol(WorkerProtocolError),
     /// TCP authority possession handshake failed.
     Authentication(backend_engine::TcpHandshakeError),
-    /// A routable plaintext TCP listener lacked an explicit outer secure
-    /// transport declaration.
-    ConfidentialityRequired,
     /// The listener's worker has already been taken by `into_worker`.
     WorkerConsumed,
 }
@@ -736,8 +659,6 @@ impl fmt::Display for WorkerListenerError {
             Self::Io(kind) => write!(formatter, "worker listener I/O failed: {kind:?}"),
             Self::Protocol(error) => error.fmt(formatter),
             Self::Authentication(error) => error.fmt(formatter),
-            Self::ConfidentialityRequired => formatter
-                .write_str("routable worker TCP requires an explicitly protected outer transport"),
             Self::WorkerConsumed => formatter.write_str("worker service was already consumed"),
         }
     }

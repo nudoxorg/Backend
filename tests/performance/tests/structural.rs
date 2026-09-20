@@ -26,9 +26,9 @@ use backend_replication::{
 };
 use backend_store::{Change, OrderedMap, StoredValue, UpdateStats};
 use backend_version::{
-    AuthorityScopeClaim, CoverageWitness, ProducerObservationClaims, ProducerObservationVerifier,
-    Relation, RelationState, UntrustedProducerObservation, admit_complete_scope,
-    admit_producer_observation, partial_coverage,
+    AuthorityScopeClaim, CoverageWitness, ProducerObservationVerifier, Relation, RelationState,
+    UntrustedProducerObservation, admit_complete_scope, admit_producer_observation,
+    partial_coverage,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
@@ -82,19 +82,10 @@ struct PerformanceCoverageVerifier(UntrustedProducerObservation);
 impl ProducerObservationVerifier for PerformanceCoverageVerifier {
     type Error = &'static str;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
-        if observation != &self.0 {
-            return Err("producer observation mismatch");
-        }
-        Ok(ProducerObservationClaims::new(
-            self.0.producer_identity(),
-            self.0.scope_root(),
-            self.0.context(),
-            *blake3::hash(self.0.evidence()).as_bytes(),
-        ))
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
+        (observation == &self.0)
+            .then_some(())
+            .ok_or("producer observation mismatch")
     }
 }
 

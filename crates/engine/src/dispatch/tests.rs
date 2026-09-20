@@ -16,9 +16,9 @@ use backend_replication::{
 };
 use backend_semantic::DependencyManifest;
 use backend_version::{
-    AuthorityScopeClaim, CoverageWitness, ObjectVersion, ProducerObservationClaims,
-    ProducerObservationVerifier, Relation, RelationState, Schema, UntrustedProducerObservation,
-    WorkspaceManifest, WorkspaceRoot, admit_complete_scope, admit_producer_observation,
+    AuthorityScopeClaim, CoverageWitness, ObjectVersion, ProducerObservationVerifier, Relation,
+    RelationState, Schema, UntrustedProducerObservation, WorkspaceManifest, WorkspaceRoot,
+    admit_complete_scope, admit_producer_observation,
 };
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Barrier};
@@ -200,19 +200,9 @@ struct ExactProducerObservation(UntrustedProducerObservation);
 impl ProducerObservationVerifier for ExactProducerObservation {
     type Error = &'static str;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
         (observation == &self.0)
-            .then(|| {
-                ProducerObservationClaims::new(
-                    self.0.producer_identity(),
-                    self.0.scope_root(),
-                    self.0.context(),
-                    *blake3::hash(self.0.evidence()).as_bytes(),
-                )
-            })
+            .then_some(())
             .ok_or("test producer observation mismatch")
     }
 }
@@ -569,43 +559,6 @@ fn remote_fixture(
 }
 
 static LARGE_REMOTE_OUTPUT: [u8; 8192] = [0x5a; 8192];
-
-#[test]
-fn worker_receipt_commits_complete_request_material() {
-    let (_dispatcher, plan, contract, wire) = remote_fixture(b"receipt binding");
-    let scheduled = match &plan {
-        DispatchPlan::Scheduled(schedule) => schedule,
-        DispatchPlan::Reused(_) | DispatchPlan::Waiting(_) => unreachable!("fresh fixture"),
-    };
-    let expected = request_expectation(scheduled, &contract)
-        .unwrap_or_else(|_| unreachable!("fixture request expectation"));
-    let request = wire_request(scheduled, &contract, &expected);
-    let output = OutputVersion::from_value(wire.output_bytes.as_slice());
-    let original = worker_receipt_id(&request, output, &wire.output_bytes);
-
-    let mut changed_basis = request.clone();
-    let mut basis = changed_basis.input_basis.as_bytes();
-    basis[0] ^= 1;
-    changed_basis.input_basis = backend_replication::WorkspaceRootClaim::from_bytes(basis);
-    assert_ne!(
-        original,
-        worker_receipt_id(&changed_basis, output, &wire.output_bytes)
-    );
-
-    let mut changed_authority = request.clone();
-    changed_authority.authority.minimum_epoch.0 += 1;
-    assert_ne!(
-        original,
-        worker_receipt_id(&changed_authority, output, &wire.output_bytes)
-    );
-
-    let mut changed_inputs = request;
-    changed_inputs.inputs.push(changed_inputs.recipe);
-    assert_ne!(
-        original,
-        worker_receipt_id(&changed_inputs, output, &wire.output_bytes)
-    );
-}
 
 #[test]
 fn dispatch_ticket_owns_exact_remote_correlation() {

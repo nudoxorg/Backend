@@ -1,8 +1,7 @@
 //! Bounded lexical transition planning and binding fences.
 
 use crate::delta::DocumentDelta;
-use crate::{CaseSensitivity, Error, FieldSelection, MatchMode, Root};
-use backend_semantic::EntityId;
+use crate::{Error, Root};
 use backend_version::CoverageWitness;
 use std::collections::BTreeSet;
 use std::mem::size_of;
@@ -111,19 +110,13 @@ impl RefreshPlan {
         for change in delta.delta.changes() {
             changed_documents = changed_documents.checked_add(1).ok_or(Error::SizeLimit)?;
             estimated_bytes = estimated_bytes
-                .checked_add(size_of::<EntityId>())
+                .checked_add(size_of::<u64>())
                 .ok_or(Error::SizeLimit)?;
             if let Some(fields) = &change.after {
                 for term in terms_for(fields) {
                     estimated_bytes = estimated_bytes
-                        .checked_add(
-                            term.field
-                                .len()
-                                .checked_add(term.term.len())
-                                .and_then(|bytes| bytes.checked_mul(2))
-                                .ok_or(Error::SizeLimit)?,
-                        )
-                        .and_then(|size| size.checked_add(size_of::<EntityId>()))
+                        .checked_add(term.len().checked_mul(2).ok_or(Error::SizeLimit)?)
+                        .and_then(|size| size.checked_add(size_of::<u64>()))
                         .ok_or(Error::SizeLimit)?;
                     terms.insert(term);
                 }
@@ -225,56 +218,11 @@ pub(crate) fn validate_delta_binding(
     Ok(())
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct PostingKey {
-    pub(crate) field: String,
-    pub(crate) term: String,
-}
-
-impl PostingKey {
-    pub(crate) fn selected_by(
-        &self,
-        term: &str,
-        mode: MatchMode,
-        fields: &FieldSelection,
-        case: CaseSensitivity,
-    ) -> bool {
-        let field_selected = match fields {
-            FieldSelection::All => true,
-            FieldSelection::Only(field) => field == &self.field,
-        };
-        field_selected
-            && match (mode, case) {
-                (MatchMode::Exact, CaseSensitivity::Sensitive) => self.term == term,
-                (MatchMode::Exact, CaseSensitivity::FoldAscii) => {
-                    self.term.eq_ignore_ascii_case(term)
-                }
-                (MatchMode::Prefix, CaseSensitivity::Sensitive) => self.term.starts_with(term),
-                (MatchMode::Prefix, CaseSensitivity::FoldAscii) => self
-                    .term
-                    .get(..term.len())
-                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(term)),
-            }
-    }
-
-    pub(crate) fn field_weight(&self) -> u16 {
-        match self.field.as_str() {
-            "name" => 4,
-            "signature" => 3,
-            "documentation" => 2,
-            _ => 1,
-        }
-    }
-}
-
-pub(crate) fn terms_for(fields: &[(String, String)]) -> impl Iterator<Item = PostingKey> + '_ {
-    fields.iter().flat_map(|(field, value)| {
+pub(crate) fn terms_for(fields: &[(String, String)]) -> impl Iterator<Item = String> + '_ {
+    fields.iter().flat_map(|(_, value)| {
         value
             .split_ascii_whitespace()
             .filter(|term| !term.is_empty())
-            .map(move |term| PostingKey {
-                field: field.clone(),
-                term: term.to_owned(),
-            })
+            .map(str::to_ascii_lowercase)
     })
 }

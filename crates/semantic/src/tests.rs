@@ -2,9 +2,8 @@ use super::*;
 use backend_flow::{CanonicalValue, Delta as FlowDelta, Time};
 use backend_version::{
     AuthorityScopeClaim, AuthorizedCompleteCoverage, CoverageWitness, ObjectVersion,
-    ProducerObservationClaims, ProducerObservationVerifier, RelationState, Schema, ScopeRoot,
-    UntrustedCoverageScope, UntrustedProducerObservation, admit_complete_scope,
-    admit_producer_observation,
+    ProducerObservationVerifier, RelationState, Schema, ScopeRoot, UntrustedCoverageScope,
+    UntrustedProducerObservation, admit_complete_scope, admit_producer_observation,
 };
 
 struct TestProducerVerifier {
@@ -14,19 +13,10 @@ struct TestProducerVerifier {
 impl ProducerObservationVerifier for TestProducerVerifier {
     type Error = ();
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
-        if observation.producer_identity() != self.expected_identity {
-            return Err(());
-        }
-        Ok(ProducerObservationClaims::new(
-            self.expected_identity,
-            observation.scope_root(),
-            observation.context(),
-            *blake3::hash(observation.evidence()).as_bytes(),
-        ))
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
+        (observation.producer_identity() == self.expected_identity)
+            .then_some(())
+            .ok_or(())
     }
 }
 

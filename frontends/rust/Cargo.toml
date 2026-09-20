@@ -8,19 +8,6 @@ publish.workspace = true
 workspace = true
 [dependencies]
 backend-compile = { path = "../../crates/compile" }
-backend-semantic = { path = "../../crates/semantic" }
-anyhow = "1.0.100"
-ra_ap_base_db = "=0.0.341"
-ra_ap_hir = "=0.0.341"
-ra_ap_hir_ty = "=0.0.341"
-ra_ap_ide_db = "=0.0.341"
-ra_ap_load-cargo = "=0.0.341"
-ra_ap_project_model = "=0.0.341"
-ra_ap_syntax = "=0.0.341"
-ra_ap_vfs = "=0.0.341"
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
 tree-sitter-rust = "=0.24.2"
 [lib]
 path = "lib.rs"

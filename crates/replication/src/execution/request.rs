@@ -5,55 +5,6 @@ use super::{
     ResourceEnvelope, TransportLimits, WireAuthorityPolicy, WireIdentity, WorkspaceRoot,
     WorkspaceRootClaim,
 };
-use std::num::NonZeroU64;
-
-/// Canonical identity of the exact key/range/SCC scope requested for execution.
-///
-/// The wire contract carries the full identity rather than an owner-local ordinal, so scopes from
-/// independent authorities cannot compare equal accidentally.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ExecutionScopeId([u8; 32]);
-
-impl ExecutionScopeId {
-    /// Admits a nonzero canonical scope identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ReplicationError::InvalidIdentifier`] for the reserved zero identity.
-    pub fn new(bytes: [u8; 32]) -> Result<Self, ReplicationError> {
-        if bytes == [0; 32] {
-            Err(ReplicationError::InvalidIdentifier)
-        } else {
-            Ok(Self(bytes))
-        }
-    }
-
-    /// Canonically lifts a proven nonzero legacy owner-local scope ordinal
-    /// during migration.
-    #[must_use]
-    pub fn from_legacy_ordinal(value: NonZeroU64) -> Self {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"backend.execution.scope.legacy.v1\0");
-        hasher.update(&value.get().to_be_bytes());
-        Self(*hasher.finalize().as_bytes())
-    }
-
-    /// Returns the exact canonical scope bytes.
-    #[must_use]
-    pub const fn as_bytes(self) -> [u8; 32] {
-        self.0
-    }
-}
-
-impl TryFrom<u64> for ExecutionScopeId {
-    type Error = ReplicationError;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        NonZeroU64::new(value)
-            .map(Self::from_legacy_ordinal)
-            .ok_or(ReplicationError::InvalidIdentifier)
-    }
-}
 
 /// Caller-owned typed execution material used to admit a wire request.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,7 +20,7 @@ pub struct ExecutionRequestExpectation {
     /// Expected complete read-manifest identity.
     pub read_manifest: ExpectedIdentity,
     /// Requested key/range/SCC scope.
-    pub scope: ExecutionScopeId,
+    pub scope: u64,
     /// Expected authority and revocation policy.
     pub authority: AuthorityExpectation,
     /// Full resource envelope declared for the pure operation.
@@ -119,7 +70,7 @@ pub struct WireRecipeRequest {
     /// Untrusted complete read-manifest identity.
     pub read_manifest: WireIdentity,
     /// Requested key/range/SCC scope.
-    pub scope: ExecutionScopeId,
+    pub scope: u64,
     /// Untrusted authority policy.
     pub authority: WireAuthorityPolicy,
     /// Full declared pure resource envelope.

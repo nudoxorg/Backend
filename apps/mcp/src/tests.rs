@@ -6,7 +6,7 @@ use super::*;
 use backend_library::{
     Basis, CommandReply, Freshness, Frontier, Query, QueryLimit, ViewRoot, ViewSnapshot,
     WireCertificate, WireClaim, WireSchema, encode_id, intent_id, object_version, package_key,
-    symbol_key, view_key, view_state_root,
+    view_key, view_state_root,
 };
 use backend_replication::{LocalControlLimits, frame as canonical_frame};
 
@@ -143,16 +143,6 @@ fn injected_transport_checks_basis_and_freshness() {
     };
     let reply = transport.request(request).expect("reply");
     assert_eq!(reply.request_id, 9);
-}
-
-#[test]
-fn graph_requests_retain_their_revision_for_endpoint_admission() {
-    let basis = view_state_root(&[]);
-    let command = Command::Graph(backend_library::GraphNeighborhoodQuery::new(
-        symbol_key("pkg::Thing"),
-        basis,
-    ));
-    assert_eq!(client::request_basis(&command), Some(basis.into()));
 }
 
 #[test]
@@ -349,10 +339,6 @@ fn unix_transport_executes_one_correlated_request() {
 
 #[cfg(unix)]
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one case per forged-identity variant keeps the proof readable"
-)]
 fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
     use std::os::unix::net::UnixStream;
 

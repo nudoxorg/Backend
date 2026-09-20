@@ -157,16 +157,8 @@ struct FixtureVerifier;
 impl ProducerObservationVerifier for FixtureVerifier {
     type Error = CoverageAdmissionError;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
-        Ok(ProducerObservationClaims::new(
-            observation.producer_identity(),
-            observation.scope_root(),
-            observation.context(),
-            *blake3::hash(observation.evidence()).as_bytes(),
-        ))
+    fn verify(&self, _: &UntrustedProducerObservation) -> Result<(), Self::Error> {
+        Ok(())
     }
 }
 
@@ -189,12 +181,6 @@ fn admitted_observation(
     )
     .map_err(|error| match error {
         ProducerObservationAdmissionError::Rejected(error) => error,
-        ProducerObservationAdmissionError::ClaimsMismatch => {
-            CoverageAdmissionError::ScopeMismatch {
-                declared: scope,
-                observed: ScopeRoot::from_bytes([0; ID_BYTES]),
-            }
-        }
     })
 }
 
@@ -1455,22 +1441,14 @@ fn producer_verifier_rejects_identity_context_and_evidence_drift() {
     impl ProducerObservationVerifier for StrictVerifier {
         type Error = &'static str;
 
-        fn verify(
-            &self,
-            observation: &UntrustedProducerObservation,
-        ) -> Result<ProducerObservationClaims, Self::Error> {
+        fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
             if observation.producer_identity() != [7; ID_BYTES]
                 || observation.context() != [3; ID_BYTES]
                 || observation.evidence() != [4, 5, 6]
             {
                 return Err("producer session evidence drift");
             }
-            Ok(ProducerObservationClaims::new(
-                [7; ID_BYTES],
-                ScopeRoot::from_u64(7),
-                [3; ID_BYTES],
-                *blake3::hash(&[4, 5, 6]).as_bytes(),
-            ))
+            Ok(())
         }
     }
 
@@ -1491,38 +1469,6 @@ fn producer_verifier_rejects_identity_context_and_evidence_drift() {
             ))
         ));
     }
-}
-
-#[test]
-fn verifier_cannot_turn_mismatched_claims_into_an_admission() {
-    struct MismatchedClaims;
-
-    impl ProducerObservationVerifier for MismatchedClaims {
-        type Error = core::convert::Infallible;
-
-        fn verify(
-            &self,
-            observation: &UntrustedProducerObservation,
-        ) -> Result<ProducerObservationClaims, Self::Error> {
-            Ok(ProducerObservationClaims::new(
-                [9; ID_BYTES],
-                observation.scope_root(),
-                observation.context(),
-                *blake3::hash(observation.evidence()).as_bytes(),
-            ))
-        }
-    }
-
-    let observation = UntrustedProducerObservation::new(
-        [7; ID_BYTES],
-        ScopeRoot::from_u64(4),
-        [3; ID_BYTES],
-        vec![1, 2, 3],
-    );
-    assert!(matches!(
-        admit_producer_observation(observation, &MismatchedClaims),
-        Err(ProducerObservationAdmissionError::ClaimsMismatch)
-    ));
 }
 
 #[test]

@@ -7,41 +7,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
-arrayvec.workspace = true
 backend-platform = { path = "../platform" }
 backend-version = { path = "../version" }
 blake3.workspace = true
-derive_more.workspace = true
-fearless_simd = { workspace = true, features = ["libm"] }
-loom = { workspace = true, optional = true }
-strum.workspace = true
-thiserror.workspace = true
-zerocopy.workspace = true
-
-[features]
-loom-model = ["dep:loom"]
-
-[dev-dependencies]
-allocation-counter.workspace = true
-backend-extension-tantivy = { path = "../../extensions/tantivy" }
-backend-extension-trustfall = { path = "../../extensions/trustfall" }
-backend-semantic = { path = "../semantic" }
-bolero.workspace = true
-backend-engine = { path = "../engine" }
-fearless_simd = { workspace = true, features = ["force_support_fallback", "std"] }
-rstest.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-trybuild.workspace = true
-
-[[bench]]
-name = "capacity-planning"
-path = "benches/capacity_planning.rs"
-harness = false
-
-[[example]]
-name = "capacity-worksheet"
-path = "examples/capacity_worksheet.rs"
 
 [lints]
 workspace = true

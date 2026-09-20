@@ -48,7 +48,7 @@ pub struct AdmittedInvocation {
     /// Admitted immutable inputs.
     pub inputs: Box<[AdmittedInput]>,
     /// Exact requested semantic scope.
-    pub scope: backend_replication::ExecutionScopeId,
+    pub scope: u64,
     /// Multidimensional hard resource envelope.
     pub resources: ResourceEnvelope,
     /// Nonzero attempt identity.
@@ -477,14 +477,12 @@ impl<E: PureRecipeExecutor, S: WorkerAttestationSigner> WorkerEndpoint<E, S> {
         }
         let recipe_claim = WireIdentity::from_typed(&call.recipe);
         let read_manifest_claim = WireIdentity::from_typed(&call.read_manifest);
-        let semantic_scope = backend_replication::ExecutionScopeId::try_from(call.semantic.scope())
-            .map_err(WorkerError::Replication)?;
         if !self.capabilities.recipes.contains(&call.recipe)
             || self.executor.recipe_id() != call.recipe
             || call.expected.work_key != ExpectedIdentity::from_typed(&call.work_key)
             || call.request.recipe != recipe_claim
             || call.request.read_manifest != read_manifest_claim
-            || call.request.scope != semantic_scope
+            || call.request.scope != call.semantic.scope()
             || call.request.resources != call.resources
         {
             return Err(WorkerError::Capability);
@@ -506,7 +504,7 @@ impl<E: PureRecipeExecutor, S: WorkerAttestationSigner> WorkerEndpoint<E, S> {
         {
             return Err(WorkerError::InputMismatch);
         }
-        if call.semantic.scope() > self.capabilities.max_scope
+        if call.request.scope > self.capabilities.max_scope
             || !within(call.resources, self.capabilities.max_resources)
         {
             return Err(WorkerError::ResourceLimit);

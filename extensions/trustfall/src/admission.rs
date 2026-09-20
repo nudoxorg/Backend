@@ -137,11 +137,11 @@ pub fn execute(input: &QueryInput) -> Result<Projection, Error> {
             .ok()
             .and_then(|value| value.checked_add(1))
             .ok_or(Error::SizeLimit)?;
-        let mut row = GraphRow {
+        let row = GraphRow {
             key,
             values: values.clone(),
         };
-        normalize_row(&mut row, Limits::default(), &mut total)?;
+        normalize_row(&row, Limits::default(), &mut total)?;
     }
     rows.sort();
     rows.dedup();

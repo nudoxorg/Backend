@@ -17,8 +17,7 @@ pub(crate) use descriptor::DescriptorParts;
 pub use descriptor::{ViewRootDescriptor, ViewRootDescriptorClaim};
 pub use model::{
     Basis, Coverage, CoverageCapability, Document, Fragment, Freshness, Lane,
-    MAX_COVERAGE_EVIDENCE, NameRecord, Outline, OutlineExtent, OutlineNode, Reason, Row, RowId,
-    RowState, SourceAvailability,
+    MAX_COVERAGE_EVIDENCE, NameRecord, Outline, OutlineNode, Reason, Row, RowId, RowState,
 };
 pub use page::{ViewPageCursor, ViewPageError, ViewSnapshotPage};
 pub use proof::{CompleteViewProjection, ViewProjection, ViewProjectionError};

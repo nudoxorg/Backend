@@ -217,7 +217,6 @@ fn validate_dependencies(
             let actual: BTreeSet<&str> = package
                 .dependencies
                 .iter()
-                .filter(|dependency| dependency.kind.is_none())
                 .map(|dependency| dependency_package_name(dependency, &product_names))
                 .filter(|dependency| dependency.starts_with("backend-"))
                 .collect();

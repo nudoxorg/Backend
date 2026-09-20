@@ -1,16 +1,11 @@
 //! Exact vector facts and finite vector values.
 
-use crate::{
-    Binding, CandidateId, CandidateState, Error, ModelVersion, Recipe, TokenizerVersion,
-    TreatmentVersion,
-};
+use crate::{Binding, CandidateId, CandidateState, Error, ModelVersion};
 use backend_version::CoverageWitness;
 use std::mem::size_of;
-use std::num::NonZeroU32;
 use std::sync::Arc;
 
 /// Distance/similarity semantics for one immutable vector recipe.
-#[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Metric {
     /// Squared Euclidean distance; smaller is better.
@@ -19,103 +14,6 @@ pub enum Metric {
     CosineDistance,
     /// Negative dot product; smaller is better.
     NegativeDot,
-}
-
-/// Token-state pooling performed by the admitted embedding runtime.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum EmbeddingPooling {
-    /// Use the model's designated classification token.
-    ClassificationToken = 1,
-    /// Mean-pool non-padding token states.
-    Mean = 2,
-    /// Use the final non-padding token state.
-    LastToken = 3,
-}
-
-/// Post-inference normalization committed by an embedding recipe.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum EmbeddingNormalization {
-    /// Preserve model output coordinates.
-    None = 1,
-    /// Normalize coordinates to unit L2 length.
-    UnitL2 = 2,
-}
-
-/// Coordinate representation committed by an embedding recipe.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum EmbeddingEncoding {
-    /// IEEE-754 single-precision coordinates.
-    Float32 = 1,
-    /// Symmetric signed eight-bit scalar quantization.
-    SignedInt8 = 2,
-}
-
-/// Complete reproducibility contract for query and document embeddings.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct EmbeddingRecipe {
-    /// Verified model artifact/runtime revision.
-    pub model: ModelVersion,
-    /// Verified tokenizer vocabulary/configuration revision.
-    pub tokenizer: TokenizerVersion,
-    /// Exact model output dimension.
-    pub dimensions: NonZeroU32,
-    /// Distance semantics used by collection and reranker.
-    pub metric: Metric,
-    /// Token-state pooling behavior.
-    pub pooling: EmbeddingPooling,
-    /// Post-inference normalization.
-    pub normalization: EmbeddingNormalization,
-    /// Stored coordinate representation.
-    pub encoding: EmbeddingEncoding,
-    /// Canonical query-side instructions or prefix.
-    pub query_treatment: TreatmentVersion,
-    /// Canonical document-side instructions or prefix.
-    pub document_treatment: TreatmentVersion,
-}
-
-impl EmbeddingRecipe {
-    /// Derives the existing extension recipe identity from every coordinate-producing fact.
-    #[must_use]
-    pub fn version(self) -> Recipe {
-        let mut bytes = Vec::with_capacity(171);
-        // V2 commits the binding-scoped UUID point layout and logical
-        // candidate payload introduced by the HTTP provider. Keeping V1 here
-        // would let a numeric-ID projection satisfy the same binding filter
-        // even though the new reader cannot safely interpret its point IDs.
-        bytes.extend_from_slice(b"backend.qdrant.embedding-recipe.v2\0");
-        bytes.extend_from_slice(self.model.as_bytes());
-        bytes.extend_from_slice(self.tokenizer.as_bytes());
-        bytes.extend_from_slice(&self.dimensions.get().to_be_bytes());
-        bytes.extend_from_slice(&[
-            self.metric as u8,
-            self.pooling as u8,
-            self.normalization as u8,
-            self.encoding as u8,
-        ]);
-        bytes.extend_from_slice(self.query_treatment.as_bytes());
-        bytes.extend_from_slice(self.document_treatment.as_bytes());
-        Recipe::from_value(&bytes)
-    }
-
-    fn validate(self, values: &[f32]) -> Result<(), Error> {
-        let dimensions = usize::try_from(self.dimensions.get()).map_err(|_| Error::SizeLimit)?;
-        if values.len() != dimensions || values.iter().any(|value| !value.is_finite()) {
-            return Err(Error::DimensionMismatch);
-        }
-        if self.normalization == EmbeddingNormalization::UnitL2 {
-            let squared_norm = values
-                .iter()
-                .map(|value| f64::from(*value).powi(2))
-                .sum::<f64>();
-            if (squared_norm - 1.0).abs() > 1.0e-4 {
-                return Err(Error::MalformedInput);
-            }
-        }
-        Ok(())
-    }
 }
 
 /// An exact finite vector owned by the query/facts boundary.
@@ -171,17 +69,6 @@ impl VectorPoint {
         Self::new(id, values.to_vec())
     }
 
-    fn from_shared(id: CandidateId, values: Arc<[f32]>) -> Result<Self, Error> {
-        if !id.is_valid()
-            || values.is_empty()
-            || values.len() > u32::MAX as usize
-            || values.iter().any(|value| !value.is_finite())
-        {
-            return Err(Error::MalformedInput);
-        }
-        Ok(Self { id, values })
-    }
-
     /// Returns the stable logical candidate identity.
     #[must_use]
     pub const fn id(&self) -> CandidateId {
@@ -235,58 +122,6 @@ impl VectorPoint {
     }
 }
 
-/// A document-side embedding admitted under the recipe's document treatment.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DocumentVector {
-    recipe: EmbeddingRecipe,
-    point: VectorPoint,
-}
-
-impl DocumentVector {
-    /// Admits finite, dimension-correct document coordinates.
-    ///
-    /// # Errors
-    /// Returns a typed malformed-input or dimension error when coordinates violate the recipe.
-    pub fn new(recipe: EmbeddingRecipe, id: CandidateId, values: Vec<f32>) -> Result<Self, Error> {
-        recipe.validate(&values)?;
-        Ok(Self {
-            recipe,
-            point: VectorPoint::new(id, values)?,
-        })
-    }
-
-    /// Admits already-shared finite, dimension-correct document coordinates.
-    ///
-    /// This keeps unchanged embeddings shared between an owner cache and a
-    /// replacement projection instead of copying every coordinate.
-    ///
-    /// # Errors
-    /// Returns a typed malformed-input or dimension error when coordinates violate the recipe.
-    pub fn from_shared(
-        recipe: EmbeddingRecipe,
-        id: CandidateId,
-        values: Arc<[f32]>,
-    ) -> Result<Self, Error> {
-        recipe.validate(&values)?;
-        Ok(Self {
-            recipe,
-            point: VectorPoint::from_shared(id, values)?,
-        })
-    }
-
-    /// Complete coordinate-production recipe.
-    #[must_use]
-    pub const fn recipe(&self) -> EmbeddingRecipe {
-        self.recipe
-    }
-
-    /// Canonical point representation for durable vector facts.
-    #[must_use]
-    pub const fn point(&self) -> &VectorPoint {
-        &self.point
-    }
-}
-
 /// Exact vector facts backed by the canonical candidate relation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VectorFacts {
@@ -297,18 +132,6 @@ pub struct VectorFacts {
 }
 
 impl VectorFacts {
-    /// Builds exact facts only when the durable relation is bound to this complete recipe.
-    ///
-    /// # Errors
-    /// Returns a typed binding, coverage, coordinate, dimension, or size error.
-    pub fn from_recipe(state: CandidateState, recipe: EmbeddingRecipe) -> Result<Self, Error> {
-        if state.binding().recipe != recipe.version() {
-            return Err(Error::StaleRoot);
-        }
-        let dimensions = usize::try_from(recipe.dimensions.get()).map_err(|_| Error::SizeLimit)?;
-        Self::new(state, recipe.model, recipe.metric, dimensions)
-    }
-
     /// Validates every relation payload once and binds the model/metric
     /// recipe to the exact relation root.
     ///
@@ -435,39 +258,6 @@ impl VectorQuery {
     #[must_use]
     pub fn values(&self) -> &[f32] {
         &self.values
-    }
-}
-
-/// A query-side embedding admitted under the recipe's query treatment.
-#[derive(Clone, Debug, PartialEq)]
-pub struct QueryVector {
-    recipe: EmbeddingRecipe,
-    query: VectorQuery,
-}
-
-impl QueryVector {
-    /// Admits finite, dimension-correct query coordinates.
-    ///
-    /// # Errors
-    /// Returns a typed malformed-input or dimension error when coordinates violate the recipe.
-    pub fn new(recipe: EmbeddingRecipe, values: Vec<f32>) -> Result<Self, Error> {
-        recipe.validate(&values)?;
-        Ok(Self {
-            recipe,
-            query: VectorQuery::new(recipe.model, recipe.metric, values)?,
-        })
-    }
-
-    /// Complete coordinate-production recipe.
-    #[must_use]
-    pub const fn recipe(&self) -> EmbeddingRecipe {
-        self.recipe
-    }
-
-    /// Internal query representation accepted by the index.
-    #[must_use]
-    pub const fn query(&self) -> &VectorQuery {
-        &self.query
     }
 }
 

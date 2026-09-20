@@ -1,6 +1,6 @@
 //! Compiled profile identities and capability descriptors.
 
-use super::{SEMANTIC_OUTPUT_BODY_BYTES, product_dependency_manifest, product_read_manifest};
+use super::{PRODUCT_OUTPUT_BODY_BYTES, product_dependency_manifest, product_read_manifest};
 use backend_execution::{
     AuthorityVersion, OutputEquivalence, ReadManifestId, RecipeId, RecipeSchema, WorkKeySchema,
 };
@@ -12,17 +12,15 @@ use backend_semantic::DependencyManifest;
 use std::sync::Arc;
 
 /// Stable identity bytes for the checked production profile.
-pub const PRODUCT_RECIPE_BYTES: &[u8] = b"backend.worker.builtin.semantic-publication.v1";
+pub const PRODUCT_RECIPE_BYTES: &[u8] = b"backend.worker.builtin.relation.v1";
 /// Authority identity preimage.
-pub const PRODUCT_AUTHORITY_BYTES: &[u8] =
-    b"backend.worker.builtin.semantic-publication.authority.v1";
+pub const PRODUCT_AUTHORITY_BYTES: &[u8] = b"backend.worker.builtin.relation.authority.v1";
 /// Output-equivalence identity preimage.
-pub const PRODUCT_EQUIVALENCE_BYTES: &[u8] =
-    b"backend.worker.builtin.semantic-publication.equivalence.v1";
+pub const PRODUCT_EQUIVALENCE_BYTES: &[u8] = b"backend.worker.builtin.relation.equivalence.v1";
 /// Output identity preimage.
-pub const PRODUCT_OUTPUT_BYTES: &[u8] = b"backend.worker.builtin.semantic-publication.output.v1";
+pub const PRODUCT_OUTPUT_BYTES: &[u8] = b"backend.worker.builtin.relation.output.v1";
 /// Semantic coverage witness identity preimage.
-pub const PRODUCT_WITNESS_BYTES: &[u8] = b"backend.worker.builtin.semantic-publication.coverage.v1";
+pub const PRODUCT_WITNESS_BYTES: &[u8] = b"backend.worker.builtin.relation.semantic.v1";
 /// Maximum authenticated relation nodes charged by one Product execution.
 pub const PRODUCT_EXECUTION_NODE_BUDGET: u64 = 1_000_000;
 /// Fixed mutable-memory reservation for one streaming Product execution.
@@ -89,7 +87,7 @@ pub fn profile_output_len(profile: ProfileIds) -> usize {
         .output_prefix
         .len()
         .saturating_add(if profile.include_basis {
-            SEMANTIC_OUTPUT_BODY_BYTES
+            PRODUCT_OUTPUT_BODY_BYTES
         } else {
             0
         })

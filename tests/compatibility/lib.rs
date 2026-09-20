@@ -97,69 +97,6 @@ fn golden_fixture_inputs_are_nonempty_and_facts_are_normalized() {
     assert_eq!(names.len(), 7);
 }
 
-#[test]
-fn semantic_profiles_parse_before_environment_validation() -> Result<(), &'static str> {
-    let Err(java) = JavaFrontend::new(Vec::new(), "relative-javac", Vec::new(), "latest") else {
-        return Err("open-ended Java release was accepted");
-    };
-    assert!(
-        java.to_string()
-            .contains("unsupported java profile \"latest\"")
-    );
-
-    let Err(python) = PythonFrontend::new(
-        Vec::new(),
-        "relative-python",
-        "relative-pyrefly",
-        "python-next",
-        Vec::new(),
-    ) else {
-        return Err("open-ended Python version was accepted");
-    };
-    assert!(
-        python
-            .to_string()
-            .contains("unsupported python profile \"python-next\"")
-    );
-
-    let Err(typescript) = TypeScriptFrontend::new(
-        Vec::new(),
-        "relative-node",
-        "relative-tsc",
-        "javascript",
-        Vec::new(),
-    ) else {
-        return Err("ambiguous TypeScript grammar was accepted");
-    };
-    assert!(
-        typescript
-            .to_string()
-            .contains("unsupported typescript profile \"javascript\"")
-    );
-    Ok(())
-}
-
-#[test]
-fn semantic_profile_aliases_have_one_manifest_identity() -> Result<(), Box<dyn Error>> {
-    let canonical = JavaFrontend::new(Vec::new(), "/bin/sh", Vec::new(), "21")?.discover()?;
-    let alias = JavaFrontend::new(Vec::new(), "/bin/sh", Vec::new(), "java-21")?.discover()?;
-    assert_eq!(canonical.manifest().digest(), alias.manifest().digest());
-
-    let canonical =
-        PythonFrontend::new(Vec::new(), "/bin/sh", "/bin/sh", "3.13", Vec::new())?.discover()?;
-    let alias = PythonFrontend::new(Vec::new(), "/bin/sh", "/bin/sh", "python-3.13", Vec::new())?
-        .discover()?;
-    assert_eq!(canonical.manifest().digest(), alias.manifest().digest());
-
-    let canonical =
-        TypeScriptFrontend::new(Vec::new(), "/bin/sh", "/bin/sh", "ts", Vec::new())?.discover()?;
-    let alias =
-        TypeScriptFrontend::new(Vec::new(), "/bin/sh", "/bin/sh", "typescript", Vec::new())?
-            .discover()?;
-    assert_eq!(canonical.manifest().digest(), alias.manifest().digest());
-    Ok(())
-}
-
 #[cfg(test)]
 #[derive(Clone, Copy)]
 enum FixtureMode {
@@ -299,9 +236,9 @@ fn all_seven_authorities_bind_facts_to_their_discovery_root() -> Result<(), Box<
         assert_eq!(extraction.records().len(), 6);
         assert_eq!(extraction.records()[0].kind(), FactKind::Declaration);
         assert_eq!(extraction.records()[0].key_bytes(), b"main");
-        assert!(!extraction.records()[0].value().is_empty());
+        assert_eq!(extraction.records()[0].value(), b"decl");
         assert_eq!(extraction.records()[1].kind(), FactKind::Type);
-        assert!(!extraction.records()[1].value().is_empty());
+        assert_eq!(extraction.records()[1].value(), b"i32");
         assert_eq!(extraction.records()[2].kind(), FactKind::Edge);
         assert_eq!(extraction.records()[3].kind(), FactKind::Diagnostic);
         assert_eq!(extraction.records()[4].kind(), FactKind::Dependency);

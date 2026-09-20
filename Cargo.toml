@@ -1,5 +1,5 @@
-# Backend v2 is one acyclic versioned engine. Proven compiler semantics are
-# retained as first-class workspace crates and adapted at product boundaries.
+# Backend v2 is one acyclic versioned engine. Historical implementations live
+# in external reference checkouts and never participate in this product tree.
 [workspace]
 resolver = "3"
 members = [
@@ -63,14 +63,12 @@ tracing-subscriber = { version = "=0.3.23", features = ["registry"] }
 tree-sitter = "=0.27.0"
 trustfall = { git = "https://github.com/philocalyst/trustfall", rev = "5a0a8607fc5d972380437289b9a4ad1aa5150b09", features = ["async"] }
 trustfall_core = { git = "https://github.com/philocalyst/trustfall", rev = "5a0a8607fc5d972380437289b9a4ad1aa5150b09", features = ["async"] }
-turso = { version = "=0.8.0-pre.10", default-features = false }
+turso = { version = "=0.8.0-pre.10", default-features = false, features = ["fts"] }
 ureq = { version = "=3.4.0", default-features = false, features = ["gzip", "json"] }
 zerocopy = { version = "0.8.56", default-features = false, features = ["derive"] }
 
 [workspace.lints.rust]
-# Audited low-level storage modules may opt into narrowly scoped unsafe code;
-# all other workspace code inherits this denial.
-unsafe_code = "deny"
+unsafe_code = "forbid"
 missing_docs = "warn"
 unreachable_pub = "warn"
 unused_lifetimes = "warn"

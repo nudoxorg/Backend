@@ -15,11 +15,11 @@ use backend_engine::{
     AuthorityScopeClaim, Boundary, ClosureManifest, Commit, CommitProvenance, CoverageWitness,
     EffectCoordinator, EffectError, EffectJournalPersistence, EffectSink, EffectSpec, Faults,
     GcLimits, GcRoot, HashChainJournal, JournalCodec, JournalDomain, JournalError, JournalLimits,
-    ObjectKey, ObjectVersion, PreparedTransition, ProducerObservationClaims,
-    ProducerObservationVerifier, Schema, SinkApply, SinkObservation, TransactionId,
-    TransactionSchema, TypedObject, UntrustedProducerObservation, WorkspaceClosure, WorkspaceDelta,
-    WorkspaceError, WorkspaceHead, WorkspaceManifest, WorkspaceModel, WorkspaceOwner,
-    WorkspaceSnapshot, admit_complete_scope, admit_producer_observation, effect_key,
+    ObjectKey, ObjectVersion, PreparedTransition, ProducerObservationVerifier, Schema, SinkApply,
+    SinkObservation, TransactionId, TransactionSchema, TypedObject, UntrustedProducerObservation,
+    WorkspaceClosure, WorkspaceDelta, WorkspaceError, WorkspaceHead, WorkspaceManifest,
+    WorkspaceModel, WorkspaceOwner, WorkspaceSnapshot, admit_complete_scope,
+    admit_producer_observation, effect_key,
 };
 use backend_store::{
     FileStore, LayoutId, OrderedMap, PublicationAuthorityError, StoreError, StoredValue,
@@ -88,19 +88,10 @@ struct CrashCoverageVerifier(UntrustedProducerObservation);
 impl ProducerObservationVerifier for CrashCoverageVerifier {
     type Error = &'static str;
 
-    fn verify(
-        &self,
-        observation: &UntrustedProducerObservation,
-    ) -> Result<ProducerObservationClaims, Self::Error> {
-        if observation != &self.0 {
-            return Err("crash fixture producer observation mismatch");
-        }
-        Ok(ProducerObservationClaims::new(
-            self.0.producer_identity(),
-            self.0.scope_root(),
-            self.0.context(),
-            *blake3::hash(self.0.evidence()).as_bytes(),
-        ))
+    fn verify(&self, observation: &UntrustedProducerObservation) -> Result<(), Self::Error> {
+        (observation == &self.0)
+            .then_some(())
+            .ok_or("crash fixture producer observation mismatch")
     }
 }
 
@@ -1368,13 +1359,14 @@ fn two_process_workspace_writers_have_one_owner_and_one_published_transition() {
 }
 
 #[test]
-fn truncated_visible_head_is_rejected_as_corruption() {
+fn truncated_selected_head_recovers_the_journal_head_and_repairs_receipt() {
     let path = temporary_directory("torn-head");
     let store = FileStore::open(&path, 64 * 1024)
         .unwrap_or_else(|error| panic!("open torn-head store: {error:?}"));
     store
         .publish(&raw_map(0), LayoutId::derive(b"torn-head-layout"))
         .unwrap_or_else(|error| panic!("write torn-head genesis: {error:?}"));
+    let expected = raw_map(1).state_root();
     store
         .publish(&raw_map(1), LayoutId::derive(b"torn-head-layout"))
         .unwrap_or_else(|error| panic!("write torn-head target: {error:?}"));
@@ -1386,12 +1378,20 @@ fn truncated_visible_head_is_rejected_as_corruption() {
     for cut in cuts {
         fs::write(&head_path, &original[..cut])
             .unwrap_or_else(|error| panic!("tear HEAD at {cut}: {error}"));
-        assert!(matches!(
-            FileStore::open(&path, 64 * 1024),
-            Err(StoreError::Corrupt)
-        ));
-        fs::write(&head_path, &original)
-            .unwrap_or_else(|error| panic!("restore HEAD after cut {cut}: {error}"));
+        let store = FileStore::open(&path, 64 * 1024)
+            .unwrap_or_else(|error| panic!("recover torn HEAD at {cut}: {error:?}"));
+        let selected = store
+            .head()
+            .unwrap_or_else(|error| panic!("read recovered HEAD at {cut}: {error:?}"))
+            .unwrap_or_else(|| unreachable!("journal selection survives torn HEAD"));
+        assert_eq!(selected.descriptor().target(), *expected.as_bytes());
+        let recovered = store
+            .recover()
+            .unwrap_or_else(|error| panic!("recover map at {cut}: {error:?}"))
+            .unwrap_or_else(|| unreachable!("selected map survives torn HEAD"));
+        assert_eq!(recovered.state_root(), expected);
+        drop(store);
+        assert_eq!(fs::read(&head_path).unwrap_or_default(), original);
     }
     fs::remove_dir_all(path).unwrap_or_else(|error| panic!("cleanup: {error}"));
 }

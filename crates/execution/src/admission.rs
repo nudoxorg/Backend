@@ -250,8 +250,6 @@ impl AdmissionRequest {
 /// Failure to reserve a resource envelope.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdmissionError {
-    /// One request can never fit in the selected envelope, even when it is idle.
-    Impossible(ImpossibleAdmission),
     /// The operation envelope has no remaining capacity.
     Operations,
     /// The byte envelope has no remaining capacity.
@@ -262,36 +260,6 @@ pub enum AdmissionError {
     Resources,
     /// A checked counter operation overflowed.
     Overflow,
-}
-
-/// The exact capacity axis that makes one request permanently inadmissible.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AdmissionDimension {
-    /// Concurrent operation slots.
-    Operations,
-    /// Retained payload bytes.
-    Bytes,
-    /// Duplicate pure attempts.
-    Hedges,
-    /// CPU-time credits.
-    CpuMillis,
-    /// Mutable memory credits.
-    MemoryBytes,
-    /// Network-transfer credits.
-    NetworkBytes,
-    /// Temporary durable-storage credits.
-    StorageBytes,
-}
-
-/// Proof that retrying an unchanged request can never succeed in this envelope.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ImpossibleAdmission {
-    /// Resource axis that exceeded total capacity.
-    pub dimension: AdmissionDimension,
-    /// Amount requested by the single operation.
-    pub requested: u64,
-    /// Total configured capacity, independent of current use.
-    pub capacity: u64,
 }
 
 impl std::fmt::Display for AdmissionError {
@@ -381,7 +349,6 @@ impl Admission {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let budget = state.budgets.for_envelope(envelope);
-        reject_impossible(amount, budget)?;
         let used = state.used.for_envelope(envelope);
         let next = used.checked_add(amount)?;
         if next.operations > budget.operations {
@@ -471,49 +438,6 @@ impl Admission {
     }
 }
 
-fn reject_impossible(amount: Budget, capacity: Budget) -> Result<(), AdmissionError> {
-    let dimensions = [
-        (
-            AdmissionDimension::Operations,
-            amount.operations,
-            capacity.operations,
-        ),
-        (AdmissionDimension::Bytes, amount.bytes, capacity.bytes),
-        (AdmissionDimension::Hedges, amount.hedges, capacity.hedges),
-        (
-            AdmissionDimension::CpuMillis,
-            amount.resources.cpu_millis,
-            capacity.resources.cpu_millis,
-        ),
-        (
-            AdmissionDimension::MemoryBytes,
-            amount.resources.memory_bytes,
-            capacity.resources.memory_bytes,
-        ),
-        (
-            AdmissionDimension::NetworkBytes,
-            amount.resources.network_bytes,
-            capacity.resources.network_bytes,
-        ),
-        (
-            AdmissionDimension::StorageBytes,
-            amount.resources.storage_bytes,
-            capacity.resources.storage_bytes,
-        ),
-    ];
-    if let Some((dimension, requested, capacity)) = dimensions
-        .into_iter()
-        .find(|(_, requested, capacity)| requested > capacity)
-    {
-        return Err(AdmissionError::Impossible(ImpossibleAdmission {
-            dimension,
-            requested,
-            capacity,
-        }));
-    }
-    Ok(())
-}
-
 fn set_envelope(all: &mut EnvelopeBudgets, envelope: Envelope, value: Budget) {
     match envelope {
         Envelope::Interactive => all.interactive = value,
@@ -574,55 +498,5 @@ impl Drop for Reservation {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let used = state.used.for_envelope(self.envelope);
         set_envelope(&mut state.used, self.envelope, used.checked_sub(self.held));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        Admission, AdmissionDimension, AdmissionError, AdmissionRequest, Budget,
-        ImpossibleAdmission, ResourceVector,
-    };
-
-    #[test]
-    fn impossible_request_is_distinct_from_transient_pressure() -> Result<(), AdmissionError> {
-        let admission = Admission::new(Budget {
-            operations: 1,
-            bytes: 8,
-            hedges: 0,
-            resources: ResourceVector {
-                memory_bytes: 4,
-                ..ResourceVector::zero()
-            },
-        });
-        assert!(matches!(
-            admission.try_admit(AdmissionRequest::new(1, 9)),
-            Err(AdmissionError::Impossible(ImpossibleAdmission {
-                dimension: AdmissionDimension::Bytes,
-                requested: 9,
-                capacity: 8,
-            }))
-        ));
-        assert_eq!(admission.available().bytes, 8);
-
-        let held = admission.try_admit(AdmissionRequest::new(1, 8))?;
-        assert!(matches!(
-            admission.try_admit(AdmissionRequest::new(1, 1)),
-            Err(AdmissionError::Operations)
-        ));
-        drop(held);
-
-        assert!(matches!(
-            admission.try_admit(AdmissionRequest::new(1, 1).with_resources(ResourceVector {
-                memory_bytes: 5,
-                ..ResourceVector::zero()
-            })),
-            Err(AdmissionError::Impossible(ImpossibleAdmission {
-                dimension: AdmissionDimension::MemoryBytes,
-                requested: 5,
-                capacity: 4,
-            }))
-        ));
-        Ok(())
     }
 }

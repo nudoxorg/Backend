@@ -92,24 +92,6 @@ impl Relation for NamePostingRelation {
     fn encode_value(_value: &(), _: &mut Vec<u8>) {}
 }
 
-/// A bounded full-text gram membership relation. Its distinct key type prevents
-/// name-only lookup from accidentally using document/signature candidates.
-#[derive(Debug)]
-pub(super) struct SearchPostingRelation;
-impl Relation for SearchPostingRelation {
-    const DOMAIN: u8 = INDEX_DOMAIN;
-    const TYPE: u16 = 5;
-    type Key = SearchPostingKey;
-    type Value = ();
-
-    fn encode_key(value: &Self::Key, out: &mut Vec<u8>) {
-        append_bytes(out, &value.gram);
-        encode_optional_row_id(value.id, out);
-    }
-
-    fn encode_value(_value: &(), _: &mut Vec<u8>) {}
-}
-
 /// A package membership relation ordered by package and row identity.
 #[derive(Debug)]
 pub(super) struct PackageSymbolsRelation;
@@ -164,12 +146,6 @@ pub(super) struct NamePostingKey {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) struct SearchPostingKey {
-    pub(super) gram: Vec<u8>,
-    pub(super) id: Option<RowId>,
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct PackageRowKey {
     pub(super) package: PackageKey,
     pub(super) id: Option<RowId>,
@@ -187,30 +163,28 @@ pub(super) type PackageTree = MaterializedIndex<PackageIndexRelation>;
 pub(super) type UnscopedTree = MaterializedIndex<UnscopedIndexRelation>;
 pub(super) type NameTree = MaterializedIndex<NameIndexRelation>;
 pub(super) type NamePostingTree = MaterializedIndex<NamePostingRelation>;
-pub(super) type SearchPostingTree = MaterializedIndex<SearchPostingRelation>;
 pub(super) type PackageSymbolsTree = MaterializedIndex<PackageSymbolsRelation>;
 pub(super) type ChildrenTree = MaterializedIndex<ChildrenRelation>;
 
-/// Builds the bounded-width scalar postings used by substring search.
-///
-/// Retaining one-, two-, and three-scalar windows prevents short queries from
-/// degenerating into a scan of every indexed symbol. Longer queries use a
-/// three-scalar posting and verify the complete normalized text before a hit
-/// is admitted.
-pub(super) fn search_grams(text: &str) -> BTreeSet<Vec<u8>> {
+/// Builds the selective three-scalar postings used by full-text search.
+/// One- and two-scalar queries use the compact name order directly, avoiding
+/// two additional posting families for every indexed scalar.
+pub(super) fn trigrams(text: &str) -> BTreeSet<Vec<u8>> {
     let chars = text.to_lowercase().chars().collect::<Vec<_>>();
-    let mut grams = BTreeSet::new();
-    for width in 1..=chars.len().min(3) {
-        for start in 0..=chars.len() - width {
-            grams.insert(
-                chars[start..start + width]
-                    .iter()
-                    .collect::<String>()
-                    .into_bytes(),
-            );
-        }
+    if chars.len() < 3 {
+        return chars
+            .is_empty()
+            .then(BTreeSet::new)
+            .unwrap_or_else(|| [chars.iter().collect::<String>().into_bytes()].into());
     }
-    grams
+    (0..=chars.len() - 3)
+        .map(|start| {
+            chars[start..start + 3]
+                .iter()
+                .collect::<String>()
+                .into_bytes()
+        })
+        .collect()
 }
 
 pub(super) fn append_bytes(out: &mut Vec<u8>, bytes: &[u8]) {

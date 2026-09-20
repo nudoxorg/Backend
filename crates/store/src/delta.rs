@@ -9,7 +9,7 @@ pub(crate) fn delta_id_for(
     changes: &[Change],
     coverage: CoverageWitness,
 ) -> Result<DeltaId<RawRelation>, StoreError> {
-    if !coverage.is_authorized_complete() {
+    if !coverage.state().is_complete() {
         return Err(StoreError::IncompleteCoverage);
     }
     validate_changes(changes)?;

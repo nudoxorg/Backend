@@ -17,9 +17,9 @@ path = "src/main.rs"
 backend-client = { path = "../../crates/client" }
 backend-library = { path = "../../crates/library" }
 backend-local-service = { path = "../../crates/local-service" }
-backend-present = { path = "../../crates/present" }
 backend-replication = { path = "../../crates/replication" }
 backend-runtime = { path = "../../crates/runtime" }
+backend-version = { path = "../../crates/version" }
 gpui.workspace = true
 gpui_elements.workspace = true
 serde.workspace = true
@@ -34,15 +34,6 @@ gpui_platform = { workspace = true, features = ["x11", "wayland"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 gpui_platform = { workspace = true, features = ["wgpu"] }
-
-[features]
-# Rich design fixtures for screenshots and layout work without a live service.
-preview = []
-
-[dev-dependencies]
-blake3.workspace = true
-gpui = { workspace = true, features = ["test-support"] }
-gpui_platform = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true
