@@ -8,8 +8,10 @@
 //! the same user. On Unix that is one safe `rustix` call. On Windows it is a
 //! socket ioctl, a process token, and a security descriptor, and each of those
 //! is an unsafe FFI call. Keeping them here means the workspace-wide
-//! `unsafe_code = "deny"` still holds everywhere else, and the whole Windows
-//! trust seam can be reviewed in one module.
+//! `unsafe_code = "forbid"` still holds everywhere else — this crate's manifest
+//! is the only place that softens it to `deny`, and only so the `win32` modules
+//! can opt in by name — and the whole Windows trust seam can be reviewed in one
+//! module.
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 #![cfg_attr(test, allow(clippy::expect_used))]
 
