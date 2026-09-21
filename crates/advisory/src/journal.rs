@@ -146,6 +146,11 @@ impl AdvisoryJournal {
         self.withdrawals.get(key).map_or(&[], Box::as_ref)
     }
 
+    /// Iterates active advisory objects in canonical identity order.
+    pub fn iter(&self) -> impl Iterator<Item = &Advisory> {
+        self.active.values()
+    }
+
     /// Applies a sync atomically and advances the checkpoint even when entries are empty.
     ///
     /// # Errors

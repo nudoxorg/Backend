@@ -32,6 +32,7 @@ use crate::listener::{ListenerConfig, ListenerError, RunReport, UnixListenerServ
 use crate::protocol::ProtocolError;
 use crate::service::{LocaldService, OwnerService};
 use backend_engine::UnixEndpointPath;
+use backend_engine::advisory::AdvisorySource;
 use backend_engine::registry::{
     AcquisitionLimits, AcquisitionPolicy, AuthenticationToken, RegistryEcosystem, RegistryEndpoint,
 };
@@ -71,6 +72,16 @@ pub const REGISTRY_OFFLINE_ENV: &str = "BACKEND_REGISTRY_OFFLINE";
 pub const ADVISORY_POLICY_ENV: &str = "BACKEND_ADVISORY_POLICY";
 /// Environment variable overriding the maximum admitted registry archive bytes.
 pub const REGISTRY_MAX_ARCHIVE_BYTES_ENV: &str = "BACKEND_REGISTRY_MAX_ARCHIVE_BYTES";
+/// Environment variable naming an OSV JSON/batch feed path or HTTPS URL.
+pub const ADVISORY_OSV_ENV: &str = "BACKEND_ADVISORY_OSV";
+/// Environment variable naming a RustSec TOML/tree path or HTTPS URL.
+pub const ADVISORY_RUSTSEC_ENV: &str = "BACKEND_ADVISORY_RUSTSEC";
+/// Environment variable naming a GHSA JSON/batch feed path or HTTPS URL.
+pub const ADVISORY_GHSA_ENV: &str = "BACKEND_ADVISORY_GHSA";
+/// Environment variable controlling the accepted advisory freshness window.
+pub const ADVISORY_MAX_AGE_ENV: &str = "BACKEND_ADVISORY_MAX_AGE_SECS";
+/// Environment variable disabling advisory network refreshes.
+pub const ADVISORY_OFFLINE_ENV: &str = "BACKEND_ADVISORY_OFFLINE";
 
 /// Default registry archive admission for a single source archive.
 ///
@@ -80,6 +91,7 @@ pub const REGISTRY_MAX_ARCHIVE_BYTES_ENV: &str = "BACKEND_REGISTRY_MAX_ARCHIVE_B
 /// clamped and a deliberate overrun returns a typed acquisition error.
 const REGISTRY_MAX_ARCHIVE_DEFAULT_BYTES: usize = 512 * 1024 * 1024;
 const REGISTRY_MAX_ARCHIVE_CEILING_BYTES: usize = 1024 * 1024 * 1024;
+const ADVISORY_MAX_FEED_BYTES: usize = 256 * 1024 * 1024;
 
 const EX_USAGE: u8 = 64;
 const EX_UNAVAILABLE: u8 = 69;
@@ -102,6 +114,32 @@ pub struct ProcessConfig {
     pub listener: ListenerConfig,
     /// Optional durable remote registry composition.
     pub registry: RegistryConfig,
+    /// Durable OSV/RustSec/GHSA authority composition.
+    pub advisory: AdvisoryConfig,
+}
+
+/// One source location admitted by the local-first advisory composition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdvisorySourceConfig {
+    /// Source parser and identity namespace.
+    pub source: AdvisorySource,
+    /// Local path or HTTPS URL supplied by the host.
+    pub location: String,
+}
+
+/// Advisory authority settings persisted independently from registry archives.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdvisoryConfig {
+    /// Configured authorities. Empty is a valid unknown-coverage state.
+    pub sources: Vec<AdvisorySourceConfig>,
+    /// Maximum age of a source frontier before it becomes stale.
+    pub max_age_secs: u64,
+    /// Whether refresh network effects are disabled.
+    pub offline: bool,
+    /// Policy applied before archive staging.
+    pub gate: AcquisitionGate,
+    /// Maximum one authority body admitted into memory.
+    pub max_feed_bytes: usize,
 }
 
 /// Registry settings carried by the local process composition.
@@ -187,6 +225,62 @@ impl RegistryConfig {
     }
 }
 
+impl AdvisoryConfig {
+    fn from_options(
+        osv: Option<String>,
+        rustsec: Option<String>,
+        ghsa: Option<String>,
+        offline: bool,
+        max_age_secs: Option<usize>,
+    ) -> Result<Self, ProcessError> {
+        let mut sources = Vec::new();
+        for (source, value, env) in [
+            (
+                AdvisorySource::Osv,
+                osv.or_else(|| std::env::var(ADVISORY_OSV_ENV).ok()),
+                ADVISORY_OSV_ENV,
+            ),
+            (
+                AdvisorySource::RustSec,
+                rustsec.or_else(|| std::env::var(ADVISORY_RUSTSEC_ENV).ok()),
+                ADVISORY_RUSTSEC_ENV,
+            ),
+            (
+                AdvisorySource::Ghsa,
+                ghsa.or_else(|| std::env::var(ADVISORY_GHSA_ENV).ok()),
+                ADVISORY_GHSA_ENV,
+            ),
+        ] {
+            if let Some(location) = value {
+                let location = location.trim().to_owned();
+                if location.is_empty() || location.len() > 4096 {
+                    return Err(ProcessError::Usage(format!(
+                        "{env} must be a bounded non-empty path or URL"
+                    )));
+                }
+                sources.push(AdvisorySourceConfig { source, location });
+            }
+        }
+        let max_age_secs = max_age_secs
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| ProcessError::Usage("advisory max age is oversized".to_owned()))?
+            .or_else(|| {
+                std::env::var(ADVISORY_MAX_AGE_ENV)
+                    .ok()
+                    .and_then(|value| value.trim().parse().ok())
+            })
+            .unwrap_or(86_400);
+        Ok(Self {
+            sources,
+            max_age_secs,
+            offline: offline || env_flag(ADVISORY_OFFLINE_ENV),
+            gate: advisory_gate_from_env()?,
+            max_feed_bytes: ADVISORY_MAX_FEED_BYTES,
+        })
+    }
+}
+
 fn advisory_gate_from_env() -> Result<AcquisitionGate, ProcessError> {
     // Native registry adapters do not claim advisory authority. Unknown coverage is retained and
     // warned about until a configured authority supplies a complete frontier; operators can still
@@ -199,7 +293,7 @@ fn advisory_gate_from_env() -> Result<AcquisitionGate, ProcessError> {
         _ => {
             return Err(ProcessError::Usage(format!(
                 "{ADVISORY_POLICY_ENV} must be allow-cached, warn, or fail-closed"
-            )))
+            )));
         }
     };
     Ok(AcquisitionGate { offline })
@@ -280,6 +374,11 @@ impl ProcessConfig {
             registry_auth_file,
             registry_native,
             registry_offline,
+            advisory_osv,
+            advisory_rustsec,
+            advisory_ghsa,
+            advisory_offline,
+            advisory_max_age_secs,
             help,
         } = parse_options(args)?;
         if help {
@@ -335,14 +434,14 @@ impl ProcessConfig {
             listener.max_clients = max_clients;
         }
         if let Some(timeout_ms) = timeout_ms {
-            listener.io_timeout = Duration::from_millis(u64::try_from(timeout_ms).unwrap_or(u64::MAX));
+            listener.io_timeout =
+                Duration::from_millis(u64::try_from(timeout_ms).unwrap_or(u64::MAX));
         }
         if let Some(idle_timeout_ms) = idle_timeout_ms {
             // `0` is the explicit "supervise me yourself" spelling; it is not
             // a zero-length window, which `validate` rejects.
-            listener.idle_timeout = (idle_timeout_ms != 0).then(|| {
-                Duration::from_millis(u64::try_from(idle_timeout_ms).unwrap_or(u64::MAX))
-            });
+            listener.idle_timeout = (idle_timeout_ms != 0)
+                .then(|| Duration::from_millis(u64::try_from(idle_timeout_ms).unwrap_or(u64::MAX)));
         }
         listener.validate().map_err(ProcessError::Listener)?;
         let registry = RegistryConfig::from_options(
@@ -354,6 +453,13 @@ impl ProcessConfig {
             registry_offline,
             &listener,
         )?;
+        let advisory = AdvisoryConfig::from_options(
+            advisory_osv,
+            advisory_rustsec,
+            advisory_ghsa,
+            advisory_offline,
+            advisory_max_age_secs,
+        )?;
         Ok(Self {
             endpoint,
             workspace: paths.data().to_path_buf(),
@@ -362,6 +468,7 @@ impl ProcessConfig {
             authority_secret,
             listener,
             registry,
+            advisory,
         })
     }
 }
@@ -382,6 +489,11 @@ struct ParsedOptions {
     registry_auth_file: Option<String>,
     registry_native: bool,
     registry_offline: bool,
+    advisory_osv: Option<String>,
+    advisory_rustsec: Option<String>,
+    advisory_ghsa: Option<String>,
+    advisory_offline: bool,
+    advisory_max_age_secs: Option<usize>,
     help: bool,
 }
 
@@ -402,6 +514,11 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<ParsedOptions
         registry_auth_file: None,
         registry_native: false,
         registry_offline: false,
+        advisory_osv: None,
+        advisory_rustsec: None,
+        advisory_ghsa: None,
+        advisory_offline: false,
+        advisory_max_age_secs: None,
         help: false,
     };
     let mut args = args.into_iter();
@@ -455,6 +572,22 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<ParsedOptions
             }
             "--registry-native" => parsed.registry_native = true,
             "--registry-offline" => parsed.registry_offline = true,
+            "--advisory-osv" => {
+                parsed.advisory_osv = Some(next_value(&mut args, "--advisory-osv")?);
+            }
+            "--advisory-rustsec" => {
+                parsed.advisory_rustsec = Some(next_value(&mut args, "--advisory-rustsec")?);
+            }
+            "--advisory-ghsa" => {
+                parsed.advisory_ghsa = Some(next_value(&mut args, "--advisory-ghsa")?);
+            }
+            "--advisory-offline" => parsed.advisory_offline = true,
+            "--advisory-max-age-secs" => {
+                parsed.advisory_max_age_secs = Some(parse_count(
+                    &next_value(&mut args, "--advisory-max-age-secs")?,
+                    "--advisory-max-age-secs",
+                )?);
+            }
             other => return Err(ProcessError::Usage(format!("unknown option: {other}"))),
         }
     }
@@ -570,7 +703,7 @@ pub fn main_entry() -> ExitCode {
 
 fn print_help() {
     println!(
-        "usage: backend-locald [--endpoint PATH] [--workspace PATH] [--profile builtin|builtin-echo] [--worker-endpoint PATH] [--authority-secret-file PATH] [--registry-endpoint URL] [--registry-ecosystem NAME] [--registry-auth VALUE|--registry-auth-file PATH] [--registry-native] [--registry-offline] [--max-frame BYTES] [--max-clients COUNT] [--timeout-ms MS] [--idle-timeout-ms MS]"
+        "usage: backend-locald [--endpoint PATH] [--workspace PATH] [--profile builtin|builtin-echo] [--worker-endpoint PATH] [--authority-secret-file PATH] [--registry-endpoint URL] [--registry-ecosystem NAME] [--registry-auth VALUE|--registry-auth-file PATH] [--registry-native] [--registry-offline] [--advisory-osv PATH|URL] [--advisory-rustsec PATH|URL] [--advisory-ghsa PATH|URL] [--advisory-offline] [--advisory-max-age-secs SECONDS] [--max-frame BYTES] [--max-clients COUNT] [--timeout-ms MS] [--idle-timeout-ms MS]"
     );
     println!(
         "without paths, locald opens .backend/v2 for the current project and derives a short local endpoint"
@@ -760,5 +893,28 @@ mod tests {
         assert!(parsed.is_ok(), "long authority path: {parsed:?}");
         let Ok(parsed) = parsed else { return };
         assert_eq!(parsed.authority_secret, Some(PathBuf::from(authority)));
+    }
+
+    #[test]
+    fn advisory_authorities_are_explicitly_composable_and_bounded() {
+        let parsed = ProcessConfig::parse([
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-advisory.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-advisory".to_owned(),
+            "--advisory-osv".to_owned(),
+            "/tmp/osv.json".to_owned(),
+            "--advisory-rustsec".to_owned(),
+            "https://example.invalid/rustsec.json".to_owned(),
+            "--advisory-offline".to_owned(),
+            "--advisory-max-age-secs".to_owned(),
+            "42".to_owned(),
+        ]);
+        assert!(parsed.is_ok(), "advisory composition: {parsed:?}");
+        let Ok(parsed) = parsed else { return };
+        assert_eq!(parsed.advisory.sources.len(), 2);
+        assert!(parsed.advisory.offline);
+        assert_eq!(parsed.advisory.max_age_secs, 42);
+        assert_eq!(parsed.advisory.max_feed_bytes, ADVISORY_MAX_FEED_BYTES);
     }
 }

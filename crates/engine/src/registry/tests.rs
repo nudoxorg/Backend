@@ -672,6 +672,7 @@ fn advisory_gate_denies_unknown_version_before_archive_staging() {
                         offline: true,
                         yanked: false,
                         unlisted: false,
+                        malware: backend_advisory::MalwareCoverage::NotCovered,
                     }),
                     archive_url: std::sync::Arc::from("https://registry.example.test/demo.crate"),
                 }],

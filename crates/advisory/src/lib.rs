@@ -5,6 +5,7 @@
 //! bytes and release selection.  Keeping those two facts separate means a refreshed advisory
 //! frontier can invalidate an installation without downloading or re-indexing an artifact.
 
+mod authority;
 mod journal;
 mod model;
 mod parse;
@@ -12,6 +13,10 @@ mod policy;
 mod version;
 mod wire;
 
+pub use authority::{
+    AdvisoryAuthority, AdvisoryResolver, AuthorityApplyError, AuthorityAvailability, AuthorityFeed,
+    AuthorityFrontier, AuthorityParseError, AuthorityStorageError, read_feed,
+};
 pub use journal::{
     AdvisoryDelta, AdvisoryJournal, AdvisoryJournalError, AdvisorySync, Checkpoint, FeedFreshness,
     SyncMode, WithdrawalRecord,
@@ -232,6 +237,7 @@ unaffected = ["< 1.0.0"]
             offline: false,
             yanked: true,
             unlisted: false,
+            malware: MalwareCoverage::NotCovered,
         };
         let gate = AcquisitionGate {
             offline: OfflinePolicy::Warn,
@@ -247,6 +253,7 @@ unaffected = ["< 1.0.0"]
             offline: observation.offline,
             yanked: true,
             unlisted: observation.unlisted,
+            malware: MalwareCoverage::NotCovered,
         };
         assert!(matches!(gate.decide(&clean), AcquisitionDecision::Warn(_)));
         let override_evidence = OverrideEvidence {
@@ -310,6 +317,7 @@ unaffected = ["< 1.0.0"]
             offline: false,
             yanked: false,
             unlisted: false,
+            malware: MalwareCoverage::NotCovered,
         };
         assert!(matches!(
             (AcquisitionGate {
@@ -335,6 +343,7 @@ unaffected = ["< 1.0.0"]
             offline: true,
             yanked: false,
             unlisted: false,
+            malware: MalwareCoverage::NotCovered,
         };
         assert!(matches!(
             gate.decide(&observation),
@@ -347,6 +356,7 @@ unaffected = ["< 1.0.0"]
             coverage: AdvisoryCoverage::Complete,
             yanked: observation.yanked,
             unlisted: observation.unlisted,
+            malware: MalwareCoverage::NotCovered,
         };
         assert!(matches!(
             (AcquisitionGate {

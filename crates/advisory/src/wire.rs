@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::model::{
     Advisory, AdvisoryCategory, AdvisoryStatus, AffectedRange, FreshnessState, NativeAdvisoryId,
-    SeverityLevel,
+    MalwareCoverage, SeverityLevel,
 };
 use super::policy::{
     AcquisitionDecision, AdvisoryCoverage, AdvisoryObservation, OverrideEvidence, PolicyReason,
@@ -34,6 +34,8 @@ pub struct AdvisorySurfaceDto {
     pub fixed_ranges: Box<[String]>,
     /// Normalized severity.
     pub severity: SeverityLevel,
+    /// Whether the source explicitly evaluates malicious-package claims.
+    pub malware: MalwareCoverage,
     /// Coverage of the selected source frontier.
     pub coverage: AdvisoryCoverage,
     /// Freshness of the selected source frontier.
@@ -98,6 +100,7 @@ impl AdvisorySurfaceDto {
                 })
                 .collect(),
             severity: advisory.severity.level,
+            malware: advisory.malware,
             coverage,
             freshness,
             withdrawn: advisory.withdrawn.clone(),
@@ -135,6 +138,8 @@ pub struct AdvisoryPackageDto {
     pub coverage: AdvisoryCoverage,
     /// Freshness of the selected advisory frontier.
     pub freshness: FreshnessState,
+    /// Whether configured authorities explicitly cover malicious-package claims.
+    pub malware: MalwareCoverage,
     /// Registry publisher withdrew this exact version.
     pub yanked: bool,
     /// Registry publisher hides this exact version from listings.
@@ -158,6 +163,7 @@ impl AdvisoryPackageDto {
             advisories: Box::new([]),
             coverage: AdvisoryCoverage::Unknown,
             freshness: FreshnessState::Unknown,
+            malware: MalwareCoverage::NotCovered,
             yanked: false,
             unlisted: false,
             decision: AcquisitionDecision::Warn(reasons.clone()),
@@ -183,6 +189,7 @@ impl AdvisoryPackageDto {
             advisories,
             coverage: observation.coverage,
             freshness: observation.freshness,
+            malware: observation.malware,
             yanked: observation.yanked,
             unlisted: observation.unlisted,
             decision,

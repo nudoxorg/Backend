@@ -30,8 +30,9 @@ pub use listener::{
     PeerPolicy, PeerPolicyError, RunReport, UnixListenerService,
 };
 pub use process::{
-    ADVISORY_POLICY_ENV,
-    AUTHORITY_SECRET_ENV, ENDPOINT_ENV, PROFILE_ENV, ProcessConfig, ProcessError,
+    ADVISORY_GHSA_ENV, ADVISORY_MAX_AGE_ENV, ADVISORY_OFFLINE_ENV, ADVISORY_OSV_ENV,
+    ADVISORY_POLICY_ENV, ADVISORY_RUSTSEC_ENV, AUTHORITY_SECRET_ENV, AdvisoryConfig,
+    AdvisorySourceConfig, ENDPOINT_ENV, PROFILE_ENV, ProcessConfig, ProcessError,
     REGISTRY_AUTH_ENV, REGISTRY_AUTH_FILE_ENV, REGISTRY_ECOSYSTEM_ENV, REGISTRY_ENDPOINT_ENV,
     REGISTRY_NATIVE_ENV, REGISTRY_OFFLINE_ENV, RegistryConfig, WORKER_ENDPOINT_ENV, WORKSPACE_ENV,
     main_entry, run_process, run_with_owner,

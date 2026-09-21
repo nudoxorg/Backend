@@ -178,9 +178,10 @@ pub(super) fn activate_semantic_publication(
         .activate_semantic_generation(key.profile(), claim.manifest(), claim.binding())
         .map_err(|error| BuiltinModelError(format!("activate semantic publication: {error}")))?;
     for image in &publication.images {
-        let view = backend_semantic::ir::SemanticImageView::reopen(image.as_ref()).map_err(|error| {
-            BuiltinModelError(format!("reopen activated semantic publication: {error}"))
-        })?;
+        let view =
+            backend_semantic::ir::SemanticImageView::reopen(image.as_ref()).map_err(|error| {
+                BuiltinModelError(format!("reopen activated semantic publication: {error}"))
+            })?;
         key.admit_image(&view).map_err(|error| {
             BuiltinModelError(format!("bind semantic publication to product key: {error}"))
         })?;
@@ -803,10 +804,11 @@ pub(crate) fn compose_owner(
         relation_registry,
     )
     .map_err(|error| ProcessError::Profile(error.to_string()))?;
-    let compiler =
-        backend_engine::application::LocalCompilerHost::production_at(config.workspace.join("compiler"))
-            .open()
-            .map_err(|error| ProcessError::Profile(format!("open compiler owner: {error}")))?;
+    let compiler = backend_engine::application::LocalCompilerHost::production_at(
+        config.workspace.join("compiler"),
+    )
+    .open()
+    .map_err(|error| ProcessError::Profile(format!("open compiler owner: {error}")))?;
     // Admit optional semantic configuration without network I/O. Missing or
     // malformed remote settings remain a retained unavailable state and can
     // never delay the local owner or its lexical query path. The classification
@@ -900,15 +902,21 @@ pub(crate) fn compose_owner(
         // worker is offline.
         replication.start_reconnect();
     }
-    let registry = RegistryGateway::open(&config.registry, config.workspace.join("registry"))
-        .map_err(|error| ProcessError::Profile(format!("open registry owner: {error}")))?;
+    let registry = RegistryGateway::open(
+        &config.registry,
+        config.workspace.join("registry"),
+        &config.advisory,
+    )
+    .map_err(|error| ProcessError::Profile(format!("open registry owner: {error}")))?;
     if let Some(registry) = registry.as_ref() {
         let dependency_facts = registry.dependency_facts();
         futures_executor::block_on(sql_projection.synchronize_package_graph(
             daemon.engine().daemon().library().view().root(),
             &dependency_facts,
         ))
-        .map_err(|error| ProcessError::Profile(format!("align package graph projection: {error}")))?;
+        .map_err(|error| {
+            ProcessError::Profile(format!("align package graph projection: {error}"))
+        })?;
     }
     let product_state = ProductState::open(config.workspace.join("product-state.json"))
         .map_err(|error| ProcessError::Profile(format!("open product state: {error}")))?;

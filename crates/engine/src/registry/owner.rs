@@ -21,7 +21,7 @@ use crate::{
 };
 use backend_advisory::{
     AcquisitionDecision, AcquisitionGate, AdvisoryCoverage, AdvisoryObservation,
-    AdvisoryPackageDto, FreshnessState,
+    AdvisoryPackageDto, AdvisoryResolver, FreshnessState, MalwareCoverage, normalize_package,
 };
 use blake3::Hasher;
 
@@ -79,9 +79,8 @@ pub struct PublishedPackage {
     /// Versioned advisory facts and the policy decision admitted before staging.
     pub advisory: AdvisoryPackageDto,
     /// Dependency facts captured at the same immutable source frontier.
-    pub dependency_facts: backend_library::DependencyFacts<
-        Box<[backend_library::PackageDependencyRecord]>,
-    >,
+    pub dependency_facts:
+        backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>>,
 }
 
 /// Receipt atomically pairing archive publication and cursor advancement.
@@ -261,6 +260,7 @@ pub struct RegistryOwner<S: FeedSchema = CanonicalFeedV1> {
     faults: Arc<Faults>,
     readiness: RegistryReadiness,
     advisory_gate: Option<AcquisitionGate>,
+    advisory_resolver: Option<Arc<dyn AdvisoryResolver>>,
 }
 
 impl<S: FeedSchema> fmt::Debug for RegistryOwner<S> {
@@ -387,6 +387,7 @@ impl RegistryOwner {
                 faults: Arc::new(Faults::default()),
                 readiness,
                 advisory_gate: None,
+                advisory_resolver: None,
             },
             report,
         ))
@@ -405,6 +406,16 @@ impl RegistryOwner {
     #[must_use]
     pub fn with_advisory_gate(mut self, gate: AcquisitionGate) -> Self {
         self.advisory_gate = Some(gate);
+        self
+    }
+
+    /// Installs the immutable advisory frontier used to resolve native
+    /// registry releases before archive staging. The resolver is deliberately
+    /// independent of the registry transport, so a refreshed security
+    /// frontier can change policy without downloading the archive again.
+    #[must_use]
+    pub fn with_advisory_resolver(mut self, resolver: Arc<dyn AdvisoryResolver>) -> Self {
+        self.advisory_resolver = Some(resolver);
         self
     }
 
@@ -852,10 +863,24 @@ impl RegistryOwner {
                 })
                 .unwrap_or_else(AdvisoryPackageDto::unknown);
         };
-        let observation = package
-            .advisory
+        let observation = self
+            .advisory_resolver
             .as_ref()
-            .cloned()
+            .and_then(|resolver| {
+                let admitted = super::admit_registry_coordinate(&package.coordinate).ok()?;
+                let identity = normalize_package(
+                    admitted.ecosystem().package_type().as_str(),
+                    admitted.qualified_name().as_str(),
+                )
+                .ok()?;
+                Some(resolver.observe(
+                    &identity,
+                    admitted.version().as_str(),
+                    matches!(package.facts.standing(), super::ReleaseStanding::Yanked),
+                    matches!(package.facts.standing(), super::ReleaseStanding::Unlisted),
+                ))
+            })
+            .or_else(|| package.advisory.as_ref().cloned())
             .unwrap_or(AdvisoryObservation {
                 advisories: Box::new([]),
                 coverage: AdvisoryCoverage::Unknown,
@@ -863,6 +888,7 @@ impl RegistryOwner {
                 offline: true,
                 yanked: false,
                 unlisted: false,
+                malware: MalwareCoverage::NotCovered,
             });
         let decision = gate.decide(&observation);
         AdvisoryPackageDto::from_observation(&observation, decision)

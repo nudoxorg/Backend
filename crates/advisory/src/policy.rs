@@ -46,6 +46,8 @@ pub struct AdvisoryObservation {
     pub yanked: bool,
     /// Registry publisher hides this exact release from ordinary listings.
     pub unlisted: bool,
+    /// Whether a source explicitly evaluates malicious-package claims.
+    pub malware: MalwareCoverage,
 }
 
 /// An explicit, auditable override for an otherwise blocked installation.
@@ -109,6 +111,14 @@ impl AcquisitionGate {
         }
         if observation.unlisted {
             reasons.push(PolicyReason::Advisory(AdvisoryStatus::Unlisted));
+        }
+        if observation.malware == MalwareCoverage::NotCovered
+            && observation.coverage == AdvisoryCoverage::Complete
+        {
+            reasons.push(PolicyReason::IncompleteCoverage);
+            if self.offline == OfflinePolicy::FailClosed {
+                blocked = true;
+            }
         }
         for advisory in &observation.advisories {
             if advisory.is_withdrawn() {

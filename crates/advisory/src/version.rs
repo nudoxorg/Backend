@@ -106,7 +106,12 @@ pub fn normalize_package(
     ecosystem: &str,
     name: &str,
 ) -> Result<PackageIdentity, PackageNormalizationError> {
-    let ecosystem = ecosystem.trim().to_ascii_lowercase();
+    let ecosystem = match ecosystem.trim().to_ascii_lowercase().as_str() {
+        "python" => "pypi".to_owned(),
+        "golang" | "go" => "go".to_owned(),
+        "generic" => "conan".to_owned(),
+        value => value.to_owned(),
+    };
     if name.is_empty() || name.len() > 512 || name.bytes().any(|b| b.is_ascii_control()) {
         return Err(PackageNormalizationError::InvalidName);
     }

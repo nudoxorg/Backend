@@ -5,7 +5,7 @@
 //! breaker, leases, and immutable source receipt; the registry owner remains
 //! the protocol adapter for feed journal phases and 64 KiB archive streaming.
 
-use crate::process::RegistryConfig;
+use crate::process::{AdvisoryConfig, AdvisorySourceConfig, RegistryConfig};
 use backend_engine::acquisition::{
     AcquisitionOutcome as TypedAcquisitionOutcome, AcquisitionRequest, AcquisitionService,
     CorruptReason, RejectReason,
@@ -185,18 +185,26 @@ impl RegistryGateway {
     pub(super) fn open(
         config: &RegistryConfig,
         root: impl AsRef<Path>,
+        advisory_config: &AdvisoryConfig,
     ) -> Result<Option<Self>, AcquisitionError> {
+        let workspace_root = root.as_ref().to_path_buf();
+        let advisory_path = workspace_root.join("advisory-authority.json");
+        let advisory = open_advisory_authority(&advisory_path, advisory_config)
+            .map_err(|error| AcquisitionError::Io(std::io::Error::other(error)))?;
         let Some(endpoint) = config.endpoint.clone() else {
             return Ok(None);
         };
-        let workspace_root = root.as_ref().to_path_buf();
         let (owner, _) = backend_engine::registry::RegistryOwner::open(
             &workspace_root,
             endpoint,
             config.policy,
             config.limits,
         )?;
-        let owner = owner.with_advisory_gate(config.advisory_gate);
+        let owner = owner
+            .with_advisory_gate(config.advisory_gate)
+            .with_advisory_resolver(
+                Arc::clone(&advisory) as Arc<dyn backend_engine::advisory::AdvisoryResolver>
+            );
         let service =
             AcquisitionService::from_owner(owner, workspace_root.join("registry-acquisition"))
                 .map_err(AcquisitionError::Io)?;
@@ -365,6 +373,175 @@ fn native_adapter(
         admitted.version().clone(),
     )
     .map_err(RegistryAddError::Acquisition)
+}
+
+fn open_advisory_authority(
+    path: &Path,
+    config: &AdvisoryConfig,
+) -> Result<Arc<backend_engine::advisory::AdvisoryAuthority>, String> {
+    let mut authority =
+        backend_engine::advisory::AdvisoryAuthority::open(path, config.max_age_secs)
+            .map_err(|error| error.to_string())?;
+    authority.set_max_age_secs(config.max_age_secs);
+    authority.set_offline(config.offline);
+    authority.configure_sources(config.sources.iter().map(|source| source.source));
+    if !config.offline {
+        for source in &config.sources {
+            match refresh_authority_source(&authority, source, config.max_feed_bytes) {
+                Ok(feed) => {
+                    authority.apply(feed).map_err(|error| error.to_string())?;
+                }
+                Err(_) => {
+                    authority.mark_unavailable(source.source, advisory_now());
+                }
+            }
+        }
+    }
+    authority.persist(path).map_err(|error| error.to_string())?;
+    Ok(Arc::new(authority))
+}
+
+fn refresh_authority_source(
+    authority: &backend_engine::advisory::AdvisoryAuthority,
+    source: &AdvisorySourceConfig,
+    maximum: usize,
+) -> Result<backend_engine::advisory::AuthorityFeed, String> {
+    let previous = authority.frontier(source.source);
+    let observed_at = advisory_now();
+    let (bytes, etag, last_modified, not_modified) = if source.location.starts_with("https://")
+        || source.location.starts_with("http://localhost")
+        || source.location.starts_with("http://127.0.0.1")
+        || source.location.starts_with("http://[::1]")
+    {
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(10)))
+            .max_redirects(0)
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
+        let mut request = agent
+            .get(&source.location)
+            .header("accept-encoding", "identity");
+        if let Some(etag) = previous.and_then(|frontier| frontier.etag.as_deref()) {
+            request = request.header("if-none-match", etag);
+        }
+        if let Some(last_modified) = previous.and_then(|frontier| frontier.last_modified.as_deref())
+        {
+            request = request.header("if-modified-since", last_modified);
+        }
+        let mut response = request.call().map_err(|error| error.to_string())?;
+        let status = response.status().as_u16();
+        let etag = response
+            .headers()
+            .get("etag")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .or_else(|| previous.and_then(|frontier| frontier.etag.clone()));
+        let last_modified = response
+            .headers()
+            .get("last-modified")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .or_else(|| previous.and_then(|frontier| frontier.last_modified.clone()));
+        if status == 304 {
+            (Vec::new(), etag, last_modified, true)
+        } else if (200..300).contains(&status) {
+            let mut bytes = Vec::new();
+            response
+                .body_mut()
+                .as_reader()
+                .take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1))
+                .read_to_end(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            if bytes.len() > maximum {
+                return Err("advisory authority body exceeds bound".to_owned());
+            }
+            (bytes, etag, last_modified, false)
+        } else {
+            return Err(format!("advisory authority returned HTTP {status}"));
+        }
+    } else {
+        let path = Path::new(&source.location);
+        if source.source == backend_engine::advisory::AdvisorySource::RustSec && path.is_dir() {
+            let entries = read_rustsec_tree(path, maximum, observed_at)?;
+            return Ok(backend_engine::advisory::AuthorityFeed::from_entries(
+                source.source,
+                entries,
+                observed_at,
+                previous.and_then(|frontier| frontier.etag.clone()),
+                previous.and_then(|frontier| frontier.last_modified.clone()),
+            ));
+        }
+        (
+            backend_engine::advisory::read_feed(path, maximum)
+                .map_err(|error| error.to_string())?,
+            previous.and_then(|frontier| frontier.etag.clone()),
+            previous.and_then(|frontier| frontier.last_modified.clone()),
+            false,
+        )
+    };
+    if not_modified {
+        Ok(backend_engine::advisory::AuthorityFeed::not_modified(
+            source.source,
+            observed_at,
+            etag,
+            last_modified,
+        ))
+    } else {
+        backend_engine::advisory::AuthorityFeed::parse(
+            source.source,
+            &bytes,
+            observed_at,
+            etag,
+            last_modified,
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
+fn read_rustsec_tree(
+    root: &Path,
+    maximum: usize,
+    observed_at: u64,
+) -> Result<Vec<backend_engine::advisory::Advisory>, String> {
+    fn visit(
+        path: &Path,
+        maximum: usize,
+        observed_at: u64,
+        total: &mut usize,
+        output: &mut Vec<backend_engine::advisory::Advisory>,
+    ) -> Result<(), String> {
+        let entries = std::fs::read_dir(path).map_err(|error| error.to_string())?;
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, maximum, observed_at, total, output)?;
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("toml") {
+                let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+                *total = total.saturating_add(bytes.len());
+                if *total > maximum {
+                    return Err("RustSec authority tree exceeds bound".to_owned());
+                }
+                output.push(
+                    backend_engine::advisory::parse_rustsec(&bytes, observed_at)
+                        .map_err(|error| format!("{error:?}"))?,
+                );
+            }
+        }
+        Ok(())
+    }
+    let mut total = 0;
+    let mut output = Vec::new();
+    visit(root, maximum, observed_at, &mut total, &mut output)?;
+    Ok(output)
+}
+
+fn advisory_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// A temporary, sanitized source tree used by the normal product ingester.
