@@ -68,6 +68,7 @@ fn acquisition_service_coalesces_concurrent_registry_effects() {
         integrity: transport::ArchiveIntegrity::Canonical(digest),
         provenance: ProvenanceDigest::from_authenticated_feed([9; 32]),
         facts: ReleaseFacts::default(),
+        advisory: None,
         archive_url: Arc::from("http://127.0.0.1:9/acquisition-service/archive"),
     };
     let pages = Arc::new(AtomicU64::new(0));

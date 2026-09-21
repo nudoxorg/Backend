@@ -379,4 +379,14 @@ unaffected = ["< 1.0.0"]
         assert_eq!(decoded.freshness, FreshnessState::NotModified);
         assert!(decoded.statuses.contains(&AdvisoryStatus::Vulnerable));
     }
+
+    #[test]
+    fn unknown_product_coverage_warns_without_blocking_acquisition() {
+        let dto = AdvisoryPackageDto::unknown();
+        assert_eq!(dto.coverage, AdvisoryCoverage::Unknown);
+        assert_eq!(dto.freshness, FreshnessState::Unknown);
+        assert!(matches!(dto.decision, AcquisitionDecision::Warn(_)));
+        assert!(dto.reasons.contains(&PolicyReason::IncompleteCoverage));
+        assert!(dto.reasons.contains(&PolicyReason::StaleEvidence));
+    }
 }

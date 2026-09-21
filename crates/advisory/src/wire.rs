@@ -160,7 +160,7 @@ impl AdvisoryPackageDto {
             freshness: FreshnessState::Unknown,
             yanked: false,
             unlisted: false,
-            decision: AcquisitionDecision::Deny(reasons.clone()),
+            decision: AcquisitionDecision::Warn(reasons.clone()),
             reasons,
         }
     }
