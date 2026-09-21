@@ -18,7 +18,7 @@
 //! is what the engine did say about it: its kind, its language, its signature
 //! in colour, and — only when it is not simply ready — its publication state.
 
-use super::chrome::Platform;
+use super::chrome::{HeaderMenu, Platform};
 use super::keys;
 use super::workspace::Workspace;
 use crate::motion::{Beat, once};
@@ -55,8 +55,12 @@ impl Workspace {
     ) -> impl IntoElement {
         let platform = Platform::current();
         let controls = Self::window_controls(theme, window, cx);
+        let compact = f32::from(window.viewport_size().width) < 900.0;
+        let compact_right = if platform.draws_controls() { 108.0 } else { 8.0 };
+        let compact_reserve = if compact { 270.0 + compact_right } else { 0.0 };
         div()
             .id("titlebar")
+            .relative()
             .flex_none()
             .h(px(Chrome::TITLEBAR))
             .w_full()
@@ -75,9 +79,10 @@ impl Workspace {
                     .flex_1()
                     .flex()
                     .justify_center()
+                    .when(compact, |bar| bar.pr(px(compact_reserve)))
                     .child(self.omnibar(theme, window, cx)),
             )
-            .child(self.titlebar_keys(theme, cx))
+            .child(self.titlebar_keys(theme, window, cx))
             .when_some(controls, ParentElement::child)
             .when(!platform.draws_controls(), |bar| bar.pr(space(Space::Base)))
     }
@@ -128,59 +133,137 @@ impl Workspace {
             ))
     }
 
-    fn titlebar_keys(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn titlebar_keys(
+        &mut self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let appearance = self.shell.read(cx).prefs().appearance();
         let mark = if appearance.is_dark() {
             Icon::Moon
         } else {
             Icon::Sun
         };
+        let compact = f32::from(window.viewport_size().width) < 900.0;
         div()
             .flex_none()
             .flex()
             .items_center()
             .justify_end()
             .gap(space(Space::Tight))
+            .when(compact, |bar| {
+                bar.absolute()
+                    .top(px(0.0))
+                    .right(px(if Platform::current().draws_controls() {
+                        108.0
+                    } else {
+                        8.0
+                    }))
+                    .h_full()
+            })
+            .child(self.header_menu_button(theme, HeaderMenu::Platform, compact, cx))
+            .child(self.header_menu_button(theme, HeaderMenu::Features, compact, cx))
+            .child(self.header_menu_button(theme, HeaderMenu::Docs, compact, cx))
+            .child(self.header_menu_button(theme, HeaderMenu::Language, compact, cx))
             .child(
-                button::icon_button(theme, "appearance", mark)
+                button::icon_button(theme, "connect-agent", Icon::Spark)
                     .tip(
-                        Tip::new(if appearance.is_dark() {
-                            "Switch to Vellum"
-                        } else {
-                            "Switch to Ink"
-                        })
-                        .detail("The light and dark palettes of this window.")
-                        .key(keys::TOGGLE_APPEARANCE),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.shell.update(cx, |shell, cx| {
-                            let next = shell.prefs().appearance().flipped();
-                            shell.set_appearance(next, cx);
-                        });
-                    })),
-            )
-            .child(
-                button::icon_button(theme, "settings", Icon::Gear)
-                    .tip(
-                        Tip::new("Settings")
-                            .detail("Appearance, editor, agents, diagnostics, legend.")
-                            .key(keys::OPEN_SETTINGS),
+                        Tip::new("Connect Claude")
+                            .detail("Copy the generated MCP command for this local shelf."),
                     )
                     .on_click(cx.listener(|this, _, window, cx| {
-                        let was_open = this.shell.read(cx).settings_open();
-                        this.shell
-                            .update(cx, super::super::store::shell::ShellStore::toggle_settings);
-                        if was_open {
-                            this.remove_transient(Transient::Settings, cx);
-                            this.restore_focus(window, cx);
-                        } else {
-                            let restore = this.shell.read(cx).focus_before_settings();
-                            this.transients
-                                .push_with_restore(Transient::Settings, restore);
-                            window.focus(&this.settings_focus, cx);
-                        }
+                        this.open_agents_settings(window, cx);
                     })),
             )
+            .when(!compact, |bar| {
+                bar.child(
+                    button::icon_button(theme, "appearance", mark)
+                        .tip(
+                            Tip::new(if appearance.is_dark() {
+                                "Switch to Vellum"
+                            } else {
+                                "Switch to Ink"
+                            })
+                            .detail("The light and dark palettes of this window.")
+                            .key(keys::TOGGLE_APPEARANCE),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.shell.update(cx, |shell, cx| {
+                                let next = shell.prefs().appearance().flipped();
+                                shell.set_appearance(next, cx);
+                            });
+                        })),
+                )
+                .child(
+                    button::icon_button(theme, "settings", Icon::Gear)
+                        .tip(
+                            Tip::new("Settings")
+                                .detail("Appearance, editor, agents, diagnostics, legend.")
+                                .key(keys::OPEN_SETTINGS),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let was_open = this.shell.read(cx).settings_open();
+                            this.shell.update(
+                                cx,
+                                super::super::store::shell::ShellStore::toggle_settings,
+                            );
+                            if was_open {
+                                this.remove_transient(Transient::Settings, cx);
+                                this.restore_focus(window, cx);
+                            } else {
+                                let restore = this.shell.read(cx).focus_before_settings();
+                                this.transients
+                                    .push_with_restore(Transient::Settings, restore);
+                                window.focus(&this.settings_focus, cx);
+                            }
+                        })),
+                )
+            })
+    }
+
+    /// Returns one compact, labelled header disclosure. Keeping the trigger a
+    /// real CE button gives it pointer activation, Tab order, Enter/Space
+    /// activation, and a stable action-tree identity in every viewport.
+    fn header_menu_button(
+        &self,
+        theme: &Theme,
+        menu: HeaderMenu,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let label = if menu == HeaderMenu::Language {
+            self.active_language(cx).map_or_else(
+                || "Language".to_owned(),
+                |language| crate::theme::language::label(language).to_owned(),
+            )
+        } else {
+            menu.label().to_owned()
+        };
+        if compact {
+            let compact_label = if menu == HeaderMenu::Language {
+                if label == "Language" {
+                    "Lang".to_owned()
+                } else {
+                    label.clone()
+                }
+            } else {
+                match menu {
+                    HeaderMenu::Platform => "OS".to_owned(),
+                    HeaderMenu::Features => "Flags".to_owned(),
+                    HeaderMenu::Docs => "Docs".to_owned(),
+                    HeaderMenu::Language => unreachable!(),
+                }
+            };
+            button::button(theme, menu.id(), &compact_label, button::Weight::Quiet)
+                .tip(Tip::new(label).detail("Open header details"))
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_header_menu(menu, cx)))
+                .into_any_element()
+        } else {
+            button::button(theme, menu.id(), &label, button::Weight::Quiet)
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_header_menu(menu, cx)))
+                .into_any_element()
+        }
     }
 
     fn omnibar(
@@ -192,13 +275,19 @@ impl Workspace {
         let focused = self.shell.read(cx).focus() == Focus::Omnibar;
         let mode = self.search.read(cx).parsed().mode().clone();
         let placeholder = mode.placeholder();
+        let compact = f32::from(window.viewport_size().width) < 900.0;
+        let omnibar_width = if compact {
+            (f32::from(window.viewport_size().width) - 480.0).clamp(160.0, Chrome::OMNIBAR)
+        } else {
+            (f32::from(window.viewport_size().width) - 420.0).clamp(220.0, Chrome::OMNIBAR)
+        };
         self.field.update(cx, |field, cx| {
             field.set_placeholder(placeholder, window, cx);
         });
         div()
             .id("omnibar")
-            .w(px(Chrome::OMNIBAR))
-            .max_w(px(Chrome::OMNIBAR))
+            .w(px(omnibar_width))
+            .max_w(px(omnibar_width))
             .h(px(28.0))
             .flex()
             .items_center()
@@ -230,10 +319,10 @@ impl Workspace {
                         self.field.read(cx).value(),
                         self.field.read(cx).focus_handle(cx).is_focused(window),
                     )
-                        .appearance(false)
-                        .bordered(false)
-                        .text_size(type_size(TypeScale::Interface))
-                        .text_color(theme.paint(Paint::TextStrong)),
+                    .appearance(false)
+                    .bordered(false)
+                    .text_size(type_size(TypeScale::Interface))
+                    .text_color(theme.paint(Paint::TextStrong)),
                 ),
             )
             .when(!focused, |bar| {

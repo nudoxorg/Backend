@@ -11,11 +11,13 @@
 use super::actions::{
     Accept, AddProject, CloseTab, Complete, CopyIdentity, CopyKey, Dismiss, FindInSource,
     FocusOmnibar, GoBack, GoForward, GoHome, GraphNext, GraphPrevious, GrowInterface, MoveDown,
-    MoveUp, NextTab, OpenEditor, OpenPalette, OpenSettings, OpenSource, PageDown, PageUp,
+    MoveUp, NextTab, OpenAgentsSettings, OpenDocsMenu, OpenEditor, OpenFeatureMenu,
+    OpenLanguageMenu, OpenPalette, OpenPlatformMenu, OpenSettings, OpenSource, PageDown, PageUp,
     PreviousSourceMatch, PreviousTab, Reload, ResetInterface, SelectFirst, SelectLast,
     ShrinkInterface, Tab1, Tab2, Tab3, Tab4, Tab5, Tab6, Tab7, Tab8, Tab9, ToggleAppearance,
     ToggleContext, ToggleLibrary, ToggleMotion, WINDOW_CONTEXT, tab_index,
 };
+use super::chrome::HeaderMenu;
 use crate::host::lease::HostMode;
 use crate::reducer::model::Model;
 use crate::store::catalog::{Ask, CatalogStore};
@@ -41,7 +43,7 @@ use crate::ui::surface;
 #[cfg(feature = "visual-harness")]
 use backend_gui_harness::{FocusState, GuiState, InputStep, OverlayState, PageState};
 use backend_library::{SymbolKey, ViewRoot};
-use backend_present::{Identity, IdentityKey, Source};
+use backend_present::{Identity, IdentityKey, Language, Source};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, EntityInputHandler, FocusHandle, Focusable,
@@ -86,6 +88,16 @@ pub struct WorkspaceSemanticProbe {
     pub text_direction: String,
     /// Active design-system appearance.
     pub theme: String,
+    /// Whether the first-run Get Started surface is visible.
+    pub onboarding: bool,
+    /// Stable id of the open header disclosure, or an empty string.
+    pub header_menu: String,
+    /// Number of project identities currently admitted to the shelf.
+    pub shelf_count: usize,
+    /// First language reported by the active project, or an empty string.
+    pub active_language: String,
+    /// MCP connection verification state exposed by the setup journey.
+    pub mcp_health: String,
     /// Motion preference read from the shell store.
     pub reduced_motion: bool,
     /// Stable focus identity used by keyboard and focus-trap assertions.
@@ -182,7 +194,7 @@ pub(crate) struct Workspace {
     /// Dedicated to the source sheet so in-page find never opens the omnibar.
     pub(super) source_field: Entity<InputState>,
     pending_field: Option<String>,
-    pending_coordinate: Option<String>,
+    pub(super) pending_coordinate: Option<String>,
     pub(super) adding: bool,
     pub(super) add_fault: Option<String>,
     pub(super) add_ecosystem: backend_library::RegistryEcosystem,
@@ -214,6 +226,14 @@ pub(crate) struct Workspace {
     pub(super) revealed_row: Option<usize>,
     /// Revision-pinned graph projection and navigation state for the reader.
     pub(super) graph: crate::graph::ExplorerState,
+    /// True while the durable shelf has no project and the desktop was
+    /// launched without an explicit project. This is a real first-run state,
+    /// derived from the admitted root, rather than a preview fixture.
+    pub(super) onboarding: bool,
+    /// Header disclosure currently open, if any.
+    pub(super) header_menu: Option<HeaderMenu>,
+    /// Whether the reader has explicitly verified the generated MCP setup.
+    pub(super) mcp_verified: bool,
     #[cfg(feature = "visual-harness")]
     pending_harness_state: Option<GuiState>,
     pub(super) focus: FocusHandle,
@@ -289,6 +309,11 @@ impl Workspace {
                 cx,
             )
         });
+        // The admitted root always contains the home row, even when its
+        // durable shelf has no project. Derive first run from the projected
+        // shelf after bootstrap so an empty workspace cannot silently skip
+        // onboarding just because the root has that structural row.
+        let onboarding = engine.read(cx).shelf().entries().is_empty();
         let stores = Self::stores(&endpoint, &engine, data, prefs, window, cx);
         let subscriptions = Self::wire(
             &Wiring {
@@ -306,7 +331,7 @@ impl Workspace {
             },
             cx,
         );
-        Self::assemble(engine, stores, subscriptions, capture_time, cx)
+        Self::assemble(engine, stores, subscriptions, capture_time, onboarding, cx)
     }
 
     /// Returns the window with every store installed and nothing yet open.
@@ -315,6 +340,7 @@ impl Workspace {
         stores: Stores,
         subscriptions: Vec<Subscription>,
         capture_time: Option<std::time::Duration>,
+        onboarding: bool,
         cx: &mut Context<Self>,
     ) -> Self {
         let Stores {
@@ -370,6 +396,9 @@ impl Workspace {
             tab_tree_state: cx.new(|cx| TreeState::new(cx)),
             revealed_row: None,
             graph: crate::graph::ExplorerState::new(),
+            onboarding,
+            header_menu: None,
+            mcp_verified: false,
             #[cfg(feature = "visual-harness")]
             pending_harness_state: None,
             focus: cx.focus_handle(),
@@ -509,6 +538,7 @@ impl Workspace {
                 let coordinate = coordinate.to_owned();
                 self.add_fault = None;
                 self.adding = false;
+                self.onboarding = false;
                 self.remove_transient(Transient::Add, cx);
                 self.pending_coordinate = Some(String::new());
                 self.catalog.update(cx, CatalogStore::clear);
@@ -922,6 +952,16 @@ impl Workspace {
             .update(cx, |shell, cx| shell.set_appearance(appearance, cx));
     }
 
+    /// Forces the explicit empty-workspace journey onto the same Get Started
+    /// surface even when the harness process inherits a developer's project
+    /// environment. Production launches still derive onboarding from their
+    /// durable root and explicit environment.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn harness_set_onboarding(&mut self, cx: &mut Context<Self>) {
+        self.onboarding = true;
+        cx.notify();
+    }
+
     /// Reads the actual semantic/accessibility-facing state used by scenario assertions.
     #[cfg(feature = "visual-harness")]
     pub(crate) fn harness_semantic_probe(
@@ -1033,6 +1073,27 @@ impl Workspace {
                 .try_global::<crate::harness::HarnessDirection>()
                 .map_or_else(|| "ltr".to_owned(), |direction| direction.0.clone()),
             theme: crate::theme::theme(cx).appearance().name().to_owned(),
+            onboarding: self.onboarding,
+            header_menu: self
+                .header_menu
+                .map_or_else(String::new, |menu| menu.id().to_owned()),
+            // Include locally submitted jobs in the semantic shelf. A newly
+            // chosen folder is admitted to the visible shelf immediately,
+            // before the asynchronous publication revision arrives; the
+            // screenshot/journey contract should observe the same projected
+            // shelf the reader sees rather than briefly reporting zero.
+            shelf_count: self
+                .jobs
+                .read(cx)
+                .merge(self.engine.read(cx).shelf())
+                .entries()
+                .len(),
+            active_language: self
+                .active_language(cx)
+                .map_or_else(String::new, |language| {
+                    crate::theme::language::label(language).to_owned()
+                }),
+            mcp_health: self.mcp_health(cx),
             reduced_motion: shell.reduced_motion(),
             action_tree_route: action_tree.route().to_string(),
             action_tree_revision: action_tree.revision(),
@@ -1518,6 +1579,93 @@ impl Workspace {
             .and_then(|tab| tab.subject().and_then(Subject::identity))
     }
 
+    /// Returns the language the header can truthfully attribute to the active
+    /// route. Project rows use the live shelf's language mix; declarations use
+    /// their captured source path. An empty or registry-only route stays
+    /// explicit rather than defaulting to Rust.
+    pub(super) fn active_language(&self, cx: &Context<Self>) -> Option<Language> {
+        self.active_languages(cx).into_iter().next()
+    }
+
+    /// Returns the languages admitted for the active project or package.
+    pub(super) fn active_languages(&self, cx: &Context<Self>) -> Vec<Language> {
+        let Some(tab) = self.document.read(cx).tab() else {
+            return Vec::new();
+        };
+        let Some(subject) = tab.subject() else {
+            return Vec::new();
+        };
+        if let Some(identity) = subject.identity() {
+            let language = identity.language();
+            if language != Language::Unknown {
+                return vec![language];
+            }
+        }
+        let coordinate = match subject {
+            Subject::Project { coordinate } | Subject::Outline { coordinate } => coordinate,
+            Subject::Package { coordinate } => {
+                return crate::store::registry::Spelling::of(coordinate)
+                    .ecosystem()
+                    .map(super::home::ecosystem_language)
+                    .into_iter()
+                    .collect();
+            }
+            Subject::Home | Subject::Declaration { .. } => return Vec::new(),
+        };
+        let shelf = self.jobs.read(cx).merge(self.engine.read(cx).shelf());
+        shelf
+            .entries()
+            .iter()
+            .find(|entry| entry.identity().coordinate().as_str() == coordinate)
+            .map(|entry| {
+                entry
+                    .languages()
+                    .iter()
+                    .map(|count| count.language())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Opens or closes one header disclosure.
+    pub(super) fn toggle_header_menu(&mut self, menu: HeaderMenu, cx: &mut Context<Self>) {
+        self.header_menu = (self.header_menu != Some(menu)).then_some(menu);
+        cx.notify();
+    }
+
+    /// Closes a header disclosure after Escape or a selection.
+    pub(super) fn close_header_menu(&mut self, cx: &mut Context<Self>) {
+        if self.header_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Reports the live MCP health state used by the setup card and harness.
+    pub(super) fn mcp_health(&self, cx: &Context<Self>) -> String {
+        let binary = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+            .map_or_else(
+                || std::path::PathBuf::from("backend-mcp"),
+                |dir| {
+                    dir.join(if cfg!(target_os = "windows") {
+                        "backend-mcp.exe"
+                    } else {
+                        "backend-mcp"
+                    })
+                },
+            );
+        if !binary.is_file() {
+            "missing".to_owned()
+        } else if self.engine.read(cx).fault().is_some() {
+            "offline".to_owned()
+        } else if self.mcp_verified {
+            "healthy".to_owned()
+        } else {
+            "unverified".to_owned()
+        }
+    }
+
     /// Follows one crumb of the trail above the page.
     ///
     /// A project crumb opens that project. A file crumb cannot open a page —
@@ -1752,6 +1900,10 @@ impl Workspace {
             .when(settings, |layer| {
                 layer.child(self.settings_sheet(theme, cx))
             })
+            .when_some(
+                self.header_menu_panel(theme, window, cx),
+                ParentElement::child,
+            )
             .when_some(self.source_sheet(theme, cx), ParentElement::child)
             .when_some(self.hover_card(theme, cx), ParentElement::child)
             .when_some(self.notice_bar(theme, cx), ParentElement::child)
@@ -1773,6 +1925,11 @@ impl<E: InteractiveElement> KeyHandlers for E {
             .on_action(cx.listener(Workspace::toggle_library))
             .on_action(cx.listener(Workspace::toggle_context))
             .on_action(cx.listener(Workspace::open_settings))
+            .on_action(cx.listener(Workspace::open_platform_menu))
+            .on_action(cx.listener(Workspace::open_feature_menu))
+            .on_action(cx.listener(Workspace::open_docs_menu))
+            .on_action(cx.listener(Workspace::open_language_menu))
+            .on_action(cx.listener(Workspace::open_agents_settings_action))
             .on_action(cx.listener(Workspace::go_back))
             .on_action(cx.listener(Workspace::go_forward))
             .on_action(cx.listener(Workspace::go_home))
@@ -1844,6 +2001,31 @@ impl Workspace {
 
     fn start_add(&mut self, _: &AddProject, window: &mut Window, cx: &mut Context<Self>) {
         self.begin_add(window, cx);
+    }
+
+    fn open_platform_menu(&mut self, _: &OpenPlatformMenu, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_header_menu(HeaderMenu::Platform, cx);
+    }
+
+    fn open_feature_menu(&mut self, _: &OpenFeatureMenu, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_header_menu(HeaderMenu::Features, cx);
+    }
+
+    fn open_docs_menu(&mut self, _: &OpenDocsMenu, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_header_menu(HeaderMenu::Docs, cx);
+    }
+
+    fn open_language_menu(&mut self, _: &OpenLanguageMenu, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_header_menu(HeaderMenu::Language, cx);
+    }
+
+    fn open_agents_settings_action(
+        &mut self,
+        _: &OpenAgentsSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_agents_settings(window, cx);
     }
 
     fn toggle_library(&mut self, _: &ToggleLibrary, _: &mut Window, cx: &mut Context<Self>) {
@@ -2057,6 +2239,10 @@ impl Workspace {
             self.restore_focus(window, cx);
             return;
         }
+        if self.header_menu.is_some() {
+            self.close_header_menu(cx);
+            return;
+        }
         // Package disclosures are local navigation surfaces rather than
         // global transients. Escape still needs to close the topmost one so a
         // keyboard reader can leave a release picker or security panel without
@@ -2151,7 +2337,7 @@ impl Workspace {
             return;
         }
         if self.adding {
-            self.submit_add(cx);
+            self.submit_add_from_window(window, cx);
             return;
         }
         if !self.search.read(cx).is_open() {
@@ -2211,6 +2397,19 @@ impl Workspace {
         self.pending_coordinate = Some(text);
     }
 
+    /// Submits the inline add field from a real window action. The add input
+    /// owns focus while the intent is admitted; once it closes, return focus
+    /// to the route remembered by the transient stack. Without this handoff
+    /// the hidden CE input keeps the native focus handle and swallows the
+    /// next `AddProject` shortcut, making a second shelf project impossible
+    /// to add from the keyboard.
+    pub(super) fn submit_add_from_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit_add(cx);
+        if !self.adding {
+            self.restore_focus(window, cx);
+        }
+    }
+
     /// Submits the add field: a folder or pinned URL at once, a name via the catalog.
     pub(super) fn submit_add(&mut self, cx: &mut Context<Self>) {
         let text = self
@@ -2244,6 +2443,7 @@ impl Workspace {
             Ok(coordinate) => {
                 self.add_fault = None;
                 self.adding = false;
+                self.onboarding = false;
                 self.remove_transient(Transient::Add, cx);
                 self.pending_coordinate = Some(String::new());
                 self.catalog.update(cx, CatalogStore::clear);

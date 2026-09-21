@@ -20,7 +20,7 @@ use crate::store::marks::Recent;
 use crate::store::registry::Spelling;
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{Radius, Space, hairline, radius, space};
 use crate::ui::bar;
 use crate::ui::icon::Icon;
 use crate::ui::tip::{Tip, Tipped as _};
@@ -51,7 +51,9 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(space(Space::Bay))
-            .when(held.is_empty(), |page| page.child(Self::welcome_region(theme, cx)))
+            .when(self.onboarding || held.is_empty(), |page| {
+                page.child(self.welcome_region(theme, cx))
+            })
             .when_some(pinned, ParentElement::child)
             .when_some(recent, ParentElement::child)
             .child(browse)
@@ -265,20 +267,32 @@ impl Workspace {
     }
 
     /// Returns the first-run welcome, folded into the home page itself.
-    fn welcome_region(theme: &Theme, cx: &mut Context<Self>) -> Div {
+    ///
+    /// This is a real product route: the folder button opens the platform
+    /// picker and the agent card copies the exact MCP command assembled for
+    /// this process. No sample project is hidden behind the welcome state.
+    fn welcome_region(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Div {
+        let title = if self.onboarding {
+            "Welcome to Nudox"
+        } else {
+            "Start here"
+        };
+        let intro = if self.onboarding {
+            "Choose a project folder to build your local index. Nudox keeps the index on this machine, then shares the same live workspace with the GUI, CLI, and MCP."
+        } else {
+            "Add a folder or a package and Nudox compiles it, indexes every declaration in it, and makes all of them readable and linked."
+        };
         head_and_body(
             theme,
-            "Start here",
+            title,
             div()
                 .flex()
                 .flex_col()
                 .gap(space(Space::Base))
-                .child(text::body(theme).child(
-                    "Add a folder or a package and Nudox compiles it, indexes every \
-                     declaration in it, and makes all of them readable and linked.",
-                ))
-                .child(Self::home_actions(theme, cx))
-                .child(Self::home_examples(theme, cx))
+                .child(text::body(theme).child(intro))
+                .child(self.home_actions(theme, cx))
+                .child(self.home_registry_action(theme, cx))
+                .child(self.mcp_setup_card(theme, cx))
                 .child(
                     div()
                         .flex()
@@ -291,46 +305,54 @@ impl Workspace {
         )
     }
 
-    fn home_actions(theme: &Theme, cx: &mut Context<Self>) -> Div {
+    fn home_actions(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .flex_wrap()
             .gap(space(Space::Snug))
             .child(
-                button::button(theme, "home-folder", "Add a project…", button::Weight::Primary)
-                    .on_click(cx.listener(|this, _, window: &mut Window, cx| {
-                        this.begin_add(window, cx);
-                    })),
+                button::button(
+                    theme,
+                    "home-folder",
+                    "Choose a project folder…",
+                    button::Weight::Primary,
+                )
+                .on_click(cx.listener(|this, _, window: &mut Window, cx| {
+                    this.choose_folder(window, cx);
+                })),
             )
             .child(
-                button::button(theme, "home-palette", "Open the palette", button::Weight::Regular)
-                    .on_click(cx.listener(|this, _, window: &mut Window, cx| {
-                        this.set_field(">".to_owned(), cx);
-                        this.focus_field(window, cx);
-                    })),
+                button::button(
+                    theme,
+                    "home-palette",
+                    "Open the palette",
+                    button::Weight::Regular,
+                )
+                .on_click(cx.listener(|this, _, window: &mut Window, cx| {
+                    this.set_field(">".to_owned(), cx);
+                    this.focus_field(window, cx);
+                })),
             )
     }
 
-    fn home_examples(theme: &Theme, cx: &mut Context<Self>) -> Div {
+    fn home_registry_action(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .flex_col()
             .gap(space(Space::Snug))
-            .child(text::faint(theme).child("Or index one of these:"))
             .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(space(Space::Tight))
-                    .children(super::library::EXAMPLES.iter().enumerate().map(
-                        |(at, example)| {
-                            coordinate_chip(theme, format!("home-example-{at}"), example).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.index_project((*example).to_owned(), cx);
-                                }),
-                            )
-                        },
-                    )),
+                text::faint(theme).child("Or add a package from one of the supported registries."),
+            )
+            .child(
+                button::button(
+                    theme,
+                    "home-add-package",
+                    "Add a package…",
+                    button::Weight::Regular,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.begin_add(window, cx);
+                })),
             )
     }
 }
@@ -393,32 +415,6 @@ pub(super) fn head_and_body(theme: &Theme, title: &str, body: AnyElement) -> Div
         .child(body)
 }
 
-/// Returns a monospace chip holding one exact coordinate.
-pub(super) fn coordinate_chip(
-    theme: &Theme,
-    id: impl Into<SharedString>,
-    text: &str,
-) -> gpui::Stateful<Div> {
-    div()
-        .id(ElementId::Name(id.into()))
-        .flex_none()
-        .px(space(Space::Snug))
-        .py(px(3.0))
-        .rounded(radius(Radius::Hair))
-        .border(hairline())
-        .border_color(theme.paint(Paint::Hairline))
-        .font_family(theme.specimen())
-        .text_size(type_size(TypeScale::Small))
-        .text_color(theme.paint(Paint::TextDim))
-        .cursor_pointer()
-        .hover(|style| {
-            style
-                .bg(theme.paint(Paint::Hover))
-                .text_color(theme.paint(Paint::Gilt))
-        })
-        .child(text.to_owned())
-}
-
 
 /// Returns one reserved bar of an exact size.
 pub(super) fn skeleton(theme: &Theme, width: f32, height: f32) -> Div {
@@ -446,5 +442,4 @@ fn tile_shell(theme: &Theme, id: impl Into<SharedString>) -> gpui::Stateful<Div>
         .cursor_pointer()
         .hover(|style| style.bg(theme.paint(Paint::Hover)))
 }
-
 

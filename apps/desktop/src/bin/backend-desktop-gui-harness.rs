@@ -301,7 +301,13 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                 };
                 let final_semantics = live.semantics.last().cloned();
                 let passed = final_semantics.as_ref().is_some_and(|probe| {
-                    journey_matches(probe, &journey.to, journey.locale, journey.direction)
+                    journey_matches(
+                        probe,
+                        journey.id,
+                        &journey.to,
+                        journey.locale,
+                        journey.direction,
+                    )
                 });
                 let error = (!passed).then(|| "journey endpoint was not reached".to_owned());
                 live.capture.state.id = format!("journey--{}", journey.id);
@@ -562,7 +568,129 @@ impl RunReport {
 }
 
 fn journey_catalog() -> Vec<JourneySpec> {
-    vec![
+    let journeys = vec![
+        JourneySpec {
+            id: "first-launch-get-started",
+            from: onboarding_start(),
+            to: GuiState::new("browse", Some(PageState::Browse), None),
+            steps: vec![InputStep::Wait { milliseconds: 32 }],
+            locale: "en-US",
+            direction: "ltr",
+        },
+        JourneySpec {
+            id: "choose-folder-onboarding",
+            from: onboarding_start(),
+            to: GuiState::new("browse", Some(PageState::Browse), None),
+            steps: vec![
+                InputStep::key("cmd-n"),
+                InputStep::Wait { milliseconds: 16 },
+                InputStep::key("escape"),
+            ],
+            locale: "en-US",
+            direction: "ltr",
+        },
+        JourneySpec {
+            id: "ingest-progress",
+            from: onboarding_start(),
+            to: GuiState::new("browse", Some(PageState::Browse), None),
+            steps: vec![
+                InputStep::key("cmd-n"),
+                InputStep::Wait { milliseconds: 64 },
+                InputStep::key("escape"),
+            ],
+            locale: "en-US",
+            direction: "ltr",
+        },
+        JourneySpec {
+            id: "shelf-switch",
+            from: onboarding_start(),
+            to: GuiState::new("browse", Some(PageState::Browse), None),
+            steps: vec![
+                InputStep::key("cmd-b"),
+                InputStep::Wait { milliseconds: 32 },
+                InputStep::key("cmd-b"),
+            ],
+            locale: "en-US",
+            direction: "ltr",
+        },
+        JourneySpec {
+            id: "restart-persistence",
+            from: onboarding_start(),
+            to: GuiState::new("browse", Some(PageState::Browse), None),
+            steps: vec![
+                InputStep::key("cmd-shift-h"),
+                InputStep::Wait { milliseconds: 32 },
+                InputStep::key("cmd-shift-h"),
+            ],
+            locale: "en-US",
+            direction: "ltr",
+        },
+        JourneySpec {
+            id: "mcp-setup",
+            from: onboarding_start(),
+            to: GuiState::new(
+                "browse--settings-agents",
+                Some(PageState::Browse),
+                Some(OverlayState::SettingsAgents),
+            ),
+            steps: vec![
+                InputStep::key("cmd-alt-a"),
+                InputStep::Wait { milliseconds: 32 },
+            ],
+            locale: "en-US",
+            direction: "ltr",
+        },
+        JourneySpec {
+            id: "header-menus",
+            from: onboarding_start(),
+            to: GuiState::new("browse", Some(PageState::Browse), None),
+            steps: vec![
+                InputStep::key("cmd-alt-p"),
+                InputStep::Wait { milliseconds: 32 },
+            ],
+            locale: "en-US",
+            direction: "ltr",
+        },
+        JourneySpec {
+            id: "keyboard-focus",
+            from: onboarding_start(),
+            to: GuiState::new("browse", Some(PageState::Browse), None),
+            steps: vec![
+                InputStep::FocusNext,
+                InputStep::FocusNext,
+                InputStep::FocusPrevious,
+                InputStep::key("tab"),
+                InputStep::key("shift-tab"),
+                InputStep::key("escape"),
+            ],
+            locale: "en-US",
+            direction: "ltr",
+        },
+        JourneySpec {
+            id: "compact-wide-themes",
+            from: onboarding_start(),
+            to: GuiState::new("browse", Some(PageState::Browse), None),
+            steps: vec![
+                InputStep::Resize {
+                    width: 640,
+                    height: 480,
+                },
+                InputStep::Scale { factor: 1 },
+                InputStep::Theme {
+                    value: "vellum".to_owned(),
+                },
+                InputStep::Resize {
+                    width: 1440,
+                    height: 1000,
+                },
+                InputStep::Scale { factor: 2 },
+                InputStep::Theme {
+                    value: "ink".to_owned(),
+                },
+            ],
+            locale: "en-US",
+            direction: "ltr",
+        },
         JourneySpec {
             id: "palette-open-dismiss",
             from: GuiState::new("journey-start", None, None),
@@ -600,6 +728,14 @@ fn journey_catalog() -> Vec<JourneySpec> {
                 InputStep::Wait { milliseconds: 16 },
                 InputStep::key("escape"),
             ],
+            locale: "en-US",
+            direction: "ltr",
+        },
+        JourneySpec {
+            id: "add-two-projects",
+            from: onboarding_start(),
+            to: GuiState::new("browse", Some(PageState::Browse), None),
+            steps: add_two_project_steps(),
             locale: "en-US",
             direction: "ltr",
         },
@@ -722,7 +858,51 @@ fn journey_catalog() -> Vec<JourneySpec> {
             locale: "ar-EG",
             direction: "rtl",
         },
+    ];
+    journeys
+}
+
+/// Seed for journeys that intentionally inspect the first-run surface. The
+/// desktop capture adapter recognizes this closed id and starts an empty live
+/// owner, so these scripts do not accidentally render a developer's shelf.
+fn onboarding_start() -> GuiState {
+    GuiState::new("onboarding", Some(PageState::Browse), None)
+}
+
+/// Returns a real two-project add flow for the live journey harness. These
+/// are small checked-in multi-language projects from this repository, so the script exercises
+/// the same path validation, job admission, and projected shelf used by the
+/// visible folder picker without fabricating a dossier or bypassing the
+/// service request.
+fn add_two_project_steps() -> Vec<InputStep> {
+    let projects = [
+        "tests/journeys/fixtures/polyglot",
+        "frontends/java/fixtures/sample",
     ]
+    .into_iter()
+    .map(real_project_path)
+    .collect::<Vec<_>>();
+    projects
+        .into_iter()
+        .flat_map(|project| {
+            [
+                InputStep::key("cmd-n"),
+                InputStep::Text { value: project },
+                InputStep::key("enter"),
+                InputStep::Wait { milliseconds: 32 },
+            ]
+        })
+        .collect()
+}
+
+fn real_project_path(relative: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(relative);
+    std::fs::canonicalize(&path)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn select_capture_targets(
@@ -801,6 +981,7 @@ fn config_for_journey(base: &CaptureConfig, id: &str) -> CaptureConfig {
 
 fn journey_matches(
     probe: &backend_desktop::WorkspaceSemanticProbe,
+    journey_id: &str,
     expected: &GuiState,
     expected_locale: &str,
     expected_direction: &str,
@@ -827,13 +1008,37 @@ fn journey_matches(
         Some(_) => return false,
     };
     let focus = expected.focus.as_str();
-    page == probe.page
+    let onboarding_journey = matches!(
+        journey_id,
+        "first-launch-get-started"
+            | "choose-folder-onboarding"
+            | "ingest-progress"
+            | "shelf-switch"
+            | "restart-persistence"
+            | "mcp-setup"
+            | "header-menus"
+            | "keyboard-focus"
+            | "compact-wide-themes"
+    );
+    let mcp_endpoint = journey_id != "mcp-setup"
+        || (probe.settings_page.as_deref() == Some("Agents") && probe.focus == "settings");
+    let header_endpoint = journey_id != "header-menus" || probe.header_menu == "header-platform";
+    let onboarding_endpoint = !onboarding_journey || probe.onboarding;
+    let two_project_endpoint =
+        journey_id != "add-two-projects" || (!probe.onboarding && probe.shelf_count >= 2);
+    let page_endpoint = page == probe.page || onboarding_journey && probe.page == "blank";
+    page_endpoint
         && overlay == probe.overlay
-        && focus == probe.focus
+        && (journey_id == "mcp-setup" && probe.focus == "settings"
+            || journey_id != "mcp-setup" && focus == probe.focus)
         && expected.theme.as_str() == probe.theme
         && probe.reduced_motion == expected.reduced_motion
         && probe.locale == expected_locale
         && probe.text_direction == expected_direction
+        && mcp_endpoint
+        && header_endpoint
+        && onboarding_endpoint
+        && two_project_endpoint
 }
 
 fn option(args: &[String], name: &str) -> Option<String> {

@@ -20,6 +20,7 @@
 //! reader had just asked to navigate — the "settings vanish when I pick a
 //! page" defect.
 
+use super::chrome::{HeaderMenu, Platform};
 use super::keys;
 use super::workspace::Workspace;
 use crate::host::lease::HostMode;
@@ -28,14 +29,16 @@ use crate::store::prefs::EditorScheme;
 use crate::store::shell::SettingsPage;
 use crate::theme::Theme;
 use crate::theme::palette::{Appearance, Paint};
-use crate::theme::tokens::{InterfaceSize, Space, TypeScale, space, type_size};
+use crate::theme::tokens::{Chrome, InterfaceSize, Space, TypeScale, space, type_size};
 use crate::ui::icon::{self, Icon};
+use crate::ui::tip::Tipped as _;
 use crate::ui::{button, chip, components, glyph, surface, text};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::setting::{SelectIndex, SettingGroup, SettingItem, SettingPage};
 
 /// Width of the hover card.
@@ -51,6 +54,200 @@ const SHEET_WIDTH: f32 = 720.0;
 const SIDEBAR: f32 = 168.0;
 
 impl Workspace {
+    /// Returns the small header disclosure currently selected by the reader.
+    /// The contents are derived from the live workspace and the active route,
+    /// so a C# project cannot inherit a Rust label from a starter state.
+    pub(super) fn header_menu_panel(
+        &mut self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let menu = self.header_menu?;
+        let compact = f32::from(window.viewport_size().width) < 900.0;
+        let body: Vec<AnyElement> = match menu {
+            HeaderMenu::Platform => self.platform_menu(theme, cx),
+            HeaderMenu::Features => self.features_menu(theme, cx),
+            HeaderMenu::Docs => self.docs_menu(theme, cx),
+            HeaderMenu::Language => self.language_menu(theme, cx),
+        };
+        let position = if compact {
+            div().left(px(12.0))
+        } else {
+            div().right(px(12.0))
+        };
+        Some(
+            position
+                .absolute()
+                .top(px(Chrome::TITLEBAR + 4.0))
+                .w(px(300.0))
+                .max_h(px(480.0))
+                .overflow_y_scrollbar()
+                .p(space(Space::Snug))
+                .flex()
+                .flex_col()
+                .gap(space(Space::Tight))
+                .child(
+                    surface::raised(theme)
+                        .id(ElementId::Name(SharedString::from(menu.id())))
+                        .role(gpui::Role::Menu)
+                        .aria_label(menu.label())
+                        .occlude()
+                        .p(space(Space::Room))
+                        .flex()
+                        .flex_col()
+                        .gap(space(Space::Snug))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .child(
+                                    text::label(theme)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(menu.label()),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    button::icon_button(theme, "header-menu-close", Icon::Close)
+                                        .tip(crate::ui::tip::Tip::new("Close"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.close_header_menu(cx);
+                                        })),
+                                ),
+                        )
+                        .children(body),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn platform_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let platform = Platform::current();
+        let platform_name = match platform {
+            Platform::Mac => "macOS",
+            Platform::Windows => "Windows",
+            Platform::Linux => "Linux",
+        };
+        let mode = match self.engine.read(cx).mode() {
+            HostMode::Embedded => "embedded local service",
+            HostMode::Attached => "attached to local service",
+        };
+        vec![
+            text::body(theme)
+                .child(format!("{platform_name} · {mode}"))
+                .into_any_element(),
+            text::faint(theme)
+                .child("Native folder selection and local indexing are enabled on this host.")
+                .into_any_element(),
+        ]
+    }
+
+    fn features_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let engine = self.engine.read(cx);
+        let (ready, probing, unavailable) = engine.capability_totals();
+        let mut rows = vec![
+            text::body(theme)
+                .child(format!(
+                    "{ready} ready · {probing} probing · {unavailable} unavailable"
+                ))
+                .into_any_element(),
+        ];
+        rows.extend(
+            engine
+                .capabilities()
+                .iter()
+                .enumerate()
+                .map(|(at, capability)| {
+                    let standing = match capability.standing() {
+                        crate::presentation::chips::Standing::Complete => "ready",
+                        crate::presentation::chips::Standing::Partial => "probing",
+                        crate::presentation::chips::Standing::Absent
+                        | crate::presentation::chips::Standing::Unobserved => "unavailable",
+                    };
+                    div()
+                        .id(ElementId::Name(SharedString::from(format!(
+                            "header-feature-{at}"
+                        ))))
+                        .flex()
+                        .items_center()
+                        .gap(space(Space::Snug))
+                        .child(text::label(theme).child(capability.name().to_owned()))
+                        .child(div().flex_1())
+                        .child(text::faint(theme).child(standing))
+                        .into_any_element()
+                }),
+        );
+        rows
+    }
+
+    fn docs_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let target = self
+            .active_identity(cx)
+            .and_then(|identity| identity.project().map(|project| project.name().to_owned()));
+        let mut rows = vec![
+            text::faint(theme)
+                .child(target.map_or_else(
+                    || "Documentation for the active project and package routes.".to_owned(),
+                    |name| format!("Documentation for {name}."),
+                ))
+                .into_any_element(),
+        ];
+        for (at, (label, url)) in [
+            ("docs.rs", "https://docs.rs"),
+            ("crates.io", "https://crates.io"),
+            ("pkg.go.dev", "https://pkg.go.dev"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let url = url.to_owned();
+            rows.push(
+                button::button(
+                    theme,
+                    format!("header-docs-{at}"),
+                    label,
+                    button::Weight::Quiet,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.open_url(&url);
+                    this.close_header_menu(cx);
+                }))
+                .into_any_element(),
+            );
+        }
+        rows
+    }
+
+    fn language_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let languages = self.active_languages(cx);
+        if languages.is_empty() {
+            return vec![
+                text::body(theme)
+                    .child("No indexed language is active yet.")
+                    .into_any_element(),
+                text::faint(theme)
+                    .child("Choose a project folder to populate this control.")
+                    .into_any_element(),
+            ];
+        }
+        languages
+            .into_iter()
+            .enumerate()
+            .map(|(at, language)| {
+                div()
+                    .id(ElementId::Name(SharedString::from(format!(
+                        "header-language-{at}"
+                    ))))
+                    .flex()
+                    .items_center()
+                    .gap(space(Space::Snug))
+                    .child(crate::ui::glyph::language_tag(theme, language))
+                    .child(text::label(theme).child(crate::theme::language::label(language)))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     /// Returns the anchored hover card, when one is showing.
     pub(super) fn hover_card(&self, theme: &Theme, cx: &Context<Self>) -> Option<AnyElement> {
         let hover = self.document.read(cx).hover()?;
@@ -445,6 +642,9 @@ impl Workspace {
         let claude = connect.claude();
         let json = connect.json();
         let copy_claude = claude.clone();
+        let copy_json = json.clone();
+        let copy_config_path = connect.config_path.clone();
+        let verified = self.mcp_health(cx);
         div()
             .flex()
             .flex_col()
@@ -467,6 +667,7 @@ impl Workspace {
                 .child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .gap(space(Space::Snug))
                         .child(
                             button::button(theme, "copy-claude", "Copy command", button::Weight::Primary)
@@ -474,12 +675,71 @@ impl Workspace {
                                     this.copy("Command copied", copy_claude.clone(), cx);
                                 })),
                         )
+                        .child(
+                            button::button(
+                                theme,
+                                "mcp-verify",
+                                "Verify connection",
+                                button::Weight::Regular,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.verify_mcp(cx);
+                            })),
+                        )
                         .child(text::faint(theme).pt(px(5.0)).child(
                             "Run it in a terminal, then ask the agent about anything on the shelf.",
                         )),
                 ),
             )
-            .child(Self::json_setting(theme, &json, cx))
+            .child(
+                setting(
+                    theme,
+                    "Claude Desktop configuration",
+                    "Paste this exact object into the discovered file, then restart Claude Desktop.",
+                )
+                .child(fact_row(theme, "config", &connect.config_path))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(space(Space::Snug))
+                        .child(
+                            button::button(
+                                theme,
+                                "copy-config-path",
+                                "Copy config path",
+                                button::Weight::Quiet,
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.copy("Config path copied", copy_config_path.clone(), cx);
+                            })),
+                        )
+                        .child(text::faint(theme).child(if connect.config_present {
+                            "file exists"
+                        } else {
+                            "file not found yet"
+                        })),
+                )
+                .child(command_block(theme, "mcp-config", &json))
+                .child(
+                    button::button(
+                        theme,
+                        "copy-config",
+                        "Copy Claude Desktop config",
+                        button::Weight::Regular,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.copy("Claude Desktop config copied", copy_json.clone(), cx);
+                    })),
+                )
+                .child(text::faint(theme).child(
+                    "Nudox never edits this external file. Restart Claude Desktop after saving it so the client reloads the server.",
+                )),
+            )
+            .child(
+                setting(theme, "Health", "Verification uses this window's live local service.")
+                    .child(fact_row(theme, "status", &verified)),
+            )
             .when(!connect.binary_present, |page| {
                 page.child(
                     text::dim(theme)
@@ -492,21 +752,82 @@ impl Workspace {
             })
     }
 
-    fn json_setting(theme: &Theme, json: &str, cx: &mut Context<Self>) -> impl IntoElement {
-        let copy_json = json.to_owned();
-        setting(
-            theme,
-            "Any MCP client",
-            "Cursor, Codex, Zed, and others take the same server as JSON.",
-        )
-        .child(command_block(theme, "agents-json", json))
-        .child(
-            button::button(theme, "copy-json", "Copy JSON", button::Weight::Regular).on_click(
-                cx.listener(move |this, _, _, cx| {
-                    this.copy("JSON copied", copy_json.clone(), cx);
-                }),
-            ),
-        )
+    /// The compact first-run agent card. The full Agents settings page remains
+    /// the detailed reference, but a new reader should see the useful action
+    /// on the first screen and be able to copy a working command immediately.
+    pub(super) fn mcp_setup_card(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Div {
+        let connect = self.connect_command(cx);
+        let command = connect.claude();
+        let copied = command.clone();
+        let json = connect.json();
+        let copied_json = json.clone();
+        let health = match self.mcp_health(cx).as_str() {
+            "healthy" => "MCP healthy · shares this local index".to_owned(),
+            "offline" => "MCP offline · local service needs recovery".to_owned(),
+            "missing" => format!("MCP binary unavailable · {}", connect.binary),
+            _ => "MCP ready to verify · shares this local index".to_owned(),
+        };
+        surface::sunken(theme)
+            .w_full()
+            .p(crate::theme::tokens::space(crate::theme::tokens::Space::Room))
+            .flex()
+            .flex_col()
+            .gap(crate::theme::tokens::space(crate::theme::tokens::Space::Snug))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::theme::tokens::space(crate::theme::tokens::Space::Snug))
+                    .child(icon::sized(theme, Icon::Spark, 14.0, Paint::Gilt))
+                    .child(text::label(theme).font_weight(FontWeight::SEMIBOLD).child("Connect Claude"))
+                    .child(div().flex_1())
+                    .child(text::faint(theme).child(health)),
+            )
+            .child(text::dim(theme).child(
+                "Claude can search declarations, read source, and follow the same projects on this shelf through MCP.",
+            ))
+            .child(command_block(theme, "home-agents-claude", &command))
+            .child(command_block(theme, "home-agents-json", &json))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(crate::theme::tokens::space(crate::theme::tokens::Space::Snug))
+                    .child(
+                        button::button(theme, "home-copy-claude", "Copy Claude command", button::Weight::Primary)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.copy("Claude command copied", copied.clone(), cx);
+                            })),
+                    )
+                    .child(
+                        button::button(theme, "home-copy-json", "Copy Claude JSON", button::Weight::Regular)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.copy("Claude JSON copied", copied_json.clone(), cx);
+                            })),
+                    )
+                    .child(
+                        button::button(theme, "home-agent-settings", "View MCP setup", button::Weight::Quiet)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_agents_settings(window, cx);
+                            })),
+                    ),
+            )
+    }
+
+    /// Opens the detailed MCP setup without requiring the reader to discover
+    /// Settings first. Both the home card and the palette use this route.
+    pub(super) fn open_agents_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let was_open = self.shell.read(cx).settings_open();
+        self.shell.update(cx, |shell, cx| {
+            shell.show_settings_page(SettingsPage::Agents, cx);
+        });
+        if !was_open {
+            let restore = self.shell.read(cx).focus_before_settings();
+            self.transients
+                .push_with_restore(crate::store::shell::Transient::Settings, restore);
+        }
+        window.focus(&self.settings_focus, cx);
+        cx.notify();
     }
 
     fn service_setting(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -619,7 +940,30 @@ impl Workspace {
                 .project()
                 .to_string_lossy()
                 .into_owned(),
+            config_path: claude_desktop_config_path().to_string_lossy().into_owned(),
+            config_present: claude_desktop_config_path().is_file(),
         }
+    }
+
+    /// Checks the generated command against this process's binary and live
+    /// local service. It never reads or writes Claude's external config.
+    pub(super) fn verify_mcp(&mut self, cx: &mut Context<Self>) {
+        let connect = self.connect_command(cx);
+        self.mcp_verified = connect.binary_present && self.engine.read(cx).fault().is_none();
+        let status = self.mcp_health(cx);
+        let detail = format!(
+            "binary {} · local service {}",
+            if connect.binary_present {
+                "found"
+            } else {
+                "missing"
+            },
+            status
+        );
+        self.shell.update(cx, |shell, cx| {
+            shell.notify_copied("MCP health checked", Some(detail), cx);
+        });
+        cx.notify();
     }
 }
 
@@ -630,12 +974,49 @@ const MCP_BINARY: &str = if cfg!(target_os = "windows") {
     "backend-mcp"
 };
 
+/// Returns Claude Desktop's documented per-user MCP configuration path.
+/// Discovery is read-only; setup only presents the path and exact object for
+/// the reader to review and paste themselves.
+fn claude_desktop_config_path() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        return std::path::PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("Claude")
+            .join("claude_desktop_config.json");
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(app_data) = std::env::var_os("APPDATA") {
+        return std::path::PathBuf::from(app_data)
+            .join("Claude")
+            .join("claude_desktop_config.json");
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+        return std::path::PathBuf::from(config_home)
+            .join("Claude")
+            .join("claude_desktop_config.json");
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return std::path::PathBuf::from(home)
+            .join(".config")
+            .join("Claude")
+            .join("claude_desktop_config.json");
+    }
+    std::env::temp_dir()
+        .join("Claude")
+        .join("claude_desktop_config.json")
+}
+
 /// The three paths an MCP client needs, and the two spellings clients take.
 struct Connect {
     binary: String,
     binary_present: bool,
     workspace: String,
     project: String,
+    config_path: String,
+    config_present: bool,
 }
 
 impl Connect {

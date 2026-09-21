@@ -313,6 +313,7 @@ impl Workspace {
                 Motion::of(standing),
             ))
             .child(shelf_meta(theme, entry, standing))
+            .child(Self::shelf_actions(theme, at, &coordinate, cx))
             .when(family.entries.len() > 1, |row| {
                 row.child(Self::version_strip(theme, at, family, &coordinate, cx))
             })
@@ -320,6 +321,40 @@ impl Workspace {
                 row.child(Self::failed_row(theme, at, &fault, &coordinate, cx))
             })
             .into_any_element()
+    }
+
+    /// Project controls stay on the shelf row so a reader can maintain more
+    /// than one local project without opening a separate page first. They are
+    /// real CE buttons with focus rings and stop propagation before the row's
+    /// open action, preserving both keyboard and pointer semantics.
+    fn shelf_actions(
+        theme: &Theme,
+        at: usize,
+        coordinate: &str,
+        cx: &mut Context<Workspace>,
+    ) -> impl IntoElement {
+        let reindex = coordinate.to_owned();
+        let remove = coordinate.to_owned();
+        div()
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .child(
+                button::icon_button(theme, format!("shelf-reindex-{at}"), Icon::Refresh)
+                    .tip(Tip::new("Re-index project").value(coordinate.to_owned()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.index_project(reindex.clone(), cx);
+                    })),
+            )
+            .child(
+                button::icon_button(theme, format!("shelf-remove-{at}"), Icon::Close)
+                    .tip(Tip::new("Remove from shelf").value(coordinate.to_owned()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.remove_project(remove.clone(), cx);
+                    })),
+            )
     }
 
     /// Returns the strip of versions under a family, the shown one lit.
@@ -614,11 +649,21 @@ fn rail_dot(
         }))
 }
 
-fn close_button(theme: &Theme, at: usize, id: TabId, cx: &mut Context<Workspace>) -> impl IntoElement {
+fn close_button(
+    theme: &Theme,
+    at: usize,
+    id: TabId,
+    cx: &mut Context<Workspace>,
+) -> impl IntoElement {
     button::icon_button(theme, format!("tab-close-{at}"), Icon::Close)
-        .tip(Tip::new("Close").detail("Its branches move up to the page it was opened from.").key(keys::CLOSE_TAB))
+        .tip(
+            Tip::new("Close")
+                .detail("Its branches move up to the page it was opened from.")
+                .key(keys::CLOSE_TAB),
+        )
         .on_click(cx.listener(move |this, _, _, cx| {
-            this.document.update(cx, |document, cx| document.close(id, cx));
+            this.document
+                .update(cx, |document, cx| document.close(id, cx));
         }))
 }
 
@@ -636,9 +681,10 @@ fn tab_glyph(
             glyph::package_tile(theme, false).into_any_element()
         }
         Some(Subject::Package { coordinate }) => {
-            let language = Spelling::of(coordinate)
-                .ecosystem()
-                .map_or(backend_present::Language::Unknown, super::home::ecosystem_language);
+            let language = Spelling::of(coordinate).ecosystem().map_or(
+                backend_present::Language::Unknown,
+                super::home::ecosystem_language,
+            );
             glyph::language_tag(theme, language).into_any_element()
         }
         Some(Subject::Declaration { symbol, .. }) => {
@@ -839,8 +885,11 @@ impl Workspace {
             .items_center()
             .gap(space(Space::Snug))
             .child(
-                button::button(theme, "add-submit", "Index", button::Weight::Primary)
-                    .on_click(cx.listener(|this, _, _, cx| this.submit_add(cx))),
+                button::button(theme, "add-submit", "Index", button::Weight::Primary).on_click(
+                    cx.listener(|this, _, window, cx| {
+                        this.submit_add_from_window(window, cx);
+                    }),
+                ),
             )
             .child(button::key_hint(theme, &keys::ACCEPT.label()))
             .child(div().flex_1())
@@ -868,7 +917,7 @@ impl Workspace {
         )
         .w_full()
         .justify_center()
-        .on_click(cx.listener(|_, _, _, cx| Self::choose_folder(cx)))
+        .on_click(cx.listener(|this, _, window, cx| this.choose_folder(window, cx)))
     }
 
     fn coordinate_field(&mut self, theme: &Theme) -> impl IntoElement {
@@ -978,13 +1027,14 @@ impl Workspace {
         cx.notify();
     }
 
-    fn choose_folder(cx: &mut Context<Self>) {
+    pub(crate) fn choose_folder(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
             prompt: None,
         });
+        let restore = self.shell.read(cx).focus();
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(chosen))) = paths.await else {
                 return;
@@ -994,19 +1044,18 @@ impl Workspace {
             };
             let _ = this.update(cx, |this, cx| {
                 this.adding = false;
+                this.onboarding = false;
+                this.remove_transient(Transient::Add, cx);
+                this.pending_coordinate = Some(String::new());
                 this.index_project(folder.to_string_lossy().into_owned(), cx);
+                this.shell
+                    .update(cx, |shell, cx| shell.focus_on(restore, cx));
+                cx.notify();
             });
         })
         .detach();
     }
 }
-
-/// Example coordinates offered on the first run and in the add flow.
-pub(super) const EXAMPLES: [&str; 3] = [
-    "pkg:cargo/memchr@2.7.4",
-    "pkg:pypi/attrs@24.2.0",
-    "pkg:npm/zod@3.23.8",
-];
 
 /// Returns the one faint line that says what the field will do.
 fn hint_for(ask: &Ask) -> Option<String> {

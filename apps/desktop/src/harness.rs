@@ -17,10 +17,13 @@ use backend_gui_harness::{
     GpuiCaptureOptions, GuiState, InputStep, PageState, ThemeState,
     capture_gpui_state_with_adapters_result,
 };
+use backend_runtime::WorkspacePaths;
 use gpui::{App, AppContext as _, Global, WeakEntity, Window};
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Locale selected for a deterministic visual run. Product formatters may
 /// read this global without consulting the host process locale.
@@ -166,7 +169,7 @@ fn capture_live_workspace_mode(
     apply_initial_state: bool,
 ) -> Result<LiveCapture, String> {
     config.validate().map_err(|error| error.to_string())?;
-    let host = DesktopHost::start().map_err(|error| format!("start desktop host: {error}"))?;
+    let host = capture_host(&state)?;
     let mut transport = UnixSubscriptionTransport::connect(host.endpoint())
         .map_err(|error| format!("connect desktop subscription: {error}"))?;
     let (initial_root, _initial_cursor) = transport
@@ -351,6 +354,11 @@ fn capture_live_workspace_mode(
             cx.set_global(HarnessLocale(locale));
             cx.set_global(HarnessDirection(config.text_direction.clone()));
             let workspace = cx.new(|cx| Workspace::new(opened, window, cx));
+            if state_for_build.id == "onboarding"
+                || state_for_build.id.starts_with("onboarding-")
+            {
+                workspace.update(cx, |workspace, cx| workspace.harness_set_onboarding(cx));
+            }
             workspace.update(cx, |workspace, cx| {
                 workspace.harness_set_reduced_motion(reduced_motion, cx);
             });
@@ -397,6 +405,34 @@ fn reader_surface(page: Option<PageState>) -> crate::ReaderSurface {
         Some(PageState::Security) => crate::ReaderSurface::Security,
         Some(PageState::CodeSearch) => crate::ReaderSurface::CodeSearch,
     }
+
+/// Starts the ordinary attached/embedded host for every capture, except for
+/// the explicit onboarding state. That state gets a fresh, empty durable
+/// workspace through the same owner lease and authenticated service path; it
+/// is deliberately not a fabricated root or a preview dossier. Keeping the
+/// special case keyed by the closed state id makes a complete matrix safe to
+/// run beside a developer's existing live workspace.
+fn capture_host(state: &GuiState) -> Result<DesktopHost, String> {
+    if state.id != "onboarding" && !state.id.starts_with("onboarding-") {
+        return DesktopHost::start().map_err(|error| format!("start desktop host: {error}"));
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("read capture clock: {error}"))?
+        .as_nanos();
+    // Unix socket paths have a small platform limit. `/tmp` keeps this
+    // deterministic fixture workspace short enough even under a Nix shell.
+    let root = PathBuf::from("/tmp").join(format!(
+        "nudox-gui-onboarding-{}-{nonce}",
+        std::process::id()
+    ));
+    let project = root.join("starter");
+    let data = root.join("workspace");
+    std::fs::create_dir_all(&project)
+        .map_err(|error| format!("create onboarding project: {error}"))?;
+    let paths = WorkspacePaths::discover(Some(project), Some(data), None)
+        .map_err(|error| format!("discover onboarding workspace: {error}"))?;
+    DesktopHost::start_with_paths(paths).map_err(|error| format!("start onboarding host: {error}"))
 }
 
 fn update_expected_state(state: &mut GuiState, step: &InputStep) {

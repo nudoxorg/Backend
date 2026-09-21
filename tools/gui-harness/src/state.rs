@@ -272,6 +272,11 @@ impl GuiState {
     #[must_use]
     pub fn catalog() -> Vec<Self> {
         let mut states = Vec::new();
+        // A real empty local workspace is part of the visual contract. The
+        // desktop adapter provisions that state through the live host, so the
+        // first-run surface is captured with the same service/bootstrap path
+        // as a user launching Nudox for the first time.
+        states.push(Self::new("onboarding", Some(PageState::Browse), None));
         for page in PageState::ALL {
             states.push(Self::new(page.as_str(), Some(page), None));
             // These surfaces are global shell controls and are legal over
@@ -413,7 +418,7 @@ mod tests {
         let states = GuiState::catalog();
         assert_eq!(
             states.len(),
-            PageState::ALL.len() + (PageState::ALL.len() * 9) + 3
+            PageState::ALL.len() + (PageState::ALL.len() * 9) + 4
         );
         validate_catalog(&states).expect("catalog should be valid");
         assert!(
@@ -428,6 +433,7 @@ mod tests {
         );
         assert!(!states.iter().any(|state| state.id == "package--loading"));
         assert!(states.iter().any(|state| state.id == "shell--vellum"));
+        assert!(states.iter().any(|state| state.id == "onboarding"));
     }
 
     #[test]

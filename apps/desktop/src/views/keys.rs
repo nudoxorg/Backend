@@ -156,6 +156,16 @@ pub(crate) const TOGGLE_LIBRARY: Chord = Chord::primary("b");
 pub(crate) const TOGGLE_CONTEXT: Chord = Chord::primary("\\");
 /// Open settings.
 pub(crate) const OPEN_SETTINGS: Chord = Chord::primary(",");
+/// Open the host platform disclosure.
+pub(crate) const OPEN_PLATFORM_MENU: Chord = Chord::primary("p").alt();
+/// Open the feature flags disclosure.
+pub(crate) const OPEN_FEATURE_MENU: Chord = Chord::primary("f").alt();
+/// Open the documentation disclosure.
+pub(crate) const OPEN_DOCS_MENU: Chord = Chord::primary("d").alt();
+/// Open the active language disclosure.
+pub(crate) const OPEN_LANGUAGE_MENU: Chord = Chord::primary("l").alt();
+/// Open the MCP/Agents setup page.
+pub(crate) const OPEN_AGENTS_SETTINGS: Chord = Chord::primary("a").alt();
 /// Walk history back.
 pub(crate) const GO_BACK: Chord = Chord::primary("[");
 /// Walk history forward.

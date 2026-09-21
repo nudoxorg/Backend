@@ -131,3 +131,26 @@ develop` for GUI evidence because it does not make the lane closure explicit.
 Each lane hands off exact commands, selected shard and count, pass/fail totals,
 resource-lock manifests, artifact paths, image and perceptual comparisons,
 startup/resource observations, external limitations, and its isolated commit.
+
+## Desktop onboarding and shell journeys
+
+The GPUI CE desktop adapter also exposes a production-input journey catalog in
+`backend-desktop-gui-harness`. The onboarding slice covers the no-project
+Get Started surface, the inline add flow and native folder-picker entry point,
+indexing progress, shelf switching, restart persistence, MCP setup, titlebar
+header menus, keyboard focus traversal, compact/wide resize, 1x/2x scale, and
+Ink/Vellum appearance changes. Every journey captures the live
+`WorkspaceSemanticProbe` beside its frames. The probe includes the onboarding
+flag, header-menu id, shelf count, active language, data/revision identity, and
+MCP health so a matching screenshot cannot hide a stale or mislabeled route.
+
+Run the focused desktop catalog directly when the Nix shell is unavailable:
+
+```text
+cargo run -p backend-desktop --features visual-harness --bin backend-desktop-gui-harness -- capture --smoke
+```
+
+The MCP setup journey only displays and copies the discovered Claude Desktop
+configuration path and exact JSON object. It never writes that external file;
+the captured setup state tells the reader to save the object and restart Claude
+Desktop before verifying the connection.

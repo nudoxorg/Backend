@@ -31,8 +31,24 @@ pub(crate) fn icon_button(
     id: impl Into<SharedString>,
     mark: super::icon::Icon,
 ) -> gpui_component::button::Button {
-    super::components::icon_button(theme, id, icon_accessibility_label(mark))
-        .child(super::icon::sized(theme, mark, 13.0, Paint::TextDim))
+    icon_button_labeled(theme, id, mark, icon_accessibility_label(mark))
+}
+
+/// Returns an icon button whose semantic name can differ from the icon's
+/// generic label. Compact chrome uses this to keep the header truthful while
+/// preserving the same CE action-tree registration as its wide text button.
+pub(crate) fn icon_button_labeled(
+    theme: &Theme,
+    id: impl Into<SharedString>,
+    mark: super::icon::Icon,
+    label: impl Into<SharedString>,
+) -> gpui_component::button::Button {
+    super::components::icon_button(theme, id, label).child(super::icon::sized(
+        theme,
+        mark,
+        13.0,
+        Paint::TextDim,
+    ))
 }
 
 /// Returns a CE icon button with the disabled state projected into both the

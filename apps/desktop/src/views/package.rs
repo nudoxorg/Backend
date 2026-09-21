@@ -766,6 +766,7 @@ impl Workspace {
                             .child(coordinate.clone()),
                     )
                     .child(Self::title_row(theme, dossier, unfurled, cx))
+                    .child(Self::package_header_controls(theme, dossier, cx))
                     .when(unfurled, |header| {
                         header.child(self.version_menu(theme, dossier, cx))
                     })
@@ -791,6 +792,66 @@ impl Workspace {
                         standing,
                         cx,
                     )),
+            )
+    }
+
+    /// Small, truthful controls beside the package identity. Registry feeds
+    /// often omit platform and feature metadata; keeping those controls
+    /// interactive lets a reader ask for the fact and receive an explicit
+    /// absence instead of a misleading hard-coded Rust label.
+    fn package_header_controls(
+        theme: &Theme,
+        dossier: &Dossier,
+        cx: &mut Context<Workspace>,
+    ) -> Div {
+        let ecosystem = dossier
+            .ecosystem()
+            .map(super::library::registry_name)
+            .unwrap_or("registry metadata unavailable");
+        let language = dossier
+            .ecosystem()
+            .map(super::home::ecosystem_language)
+            .unwrap_or(Language::Unknown);
+        let language_label = crate::theme::language::label(language);
+        let platform = format!("Platform · {ecosystem}");
+        let feature_notice = "Feature flags are not recorded by this registry feed";
+        let platform_notice = format!("Platform metadata is not recorded beyond {ecosystem}");
+        let language_notice = format!("Source language inferred from ecosystem: {language_label}");
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(space(Space::Tight))
+            .child(
+                button::button(theme, "package-platform", &platform, button::Weight::Quiet)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.shell
+                            .update(cx, |shell, cx| shell.notify(platform_notice.clone(), cx));
+                    })),
+            )
+            .child(
+                button::button(
+                    theme,
+                    "package-features",
+                    "Feature flags",
+                    button::Weight::Quiet,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.shell
+                        .update(cx, |shell, cx| shell.notify(feature_notice, cx));
+                })),
+            )
+            .child(
+                button::button(
+                    theme,
+                    "package-language",
+                    language_label,
+                    button::Weight::Quiet,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.shell
+                        .update(cx, |shell, cx| shell.notify(language_notice.clone(), cx));
+                })),
             )
     }
 

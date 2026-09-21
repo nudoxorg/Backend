@@ -13,8 +13,8 @@ use crate::theme::palette::Paint;
 use crate::ui::icon::{self, Icon};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, Context, ElementId, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Window, WindowControlArea, div, px,
+    AnyElement, Context, ElementId, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, Window, WindowControlArea, div, px,
 };
 
 /// Width of one caption button, the Windows convention.
@@ -29,6 +29,41 @@ pub(crate) enum Platform {
     Windows,
     /// Server-side decorations; the titlebar is ordinary content.
     Linux,
+}
+
+/// The small, keyboard reachable menus in the window header.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HeaderMenu {
+    /// The host platform and local service mode.
+    Platform,
+    /// The compiler and indexing capabilities reported by the live service.
+    Features,
+    /// Documentation links for the active package/project.
+    Docs,
+    /// Languages actually present in the active project.
+    Language,
+}
+
+impl HeaderMenu {
+    /// Stable semantic id used by the action tree and harness.
+    pub(crate) const fn id(self) -> &'static str {
+        match self {
+            Self::Platform => "header-platform",
+            Self::Features => "header-feature-flags",
+            Self::Docs => "header-docs",
+            Self::Language => "header-language",
+        }
+    }
+
+    /// Visible trigger label.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Platform => "Platform",
+            Self::Features => "Feature flags",
+            Self::Docs => "Docs",
+            Self::Language => "Language",
+        }
+    }
 }
 
 impl Platform {

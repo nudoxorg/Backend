@@ -31,6 +31,16 @@ actions!(
         ToggleContext,
         /// Open or close the settings sheet.
         OpenSettings,
+        /// Open or close the host platform disclosure in the titlebar.
+        OpenPlatformMenu,
+        /// Open or close the feature flags disclosure in the titlebar.
+        OpenFeatureMenu,
+        /// Open or close the documentation disclosure in the titlebar.
+        OpenDocsMenu,
+        /// Open or close the active-language disclosure in the titlebar.
+        OpenLanguageMenu,
+        /// Open the MCP/Agents setup page.
+        OpenAgentsSettings,
         /// Walk the active tab's history back one step.
         GoBack,
         /// Walk the active tab's history forward one step.
@@ -129,6 +139,11 @@ fn command_bindings() -> Vec<KeyBinding> {
         bind(keys::TOGGLE_LIBRARY, ToggleLibrary, None),
         bind(keys::TOGGLE_CONTEXT, ToggleContext, None),
         bind(keys::OPEN_SETTINGS, OpenSettings, None),
+        bind(keys::OPEN_PLATFORM_MENU, OpenPlatformMenu, None),
+        bind(keys::OPEN_FEATURE_MENU, OpenFeatureMenu, None),
+        bind(keys::OPEN_DOCS_MENU, OpenDocsMenu, None),
+        bind(keys::OPEN_LANGUAGE_MENU, OpenLanguageMenu, None),
+        bind(keys::OPEN_AGENTS_SETTINGS, OpenAgentsSettings, None),
         bind(keys::GO_BACK, GoBack, None),
         bind(keys::GO_FORWARD, GoForward, None),
         bind(keys::GO_HOME, GoHome, None),
