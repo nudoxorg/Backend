@@ -1,0 +1,16 @@
+[package]
+name = "backend-discovery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ignore.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"

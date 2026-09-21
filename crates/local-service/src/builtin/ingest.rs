@@ -5,6 +5,7 @@ use backend_engine::{
     ProductSourceRecord, ProductSourceRelation, Relation, SourceUnavailableReason,
     product_source_file_key,
 };
+use backend_library::{DiscoveryPolicy, discover_source_entries, source_selection_policy};
 use backend_semantic::vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion,
     RustEdition, TypeScriptSource,
@@ -476,6 +477,20 @@ pub(super) fn scan_project(
     project: [u8; 32],
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
 ) -> Result<IndexSnapshot, String> {
+    scan_project_with_policy(coordinate, project, reusable, source_selection_policy())
+}
+
+/// Reads supported sources under one shared discovery policy.
+///
+/// Keeping the policy as an argument makes the same selection contract usable
+/// by local ingest and future package/archive graph adapters.  The default
+/// entry point above preserves the production behavior for existing callers.
+pub(super) fn scan_project_with_policy(
+    coordinate: &str,
+    project: [u8; 32],
+    reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
+    discovery: DiscoveryPolicy,
+) -> Result<IndexSnapshot, String> {
     let root = Path::new(coordinate)
         .canonicalize()
         .map_err(|error| format!("open project {coordinate}: {error}"))?;
@@ -484,7 +499,7 @@ pub(super) fn scan_project(
     }
     let root_capability = ProjectRoot::open(&root)?;
     let frontends = frontends()?;
-    let mut paths = supported_paths(&root, frontends)?;
+    let mut paths = supported_paths_with_policy(&root, frontends, discovery)?;
     paths.sort();
     preflight_source_bytes(&paths)?;
     let workers = thread::available_parallelism()
@@ -569,38 +584,37 @@ pub(super) fn scan_project(
 }
 
 fn supported_paths(root: &Path, frontends: &FrontendSet) -> Result<Vec<PathBuf>, String> {
+    supported_paths_with_policy(root, frontends, source_selection_policy())
+}
+
+fn supported_paths_with_policy(
+    root: &Path,
+    frontends: &FrontendSet,
+    discovery: DiscoveryPolicy,
+) -> Result<Vec<PathBuf>, String> {
     let mut output = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
     let mut budget = DiscoveryBudget::default();
-    while let Some(directory) = pending.pop() {
-        let reader = fs::read_dir(&directory)
-            .map_err(|error| format!("read {}: {error}", directory.display()))?;
-        let mut entries = Vec::new();
-        for entry in reader {
-            let entry = entry.map_err(|error| format!("read {}: {error}", directory.display()))?;
-            budget
-                .admit_entry(entries.len())
-                .map_err(|error| format!("{error}: {}", directory.display()))?;
-            entries.push(entry);
+    let mut current_directory = None;
+    let mut directory_entries = 0_usize;
+    for entry in discover_source_entries(root, discovery) {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if entry.path() == root {
+            continue;
         }
-        entries.sort_by_key(fs::DirEntry::file_name);
-        for entry in entries.into_iter().rev() {
-            let file_type = entry
-                .file_type()
-                .map_err(|error| format!("inspect {}: {error}", entry.path().display()))?;
-            if file_type.is_symlink() {
-                continue;
+        let parent = entry.path().parent().unwrap_or(root);
+        if current_directory.as_deref() != Some(parent) {
+            current_directory = Some(parent.to_owned());
+            directory_entries = 0;
+        }
+        budget
+            .admit_entry(directory_entries)
+            .map_err(|error| format!("{error}: {}", entry.path().display()))?;
+        directory_entries = directory_entries.saturating_add(1);
+        if entry.is_file() && frontends.for_path(entry.path()).is_some() {
+            if output.len() >= ProductSourceRecord::MAX_PROJECT_FILES {
+                return Err("project contains too many supported source files".to_owned());
             }
-            if file_type.is_dir() {
-                if !ignored_directory(&entry.file_name().to_string_lossy()) {
-                    pending.push(entry.path());
-                }
-            } else if file_type.is_file() && frontends.for_path(&entry.path()).is_some() {
-                if output.len() >= ProductSourceRecord::MAX_PROJECT_FILES {
-                    return Err("project contains too many supported source files".to_owned());
-                }
-                output.push(entry.path());
-            }
+            output.push(entry.path().to_owned());
         }
     }
     Ok(output)
@@ -632,37 +646,6 @@ fn preflight_source_bytes(paths: &[PathBuf]) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-/// Directory names never walked by discovery.
-///
-/// Build output, dependency caches, and tool state only.  Every name here is
-/// a directory whose contents are generated: walking one costs the whole
-/// budget and indexes nothing a reader would search for.  This is deliberately
-/// not a heuristic list — no "tests", no "examples" — because guessing which
-/// directories are the project is how half of it goes missing.
-///
-/// `bin`, `obj`, `.git`, `.vs`, and `node_modules` are also excluded by the
-/// C# oracle's own loader (`frontends/csharp/helper/SourceLoader.cs:73`).
-/// The two lists must agree on those five names, or a `.cs` file the oracle
-/// refuses to load is still discovered here and waits for semantics that
-/// never arrive; keep them in sync.
-fn ignored_directory(name: &str) -> bool {
-    matches!(
-        name,
-        // Version control and this product's own state.
-        ".git" | ".backend"
-            // Rust, C#, and Java build output.
-            | "target" | "bin" | "obj" | "out" | ".gradle"
-            // JavaScript dependency and framework caches.
-            | "node_modules" | "dist" | "build" | ".angular" | ".next" | ".nuxt"
-            | ".svelte-kit" | ".turbo" | ".cache" | "coverage" | "Library"
-            // Python environments and tool caches.
-            | ".venv" | "venv" | "__pycache__" | ".mypy_cache" | ".pytest_cache"
-            | ".tox" | ".ruff_cache"
-            // Editor and IDE state.
-            | ".idea" | ".vscode" | ".vs"
-    )
 }
 
 /// Scans one discovered file into a row, or into a typed per-file fault.
@@ -712,11 +695,11 @@ fn unavailable_file(
     let mut encoded = Vec::new();
     ProductSourceRelation::encode_value(&record, &mut encoded);
     Ok(ScannedFile {
-        compiler_source: profile_of(frontends, path).map(|profile| CompilerSource {
-            profile,
-            relative_path: relative.clone(),
-            source: String::new(),
-        }),
+        // An unavailable source must not be turned into an empty compiler
+        // artifact.  The relation row carries the typed terminal and the
+        // semantic lane must retain partial coverage until a later scan can
+        // read the real bytes.
+        compiler_source: None,
         relative,
         key,
         record,
@@ -1483,6 +1466,30 @@ mod robustness_tests {
     }
 
     #[test]
+    fn gitignored_sources_are_excluded_while_negated_sources_are_admitted()
+    -> Result<(), String> {
+        let scratch = scratch("gitignore")?;
+        fs::write(scratch.0.join(".gitignore"), b"ignored.rs\nsrc/*\n!src/keep.rs\n")
+            .map_err(|error| error.to_string())?;
+        fs::write(scratch.0.join("good.rs"), good_source()).map_err(|error| error.to_string())?;
+        fs::write(scratch.0.join("ignored.rs"), good_source())
+            .map_err(|error| error.to_string())?;
+        fs::create_dir_all(scratch.0.join("src")).map_err(|error| error.to_string())?;
+        fs::write(scratch.0.join("src/drop.rs"), good_source())
+            .map_err(|error| error.to_string())?;
+        fs::write(scratch.0.join("src/keep.rs"), good_source())
+            .map_err(|error| error.to_string())?;
+
+        let scan = scan(&scratch)?;
+
+        assert_eq!(retention_of(&scan, "ignored.rs"), None);
+        assert_eq!(retention_of(&scan, "src/drop.rs"), None);
+        assert_eq!(retention_of(&scan, "src/keep.rs"), Some(DeclarationRetention::Complete));
+        assert_eq!(retention_of(&scan, "good.rs"), Some(DeclarationRetention::Complete));
+        Ok(())
+    }
+
+    #[test]
     fn a_symlink_cycle_is_skipped_and_the_project_still_indexes() -> Result<(), String> {
         let scratch = scratch("symlink")?;
         fs::write(scratch.0.join("good.rs"), good_source()).map_err(|e| e.to_string())?;
@@ -1786,7 +1793,13 @@ mod profile_tests {
         fs::create_dir_all(scratch.0.join(".angular/cache")).map_err(|e| e.to_string())?;
         fs::write(
             scratch.0.join(".angular/cache/x.js"),
-            b"function cachedChunk() { return 1; }\n",
+            vec![b'x'; MAX_SOURCE_BYTES.saturating_add(1)],
+        )
+        .map_err(|error| error.to_string())?;
+        fs::create_dir_all(scratch.0.join(".next/static")).map_err(|error| error.to_string())?;
+        fs::write(
+            scratch.0.join(".next/static/chunk.js"),
+            vec![b'x'; MAX_SOURCE_BYTES.saturating_add(1)],
         )
         .map_err(|error| error.to_string())?;
 
@@ -1816,6 +1829,10 @@ mod profile_tests {
             !paths.iter().any(|path| path.starts_with(".angular")),
             "a framework cache must never be walked, found {paths:?}"
         );
+        assert!(
+            !paths.iter().any(|path| path.starts_with(".next")),
+            "a framework cache must never be walked, found {paths:?}"
+        );
         Ok(())
     }
 
@@ -1828,7 +1845,7 @@ mod profile_tests {
     fn discovery_skips_every_directory_the_csharp_oracle_skips() {
         for name in ["bin", "obj", ".git", ".vs", "node_modules"] {
             assert!(
-                ignored_directory(name),
+                backend_library::is_hard_ignored_directory(std::ffi::OsStr::new(name)),
                 "{name} is excluded by the C# source loader but still walked here"
             );
         }
@@ -1854,10 +1871,13 @@ mod profile_tests {
             ".tox",
             ".ruff_cache",
         ] {
-            assert!(ignored_directory(name), "{name} is still walked");
+            assert!(
+                backend_library::is_hard_ignored_directory(std::ffi::OsStr::new(name)),
+                "{name} is still walked"
+            );
         }
         assert!(
-            !ignored_directory("src"),
+            !backend_library::is_hard_ignored_directory(std::ffi::OsStr::new("src")),
             "discovery must not start guessing which directories are the project"
         );
     }

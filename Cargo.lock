@@ -892,6 +892,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-discovery"
+version = "0.1.0"
+dependencies = [
+ "ignore",
+]
+
+[[package]]
 name = "backend-engine"
 version = "0.1.0"
 dependencies = [
@@ -1216,6 +1223,7 @@ dependencies = [
  "arrayvec",
  "backend-advisory",
  "backend-compile",
+ "backend-discovery",
  "backend-execution",
  "backend-flow",
  "backend-semantic",
@@ -1338,6 +1346,7 @@ name = "backend-runtime"
 version = "0.1.0"
 dependencies = [
  "atomic-waker",
+ "backend-discovery",
  "backend-version",
  "blake3",
  "loom",

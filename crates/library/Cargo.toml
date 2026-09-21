@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 backend-advisory = { path = "../advisory" }
+backend-discovery = { path = "../discovery" }
 arrayvec.workspace = true
 blake3.workspace = true
 backend-version = { path = "../version" }

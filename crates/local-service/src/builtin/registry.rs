@@ -14,6 +14,7 @@ use backend_engine::registry::{
     AcquisitionError, EcosystemAdapter, HttpRegistryTransport, PackageCoordinate,
     admit_registry_coordinate,
 };
+use backend_library::is_hard_ignored_path;
 use flate2::read::{DeflateDecoder, GzDecoder};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -648,6 +649,14 @@ impl StageWriter {
 
     fn file(&mut self, raw: &str, bytes: &[u8]) -> Result<(), RegistryAddError> {
         let relative = confined_path(raw)?;
+        // Registry archives frequently carry dependency trees and framework
+        // output.  Apply the same hard product-owned directory policy as
+        // local source discovery before accounting or materialising bytes.
+        // This keeps archive staging and checkout discovery on one boundary;
+        // a later source scan still applies its smaller per-source limit.
+        if is_hard_ignored_path(&relative) {
+            return Ok(());
+        }
         if bytes.len() > MAX_EXTRACTED_FILE_BYTES {
             return Err(RegistryAddError::Acquisition(AcquisitionError::Bounds));
         }
@@ -1255,6 +1264,24 @@ mod tests {
             stage_archive(&corrupt_coordinate, &corrupt, &root),
             Err(RegistryAddError::UnsupportedArchive)
         ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn archive_hard_generated_paths_are_ignored_before_accounting() {
+        let root = scratch();
+        fs::create_dir_all(&root).expect("stage root");
+        let mut writer = StageWriter::new(root.clone());
+        writer
+            .file("package/node_modules/dependency/index.js", b"generated")
+            .expect("generated archive entries are ignored");
+        writer
+            .file("package/src/index.js", b"export const source = true;")
+            .expect("source archive entry");
+        assert_eq!(writer.files, 1);
+        assert_eq!(writer.source_files, 1);
+        assert!(!root.join("package/node_modules").exists());
+        assert!(root.join("package/src/index.js").exists());
         let _ = fs::remove_dir_all(root);
     }
 }

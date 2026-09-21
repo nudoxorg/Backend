@@ -8,6 +8,13 @@
 
 #![deny(unsafe_code)]
 
+/// Shared filesystem source-selection policy used by local and package
+/// discovery adapters.
+pub use backend_discovery::{
+    DEFAULT_IGNORED_DIRECTORIES, DiscoveryError, DiscoveryPolicy, DiscoveredEntry, EntryKind,
+    HARD_IGNORED_DIRECTORIES, is_hard_ignored_directory, is_hard_ignored_path,
+};
+
 mod arrangement;
 pub mod canonical;
 mod capability;
@@ -90,8 +97,9 @@ pub use graph_query::{
 };
 pub use package_graph::{
     admit_dependency_rows, DependencyAuthority, DependencyEvidence, DependencyFacts,
-    DependencyScope, PackageDependencyRecord, PackageDependencySourceFacts,
-    PackageDependencyTarget, MAX_PACKAGE_GRAPH_ROWS,
+    discover_source_entries, discover_source_files, source_selection_policy, DependencyScope,
+    PackageDependencyRecord, PackageDependencySourceFacts, PackageDependencyTarget,
+    MAX_PACKAGE_GRAPH_ROWS,
 };
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,

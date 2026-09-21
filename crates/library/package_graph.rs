@@ -9,7 +9,51 @@
 
 use crate::{PackageReference, ProductAdmissionError, ProductText, RegistryEcosystem};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
+
+/// Returns the source-selection policy package/archive adapters should use
+/// when they inspect a local checkout.  Keeping this constructor in the
+/// package-graph module makes the graph and source ingest share one policy
+/// without coupling either parser to the local daemon.
+#[must_use]
+pub fn source_selection_policy() -> backend_discovery::DiscoveryPolicy {
+    backend_discovery::DiscoveryPolicy::default()
+}
+
+/// Starts the shared deterministic traversal for a package/archive adapter.
+///
+/// The iterator is intentionally returned before any identity or delta work:
+/// callers can apply their own bounded byte reader while retaining one source
+/// selection policy and one symlink/path-confinement boundary.
+#[must_use]
+pub fn discover_source_entries(
+    root: impl AsRef<Path>,
+    policy: backend_discovery::DiscoveryPolicy,
+) -> backend_discovery::Discovery {
+    policy.walk(root)
+}
+
+/// Selects regular source candidates for package/archive graph adapters.
+///
+/// Traversal policy deliberately stops at this boundary: callers receive
+/// deterministic paths and decide which manifest or source identity to derive
+/// from each byte stream. This keeps file identity and graph deltas reusable
+/// for code-forge and archive sources without duplicating ignore semantics.
+pub fn discover_source_files(
+    root: impl AsRef<Path>,
+    policy: backend_discovery::DiscoveryPolicy,
+) -> Result<Vec<PathBuf>, backend_discovery::DiscoveryError> {
+    discover_source_entries(root, policy)
+        .filter_map(|entry| match entry {
+            Ok(entry) if entry.is_file() => Some(Ok(entry.path().to_owned())),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
+}
 
 /// Maximum dependency rows in one package graph answer.
 pub const MAX_PACKAGE_GRAPH_ROWS: usize = 2_048;
@@ -208,6 +252,11 @@ pub fn admit_dependency_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn source() -> PackageReference {
         PackageReference::parse("pkg:cargo/demo@1.0.0").expect("valid source")
@@ -259,5 +308,27 @@ mod tests {
         assert_ne!(unknown, unavailable);
         let encoded = serde_json::to_string(&unknown).expect("encode");
         assert!(encoded.contains("unknown"));
+    }
+
+    #[test]
+    fn package_source_adapter_uses_the_shared_selection_policy() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("nudox-package-discovery-{suffix}"));
+        fs::create_dir_all(root.join("src")).expect("source directory");
+        fs::create_dir_all(root.join("node_modules/pkg")).expect("dependency directory");
+        fs::write(root.join("src/lib.rs"), b"pub fn source() {}").expect("source");
+        fs::write(root.join("node_modules/pkg/lib.rs"), b"pub fn generated() {}")
+            .expect("generated");
+
+        let paths = discover_source_files(&root, source_selection_policy()).expect("discover");
+        let relative = paths
+            .iter()
+            .map(|path| path.strip_prefix(&root).expect("relative").to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(relative, [PathBuf::from("src/lib.rs")]);
+        let _ = fs::remove_dir_all(root);
     }
 }

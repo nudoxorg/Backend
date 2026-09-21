@@ -790,7 +790,7 @@ where
 {
     fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
         (self.command)(&mut self.daemon, body)
-            .map_err(|error| ProtocolError::InvalidCommand(error.to_string()))
+            .map_err(|error| ProtocolError::CommandExecution(error.to_string()))
     }
 
     fn engine(

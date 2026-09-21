@@ -262,6 +262,12 @@ pub enum ProtocolError {
     InvalidControl(&'static str),
     /// A decoded command or reply is malformed.
     InvalidCommand(String),
+    /// The owner could not execute an admitted command.
+    ///
+    /// This is deliberately separate from [`Self::InvalidCommand`]: framing
+    /// and DTO admission succeeded, so reporting an owner failure as an
+    /// "invalid command frame" sends callers debugging in the wrong layer.
+    CommandExecution(String),
     /// A stream read or write failed.
     Io(io::ErrorKind),
     /// The endpoint timed out while the peer was idle.
@@ -283,6 +289,9 @@ impl fmt::Display for ProtocolError {
                 write!(formatter, "invalid local control envelope: {message}")
             }
             Self::InvalidCommand(message) => write!(formatter, "invalid command frame: {message}"),
+            Self::CommandExecution(message) => {
+                write!(formatter, "command execution failed: {message}")
+            }
             Self::Io(kind) => write!(formatter, "local endpoint I/O failed: {kind:?}"),
             Self::Timeout => formatter.write_str("local endpoint timed out"),
             Self::Closed => formatter.write_str("local endpoint is closed"),
@@ -716,6 +725,18 @@ mod tests {
         assert_eq!(
             unframe(&too_large, limits),
             Err(ProtocolError::FrameTooLarge)
+        );
+    }
+
+    #[test]
+    fn owner_execution_failures_are_not_reported_as_malformed_frames() {
+        assert_eq!(
+            ProtocolError::CommandExecution("index failed".to_owned()).to_string(),
+            "command execution failed: index failed"
+        );
+        assert_ne!(
+            ProtocolError::CommandExecution("index failed".to_owned()),
+            ProtocolError::InvalidCommand("index failed".to_owned())
         );
     }
 

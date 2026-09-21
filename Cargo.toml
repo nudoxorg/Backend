@@ -38,6 +38,7 @@ futures-core = { version = "0.3.31", default-features = false }
 futures-executor = "0.3.31"
 futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
 flate2 = "1.1.10"
+ignore = "0.4.33"
 # Keep the entire CE family on one published GPUI type universe. Cargo.lock
 # records registry checksums for each of these exact versions.
 gpui = { package = "gpui-ce", version = "=0.2.2", default-features = false }

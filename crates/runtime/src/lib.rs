@@ -29,6 +29,9 @@
 
 extern crate alloc;
 
+/// Shared source-selection policy re-exported for CLI, MCP, and GUI hosts.
+pub use backend_discovery::DiscoveryPolicy;
+
 /// Bounded physical-credit admission and one-owner execution.
 pub mod server;
 
