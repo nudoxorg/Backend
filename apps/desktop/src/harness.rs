@@ -11,9 +11,11 @@ use crate::store::service::Endpoint;
 use crate::views::workspace::{Bootstrap, Workspace};
 pub use crate::views::workspace::{WorkspaceActionProbe, WorkspaceSemanticProbe};
 use crate::{DesktopHost, Model, UnixSubscriptionTransport};
+use backend_client::Session;
 use backend_gui_harness::{
     ActionDescriptor, ActionTarget, AnimationFrame, CaptureConfig, CaptureError, CaptureSet,
-    GpuiCaptureOptions, GuiState, InputStep, ThemeState, capture_gpui_state_with_adapters_result,
+    GpuiCaptureOptions, GuiState, InputStep, PageState, ThemeState,
+    capture_gpui_state_with_adapters_result,
 };
 use gpui::{App, AppContext as _, Global, WeakEntity, Window};
 use std::borrow::Cow;
@@ -59,6 +61,8 @@ pub struct LiveCapture {
     pub capture: CaptureSet,
     /// Store-derived semantic state for each frame, in capture order.
     pub semantics: Vec<WorkspaceSemanticProbe>,
+    /// Production service readiness proof used before the route was applied.
+    pub readiness: Option<crate::ReadinessReport>,
 }
 
 /// Returns the action inventory registered by the production desktop launch.
@@ -165,9 +169,34 @@ fn capture_live_workspace_mode(
     let host = DesktopHost::start().map_err(|error| format!("start desktop host: {error}"))?;
     let mut transport = UnixSubscriptionTransport::connect(host.endpoint())
         .map_err(|error| format!("connect desktop subscription: {error}"))?;
-    let (root, cursor) = transport
+    let (initial_root, _initial_cursor) = transport
         .bootstrap_root()
         .map_err(|error| format!("hydrate admitted desktop root: {error}"))?;
+    let mut readiness = if apply_initial_state {
+        let mut session = Session::connect(host.endpoint())
+            .map_err(|error| format!("connect readiness session: {error}"))?;
+        let options = crate::ReadinessOptions::from_env().map_err(|error| error.to_string())?;
+        Some(
+            crate::await_readiness(
+                &mut session,
+                host.project(),
+                reader_surface(state.page),
+                &initial_root,
+                options,
+            )
+            .map_err(|error| error.to_string())?,
+        )
+    } else {
+        None
+    };
+    let (root, cursor) = transport
+        .bootstrap_root()
+        .map_err(|error| format!("hydrate route-ready desktop root: {error}"))?;
+    if let Some(readiness) = readiness.as_mut() {
+        readiness
+            .pin_admitted_root(&root)
+            .map_err(|error| error.to_string())?;
+    }
     let basis = root.basis().root;
     let model = Model::try_new_at(root.clone(), cursor, basis)
         .map_err(|error| format!("admit desktop model: {error}"))?;
@@ -347,8 +376,27 @@ fn capture_live_workspace_mode(
     .map(|capture| LiveCapture {
         capture,
         semantics: semantic_probes.borrow().clone(),
+        readiness,
     })
     .map_err(|error: CaptureError| error.to_string())
+}
+
+fn reader_surface(page: Option<PageState>) -> crate::ReaderSurface {
+    match page {
+        None | Some(PageState::Browse) => crate::ReaderSurface::Browse,
+        Some(PageState::Project) => crate::ReaderSurface::Project,
+        Some(PageState::Package) => crate::ReaderSurface::Package,
+        Some(PageState::Declaration) => crate::ReaderSurface::Declaration,
+        Some(PageState::Source) => crate::ReaderSurface::Source,
+        Some(PageState::Code) => crate::ReaderSurface::Code,
+        Some(PageState::Docs) => crate::ReaderSurface::Docs,
+        Some(PageState::Graph) => crate::ReaderSurface::Graph,
+        Some(PageState::Dependencies) => crate::ReaderSurface::Dependencies,
+        Some(PageState::Dependents) => crate::ReaderSurface::Dependents,
+        Some(PageState::Releases) => crate::ReaderSurface::Releases,
+        Some(PageState::Security) => crate::ReaderSurface::Security,
+        Some(PageState::CodeSearch) => crate::ReaderSurface::CodeSearch,
+    }
 }
 
 fn update_expected_state(state: &mut GuiState, step: &InputStep) {

@@ -32,12 +32,32 @@ struct RunReport {
     manifests: Vec<String>,
     semantic_artifacts: Vec<String>,
     journey_artifacts: Vec<String>,
+    readiness: Vec<ReadinessArtifact>,
     verified_manifests: usize,
     verified_frames: usize,
     registered_actions: Vec<ActionDescriptor>,
     action_tree_source: String,
     journeys: Vec<JourneyResult>,
     pass: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ReadinessArtifact {
+    state: String,
+    viewport: String,
+    #[serde(flatten)]
+    proof: backend_desktop::ReadinessReport,
+    capture_geometry: CaptureGeometry,
+}
+
+#[derive(Debug, Serialize)]
+struct CaptureGeometry {
+    logical_width: u32,
+    logical_height: u32,
+    scale: u8,
+    physical_width: u32,
+    physical_height: u32,
+    frame_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -416,6 +436,7 @@ fn write_capture(
     report: &mut RunReport,
     script_id: Option<&str>,
 ) -> Result<(), String> {
+    report.record_readiness(&live);
     if live.capture.frames.is_empty() || live.semantics.len() != live.capture.frames.len() {
         return Err("capture produced no frames or an incomplete semantic timeline".to_owned());
     }
@@ -462,6 +483,19 @@ fn write_capture(
         .next()
         .filter(|revision| !revision.trim().is_empty() && *revision != "undetermined")
         .ok_or_else(|| "semantic probe did not expose an admitted data revision".to_owned())?;
+    if let Some(readiness) = live.readiness.as_ref() {
+        let admitted_short = readiness
+            .admitted_revision
+            .revision
+            .chars()
+            .take(10)
+            .collect::<String>();
+        if admitted_short != revision {
+            return Err(format!(
+                "semantic probe revision {revision} differs from readiness admission {admitted_short}"
+            ));
+        }
+    }
     if live
         .semantics
         .iter()
@@ -499,6 +533,32 @@ fn write_capture(
         semantic_path
     ));
     Ok(())
+}
+
+impl RunReport {
+    fn record_readiness(&mut self, live: &LiveCapture) {
+        let Some(proof) = live.readiness.clone() else {
+            return;
+        };
+        let viewport = live.capture.viewport;
+        let (physical_width, physical_height) = live.capture.frames.first().map_or_else(
+            || viewport.physical_size(),
+            |frame| (frame.image.width(), frame.image.height()),
+        );
+        self.readiness.push(ReadinessArtifact {
+            state: live.capture.state.id.clone(),
+            viewport: viewport.suffix(),
+            proof,
+            capture_geometry: CaptureGeometry {
+                logical_width: viewport.width,
+                logical_height: viewport.height,
+                scale: viewport.scale,
+                physical_width,
+                physical_height,
+                frame_count: live.capture.frames.len(),
+            },
+        });
+    }
 }
 
 fn journey_catalog() -> Vec<JourneySpec> {
@@ -800,7 +860,7 @@ fn parse_viewport(value: &str) -> Result<Viewport, String> {
 
 fn print_help() {
     println!(
-        "backend-desktop-gui-harness\n\nCommands:\n  capture [--output DIR] [--state ID] [--scale 1|2] [--viewport WIDTHxHEIGHT@SCALE] [--baseline DIR] [--smoke]\n\nThe capture command starts the live desktop host, renders every catalog state at every required viewport and scale, writes PNG frame sequences, manifests, semantic probes, and run-report.json, then exits nonzero when any live state cannot be reached or differs from baseline. --smoke runs only the production-input journey catalog at 640x480@1x for a fast live-index check."
+        "backend-desktop-gui-harness\n\nCommands:\n  capture [--output DIR] [--state ID] [--scale 1|2] [--viewport WIDTHxHEIGHT@SCALE] [--baseline DIR] [--smoke]\n\nThe capture command starts the live desktop host, requests missing local indexes through the production service, waits for an admitted route anchor, renders every catalog state at every required viewport and scale, and writes PNG frame sequences, manifests, semantic probes, readiness proofs, and run-report.json. It exits nonzero when any live state cannot be reached or differs from baseline. Set NUDOX_GUI_HARNESS_READINESS_TIMEOUT_MS and NUDOX_GUI_HARNESS_READINESS_POLL_MS to bound a failure lane. --smoke runs only the production-input journey catalog at 640x480@1x."
     );
 }
 

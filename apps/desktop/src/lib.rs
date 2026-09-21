@@ -29,6 +29,8 @@ mod views;
 mod preview;
 #[cfg(all(unix, feature = "visual-harness"))]
 mod harness;
+#[cfg(all(unix, feature = "visual-harness"))]
+mod harness_readiness;
 
 #[cfg(test)]
 mod tests;
@@ -67,3 +69,8 @@ pub use transport::diff::diff_endpoint;
 pub use transport::search::search_endpoint;
 #[cfg(unix)]
 pub use transport::unix::UnixSubscriptionTransport;
+#[cfg(all(unix, feature = "visual-harness"))]
+pub use harness_readiness::{
+    ReaderSurface, ReadinessError, ReadinessEvent, ReadinessOptions, ReadinessReport,
+    ReadinessTimeoutCause, RevisionIdentity, SelectedIdentity, await_readiness,
+};
