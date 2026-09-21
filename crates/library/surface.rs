@@ -396,6 +396,11 @@ pub enum SurfaceCommand {
         /// Package locator.
         package: PackageReference,
     },
+    /// Read outgoing dependency metadata.
+    Dependencies {
+        /// Package locator.
+        package: PackageReference,
+    },
     /// Read packages associated with one publisher.
     Owner {
         /// Registry publisher handle.
@@ -520,6 +525,7 @@ impl SurfaceCommand {
             Self::Explore { .. } => CommandId::Explore,
             Self::Package { .. } => CommandId::Package,
             Self::Dependents { .. } => CommandId::Dependents,
+            Self::Dependencies { .. } => CommandId::Dependencies,
             Self::Owner { .. } => CommandId::Owner,
             Self::IndexSearch { .. } => CommandId::IndexSearch,
             Self::PackageVersions { .. } => CommandId::PackageVersions,
@@ -967,6 +973,8 @@ pub enum SurfaceReply {
     Package(Box<[RegistryPackageRecord]>),
     /// Reverse dependency facts.
     Dependents(RegistryMetadata<Box<[RegistryPackageRecord]>>),
+    /// Outgoing dependency facts.
+    Dependencies(crate::DependencyFacts<Box<[crate::PackageDependencyRecord]>>),
     /// Publisher facts.
     Owner(RegistryMetadata<Box<[RegistryPackageRecord]>>),
     /// Bounded local index matches.
@@ -1024,6 +1032,7 @@ impl SurfaceReply {
             Self::Explored(_) => CommandId::Explore,
             Self::Package(_) => CommandId::Package,
             Self::Dependents(_) => CommandId::Dependents,
+            Self::Dependencies(_) => CommandId::Dependencies,
             Self::Owner(_) => CommandId::Owner,
             Self::IndexSearch(_) => CommandId::IndexSearch,
             Self::PackageVersions(_) => CommandId::PackageVersions,
@@ -1082,6 +1091,7 @@ impl SurfaceReply {
             | Self::PackageVersions(v)
             | Self::Dependents(RegistryMetadata::Recorded(v))
             | Self::Owner(RegistryMetadata::Recorded(v)) => v.len(),
+            Self::Dependencies(crate::DependencyFacts::Known(v)) => v.len(),
             Self::SemanticVersions(records) => {
                 let mut selected = 0_usize;
                 for record in records {
@@ -1150,6 +1160,13 @@ impl SurfaceReply {
                 .saturating_add(record.coordinate.as_str().len()),
             Self::Dependents(RegistryMetadata::NotRecorded(reason))
             | Self::Owner(RegistryMetadata::NotRecorded(reason)) => text_bound(reason),
+            Self::Dependencies(crate::DependencyFacts::Known(records)) => records
+                .iter()
+                .fold(0_usize, |bound, record| {
+                    bound.saturating_add(dependency_record_bound(record))
+                }),
+            Self::Dependencies(crate::DependencyFacts::Unknown(reason))
+            | Self::Dependencies(crate::DependencyFacts::Unavailable(reason)) => text_bound(reason),
             Self::PackageProfile { latest, .. } => {
                 latest.as_ref().map_or(64, registry_package_record_bound)
             }
@@ -1238,6 +1255,20 @@ fn registry_package_record_bound(record: &RegistryPackageRecord) -> usize {
         .saturating_add(serde_json::to_vec(&record.advisory).map_or(0, |bytes| bytes.len()))
 }
 
+fn dependency_record_bound(record: &crate::PackageDependencyRecord) -> usize {
+    fixed_record_bound()
+        .saturating_add(package_reference_bound(&record.source))
+        .saturating_add(text_bound(&record.target.name))
+        .saturating_add(text_bound(&record.target.requirement))
+        .saturating_add(
+            record
+                .target
+                .resolved
+                .as_ref()
+                .map_or(0, package_reference_bound),
+        )
+}
+
 fn subscription_record_bound(record: &SubscriptionRecord) -> usize {
     fixed_record_bound()
         .saturating_add(package_reference_bound(&record.package))
@@ -1298,6 +1329,8 @@ pub enum ProductAdmissionError {
     DiffShape,
     /// A semantic generation record or selection is internally inconsistent.
     SemanticVersionShape,
+    /// A dependency row has a stale or duplicated content identity.
+    DependencyShape,
 }
 impl core::fmt::Display for ProductAdmissionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -1310,6 +1343,7 @@ impl core::fmt::Display for ProductAdmissionError {
             Self::CommandMismatch => "product reply does not match its command",
             Self::DiffShape => "semantic diff has inconsistent identities or evidence",
             Self::SemanticVersionShape => "semantic version selection is inconsistent",
+            Self::DependencyShape => "dependency fact has an invalid or duplicate identity",
         })
     }
 }

@@ -127,6 +127,7 @@ const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
         | SurfaceCommand::Explore { .. }
         | SurfaceCommand::Package { .. }
         | SurfaceCommand::Dependents { .. }
+        | SurfaceCommand::Dependencies { .. }
         | SurfaceCommand::Owner { .. }
         | SurfaceCommand::IndexSearch { .. }
         | SurfaceCommand::PackageVersions { .. }

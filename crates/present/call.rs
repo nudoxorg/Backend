@@ -432,6 +432,9 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
         CommandId::Dependents => SurfaceCommand::Dependents {
             package: package(invocation, 0)?,
         },
+        CommandId::Dependencies => SurfaceCommand::Dependencies {
+            package: package(invocation, 0)?,
+        },
         CommandId::Owner => SurfaceCommand::Owner {
             owner: text(invocation, 0)?,
         },

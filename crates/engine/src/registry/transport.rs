@@ -47,6 +47,10 @@ pub struct RemotePackage {
     /// Advisory observation for this exact selected version. `None` is typed absence and is
     /// fail-closed when an advisory gate is configured by the product composition.
     pub advisory: Option<AdvisoryObservation>,
+    /// Native or archive dependency facts carried with the same source frontier.
+    pub dependency_facts: backend_library::DependencyFacts<
+        Box<[backend_library::PackageDependencyRecord]>,
+    >,
     pub(super) archive_url: Arc<str>,
 }
 

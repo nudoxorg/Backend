@@ -275,6 +275,7 @@ impl CommandGrammar {
             | CommandId::Explore
             | CommandId::Package
             | CommandId::Dependents
+            | CommandId::Dependencies
             | CommandId::Owner
             | CommandId::IndexSearch
             | CommandId::PackageVersions
@@ -393,7 +394,7 @@ const LIMIT: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 37] = [
+pub const GRAMMARS: [CommandGrammar; 38] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",
@@ -613,6 +614,18 @@ pub const GRAMMARS: [CommandGrammar; 37] = [
         )],
         options: &[],
         when: "Use to judge how widely a package is relied on before changing or replacing it.",
+    },
+    CommandGrammar {
+        name: "dependencies",
+        tool: "backend.dependencies",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "package",
+            ArgumentKind::PackageReference,
+            "A pinned purl or an exact local package label.",
+        )],
+        options: &[],
+        when: "Use to inspect the requirements and scopes declared by one package.",
     },
     CommandGrammar {
         name: "owner",

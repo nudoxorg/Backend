@@ -6,6 +6,11 @@
 //! never turns a missing claim into a fabricated checksum.
 
 use serde_json::Value;
+use backend_library::{
+    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
+    PackageDependencyRecord, PackageDependencyTarget, PackageReference, ProductText,
+    admit_dependency_rows,
+};
 
 use super::super::transport::ArchiveIntegrity;
 use super::{EcosystemAdapter, RegistryChecksum, TransportFailure, component};
@@ -38,7 +43,7 @@ impl EcosystemAdapter {
                 component(self.package_name()),
                 component(version)
             );
-            releases.push(self.release_from_checksum(
+            let mut release = self.release_from_checksum(
                 version,
                 url,
                 checksum,
@@ -51,7 +56,13 @@ impl EcosystemAdapter {
                     },
                     DownloadCount::NotReported(DownloadCountGap::Unsupported),
                 ),
-            )?);
+            )?;
+            release.dependency_facts = cargo_dependencies(
+                &release.coordinate,
+                &row,
+                line.as_bytes(),
+            )?;
+            releases.push(release);
         }
         Ok(releases)
     }
@@ -88,7 +99,7 @@ impl EcosystemAdapter {
                     .filter(|message| !message.is_empty())
                     .map_or(ReleaseStanding::Available, |_| ReleaseStanding::Deprecated);
                 let encoded = serde_json::to_vec(row).map_err(|_| TransportFailure::Protocol)?;
-                self.release_from_checksum(
+                let mut release = self.release_from_checksum(
                     version,
                     field(dist, "tarball")?.to_owned(),
                     checksum,
@@ -97,7 +108,13 @@ impl EcosystemAdapter {
                         standing,
                         DownloadCount::NotReported(DownloadCountGap::Unsupported),
                     ),
-                )
+                )?;
+                release.dependency_facts = npm_dependencies(
+                    &release.coordinate,
+                    row,
+                    &encoded,
+                )?;
+                Ok(release)
             })
             .collect()
     }
@@ -344,6 +361,7 @@ impl EcosystemAdapter {
                     archive_url,
                     checksum,
                     provenance: serde_json::to_vec(row).map_err(|_| TransportFailure::Protocol)?,
+                    dependency_groups: entry.get("dependencyGroups").cloned(),
                     facts,
                 })
             })
@@ -357,16 +375,24 @@ impl EcosystemAdapter {
         self.nuget_metadata(bytes, None)?
             .into_iter()
             .map(|release| {
+                let dependency_groups = release.dependency_groups.clone();
                 let checksum = release
                     .checksum
                     .ok_or(TransportFailure::DownloadUnavailable)?;
-                self.release_from_checksum(
+                let mut release = self.release_from_checksum(
                     &release.version,
                     release.archive_url,
                     checksum,
                     &release.provenance,
                     release.facts,
-                )
+                )?;
+                let provenance = release.provenance.as_bytes();
+                release.dependency_facts = nuget_dependencies(
+                    &release.coordinate,
+                    dependency_groups.as_ref(),
+                    &provenance,
+                )?;
+                Ok(release)
             })
             .collect()
     }
@@ -457,6 +483,7 @@ impl EcosystemAdapter {
                 provenance: release.provenance,
                 facts: release.facts,
                 advisory: None,
+                dependency_facts: release.dependency_facts.clone(),
                 archive_url: std::sync::Arc::from(release.archive_url.as_str()),
             })
             .collect();
@@ -508,11 +535,165 @@ impl EcosystemAdapter {
     }
 }
 
+fn cargo_dependencies(
+    source: &super::PackageCoordinate,
+    row: &Value,
+    provenance: &[u8],
+) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
+    let Some(values) = row.get("deps").and_then(Value::as_array) else {
+        return Ok(DependencyFacts::Unknown(ProductText::new(
+            "Cargo index row omits dependency metadata",
+        )
+        .map_err(|_| TransportFailure::Protocol)?));
+    };
+    let mut rows = Vec::with_capacity(values.len());
+    for value in values {
+        let name = value
+            .get("package")
+            .or_else(|| value.get("name"))
+            .and_then(Value::as_str)
+            .ok_or(TransportFailure::Protocol)?;
+        let requirement = value
+            .get("req")
+            .and_then(Value::as_str)
+            .ok_or(TransportFailure::Protocol)?;
+        let scope = match value.get("kind").and_then(Value::as_str) {
+            Some("dev") => DependencyScope::Development,
+            Some("build") => DependencyScope::Build,
+            Some("normal") | None => DependencyScope::Runtime,
+            Some(_) => return Err(TransportFailure::Protocol),
+        };
+        rows.push(dependency_record(
+            source,
+            backend_semantic::vocabulary::RegistryEcosystem::Cargo,
+            name,
+            requirement,
+            scope,
+            value.get("optional").and_then(Value::as_bool).unwrap_or(false),
+            provenance,
+        )?);
+    }
+    Ok(DependencyFacts::Known(
+        admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+    ))
+}
+
+fn npm_dependencies(
+    source: &super::PackageCoordinate,
+    row: &Value,
+    provenance: &[u8],
+) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
+    let mut rows = Vec::new();
+    for (field_name, scope, optional) in [
+        ("dependencies", DependencyScope::Runtime, false),
+        ("optionalDependencies", DependencyScope::Optional, true),
+        ("peerDependencies", DependencyScope::Peer, false),
+        ("devDependencies", DependencyScope::Development, true),
+    ] {
+        let Some(values) = row.get(field_name).and_then(Value::as_object) else {
+            continue;
+        };
+        for (name, requirement) in values {
+            let requirement = requirement.as_str().ok_or(TransportFailure::Protocol)?;
+            rows.push(dependency_record(
+                source,
+                backend_semantic::vocabulary::RegistryEcosystem::Npm,
+                name,
+                requirement,
+                scope,
+                optional,
+                provenance,
+            )?);
+        }
+    }
+    if row.get("dependencies").is_none()
+        && row.get("optionalDependencies").is_none()
+        && row.get("peerDependencies").is_none()
+        && row.get("devDependencies").is_none()
+    {
+        return Ok(DependencyFacts::Unknown(ProductText::new(
+            "npm packument version omits dependency metadata",
+        )
+        .map_err(|_| TransportFailure::Protocol)?));
+    }
+    Ok(DependencyFacts::Known(
+        admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+    ))
+}
+
+fn nuget_dependencies(
+    source: &super::PackageCoordinate,
+    groups: Option<&Value>,
+    provenance: &[u8],
+) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
+    let Some(groups) = groups else {
+        return Ok(DependencyFacts::Unknown(ProductText::new(
+            "NuGet registration metadata omits dependency groups",
+        )
+        .map_err(|_| TransportFailure::Protocol)?));
+    };
+    let groups = groups.as_array().ok_or(TransportFailure::Protocol)?;
+    let mut rows = Vec::new();
+    for group in groups {
+        let dependencies = group
+            .get("dependencies")
+            .and_then(Value::as_array)
+            .ok_or(TransportFailure::Protocol)?;
+        for dependency in dependencies {
+            let name = field(dependency, "id")?;
+            let requirement = dependency
+                .get("range")
+                .and_then(Value::as_str)
+                .unwrap_or("*");
+            rows.push(dependency_record(
+                source,
+                backend_semantic::vocabulary::RegistryEcosystem::Nuget,
+                name,
+                requirement,
+                DependencyScope::Runtime,
+                false,
+                provenance,
+            )?);
+        }
+    }
+    Ok(DependencyFacts::Known(
+        admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+    ))
+}
+
+fn dependency_record(
+    source: &super::PackageCoordinate,
+    ecosystem: backend_semantic::vocabulary::RegistryEcosystem,
+    name: &str,
+    requirement: &str,
+    scope: DependencyScope,
+    optional: bool,
+    provenance: &[u8],
+) -> Result<PackageDependencyRecord, TransportFailure> {
+    let source = PackageReference::parse(source.as_str().to_owned())
+        .map_err(|_| TransportFailure::Protocol)?;
+    let target = PackageDependencyTarget::new(ecosystem, name, requirement, None)
+        .map_err(|_| TransportFailure::Protocol)?;
+    let digest = *blake3::hash(provenance).as_bytes();
+    Ok(PackageDependencyRecord::new(
+        source,
+        target,
+        scope,
+        optional,
+        DependencyEvidence {
+            authority: DependencyAuthority::RegistryMetadata,
+            frontier: digest,
+            provenance: digest,
+        },
+    ))
+}
+
 pub(crate) struct NugetReleaseMetadata {
     pub(crate) version: String,
     pub(crate) archive_url: String,
     pub(crate) checksum: Option<RegistryChecksum>,
     pub(crate) provenance: Vec<u8>,
+    pub(crate) dependency_groups: Option<Value>,
     pub(crate) facts: ReleaseFacts,
 }
 

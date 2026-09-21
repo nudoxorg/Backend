@@ -50,6 +50,7 @@ impl Workspace {
             CommandId::Package
             | CommandId::PackageProfile
             | CommandId::PackageVersions
+            | CommandId::Dependencies
             | CommandId::Dependents => self.palette_package(arguments, cx),
             CommandId::Health | CommandId::Revision => {
                 self.shell.update(cx, |shell, cx| {

@@ -2115,8 +2115,22 @@ impl CommandAdapter {
                     .as_ref()
                     .map_or(Ok(Vec::new()), RegistryGateway::catalog)
                     .map_err(BuiltinModelError)?;
+                let dependency_facts = self
+                    .registry
+                    .as_ref()
+                    .map_or_else(Vec::new, RegistryGateway::dependency_facts);
+                futures_executor::block_on(self.sql_projection.synchronize_package_graph(
+                    daemon.engine().daemon().library().view().root(),
+                    &dependency_facts,
+                ))
+                .map_err(|error| BuiltinModelError(format!("align package graph projection: {error}")))?;
                 self.product_state
-                    .execute(surface, daemon.engine().daemon().library().view(), &catalog)
+                    .execute(
+                        surface,
+                        daemon.engine().daemon().library().view(),
+                        &catalog,
+                        &dependency_facts,
+                    )
                     .map_or_else(
                         |error| {
                             CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(

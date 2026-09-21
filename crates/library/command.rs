@@ -67,6 +67,8 @@ pub enum CommandId {
     Package,
     /// Read packages depending on one registry package.
     Dependents,
+    /// Read the packages one registry package depends on.
+    Dependencies,
     /// Read packages published by one owner.
     Owner,
     /// Search the local registry index.

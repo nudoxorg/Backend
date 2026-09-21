@@ -1,7 +1,9 @@
 //! Durable typed owner for follows, projects, and the shared session tree.
 
 use backend_engine::{
-    DeclarationRecord, PackageReference, ProductText, ProductTreeNodeId as TreeNodeId, ProjectId,
+    DeclarationRecord, DependencyFacts, PackageDependencyRecord, PackageDependencySourceFacts,
+    PackageReference, ProductText,
+    ProductTreeNodeId as TreeNodeId, ProjectId,
     ProjectName, ProjectRecord, ProjectSelector, RegistryMetadata, RegistryPackageRecord,
     ReleaseRecord, RowId, SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeRecord,
     TreeOpener, TreeSubject, ViewRoot,
@@ -74,6 +76,7 @@ impl ProductState {
         command: SurfaceCommand,
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
+        dependency_facts: &[PackageDependencySourceFacts],
     ) -> Result<SurfaceReply, String> {
         command.admit().map_err(|error| error.to_string())?;
         let (reply, changed) = match command {
@@ -112,6 +115,10 @@ impl ProductState {
             SurfaceCommand::Package { package } => {
                 (SurfaceReply::Package(packages(catalog, &package)), false)
             }
+            SurfaceCommand::Dependencies { package } => (
+                SurfaceReply::Dependencies(dependencies(dependency_facts, &package)?),
+                false,
+            ),
             SurfaceCommand::PackageVersions { package } => (
                 SurfaceReply::PackageVersions(versions(catalog, &package)),
                 false,
@@ -124,7 +131,7 @@ impl ProductState {
             }
             SurfaceCommand::PackageProfile { package } => (profile(catalog, &package), false),
             SurfaceCommand::Dependents { package } => (
-                SurfaceReply::Dependents(missing_metadata(&package, "dependency metadata")?),
+                SurfaceReply::Dependents(dependents(catalog, dependency_facts, &package)?),
                 false,
             ),
             SurfaceCommand::Owner { owner } => (
@@ -539,16 +546,75 @@ fn profile(catalog: &[RegistryPackageRecord], package: &PackageReference) -> Sur
         versions: rows.len() as u64,
     }
 }
-fn missing_metadata(
+fn dependencies(
+    facts: &[PackageDependencySourceFacts],
     package: &PackageReference,
-    name: &str,
-) -> Result<RegistryMetadata<Box<[RegistryPackageRecord]>>, String> {
-    Ok(RegistryMetadata::NotRecorded(
+) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, String> {
+    if let Some((_, value)) = facts
+        .iter()
+        .find(|(source, _)| source == package || source.as_str() == package.as_str())
+    {
+        return Ok(value.clone());
+    }
+    Ok(DependencyFacts::Unavailable(
         ProductText::new(format!(
-            "the configured feed does not record {name} for {}",
+            "dependency facts are unavailable for {} because the package is not recorded",
             package.as_str()
         ))
-        .map_err(|e| e.to_string())?,
+        .map_err(|error| error.to_string())?,
+    ))
+}
+
+fn dependents(
+    catalog: &[RegistryPackageRecord],
+    facts: &[PackageDependencySourceFacts],
+    package: &PackageReference,
+) -> Result<RegistryMetadata<Box<[RegistryPackageRecord]>>, String> {
+    if facts.is_empty() {
+        return Ok(RegistryMetadata::NotRecorded(
+            ProductText::new("the configured feed does not record dependency metadata")
+                .map_err(|error| error.to_string())?,
+        ));
+    }
+    let PackageReference::Purl(target) = package else {
+        return Ok(RegistryMetadata::NotRecorded(
+            ProductText::new("reverse dependency lookup requires a pinned package URL")
+                .map_err(|error| error.to_string())?,
+        ));
+    };
+    let ecosystem = target.package_type().registry();
+    let mut sources = std::collections::BTreeSet::new();
+    let mut saw_unknown = None;
+    for (source, value) in facts {
+        match value {
+            DependencyFacts::Known(rows) => {
+                if rows.iter().any(|row| {
+                    Some(row.target.ecosystem) == ecosystem
+                        && row.target.name.as_str() == target.lineage_name()
+                        && row.target.resolved.as_ref().is_none_or(|resolved| {
+                            resolved.as_str() == target.as_str()
+                        })
+                }) {
+                    sources.insert(source.clone());
+                }
+            }
+            DependencyFacts::Unknown(reason) | DependencyFacts::Unavailable(reason) => {
+                saw_unknown.get_or_insert(reason.clone());
+            }
+        }
+    }
+    if sources.is_empty() {
+        if let Some(reason) = saw_unknown {
+            return Ok(RegistryMetadata::NotRecorded(reason));
+        }
+    }
+    Ok(RegistryMetadata::Recorded(
+        catalog
+            .iter()
+            .filter(|record| sources.contains(&record.coordinate))
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
     ))
 }
 fn subject_title(subject: &TreeSubject) -> ProductText {

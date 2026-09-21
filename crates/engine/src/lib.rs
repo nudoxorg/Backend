@@ -109,6 +109,8 @@ pub use backend_library::{
     GraphQueryRow, GraphRelation, GraphValue, HealthReport, IngestProgress, IntentId, Lane, LanguageOracleTask,
     LanguageRows, LogKey, MAX_PRODUCT_ROWS, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
     MAX_SNAPSHOT_PAGE_ROWS, MAX_SUBSCRIPTION_EVENTS, MAX_VIEW_PATCH_ROWS, Outline,
+    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
+    PackageDependencyRecord, PackageDependencySourceFacts, PackageDependencyTarget,
     PackageAuthorityIdentity, PackageCoordinate as ProductPackageCoordinate, PackageKey,
     PackageReference, PageContinuation, PageRequest, PageTerminal, ProductAdmissionError,
     ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector, ProjectionPage, Query,

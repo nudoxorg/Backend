@@ -14,7 +14,7 @@ pub(crate) enum RegistryLog {}
 impl JournalDomain for RegistryLog {
     const DOMAIN: u8 = 0x91;
     const TYPE: u16 = 1;
-    const VERSION: u8 = 3;
+    const VERSION: u8 = 4;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -134,6 +134,9 @@ fn put_package(out: &mut Vec<u8>, value: &PublishedPackage) {
     let advisory = serde_json::to_vec(&value.advisory).unwrap_or_default();
     put_u32(out, advisory.len());
     out.extend_from_slice(&advisory);
+    let dependencies = serde_json::to_vec(&value.dependency_facts).unwrap_or_default();
+    put_u32(out, dependencies.len());
+    out.extend_from_slice(&dependencies);
 }
 fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, AcquisitionError> {
     let ecosystem = RegistryEcosystem::try_from(take_byte(bytes, at)?)
@@ -151,6 +154,12 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
     }
     let advisory = serde_json::from_slice::<AdvisoryPackageDto>(take(bytes, at, advisory_len)?)
         .map_err(|_| AcquisitionError::CorruptJournal)?;
+    let dependency_len = usize::try_from(read_u32(bytes, at)?).map_err(|_| AcquisitionError::Bounds)?;
+    if dependency_len > 16 * 1024 * 1024 {
+        return Err(AcquisitionError::Bounds);
+    }
+    let dependency_facts = serde_json::from_slice(take(bytes, at, dependency_len)?)
+        .map_err(|_| AcquisitionError::CorruptJournal)?;
     let coordinate = coordinate_from_registry_parts(ecosystem, name.as_str(), version.as_str())?;
     let registry = admit_registry_coordinate(&coordinate)?;
     Ok(PublishedPackage {
@@ -162,6 +171,7 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
         upstream_integrity,
         facts,
         advisory,
+        dependency_facts,
     })
 }
 

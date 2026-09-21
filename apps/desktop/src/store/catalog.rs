@@ -506,6 +506,9 @@ fn read_sections(
         ("Versions", SurfaceCommand::PackageVersions {
             package: package.clone(),
         }),
+        ("Dependencies", SurfaceCommand::Dependencies {
+            package: package.clone(),
+        }),
         ("Dependents", SurfaceCommand::Dependents {
             package: package.clone(),
         }),

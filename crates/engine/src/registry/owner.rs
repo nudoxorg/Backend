@@ -78,6 +78,10 @@ pub struct PublishedPackage {
     pub facts: super::ReleaseFacts,
     /// Versioned advisory facts and the policy decision admitted before staging.
     pub advisory: AdvisoryPackageDto,
+    /// Dependency facts captured at the same immutable source frontier.
+    pub dependency_facts: backend_library::DependencyFacts<
+        Box<[backend_library::PackageDependencyRecord]>,
+    >,
 }
 
 /// Receipt atomically pairing archive publication and cursor advancement.
@@ -798,6 +802,7 @@ impl RegistryOwner {
                         upstream_integrity,
                         facts: package.facts,
                         advisory,
+                        dependency_facts: package.dependency_facts.clone(),
                     });
                     continue;
                 }
@@ -934,6 +939,7 @@ impl ArchiveStageContext {
             upstream_integrity: package.integrity_version(),
             facts: package.facts,
             advisory,
+            dependency_facts: package.dependency_facts.clone(),
         })
     }
 }

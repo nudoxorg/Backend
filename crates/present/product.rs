@@ -15,7 +15,8 @@
 use crate::fault::Fault;
 use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DiffRecord,
-    PackageReference, ProjectRecord, RegistryMetadata, RegistryPackageRecord, ReleaseRecord,
+    DependencyFacts, PackageDependencyRecord, PackageReference, ProjectRecord, RegistryMetadata,
+    RegistryPackageRecord, ReleaseRecord,
     SemanticVersionRecord, SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener,
     TreeSubject, encode_id,
 };
@@ -178,6 +179,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         }
         SurfaceReply::Advisory(advisory) => advisory_view(advisory),
         SurfaceReply::Dependents(metadata) => metadata_view("dependents", metadata),
+        SurfaceReply::Dependencies(facts) => dependency_view("dependencies", facts),
         SurfaceReply::Owner(metadata) => metadata_view("owner", metadata),
         SurfaceReply::SemanticVersions(records) => ProductView::rows(
             "semantic-versions",
@@ -286,6 +288,52 @@ fn metadata_view(
             ),
         ),
     }
+}
+
+fn dependency_view(
+    heading: &str,
+    facts: &DependencyFacts<Box<[PackageDependencyRecord]>>,
+) -> ProductView {
+    match facts {
+        DependencyFacts::Known(records) => ProductView::rows(
+            heading,
+            records.iter().map(dependency_row).collect(),
+        ),
+        DependencyFacts::Unknown(reason) | DependencyFacts::Unavailable(reason) => {
+            ProductView::refused(
+                heading,
+                Fault::new(
+                    crate::fault::FaultSlug::LaneUnavailable,
+                    crate::fault::Operand::Text(heading.to_owned()),
+                    crate::fault::Cause::new(
+                        crate::fault::CauseSlug::Unconfigured,
+                        reason.as_str().to_owned(),
+                    ),
+                    crate::fault::Affordance::None,
+                ),
+            )
+        }
+    }
+}
+
+fn dependency_row(record: &PackageDependencyRecord) -> ProductRecord {
+    ProductRecord::new(
+        format!(
+            "{} {}",
+            record.target.name.as_str(),
+            record.target.requirement.as_str()
+        ),
+        record
+            .target
+            .resolved
+            .as_ref()
+            .map(|package| package.as_str().to_owned()),
+        vec![
+            format!("{:?}", record.scope).to_lowercase(),
+            record.target.ecosystem.as_str().to_owned(),
+            format!("authority: {:?}", record.evidence.authority).to_lowercase(),
+        ],
+    )
 }
 
 fn registry_rows(records: &[RegistryPackageRecord]) -> Vec<ProductRecord> {

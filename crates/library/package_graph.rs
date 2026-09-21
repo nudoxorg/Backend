@@ -1,0 +1,263 @@
+//! Canonical package dependency facts shared by acquisition, storage, and clients.
+//!
+//! A dependency is deliberately not modelled as a pair of strings.  Registries
+//! publish requirements before a resolver chooses a concrete version, while a
+//! lockfile or a local checkout may publish an exact target.  Keeping both the
+//! requirement and the optional resolution lets callers answer useful graph
+//! questions without pretending that an unresolved requirement is a resolved
+//! edge.
+
+use crate::{PackageReference, ProductAdmissionError, ProductText, RegistryEcosystem};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+
+/// Maximum dependency rows in one package graph answer.
+pub const MAX_PACKAGE_GRAPH_ROWS: usize = 2_048;
+
+/// Dependency facts associated with one canonical source package.
+pub type PackageDependencySourceFacts =
+    (PackageReference, DependencyFacts<Box<[PackageDependencyRecord]>>);
+
+/// Why one dependency fact was observed.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DependencyAuthority {
+    /// The registry's authenticated package metadata published the edge.
+    RegistryMetadata,
+    /// The package archive contained a manifest that declared the edge.
+    ArchiveManifest,
+    /// A code-forge manifest declared the edge.
+    ForgeManifest,
+    /// A local project manifest declared the edge.
+    LocalManifest,
+}
+
+/// Scope in which a dependency participates.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DependencyScope {
+    /// Normal runtime dependency.
+    Runtime,
+    /// Optional feature or extra dependency.
+    Optional,
+    /// Development and test dependency.
+    Development,
+    /// Build-time dependency.
+    Build,
+    /// Peer dependency supplied by the consuming application.
+    Peer,
+}
+
+/// A package lineage plus the version requirement written by its source.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageDependencyTarget {
+    /// Ecosystem whose resolver owns the requirement grammar.
+    pub ecosystem: RegistryEcosystem,
+    /// Registry-qualified package name (for example `serde` or `org:artifact`).
+    pub name: ProductText,
+    /// Exact source spelling of the version requirement.
+    pub requirement: ProductText,
+    /// Exact package selected by a lockfile or resolver, when one is known.
+    pub resolved: Option<PackageReference>,
+}
+
+impl PackageDependencyTarget {
+    /// Admits one dependency target while retaining the resolver grammar.
+    pub fn new(
+        ecosystem: RegistryEcosystem,
+        name: impl Into<String>,
+        requirement: impl Into<String>,
+        resolved: Option<PackageReference>,
+    ) -> Result<Self, ProductAdmissionError> {
+        let target = Self {
+            ecosystem,
+            name: ProductText::new(name)?,
+            requirement: ProductText::new(requirement)?,
+            resolved,
+        };
+        if let Some(reference) = &target.resolved {
+            let PackageReference::Purl(purl) = reference else {
+                return Err(ProductAdmissionError::PackageReference);
+            };
+            if purl.package_type().registry() != Some(ecosystem)
+                || purl.lineage_name() != target.name.as_str()
+            {
+                return Err(ProductAdmissionError::PackageReference);
+            }
+        }
+        Ok(target)
+    }
+}
+
+/// Authority and content identities attached to one edge.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DependencyEvidence {
+    /// Authority class that emitted the fact.
+    pub authority: DependencyAuthority,
+    /// Versioned source frontier (registry page, forge commit, or local root).
+    pub frontier: [u8; 32],
+    /// Digest of the exact source row or manifest bytes.
+    pub provenance: [u8; 32],
+}
+
+/// One canonical outgoing package dependency edge.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageDependencyRecord {
+    /// Exact package release declaring the dependency.
+    pub source: PackageReference,
+    /// Declared target lineage and requirement.
+    pub target: PackageDependencyTarget,
+    /// Resolver scope of this edge.
+    pub scope: DependencyScope,
+    /// Whether the edge is excluded from the default resolution.
+    pub optional: bool,
+    /// Versioned source evidence.
+    pub evidence: DependencyEvidence,
+    /// Content identity of all fields above.
+    pub facts_version: [u8; 32],
+}
+
+impl PackageDependencyRecord {
+    /// Constructs a record and derives its stable content identity.
+    pub fn new(
+        source: PackageReference,
+        target: PackageDependencyTarget,
+        scope: DependencyScope,
+        optional: bool,
+        evidence: DependencyEvidence,
+    ) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"nudox.package-dependency.v1\0");
+        hasher.update(source.as_str().as_bytes());
+        hasher.update(target.name.as_str().as_bytes());
+        hasher.update(target.requirement.as_str().as_bytes());
+        hasher.update(&[target.ecosystem as u8, scope as u8, u8::from(optional)]);
+        if let Some(resolved) = &target.resolved {
+            hasher.update(&[1]);
+            hasher.update(resolved.as_str().as_bytes());
+        } else {
+            hasher.update(&[0]);
+        }
+        hasher.update(&[evidence.authority as u8]);
+        hasher.update(&evidence.frontier);
+        hasher.update(&evidence.provenance);
+        Self {
+            source,
+            target,
+            scope,
+            optional,
+            evidence,
+            facts_version: *hasher.finalize().as_bytes(),
+        }
+    }
+
+    /// Recomputes the content identity for admission checks.
+    #[must_use]
+    pub fn recomputed_version(&self) -> [u8; 32] {
+        Self::new(
+            self.source.clone(),
+            self.target.clone(),
+            self.scope,
+            self.optional,
+            self.evidence,
+        )
+        .facts_version
+    }
+}
+
+/// Availability of dependency metadata at one immutable source frontier.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
+pub enum DependencyFacts<T> {
+    /// Complete set of edges observed at this frontier (possibly empty).
+    Known(T),
+    /// The source is valid but does not publish dependency metadata.
+    Unknown(ProductText),
+    /// The source should publish metadata, but it was unavailable or rejected.
+    Unavailable(ProductText),
+}
+
+impl<T> DependencyFacts<T> {
+    /// Returns whether this value carries an actual edge set.
+    #[must_use]
+    pub const fn is_known(&self) -> bool {
+        matches!(self, Self::Known(_))
+    }
+}
+
+/// Validates and canonicalizes a dependency edge collection.
+pub fn admit_dependency_rows(
+    mut rows: Vec<PackageDependencyRecord>,
+) -> Result<Box<[PackageDependencyRecord]>, ProductAdmissionError> {
+    if rows.len() > MAX_PACKAGE_GRAPH_ROWS {
+        return Err(ProductAdmissionError::RowBound);
+    }
+    let mut identities = BTreeSet::new();
+    for row in &rows {
+        if row.facts_version != row.recomputed_version() || !identities.insert(row.facts_version) {
+            return Err(ProductAdmissionError::DependencyShape);
+        }
+    }
+    rows.sort_unstable_by_key(|row| row.facts_version);
+    Ok(rows.into_boxed_slice())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source() -> PackageReference {
+        PackageReference::parse("pkg:cargo/demo@1.0.0").expect("valid source")
+    }
+
+    fn edge(requirement: &str, frontier: u8) -> PackageDependencyRecord {
+        PackageDependencyRecord::new(
+            source(),
+            PackageDependencyTarget::new(
+                RegistryEcosystem::Cargo,
+                "serde",
+                requirement,
+                None,
+            )
+            .expect("valid target"),
+            DependencyScope::Runtime,
+            false,
+            DependencyEvidence {
+                authority: DependencyAuthority::RegistryMetadata,
+                frontier: [frontier; 32],
+                provenance: [frontier.saturating_add(1); 32],
+            },
+        )
+    }
+
+    #[test]
+    fn facts_identity_includes_requirement_and_source_evidence() {
+        assert_ne!(edge("^1", 1).facts_version, edge("^2", 1).facts_version);
+        assert_ne!(edge("^1", 1).facts_version, edge("^1", 2).facts_version);
+    }
+
+    #[test]
+    fn admission_sorts_and_rejects_duplicate_fact_identities() {
+        let first = edge("^1", 1);
+        let second = edge("^2", 2);
+        let admitted = admit_dependency_rows(vec![second.clone(), first.clone()]).expect("admit");
+        assert_eq!(admitted[0].facts_version, first.facts_version.min(second.facts_version));
+        assert!(admit_dependency_rows(vec![first.clone(), first]).is_err());
+    }
+
+    #[test]
+    fn unknown_and_unavailable_are_distinct_wire_states() {
+        let unknown = DependencyFacts::<Box<[PackageDependencyRecord]>>::Unknown(
+            ProductText::new("registry omits this field").expect("reason"),
+        );
+        let unavailable = DependencyFacts::<Box<[PackageDependencyRecord]>>::Unavailable(
+            ProductText::new("registry request failed").expect("reason"),
+        );
+        assert_ne!(unknown, unavailable);
+        let encoded = serde_json::to_string(&unknown).expect("encode");
+        assert!(encoded.contains("unknown"));
+    }
+}

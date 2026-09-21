@@ -163,6 +163,24 @@ impl RegistryGateway {
             .map_err(|error| error.to_string())
     }
 
+    /// Returns dependency facts from the same immutable publication records as
+    /// the catalog. Unknown and unavailable metadata stay typed all the way to
+    /// the product surface; an empty known set is the only representation of
+    /// a package that has no declared edges.
+    pub(super) fn dependency_facts(
+        &self,
+    ) -> Vec<backend_engine::PackageDependencySourceFacts> {
+        self.service
+            .published_packages()
+            .into_iter()
+            .filter_map(|published| {
+                backend_engine::PackageReference::parse(published.coordinate.as_str().to_owned())
+                    .ok()
+                    .map(|source| (source, published.dependency_facts.clone()))
+            })
+            .collect()
+    }
+
     /// Opens the existing durable owner when a registry endpoint is present.
     pub(super) fn open(
         config: &RegistryConfig,

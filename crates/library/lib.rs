@@ -18,6 +18,7 @@ mod cursor;
 mod delta;
 mod error;
 mod graph_query;
+mod package_graph;
 /// Transport-independent application service and reply vocabulary.
 pub mod interface;
 mod progress;
@@ -86,6 +87,11 @@ pub use graph_query::{
     GraphQueryControl, GraphQueryError, GraphQueryPage, GraphQueryRequest, GraphQueryRow,
     GraphValue, MAX_GRAPH_QUERY_BYTES, MAX_GRAPH_QUERY_FIELDS, MAX_GRAPH_VALUE_BYTES,
     MAX_GRAPH_VALUE_DEPTH,
+};
+pub use package_graph::{
+    admit_dependency_rows, DependencyAuthority, DependencyEvidence, DependencyFacts,
+    DependencyScope, PackageDependencyRecord, PackageDependencySourceFacts,
+    PackageDependencyTarget, MAX_PACKAGE_GRAPH_ROWS,
 };
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,

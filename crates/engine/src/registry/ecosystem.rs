@@ -243,6 +243,10 @@ pub struct NativeRelease {
     pub provenance: ProvenanceDigest,
     /// Mutable registry policy and observations, versioned independently.
     pub facts: ReleaseFacts,
+    /// Dependency facts captured from the native metadata row.
+    pub dependency_facts: backend_library::DependencyFacts<
+        Box<[backend_library::PackageDependencyRecord]>,
+    >,
 }
 
 /// Stateless native registry adapter for one package feed.
@@ -428,6 +432,7 @@ impl EcosystemAdapter {
                 provenance: release.provenance,
                 facts: release.facts,
                 advisory: None,
+                dependency_facts: release.dependency_facts.clone(),
                 archive_url: Arc::from(release.archive_url.as_str()),
             })
             .collect();
@@ -512,6 +517,10 @@ impl EcosystemAdapter {
                 *blake3::hash(provenance).as_bytes(),
             ),
             facts,
+            dependency_facts: backend_library::DependencyFacts::Unavailable(
+                backend_library::ProductText::new("native feed omits dependency metadata")
+                    .map_err(|_| TransportFailure::Protocol)?,
+            ),
         })
     }
 
@@ -603,6 +612,7 @@ impl EcosystemAdapter {
                 provenance: release.provenance,
                 facts: release.facts,
                 advisory: None,
+                dependency_facts: release.dependency_facts.clone(),
                 archive_url: Arc::from(release.archive_url.as_str()),
             })
             .collect();

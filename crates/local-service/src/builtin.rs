@@ -902,6 +902,14 @@ pub(crate) fn compose_owner(
     }
     let registry = RegistryGateway::open(&config.registry, config.workspace.join("registry"))
         .map_err(|error| ProcessError::Profile(format!("open registry owner: {error}")))?;
+    if let Some(registry) = registry.as_ref() {
+        let dependency_facts = registry.dependency_facts();
+        futures_executor::block_on(sql_projection.synchronize_package_graph(
+            daemon.engine().daemon().library().view().root(),
+            &dependency_facts,
+        ))
+        .map_err(|error| ProcessError::Profile(format!("align package graph projection: {error}")))?;
+    }
     let product_state = ProductState::open(config.workspace.join("product-state.json"))
         .map_err(|error| ProcessError::Profile(format!("open product state: {error}")))?;
     let mut commands = commands::CommandAdapter::new(

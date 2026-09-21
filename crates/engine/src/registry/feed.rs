@@ -87,6 +87,10 @@ fn admit_package(
         )?)?),
         facts: super::ReleaseFacts::default(),
         advisory,
+        dependency_facts: backend_library::DependencyFacts::Unavailable(
+            backend_library::ProductText::new("canonical feed omits dependency metadata")
+                .map_err(|_| TransportFailure::Protocol)?,
+        ),
         archive_url: Arc::from(admit_archive_url(endpoint, text(row, "archive")?)?),
     })
 }
