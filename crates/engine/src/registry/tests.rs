@@ -22,6 +22,14 @@ use sha2::{Digest, Sha256, Sha512};
 
 static TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
+fn unavailable_dependency_facts()
+-> backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>> {
+    backend_library::DependencyFacts::Unavailable(
+        backend_library::ProductText::new("test dependency metadata unavailable")
+            .expect("bounded test dependency reason"),
+    )
+}
+
 #[test]
 fn acquisition_service_coalesces_concurrent_registry_effects() {
     struct CountingTransport {
@@ -69,6 +77,7 @@ fn acquisition_service_coalesces_concurrent_registry_effects() {
         provenance: ProvenanceDigest::from_authenticated_feed([9; 32]),
         facts: ReleaseFacts::default(),
         advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
         archive_url: Arc::from("http://127.0.0.1:9/acquisition-service/archive"),
     };
     let pages = Arc::new(AtomicU64::new(0));
@@ -464,6 +473,7 @@ fn archive_stream_hashing_never_requests_a_buffer_over_64kib() {
         provenance: ProvenanceDigest::from_authenticated_feed([7; 32]),
         facts: ReleaseFacts::default(),
         advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
         archive_url: std::sync::Arc::from("https://registry.example.test/large.crate"),
     };
     let mut reader = TrackingReader {
@@ -674,6 +684,7 @@ fn advisory_gate_denies_unknown_version_before_archive_staging() {
                         unlisted: false,
                         malware: backend_advisory::MalwareCoverage::NotCovered,
                     }),
+                    dependency_facts: unavailable_dependency_facts(),
                     archive_url: std::sync::Arc::from("https://registry.example.test/demo.crate"),
                 }],
             }))
@@ -744,6 +755,7 @@ fn policy_delta_reuses_the_exact_archive_without_a_second_download() {
                         SecurityStanding::Unassessed,
                     ),
                     advisory: None,
+                    dependency_facts: unavailable_dependency_facts(),
                     archive_url: std::sync::Arc::from("https://registry.example.test/demo.crate"),
                 }],
             }))
@@ -830,6 +842,7 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
                         SecurityStanding::Unassessed,
                     ),
                     advisory: None,
+                    dependency_facts: unavailable_dependency_facts(),
                     archive_url: Arc::from("https://registry.example.test/demo.crate"),
                 }],
             }))
@@ -987,7 +1000,9 @@ fn cached_advisory_warning_is_rechecked_after_fail_closed_restart() {
                         offline: true,
                         yanked: false,
                         unlisted: false,
+                        malware: backend_advisory::MalwareCoverage::NotCovered,
                     }),
+                    dependency_facts: unavailable_dependency_facts(),
                     archive_url: Arc::from("https://registry.example.test/advisory.crate"),
                 }],
             }))

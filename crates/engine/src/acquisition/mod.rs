@@ -2481,6 +2481,7 @@ impl AcquisitionService {
                                     upstream_integrity: package.integrity_version(),
                                     facts: package.facts,
                                     advisory,
+                                    dependency_facts: package.dependency_facts.clone(),
                                 });
                                 continue;
                             }
