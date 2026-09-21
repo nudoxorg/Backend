@@ -32,6 +32,7 @@ backend-frontend-python = { path = "../../frontends/python" }
 backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
 blake3.workspace = true
+flate2.workspace = true
 serde_json.workspace = true
 
 [[bin]]

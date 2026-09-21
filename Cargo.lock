@@ -1177,6 +1177,7 @@ dependencies = [
  "backend-version",
  "backend-worker",
  "blake3",
+ "flate2",
  "serde_json",
 ]
 
