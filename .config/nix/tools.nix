@@ -44,7 +44,7 @@ let
   # separate products and must not be realized just to ask for `cargo
   # --version`. The full role command bundle remains available as
   # `commands.roleBundles."luna-pair"` for control-plane checks.
-  lunaTools = pkgs.buildEnv {
+  lunaToolClosure = pkgs.buildEnv {
     name = "nudox-luna-tools";
     paths = [
       toolchains.stable
@@ -57,8 +57,29 @@ let
       pkgs.pkg-config
       pkgs.ripgrep
       pkgs.stdenv.cc
+      pkgs.libiconv
+      pkgs.zlib
     ];
-    pathsToLink = [ "/bin" ];
+    pathsToLink = [
+      "/bin"
+      "/include"
+      "/lib"
+    ];
+  };
+  # `nix shell .#luna-tools` does not evaluate a development-shell hook, so
+  # native Cargo builds must receive their link search path from the package
+  # itself. Wrap both entry points: Cargo covers workspace commands while the
+  # rustc wrapper keeps direct compiler probes reproducible.
+  lunaTools = pkgs.symlinkJoin {
+    name = "nudox-luna-tools-shell";
+    paths = [ lunaToolClosure ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      wrapProgram "$out/bin/cargo" \
+        --set LIBRARY_PATH "${pkgs.lib.makeLibraryPath [ pkgs.libiconv pkgs.zlib ]}"
+      wrapProgram "$out/bin/rustc" \
+        --set LIBRARY_PATH "${pkgs.lib.makeLibraryPath [ pkgs.libiconv pkgs.zlib ]}"
+    '';
   };
   dylintSource = pkgs.fetchFromGitHub {
     owner = "trailofbits";
