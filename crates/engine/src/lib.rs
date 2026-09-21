@@ -16,6 +16,7 @@
 pub use blake3;
 pub use serde_json;
 
+pub mod acquisition;
 pub mod application;
 pub mod advisory;
 pub mod builtin;
@@ -51,7 +52,7 @@ pub use backend_execution::{
     RemoteState, ResourceVector, ResultCoverage, ResultReceipt, ReuseContext, RuntimeSnapshot,
     ScheduleError, ScheduleOutcome, ScheduleReceipt, ScheduleRequest, Scheduled, Scheduler,
     Telemetry, TelemetryExporter, TelemetrySnapshot, UntrustedResultReceipt, VersionedWorkIdentity,
-    WorkInterner, WorkKey, WorkKeySchema, choose_refresh,
+    WorkInterner, WorkKey, WorkKeySchema, acquisition_work_key, choose_refresh,
 };
 pub use backend_replication::{
     AdmittedAuthority, AdmittedChunk, AttemptId, Attestation, AttestationClass,

@@ -267,6 +267,42 @@ impl<R: Relation> AdmittedWork<R> {
 /// work key cannot be confused with any other object version.
 pub type WorkKey = ObjectVersion<WorkKeySchema>;
 
+/// Derives the process-local acquisition work key used by the registry and
+/// source acquisition coordinator.
+///
+/// Acquisition is a different protocol from semantic execution, but it still
+/// uses the same bounded [`WorkInterner`] and therefore must use the same
+/// content-addressed key type.  The five fields are length-framed before they
+/// are folded into the existing work-key schema; callers cannot make a key by
+/// concatenating ambiguous strings.
+#[must_use]
+pub fn acquisition_work_key(
+    source: [u8; 32],
+    coordinate: &[u8],
+    artifact: [u8; 32],
+    schema: u16,
+    policy_epoch: u64,
+) -> WorkKey {
+    let mut coordinate_digest = blake3::Hasher::new();
+    coordinate_digest.update(b"backend.acquisition.coordinate.v1\0");
+    coordinate_digest.update(&(coordinate.len() as u64).to_be_bytes());
+    coordinate_digest.update(coordinate);
+    let coordinate = *coordinate_digest.finalize().as_bytes();
+    let mut policy = [0_u8; 32];
+    policy[..8].copy_from_slice(&policy_epoch.to_be_bytes());
+    let material = WorkKeyMaterial {
+        relation_domain: 0x72,
+        relation_type: schema,
+        relation_version: 1,
+        recipe: source,
+        input: artifact,
+        read_manifest: coordinate,
+        authority: policy,
+        output_equivalence: [0; 32],
+    };
+    ObjectVersion::<WorkKeySchema>::from_value(&material)
+}
+
 fn derive_work_key<R: Relation>(identity: VersionedWorkIdentity<R>) -> WorkKey {
     let material = WorkKeyMaterial {
         relation_domain: R::DOMAIN,

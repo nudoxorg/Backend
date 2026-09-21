@@ -54,7 +54,7 @@ pub use types::{
     AdmittedWork, AuthorityVersion, AuthorityVersionSchema, CompletionReceipt, InternError,
     Interned, OutputEquivalence, OutputEquivalenceSchema, OutputSchema, OutputVersion,
     ReadManifestId, ReadManifestSchema, RecipeId, RecipeSchema, VersionedWorkIdentity,
-    WorkInterner, WorkKey, WorkKeySchema, WorkTicket,
+    WorkInterner, WorkKey, WorkKeySchema, WorkTicket, acquisition_work_key,
 };
 
 #[cfg(test)]
