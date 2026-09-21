@@ -290,6 +290,10 @@ pub enum CompilerRuntimeCause {
     RequestOwnerStopped,
     /// The compiler owner stopped after admission but before returning a terminal result.
     ResponseOwnerStopped,
+    /// The selected explicit toolchain probe did not settle within its bounded admission window.
+    ToolchainProbeTimeout,
+    /// Cancellation won while the selected explicit toolchain was still being probed.
+    RequestCancelled,
     /// The compiler owner panicked while executing this exact request.
     WorkerPanic(CompilerRuntimePanic),
 }

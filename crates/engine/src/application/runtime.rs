@@ -9,12 +9,12 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
-        Arc, RwLock,
+        Arc, Condvar, Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
@@ -105,6 +105,7 @@ impl OwnedPackageSourceSet {
 
     fn facts(&self) -> RequestFacts {
         RequestFacts {
+            profile: self.request.target.profile,
             language: self.request.target.profile.language(),
             stage: self.request.target.stage,
             target: Some(self.request.as_ref().identity),
@@ -801,6 +802,7 @@ impl LocalCompilerClient {
         let capabilities = Arc::new(RwLock::new(LocalCompilerCapabilities::from_configuration(
             &configuration,
         )));
+        let capability_signal = Arc::new(CapabilitySignal::new());
         let (command_tx, command_rx) = sync_channel(1);
         let (probe_tx, probe_rx) = channel();
         let (startup_tx, startup_rx) = sync_channel(1);
@@ -809,6 +811,7 @@ impl LocalCompilerClient {
         let alive = Arc::new(AtomicBool::new(true));
         let worker_alive = Arc::clone(&alive);
         let worker_capabilities = Arc::clone(&capabilities);
+        let worker_capability_signal = Arc::clone(&capability_signal);
         let worker = thread::Builder::new()
             .name("nudox-compiler-owner".to_owned())
             .spawn(move || {
@@ -820,6 +823,7 @@ impl LocalCompilerClient {
                     &worker_cancelled,
                     &worker_alive,
                     &worker_capabilities,
+                    &worker_capability_signal,
                 );
             })
             .map_err(LocalCompilerRuntimeOpenError::Spawn)?;
@@ -834,6 +838,7 @@ impl LocalCompilerClient {
                         active: AtomicBool::new(false),
                         alive,
                         capabilities,
+                        capability_signal,
                     }),
                 })
             }
@@ -886,6 +891,7 @@ impl LocalCompilerClient {
     {
         let facts = request.facts();
         let lease = RequestLease::acquire(&self.shared, facts)?;
+        self.wait_for_toolchain(facts)?;
         self.shared.cancelled.store(false, Ordering::Release);
         let (response_tx, response_rx) = sync_channel(1);
         let command = RuntimeCommand::Compile {
@@ -911,6 +917,52 @@ impl LocalCompilerClient {
         };
         drop(lease);
         result
+    }
+
+    /// Waits for the selected profile's explicit toolchain probe to settle.
+    ///
+    /// Host admission intentionally launches probes after the process owner
+    /// becomes reachable, so an unrelated slow tool (for example a hanging Go
+    /// probe) cannot delay listener readiness. A compile for a profile whose
+    /// toolchain is still being probed must therefore wait before it is sent to
+    /// the compiler owner; otherwise the owner would turn a transient
+    /// `Probing` state into a durable `Unavailable` semantic publication.
+    fn wait_for_toolchain(&self, facts: RequestFacts) -> Result<(), CompilerTerminal> {
+        const PROBE_WAIT: Duration = Duration::from_secs(6);
+        const SIGNAL_WAIT: Duration = Duration::from_millis(25);
+        let deadline = Instant::now()
+            .checked_add(PROBE_WAIT)
+            .expect("fixed probe wait fits the monotonic clock");
+        let mut signal = self
+            .shared
+            .capability_signal
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            let state = self.capabilities().for_profile(facts.profile).state();
+            if !matches!(state, LocalCompilerCapabilityState::Probing) {
+                return Ok(());
+            }
+            if !self.shared.alive.load(Ordering::Acquire) {
+                return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
+            }
+            if self.shared.cancelled.load(Ordering::Acquire) {
+                return Err(facts.terminal(CompilerRuntimeCause::RequestCancelled));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(facts.terminal(CompilerRuntimeCause::ToolchainProbeTimeout));
+            }
+            let timeout = remaining.min(SIGNAL_WAIT);
+            signal = self
+                .shared
+                .capability_signal
+                .changed
+                .wait_timeout(signal, timeout)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
     }
 
     /// Retrieves one exact reopened semantic image from the single compiler owner.
@@ -956,6 +1008,8 @@ impl LocalCompilerClient {
         let facts = request.facts();
         let lease = RequestLease::acquire(&self.shared, facts)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
+        self.wait_for_toolchain(facts)
+            .map_err(PackageSemanticRuntimeError::Runtime)?;
         self.shared.cancelled.store(false, Ordering::Release);
         let (response, returned) = sync_channel(1);
         let sender = self
@@ -991,6 +1045,7 @@ impl LocalCompilerClient {
         binding: CompilationBindingFacts,
     ) -> Result<ActivatedSemanticPackage, PackageSemanticRuntimeError> {
         let facts = RequestFacts {
+            profile,
             language: profile.language(),
             stage: Stage::LowerIr,
             target: None,
@@ -1090,6 +1145,21 @@ struct RuntimeShared {
     active: AtomicBool,
     alive: Arc<AtomicBool>,
     capabilities: Arc<RwLock<LocalCompilerCapabilities>>,
+    capability_signal: Arc<CapabilitySignal>,
+}
+
+struct CapabilitySignal {
+    lock: Mutex<()>,
+    changed: Condvar,
+}
+
+impl CapabilitySignal {
+    fn new() -> Self {
+        Self {
+            lock: Mutex::new(()),
+            changed: Condvar::new(),
+        }
+    }
 }
 
 impl Drop for RuntimeShared {
@@ -1156,11 +1226,13 @@ impl OwnedCompilerRequest {
     fn facts(&self) -> RequestFacts {
         match self {
             Self::Generate { profile, stage, .. } => RequestFacts {
+                profile: *profile,
                 language: profile.language(),
                 stage: *stage,
                 target: None,
             },
             Self::Package(request) => RequestFacts {
+                profile: request.target.profile,
                 language: request.target.profile.language(),
                 stage: request.target.stage,
                 target: Some(request.as_ref().identity),
@@ -1171,6 +1243,7 @@ impl OwnedCompilerRequest {
 
 #[derive(Clone, Copy)]
 struct RequestFacts {
+    profile: LanguageProfile,
     language: Language,
     stage: Stage,
     target: Option<ContentId<CompilationTargetDomain>>,
@@ -1251,6 +1324,7 @@ fn run_worker(
     cancelled: &AtomicBool,
     alive: &AtomicBool,
     capabilities: &RwLock<LocalCompilerCapabilities>,
+    capability_signal: &CapabilitySignal,
 ) {
     let mut startup = Some(startup);
     loop {
@@ -1280,6 +1354,7 @@ fn run_worker(
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
                     LocalCompilerCapabilities::from_configuration(&configuration);
+                capability_signal.changed.notify_all();
             }
         }
     }
@@ -1581,6 +1656,7 @@ fn run_worker_generation(
                             payload.as_ref(),
                         );
                         let terminal = RequestFacts {
+                            profile,
                             language: profile.language(),
                             stage: Stage::LowerIr,
                             target: None,

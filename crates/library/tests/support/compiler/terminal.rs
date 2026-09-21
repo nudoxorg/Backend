@@ -228,6 +228,8 @@ pub(crate) enum GoldenCompilerRuntimeCause {
     RequestInFlight,
     RequestOwnerStopped,
     ResponseOwnerStopped,
+    ToolchainProbeTimeout,
+    RequestCancelled,
     WorkerPanic {
         class: GoldenNativeWorkerPanicClass,
         message: GoldenNativeWorkerPanicMessage,
@@ -553,6 +555,8 @@ impl From<CompilerRuntimeCause> for GoldenCompilerRuntimeCause {
             CompilerRuntimeCause::RequestInFlight => Self::RequestInFlight,
             CompilerRuntimeCause::RequestOwnerStopped => Self::RequestOwnerStopped,
             CompilerRuntimeCause::ResponseOwnerStopped => Self::ResponseOwnerStopped,
+            CompilerRuntimeCause::ToolchainProbeTimeout => Self::ToolchainProbeTimeout,
+            CompilerRuntimeCause::RequestCancelled => Self::RequestCancelled,
             CompilerRuntimeCause::WorkerPanic(panic) => Self::WorkerPanic {
                 class: panic.class.into(),
                 message: panic.message.into(),

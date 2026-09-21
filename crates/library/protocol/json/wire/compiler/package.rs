@@ -192,6 +192,8 @@ pub(crate) enum CompilerRuntimeCauseWire {
     RequestInFlight,
     RequestOwnerStopped,
     ResponseOwnerStopped,
+    ToolchainProbeTimeout,
+    RequestCancelled,
     WorkerPanic(#[serde(with = "CompilerRuntimePanicWire")] CompilerRuntimePanic),
 }
 

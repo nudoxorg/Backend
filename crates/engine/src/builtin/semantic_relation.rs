@@ -490,6 +490,17 @@ pub enum SemanticUnavailableReason {
 }
 
 impl SemanticUnavailableReason {
+    /// Returns the stable lowercase name carried by surface diagnostics.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Toolchain => "toolchain",
+            Self::ProjectAuthority => "project authority",
+            Self::Cancelled => "cancelled",
+            Self::Rejected => "rejected",
+        }
+    }
+
     const fn from_tag(tag: u8) -> Option<Self> {
         match tag {
             1 => Some(Self::Toolchain),
@@ -498,6 +509,12 @@ impl SemanticUnavailableReason {
             4 => Some(Self::Rejected),
             _ => None,
         }
+    }
+}
+
+impl std::fmt::Display for SemanticUnavailableReason {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.name())
     }
 }
 

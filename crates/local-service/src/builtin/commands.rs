@@ -1494,16 +1494,24 @@ fn index_project_intent_at(
             .filter(|key| !selected.contains(key))
             .map(|key| BuiltinSourceChange { key, after: None }),
     );
-    let semantic_context = SemanticCompilationContext::admit(
-        package,
-        label,
-        source_root,
-        coordinate,
-        request_id,
-        compiler,
-    )?;
-    let semantic_changes =
-        compile_semantic_publications(daemon, &semantic_context, scan.compiler_sources)?;
+    // The source relation is content addressed. If its frontier is unchanged,
+    // compiling again would publish identical images under a fresh journal
+    // generation and turn an idempotent index request into a new semantic
+    // history entry. Reuse the selected immutable generation until a source
+    // change requires a new compiler transaction.
+    let semantic_changes = if changes.is_empty() {
+        Vec::new()
+    } else {
+        let semantic_context = SemanticCompilationContext::admit(
+            package,
+            label,
+            source_root,
+            coordinate,
+            request_id,
+            compiler,
+        )?;
+        compile_semantic_publications(daemon, &semantic_context, scan.compiler_sources)?
+    };
     if changes.is_empty() && semantic_changes.is_empty() {
         return Ok(None);
     }
@@ -1692,12 +1700,25 @@ fn semantic_unavailable_reason(error: &PackageSemanticRuntimeError) -> SemanticU
             }
             _ => SemanticUnavailableReason::Rejected,
         },
-        PackageSemanticRuntimeError::Runtime(
-            backend_library::interface::CompilerTerminal::PackageCancelled { .. },
-        ) => SemanticUnavailableReason::Cancelled,
-        PackageSemanticRuntimeError::Admission(_)
-        | PackageSemanticRuntimeError::Runtime(_)
-        | PackageSemanticRuntimeError::Package(_) => SemanticUnavailableReason::Rejected,
+        PackageSemanticRuntimeError::Runtime(terminal) => match terminal {
+            backend_library::interface::CompilerTerminal::Toolchain { .. }
+            | backend_library::interface::CompilerTerminal::ToolingUnavailable { .. }
+            | backend_library::interface::CompilerTerminal::Unavailable { .. }
+            | backend_library::interface::CompilerTerminal::Runtime {
+                cause: backend_library::interface::CompilerRuntimeCause::ToolchainProbeTimeout,
+                ..
+            } => SemanticUnavailableReason::Toolchain,
+            backend_library::interface::CompilerTerminal::PackageCancelled { .. }
+            | backend_library::interface::CompilerTerminal::Cancelled { .. }
+            | backend_library::interface::CompilerTerminal::Runtime {
+                cause: backend_library::interface::CompilerRuntimeCause::RequestCancelled,
+                ..
+            } => SemanticUnavailableReason::Cancelled,
+            _ => SemanticUnavailableReason::Rejected,
+        },
+        PackageSemanticRuntimeError::Admission(_) | PackageSemanticRuntimeError::Package(_) => {
+            SemanticUnavailableReason::Rejected
+        }
     }
 }
 
@@ -1796,8 +1817,16 @@ fn semantic_versions(
             key.admit_record(record).map_err(|error| {
                 BuiltinModelError(format!("admit semantic version history: {error}"))
             })?;
-            let ProductSemanticPublicationRecord::Published { coverage, claim } = record else {
-                continue;
+            let (coverage, claim) = match record {
+                ProductSemanticPublicationRecord::Published { coverage, claim } => {
+                    (*coverage, *claim)
+                }
+                ProductSemanticPublicationRecord::Unavailable(reason) if key.is_selected() => {
+                    return Err(BuiltinModelError(format!(
+                        "semantic publication unavailable: {reason}"
+                    )));
+                }
+                ProductSemanticPublicationRecord::Unavailable(_) => continue,
             };
             let target = (key.coordinate().clone(), key.profile());
             match key.selection() {
@@ -1819,7 +1848,7 @@ fn semantic_versions(
                     }
                     generations.push((
                         target,
-                        semantic_version_record(key, *coverage, *claim, false),
+                        semantic_version_record(key, coverage, claim, false),
                     ));
                 }
             }
@@ -1936,6 +1965,8 @@ impl CommandAdapter {
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let label = certified_package_label(certificate, package)?;
+        let requested_package = package;
+        let (package, label) = canonical_local_package(package, label)?;
         let intent = if Path::new(&label).is_dir() {
             index_project_intent(daemon, package, &label, request_id, &self.compiler)?
         } else if label.starts_with("pkg:") || label.starts_with("PKG:") {
@@ -1949,11 +1980,12 @@ impl CommandAdapter {
             })?;
         }
         self.publish_view(daemon)?;
-        let intent_id = backend_engine::intent_id("request_package", package.as_bytes());
+        let intent_id =
+            backend_engine::intent_id("request_package", requested_package.as_bytes());
         let certificate = WireCertificate::new().with_claim(WireClaim::Intent {
             id: backend_engine::encode_id(intent_id.as_bytes()),
             token: "request_package".to_owned(),
-            payload: package.as_bytes().to_vec().into_boxed_slice(),
+            payload: requested_package.as_bytes().to_vec().into_boxed_slice(),
         });
         Ok((CommandReply::Added(intent_id), Some(certificate)))
     }
@@ -2063,17 +2095,19 @@ impl CommandAdapter {
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let label = certified_package_label(certificate, package)?;
+        let requested_package = package;
+        let (package, label) = canonical_local_package(package, label)?;
         if let Some(intent) = remove_project_intent(daemon, package, &label)? {
             commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
                 BuiltinModelError(format!("commit product source intent: {error}"))
             })?;
         }
         self.publish_view(daemon)?;
-        let intent_id = backend_engine::intent_id("remove_package", package.as_bytes());
+        let intent_id = backend_engine::intent_id("remove_package", requested_package.as_bytes());
         let certificate = WireCertificate::new().with_claim(WireClaim::Intent {
             id: backend_engine::encode_id(intent_id.as_bytes()),
             token: "remove_package".to_owned(),
-            payload: package.as_bytes().to_vec().into_boxed_slice(),
+            payload: requested_package.as_bytes().to_vec().into_boxed_slice(),
         });
         Ok((CommandReply::Removed(intent_id), Some(certificate)))
     }
@@ -2398,6 +2432,21 @@ fn project_view_deltas(
         })?;
     }
     Ok(())
+}
+
+fn canonical_local_package(
+    package: backend_engine::PackageKey,
+    label: String,
+) -> Result<(backend_engine::PackageKey, String), BuiltinModelError> {
+    let path = Path::new(&label);
+    if !path.is_dir() {
+        return Ok((package, label));
+    }
+    let canonical = path.canonicalize().map_err(|error| {
+        BuiltinModelError(format!("canonicalize local package {label}: {error}"))
+    })?;
+    let label = canonical.to_string_lossy().into_owned();
+    Ok((backend_engine::package_key(&label), label))
 }
 
 fn certified_package_label(
