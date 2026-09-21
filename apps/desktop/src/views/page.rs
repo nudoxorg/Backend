@@ -495,6 +495,7 @@ impl Workspace {
         let document = self.document.clone();
         let types = self.named_types(theme, signature, cx);
         div()
+            .id("section-signature")
             .w_full()
             .flex()
             .flex_col()
@@ -605,9 +606,11 @@ impl Workspace {
 
     fn prose_section(&mut self, theme: &Theme, page: &Page) -> impl IntoElement {
         let document = self.document.clone();
-        prose::blocks(theme, page.prose(), "page", move |symbol, _, cx| {
-            open_symbol(&document, symbol, cx);
-        })
+        div()
+            .id("section-documentation")
+            .child(prose::blocks(theme, page.prose(), "page", move |symbol, _, cx| {
+                open_symbol(&document, symbol, cx);
+            }))
     }
 }
 

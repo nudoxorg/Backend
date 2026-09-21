@@ -15,20 +15,20 @@
 use super::keys;
 use super::workspace::Workspace;
 use crate::store::document::{Content, Target};
-use crate::store::shell::Transient;
 use crate::theme::Theme;
 use crate::theme::palette::{Appearance, Paint};
 use crate::theme::tokens::{Space, hairline, space};
 use crate::ui::icon::Icon;
-use crate::ui::source::{self, SourceView};
+use crate::ui::source::{self, SourceSearch, SourceView};
 use crate::ui::tip::{Tip, Tipped as _};
 use crate::ui::{button, fault as fault_ui, glyph, surface, text};
 use backend_present::{Page, Source};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, Context, Div, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, Context, Div, InteractiveElement, IntoElement, ParentElement, ScrollStrategy,
+    StatefulInteractiveElement, Styled, div, px,
 };
+use gpui_elements::editable_text::text_input;
 
 /// Widest the sheet grows, in pixels.
 const SHEET_WIDTH: f32 = 960.0;
@@ -37,27 +37,31 @@ const SHEET_WIDTH: f32 = 960.0;
 pub(crate) struct SourceCache {
     coordinate: String,
     appearance: Appearance,
+    generation: u64,
     view: SourceView,
+}
+
+/// Query projection for one captured source revision. Match ranges are built
+/// once per query and then shared by the header and virtualized body.
+pub(crate) struct SourceQueryCache {
+    coordinate: String,
+    appearance: Appearance,
+    generation: u64,
+    query: String,
+    search: SourceSearch,
 }
 
 impl Workspace {
     /// Opens or closes the source sheet for the page being read.
-    pub(crate) fn toggle_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.source_open && self.open_page(cx).is_none() {
+    pub(crate) fn toggle_source(&mut self, cx: &mut Context<Self>) {
+        if !self.source_open && !self.has_open_page(cx) {
             return;
         }
         self.source_open = !self.source_open;
-        if self.source_open {
-            let restore = self.shell.read(cx).focus();
-            self.transients
-                .push_with_restore(Transient::Source, restore);
-            self.shell.update(cx, |shell, cx| {
-                shell.focus_on(crate::store::shell::Focus::Source, cx)
-            });
-            window.focus(&self.source_focus, cx);
-        } else {
-            self.close_source(cx);
-            self.restore_focus(window, cx);
+        if !self.source_open {
+            self.source_field
+                .update(cx, |field, cx| field.emplace("", cx));
+            self.source_query_cache = None;
         }
         cx.notify();
     }
@@ -66,20 +70,19 @@ impl Workspace {
     #[cfg(feature = "preview")]
     pub(crate) fn preview_source(&mut self, cx: &mut Context<Self>) {
         self.source_open = true;
-        let restore = self.shell.read(cx).focus();
-        self.transients
-            .push_with_restore(Transient::Source, restore);
-        self.shell.update(cx, |shell, cx| {
-            shell.focus_on(crate::store::shell::Focus::Source, cx)
-        });
+        self.source_field
+            .update(cx, |field, cx| field.emplace("", cx));
+        self.source_query_cache = None;
         cx.notify();
     }
 
     /// Closes the source sheet.
     pub(super) fn close_source(&mut self, cx: &mut Context<Self>) {
-        self.remove_transient(Transient::Source, cx);
         if self.source_open {
             self.source_open = false;
+            self.source_field
+                .update(cx, |field, cx| field.emplace("", cx));
+            self.source_query_cache = None;
             cx.notify();
         }
     }
@@ -103,10 +106,7 @@ impl Workspace {
                 .child(
                     surface::scrim(theme)
                         .id("source-scrim")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.close_source(cx);
-                            this.restore_focus(window, cx);
-                        })),
+                        .on_click(cx.listener(|this, _, _, cx| this.close_source(cx))),
                 )
                 .child(
                     div()
@@ -119,8 +119,6 @@ impl Workspace {
                         .child(
                             surface::raised(theme)
                                 .id("source-sheet")
-                                .track_focus(&self.source_focus)
-                                .tab_group()
                                 .occlude()
                                 .w(px(SHEET_WIDTH))
                                 .max_w(gpui::relative(1.0))
@@ -147,10 +145,13 @@ impl Workspace {
         let spelling = format!("{path}:{line}");
         let copied = spelling.clone();
         let target = path.to_owned();
-        let facts = self.source_facts(page, cx);
+        let query = self.source_field.read(cx).as_str().to_owned();
+        let search = self.source_search(page, &query, cx).unwrap_or_default();
+        let facts = self.source_facts(page, &query, &search, cx);
         div()
             .flex_none()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(space(Space::Snug))
             .px(space(Space::Room))
@@ -175,6 +176,28 @@ impl Workspace {
                 head.child(text::faint(theme).flex_none().child(facts))
             })
             .child(
+                div()
+                    .id("source-find")
+                    .aria_label("Find in source")
+                    .tip(Tip::new("Find in source").key(keys::FIND_IN_SOURCE))
+                    .w(px(180.0))
+                    .h(px(26.0))
+                    .flex()
+                    .items_center()
+                    .child(
+                        text_input("source-find-field")
+                            .state(self.source_field.downgrade())
+                            .placeholder("Find in source…")
+                            .placeholder_color(theme.paint(Paint::TextFaint))
+                            .selection_color(theme.paint(Paint::GiltWash))
+                            .caret_color(theme.paint(Paint::Gilt))
+                            .text_size(crate::theme::tokens::type_size(
+                                crate::theme::tokens::TypeScale::Small,
+                            ))
+                            .text_color(theme.paint(Paint::TextStrong)),
+                    ),
+            )
+            .child(
                 button::button(
                     theme,
                     "source-editor",
@@ -196,37 +219,62 @@ impl Workspace {
             .child(
                 button::icon_button(theme, "source-close", Icon::Close)
                     .tip(Tip::new("Close").key(keys::DISMISS))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.close_source(cx);
-                        this.restore_focus(window, cx);
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.close_source(cx))),
             )
     }
 
     /// Returns the "N lines · N linked" statement for the head.
-    fn source_facts(&mut self, page: &Page, cx: &mut Context<Self>) -> Option<String> {
+    fn source_facts(
+        &mut self,
+        page: &Page,
+        query: &str,
+        search: &SourceSearch,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
         let Source::Captured { .. } = page.source() else {
             return None;
         };
         let theme = self.theme(cx);
         let view = self.source_view(&theme, page, cx)?;
-        Some(match view.doors() {
+        let facts = match view.doors() {
             0 => format!("{} lines", view.len()),
             doors => format!("{} lines · {doors} linked", view.len()),
+        };
+        Some(if query.trim().is_empty() {
+            facts
+        } else if search.matches() == 0 {
+            format!("{facts} · No matches")
+        } else {
+            let active = self
+                .source_active_match
+                .min(search.matches().saturating_sub(1))
+                .saturating_add(1);
+            format!("{facts} · {active} of {} matches", search.matches())
         })
     }
 
     fn source_body(&mut self, theme: &Theme, page: &Page, cx: &mut Context<Self>) -> AnyElement {
+        let query = self.source_field.read(cx).as_str().to_owned();
+        let search = self.source_search(page, &query, cx).unwrap_or_default();
+        let searching_captured = matches!(page.source(), Source::Captured { .. });
         let body: AnyElement = match page.source() {
             Source::Captured { .. } => match self.source_view(theme, page, cx) {
                 Some(view) => {
                     let entity = cx.entity();
-                    source::block(theme, &view, "source", move |symbol, _, cx| {
-                        entity.update(cx, |workspace, cx| {
-                            workspace.close_source(cx);
-                            workspace.open_symbol(symbol, Target::Child, cx);
-                        });
-                    })
+                    source::block_with_search(
+                        theme,
+                        &view,
+                        "source",
+                        &search,
+                        &self.source_scroll,
+                        self.source_active_match,
+                        move |symbol, _, cx| {
+                            entity.update(cx, |workspace, cx| {
+                                workspace.close_source(cx);
+                                workspace.open_symbol(symbol, Target::Child, cx);
+                            });
+                        },
+                    )
                     .into_any_element()
                 }
                 None => div().into_any_element(),
@@ -238,11 +286,23 @@ impl Workspace {
         };
         div()
             .id("source-body")
+            .aria_label("Captured source")
             .flex_1()
             .min_h(px(0.0))
-            .overflow_y_scroll()
+            .overflow_hidden()
             .px(space(Space::Base))
             .py(space(Space::Base))
+            .when(
+                searching_captured && !query.trim().is_empty() && search.matches() == 0,
+                |body| {
+                    body.child(
+                        text::faint(theme)
+                            .id("source-no-matches")
+                            .pb(space(Space::Snug))
+                            .child("No matches in the captured source."),
+                    )
+                },
+            )
             .child(body)
             .into_any_element()
     }
@@ -256,10 +316,12 @@ impl Workspace {
     ) -> Option<SourceView> {
         let coordinate = page.identity().coordinate().as_str();
         let appearance = self.shell.read(cx).prefs().appearance();
-        let fresh = self
-            .source_cache
-            .as_ref()
-            .filter(|cache| cache.coordinate == coordinate && cache.appearance == appearance);
+        let generation = self.document.read(cx).generation();
+        let fresh = self.source_cache.as_ref().filter(|cache| {
+            cache.coordinate == coordinate
+                && cache.appearance == appearance
+                && cache.generation == generation
+        });
         if let Some(cache) = fresh {
             return Some(cache.view.clone());
         }
@@ -304,9 +366,79 @@ impl Workspace {
         self.source_cache = Some(SourceCache {
             coordinate: coordinate.to_owned(),
             appearance,
+            generation,
             view: view.clone(),
         });
         Some(view)
+    }
+
+    /// Returns the query projection for the current source revision.
+    fn source_search(
+        &mut self,
+        page: &Page,
+        query: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<SourceSearch> {
+        let coordinate = page.identity().coordinate().as_str();
+        let appearance = self.shell.read(cx).prefs().appearance();
+        let generation = self.document.read(cx).generation();
+        if let Some(cache) = self.source_query_cache.as_ref()
+            && cache.coordinate == coordinate
+            && cache.appearance == appearance
+            && cache.generation == generation
+            && cache.query == query
+        {
+            return Some(cache.search.clone());
+        }
+        let theme = self.theme(cx);
+        let view = self.source_view(&theme, page, cx)?;
+        let search = view.search(&theme, query);
+        self.source_active_match = 0;
+        if let Some((line, _)) = search.location(0) {
+            self.source_scroll
+                .scroll_to_item(line, ScrollStrategy::Center);
+        }
+        self.source_query_cache = Some(SourceQueryCache {
+            coordinate: coordinate.to_owned(),
+            appearance,
+            generation,
+            query: query.to_owned(),
+            search: search.clone(),
+        });
+        Some(search)
+    }
+
+    /// Moves the active source match and keeps it in view.
+    pub(super) fn move_source_match(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let query = self.source_field.read(cx).as_str().to_owned();
+        let appearance = self.shell.read(cx).prefs().appearance();
+        let generation = self.document.read(cx).generation();
+        let search = self
+            .source_query_cache
+            .as_ref()
+            .filter(|cache| {
+                cache.appearance == appearance
+                    && cache.generation == generation
+                    && cache.query == query
+            })
+            .map(|cache| cache.search.clone())
+            .or_else(|| {
+                let page = self.open_page(cx)?;
+                self.source_search(&page, &query, cx)
+            });
+        let Some(search) = search else { return };
+        let count = search.matches();
+        if count == 0 {
+            return;
+        }
+        let current = self.source_active_match.min(count.saturating_sub(1)) as isize;
+        self.source_active_match =
+            current.saturating_add(delta).rem_euclid(count as isize) as usize;
+        if let Some((line, _)) = search.location(self.source_active_match) {
+            self.source_scroll
+                .scroll_to_item(line, ScrollStrategy::Center);
+        }
+        cx.notify();
     }
 
     /// Returns the declaration page the reader is showing, if any.
@@ -315,5 +447,12 @@ impl Workspace {
             Content::Page(page) => Some((**page).clone()),
             _ => None,
         }
+    }
+
+    fn has_open_page(&self, cx: &Context<Self>) -> bool {
+        matches!(
+            self.document.read(cx).tab().map(|tab| tab.content()),
+            Some(Content::Page(_))
+        )
     }
 }

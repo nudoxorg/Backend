@@ -312,6 +312,15 @@ impl IndexStore {
             .find_map(|project| project.top_level().next())
     }
 
+    /// Returns the admitted root revision used to build this projection.
+    ///
+    /// Views use this as a cheap cache key. The bytes are copied, rather than
+    /// exposing the store's revision, so a projection can keep its key while
+    /// the index is rebuilt by the event path.
+    pub(crate) fn version(&self) -> [u8; 32] {
+        self.version
+    }
+
     /// Returns the project one declaration belongs to.
     pub(crate) fn project_of(&self, symbol: SymbolKey) -> Option<&ProjectIndex> {
         self.locate

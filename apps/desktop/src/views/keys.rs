@@ -186,6 +186,10 @@ pub(crate) const TOGGLE_APPEARANCE: Chord = Chord::primary("d").shift();
 pub(crate) const TOGGLE_MOTION: Chord = Chord::primary("m").shift();
 /// Show the source of the page being read, over the page.
 pub(crate) const OPEN_SOURCE: Chord = Chord::primary("e");
+/// Find text in the captured source sheet.
+pub(crate) const FIND_IN_SOURCE: Chord = Chord::primary("f");
+/// Move to the previous source find match.
+pub(crate) const PREVIOUS_SOURCE_MATCH: Chord = Chord::plain("enter").shift();
 /// Open the source of the page being read in the external editor.
 pub(crate) const OPEN_EDITOR: Chord = Chord::primary("e").shift();
 /// Dismiss the topmost transient surface.

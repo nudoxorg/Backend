@@ -57,6 +57,10 @@ actions!(
         Reload,
         /// Show the source of the page being read, over the page.
         OpenSource,
+        /// Find text in the captured source sheet.
+        FindInSource,
+        /// Move to the previous match in the captured source sheet.
+        PreviousSourceMatch,
         /// Open the source of the page being read in the external editor.
         OpenEditor,
         /// Close the topmost transient surface.
@@ -138,6 +142,8 @@ fn command_bindings() -> Vec<KeyBinding> {
         bind(keys::SHRINK_INTERFACE, ShrinkInterface, None),
         bind(keys::RELOAD, Reload, None),
         bind(keys::OPEN_SOURCE, OpenSource, None),
+        bind(keys::FIND_IN_SOURCE, FindInSource, None),
+        bind(keys::PREVIOUS_SOURCE_MATCH, PreviousSourceMatch, None),
         bind(keys::OPEN_EDITOR, OpenEditor, None),
         bind(keys::TOGGLE_APPEARANCE, ToggleAppearance, None),
         bind(keys::TOGGLE_MOTION, ToggleMotion, None),

@@ -35,6 +35,7 @@ use gpui::{
     ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
     uniform_list,
 };
+use std::sync::Arc;
 
 /// What one row of the panel is.
 #[derive(Clone, Debug)]
@@ -59,6 +60,25 @@ enum Row {
         depth: usize,
         current: bool,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ContextKey {
+    Empty,
+    Declaration(SymbolKey),
+    Project(String),
+}
+
+/// The context projection is built on state changes, never while drawing.
+///
+/// Keeping the immutable row slice behind an `Arc` lets the uniform list own
+/// a stable snapshot for its callback without cloning or re-sorting thousands
+/// of symbols on every frame.
+pub(super) struct ContextCache {
+    key: ContextKey,
+    generation: u64,
+    index_version: [u8; 32],
+    rows: Arc<[Row]>,
 }
 
 impl Workspace {
@@ -141,7 +161,7 @@ impl Workspace {
     fn context_list(
         &mut self,
         theme: &Theme,
-        rows: Vec<Row>,
+        rows: Arc<[Row]>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = theme.clone();
@@ -174,24 +194,49 @@ impl Workspace {
         )
     }
 
-    fn context_rows(&self, cx: &Context<Self>) -> Vec<Row> {
+    fn context_rows(&mut self, cx: &Context<Self>) -> Arc<[Row]> {
         let subject = self
             .document
             .read(cx)
             .tab()
             .and_then(|tab| tab.subject().cloned());
-        let index = self.index.read(cx);
-        match subject {
-            Some(Subject::Declaration { symbol, .. }) => index
-                .project_of(symbol)
-                .map(|project| declaration_rows(project, symbol))
-                .unwrap_or_default(),
-            Some(Subject::Project { coordinate }) => index
-                .project(&coordinate)
-                .map(project_rows)
-                .unwrap_or_default(),
-            Some(Subject::Home | Subject::Package { .. }) | None => Vec::new(),
+        let generation = self.document.read(cx).generation();
+        let key = match &subject {
+            Some(Subject::Declaration { symbol, .. }) => ContextKey::Declaration(*symbol),
+            Some(Subject::Project { coordinate }) => ContextKey::Project(coordinate.clone()),
+            Some(Subject::Home | Subject::Package { .. }) | None => ContextKey::Empty,
+        };
+        let index_version = self.index.read(cx).version();
+        if let Some(cache) = self.context_cache.as_ref()
+            && cache.key == key
+            && cache.generation == generation
+            && cache.index_version == index_version
+        {
+            return Arc::clone(&cache.rows);
         }
+
+        let rows = {
+            let index = self.index.read(cx);
+            match subject {
+                Some(Subject::Declaration { symbol, .. }) => index
+                    .project_of(symbol)
+                    .map(|project| declaration_rows(project, symbol))
+                    .unwrap_or_default(),
+                Some(Subject::Project { coordinate }) => index
+                    .project(&coordinate)
+                    .map(project_rows)
+                    .unwrap_or_default(),
+                Some(Subject::Home | Subject::Package { .. }) | None => Vec::new(),
+            }
+        };
+        let rows = Arc::<[Row]>::from(rows);
+        self.context_cache = Some(ContextCache {
+            key,
+            generation,
+            index_version,
+            rows: Arc::clone(&rows),
+        });
+        rows
     }
 }
 

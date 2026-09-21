@@ -116,11 +116,14 @@ pub(crate) fn highlighted(
 }
 
 /// Returns the byte ranges of every case-insensitive occurrence of each word.
+///
+/// Matching is projected back onto the original string. Rust's Unicode lower
+/// casing can expand one scalar into several scalars (`İ`, for example), so a
+/// lower-cased byte offset cannot be used as a `StyledText` range directly.
+/// The boundary map keeps every returned range valid UTF-8 while preserving
+/// the useful behaviour of highlighting the complete source scalar.
 pub(crate) fn match_ranges(text: &str, needle: &str) -> Vec<std::ops::Range<usize>> {
-    let lower = text.to_lowercase();
-    if lower.len() != text.len() {
-        return Vec::new();
-    }
+    let (lower, starts, ends) = lower_with_boundaries(text);
     let mut ranges = Vec::new();
     for word in needle.split_whitespace() {
         let word = word.to_lowercase();
@@ -129,13 +132,57 @@ pub(crate) fn match_ranges(text: &str, needle: &str) -> Vec<std::ops::Range<usiz
         }
         let mut from = 0;
         while let Some(at) = lower.get(from..).and_then(|rest| rest.find(&word)) {
-            let start = from.saturating_add(at);
-            let end = start.saturating_add(word.len());
+            let folded_start = from.saturating_add(at);
+            let folded_end = folded_start.saturating_add(word.len());
+            let Some(&start) = starts.get(folded_start) else {
+                break;
+            };
+            let Some(&end) = ends.get(folded_end) else {
+                break;
+            };
             ranges.push(start..end);
-            from = end;
+            from = folded_end;
         }
     }
     ranges.sort_by_key(|range| range.start);
     ranges.dedup();
     ranges
+}
+
+fn lower_with_boundaries(text: &str) -> (String, Vec<usize>, Vec<usize>) {
+    let mut lower = String::with_capacity(text.len());
+    let mut starts = vec![0];
+    let mut ends = vec![0];
+    for (start, scalar) in text.char_indices() {
+        let end = start + scalar.len_utf8();
+        let folded = scalar.to_lowercase().collect::<String>();
+        lower.push_str(&folded);
+        for _ in 1..folded.len() {
+            starts.push(start);
+            ends.push(end);
+        }
+        starts.push(end);
+        ends.push(end);
+    }
+    (lower, starts, ends)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::match_ranges;
+
+    #[test]
+    fn match_ranges_keeps_expanded_unicode_ranges_on_boundaries() {
+        assert_eq!(match_ranges("İstanbul", "i"), vec![0..2]);
+        assert_eq!(match_ranges("Δelta δELTA", "δelta"), vec![0..6, 7..13]);
+    }
+
+    #[test]
+    fn match_ranges_handles_long_rtl_text_without_invalid_offsets() {
+        let text = "שלום العالم ".repeat(2_048);
+        let ranges = match_ranges(&text, "العالم");
+        assert_eq!(ranges.len(), 2_048);
+        assert!(ranges.iter().all(|range| text.is_char_boundary(range.start)
+            && text.is_char_boundary(range.end)));
+    }
 }
