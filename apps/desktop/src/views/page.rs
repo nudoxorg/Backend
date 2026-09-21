@@ -1557,11 +1557,6 @@ fn source_button(theme: &Theme) -> Button {
         .py(px(2.0))
         .border(hairline())
         .border_color(theme.paint(Paint::Hairline))
-        .hover(|style| {
-            style
-                .bg(theme.paint(Paint::Hover))
-                .text_color(theme.paint(Paint::TextStrong))
-        })
         .child(icon::sized(theme, icon::Icon::Code, 11.0, Paint::TextDim))
 }
 

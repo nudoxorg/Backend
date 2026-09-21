@@ -119,6 +119,11 @@ fn capture_command(args: &[String]) -> Result<(), String> {
         .unwrap_or_else(|| PathBuf::from(".artifacts/gui-harness"));
     let state_filter = option(args, "--state");
     let journey_filter = option(args, "--journey");
+    if let Some(filter) = journey_filter.as_deref()
+        && !journey_catalog().iter().any(|journey| journey.id == filter)
+    {
+        return Err(format!("unknown journey {filter:?}"));
+    }
     let viewport_filter = option(args, "--viewport")
         .map(|value| parse_viewport(&value))
         .transpose()?;

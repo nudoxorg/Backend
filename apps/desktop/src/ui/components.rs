@@ -79,11 +79,6 @@ pub(crate) fn button_with_state(
         .border_color(border)
         .bg(background)
         .text_color(foreground)
-        .hover(|style| {
-            style
-                .bg(theme.paint(Paint::Hover))
-                .border_color(theme.paint(Paint::Focus))
-        })
         .focus_visible(|style| {
             style
                 .border_color(theme.paint(Paint::Focus))
@@ -135,11 +130,6 @@ pub(crate) fn icon_button_with_state(
         .border_color(gpui::transparent_black())
         .bg(gpui::transparent_black())
         .text_color(theme.paint(Paint::TextDim))
-        .hover(|style| {
-            style
-                .bg(theme.paint(Paint::Hover))
-                .text_color(theme.paint(Paint::TextStrong))
-        })
         .focus_visible(|style| {
             style
                 .border_color(theme.paint(Paint::Focus))

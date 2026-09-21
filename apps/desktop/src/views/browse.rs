@@ -349,7 +349,6 @@ fn toggle(
         .when(chosen, |chip| chip.bg(theme.paint(Paint::GiltWash)))
         .text_size(type_size(TypeScale::Tiny))
         .text_color(theme.paint(if chosen { Paint::Gilt } else { Paint::TextDim }))
-        .hover(|style| style.bg(theme.paint(Paint::Hover)))
 }
 
 /// Returns one ecosystem's logo, drawn in that ecosystem's own hue.
