@@ -382,6 +382,26 @@ impl DiscoveryPolicy {
         })
     }
 
+    fn include_reopens_directory_contents(&self, root: &Path, path: &Path) -> bool {
+        let Ok(relative) = path.strip_prefix(root) else {
+            return false;
+        };
+        let relative = slash_path(relative);
+        self.includes.iter().any(|pattern| {
+            let pattern = normalize_pattern(pattern)
+                .trim_start_matches('!')
+                .trim_start_matches('/')
+                .trim_end_matches('/')
+                .to_owned();
+            // A literal directory include is intentionally recursive. Glob
+            // patterns are left to the ignore override matcher below so a
+            // prefix such as `dist/foo*` cannot accidentally admit siblings.
+            !pattern.is_empty()
+                && !pattern.contains(['*', '?', '['])
+                && (relative == pattern || relative.starts_with(&format!("{pattern}/")))
+        })
+    }
+
     fn admits_path(
         &self,
         root: &Path,
@@ -401,6 +421,7 @@ impl DiscoveryPolicy {
             return self.include_reopens(root, path);
         }
         include_overrides.is_some_and(|overrides| overrides.matched(path, false).is_whitelist())
+            || self.include_reopens_directory_contents(root, path)
     }
 }
 
@@ -629,6 +650,32 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(paths, [PathBuf::from("bundle.js")]);
+    }
+
+    #[test]
+    fn explicit_literal_directory_include_reopens_all_descendants() {
+        let scratch = Scratch::new("directory-override");
+        fs::create_dir_all(scratch.0.join("dist/nested")).expect("dist");
+        fs::write(scratch.0.join("dist/bundle.js"), b"bundle").expect("bundle");
+        fs::write(scratch.0.join("dist/nested/chunk.js"), b"chunk").expect("chunk");
+        fs::write(scratch.0.join("dist/drop.css"), b"drop").expect("drop");
+        let paths = DiscoveryPolicy::default()
+            .include("dist")
+            .walk(&scratch.0)
+            .filter_map(|entry| {
+                let path = entry.ok()?.path().strip_prefix(&scratch.0).ok()?.to_owned();
+                path.extension()
+                    .is_some_and(|extension| extension == "js")
+                    .then_some(path)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            [
+                PathBuf::from("dist/bundle.js"),
+                PathBuf::from("dist/nested/chunk.js")
+            ]
+        );
     }
 
     #[test]
