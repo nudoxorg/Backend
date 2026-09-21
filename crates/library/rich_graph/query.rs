@@ -2,7 +2,8 @@
 
 use super::{
     GraphNodeId, GraphRelationFamily, MAX_RICH_GRAPH_PAGE_EDGES, MAX_RICH_GRAPH_PAGE_ROWS,
-    RICH_GRAPH_SCHEMA_VERSION, RichGraphError, RichGraphRevision, RichGraphSnapshot,
+    RICH_GRAPH_SCHEMA_VERSION, RichGraphEdge, RichGraphError, RichGraphNode, RichGraphRevision,
+    RichGraphSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;

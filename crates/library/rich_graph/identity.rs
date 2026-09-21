@@ -227,3 +227,29 @@ impl GraphEdgeId {
         Self(*blake3::hash(&preimage).as_bytes())
     }
 }
+
+fn semantic_link_tag(kind: SemanticLinkKind) -> u8 {
+    match kind {
+        SemanticLinkKind::Calls => 0,
+        SemanticLinkKind::MethodCall => 1,
+        SemanticLinkKind::TypeReference => 2,
+        SemanticLinkKind::Reads => 3,
+        SemanticLinkKind::Writes => 4,
+        SemanticLinkKind::Imports => 5,
+        SemanticLinkKind::Implements => 6,
+        SemanticLinkKind::Overrides => 7,
+        SemanticLinkKind::Reexports => 8,
+        SemanticLinkKind::Inherits => 9,
+        SemanticLinkKind::Documents => 10,
+    }
+}
+
+fn dependency_scope_tag(scope: DependencyScope) -> u8 {
+    match scope {
+        DependencyScope::Runtime => 0,
+        DependencyScope::Optional => 1,
+        DependencyScope::Development => 2,
+        DependencyScope::Build => 3,
+        DependencyScope::Peer => 4,
+    }
+}
