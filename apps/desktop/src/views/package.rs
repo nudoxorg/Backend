@@ -23,6 +23,7 @@
 use super::home::skeleton;
 use super::workspace::Workspace;
 use crate::motion::{Beat, entering_opacity, once};
+use crate::store::document::ReaderIntent;
 use crate::store::document::Target;
 use crate::store::dossier::{
     self, Dependency, Dependent, Dossier, Downloads, History, Link, Owner, PackageRoute, Precis,
@@ -34,16 +35,19 @@ use crate::theme::language::hue as language_hue;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
 use crate::ui::icon::Icon;
-use crate::ui::{button, chart, chip, fault as fault_ui, icon, surface, text};
+use crate::ui::{button, chart, chip, components, fault as fault_ui, icon, surface, text};
 use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, AdvisoryStatus, FreshnessState, RegistryEcosystem,
 };
 use backend_present::Language;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnimationExt as _, AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px,
+    AnimationExt as _, AnyElement, Context, Div, ElementId, InteractiveElement, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px, uniform_list,
 };
+use gpui_component::Selectable as _;
+use std::cmp::Ordering;
+use std::sync::Arc;
 
 /// How many rows a long section lists before it offers the rest.
 const BUDGET: usize = 12;
@@ -96,6 +100,9 @@ fn package_tab(
     cx: &mut Context<Workspace>,
 ) -> impl IntoElement {
     button::button(theme, id, label, button::Weight::Quiet)
+        .flex_none()
+        .selected(selected)
+        .toggled(selected)
         .px(px(4.0))
         .when(selected, |tab| {
             tab.border_b(px(2.0))
@@ -109,22 +116,83 @@ fn package_tab(
 
 fn package_route_tab(
     theme: &Theme,
-    id: &'static str,
+    id: impl Into<SharedString>,
     label: &'static str,
-    route: &'static str,
-    selected: bool,
+    route: PackageRoute,
+    coordinate: &str,
+    authority: RouteAuthority,
     cx: &mut Context<Workspace>,
 ) -> impl IntoElement {
-    button::button(theme, id, label, button::Weight::Quiet)
-        .px(px(4.0))
-        .when(selected, |tab| {
-            tab.border_b(px(2.0))
-                .border_color(theme.paint(Paint::Gilt))
-                .text_color(theme.paint(Paint::Gilt))
-        })
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.select_package_route(route, cx);
-        }))
+    let enabled = authority.is_available();
+    let reason = authority.reason();
+    let coordinate = coordinate.to_owned();
+    let mut tab =
+        components::button_with_state(theme, id, label, button::Weight::Quiet, !enabled, true)
+            .flex_none()
+            .tab_index(0)
+            .px(px(4.0))
+            .when(!enabled, |tab| {
+                tab.tooltip(format!("{label} unavailable: {reason}"))
+            });
+    if enabled {
+        tab = tab.on_click(cx.listener(move |this, _, window, cx| {
+            let _ = this.open_package_route(coordinate.clone(), route.intent(), window, cx);
+        }));
+    }
+    tab
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RouteAuthority {
+    Available,
+    Unavailable(&'static str),
+}
+
+impl RouteAuthority {
+    const fn is_available(self) -> bool {
+        matches!(self, Self::Available)
+    }
+
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::Available => "local projection is admitted",
+            Self::Unavailable(reason) => reason,
+        }
+    }
+}
+
+fn route_rail_button(
+    theme: &Theme,
+    id: &'static str,
+    label: &'static str,
+    route: PackageRoute,
+    coordinate: &str,
+    authority: RouteAuthority,
+    cx: &mut Context<Workspace>,
+) -> impl IntoElement {
+    let enabled = authority.is_available();
+    let coordinate = coordinate.to_owned();
+    let mut button =
+        components::button_with_state(theme, id, label, components::Weight::Quiet, !enabled, true);
+    if enabled {
+        button = button.on_click(cx.listener(move |this, _, window, cx| {
+            let _ = this.open_package_route(coordinate.clone(), route.intent(), window, cx);
+        }));
+    } else {
+        button = button.tooltip(format!("{label} unavailable: {}", authority.reason()));
+    }
+    button
+}
+
+impl PackageRoute {
+    const fn intent(self) -> ReaderIntent {
+        match self {
+            Self::Documentation => ReaderIntent::Docs,
+            Self::Source => ReaderIntent::Source,
+            Self::Code => ReaderIntent::Code,
+            Self::Search => ReaderIntent::Search,
+        }
+    }
 }
 
 impl Workspace {
@@ -174,7 +242,7 @@ impl Workspace {
             .flex_col()
             .gap(space(Space::Gutter))
             .child(self.package_header(theme, &dossier, cx))
-            .child(self.package_tabs(theme, cx))
+            .child(self.package_tabs(theme, &dossier, cx))
             .child(self.package_route_sections(theme, &dossier, cx))
             .child(self.primary_package_content(theme, &dossier, cx))
             .child(self.dependencies_section(theme, &dossier, cx))
@@ -193,104 +261,145 @@ impl Workspace {
     /// Returns the internal package information architecture. Each tab names a
     /// typed route in this live dossier; no route is synthesized from a package
     /// name or handed off to an external site.
-    fn package_tabs(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    fn package_tabs(
+        &self,
+        theme: &Theme,
+        dossier: &Dossier,
+        cx: &mut Context<Workspace>,
+    ) -> impl IntoElement {
+        let coordinate = dossier.coordinate().to_owned();
         div()
-            .id("package-tabs")
+            .id("package-tabs-scroll")
             .w_full()
             .min_w(px(0.0))
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(space(Space::Tight))
+            .overflow_x_scroll()
             .border_b(hairline())
             .border_color(theme.paint(Paint::Hairline))
-            .child(package_tab(
-                theme,
-                "package-tab-readme",
-                "Readme",
-                "readme",
-                !self.is_folded("readme"),
-                cx,
-            ))
-            .child(package_route_tab(
-                theme,
-                "package-tab-docs",
-                "Docs",
-                PackageRoute::Documentation.key(),
-                self.is_unfurled(PackageRoute::Documentation.key()),
-                cx,
-            ))
-            .child(package_route_tab(
-                theme,
-                "package-tab-source",
-                "Source",
-                PackageRoute::Source.key(),
-                self.is_unfurled(PackageRoute::Source.key()),
-                cx,
-            ))
-            .child(package_route_tab(
-                theme,
-                "package-tab-code",
-                "Code",
-                PackageRoute::Code.key(),
-                self.is_unfurled(PackageRoute::Code.key()),
-                cx,
-            ))
-            .child(package_route_tab(
-                theme,
-                "package-tab-search",
-                "Search",
-                PackageRoute::Search.key(),
-                self.is_unfurled(PackageRoute::Search.key()),
-                cx,
-            ))
-            .child(package_tab(
-                theme,
-                "package-tab-versions",
-                "Versions",
-                "versions",
-                !self.is_folded("versions"),
-                cx,
-            ))
-            .child(package_tab(
-                theme,
-                "package-tab-dependencies",
-                "Dependencies",
-                "dependencies",
-                !self.is_folded("dependencies"),
-                cx,
-            ))
-            .child(package_tab(
-                theme,
-                "package-tab-dependents",
-                "Dependents",
-                "dependents",
-                !self.is_folded("dependents"),
-                cx,
-            ))
-            .child(package_route_tab(
-                theme,
-                "package-tab-security",
-                "Security",
-                "package-security",
-                self.is_unfurled("package-security"),
-                cx,
-            ))
+            .child(
+                div()
+                    .id("package-tabs")
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(space(Space::Tight))
+                    .child(package_tab(
+                        theme,
+                        "package-tab-readme",
+                        "Readme",
+                        "readme",
+                        !self.is_folded("readme"),
+                        cx,
+                    ))
+                    .child(package_route_tab(
+                        theme,
+                        "package-tab-docs",
+                        "Docs",
+                        PackageRoute::Documentation,
+                        &coordinate,
+                        self.package_route_authority(dossier, PackageRoute::Documentation, cx),
+                        cx,
+                    ))
+                    .child(package_route_tab(
+                        theme,
+                        "package-tab-source",
+                        "Source",
+                        PackageRoute::Source,
+                        &coordinate,
+                        self.package_route_authority(dossier, PackageRoute::Source, cx),
+                        cx,
+                    ))
+                    .child(package_route_tab(
+                        theme,
+                        "package-tab-code",
+                        "Code",
+                        PackageRoute::Code,
+                        &coordinate,
+                        self.package_route_authority(dossier, PackageRoute::Code, cx),
+                        cx,
+                    ))
+                    .child(package_route_tab(
+                        theme,
+                        "package-tab-search",
+                        "Search",
+                        PackageRoute::Search,
+                        &coordinate,
+                        self.package_route_authority(dossier, PackageRoute::Search, cx),
+                        cx,
+                    ))
+                    .child(package_tab(
+                        theme,
+                        "package-tab-versions",
+                        "Versions",
+                        "versions",
+                        !self.is_folded("versions"),
+                        cx,
+                    ))
+                    .child(package_tab(
+                        theme,
+                        "package-tab-dependencies",
+                        "Dependencies",
+                        "dependencies",
+                        !self.is_folded("dependencies"),
+                        cx,
+                    ))
+                    .child(package_tab(
+                        theme,
+                        "package-tab-dependents",
+                        "Dependents",
+                        "dependents",
+                        !self.is_folded("dependents"),
+                        cx,
+                    ))
+                    .child(package_tab(
+                        theme,
+                        "package-tab-security",
+                        "Security",
+                        "package-security",
+                        self.is_unfurled("package-security"),
+                        cx,
+                    )),
+            )
     }
 
-    /// Selects one internal route and clears any previously open route body.
-    /// The package page keeps the route handoff local to the admitted dossier;
-    /// it never constructs or opens an upstream URL.
-    fn select_package_route(&mut self, route: &'static str, cx: &mut Context<Self>) {
-        for key in PACKAGE_ROUTES {
-            if key != route && self.is_unfurled(key) {
-                self.toggle_unfurl(key, cx);
+    /// Checks authority before exposing a route control. Registry metadata is
+    /// not semantic authority: a package can be listed by a registry while no
+    /// local project/declaration projection exists for the same coordinate.
+    /// Keeping this decision here makes a disabled control a precise coverage
+    /// statement instead of a speculative navigation attempt.
+    fn package_route_authority(
+        &self,
+        dossier: &Dossier,
+        route: PackageRoute,
+        cx: &Context<Workspace>,
+    ) -> RouteAuthority {
+        let coordinate = dossier.coordinate();
+        let index = self.index.read(cx);
+        let project = index.project(coordinate);
+        let symbol = index.symbol_for(coordinate);
+        match route {
+            PackageRoute::Documentation if symbol.is_some() || project.is_some() => {
+                RouteAuthority::Available
+            }
+            PackageRoute::Documentation => {
+                RouteAuthority::Unavailable("the local declaration index has no admitted docs page")
+            }
+            PackageRoute::Source if symbol.is_some() => RouteAuthority::Available,
+            PackageRoute::Source if project.is_some() => RouteAuthority::Unavailable(
+                "source requires an admitted declaration, not only a package root",
+            ),
+            PackageRoute::Source => {
+                RouteAuthority::Unavailable("the local declaration index has no source authority")
+            }
+            PackageRoute::Code | PackageRoute::Search if project.is_some() => {
+                RouteAuthority::Available
+            }
+            PackageRoute::Code => {
+                RouteAuthority::Unavailable("the local declaration index has no code outline")
+            }
+            PackageRoute::Search => {
+                RouteAuthority::Unavailable("the local declaration index has no search scope")
             }
         }
-        if !self.is_unfurled(route) {
-            self.toggle_unfurl(route, cx);
-        }
-        cx.notify();
     }
 
     /// Selects one primary package section while keeping its body open.
@@ -307,9 +416,9 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Returns the internal docs/source/code/search/security routes that a tab
-    /// unfolds. Their bodies are typed coverage statements, so an unavailable
-    /// capability stays visible instead of turning into an external guess.
+    /// Returns package-local metadata disclosures. Docs/source/code/search
+    /// leave this page through typed reader handoffs; they are never rendered
+    /// as a fabricated placeholder inside the registry page.
     fn package_route_sections(
         &self,
         theme: &Theme,
@@ -322,63 +431,9 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(space(Space::Snug))
-            .when(
-                self.is_unfurled(PackageRoute::Documentation.key()),
-                |body| {
-                    body.child(self.package_coverage_route(
-                        theme,
-                        dossier,
-                        PackageRoute::Documentation,
-                        cx,
-                    ))
-                },
-            )
-            .when(self.is_unfurled(PackageRoute::Source.key()), |body| {
-                body.child(self.package_coverage_route(theme, dossier, PackageRoute::Source, cx))
-            })
-            .when(self.is_unfurled(PackageRoute::Code.key()), |body| {
-                body.child(self.package_coverage_route(theme, dossier, PackageRoute::Code, cx))
-            })
-            .when(self.is_unfurled(PackageRoute::Search.key()), |body| {
-                body.child(self.package_coverage_route(theme, dossier, PackageRoute::Search, cx))
-            })
             .when(self.is_unfurled("package-security"), |body| {
                 body.child(self.security_route(theme, dossier, cx))
             })
-    }
-
-    fn package_coverage_route(
-        &self,
-        theme: &Theme,
-        dossier: &Dossier,
-        route: PackageRoute,
-        cx: &mut Context<Workspace>,
-    ) -> Div {
-        let body = dossier.route_request(route).map_or_else(
-            || {
-                text::dim(theme)
-                    .child("The package coordinate is not admitted by the local index, so this route cannot open.")
-                    .into_any_element()
-            },
-            |request| {
-                text::dim(theme)
-                    .child(format!(
-                        "{} is bound to the local semantic index for {}. Content remains unavailable until that provider returns a recorded page.",
-                        request.route().title(),
-                        request.package().as_str(),
-                    ))
-                    .into_any_element()
-            },
-        );
-        self.folding(
-            theme,
-            route.key(),
-            route.title(),
-            Provenance::NotRecorded,
-            None,
-            body,
-            cx,
-        )
     }
 
     fn security_route(&self, theme: &Theme, dossier: &Dossier, cx: &mut Context<Workspace>) -> Div {
@@ -421,10 +476,24 @@ impl Workspace {
         let decision = match &advisory.decision {
             AcquisitionDecision::Allow => "allow".to_owned(),
             AcquisitionDecision::Warn(reasons) => {
-                format!("warn ({})", reasons.iter().map(Self::policy_reason_label).collect::<Vec<_>>().join(", "))
+                format!(
+                    "warn ({})",
+                    reasons
+                        .iter()
+                        .map(Self::policy_reason_label)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             }
             AcquisitionDecision::Deny(reasons) => {
-                format!("deny ({})", reasons.iter().map(Self::policy_reason_label).collect::<Vec<_>>().join(", "))
+                format!(
+                    "deny ({})",
+                    reasons
+                        .iter()
+                        .map(Self::policy_reason_label)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             }
         };
         let coverage = format!(
@@ -494,9 +563,11 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(space(Space::Tight))
-            .children(details.into_iter().map(|detail| {
-                text::text_at(theme, TypeScale::Body, Paint::Text).child(detail)
-            }))
+            .children(
+                details
+                    .into_iter()
+                    .map(|detail| text::text_at(theme, TypeScale::Body, Paint::Text).child(detail)),
+            )
             .into_any_element()
     }
 
@@ -577,6 +648,8 @@ impl Workspace {
         let precis = dossier.precis();
         let links = precis.ready().map(Precis::links).unwrap_or_default();
         let release = dossier.pinned();
+        let docs_authority = self.package_route_authority(dossier, PackageRoute::Documentation, cx);
+        let source_authority = self.package_route_authority(dossier, PackageRoute::Source, cx);
         let status = release.map_or_else(
             || "release status not recorded".to_owned(),
             |release| {
@@ -637,28 +710,24 @@ impl Workspace {
                     .flex()
                     .flex_wrap()
                     .gap(space(Space::Tight))
-                    .child(
-                        button::button(
-                            theme,
-                            "package-rail-docs",
-                            "Open docs route",
-                            button::Weight::Quiet,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.select_package_route(PackageRoute::Documentation.key(), cx);
-                        })),
-                    )
-                    .child(
-                        button::button(
-                            theme,
-                            "package-rail-source",
-                            "Open source route",
-                            button::Weight::Quiet,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.select_package_route(PackageRoute::Source.key(), cx);
-                        })),
-                    ),
+                    .child(route_rail_button(
+                        theme,
+                        "package-rail-docs",
+                        "Open docs route",
+                        PackageRoute::Documentation,
+                        dossier.coordinate(),
+                        docs_authority,
+                        cx,
+                    ))
+                    .child(route_rail_button(
+                        theme,
+                        "package-rail-source",
+                        "Open source route",
+                        PackageRoute::Source,
+                        dossier.coordinate(),
+                        source_authority,
+                        cx,
+                    )),
             )
             .when(!links.is_empty(), |rail| {
                 rail.child(div().flex().flex_wrap().gap(space(Space::Tight)).children(
@@ -698,7 +767,7 @@ impl Workspace {
                     )
                     .child(Self::title_row(theme, dossier, unfurled, cx))
                     .when(unfurled, |header| {
-                        header.child(Self::version_menu(theme, dossier, cx))
+                        header.child(self.version_menu(theme, dossier, cx))
                     })
                     .when_some(
                         precis.filter(|_| !dossier.precis().provenance().is_not_recorded()),
@@ -741,8 +810,8 @@ impl Workspace {
             .when(!spelling.version().is_empty(), |row| {
                 row.child(Self::version_button(theme, dossier, unfurled, cx))
             })
-            .when_some(dossier.history().ready(), |row, history| {
-                row.child(chip::count_chip(theme, history.versions(), "versions"))
+            .when_some(Self::history_chip(theme, dossier), |row, badge| {
+                row.child(badge)
             })
             .when_some(
                 standing.filter(|standing| *standing != ReleaseStanding::Published),
@@ -770,69 +839,112 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let key = picker_key(dossier.coordinate());
-        let count = dossier.releases().ready().map_or(0, Vec::len);
-        div()
-            .id(ElementId::Name(SharedString::from("package-version-badge")))
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(space(Space::Tight))
-            .px(space(Space::Snug))
-            .py(px(2.0))
-            .rounded(radius(Radius::Small))
-            .bg(theme.paint(Paint::Hover))
-            .border(hairline())
-            .border_color(theme.paint(if unfurled {
-                Paint::GiltDim
+        let count = match dossier.history().state() {
+            Loadable::Ready(history) if !dossier.history().provenance().is_not_recorded() => {
+                Some(history.versions().to_string())
+            }
+            Loadable::Loading => Some("loading".to_owned()),
+            Loadable::Faulted(_) => Some("unavailable".to_owned()),
+            Loadable::Idle | Loadable::Ready(_) => None,
+        };
+        let mut label = dossier.spelling().version().to_owned();
+        if let Some(count) = count {
+            label.push_str(&format!(" of {count}"));
+        }
+        components::button_with_state(
+            theme,
+            "package-version-badge",
+            label,
+            button::Weight::Quiet,
+            false,
+            true,
+        )
+        .flex_none()
+        .selected(unfurled)
+        .toggled(unfurled)
+        .font_family(theme.specimen())
+        .tooltip(if unfurled {
+            "Hide release history"
+        } else {
+            "Show release history"
+        })
+        .child(icon::sized(
+            theme,
+            if unfurled {
+                Icon::ChevronDown
             } else {
-                Paint::Hairline
-            }))
-            .cursor_pointer()
-            .hover(|style| style.bg(theme.paint(Paint::Selected)))
-            .child(
-                text::text_at(theme, TypeScale::Small, Paint::Text)
-                    .font_family(theme.specimen())
-                    .child(dossier.spelling().version().to_owned()),
-            )
-            .child(text::faint(theme).child(format!("of {count}")))
-            .child(icon::sized(
-                theme,
-                if unfurled {
-                    Icon::ChevronDown
-                } else {
-                    Icon::ChevronRight
-                },
-                11.0,
-                Paint::TextFaint,
-            ))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.toggle_unfurl(&key, cx);
-            }))
-            .into_any_element()
+                Icon::ChevronRight
+            },
+            11.0,
+            Paint::TextFaint,
+        ))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.toggle_unfurl(&key, cx);
+        }))
+        .into_any_element()
     }
 
-    /// Returns the version picker: every release, newest first.
-    fn version_menu(theme: &Theme, dossier: &Dossier, cx: &mut Context<Self>) -> Div {
+    /// Draws only a count whose profile authority actually recorded one. A
+    /// missing profile must not collapse into the very different fact "zero
+    /// versions"; loading and failure remain visible as their own states.
+    fn history_chip(theme: &Theme, dossier: &Dossier) -> Option<Div> {
+        match dossier.history().state() {
+            Loadable::Ready(history) if !dossier.history().provenance().is_not_recorded() => {
+                Some(chip::count_chip(theme, history.versions(), "versions"))
+            }
+            Loadable::Loading => Some(chip::badge(theme, "versions loading")),
+            Loadable::Faulted(_) => Some(chip::badge(theme, "versions unavailable")),
+            Loadable::Idle | Loadable::Ready(_) => None,
+        }
+    }
+
+    /// Returns the version picker: every release, newest first (virtualized).
+    fn version_menu(&mut self, theme: &Theme, dossier: &Dossier, cx: &mut Context<Self>) -> Div {
         let current = dossier.spelling().version().to_owned();
         let releases = dossier.releases().ready().cloned().unwrap_or_default();
-        surface::sunken(theme)
+        let order = release_order(&releases, dossier.ecosystem());
+        let rows: Arc<[Release]> = releases.into();
+        let entity = cx.entity();
+        let theme = theme.clone();
+        let row_theme = theme.clone();
+        let list = if rows.is_empty() {
+            div()
+                .w_full()
+                .child(text::dim(&theme).child(version_coverage_label(dossier)))
+                .into_any_element()
+        } else {
+            uniform_list(
+                "package-version-picker",
+                order.len(),
+                move |range, _window, _cx| {
+                    order[range]
+                        .iter()
+                        .filter_map(|index| {
+                            rows.get(*index).map(|release| {
+                                version_row(
+                                    &row_theme,
+                                    "picker",
+                                    release,
+                                    release.version() == current,
+                                    &entity,
+                                )
+                            })
+                        })
+                        .collect()
+                },
+            )
+            .track_scroll(&self.package_version_scroll)
+            .h(px(248.0))
+            .into_any_element()
+        };
+        surface::sunken(&theme)
             .w_full()
-            .max_h(px(260.0))
-            .overflow_hidden()
+            .max_h(px(270.0))
             .p(space(Space::Snug))
             .flex()
             .flex_col()
             .gap(px(1.0))
-            .children(releases.iter().enumerate().map(|(at, release)| {
-                version_row(
-                    theme,
-                    "picker",
-                    at,
-                    release,
-                    release.version() == current,
-                    cx,
-                )
-            }))
+            .child(list)
     }
 
     /// Returns the description, the keywords, and the sample tag over both.
@@ -985,7 +1097,7 @@ impl Workspace {
             .when(standing.is_actionable(), |row| {
                 row.child(
                     button::button(
-                        theme,
+                        &theme,
                         "package-add",
                         "Add to shelf",
                         button::Weight::Primary,
@@ -1193,7 +1305,7 @@ impl Workspace {
             .children(
                 rows.iter()
                     .enumerate()
-                    .map(|(at, row)| dependency_row(theme, at, row, cx)),
+                    .map(|(_, row)| dependency_row(theme, row, cx)),
             )
             .into_any_element()
     }
@@ -1253,7 +1365,7 @@ impl Workspace {
                 rows.iter()
                     .take(shown)
                     .enumerate()
-                    .map(|(at, row)| dependent_row(theme, at, row, cx)),
+                    .map(|(_, row)| dependent_row(theme, row, cx)),
             )
             .when(rest > 0, |list| {
                 list.child(
@@ -1271,7 +1383,12 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn versions_section(&self, theme: &Theme, dossier: &Dossier, cx: &mut Context<Self>) -> Div {
+    fn versions_section(
+        &mut self,
+        theme: &Theme,
+        dossier: &Dossier,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let section = dossier.releases();
         let current = dossier.spelling().version().to_owned();
         let unfurled = self.is_unfurled("package-versions-list");
@@ -1286,7 +1403,7 @@ impl Workspace {
             Loadable::Ready(rows) if rows.is_empty() => text::dim(theme)
                 .child("The local index recorded no version under this package name.")
                 .into_any_element(),
-            Loadable::Ready(rows) => Self::version_list(theme, rows, &current, unfurled, cx),
+            Loadable::Ready(rows) => self.version_list(theme, rows, &current, unfurled, cx),
         };
         self.folding(
             theme,
@@ -1300,6 +1417,7 @@ impl Workspace {
     }
 
     fn version_list(
+        &mut self,
         theme: &Theme,
         rows: &[Release],
         current: &str,
@@ -1312,17 +1430,41 @@ impl Workspace {
             rows.len().min(BUDGET)
         };
         let rest = rows.len().saturating_sub(shown);
+        let order = release_order(rows, None);
+        let rows: Arc<[Release]> = rows.to_owned().into();
+        let entity = cx.entity();
+        let theme = theme.clone();
+        let row_theme = theme.clone();
+        let current = current.to_owned();
+        let list = uniform_list("package-version-list", shown, move |range, _window, _cx| {
+            order[..shown]
+                .get(range)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|index| {
+                    rows.get(*index).map(|release| {
+                        version_row(
+                            &row_theme,
+                            "list",
+                            release,
+                            release.version() == current,
+                            &entity,
+                        )
+                    })
+                })
+                .collect()
+        })
+        .track_scroll(&self.package_version_scroll)
+        .h(px((shown.min(BUDGET).max(1) as f32 * 30.0).min(420.0)));
         div()
             .flex()
             .flex_col()
             .gap(px(1.0))
-            .children(rows.iter().take(shown).enumerate().map(|(at, release)| {
-                version_row(theme, "list", at, release, release.version() == current, cx)
-            }))
+            .child(list)
             .when(rest > 0, |list| {
                 list.child(
                     button::button(
-                        theme,
+                        &theme,
                         "package-versions-more",
                         &format!("Show {rest} more"),
                         button::Weight::Quiet,
@@ -1437,45 +1579,52 @@ fn section_head(
     note: Option<String>,
     folded: bool,
     cx: &mut Context<Workspace>,
-) -> gpui::Stateful<Div> {
-    div()
-        .id(ElementId::Name(SharedString::from(format!(
-            "package-head-{key}"
-        ))))
-        .flex()
-        .items_center()
-        .gap(space(Space::Snug))
-        .cursor_pointer()
-        .child(icon::sized(
-            theme,
-            if folded {
-                Icon::ChevronRight
-            } else {
-                Icon::ChevronDown
-            },
-            12.0,
-            Paint::TextFaint,
-        ))
-        .child(
-            text::heading(theme, TypeScale::Section)
-                .flex_none()
-                .child(title.to_owned()),
-        )
-        .when_some(note, |head, note| {
-            head.child(text::faint(theme).flex_none().child(note))
-        })
-        .when_some(provenance.tag(), |head, _| {
-            head.child(chart::sample_tag(theme))
-        })
+) -> impl IntoElement {
+    let label = title.to_owned();
+    let mut head = components::button_with_state(
+        theme,
+        format!("package-head-{key}"),
+        label.clone(),
+        button::Weight::Quiet,
+        false,
+        true,
+    )
+    .w_full()
+    .justify_start()
+    .selected(!folded)
+    .toggled(!folded)
+    .child(icon::sized(
+        theme,
+        if folded {
+            Icon::ChevronRight
+        } else {
+            Icon::ChevronDown
+        },
+        12.0,
+        Paint::TextFaint,
+    ));
+    if let Some(note) = note {
+        head = head.child(text::faint(theme).flex_none().child(note));
+    }
+    if provenance.tag().is_some() {
+        head = head.child(chart::sample_tag(theme));
+    }
+    head = head
         .child(
             div()
                 .flex_1()
                 .h(hairline())
                 .bg(theme.paint(Paint::Hairline)),
         )
+        .tooltip(if folded {
+            format!("Expand {label}")
+        } else {
+            format!("Collapse {label}")
+        })
         .on_click(cx.listener(move |this, _, _, cx| {
             this.toggle_fold(key, cx);
-        }))
+        }));
+    head
 }
 
 /// Returns the usage body from the registry's recorded series.
@@ -1531,170 +1680,100 @@ fn usage_body(theme: &Theme, dossier: &Dossier, downloads: &Downloads) -> AnyEle
 fn version_row(
     theme: &Theme,
     list: &str,
-    at: usize,
     release: &Release,
     current: bool,
-    cx: &mut Context<Workspace>,
+    workspace: &gpui::Entity<Workspace>,
 ) -> AnyElement {
     let opened = release.coordinate().to_owned();
     let withdrawn = release.standing() != ReleaseStanding::Published;
-    div()
-        .id(ElementId::Name(SharedString::from(format!(
-            "package-{list}-release-{at}"
-        ))))
-        .flex()
-        .items_center()
-        .gap(space(Space::Snug))
-        .px(space(Space::Snug))
-        .py(px(2.0))
-        .rounded(radius(Radius::Hair))
-        .when(current, |row| row.bg(theme.paint(Paint::GiltWash)))
-        .hover(|style| style.bg(theme.paint(Paint::Hover)))
-        .cursor_pointer()
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.open_package(opened.clone(), Target::Here, cx);
-        }))
-        .child(
-            text::single_line(
-                text::text_at(
-                    theme,
-                    TypeScale::Small,
-                    if withdrawn {
-                        Paint::TextFaint
-                    } else {
-                        Paint::Text
-                    },
-                )
-                .flex_none()
-                .w(px(96.0))
-                .font_family(theme.specimen())
-                .font_weight(if current {
-                    FontWeight::SEMIBOLD
-                } else {
-                    FontWeight::NORMAL
-                }),
-            )
-            .when(withdrawn, Styled::line_through)
-            .child(release.version().to_owned()),
-        )
-        .child(
-            text::faint(theme).flex_1().child(
-                release
-                    .published()
-                    .map_or_else(|| "date not recorded".to_owned(), Stamp::iso),
-            ),
-        )
-        .child(text::faint(theme).flex_none().child(release.size()))
-        .when(withdrawn, |row| {
-            row.child(mark(theme, release.standing().label(), Paint::Fault))
-        })
-        .when(current, |row| {
-            row.child(mark(theme, "current", Paint::Gilt))
-        })
-        .into_any_element()
-}
-
-/// Returns the one-word mark a release row ends with.
-fn mark(theme: &Theme, word: &'static str, role: Paint) -> Div {
-    div()
-        .flex_none()
-        .text_size(type_size(TypeScale::Micro))
-        .text_color(theme.paint(role))
-        .child(word)
+    let mut label = format!(
+        "{} · {} · {}",
+        release.version(),
+        release
+            .published()
+            .map_or_else(|| "date not recorded".to_owned(), Stamp::iso),
+        release.size()
+    );
+    if withdrawn {
+        label.push_str(" · ");
+        label.push_str(release.standing().label());
+    }
+    if current {
+        label.push_str(" · current");
+    }
+    components::button_with_state(
+        theme,
+        format!("package-{list}-release-{}", release.coordinate()),
+        label.clone(),
+        button::Weight::Quiet,
+        false,
+        true,
+    )
+    .w_full()
+    .justify_start()
+    .text_left()
+    .selected(current)
+    .tooltip(format!("Open package release {}", release.version()))
+    .on_click({
+        let workspace = workspace.clone();
+        move |_, _, cx| {
+            let _ = workspace.update(cx, |this, cx| {
+                this.open_package(opened.clone(), Target::Here, cx);
+            });
+        }
+    })
+    .into_any_element()
 }
 
 /// Returns one dependency row, which opens the package it names.
-fn dependency_row(
-    theme: &Theme,
-    at: usize,
-    row: &Dependency,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
+fn dependency_row(theme: &Theme, row: &Dependency, cx: &mut Context<Workspace>) -> AnyElement {
     let opened = row.resolved().to_owned();
-    package_row(
+    let role = row
+        .role()
+        .tag()
+        .map_or(String::new(), |tag| format!(" · {tag}"));
+    let label = format!("{} · {}{role}", row.name(), row.requirement());
+    components::button_with_state(
         theme,
-        format!("package-dependency-{at}"),
-        row.ecosystem(),
-        opened,
-        cx,
+        format!("package-dependency-{}", row.resolved()),
+        label.clone(),
+        button::Weight::Quiet,
+        false,
+        true,
     )
-    .child(
-        text::single_line(text::label(theme))
-            .flex_1()
-            .min_w(px(0.0))
-            .child(row.name().to_owned()),
-    )
-    .child(
-        text::faint(theme)
-            .flex_none()
-            .font_family(theme.specimen())
-            .child(row.requirement().to_owned()),
-    )
-    .when_some(row.role().tag(), |line, tag| {
-        line.child(chip::badge(theme, tag))
-    })
+    .w_full()
+    .justify_start()
+    .text_left()
+    .tooltip(format!("Open dependency {}", row.resolved()))
+    .on_click(cx.listener(move |this, _, _, cx| {
+        this.open_package(opened.clone(), Target::Here, cx);
+    }))
     .into_any_element()
 }
 
 /// Returns one dependent row, with its download weight when one is published.
-fn dependent_row(
-    theme: &Theme,
-    at: usize,
-    row: &Dependent,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
+fn dependent_row(theme: &Theme, row: &Dependent, cx: &mut Context<Workspace>) -> AnyElement {
     let opened = row.coordinate().to_owned();
-    package_row(
+    let downloads = row.downloads().map_or(String::new(), |count| {
+        format!(" · {}", dossier::tally_label(count))
+    });
+    let label = format!("{} · {}{downloads}", row.name(), row.version());
+    components::button_with_state(
         theme,
-        format!("package-dependent-{at}"),
-        row.ecosystem(),
-        opened,
-        cx,
+        format!("package-dependent-{}", row.coordinate()),
+        label,
+        button::Weight::Quiet,
+        false,
+        true,
     )
-    .child(
-        text::single_line(text::label(theme))
-            .flex_1()
-            .min_w(px(0.0))
-            .child(row.name().to_owned()),
-    )
-    .child(
-        text::faint(theme)
-            .flex_none()
-            .font_family(theme.specimen())
-            .child(row.version().to_owned()),
-    )
-    .when_some(row.downloads(), |line, count| {
-        line.child(
-            text::faint(theme)
-                .flex_none()
-                .child(dossier::tally_label(count)),
-        )
-    })
+    .w_full()
+    .justify_start()
+    .text_left()
+    .tooltip(format!("Open dependent {}", row.coordinate()))
+    .on_click(cx.listener(move |this, _, _, cx| {
+        this.open_package(opened.clone(), Target::Here, cx);
+    }))
     .into_any_element()
-}
-
-/// Returns the shell every row that names another package shares.
-fn package_row(
-    theme: &Theme,
-    id: String,
-    ecosystem: RegistryEcosystem,
-    opened: String,
-    cx: &mut Context<Workspace>,
-) -> gpui::Stateful<Div> {
-    div()
-        .id(ElementId::Name(SharedString::from(id)))
-        .flex()
-        .items_center()
-        .gap(space(Space::Snug))
-        .px(space(Space::Snug))
-        .py(px(2.0))
-        .rounded(radius(Radius::Hair))
-        .hover(|style| style.bg(theme.paint(Paint::Hover)))
-        .cursor_pointer()
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.open_package(opened.clone(), Target::Here, cx);
-        }))
-        .children(super::browse::ecosystem_logo(theme, ecosystem, 13.0))
 }
 
 /// Returns the owner chips: a handle, and what that handle does.
@@ -1799,6 +1878,104 @@ fn picker_key(coordinate: &str) -> String {
     format!("package-picker-{coordinate}")
 }
 
+/// Returns a stable semantic version order without changing the feed's
+/// immutable dossier. Numeric components sort numerically, prereleases sort
+/// before their stable release, and opaque registry versions retain a stable
+/// lexical fallback. This handles Cargo/npm/PyPI/NuGet/Go-style spellings
+/// without pretending Maven/Conan versions are all semver.
+fn release_order(rows: &[Release], _ecosystem: Option<RegistryEcosystem>) -> Vec<usize> {
+    let mut order: Vec<_> = (0..rows.len()).collect();
+    order.sort_by(|left, right| {
+        compare_versions(rows[*right].version(), rows[*left].version())
+            .then_with(|| rows[*right].coordinate().cmp(rows[*left].coordinate()))
+    });
+    order
+}
+
+fn compare_versions(left: &str, right: &str) -> Ordering {
+    let left_key = VersionKey::parse(left);
+    let right_key = VersionKey::parse(right);
+    compare_numeric_components(&left_key.numbers, &right_key.numbers)
+        .then_with(|| match (&left_key.pre, &right_key.pre) {
+            (None, None) => Ordering::Equal,
+            // A release without a prerelease tag is newer than the same core
+            // release with one. `Option`'s derived ordering is the opposite.
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(left), Some(right)) => left.cmp(right),
+        })
+        .then_with(|| left.cmp(right))
+}
+
+fn compare_numeric_components(left: &[u64], right: &[u64]) -> Ordering {
+    let width = left.len().max(right.len());
+    (0..width)
+        .map(|index| {
+            left.get(index)
+                .copied()
+                .unwrap_or_default()
+                .cmp(&right.get(index).copied().unwrap_or_default())
+        })
+        .find(|ordering| *ordering != Ordering::Equal)
+        .unwrap_or(Ordering::Equal)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VersionKey {
+    numbers: Vec<u64>,
+    pre: Option<Vec<PrePart>>,
+    raw: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum PrePart {
+    Number(u64),
+    Text(String),
+}
+
+impl VersionKey {
+    fn parse(raw: &str) -> Self {
+        let trimmed = raw.trim().trim_start_matches(['v', 'V']);
+        let (core, pre) = trimmed
+            .split_once('-')
+            .map_or((trimmed, None), |(core, pre)| {
+                let parts = pre
+                    .split('.')
+                    .map(|part| {
+                        part.parse::<u64>()
+                            .map_or_else(|_| PrePart::Text(part.to_owned()), PrePart::Number)
+                    })
+                    .collect();
+                (core, Some(parts))
+            });
+        let numbers = core
+            .split('.')
+            .map_while(|part| part.parse::<u64>().ok())
+            .collect();
+        Self {
+            numbers,
+            pre,
+            raw: raw.to_owned(),
+        }
+    }
+}
+
+fn version_coverage_label(dossier: &Dossier) -> &'static str {
+    match dossier.releases().state() {
+        Loadable::Idle => "Version history has not been requested.",
+        Loadable::Loading => "Loading recorded releases…",
+        Loadable::Faulted(_) => "Version history is unavailable from the local service.",
+        Loadable::Ready(rows) if rows.is_empty() => {
+            if dossier.releases().provenance().is_not_recorded() {
+                "Version history is not recorded by the configured registry feed."
+            } else {
+                "The local index recorded no releases for this package."
+            }
+        }
+        Loadable::Ready(_) => "No version rows are currently visible.",
+    }
+}
+
 /// Returns the reserved geometry a section holds while its read is in flight.
 fn reserved_lines(theme: &Theme) -> Div {
     div()
@@ -1813,7 +1990,9 @@ fn reserved_lines(theme: &Theme) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::{InstallCapability, PACKAGE_ROUTES, PACKAGE_SECTIONS, install_command};
+    use super::{
+        InstallCapability, PACKAGE_ROUTES, PACKAGE_SECTIONS, compare_versions, install_command,
+    };
     use crate::store::dossier::PackageRoute;
     use backend_library::RegistryEcosystem;
 
@@ -1868,5 +2047,25 @@ mod tests {
         assert_eq!(PackageRoute::Source.title(), "Source");
         assert_eq!(PackageRoute::Code.title(), "Code");
         assert_eq!(PackageRoute::Search.title(), "Search");
+    }
+
+    #[test]
+    fn release_order_is_semantic_and_prereleases_precede_stable() {
+        assert_eq!(
+            compare_versions("1.10.0", "1.9.99"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_versions("v2.0.0", "1.99.99"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_versions("1.0.0", "1.0.0-alpha.1"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_versions("1.0.0-alpha.2", "1.0.0-alpha.10"),
+            std::cmp::Ordering::Less
+        );
     }
 }

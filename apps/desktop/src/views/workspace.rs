@@ -9,9 +9,9 @@
 //! from the store it observes.
 
 use super::actions::{
-    Accept, AddProject, CloseTab, Complete, CopyIdentity, CopyKey, Dismiss, FocusOmnibar, GoBack,
-    GoForward, GoHome, GraphNext, GraphPrevious, GrowInterface, MoveDown, MoveUp, NextTab,
-    OpenEditor, OpenPalette, FindInSource, OpenSettings, OpenSource, PageDown, PageUp,
+    Accept, AddProject, CloseTab, Complete, CopyIdentity, CopyKey, Dismiss, FindInSource,
+    FocusOmnibar, GoBack, GoForward, GoHome, GraphNext, GraphPrevious, GrowInterface, MoveDown,
+    MoveUp, NextTab, OpenEditor, OpenPalette, OpenSettings, OpenSource, PageDown, PageUp,
     PreviousSourceMatch, PreviousTab, Reload, ResetInterface, SelectFirst, SelectLast,
     ShrinkInterface, Tab1, Tab2, Tab3, Tab4, Tab5, Tab6, Tab7, Tab8, Tab9, ToggleAppearance,
     ToggleContext, ToggleLibrary, ToggleMotion, WINDOW_CONTEXT, tab_index,
@@ -20,7 +20,7 @@ use crate::host::lease::HostMode;
 use crate::reducer::model::Model;
 use crate::store::catalog::{Ask, CatalogStore};
 use crate::store::document::{
-    DocumentStore, ReaderEntry, ReaderEntryFault, ReaderRoute, Subject, Target,
+    DocumentStore, ReaderEntry, ReaderEntryFault, ReaderIntent, ReaderRoute, Subject, Target,
 };
 use crate::store::events::{CatalogEvent, DocumentEvent};
 use crate::store::index::IndexStore;
@@ -131,6 +131,10 @@ pub(crate) struct Workspace {
     pub(super) source_query_cache: Option<super::source::SourceQueryCache>,
     pub(super) source_scroll: gpui::UniformListScrollHandle,
     pub(super) source_active_match: usize,
+    /// Shared virtualized release list scroll position for package pages.
+    /// Package routes are mutually exclusive, so one handle is sufficient and
+    /// avoids allocating a scroll model for every package tab.
+    pub(super) package_version_scroll: gpui::UniformListScrollHandle,
     pub(super) context_cache: Option<super::context::ContextCache>,
     folded: Vec<String>,
     unfurled: Vec<String>,
@@ -285,6 +289,7 @@ impl Workspace {
             source_query_cache: None,
             source_scroll: gpui::UniformListScrollHandle::new(),
             source_active_match: 0,
+            package_version_scroll: gpui::UniformListScrollHandle::new(),
             context_cache: None,
             folded: Vec::new(),
             unfurled: Vec::new(),
@@ -650,10 +655,14 @@ impl Workspace {
                 self.show_harness_settings(crate::store::shell::SettingsPage::Legend, cx)
             }
             Some(OverlayState::SettingsIndex | OverlayState::SettingsRegistry) => {
-                return Err("live Workspace has no registered indexing/registry settings route".to_owned());
+                return Err(
+                    "live Workspace has no registered indexing/registry settings route".to_owned(),
+                );
             }
             Some(OverlayState::Fault | OverlayState::Notice) => {
-                return Err("failure and notice overlays require an admitted live condition".to_owned());
+                return Err(
+                    "failure and notice overlays require an admitted live condition".to_owned(),
+                );
             }
             Some(unsupported) => {
                 return Err(format!(
@@ -823,7 +832,9 @@ impl Workspace {
             | Some(OverlayState::SettingsDiagnostics)
             | Some(OverlayState::SettingsLegend) => "settings",
             Some(OverlayState::Fault | OverlayState::Notice) => {
-                return Err("failure and notice overlays require an admitted live condition".to_owned());
+                return Err(
+                    "failure and notice overlays require an admitted live condition".to_owned(),
+                );
             }
             Some(OverlayState::SettingsIndex | OverlayState::SettingsRegistry) => {
                 return Err("indexing/registry settings routes are not registered".to_owned());
@@ -953,11 +964,18 @@ impl Workspace {
         let Some(symbol) = self.pending_graph_source else {
             return;
         };
-        let page = self.document.read(cx).tab().and_then(|tab| match tab.content() {
-            super::super::store::document::Content::Page(page)
-                if page.identity().key() == IdentityKey::Symbol(symbol) => Some(page.clone()),
-            _ => None,
-        });
+        let page = self
+            .document
+            .read(cx)
+            .tab()
+            .and_then(|tab| match tab.content() {
+                super::super::store::document::Content::Page(page)
+                    if page.identity().key() == IdentityKey::Symbol(symbol) =>
+                {
+                    Some(page.clone())
+                }
+                _ => None,
+            });
         let Some(page) = page else {
             return;
         };
@@ -1049,6 +1067,27 @@ impl Workspace {
             }
         }
         route
+    }
+
+    /// Opens a package capability through the same revision-pinned reader
+    /// handoff used by every other internal navigation surface. Package pages
+    /// never manufacture a docs/source URL: the document and index stores
+    /// either resolve this intent to an admitted local projection or return a
+    /// typed coverage fault to the caller.
+    pub(crate) fn open_package_route(
+        &mut self,
+        coordinate: String,
+        intent: ReaderIntent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<ReaderRoute, ReaderEntryFault> {
+        let entry = self
+            .document
+            .update(cx, |document, cx| {
+                document.reader_entry(&coordinate, intent, cx)
+            })
+            .ok_or(ReaderEntryFault::NotIndexed)?;
+        self.open_reader_entry(&entry, Target::Here, window, cx)
     }
 
     /// Records one subject in the reader's recents.
@@ -1694,6 +1733,20 @@ impl Workspace {
             self.set_field(String::new(), cx);
             self.dismiss_sheet(cx);
             self.restore_focus(window, cx);
+            return;
+        }
+        // Package disclosures are local navigation surfaces rather than
+        // global transients. Escape still needs to close the topmost one so a
+        // keyboard reader can leave a release picker or security panel without
+        // losing the package page/history underneath it.
+        if let Some(key) = self
+            .unfurled
+            .iter()
+            .find(|key| key.starts_with("package-picker-") || key.starts_with("package-security"))
+            .cloned()
+        {
+            self.unfurled.retain(|held| held != &key);
+            cx.notify();
         }
     }
 
