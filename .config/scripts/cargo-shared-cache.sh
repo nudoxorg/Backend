@@ -88,6 +88,7 @@ fi
 start="$(( $(printf '%s' "$workspace_root" | cksum | cut -d ' ' -f 1) % slot_count ))"
 selected=""
 selected_lock=""
+selected_is_overflow=false
 offset=0
 while [ "$offset" -lt "$slot_count" ]; do
   slot="$(( (start + offset) % slot_count ))"
@@ -128,6 +129,7 @@ if [ -z "$selected" ]; then
     # deterministic overflow path. This rare path remains invocation-local.
     selected="$cache_root/build/overflow-$lane_key-$$"
   fi
+  selected_is_overflow=true
   if [ "${NUDOX_CARGO_CACHE_VERBOSE:-0}" = 1 ]; then
     echo "nudox cargo: warm slots busy; using lock-free overflow $selected" >&2
   fi
@@ -140,6 +142,13 @@ release_slot() {
   if [ -n "$selected_lock" ] && [ "$(cat "$selected_lock/pid" 2>/dev/null || true)" = "$$" ]; then
     rm -f "$selected_lock/pid"
     rmdir "$selected_lock" 2>/dev/null || true
+  fi
+  # Overflow lanes preserve parallelism when every bounded warm lane is busy,
+  # but retaining one complete build graph per worktree would make disk use
+  # unbounded. They are invocation-local scratch and are removed after Cargo;
+  # the four leased warm lanes and sccache retain the reusable work.
+  if $selected_is_overflow && [ -n "$selected" ] && [ -d "$selected" ]; then
+    find "$selected" -depth -delete 2>/dev/null || true
   fi
 }
 trap release_slot EXIT HUP INT TERM
