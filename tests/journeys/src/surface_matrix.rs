@@ -198,7 +198,7 @@ pub fn run_bounded(mut command: ProcessCommand, label: &str, input: Option<Vec<u
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < end => thread::yield_now(),
+            Ok(None) if Instant::now() < end => thread::sleep(Duration::from_millis(10)),
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -372,7 +372,7 @@ pub fn fresh_ingest(endpoint: &Path, project: &Path) -> backend_library::HealthR
             return report;
         }
         assert!(Instant::now() < end, "fresh ingest never published rows");
-        thread::yield_now();
+        thread::sleep(Duration::from_millis(20));
     }
 }
 
