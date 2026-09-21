@@ -5,10 +5,10 @@ use crate::{
     Viewport,
 };
 use gpui::{
-    px, size, AnyWindowHandle, App, AssetSource, Capslock, ClipboardItem, Entity,
-    HeadlessAppContext, InputEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
-    MouseUpEvent, NavigationDirection, PlatformTextSystem, Render, ScrollDelta, ScrollWheelEvent,
-    TouchPhase, Window,
+    AnyWindowHandle, App, AssetSource, Capslock, ClipboardItem, Entity, HeadlessAppContext,
+    InputEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent,
+    NavigationDirection, PlatformTextSystem, Render, ScrollDelta, ScrollWheelEvent, TouchPhase,
+    Window, px, size,
 };
 use std::sync::Arc;
 
@@ -230,7 +230,7 @@ where
         context
             .update_window(window, |_, window, cx| frame_hook(frame, window, cx))
             .map_err(|error| CaptureError::Gpui(error.to_string()))??;
-        let image = draw_and_capture(&mut context, window)?;
+        let image = normalize_capture_image(draw_and_capture(&mut context, window)?, viewport)?;
         records.push(CaptureRecord {
             label: frame.label.clone(),
             time_ms: frame.time_ms,
@@ -541,4 +541,78 @@ fn draw_and_capture(
         })
         .map_err(|error| CaptureError::Gpui(error.to_string()))?
         .map_err(|error| CaptureError::Gpui(error.to_string()))
+}
+
+/// Normalizes the renderer's device surface to the requested capture scale.
+///
+/// GPUI's deterministic `TestPlatform` currently renders through a fixed 2x
+/// device surface. At a requested 1x scale the scene occupies the logical
+/// viewport in the upper-left and the remainder of that surface is unused.
+/// Cropping that unused backing area preserves the logical scene and produces
+/// the requested physical artifact dimensions. A smaller renderer surface is
+/// rejected rather than upscaled: upscaling a clipped scene would make the
+/// artifact appear complete while losing the logical layout contract.
+fn normalize_capture_image(
+    image: image::RgbaImage,
+    viewport: Viewport,
+) -> Result<image::RgbaImage, CaptureError> {
+    let expected = viewport.physical_size();
+    if image.width() < expected.0 || image.height() < expected.1 {
+        return Err(CaptureError::Gpui(format!(
+            "renderer surface {}x{} is smaller than requested {}x{} for {}",
+            image.width(),
+            image.height(),
+            expected.0,
+            expected.1,
+            viewport.suffix(),
+        )));
+    }
+    if (image.width(), image.height()) == expected {
+        return Ok(image);
+    }
+    Ok(image::imageops::crop_imm(&image, 0, 0, expected.0, expected.1).to_image())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::Rgba;
+
+    #[test]
+    fn one_x_capture_crops_the_fixed_retina_backing_gutter() {
+        let viewport = Viewport::new(4, 3, 1).expect("viewport");
+        let mut image = image::RgbaImage::from_pixel(8, 6, Rgba([0, 0, 0, 255]));
+        for y in 0..3 {
+            for x in 0..4 {
+                image.put_pixel(x, y, Rgba([40, 80, 120, 255]));
+            }
+        }
+        let normalized = normalize_capture_image(image, viewport).expect("normalized image");
+        assert_eq!(normalized.dimensions(), (4, 3));
+        assert!(
+            normalized
+                .pixels()
+                .all(|pixel| *pixel == Rgba([40, 80, 120, 255]))
+        );
+    }
+
+    #[test]
+    fn two_x_capture_keeps_the_full_physical_scene() {
+        let viewport = Viewport::new(4, 3, 2).expect("viewport");
+        let image = image::RgbaImage::from_pixel(8, 6, Rgba([40, 80, 120, 255]));
+        let normalized = normalize_capture_image(image, viewport).expect("normalized image");
+        assert_eq!(normalized.dimensions(), (8, 6));
+        assert!(
+            normalized
+                .pixels()
+                .all(|pixel| *pixel == Rgba([40, 80, 120, 255]))
+        );
+    }
+
+    #[test]
+    fn a_clipped_renderer_surface_fails_closed() {
+        let viewport = Viewport::new(4, 3, 2).expect("viewport");
+        let image = image::RgbaImage::new(4, 3);
+        assert!(normalize_capture_image(image, viewport).is_err());
+    }
 }

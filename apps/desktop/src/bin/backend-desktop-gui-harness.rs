@@ -7,12 +7,12 @@
 //! no fixture image is generated to hide an unavailable live capability.
 
 use backend_desktop::{
-    capture_live_workspace_journey, capture_live_workspace_with_semantics,
-    production_action_inventory, LiveCapture,
+    LiveCapture, capture_live_workspace_journey, capture_live_workspace_with_semantics,
+    production_action_inventory,
 };
 use backend_gui_harness::{
-    animation_frames, verify_run, ActionDescriptor, CaptureConfig, CaptureSession, FocusState,
-    GuiState, InputStep, OverlayState, PageState, Viewport,
+    ActionDescriptor, CaptureConfig, CaptureSession, FocusState, GuiState, InputStep, OverlayState,
+    PageState, Viewport, animation_frames, verify_run,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -78,6 +78,7 @@ struct JourneyObservation {
     semantics: Option<backend_desktop::WorkspaceSemanticProbe>,
 }
 
+#[derive(Debug)]
 struct JourneySpec {
     id: &'static str,
     from: GuiState,
@@ -119,11 +120,6 @@ fn capture_command(args: &[String]) -> Result<(), String> {
         .unwrap_or_else(|| PathBuf::from(".artifacts/gui-harness"));
     let state_filter = option(args, "--state");
     let journey_filter = option(args, "--journey");
-    if let Some(filter) = journey_filter.as_deref()
-        && !journey_catalog().iter().any(|journey| journey.id == filter)
-    {
-        return Err(format!("unknown journey {filter:?}"));
-    }
     let viewport_filter = option(args, "--viewport")
         .map(|value| parse_viewport(&value))
         .transpose()?;
@@ -138,37 +134,14 @@ fn capture_command(args: &[String]) -> Result<(), String> {
             }
         })
         .transpose()?;
-    if let (Some(viewport), Some(scale)) = (viewport_filter, scale_filter)
-        && viewport.scale != scale
-    {
-        return Err(format!(
-            "viewport scale {} conflicts with --scale {scale}",
-            viewport.scale
-        ));
-    }
     let baseline = option(args, "--baseline").map(PathBuf::from);
     let smoke = args.iter().any(|arg| arg == "--smoke");
 
+    let (states, journeys) =
+        select_capture_targets(state_filter.as_deref(), journey_filter.as_deref(), smoke)?;
+
     std::fs::create_dir_all(&output).map_err(|error| format!("create output: {error}"))?;
-    let mut states = GuiState::catalog();
-    if smoke {
-        states.clear();
-    }
-    if let Some(filter) = state_filter.as_deref() {
-        states.retain(|state| state.id == filter);
-        if states.is_empty() {
-            return Err(format!("unknown state {filter:?}"));
-        }
-    }
-    let scales: Vec<u8> = viewport_filter.map_or_else(
-        || {
-            scale_filter.map_or_else(
-                || if smoke { vec![1] } else { vec![1, 2] },
-                |scale| vec![scale],
-            )
-        },
-        |viewport| vec![viewport.scale],
-    );
+    let scales = resolve_scales(viewport_filter, scale_filter, smoke)?;
     let registered_actions = production_action_inventory();
     if registered_actions.is_empty() {
         return Err("production window registered no actions".to_owned());
@@ -185,16 +158,17 @@ fn capture_command(args: &[String]) -> Result<(), String> {
     };
 
     for scale in scales {
-        let configs = viewport_filter.map_or_else(
-            || CaptureConfig::required_at_scale(scale),
-            |viewport| Ok(vec![CaptureConfig::deterministic(viewport)]),
-        )
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|config| {
-            !smoke || (config.viewport.width, config.viewport.height) == (640, 480)
-        })
-        .collect::<Vec<_>>();
+        let configs = viewport_filter
+            .map_or_else(
+                || CaptureConfig::required_at_scale(scale),
+                |viewport| Ok(vec![CaptureConfig::deterministic(viewport)]),
+            )
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|config| {
+                !smoke || (config.viewport.width, config.viewport.height) == (640, 480)
+            })
+            .collect::<Vec<_>>();
         for config in configs {
             report.viewports.push(config.viewport.suffix());
             let viewport_root = output.join(config.viewport.suffix());
@@ -229,11 +203,7 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                     }),
                 }
             }
-            for journey in journey_catalog().into_iter().filter(|journey| {
-                journey_filter
-                    .as_deref()
-                    .is_none_or(|filter| filter == journey.id)
-            }) {
+            for journey in &journeys {
                 report.attempted_captures += 1;
                 let journey_config = config_for_journey(&config, journey.id);
                 let mut journey_session =
@@ -267,11 +237,9 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                     }
                 };
                 let final_semantics = live.semantics.last().cloned();
-                let passed = final_semantics
-                    .as_ref()
-                    .is_some_and(|probe| {
-                        journey_matches(probe, &journey.to, journey.locale, journey.direction)
-                    });
+                let passed = final_semantics.as_ref().is_some_and(|probe| {
+                    journey_matches(probe, &journey.to, journey.locale, journey.direction)
+                });
                 let error = (!passed).then(|| "journey endpoint was not reached".to_owned());
                 live.capture.state.id = format!("journey--{}", journey.id);
                 let frame_count = live.capture.frames.len();
@@ -614,6 +582,69 @@ fn journey_catalog() -> Vec<JourneySpec> {
     ]
 }
 
+fn select_capture_targets(
+    state_filter: Option<&str>,
+    journey_filter: Option<&str>,
+    smoke: bool,
+) -> Result<(Vec<GuiState>, Vec<JourneySpec>), String> {
+    if state_filter.is_some() && journey_filter.is_some() {
+        return Err("--state and --journey cannot be combined".to_owned());
+    }
+
+    let mut states = GuiState::catalog();
+    if smoke && state_filter.is_none() {
+        states.clear();
+    }
+    if let Some(filter) = state_filter {
+        states.retain(|state| state.id == filter);
+        if states.is_empty() {
+            return Err(format!("unknown state {filter:?}"));
+        }
+    }
+
+    let mut journeys = journey_catalog();
+    if let Some(filter) = journey_filter {
+        journeys.retain(|journey| journey.id == filter);
+        if journeys.is_empty() {
+            return Err(format!("unknown journey {filter:?}"));
+        }
+    }
+
+    // A state filter selects exactly that state. A journey filter selects
+    // exactly that journey. With neither filter the complete catalog remains
+    // the default, preserving full matrix coverage.
+    if state_filter.is_some() {
+        journeys.clear();
+    } else if journey_filter.is_some() {
+        states.clear();
+    }
+    Ok((states, journeys))
+}
+
+fn resolve_scales(
+    viewport_filter: Option<Viewport>,
+    scale_filter: Option<u8>,
+    smoke: bool,
+) -> Result<Vec<u8>, String> {
+    if let (Some(viewport), Some(scale)) = (viewport_filter, scale_filter)
+        && viewport.scale != scale
+    {
+        return Err(format!(
+            "viewport scale {} conflicts with --scale {scale}",
+            viewport.scale
+        ));
+    }
+    Ok(viewport_filter.map_or_else(
+        || {
+            scale_filter.map_or_else(
+                || if smoke { vec![1] } else { vec![1, 2] },
+                |scale| vec![scale],
+            )
+        },
+        |viewport| vec![viewport.scale],
+    ))
+}
+
 fn config_for_journey(base: &CaptureConfig, id: &str) -> CaptureConfig {
     let mut config = base.clone();
     if matches!(id, "omnibar-ime-composition" | "rtl-reduced-motion") {
@@ -688,4 +719,71 @@ fn print_help() {
     println!(
         "backend-desktop-gui-harness\n\nCommands:\n  capture [--output DIR] [--state ID] [--scale 1|2] [--viewport WIDTHxHEIGHT@SCALE] [--baseline DIR] [--smoke]\n\nThe capture command starts the live desktop host, renders every catalog state at every required viewport and scale, writes PNG frame sequences, manifests, semantic probes, and run-report.json, then exits nonzero when any live state cannot be reached or differs from baseline. --smoke runs only the production-input journey catalog at 640x480@1x for a fast live-index check."
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_filter_captures_only_the_requested_state() {
+        let (states, journeys) =
+            select_capture_targets(Some("browse"), None, false).expect("state selection");
+        assert_eq!(
+            states
+                .iter()
+                .map(|state| state.id.as_str())
+                .collect::<Vec<_>>(),
+            ["browse"]
+        );
+        assert!(journeys.is_empty());
+    }
+
+    #[test]
+    fn journey_filter_captures_only_the_requested_journey() {
+        let (states, journeys) = select_capture_targets(None, Some("palette-open-dismiss"), false)
+            .expect("journey selection");
+        assert!(states.is_empty());
+        assert_eq!(
+            journeys
+                .iter()
+                .map(|journey| journey.id)
+                .collect::<Vec<_>>(),
+            ["palette-open-dismiss"]
+        );
+    }
+
+    #[test]
+    fn no_filter_keeps_the_full_state_and_journey_catalogs() {
+        let (states, journeys) = select_capture_targets(None, None, false).expect("catalog");
+        assert_eq!(states.len(), GuiState::catalog().len());
+        assert_eq!(journeys.len(), journey_catalog().len());
+    }
+
+    #[test]
+    fn state_and_journey_filters_are_rejected_together() {
+        let error = select_capture_targets(Some("browse"), Some("palette-open-dismiss"), false)
+            .expect_err("conflicting filters");
+        assert!(error.contains("cannot be combined"));
+    }
+
+    #[test]
+    fn viewport_scale_conflicts_are_rejected() {
+        let viewport = Viewport::new(1440, 1000, 2).expect("viewport");
+        let error = resolve_scales(Some(viewport), Some(1), false).expect_err("scale conflict");
+        assert!(error.contains("conflicts"));
+    }
+
+    #[test]
+    fn arbitrary_viewport_uses_its_requested_scale_once() {
+        let viewport = Viewport::new(1440, 1000, 1).expect("viewport");
+        assert_eq!(
+            resolve_scales(Some(viewport), None, false).expect("scale"),
+            [1]
+        );
+        assert_eq!(
+            resolve_scales(Some(viewport), Some(1), false).expect("scale"),
+            [1]
+        );
+    }
 }

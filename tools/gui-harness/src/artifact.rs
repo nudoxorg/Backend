@@ -128,6 +128,7 @@ pub fn verify_run(root: &Path) -> Result<VerificationReport, ArtifactError> {
         let bytes = std::fs::read(&manifest_path)?;
         let manifest: CaptureManifest = serde_json::from_slice(&bytes)?;
         report.manifests += 1;
+        let expected_size = manifest.config.viewport.physical_size();
         // Frame paths in a manifest are relative to the capture/session root,
         // while manifests live in its `manifests/` directory.
         let base = manifest_path
@@ -146,6 +147,8 @@ pub fn verify_run(root: &Path) -> Result<VerificationReport, ArtifactError> {
             report.frames += 1;
             if hash_bytes(&encoded) != frame.sha256
                 || image.dimensions() != (frame.width, frame.height)
+                || image.dimensions() != expected_size
+                || (frame.width, frame.height) != expected_size
                 || image.pixels().all(|pixel| pixel[3] == 0)
             {
                 report.failures.push(relative);

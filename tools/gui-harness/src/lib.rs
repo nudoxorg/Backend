@@ -167,18 +167,33 @@ impl Viewport {
 
     /// A viewport with a validated positive scale.
     pub fn new(width: u32, height: u32, scale: u8) -> Result<Self, CaptureError> {
-        if width == 0 || height == 0 || !matches!(scale, 1 | 2) {
+        let scale = u32::from(scale);
+        if width == 0
+            || height == 0
+            || !matches!(scale, 1 | 2)
+            || width.checked_mul(scale).is_none()
+            || height.checked_mul(scale).is_none()
+        {
             return Err(CaptureError::InvalidViewport {
                 width,
                 height,
-                scale,
+                scale: scale as u8,
             });
         }
         Ok(Self {
             width,
             height,
-            scale,
+            scale: scale as u8,
         })
+    }
+
+    /// Returns the requested image size in physical pixels.
+    #[must_use]
+    pub fn physical_size(self) -> (u32, u32) {
+        (
+            self.width * u32::from(self.scale),
+            self.height * u32::from(self.scale),
+        )
     }
 
     /// Stable artifact suffix.
@@ -395,7 +410,19 @@ impl CaptureSession {
         script_id: Option<&str>,
     ) -> Result<CaptureManifest, CaptureError> {
         let mut frames = Vec::with_capacity(capture.frames.len());
+        let expected_size = self.config.viewport.physical_size();
         for record in &mut capture.frames {
+            if (record.image.width(), record.image.height()) != expected_size {
+                return Err(CaptureError::InvalidConfig(format!(
+                    "capture frame {} has physical size {}x{}, expected {}x{} for {}",
+                    record.label,
+                    record.image.width(),
+                    record.image.height(),
+                    expected_size.0,
+                    expected_size.1,
+                    self.config.viewport.suffix(),
+                )));
+            }
             let baseline = self.baseline_path(&capture.state.id, &record.label);
             if let Some(path) = baseline.as_deref().filter(|path| path.is_file()) {
                 let image = image::open(path)?.into_rgba8();
@@ -545,5 +572,26 @@ mod tests {
             ]
         );
         assert_eq!(animation_frames(&config, true).len(), 1);
+    }
+
+    #[test]
+    fn physical_size_tracks_logical_viewport_and_requested_scale() {
+        assert_eq!(
+            Viewport::new(1440, 1000, 1)
+                .expect("viewport")
+                .physical_size(),
+            (1440, 1000)
+        );
+        assert_eq!(
+            Viewport::new(1440, 1000, 2)
+                .expect("viewport")
+                .physical_size(),
+            (2880, 2000)
+        );
+    }
+
+    #[test]
+    fn physical_size_rejects_overflowing_backing_dimensions() {
+        assert!(Viewport::new(u32::MAX, 1, 2).is_err());
     }
 }
