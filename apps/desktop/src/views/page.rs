@@ -1032,7 +1032,7 @@ impl Workspace {
                         button::Weight::Quiet
                     },
                 )
-                .aria_label(format!("Toggle {} relation edges", kind.label()))
+                .accessibility_label(format!("Toggle {} relation edges", kind.label()))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.graph.toggle_filter(kind);
                     cx.notify();
@@ -1264,7 +1264,7 @@ impl Workspace {
                         "editor",
                         button::Weight::Quiet,
                     )
-                    .aria_label(format!("Open {} in external editor", node.label))
+                    .accessibility_label(format!("Open {} in external editor", node.label))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.open_in_editor(&path, line, cx);
                     })),
