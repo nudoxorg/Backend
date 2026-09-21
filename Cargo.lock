@@ -863,6 +863,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "backend-client",
+ "backend-gui-harness",
  "backend-library",
  "backend-local-service",
  "backend-present",
@@ -1132,6 +1133,19 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.20",
  "tree-sitter-typescript",
+]
+
+[[package]]
+name = "backend-gui-harness"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui_platform",
+ "image",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

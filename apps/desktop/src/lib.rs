@@ -27,6 +27,8 @@ mod views;
 
 #[cfg(all(unix, feature = "preview"))]
 mod preview;
+#[cfg(all(unix, feature = "visual-harness"))]
+mod harness;
 
 #[cfg(test)]
 mod tests;
@@ -53,6 +55,8 @@ pub use transport::subscription::{
     CertifiedSubscriptionTransport, LocalEngine, SubscriptionRequest, SubscriptionTransport,
     snapshot_page_from_bytes, snapshot_page_from_value,
 };
+#[cfg(all(unix, feature = "visual-harness"))]
+pub use harness::capture_live_workspace;
 #[cfg(unix)]
 pub use transport::diff::diff_endpoint;
 #[cfg(unix)]
