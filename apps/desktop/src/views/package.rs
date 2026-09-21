@@ -68,7 +68,7 @@ fn package_tab(
     label: &'static str,
     fold_key: &'static str,
     cx: &mut Context<Workspace>,
-) -> gpui::Stateful<Div> {
+) -> impl IntoElement {
     button::button(theme, id, label, button::Weight::Quiet)
         .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(fold_key, cx)))
 }
@@ -79,7 +79,7 @@ fn package_route_tab(
     label: &'static str,
     route: &'static str,
     cx: &mut Context<Workspace>,
-) -> gpui::Stateful<Div> {
+) -> impl IntoElement {
     button::button(theme, id, label, button::Weight::Quiet)
         .on_click(cx.listener(move |this, _, _, cx| this.toggle_unfurl(route, cx)))
 }

@@ -371,8 +371,10 @@ mod tests {
             let focus = palette.paint(Paint::Focus);
             let text = palette.paint(Paint::Text);
             assert_eq!(focus.alpha, 1.0);
-            assert!((focus.color.hue.into_degrees() - text.color.hue.into_degrees()).abs() > 0.01
-                || (focus.color.lightness - text.color.lightness).abs() > 0.2);
+            assert!(
+                (focus.color.hue.into_degrees() - text.color.hue.into_degrees()).abs() > 0.01
+                    || (focus.color.lightness - text.color.lightness).abs() > 0.2
+            );
         }
     }
 }

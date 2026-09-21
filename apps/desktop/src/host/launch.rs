@@ -99,7 +99,7 @@ fn run(opened: Opened) {
                 return;
             }
             let options = window_options(cx);
-            let opened = cx.open_window(options, move |_window, cx| {
+            let opened = cx.open_window(options, move |window, cx| {
                 cx.new(|cx| {
                     Workspace::new(
                         crate::views::workspace::Bootstrap {
@@ -112,6 +112,7 @@ fn run(opened: Opened) {
                             transport,
                             prefs,
                         },
+                        window,
                         cx,
                     )
                 })

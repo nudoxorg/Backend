@@ -6,7 +6,7 @@
 //! The spacing scale is a 4px grid at the default 16px root, the type scale is
 //! a modular ladder, and both are closed enums so no view can invent a value.
 
-use gpui::{px, rems, Pixels, Rems};
+use gpui::{Pixels, Rems, px, rems};
 
 /// The amount of space a control gives its label and pointer target.
 ///
@@ -272,7 +272,7 @@ impl Chrome {
 
 #[cfg(test)]
 mod tests {
-    use super::{space, space_at, Density, InterfaceSize, Space};
+    use super::{Density, InterfaceSize, Space, space, space_at};
 
     #[test]
     fn compact_density_preserves_the_reference_spacing_scale() {

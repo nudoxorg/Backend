@@ -28,16 +28,15 @@ use crate::store::prefs::EditorScheme;
 use crate::store::shell::SettingsPage;
 use crate::theme::Theme;
 use crate::theme::palette::{Appearance, Paint};
-use crate::theme::tokens::{
-    InterfaceSize, Radius, Space, TypeScale, hairline, radius, space, type_size,
-};
+use crate::theme::tokens::{InterfaceSize, Space, TypeScale, space, type_size};
 use crate::ui::icon::{self, Icon};
-use crate::ui::{button, chip, glyph, surface, text};
+use crate::ui::{button, chip, components, glyph, surface, text};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px,
 };
+use gpui_component::setting::{SelectIndex, SettingGroup, SettingItem, SettingPage};
 
 /// Width of the hover card.
 const CARD: f32 = 380.0;
@@ -56,21 +55,33 @@ impl Workspace {
     pub(super) fn hover_card(&self, theme: &Theme, cx: &Context<Self>) -> Option<AnyElement> {
         let hover = self.document.read(cx).hover()?;
         let anchor = hover.anchor();
-        let body = hover.card().map_or_else(
-            || reserved(theme).into_any_element(),
-            |card| filled(theme, card).into_any_element(),
-        );
+        let card = hover.card().cloned();
+        let content_theme = theme.clone();
+        let trigger = button::icon_button(theme, "hover-card-trigger", Icon::Link);
+        let popover = components::popover_with_action(
+            theme,
+            "hover-card",
+            "Details",
+            trigger,
+            move |_, _, _| {
+                let body = card.as_ref().map_or_else(
+                    || reserved(&content_theme).into_any_element(),
+                    |card| filled(&content_theme, card).into_any_element(),
+                );
+                surface::raised(&content_theme)
+                    .w(px(CARD))
+                    .px(space(Space::Room))
+                    .py(space(Space::Base))
+                    .child(body)
+            },
+        )
+        .default_open(true)
+        .overlay_closable(false);
         Some(
             gpui::anchored()
                 .position(gpui::point(anchor.x + px(12.0), anchor.y + px(16.0)))
                 .snap_to_window_with_margin(px(8.0))
-                .child(
-                    surface::raised(theme)
-                        .w(px(CARD))
-                        .px(space(Space::Room))
-                        .py(space(Space::Base))
-                        .child(body),
-                )
+                .child(popover)
                 .into_any_element(),
         )
     }
@@ -116,7 +127,31 @@ impl Workspace {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let page = self.shell.read(cx).settings_page();
+        let current_page = self.shell.read(cx).settings_page();
+        let workspace = cx.entity().downgrade();
+        let pages = SettingsPage::ALL.into_iter().map(|page| {
+            let workspace = workspace.clone();
+            let theme = theme.clone();
+            SettingPage::new(page.label()).group(SettingGroup::new().item(SettingItem::render(
+                move |_, _, app| {
+                    workspace
+                        .update(app, |workspace, cx| {
+                            workspace.settings_page(&theme, page, cx)
+                        })
+                        .map(IntoElement::into_any_element)
+                        .unwrap_or_else(|_| div().into_any_element())
+                },
+            )))
+        });
+        let settings = components::settings_with_action(theme, "settings-shell", "Settings", pages)
+            .sidebar_width(px(SIDEBAR))
+            .default_selected_index(SelectIndex {
+                page_ix: SettingsPage::ALL
+                    .iter()
+                    .position(|page| *page == current_page)
+                    .unwrap_or_default(),
+                group_ix: None,
+            });
         div()
             .absolute()
             .inset_0()
@@ -195,69 +230,8 @@ impl Workspace {
                             .max_h(px(640.0))
                             .flex()
                             .overflow_hidden()
-                            .child(Self::settings_sidebar(theme, page, cx))
-                            .child(self.settings_page(theme, page, cx)),
+                            .child(settings),
                     ),
-            )
-    }
-
-    fn settings_sidebar(theme: &Theme, current: SettingsPage, cx: &mut Context<Self>) -> Div {
-        div()
-            .flex_none()
-            .w(px(SIDEBAR))
-            .h_full()
-            .bg(theme.paint(Paint::Panel))
-            .border_r(hairline())
-            .border_color(theme.paint(Paint::Hairline))
-            .flex()
-            .flex_col()
-            .py(space(Space::Base))
-            .px(space(Space::Snug))
-            .gap(px(2.0))
-            .child(
-                text::faint(theme)
-                    .px(space(Space::Snug))
-                    .pb(space(Space::Snug))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("SETTINGS"),
-            )
-            .children(SettingsPage::ALL.map(|page| {
-                let selected = page == current;
-                div()
-                    .id(ElementId::Name(SharedString::from(format!(
-                        "settings-nav-{}",
-                        page.label()
-                    ))))
-                    .px(space(Space::Snug))
-                    .py(px(5.0))
-                    .rounded(radius(Radius::Small))
-                    .border(hairline())
-                    .border_color(gpui::transparent_black())
-                    .role(gpui::Role::Button)
-                    .aria_label(page.label())
-                    .focusable()
-                    .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
-                    .cursor_pointer()
-                    .when(selected, |row| row.bg(theme.paint(Paint::Selected)))
-                    .hover(|style| style.bg(theme.paint(Paint::Hover)))
-                    .child(if selected {
-                        text::label(theme)
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.paint(Paint::TextStrong))
-                            .child(page.label())
-                    } else {
-                        text::label(theme).child(page.label())
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.shell
-                            .update(cx, |shell, cx| shell.show_settings_page(page, cx));
-                    }))
-            }))
-            .child(div().flex_1())
-            .child(
-                text::faint(theme)
-                    .px(space(Space::Snug))
-                    .child(format!("{} closes", keys::DISMISS.label())),
             )
     }
 

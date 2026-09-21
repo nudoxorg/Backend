@@ -32,7 +32,7 @@ use crate::theme::language::hue as language_hue;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
 use crate::ui::icon::{Icon, Logo};
-use crate::ui::{button, chart, fault as fault_ui, icon, text};
+use crate::ui::{button, chart, components, fault as fault_ui, icon, text};
 use backend_library::RegistryEcosystem;
 use backend_present::Shelf;
 use gpui::prelude::FluentBuilder as _;
@@ -41,7 +41,7 @@ use gpui::{
     InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement,
     Styled, Window, div, px,
 };
-use gpui_elements::editable_text::{EditableTextState, text_input};
+use gpui_component::input::InputState;
 
 /// Every ecosystem the engine's closed registry namespace admits.
 const ECOSYSTEMS: [RegistryEcosystem; 7] = [
@@ -76,7 +76,7 @@ impl Workspace {
     /// Returns the explore region: heading, search, filters, and the grid.
     pub(super) fn browse_region(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         self.registry.update(cx, RegistryStore::ensure_page);
-        let field = self.registry.update(cx, RegistryStore::field);
+        let field = self.registry.read(cx).field();
         let held = self.jobs.read(cx).merge(self.engine.read(cx).shelf());
         let (query, state, listings, order, more) = {
             let registry = self.registry.read(cx);
@@ -138,7 +138,7 @@ impl Workspace {
     }
 
     /// Returns the large search field, which teaches by example.
-    fn browse_field(theme: &Theme, field: &Entity<EditableTextState>) -> Div {
+    fn browse_field(theme: &Theme, field: &Entity<InputState>) -> Div {
         div()
             .w_full()
             .flex()
@@ -153,12 +153,9 @@ impl Workspace {
             .child(icon::sized(theme, Icon::Search, 15.0, Paint::TextFaint))
             .child(
                 div().flex_1().min_w(px(0.0)).child(
-                    text_input("browse-search")
-                        .state(field.downgrade())
-                        .placeholder("serde, requests, @types/node, zod…")
-                        .placeholder_color(theme.paint(Paint::TextFaint))
-                        .selection_color(theme.paint(Paint::GiltWash))
-                        .caret_color(theme.paint(Paint::Gilt))
+                    components::search_input(theme, field, "browse-search", "Search packages")
+                        .appearance(false)
+                        .bordered(false)
                         .text_size(type_size(TypeScale::Body))
                         .text_color(theme.paint(Paint::TextStrong)),
                 ),

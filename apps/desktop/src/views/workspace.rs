@@ -32,6 +32,7 @@ use crate::store::workspace::WorkspaceStore;
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::transport::unix::UnixSubscriptionTransport;
+use crate::ui::components::ActionFrames;
 use crate::ui::surface;
 use backend_library::{SymbolKey, ViewRoot};
 use backend_present::Identity;
@@ -40,8 +41,10 @@ use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement,
     IntoElement, ParentElement, Render, Styled, Subscription, Window, div, px,
 };
-use gpui_elements::editable_text::{EditableTextState, StringStorage, TextChanged};
+use gpui_component::input::{InputEvent, InputState};
+use gpui_component::tree::TreeState;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 /// The window's root entity.
 pub(crate) struct Workspace {
@@ -53,8 +56,10 @@ pub(crate) struct Workspace {
     pub(super) catalog: Entity<CatalogStore>,
     pub(super) registry: Entity<RegistryStore>,
     pub(super) shell: Entity<ShellStore>,
-    pub(super) field: Entity<EditableTextState>,
-    pub(super) coordinate: Entity<EditableTextState>,
+    pub(super) field: Entity<InputState>,
+    pub(super) coordinate: Entity<InputState>,
+    pending_field: Option<String>,
+    pending_coordinate: Option<String>,
     pub(super) adding: bool,
     pub(super) add_fault: Option<String>,
     pub(super) add_ecosystem: backend_library::RegistryEcosystem,
@@ -69,6 +74,7 @@ pub(crate) struct Workspace {
     pub(super) outline_scroll: gpui::UniformListScrollHandle,
     pub(super) revealed: Option<SymbolKey>,
     pub(super) sheet_scroll: gpui::ScrollHandle,
+    pub(super) tab_tree_state: Entity<TreeState>,
     pub(super) revealed_row: Option<usize>,
     focus: FocusHandle,
     pub(super) library_focus: FocusHandle,
@@ -76,6 +82,7 @@ pub(crate) struct Workspace {
     pub(super) settings_focus: FocusHandle,
     /// Held, not read: a `Subscription` unsubscribes the moment it is dropped.
     _subscriptions: Vec<Subscription>,
+    action_frames: Rc<ActionFrames>,
 }
 
 /// Everything one window opens with, gathered before the platform starts.
@@ -100,12 +107,12 @@ pub(crate) struct Bootstrap {
 
 impl Workspace {
     /// Builds the whole window around one admitted root and one live feed.
-    pub(crate) fn new(opened: Bootstrap, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(opened: Bootstrap, window: &mut Window, cx: &mut Context<Self>) -> Self {
         #[cfg(feature = "preview")]
         let capture_time = crate::preview::capture_time();
         #[cfg(not(feature = "preview"))]
         let capture_time = None;
-        Self::new_with_capture(opened, capture_time, cx)
+        Self::new_with_capture(opened, capture_time, window, cx)
     }
 
     /// Builds a window with an optional deterministic animation timestamp.
@@ -116,6 +123,7 @@ impl Workspace {
     pub(crate) fn new_with_capture(
         opened: Bootstrap,
         capture_time: Option<std::time::Duration>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let Bootstrap {
@@ -141,7 +149,7 @@ impl Workspace {
                 cx,
             )
         });
-        let stores = Self::stores(&endpoint, &engine, data, prefs, cx);
+        let stores = Self::stores(&endpoint, &engine, data, prefs, window, cx);
         let subscriptions = Self::wire(
             &Wiring {
                 engine: &engine,
@@ -193,6 +201,8 @@ impl Workspace {
             shell,
             field,
             coordinate,
+            pending_field: None,
+            pending_coordinate: None,
             adding: false,
             add_fault: None,
             add_ecosystem: backend_library::RegistryEcosystem::Cargo,
@@ -207,12 +217,14 @@ impl Workspace {
             outline_scroll: gpui::UniformListScrollHandle::new(),
             revealed: None,
             sheet_scroll: gpui::ScrollHandle::new(),
+            tab_tree_state: cx.new(|cx| TreeState::new(cx)),
             revealed_row: None,
             focus: cx.focus_handle(),
             library_focus: cx.focus_handle(),
             source_focus: cx.focus_handle(),
             settings_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
+            action_frames: Rc::new(ActionFrames::default()),
         }
     }
 
@@ -222,6 +234,7 @@ impl Workspace {
         engine: &Entity<WorkspaceStore>,
         data: PathBuf,
         prefs: Preferences,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Stores {
         let index = cx.new(|cx| IndexStore::new(engine, cx));
@@ -232,10 +245,13 @@ impl Workspace {
             index,
             jobs: cx.new(|_| JobsStore::new(endpoint.clone())),
             catalog: cx.new(|_| CatalogStore::new(endpoint.clone())),
-            registry: cx.new(|_| RegistryStore::new(endpoint.clone())),
+            registry: cx.new(|cx| RegistryStore::new(endpoint.clone(), window, cx)),
             shell: cx.new(|_| ShellStore::new(data, prefs)),
-            field: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
-            coordinate: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
+            field: cx.new(|cx| {
+                InputState::new(window, cx).placeholder("Search packages, files, or commands")
+            }),
+            coordinate: cx
+                .new(|cx| InputState::new(window, cx).placeholder("name, or name@version")),
         }
     }
 
@@ -252,10 +268,10 @@ impl Workspace {
             }),
             cx.observe(parts.registry, |_, _, cx| cx.notify()),
             cx.observe(parts.shell, |_, _, cx| cx.notify()),
-            cx.subscribe(parts.field, |this, field, event, cx| {
+            cx.subscribe(parts.field, |this, field, event: &InputEvent, cx| {
                 this.on_typed(&field, event, cx)
             }),
-            cx.subscribe(parts.coordinate, |this, field, event, cx| {
+            cx.subscribe(parts.coordinate, |this, field, event: &InputEvent, cx| {
                 this.on_coordinate_typed(&field, event, cx);
             }),
         ]
@@ -329,8 +345,7 @@ impl Workspace {
                 self.add_fault = None;
                 self.adding = false;
                 self.remove_transient(Transient::Add, cx);
-                self.coordinate
-                    .update(cx, |field, cx| field.emplace("", cx));
+                self.pending_coordinate = Some(String::new());
                 self.catalog.update(cx, CatalogStore::clear);
                 if let Some(notice) = resolution.notice() {
                     self.shell.update(cx, |shell, cx| shell.notify(notice, cx));
@@ -342,13 +357,11 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_typed(
-        &mut self,
-        field: &Entity<EditableTextState>,
-        _: &TextChanged,
-        cx: &mut Context<Self>,
-    ) {
-        let text = field.read(cx).as_str().to_owned();
+    fn on_typed(&mut self, field: &Entity<InputState>, event: &InputEvent, cx: &mut Context<Self>) {
+        if !matches!(event, InputEvent::Change) {
+            return;
+        }
+        let text = field.read(cx).value().to_string();
         self.search
             .update(cx, |search, cx| search.set_text(text, cx));
         self.sync_search_transient(cx);
@@ -356,11 +369,14 @@ impl Workspace {
 
     fn on_coordinate_typed(
         &mut self,
-        field: &Entity<EditableTextState>,
-        _: &TextChanged,
+        field: &Entity<InputState>,
+        event: &InputEvent,
         cx: &mut Context<Self>,
     ) {
-        let text = field.read(cx).as_str().to_owned();
+        if !matches!(event, InputEvent::Change) {
+            return;
+        }
+        let text = field.read(cx).value().to_string();
         self.add_fault = None;
         self.catalog
             .update(cx, |catalog, cx| catalog.look_up(&text, cx));
@@ -375,6 +391,25 @@ impl Workspace {
             prefs.interface(),
             prefs.reduced_motion(),
         )
+        .with_action_frames(self.action_frames.clone())
+    }
+
+    /// Returns the semantic controls from the most recently rendered window
+    /// frame. Screenshot and journey harnesses use this instead of rebuilding
+    /// a parallel manifest, so the tree always describes the same component
+    /// construction path that produced the pixels.
+    pub(crate) fn action_tree(
+        &self,
+        window: &gpui::Window,
+        cx: &Context<Self>,
+    ) -> crate::ui::components::ActionTree {
+        self.theme(cx).action_tree(window)
+    }
+
+    /// Clears a completed window frame after a harness scenario has consumed
+    /// its semantic snapshot.
+    pub(crate) fn reset_action_tree(&self, window: &gpui::Window) {
+        self.action_frames.reset(window);
     }
 
     /// Keeps Escape ownership in step with the typed omnibar route.
@@ -740,14 +775,16 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::ui::components::begin_action_frame(window, "workspace");
-        let theme = self.theme(cx);
+        self.flush_input_values(window, cx);
+        let mut theme = self.theme(cx);
+        theme.begin_action_frame(window, "workspace");
         window.set_rem_size(theme.root_pixels());
         self.fit(window, cx);
         #[cfg(feature = "preview")]
         self.stage_preview(window, cx);
         self.advance_capture_frame(cx);
-        let frame = surface::ground(&theme)            .id("nudox-window")
+        let frame = surface::ground(&theme)
+            .id("nudox-window")
             .key_context(WINDOW_CONTEXT)
             .track_focus(&self.focus)
             .size_full()
@@ -759,12 +796,27 @@ impl Render for Workspace {
             .child(self.status_bar(&theme, cx))
             .child(self.overlays(&theme, window, cx))
             .with_key_handlers(cx);
-        crate::ui::components::publish_action_frame(window);
+        theme.publish_action_frame(window);
         frame
     }
 }
 
 impl Workspace {
+    /// Applies programmatic changes requested by actions that do not receive a
+    /// live window. User edits are already owned and published by CE's
+    /// `InputState`; queued writes are committed at the next frame boundary so
+    /// all callers share the same IME, selection, and undo semantics.
+    fn flush_input_values(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(value) = self.pending_field.take() {
+            self.field
+                .update(cx, |field, cx| field.set_value(value, window, cx));
+        }
+        if let Some(value) = self.pending_coordinate.take() {
+            self.coordinate
+                .update(cx, |field, cx| field.set_value(value, window, cx));
+        }
+    }
+
     fn fit(&mut self, window: &Window, cx: &mut Context<Self>) {
         let width = f32::from(window.viewport_size().width);
         let available = self.context_available(cx);
@@ -869,7 +921,8 @@ fn with_sheet_handlers<E: InteractiveElement>(element: E, cx: &mut Context<Works
 impl Workspace {
     fn focus_omnibar(&mut self, _: &FocusOmnibar, window: &mut Window, cx: &mut Context<Self>) {
         let restore = self.shell.read(cx).focus();
-        self.field.update(cx, EditableTextState::select_document);
+        self.field
+            .update(cx, |field, cx| field.select_all(window, cx));
         let handle = self.field.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
         self.shell
@@ -1188,19 +1241,25 @@ impl Workspace {
     }
 
     pub(crate) fn set_field(&mut self, text: String, cx: &mut Context<Self>) {
-        self.field.update(cx, |field, cx| {
-            field.emplace(&text, cx);
-            let end = field.as_str().len();
-            field.move_to(end, cx);
-        });
+        self.pending_field = Some(text.clone());
         self.search
             .update(cx, |search, cx| search.set_text(text, cx));
         self.sync_search_transient(cx);
     }
 
+    pub(crate) fn set_coordinate(&mut self, text: String) {
+        self.pending_coordinate = Some(text);
+    }
+
     /// Submits the add field: a folder or pinned URL at once, a name via the catalog.
     pub(super) fn submit_add(&mut self, cx: &mut Context<Self>) {
-        let text = self.coordinate.read(cx).as_str().trim().to_owned();
+        let text = self
+            .coordinate
+            .read(cx)
+            .value()
+            .to_string()
+            .trim()
+            .to_owned();
         let ask = Ask::parse(&text);
         if let Ask::Named { name, version } = &ask {
             if name.is_empty() {
@@ -1226,8 +1285,7 @@ impl Workspace {
                 self.add_fault = None;
                 self.adding = false;
                 self.remove_transient(Transient::Add, cx);
-                self.coordinate
-                    .update(cx, |field, cx| field.emplace("", cx));
+                self.pending_coordinate = Some(String::new());
                 self.catalog.update(cx, CatalogStore::clear);
                 self.index_project(coordinate, cx);
             }
@@ -1244,8 +1302,8 @@ struct Stores {
     catalog: Entity<CatalogStore>,
     registry: Entity<RegistryStore>,
     shell: Entity<ShellStore>,
-    field: Entity<EditableTextState>,
-    coordinate: Entity<EditableTextState>,
+    field: Entity<InputState>,
+    coordinate: Entity<InputState>,
 }
 
 /// Every entity the window observes, named so wiring stays one call.
@@ -1258,8 +1316,8 @@ struct Wiring<'a> {
     catalog: &'a Entity<CatalogStore>,
     registry: &'a Entity<RegistryStore>,
     shell: &'a Entity<ShellStore>,
-    field: &'a Entity<EditableTextState>,
-    coordinate: &'a Entity<EditableTextState>,
+    field: &'a Entity<InputState>,
+    coordinate: &'a Entity<InputState>,
 }
 
 /// Returns how many rows one page-up or page-down step moves.

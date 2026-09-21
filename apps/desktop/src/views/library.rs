@@ -23,7 +23,7 @@ use super::keys;
 use super::workspace::Workspace;
 use crate::presentation::project::{self, Standing};
 use crate::store::catalog::{Ask, Catalog, Suggestion};
-use crate::store::document::{Subject, TabId, TreeRow};
+use crate::store::document::{Subject, TreeRow};
 use crate::store::registry::{Spelling, version_rank};
 use crate::store::shell::Transient;
 use crate::store::shell::{Focus, Side};
@@ -35,7 +35,7 @@ use crate::theme::tokens::{
 use crate::ui::bar::{self, Motion};
 use crate::ui::icon::{self, Icon, Logo};
 use crate::ui::tip::{Card, Tip, Tipped as _};
-use crate::ui::{button, chip, fault as fault_ui, glyph, surface, text};
+use crate::ui::{button, chip, components, fault as fault_ui, glyph, surface, text};
 use backend_library::RegistryEcosystem;
 use backend_present::{Affordance, Fault, Readiness, ShelfEntry};
 use gpui::Focusable as _;
@@ -44,7 +44,6 @@ use gpui::{
     AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement, IntoElement,
     ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
-use gpui_elements::editable_text::text_input;
 
 /// Indent per level of the tab tree, in pixels.
 const TREE_INDENT: f32 = 12.0;
@@ -469,12 +468,63 @@ impl Workspace {
 /// The tab tree.
 impl Workspace {
     fn tab_tree(
-        &self,
+        &mut self,
         theme: &Theme,
         tree: &[TreeRow],
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let index = self.index.clone();
+        let rows = tree.to_vec();
+        let active = rows.iter().position(|row| row.active);
+        let items = rows
+            .iter()
+            .enumerate()
+            .map(|(at, row)| {
+                gpui_component::tree::TreeItem::new(format!("tab-row-{at}"), row.title.clone())
+            })
+            .collect::<Vec<_>>();
+        self.tab_tree_state.update(cx, |state, cx| {
+            state.set_items(items, cx);
+            state.set_selected_index(active, cx);
+        });
+        let workspace = cx.entity().downgrade();
+        let item_rows = rows.clone();
+        let item_theme = theme.clone();
+        let tree_view = components::tree_with_action(
+            theme,
+            "tab-tree",
+            "Open tabs",
+            &self.tab_tree_state,
+            move |at, entry, selected, _, _| {
+                let row = item_rows.get(at);
+                let label = entry.item().label.clone();
+                let id = row.map(|row| row.id);
+                let enabled = row.is_some_and(|row| !row.loading);
+                let mut item = components::list_item(
+                    &item_theme,
+                    format!("tab-item-{at}"),
+                    label.clone(),
+                    enabled,
+                    true,
+                )
+                .selected(selected)
+                .child(
+                    div()
+                        .pl(px(TREE_INDENT * entry.depth() as f32))
+                        .child(label),
+                );
+                if let Some(id) = id {
+                    let workspace = workspace.clone();
+                    item = item.on_click(move |_, _, app| {
+                        let _ = workspace.update(app, |workspace, cx| {
+                            workspace
+                                .document
+                                .update(cx, |document, cx| document.activate(id, cx));
+                        });
+                    });
+                }
+                item
+            },
+        );
         div()
             .id("tab-tree")
             .flex_none()
@@ -497,86 +547,7 @@ impl Workspace {
                     )
                     .child(text::faint(theme).child(tree.len().to_string())),
             )
-            .child(
-                div()
-                    .id("tab-tree-rows")
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .pb(space(Space::Tight))
-                    .children(
-                        tree.iter()
-                            .enumerate()
-                            .map(|(at, row)| Self::tab_row(theme, at, row, &index, cx)),
-                    ),
-            )
-    }
-
-    fn tab_row(
-        theme: &Theme,
-        at: usize,
-        row: &TreeRow,
-        index: &gpui::Entity<crate::store::index::IndexStore>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let id = row.id;
-        let group = SharedString::from(format!("tab-row-{at}"));
-        let indent = TREE_INDENT * to_f32(row.depth.min(8));
-        div()
-            .id(ElementId::Name(SharedString::from(format!("tab-{at}"))))
-            .group(group.clone())
-            .mx(space(Space::Tight))
-            .h(px(24.0))
-            .pl(px(indent + 6.0))
-            .pr(space(Space::Tight))
-            .flex()
-            .items_center()
-            .gap(space(Space::Snug))
-            .rounded(radius(Radius::Small))
-            .when(row.active, |tab| tab.bg(theme.paint(Paint::Selected)))
-            .hover(|style| style.bg(theme.paint(Paint::Hover)))
-            .border(hairline())
-            .border_color(gpui::transparent_black())
-            .focusable()
-            .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
-            .role(gpui::Role::Button)
-            .aria_label(row.title.clone())
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.document
-                    .update(cx, |document, cx| document.activate(id, cx));
-            }))
-            .on_aux_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
-                if event.is_middle_click() {
-                    this.document
-                        .update(cx, |document, cx| document.close(id, cx));
-                }
-            }))
-            .tip(tab_tip(row))
-            .child(tab_glyph(theme, row, index, cx))
-            .child(
-                text::single_line(if row.active {
-                    text::label(theme).font_weight(FontWeight::MEDIUM)
-                } else {
-                    text::dim(theme).text_size(type_size(TypeScale::Interface))
-                })
-                .flex_1()
-                .min_w(px(0.0))
-                .child(row.title.clone()),
-            )
-            .when(row.loading, |tab| {
-                tab.child(text::faint(theme).flex_none().child("◐"))
-            })
-            .child(
-                div()
-                    .flex_none()
-                    .opacity(if row.active { 0.7 } else { 0.0 })
-                    .group_hover(group, |style| style.opacity(1.0))
-                    .child(close_button(theme, at, id, cx)),
-            )
-            .into_any_element()
+            .child(div().flex_1().min_h(px(0.0)).child(tree_view))
     }
 }
 
@@ -642,52 +613,6 @@ fn rail_dot(
         }))
 }
 
-fn close_button(
-    theme: &Theme,
-    at: usize,
-    id: TabId,
-    cx: &mut Context<Workspace>,
-) -> impl IntoElement {
-    button::icon_button(theme, format!("tab-close-{at}"), Icon::Close)
-        .tip(
-            Tip::new("Close")
-                .detail("Its branches move up to the page it was opened from.")
-                .key(keys::CLOSE_TAB),
-        )
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.document
-                .update(cx, |document, cx| document.close(id, cx));
-        }))
-}
-
-fn tab_glyph(
-    theme: &Theme,
-    row: &TreeRow,
-    index: &gpui::Entity<crate::store::index::IndexStore>,
-    cx: &Context<Workspace>,
-) -> AnyElement {
-    match &row.subject {
-        Some(Subject::Home) | None => {
-            icon::sized(theme, Icon::Home, 13.0, Paint::TextDim).into_any_element()
-        }
-        Some(Subject::Project { .. }) => glyph::package_tile(theme, false).into_any_element(),
-        Some(Subject::Package { coordinate }) => {
-            let language = Spelling::of(coordinate).ecosystem().map_or(
-                backend_present::Language::Unknown,
-                super::home::ecosystem_language,
-            );
-            glyph::language_tag(theme, language).into_any_element()
-        }
-        Some(Subject::Declaration { symbol, .. }) => {
-            let kind = index
-                .read(cx)
-                .entry(*symbol)
-                .and_then(crate::store::index::Entry::kind);
-            glyph::kind_mark(theme, kind, 12.0).into_any_element()
-        }
-    }
-}
-
 fn tab_tip(row: &TreeRow) -> Tip {
     let coordinate = row
         .subject
@@ -744,7 +669,7 @@ impl Workspace {
             }
             shell.focus_on(Focus::Add, cx);
         });
-        let text = self.coordinate.read(cx).as_str().to_owned();
+        let text = self.coordinate.read(cx).value().to_string();
         self.catalog
             .update(cx, |catalog, cx| catalog.look_up(&text, cx));
         let handle = self.coordinate.read(cx).focus_handle(cx);
@@ -774,7 +699,7 @@ impl Workspace {
     }
 
     fn add_form(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let live = self.coordinate.read(cx).as_str().to_owned();
+        let live = self.coordinate.read(cx).value().to_string();
         let hint = hint_for(&Ask::parse(&live));
         div()
             .flex()
@@ -919,14 +844,16 @@ impl Workspace {
             .border(hairline())
             .border_color(theme.paint(Paint::Hairline))
             .child(
-                text_input("add-coordinate")
-                    .state(self.coordinate.downgrade())
-                    .placeholder("name, or name@version")
-                    .placeholder_color(theme.paint(Paint::TextFaint))
-                    .selection_color(theme.paint(Paint::GiltWash))
-                    .caret_color(theme.paint(Paint::Gilt))
-                    .text_size(type_size(TypeScale::Small))
-                    .text_color(theme.paint(Paint::TextStrong)),
+                components::input(
+                    theme,
+                    &self.coordinate,
+                    "add-coordinate",
+                    "Package name or version",
+                )
+                .appearance(false)
+                .bordered(false)
+                .text_size(type_size(TypeScale::Small))
+                .text_color(theme.paint(Paint::TextStrong)),
             )
     }
 
@@ -1008,10 +935,7 @@ impl Workspace {
 
     /// Replaces the coordinate field's text and re-runs the catalog lookup.
     pub(crate) fn fill_coordinate(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.coordinate.update(cx, |field, cx| {
-            field.emplace(text, cx);
-            field.move_to(text.len(), cx);
-        });
+        self.set_coordinate(text.to_owned());
         self.catalog
             .update(cx, |catalog, cx| catalog.look_up(text, cx));
         cx.notify();
@@ -1227,8 +1151,4 @@ fn empty_shelf(theme: &Theme) -> Div {
 /// Returns a short human size for a verified archive.
 fn bytes(count: u64) -> String {
     crate::store::registry::size_label(count)
-}
-
-fn to_f32(depth: usize) -> f32 {
-    u8::try_from(depth).map_or(8.0, f32::from)
 }

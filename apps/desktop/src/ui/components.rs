@@ -22,8 +22,9 @@ use gpui_component::setting::{SettingPage, Settings};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::tree::{Tree, TreeEntry, TreeState};
 use gpui_component::{Disableable as _, FocusableExt as _};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Visual emphasis for a component-backed action.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,17 +48,24 @@ pub(crate) fn button(
     label: impl Into<SharedString>,
     weight: Weight,
 ) -> Button {
-    let (foreground, background, border) = paints(theme, weight);
+    button_with_state(theme, id, label, weight, false, true)
+}
+
+/// Builds a CE button and registers its final disabled/visible state.
+pub(crate) fn button_with_state(
+    theme: &Theme,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    weight: Weight,
+    disabled: bool,
+    visible: bool,
+) -> Button {
     let id = id.into();
     let label = label.into();
-    register_rendered(ActionMetadata::new(
-        id.clone(),
-        label.clone(),
-        ActionRole::Button,
-    ));
-    let id = ElementId::Name(id);
-    let button = Button::new(id)
-        .label(label)
+    let (foreground, background, border) = paints(theme, weight);
+    let id_element = ElementId::Name(id.clone());
+    let button = Button::new(id_element)
+        .label(label.clone())
         .rounded(ButtonRounded::Size(radius(Radius::Small)))
         .compact()
         .tab_index(0)
@@ -80,7 +88,13 @@ pub(crate) fn button(
             style
                 .border_color(theme.paint(Paint::Focus))
                 .bg(theme.paint(Paint::GiltWash))
-        });
+        })
+        .disabled(disabled);
+    theme.register_action(
+        ActionMetadata::new(id.clone(), label.clone(), ActionRole::Button)
+            .enabled(!disabled)
+            .visible(visible),
+    );
     match weight {
         Weight::Primary => button.primary(),
         Weight::Regular => button.secondary(),
@@ -96,13 +110,8 @@ pub(crate) fn icon_button(
 ) -> Button {
     let id = id.into();
     let label = label.into();
-    register_rendered(ActionMetadata::new(
-        id.clone(),
-        label.clone(),
-        ActionRole::Button,
-    ));
-    Button::new(ElementId::Name(id))
-        .accessibility_label(label)
+    let button = Button::new(ElementId::Name(id.clone()))
+        .accessibility_label(label.clone())
         .rounded(ButtonRounded::Size(radius(Radius::Small)))
         .compact()
         .tab_index(0)
@@ -123,12 +132,13 @@ pub(crate) fn icon_button(
             style
                 .border_color(theme.paint(Paint::Focus))
                 .bg(theme.paint(Paint::GiltWash))
-        })
-}
-
-/// Applies an explicit disabled visual while keeping component semantics.
-pub(crate) fn disabled(button: Button, disabled: bool) -> Button {
-    button.disabled(disabled)
+        });
+    theme.register_action(ActionMetadata::new(
+        id.clone(),
+        label.clone(),
+        ActionRole::Button,
+    ));
+    button
 }
 
 /// Builds a component-backed text input with the Nudox control treatment.
@@ -140,8 +150,16 @@ pub(crate) fn disabled(button: Button, disabled: bool) -> Button {
 pub(crate) fn input(
     theme: &Theme,
     state: &Entity<InputState>,
+    id: impl Into<SharedString>,
     label: impl Into<SharedString>,
 ) -> Input {
+    let id = id.into();
+    let label = label.into();
+    theme.register_action(ActionMetadata::new(id, label.clone(), ActionRole::Input));
+    input_element(theme, state, label)
+}
+
+fn input_element(theme: &Theme, state: &Entity<InputState>, label: SharedString) -> Input {
     Input::new(state)
         .aria_label(label)
         .focus_ring(true)
@@ -158,9 +176,13 @@ pub(crate) fn input(
 pub(crate) fn search_input(
     theme: &Theme,
     state: &Entity<InputState>,
+    id: impl Into<SharedString>,
     label: impl Into<SharedString>,
 ) -> Input {
-    input(theme, state, label).prefix(crate::ui::icon::sized(
+    let id = id.into();
+    let label = label.into();
+    theme.register_action(ActionMetadata::new(id, label.clone(), ActionRole::Search));
+    input_element(theme, state, label).prefix(crate::ui::icon::sized(
         theme,
         crate::ui::icon::Icon::Search,
         14.0,
@@ -197,6 +219,29 @@ where
         .appearance(true)
 }
 
+/// Builds a popover trigger and records its disclosure semantics in the same
+/// explicit frame as the real CE popup.
+pub(crate) fn popover_with_action<T, E, F>(
+    theme: &Theme,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    trigger: T,
+    content: F,
+) -> Popover
+where
+    T: gpui_component::Selectable + IntoElement + 'static,
+    E: IntoElement,
+    F: Fn(&mut PopoverState, &mut Window, &mut Context<PopoverState>) -> E + 'static,
+{
+    let id = id.into();
+    theme.register_action(ActionMetadata::new(
+        id.clone(),
+        label,
+        ActionRole::Disclosure,
+    ));
+    popover(ElementId::Name(id), trigger, content)
+}
+
 /// Adds the CE scrollbar and wheel/track-scroll behavior to an existing
 /// element while preserving its layout identity.
 pub(crate) fn vertical_scroll<E>(element: E) -> Scrollable<E>
@@ -215,6 +260,39 @@ where
     gpui_component::tree::tree(state, render_item)
 }
 
+/// Builds a tree and records its focusable root. Individual `ListItem`s can
+/// be registered with [`list_item`] as they are rendered.
+pub(crate) fn tree_with_action<R>(
+    theme: &Theme,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    state: &Entity<TreeState>,
+    render_item: R,
+) -> Tree
+where
+    R: Fn(usize, &TreeEntry, bool, &mut Window, &mut App) -> ListItem + 'static,
+{
+    theme.register_action(ActionMetadata::new(id, label, ActionRole::TreeItem));
+    tree(state, render_item)
+}
+
+/// Builds a CE list item with final enabled/visible semantics.
+pub(crate) fn list_item(
+    theme: &Theme,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    visible: bool,
+) -> ListItem {
+    let id = id.into();
+    theme.register_action(
+        ActionMetadata::new(id.clone(), label, ActionRole::TreeItem)
+            .enabled(enabled)
+            .visible(visible),
+    );
+    ListItem::new(ElementId::Name(id))
+}
+
 /// Builds the complete CE settings shell from real product setting pages.
 /// Settings owns page selection, filtering, keyboard focus, and reset flow.
 pub(crate) fn settings(
@@ -222,6 +300,18 @@ pub(crate) fn settings(
     pages: impl IntoIterator<Item = SettingPage>,
 ) -> Settings {
     Settings::new(id).pages(pages)
+}
+
+/// Builds the CE settings shell and records its navigation affordance.
+pub(crate) fn settings_with_action(
+    theme: &Theme,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    pages: impl IntoIterator<Item = SettingPage>,
+) -> Settings {
+    let id = id.into();
+    theme.register_action(ActionMetadata::new(id.clone(), label, ActionRole::Setting));
+    settings(ElementId::Name(id), pages)
 }
 
 /// Semantic role used by the in-process action tree. Native accessibility is
@@ -277,6 +367,12 @@ impl ActionMetadata {
     /// Marks an action unavailable without removing it from traversal metadata.
     pub(crate) const fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    /// Marks an action absent from the current rendered tree.
+    pub(crate) const fn visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
         self
     }
 
@@ -368,89 +464,86 @@ impl ActionTree {
     }
 }
 
-thread_local! {
-    static ACTIVE_WINDOW: Cell<Option<u64>> = const { Cell::new(None) };
-    static NEXT_REVISION: Cell<u64> = const { Cell::new(0) };
-    static RENDERED_ACTIONS: RefCell<HashMap<u64, ActionTree>> = RefCell::new(HashMap::new());
+/// Owns semantic snapshots for one application/window owner.
+///
+/// A workspace keeps one instance and threads it through its `Theme`. Adapter
+/// calls therefore carry an explicit window frame even when a CE popup renders
+/// after the root element has been built. There is no process-global lock or
+/// thread-local "current window" that can misattribute a second window.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ActionFrames {
+    frames: Rc<RefCell<HashMap<u64, ActionTree>>>,
 }
 
-/// Starts a fresh semantic snapshot for one window before its root renders.
-/// The tree is render-local, so hidden routes and dismissed overlays cannot
-/// remain in a later frame and windows cannot observe each other's controls.
-pub(crate) fn begin_action_frame(window: &Window, route: impl Into<SharedString>) {
-    let key = window.window_handle().window_id().as_u64();
-    let route = route.into();
-    let revision = NEXT_REVISION.with(|next| {
-        let revision = next.get().saturating_add(1);
-        next.set(revision);
-        revision
-    });
-    ACTIVE_WINDOW.with(|active| active.set(Some(key)));
-    RENDERED_ACTIONS.with(|frames| {
-        frames.borrow_mut().insert(
-            key,
+/// A registration capability for one rendered window frame. The revision is
+/// checked on every write so a retained CE overlay from an older render cannot
+/// leak actions into the next frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ActionFrameToken {
+    window_id: u64,
+    revision: u64,
+}
+
+impl ActionFrames {
+    pub(crate) fn begin(
+        &self,
+        window: &Window,
+        route: impl Into<SharedString>,
+    ) -> ActionFrameToken {
+        self.begin_id(window.window_handle().window_id().as_u64(), route)
+    }
+
+    fn begin_id(&self, window_id: u64, route: impl Into<SharedString>) -> ActionFrameToken {
+        let mut frames = self.frames.borrow_mut();
+        let revision = frames
+            .get(&window_id)
+            .map_or(1, |frame| frame.revision.saturating_add(1));
+        frames.insert(
+            window_id,
             ActionTree {
                 actions: Vec::new(),
-                route,
+                route: route.into(),
                 revision,
             },
         );
-    });
-}
-
-/// Marks one root's current tree as complete and leaves it available to the
-/// harness until the window's next frame begins.
-pub(crate) fn publish_action_frame(window: &Window) {
-    let key = window.window_handle().window_id().as_u64();
-    ACTIVE_WINDOW.with(|active| {
-        if active.get() == Some(key) {
-            active.set(None);
+        ActionFrameToken {
+            window_id,
+            revision,
         }
-    });
-}
+    }
 
-fn register_rendered(action: ActionMetadata) {
-    let key = ACTIVE_WINDOW.with(|active| active.get()).unwrap_or(0);
-    RENDERED_ACTIONS.with(|frames| {
-        let mut frames = frames.borrow_mut();
-        frames.entry(key).or_default().registrar().record(action);
-    });
-}
-
-/// Returns the semantic actions observed while real CE controls rendered.
-///
-/// Screenshot and journey harnesses use this snapshot to assert that every
-/// focusable affordance has a stable name and role. The registry is updated by
-/// the component adapters themselves, never by a manually maintained route
-/// manifest.
-pub(crate) fn rendered_action_tree(window: &Window) -> ActionTree {
-    let key = window.window_handle().window_id().as_u64();
-    RENDERED_ACTIONS.with(|frames| frames.borrow().get(&key).cloned().unwrap_or_default())
-}
-
-/// Clears one window's published tree between deterministic scenarios.
-pub(crate) fn reset_rendered_action_tree(window: &Window) {
-    let key = window.window_handle().window_id().as_u64();
-    RENDERED_ACTIONS.with(|frames| {
-        frames.borrow_mut().remove(&key);
-    });
-    ACTIVE_WINDOW.with(|active| {
-        if active.get() == Some(key) {
-            active.set(None);
+    pub(crate) fn register(&self, token: ActionFrameToken, action: ActionMetadata) {
+        if let Some(frame) = self
+            .frames
+            .borrow_mut()
+            .get_mut(&token.window_id)
+            .filter(|frame| frame.revision == token.revision)
+        {
+            frame.registrar().record(action);
         }
-    });
-}
+    }
 
-#[cfg(test)]
-fn test_rendered_action_tree() -> ActionTree {
-    RENDERED_ACTIONS.with(|frames| frames.borrow().get(&0).cloned().unwrap_or_default())
-}
+    pub(crate) fn snapshot(&self, window: &Window) -> ActionTree {
+        self.frames
+            .borrow()
+            .get(&window.window_handle().window_id().as_u64())
+            .cloned()
+            .unwrap_or_default()
+    }
 
-#[cfg(test)]
-fn reset_test_rendered_action_tree() {
-    RENDERED_ACTIONS.with(|frames| {
-        frames.borrow_mut().remove(&0);
-    });
+    pub(crate) fn reset(&self, window: &Window) {
+        self.frames
+            .borrow_mut()
+            .remove(&window.window_handle().window_id().as_u64());
+    }
+
+    fn snapshot_id(&self, window_id: u64) -> ActionTree {
+        self.frames
+            .borrow()
+            .get(&window_id)
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 impl ActionTree {
@@ -479,125 +572,6 @@ impl ActionRegistrar<'_> {
     fn record(&mut self, action: ActionMetadata) -> bool {
         self.tree.register(action)
     }
-
-    fn register_button(
-        &mut self,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-        enabled: bool,
-    ) -> bool {
-        self.tree
-            .register(ActionMetadata::new(id, label, ActionRole::Button).enabled(enabled))
-    }
-
-    fn register_search(
-        &mut self,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-        shortcut: impl Into<SharedString>,
-    ) -> bool {
-        self.tree
-            .register(ActionMetadata::new(id, label, ActionRole::Search).shortcut(shortcut))
-    }
-
-    fn register_setting(
-        &mut self,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-        enabled: bool,
-    ) -> bool {
-        self.tree
-            .register(ActionMetadata::new(id, label, ActionRole::Setting).enabled(enabled))
-    }
-
-    pub(crate) fn button(
-        &mut self,
-        theme: &Theme,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-        weight: Weight,
-    ) -> Button {
-        let id = id.into();
-        let label = label.into();
-        self.register_button(id.clone(), label.clone(), true);
-        crate::ui::components::button(theme, id, label, weight)
-    }
-
-    pub(crate) fn icon_button(
-        &mut self,
-        theme: &Theme,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-    ) -> Button {
-        let id = id.into();
-        let label = label.into();
-        self.register_button(id.clone(), label.clone(), true);
-        crate::ui::components::icon_button(theme, id, label)
-    }
-
-    pub(crate) fn input(
-        &mut self,
-        theme: &Theme,
-        state: &Entity<InputState>,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-    ) -> Input {
-        let id = id.into();
-        let label = label.into();
-        self.tree
-            .register(ActionMetadata::new(id, label.clone(), ActionRole::Input));
-        crate::ui::components::input(theme, state, label)
-    }
-
-    pub(crate) fn search_input(
-        &mut self,
-        theme: &Theme,
-        state: &Entity<InputState>,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-    ) -> Input {
-        let id = id.into();
-        let label = label.into();
-        self.tree
-            .register(ActionMetadata::new(id, label.clone(), ActionRole::Search));
-        crate::ui::components::search_input(theme, state, label)
-    }
-
-    pub(crate) fn navigation(
-        &mut self,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-    ) -> bool {
-        self.tree
-            .register(ActionMetadata::new(id, label, ActionRole::Navigation))
-    }
-
-    pub(crate) fn disclosure(
-        &mut self,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-    ) -> bool {
-        self.tree
-            .register(ActionMetadata::new(id, label, ActionRole::Disclosure))
-    }
-
-    pub(crate) fn tree_item(
-        &mut self,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-    ) -> bool {
-        self.tree
-            .register(ActionMetadata::new(id, label, ActionRole::TreeItem))
-    }
-
-    pub(crate) fn setting(
-        &mut self,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-    ) -> bool {
-        self.tree
-            .register(ActionMetadata::new(id, label, ActionRole::Setting))
-    }
 }
 
 fn paints(theme: &Theme, weight: Weight) -> (gpui::Hsla, gpui::Hsla, gpui::Hsla) {
@@ -622,16 +596,20 @@ fn paints(theme: &Theme, weight: Weight) -> (gpui::Hsla, gpui::Hsla, gpui::Hsla)
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionRole, ActionTree, Weight};
+    use super::{ActionMetadata, ActionRole, ActionTree, Weight};
 
     #[test]
     fn action_tree_rejects_duplicate_or_empty_contracts_and_keeps_disabled_actions() {
         let mut tree = ActionTree::default();
         let mut registration = tree.registrar();
-        assert!(registration.register_search("search", "Search packages", "⌘K"));
-        assert!(!registration.register_search("search", "Again", "⌘K"));
-        assert!(!registration.register_button("", "Missing id", true));
-        assert!(registration.register_setting("settings", "Settings", false));
+        assert!(registration.record(
+            ActionMetadata::new("search", "Search packages", ActionRole::Search).shortcut("⌘K")
+        ));
+        assert!(!registration.record(ActionMetadata::new("search", "Again", ActionRole::Search,)));
+        assert!(!registration.record(ActionMetadata::new("", "Missing id", ActionRole::Button,)));
+        assert!(registration.record(
+            ActionMetadata::new("settings", "Settings", ActionRole::Setting).enabled(false)
+        ));
         drop(registration);
         assert_eq!(tree.len(), 2);
         assert_eq!(tree.focusable().count(), 1);
@@ -648,17 +626,73 @@ mod tests {
     }
 
     #[test]
-    fn rendered_component_registration_is_the_harness_source_of_truth() {
-        super::reset_test_rendered_action_tree();
-        let theme = crate::theme::Theme::default();
-        let _button = super::button(&theme, "rendered-search", "Search", Weight::Regular);
-        let tree = super::test_rendered_action_tree();
-        let action = tree
-            .iter()
-            .find(|action| action.id().as_ref() == "rendered-search")
-            .expect("CE button registration must be visible to the harness");
-        assert_eq!(action.role(), ActionRole::Button);
-        assert_eq!(action.label().as_ref(), "Search");
-        super::reset_test_rendered_action_tree();
+    fn frames_track_final_state_and_remove_stale_controls() {
+        let frames = super::ActionFrames::default();
+        let home = frames.begin_id(11, "home");
+        frames.register(
+            home,
+            super::ActionMetadata::new("submit", "Submit", ActionRole::Button)
+                .enabled(false)
+                .visible(true),
+        );
+        let first = frames.snapshot_id(11);
+        let action = first.iter().next().expect("disabled action is retained");
+        assert!(!action.is_enabled());
+        assert!(action.is_visible());
+        assert_eq!(action.focus_order(), 0);
+
+        frames.begin_id(11, "settings");
+        let second = frames.snapshot_id(11);
+        assert_eq!(second.route().as_ref(), "settings");
+        assert_eq!(second.len(), 0);
+        assert!(second.revision() > first.revision());
+    }
+
+    #[test]
+    fn frames_are_separate_per_window_and_keep_input_search_roles() {
+        let frames = super::ActionFrames::default();
+        let search = frames.begin_id(21, "search");
+        frames.register(
+            search,
+            super::ActionMetadata::new("query", "Query", ActionRole::Input),
+        );
+        frames.register(
+            search,
+            super::ActionMetadata::new("package-search", "Search packages", ActionRole::Search),
+        );
+        let other_window = frames.begin_id(22, "other-window");
+        frames.register(
+            other_window,
+            super::ActionMetadata::new("settings", "Settings", ActionRole::Setting),
+        );
+        let first = frames.snapshot_id(21);
+        let second = frames.snapshot_id(22);
+        assert_eq!(
+            first.iter().map(|action| action.role()).collect::<Vec<_>>(),
+            [ActionRole::Input, ActionRole::Search,]
+        );
+        assert_eq!(
+            second.iter().next().map(|action| action.role()),
+            Some(ActionRole::Setting)
+        );
+        assert_eq!(first.route().as_ref(), "search");
+        assert_eq!(second.route().as_ref(), "other-window");
+    }
+
+    #[test]
+    fn retained_frame_tokens_cannot_register_into_a_new_frame() {
+        let frames = super::ActionFrames::default();
+        let old = frames.begin_id(31, "home");
+        let current = frames.begin_id(31, "settings");
+        frames.register(
+            old,
+            super::ActionMetadata::new("stale", "Stale", ActionRole::Button),
+        );
+        assert_eq!(frames.snapshot_id(31).len(), 0);
+        frames.register(
+            current,
+            super::ActionMetadata::new("current", "Current", ActionRole::Button),
+        );
+        assert_eq!(frames.snapshot_id(31).len(), 1);
     }
 }

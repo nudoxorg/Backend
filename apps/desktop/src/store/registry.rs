@@ -30,8 +30,8 @@ use backend_present::{
     Affordance, Cause, CauseSlug, Coordinate, Fault, FaultSlug, Operand, Readiness, Shelf,
 };
 use gpui::AppContext as _;
-use gpui::{Context, Entity, EventEmitter, Subscription, Task};
-use gpui_elements::editable_text::{EditableTextState, StringStorage, TextChanged};
+use gpui::{Context, Entity, EventEmitter, Subscription, Task, Window};
+use gpui_component::input::{InputEvent, InputState};
 use std::cmp::Reverse;
 use std::time::Duration;
 
@@ -562,15 +562,25 @@ pub(crate) struct RegistryStore {
     cards: Vec<(String, Card)>,
     order: Ordering,
     reading: Vec<Task<()>>,
-    field: Option<Entity<EditableTextState>>,
-    typing: Option<Subscription>,
+    field: Entity<InputState>,
+    _typing: Option<Subscription>,
 }
 
 impl EventEmitter<RegistryEvent> for RegistryStore {}
 
 impl RegistryStore {
     /// Creates an idle registry view bound to one endpoint.
-    pub(crate) fn new(endpoint: Endpoint) -> Self {
+    pub(crate) fn new(endpoint: Endpoint, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let field = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("serde, requests, @types/node, zod…")
+        });
+        let typing = cx.subscribe(&field, |this, field, event: &InputEvent, cx| {
+            if !matches!(event, InputEvent::Change) {
+                return;
+            }
+            let text = field.read(cx).value().to_string();
+            this.set_text(&text, cx);
+        });
         Self {
             endpoint,
             query: Query::default(),
@@ -582,8 +592,8 @@ impl RegistryStore {
             cards: Vec::new(),
             order: Ordering::default(),
             reading: Vec::new(),
-            field: None,
-            typing: None,
+            field,
+            _typing: Some(typing),
         }
     }
 
@@ -678,22 +688,9 @@ impl RegistryStore {
         self.cards = stocked;
     }
 
-    /// Returns the field behind the registry search box, creating it once.
-    ///
-    /// The field is created here rather than in [`Self::new`] so that the
-    /// window can build this store without a context; the first frame that
-    /// draws the browse page is what brings the field into existence.
-    pub(crate) fn field(&mut self, cx: &mut Context<Self>) -> Entity<EditableTextState> {
-        if let Some(field) = self.field.clone() {
-            return field;
-        }
-        let field = cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
-        self.typing = Some(cx.subscribe(&field, |this, field, _: &TextChanged, cx| {
-            let text = field.read(cx).as_str().to_owned();
-            this.set_text(&text, cx);
-        }));
-        self.field = Some(field.clone());
-        field
+    /// Returns the CE-owned field behind the registry search box.
+    pub(crate) fn field(&self) -> Entity<InputState> {
+        self.field.clone()
     }
 
     /// Asks the catalog for a first page when nothing has been asked yet.

@@ -5,17 +5,19 @@
 //! No view in this application may write a colour literal; every tone comes
 //! from [`Theme::paint`] or from a hue placed on the chromatic plane.
 
+pub(crate) mod fonts;
 pub(crate) mod kind;
 pub(crate) mod language;
 pub(crate) mod palette;
 pub(crate) mod ramp;
 pub(crate) mod tokens;
-pub(crate) mod fonts;
 
+use crate::ui::components::{ActionFrameToken, ActionFrames, ActionMetadata, ActionTree};
 use gpui::{App, Global, Hsla, Pixels, SharedString};
 use palette::{Appearance, Contrast, Paint, Palette};
 use ramp::Hue;
-use tokens::{radius, space_at, Density, InterfaceSize, Space};
+use std::rc::Rc;
+use tokens::{Density, InterfaceSize, Space, radius, space_at};
 
 /// The lit palette and the reading preferences that scale it.
 #[derive(Clone, Debug)]
@@ -29,6 +31,8 @@ pub(crate) struct Theme {
     display_face: SharedString,
     serif_face: SharedString,
     specimen: SharedString,
+    action_frames: Rc<ActionFrames>,
+    action_frame: Option<ActionFrameToken>,
 }
 
 impl Global for Theme {}
@@ -67,7 +71,46 @@ impl Theme {
             display_face: SharedString::new_static(fonts::DISPLAY_FAMILY),
             serif_face: SharedString::new_static(fonts::SERIF_FAMILY),
             specimen: SharedString::new_static(fonts::SPECIMEN_FAMILY),
+            action_frames: Rc::new(ActionFrames::default()),
+            action_frame: None,
         }
+    }
+
+    /// Reuses the owning workspace's explicit per-window action collector.
+    pub(crate) fn with_action_frames(mut self, frames: Rc<ActionFrames>) -> Self {
+        self.action_frames = frames;
+        self
+    }
+
+    /// Starts the semantic frame that receives all controls built from this
+    /// theme, including controls created later by CE popover content.
+    pub(crate) fn begin_action_frame(
+        &mut self,
+        window: &gpui::Window,
+        route: impl Into<SharedString>,
+    ) {
+        self.action_frame = Some(self.action_frames.begin(window, route));
+    }
+
+    /// Leaves the published frame available to the harness. A later frame
+    /// replaces it atomically for this window.
+    pub(crate) fn publish_action_frame(&self, _window: &gpui::Window) {}
+
+    /// Adds one action to the current explicit window frame.
+    pub(crate) fn register_action(&self, action: ActionMetadata) {
+        if let Some(token) = self.action_frame {
+            self.action_frames.register(token, action);
+        }
+    }
+
+    /// Returns the current frame for a screenshot or accessibility harness.
+    pub(crate) fn action_tree(&self, window: &gpui::Window) -> ActionTree {
+        self.action_frames.snapshot(window)
+    }
+
+    /// Drops one window's published frame after a scenario completes.
+    pub(crate) fn reset_action_tree(&self, window: &gpui::Window) {
+        self.action_frames.reset(window);
     }
 
     /// Returns the colour for one semantic role.

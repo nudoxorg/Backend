@@ -31,7 +31,7 @@ use crate::theme::palette::Paint;
 use crate::theme::tokens::{Chrome, Radius, Space, TypeScale, hairline, radius, space, type_size};
 use crate::ui::icon::Icon;
 use crate::ui::tip::{Tip, Tipped as _};
-use crate::ui::{button, chip, fault as fault_ui, glyph, specimen, surface, text};
+use crate::ui::{button, chip, components, fault as fault_ui, glyph, specimen, surface, text};
 use backend_library::CommandDomain;
 use backend_present::{RecordState, domain_name};
 use gpui::Focusable as _;
@@ -41,7 +41,6 @@ use gpui::{
     IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window,
     WindowControlArea, div, px,
 };
-use gpui_elements::editable_text::text_input;
 
 /// Character budget for a result row's second line.
 const PREVIEW: usize = 120;
@@ -51,7 +50,7 @@ impl Workspace {
     pub(super) fn titlebar(
         &mut self,
         theme: &Theme,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let platform = Platform::current();
@@ -76,7 +75,7 @@ impl Workspace {
                     .flex_1()
                     .flex()
                     .justify_center()
-                    .child(self.omnibar(theme, cx)),
+                    .child(self.omnibar(theme, window, cx)),
             )
             .child(self.titlebar_keys(theme, cx))
             .when_some(controls, ParentElement::child)
@@ -184,11 +183,18 @@ impl Workspace {
             )
     }
 
-    fn omnibar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let search = self.search.read(cx);
+    fn omnibar(
+        &mut self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let focused = self.shell.read(cx).focus() == Focus::Omnibar;
-        let mode = search.parsed().mode().clone();
+        let mode = self.search.read(cx).parsed().mode().clone();
         let placeholder = mode.placeholder();
+        self.field.update(cx, |field, cx| {
+            field.set_placeholder(placeholder, window, cx);
+        });
         div()
             .id("omnibar")
             .w(px(Chrome::OMNIBAR))
@@ -216,12 +222,9 @@ impl Workspace {
             })
             .child(
                 div().flex_1().min_w(px(0.0)).child(
-                    text_input("omnibar-field")
-                        .state(self.field.downgrade())
-                        .placeholder(placeholder)
-                        .placeholder_color(theme.paint(Paint::TextFaint))
-                        .selection_color(theme.paint(Paint::GiltWash))
-                        .caret_color(theme.paint(Paint::Gilt))
+                    components::search_input(theme, &self.field, "omnibar-field", placeholder)
+                        .appearance(false)
+                        .bordered(false)
                         .text_size(type_size(TypeScale::Interface))
                         .text_color(theme.paint(Paint::TextStrong)),
                 ),

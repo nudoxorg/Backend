@@ -51,4 +51,3 @@ pub(crate) fn of_path(path: &str) -> Language {
             Language::from_extension(&extension.to_ascii_lowercase())
         })
 }
-
