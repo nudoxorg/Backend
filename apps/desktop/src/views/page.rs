@@ -223,8 +223,10 @@ impl Workspace {
                         .id("page-language")
                         .flex_none()
                         .child(icon::logo(logo, 14.0, ink))
-                        .tip(Tip::new(crate::theme::language::label(language))
-                            .detail("The language this declaration is written in.")),
+                        .tip(
+                            Tip::new(crate::theme::language::label(language))
+                                .detail("The language this declaration is written in."),
+                        ),
                 )
             })
     }
@@ -233,9 +235,10 @@ impl Workspace {
     fn header_controls(theme: &Theme, page: &Page, cx: &mut Context<Self>) -> Div {
         let identity = page.identity().clone();
         let coordinate = identity.coordinate().as_str().to_owned();
-        let site = page.source().site().map(|site| {
-            format!("{}:{}", site.path().as_str(), site.line().get())
-        });
+        let site = page
+            .source()
+            .site()
+            .map(|site| format!("{}:{}", site.path().as_str(), site.line().get()));
         div()
             .flex()
             .flex_none()
@@ -244,19 +247,27 @@ impl Workspace {
             .when_some(site, |controls, site| {
                 controls.child(
                     source_button(theme)
-                        .tip(Tip::new("Show source")
-                            .detail("The captured text, highlighted, with every known name linked.")
-                            .key(keys::OPEN_SOURCE)
-                            .value(site))
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_source(cx))),
+                        .tip(
+                            Tip::new("Show source")
+                                .detail(
+                                    "The captured text, highlighted, with every known name linked.",
+                                )
+                                .key(keys::OPEN_SOURCE)
+                                .value(site),
+                        )
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.toggle_source(window, cx)),
+                        ),
                 )
             })
             .child(Self::key_tag(theme, &identity, cx))
             .child(
                 button::icon_button(theme, "copy-identity", icon::Icon::Copy)
-                    .tip(Tip::new("Copy coordinate")
-                        .key(keys::COPY_IDENTITY)
-                        .value(coordinate.clone()))
+                    .tip(
+                        Tip::new("Copy coordinate")
+                            .key(keys::COPY_IDENTITY)
+                            .value(coordinate.clone()),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.copy("Coordinate copied", coordinate.clone(), cx);
                     })),
@@ -279,10 +290,12 @@ impl Workspace {
             .text_color(theme.paint(Paint::Gilt))
             .cursor_pointer()
             .child(tag.to_string())
-            .tip(Tip::new("Copy stable key")
-                .detail("The key an agent or the CLI addresses this declaration by.")
-                .key(keys::COPY_KEY)
-                .value(full))
+            .tip(
+                Tip::new("Copy stable key")
+                    .detail("The key an agent or the CLI addresses this declaration by.")
+                    .key(keys::COPY_KEY)
+                    .value(full),
+            )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.copy("Key copied", copied.clone(), cx);
             }))
@@ -294,7 +307,11 @@ impl Workspace {
     /// The coordinate alone knows the file and the name; the index knows
     /// that `enumeration` sits inside `ArgumentKind`, and a trail that skips
     /// the type is a trail that lies about where the reader is.
-    fn containers(&self, page: &Page, cx: &Context<Self>) -> Vec<(backend_library::SymbolKey, String)> {
+    fn containers(
+        &self,
+        page: &Page,
+        cx: &Context<Self>,
+    ) -> Vec<(backend_library::SymbolKey, String)> {
         let IdentityKey::Symbol(symbol) = page.identity().key() else {
             return Vec::new();
         };
@@ -321,10 +338,13 @@ impl Workspace {
         let mut crumbs = crumb::trail(identity);
         let leaf = crumbs.len().saturating_sub(1);
         for (symbol, name) in containers.iter().rev() {
-            crumbs.insert(leaf, Crumb::Container {
-                label: name.clone(),
-                symbol: *symbol,
-            });
+            crumbs.insert(
+                leaf,
+                Crumb::Container {
+                    label: name.clone(),
+                    symbol: *symbol,
+                },
+            );
         }
         let coordinate = identity.coordinate().as_str().to_owned();
         div()
@@ -360,8 +380,8 @@ impl Workspace {
         let label = step.label().to_owned();
         let navigable = step.is_navigable();
         let destination = crumb_destination(step, coordinate);
-        let body = text::identity_text(theme, TypeScale::Small)
-            .child(text::elide(&label, 42).to_string());
+        let body =
+            text::identity_text(theme, TypeScale::Small).child(text::elide(&label, 42).to_string());
         if !navigable {
             return div()
                 .child(body.text_color(theme.paint(Paint::TextDim)))
@@ -417,7 +437,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<Div> {
         let mut seen: Vec<backend_library::SymbolKey> = Vec::new();
-        let named: Vec<(backend_library::SymbolKey, String, Option<backend_library::DeclarationKind>)> = {
+        let named: Vec<(
+            backend_library::SymbolKey,
+            String,
+            Option<backend_library::DeclarationKind>,
+        )> = {
             let index = self.index.read(cx);
             signature
                 .tokens()
@@ -431,7 +455,9 @@ impl Workspace {
                         return None;
                     }
                     seen.push(symbol);
-                    let kind = index.entry(symbol).and_then(crate::store::index::Entry::kind);
+                    let kind = index
+                        .entry(symbol)
+                        .and_then(crate::store::index::Entry::kind);
                     Some((symbol, token.text().to_owned(), kind))
                 })
                 .collect()
@@ -530,7 +556,13 @@ impl Workspace {
                     .map(|(at, member)| Self::member_row(theme, &key, at, member, cx)),
             )
             .when(members.len() > shown, |body| {
-                body.child(Self::show_more(theme, &key, members.len() - shown, "members", cx))
+                body.child(Self::show_more(
+                    theme,
+                    &key,
+                    members.len() - shown,
+                    "members",
+                    cx,
+                ))
             })
             .into_any_element();
         let head = GroupHead {
@@ -596,7 +628,9 @@ impl Workspace {
                             .font_weight(FontWeight::MEDIUM)
                             .child(member.identity().name().to_owned()),
                     )
-                    .when_some(preview, |row, preview| row.child(preview_cell(theme).child(preview))),
+                    .when_some(preview, |row, preview| {
+                        row.child(preview_cell(theme).child(preview))
+                    }),
             )
             .when_some(summary, |row, summary| {
                 row.child(
@@ -633,22 +667,27 @@ impl Workspace {
         } else {
             entries.len().min(RELATION_BUDGET)
         };
-        let body = div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap(px(1.0))
-            .children(
-                entries
-                    .iter()
-                    .take(shown)
-                    .enumerate()
-                    .map(|(at, entry)| Self::relation_row(theme, label.as_str(), at, entry, cx)),
-            )
-            .when(entries.len() > shown, |body| {
-                body.child(Self::show_more(theme, &key, entries.len() - shown, "related", cx))
-            })
-            .into_any_element();
+        let body =
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .children(
+                    entries.iter().take(shown).enumerate().map(|(at, entry)| {
+                        Self::relation_row(theme, label.as_str(), at, entry, cx)
+                    }),
+                )
+                .when(entries.len() > shown, |body| {
+                    body.child(Self::show_more(
+                        theme,
+                        &key,
+                        entries.len() - shown,
+                        "related",
+                        cx,
+                    ))
+                })
+                .into_any_element();
         let title = relation_title(label);
         let head = GroupHead {
             key: &key,
@@ -696,7 +735,10 @@ impl Workspace {
                 text::single_line(text::navigable(theme, TypeScale::Interface, false))
                     .flex_none()
                     .max_w(px(280.0))
-                    .child(crate::presentation::project::display_name(entry.identity(), entry.kind())),
+                    .child(crate::presentation::project::display_name(
+                        entry.identity(),
+                        entry.kind(),
+                    )),
             )
             .child(
                 text::single_line(text::faint(theme))
@@ -744,7 +786,10 @@ impl Workspace {
             .gap(space(Space::Snug))
             .child(
                 div()
-                    .id(ElementId::Name(SharedString::from(format!("fold-{}", head.key))))
+                    .id(ElementId::Name(SharedString::from(format!(
+                        "fold-{}",
+                        head.key
+                    ))))
                     .w_full()
                     .flex()
                     .items_center()
@@ -800,8 +845,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if !entering {
-            self.document
-                .update(cx, super::super::store::document::DocumentStore::clear_hover);
+            self.document.update(
+                cx,
+                super::super::store::document::DocumentStore::clear_hover,
+            );
             return;
         }
         let anchor = window.mouse_position();

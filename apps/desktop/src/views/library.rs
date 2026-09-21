@@ -25,10 +25,13 @@ use crate::presentation::project::{self, Standing};
 use crate::store::catalog::{Ask, Catalog, Suggestion};
 use crate::store::document::{Subject, TabId, TreeRow};
 use crate::store::registry::{Spelling, version_rank};
-use crate::store::shell::Side;
+use crate::store::shell::Transient;
+use crate::store::shell::{Focus, Side};
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{PanelWidth, Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{
+    PanelWidth, Radius, Space, TypeScale, hairline, radius, space, type_size,
+};
 use crate::ui::bar::{self, Motion};
 use crate::ui::icon::{self, Icon, Logo};
 use crate::ui::tip::{Card, Tip, Tipped as _};
@@ -126,6 +129,8 @@ impl Workspace {
         let active = self.active_root(cx);
         surface::panel(theme)
             .id("library-panel")
+            .track_focus(&self.library_focus)
+            .tab_stop(false)
             .flex_none()
             .w(px(width))
             .h_full()
@@ -144,16 +149,15 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .py(space(Space::Tight))
-                    .children(
-                        families
-                            .iter()
-                            .enumerate()
-                            .map(|(at, family)| Self::family_row(theme, at, family, active.as_deref(), cx)),
-                    )
+                    .children(families.iter().enumerate().map(|(at, family)| {
+                        Self::family_row(theme, at, family, active.as_deref(), cx)
+                    }))
                     .when(entries.is_empty(), |rows| rows.child(empty_shelf(theme))),
             )
             .child(self.add_region(theme, cx))
-            .when(!tree.is_empty(), |panel| panel.child(self.tab_tree(theme, &tree, cx)))
+            .when(!tree.is_empty(), |panel| {
+                panel.child(self.tab_tree(theme, &tree, cx))
+            })
             .into_any_element()
     }
 
@@ -189,6 +193,8 @@ impl Workspace {
             .collect();
         surface::panel(theme)
             .id("library-rail")
+            .track_focus(&self.library_focus)
+            .tab_stop(false)
             .flex_none()
             .w(px(width))
             .h_full()
@@ -210,8 +216,13 @@ impl Workspace {
             )
             .children(marks)
             .when(!tree.is_empty(), |rail| {
-                rail.child(div().w(px(12.0)).h(hairline()).bg(theme.paint(Paint::Hairline)))
-                    .children(dots)
+                rail.child(
+                    div()
+                        .w(px(12.0))
+                        .h(hairline())
+                        .bg(theme.paint(Paint::Hairline)),
+                )
+                .children(dots)
             })
             .into_any_element()
     }
@@ -231,14 +242,22 @@ impl Workspace {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("PROJECTS"),
             )
-            .when(count > 0, |head| head.child(text::faint(theme).child(count.to_string())))
+            .when(count > 0, |head| {
+                head.child(text::faint(theme).child(count.to_string()))
+            })
             .child(div().flex_1())
             .child(
                 button::icon_button(theme, "add-project-head", Icon::Plus)
-                    .tip(Tip::new("Add a project")
-                        .detail("A folder on this machine, or a package from a registry.")
-                        .key(keys::ADD_PROJECT))
-                    .on_click(cx.listener(|this, _, window, cx| this.begin_add(window, cx))),
+                    .tip(
+                        Tip::new("Add a project")
+                            .detail("A folder on this machine, or a package from a registry.")
+                            .key(keys::ADD_PROJECT),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.shell
+                            .update(cx, |shell, cx| shell.focus_on(Focus::Library, cx));
+                        this.begin_add(window, cx);
+                    })),
             )
             .child(
                 button::icon_button(theme, "collapse-library", Icon::ChevronLeft)
@@ -273,8 +292,18 @@ impl Workspace {
             .rounded(radius(Radius::Small))
             .when(active, |row| row.bg(theme.paint(Paint::Selected)))
             .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .border(hairline())
+            .border_color(gpui::transparent_black())
+            .focusable()
+            .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
+            .role(gpui::Role::Button)
+            .aria_label(entry.identity().name())
             .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| this.open_project(opened.clone(), cx)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.shell
+                    .update(cx, |shell, cx| shell.focus_on(Focus::Library, cx));
+                this.open_project(opened.clone(), cx);
+            }))
             .card(project_tip(entry, family))
             .child(shelf_title(theme, entry, family, standing))
             .child(bar::language_bar(
@@ -302,18 +331,16 @@ impl Workspace {
         shown: &str,
         cx: &mut Context<Self>,
     ) -> Div {
-        div()
-            .flex()
-            .flex_wrap()
-            .gap(px(3.0))
-            .pt(px(3.0))
-            .children(family.entries.iter().enumerate().map(|(index, entry)| {
+        div().flex().flex_wrap().gap(px(3.0)).pt(px(3.0)).children(
+            family.entries.iter().enumerate().map(|(index, entry)| {
                 let coordinate = entry.identity().coordinate().as_str().to_owned();
                 let lit = coordinate == shown;
                 let standing = project::standing(entry);
                 let opened = coordinate.clone();
                 div()
-                    .id(ElementId::Name(SharedString::from(format!("version-{at}-{index}"))))
+                    .id(ElementId::Name(SharedString::from(format!(
+                        "version-{at}-{index}"
+                    ))))
                     .flex()
                     .items_center()
                     .gap(px(3.0))
@@ -324,20 +351,31 @@ impl Workspace {
                     .font_family(theme.specimen())
                     .text_size(type_size(TypeScale::Micro))
                     .text_color(theme.paint(if lit { Paint::Gilt } else { Paint::TextDim }))
+                    .border(hairline())
+                    .border_color(gpui::transparent_black())
+                    .focusable()
+                    .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
+                    .role(gpui::Role::Button)
+                    .aria_label(project::badge(entry.identity()))
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.paint(Paint::Selected)))
                     .when(standing != Standing::Readable, |chip| {
                         chip.child(text::faint(theme).child(glyph::standing_glyph(standing)))
                     })
                     .child(project::badge(entry.identity()))
-                    .tip(Tip::new(format!("Open {}", project::badge(entry.identity())))
-                        .detail(project::summary(entry))
-                        .value(coordinate))
+                    .tip(
+                        Tip::new(format!("Open {}", project::badge(entry.identity())))
+                            .detail(project::summary(entry))
+                            .value(coordinate),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
+                        this.shell
+                            .update(cx, |shell, cx| shell.focus_on(Focus::Library, cx));
                         this.open_project(opened.clone(), cx);
                     }))
-            }))
+            }),
+        )
     }
 
     fn failed_row(
@@ -406,9 +444,12 @@ impl Workspace {
     ) {
         match affordance {
             Affordance::Retry => {
-                self.document.update(cx, super::super::store::document::DocumentStore::reload);
-                self.engine
-                    .update(cx, super::super::store::workspace::WorkspaceStore::refresh_health);
+                self.document
+                    .update(cx, super::super::store::document::DocumentStore::reload);
+                self.engine.update(
+                    cx,
+                    super::super::store::workspace::WorkspaceStore::refresh_health,
+                );
             }
             Affordance::Reindex { path } => {
                 let target = if path.is_empty() { coordinate } else { path };
@@ -427,7 +468,12 @@ impl Workspace {
 
 /// The tab tree.
 impl Workspace {
-    fn tab_tree(&self, theme: &Theme, tree: &[TreeRow], cx: &mut Context<Self>) -> impl IntoElement {
+    fn tab_tree(
+        &self,
+        theme: &Theme,
+        tree: &[TreeRow],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let index = self.index.clone();
         div()
             .id("tab-tree")
@@ -491,13 +537,21 @@ impl Workspace {
             .rounded(radius(Radius::Small))
             .when(row.active, |tab| tab.bg(theme.paint(Paint::Selected)))
             .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .border(hairline())
+            .border_color(gpui::transparent_black())
+            .focusable()
+            .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
+            .role(gpui::Role::Button)
+            .aria_label(row.title.clone())
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.document.update(cx, |document, cx| document.activate(id, cx));
+                this.document
+                    .update(cx, |document, cx| document.activate(id, cx));
             }))
             .on_aux_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 if event.is_middle_click() {
-                    this.document.update(cx, |document, cx| document.close(id, cx));
+                    this.document
+                        .update(cx, |document, cx| document.close(id, cx));
                 }
             }))
             .tip(tab_tip(row))
@@ -527,25 +581,45 @@ impl Workspace {
 }
 
 /// Returns one project as a mark on the collapsed rail.
-fn rail_project(theme: &Theme, at: usize, entry: &ShelfEntry, cx: &mut Context<Workspace>) -> impl IntoElement {
+fn rail_project(
+    theme: &Theme,
+    at: usize,
+    entry: &ShelfEntry,
+    cx: &mut Context<Workspace>,
+) -> impl IntoElement {
     let coordinate = entry.identity().coordinate().as_str().to_owned();
     let name = entry.identity().name().to_owned();
     let readiness = project::summary(entry);
     div()
         .id(ElementId::Name(SharedString::from(format!("rail-{at}"))))
+        .border(hairline())
+        .border_color(gpui::transparent_black())
+        .focusable()
+        .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
+        .role(gpui::Role::Button)
+        .aria_label(name.clone())
         .cursor_pointer()
         .child(rail_mark(theme, entry))
         .tip(Tip::new(name).detail(readiness).value(coordinate.clone()))
         .on_click(cx.listener(move |this, _, _, cx| {
+            this.shell
+                .update(cx, |shell, cx| shell.focus_on(Focus::Library, cx));
             this.open_project(coordinate.clone(), cx);
         }))
 }
 
 /// Returns one tab as a dot on the collapsed rail.
-fn rail_dot(theme: &Theme, at: usize, row: &TreeRow, cx: &mut Context<Workspace>) -> impl IntoElement {
+fn rail_dot(
+    theme: &Theme,
+    at: usize,
+    row: &TreeRow,
+    cx: &mut Context<Workspace>,
+) -> impl IntoElement {
     let id = row.id;
     div()
-        .id(ElementId::Name(SharedString::from(format!("rail-tab-{at}"))))
+        .id(ElementId::Name(SharedString::from(format!(
+            "rail-tab-{at}"
+        ))))
         .w(px(6.0))
         .h(px(6.0))
         .rounded_full()
@@ -555,17 +629,34 @@ fn rail_dot(theme: &Theme, at: usize, row: &TreeRow, cx: &mut Context<Workspace>
         } else {
             theme.paint(Paint::TextFaint)
         })
+        .border(hairline())
+        .border_color(gpui::transparent_black())
+        .focusable()
+        .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
+        .role(gpui::Role::Button)
+        .aria_label(row.title.clone())
         .tip(tab_tip(row))
         .on_click(cx.listener(move |this, _, _, cx| {
-            this.document.update(cx, |document, cx| document.activate(id, cx));
+            this.document
+                .update(cx, |document, cx| document.activate(id, cx));
         }))
 }
 
-fn close_button(theme: &Theme, at: usize, id: TabId, cx: &mut Context<Workspace>) -> impl IntoElement {
+fn close_button(
+    theme: &Theme,
+    at: usize,
+    id: TabId,
+    cx: &mut Context<Workspace>,
+) -> impl IntoElement {
     button::icon_button(theme, format!("tab-close-{at}"), Icon::Close)
-        .tip(Tip::new("Close").detail("Its branches move up to the page it was opened from.").key(keys::CLOSE_TAB))
+        .tip(
+            Tip::new("Close")
+                .detail("Its branches move up to the page it was opened from.")
+                .key(keys::CLOSE_TAB),
+        )
         .on_click(cx.listener(move |this, _, _, cx| {
-            this.document.update(cx, |document, cx| document.close(id, cx));
+            this.document
+                .update(cx, |document, cx| document.close(id, cx));
         }))
 }
 
@@ -581,9 +672,10 @@ fn tab_glyph(
         }
         Some(Subject::Project { .. }) => glyph::package_tile(theme, false).into_any_element(),
         Some(Subject::Package { coordinate }) => {
-            let language = Spelling::of(coordinate)
-                .ecosystem()
-                .map_or(backend_present::Language::Unknown, super::home::ecosystem_language);
+            let language = Spelling::of(coordinate).ecosystem().map_or(
+                backend_present::Language::Unknown,
+                super::home::ecosystem_language,
+            );
             glyph::language_tag(theme, language).into_any_element()
         }
         Some(Subject::Declaration { symbol, .. }) => {
@@ -642,13 +734,15 @@ impl Workspace {
 
     /// Opens the inline add flow and puts the caret in its field.
     pub(crate) fn begin_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let restore = self.shell.read(cx).focus();
         self.adding = true;
+        self.transients.push_with_restore(Transient::Add, restore);
         self.add_fault = None;
         self.shell.update(cx, |shell, cx| {
             if !shell.library_open() {
                 shell.toggle_panel(Side::Library, cx);
             }
-            shell.focus_on(crate::store::shell::Focus::Library, cx);
+            shell.focus_on(Focus::Add, cx);
         });
         let text = self.coordinate.read(cx).as_str().to_owned();
         self.catalog
@@ -661,13 +755,19 @@ impl Workspace {
     /// Closes the inline add flow and forgets its catalog lookup.
     pub(super) fn cancel_add(&mut self, cx: &mut Context<Self>) {
         self.adding = false;
+        self.remove_transient(Transient::Add, cx);
         self.add_fault = None;
-        self.catalog.update(cx, super::super::store::catalog::CatalogStore::clear);
+        self.catalog
+            .update(cx, super::super::store::catalog::CatalogStore::clear);
         cx.notify();
     }
 
     /// Chooses the ecosystem the typed name is looked for in.
-    pub(super) fn choose_ecosystem(&mut self, ecosystem: RegistryEcosystem, cx: &mut Context<Self>) {
+    pub(super) fn choose_ecosystem(
+        &mut self,
+        ecosystem: RegistryEcosystem,
+        cx: &mut Context<Self>,
+    ) {
         self.add_ecosystem = ecosystem;
         self.add_fault = None;
         cx.notify();
@@ -694,7 +794,10 @@ impl Workspace {
                     .child(
                         button::icon_button(theme, "add-close", Icon::Close)
                             .tip(Tip::new("Cancel").key(keys::DISMISS))
-                            .on_click(cx.listener(|this, _, _, cx| this.cancel_add(cx))),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.cancel_add(cx);
+                                this.restore_focus(window, cx);
+                            })),
                     ),
             )
             .child(Self::folder_button(theme, cx))
@@ -736,7 +839,10 @@ impl Workspace {
                     theme.paint(Paint::TextDim)
                 };
                 div()
-                    .id(ElementId::Name(SharedString::from(format!("add-eco-{}", ecosystem.as_str()))))
+                    .id(ElementId::Name(SharedString::from(format!(
+                        "add-eco-{}",
+                        ecosystem.as_str()
+                    ))))
                     .flex()
                     .items_center()
                     .gap(px(4.0))
@@ -744,16 +850,24 @@ impl Workspace {
                     .py(px(2.0))
                     .rounded(radius(Radius::Capsule))
                     .border(hairline())
-                    .border_color(if lit { theme.on_plane(hue) } else { theme.paint(Paint::Hairline) })
+                    .border_color(if lit {
+                        theme.on_plane(hue)
+                    } else {
+                        theme.paint(Paint::Hairline)
+                    })
                     .when(lit, |chip| chip.bg(theme.plane_wash(hue, 0.14)))
                     .text_size(type_size(TypeScale::Tiny))
                     .text_color(ink)
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.paint(Paint::Hover)))
-                    .when_some(Logo::of(language), |chip, logo| chip.child(icon::logo(logo, 11.0, ink)))
+                    .when_some(Logo::of(language), |chip, logo| {
+                        chip.child(icon::logo(logo, 11.0, ink))
+                    })
                     .child(ecosystem.as_str().to_owned())
                     .tip(Tip::new(format!("Look in {}", registry_name(ecosystem))))
-                    .on_click(cx.listener(move |this, _, _, cx| this.choose_ecosystem(ecosystem, cx)))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.choose_ecosystem(ecosystem, cx)),
+                    )
             }))
     }
 
@@ -769,19 +883,30 @@ impl Workspace {
             .child(button::key_hint(theme, &keys::ACCEPT.label()))
             .child(div().flex_1())
             .child(
-                button::button(theme, "add-browse", "Browse the registry", button::Weight::Quiet)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.cancel_add(cx);
-                        this.open_home(cx);
-                    })),
+                button::button(
+                    theme,
+                    "add-browse",
+                    "Browse the registry",
+                    button::Weight::Quiet,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.cancel_add(cx);
+                    this.open_home(cx);
+                    this.restore_focus(window, cx);
+                })),
             )
     }
 
     fn folder_button(theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        button::button(theme, "add-folder", "Choose a folder…", button::Weight::Regular)
-            .w_full()
-            .justify_center()
-            .on_click(cx.listener(|_, _, _, cx| Self::choose_folder(cx)))
+        button::button(
+            theme,
+            "add-folder",
+            "Choose a folder…",
+            button::Weight::Regular,
+        )
+        .w_full()
+        .justify_center()
+        .on_click(cx.listener(|_, _, _, cx| Self::choose_folder(cx)))
     }
 
     fn coordinate_field(&mut self, theme: &Theme) -> impl IntoElement {
@@ -822,7 +947,9 @@ impl Workspace {
                     .collect();
                 if rows.is_empty() {
                     return text::faint(theme)
-                        .child(format!("Nothing in the local {ecosystem} catalog matches this."))
+                        .child(format!(
+                            "Nothing in the local {ecosystem} catalog matches this."
+                        ))
                         .into_any_element();
                 }
                 div()
@@ -848,7 +975,9 @@ impl Workspace {
         let filled = format!("{}@{}", row.name(), row.version());
         let coordinate = row.coordinate().to_owned();
         div()
-            .id(ElementId::Name(SharedString::from(format!("suggestion-{at}"))))
+            .id(ElementId::Name(SharedString::from(format!(
+                "suggestion-{at}"
+            ))))
             .flex()
             .items_center()
             .gap(space(Space::Snug))
@@ -923,10 +1052,14 @@ fn hint_for(ask: &Ask) -> Option<String> {
     match ask {
         Ask::Folder(_) => Some("A folder on this machine.".to_owned()),
         Ask::Pinned(_) => Some("A pinned package URL, taken as written.".to_owned()),
-        Ask::Named { name, version: None } if !name.is_empty() => {
-            Some("No version: the newest recorded one is used.".to_owned())
-        }
-        Ask::Named { version: Some(version), .. } => Some(format!(
+        Ask::Named {
+            name,
+            version: None,
+        } if !name.is_empty() => Some("No version: the newest recorded one is used.".to_owned()),
+        Ask::Named {
+            version: Some(version),
+            ..
+        } => Some(format!(
             "{version}, or the closest version the index records."
         )),
         Ask::Named { .. } => None,
@@ -963,7 +1096,10 @@ fn validate_coordinate(full: &str, rest: &str) -> Result<String, String> {
         return Err("A package URL needs an ecosystem, such as cargo or pypi.".to_owned());
     }
     if !tail.contains('@') {
-        return Err("A package URL needs a pinned @version; type just the name to take the newest.".to_owned());
+        return Err(
+            "A package URL needs a pinned @version; type just the name to take the newest."
+                .to_owned(),
+        );
     }
     match backend_library::PackageReference::parse(full) {
         Ok(_) => Ok(full.to_owned()),
@@ -988,7 +1124,9 @@ fn shelf_title(theme: &Theme, entry: &ShelfEntry, family: &Family, standing: Sta
     let name = if family.local {
         entry.identity().name().to_owned()
     } else {
-        Spelling::of(entry.identity().coordinate().as_str()).name().to_owned()
+        Spelling::of(entry.identity().coordinate().as_str())
+            .name()
+            .to_owned()
     };
     div()
         .flex()
@@ -1037,9 +1175,10 @@ fn project_tip(entry: &ShelfEntry, family: &Family) -> Card {
 fn provenance_line(entry: &ShelfEntry) -> String {
     let coordinate = entry.identity().coordinate().as_str();
     if let Some(rest) = coordinate.strip_prefix("pkg:") {
-        return rest
-            .split_once('/')
-            .map_or_else(|| rest.to_owned(), |(ecosystem, tail)| format!("{ecosystem} · {tail}"));
+        return rest.split_once('/').map_or_else(
+            || rest.to_owned(),
+            |(ecosystem, tail)| format!("{ecosystem} · {tail}"),
+        );
     }
     home_relative(coordinate)
 }
@@ -1061,12 +1200,10 @@ fn home_relative(path: &str) -> String {
 fn rail_mark(theme: &Theme, entry: &ShelfEntry) -> Div {
     let standing = project::standing(entry);
     if standing == Standing::Readable {
-        let hue = entry
-            .languages()
-            .first()
-            .map_or(crate::theme::language::hue(backend_present::Language::Unknown), |count| {
-                crate::theme::language::hue(count.language())
-            });
+        let hue = entry.languages().first().map_or(
+            crate::theme::language::hue(backend_present::Language::Unknown),
+            |count| crate::theme::language::hue(count.language()),
+        );
         return div()
             .w(px(8.0))
             .h(px(8.0))

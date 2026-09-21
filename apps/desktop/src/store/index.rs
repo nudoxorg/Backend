@@ -281,6 +281,16 @@ impl IndexStore {
         self.projects.iter().find(|project| project.root() == root)
     }
 
+    /// Returns how many projects the current admitted revision contains.
+    pub(crate) fn project_count(&self) -> usize {
+        self.projects.len()
+    }
+
+    /// Returns how many declarations the current admitted revision contains.
+    pub(crate) fn declaration_count(&self) -> usize {
+        self.projects.iter().map(|project| project.entries.len()).sum()
+    }
+
     /// Returns the project one declaration belongs to.
     pub(crate) fn project_of(&self, symbol: SymbolKey) -> Option<&ProjectIndex> {
         self.locate

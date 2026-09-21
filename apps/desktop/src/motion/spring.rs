@@ -70,6 +70,12 @@ impl Spring {
         self.target
     }
 
+    /// Returns the current velocity, useful to prove interrupted motion does
+    /// not reset its momentum when a target reverses.
+    pub(crate) const fn velocity(self) -> f32 {
+        self.velocity
+    }
+
     /// Returns whether the spring has arrived and needs no further frames.
     pub(crate) fn settled(self) -> bool {
         (self.value - self.target).abs() <= EPSILON_VALUE

@@ -11,30 +11,30 @@
 use super::actions::{
     Accept, AddProject, CloseTab, Complete, CopyIdentity, CopyKey, Dismiss, FocusOmnibar, GoBack,
     GoForward, GoHome, GrowInterface, MoveDown, MoveUp, NextTab, OpenEditor, OpenPalette,
-    OpenSettings, OpenSource, PageDown, PageUp, PreviousTab, Reload, ResetInterface, SelectFirst, SelectLast,
-    ShrinkInterface, Tab1, Tab2, Tab3, Tab4, Tab5, Tab6, Tab7, Tab8, Tab9, ToggleAppearance,
-    ToggleContext, ToggleLibrary, ToggleMotion, WINDOW_CONTEXT, tab_index,
+    OpenSettings, OpenSource, PageDown, PageUp, PreviousTab, Reload, ResetInterface, SelectFirst,
+    SelectLast, ShrinkInterface, Tab1, Tab2, Tab3, Tab4, Tab5, Tab6, Tab7, Tab8, Tab9,
+    ToggleAppearance, ToggleContext, ToggleLibrary, ToggleMotion, WINDOW_CONTEXT, tab_index,
 };
 use crate::host::lease::HostMode;
-use backend_present::Identity;
 use crate::reducer::model::Model;
-use crate::store::document::{DocumentStore, Subject, Target};
 use crate::store::catalog::{Ask, CatalogStore};
+use crate::store::document::{DocumentStore, Subject, Target};
 use crate::store::events::CatalogEvent;
-use crate::store::marks::Recent;
 use crate::store::index::IndexStore;
-use crate::store::registry::RegistryStore;
 use crate::store::jobs::{JobKind, JobsStore};
+use crate::store::marks::Recent;
 use crate::store::prefs::Preferences;
+use crate::store::registry::RegistryStore;
 use crate::store::search::{Mode, SearchStore};
 use crate::store::service::Endpoint;
-use crate::store::shell::{Focus, ShellStore, Side};
+use crate::store::shell::{Focus, ShellStore, Side, Transient, TransientStack};
 use crate::store::workspace::WorkspaceStore;
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::transport::unix::UnixSubscriptionTransport;
 use crate::ui::surface;
 use backend_library::{SymbolKey, ViewRoot};
+use backend_present::Identity;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement,
@@ -58,10 +58,12 @@ pub(crate) struct Workspace {
     pub(super) adding: bool,
     pub(super) add_fault: Option<String>,
     pub(super) add_ecosystem: backend_library::RegistryEcosystem,
+    pub(super) transients: TransientStack,
     pub(super) source_open: bool,
     pub(super) source_cache: Option<super::source::SourceCache>,
     folded: Vec<String>,
     unfurled: Vec<String>,
+    capture_time: Option<std::time::Duration>,
     #[cfg(feature = "preview")]
     scene: Option<crate::preview::Scene>,
     pub(super) outline_scroll: gpui::UniformListScrollHandle,
@@ -69,6 +71,9 @@ pub(crate) struct Workspace {
     pub(super) sheet_scroll: gpui::ScrollHandle,
     pub(super) revealed_row: Option<usize>,
     focus: FocusHandle,
+    pub(super) library_focus: FocusHandle,
+    pub(super) source_focus: FocusHandle,
+    pub(super) settings_focus: FocusHandle,
     /// Held, not read: a `Subscription` unsubscribes the moment it is dropped.
     _subscriptions: Vec<Subscription>,
 }
@@ -96,6 +101,23 @@ pub(crate) struct Bootstrap {
 impl Workspace {
     /// Builds the whole window around one admitted root and one live feed.
     pub(crate) fn new(opened: Bootstrap, cx: &mut Context<Self>) -> Self {
+        #[cfg(feature = "preview")]
+        let capture_time = crate::preview::capture_time();
+        #[cfg(not(feature = "preview"))]
+        let capture_time = None;
+        Self::new_with_capture(opened, capture_time, cx)
+    }
+
+    /// Builds a window with an optional deterministic animation timestamp.
+    ///
+    /// This seam is part of the production workspace rather than the preview
+    /// module, so an offscreen or visible harness can inject exact frame times
+    /// without relying on an environment variable or the wall clock.
+    pub(crate) fn new_with_capture(
+        opened: Bootstrap,
+        capture_time: Option<std::time::Duration>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let Bootstrap {
             endpoint,
             project,
@@ -135,7 +157,7 @@ impl Workspace {
             },
             cx,
         );
-        Self::assemble(engine, stores, subscriptions, cx)
+        Self::assemble(engine, stores, subscriptions, capture_time, cx)
     }
 
     /// Returns the window with every store installed and nothing yet open.
@@ -143,7 +165,8 @@ impl Workspace {
         engine: Entity<WorkspaceStore>,
         stores: Stores,
         subscriptions: Vec<Subscription>,
-        cx: &Context<Self>,
+        capture_time: Option<std::time::Duration>,
+        cx: &mut Context<Self>,
     ) -> Self {
         let Stores {
             search,
@@ -156,6 +179,9 @@ impl Workspace {
             field,
             coordinate,
         } = stores;
+        if capture_time.is_some() {
+            shell.update(cx, |shell, cx| shell.set_capture_mode(true, cx));
+        }
         Self {
             engine,
             search,
@@ -170,10 +196,12 @@ impl Workspace {
             adding: false,
             add_fault: None,
             add_ecosystem: backend_library::RegistryEcosystem::Cargo,
+            transients: TransientStack::default(),
             source_open: false,
             source_cache: None,
             folded: Vec::new(),
             unfurled: Vec::new(),
+            capture_time,
             #[cfg(feature = "preview")]
             scene: crate::preview::Scene::from_env(),
             outline_scroll: gpui::UniformListScrollHandle::new(),
@@ -181,6 +209,9 @@ impl Workspace {
             sheet_scroll: gpui::ScrollHandle::new(),
             revealed_row: None,
             focus: cx.focus_handle(),
+            library_focus: cx.focus_handle(),
+            source_focus: cx.focus_handle(),
+            settings_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
     }
@@ -196,9 +227,8 @@ impl Workspace {
         let index = cx.new(|cx| IndexStore::new(engine, cx));
         Stores {
             search: cx.new(|_| SearchStore::new(endpoint.clone())),
-            document: cx.new(|_| {
-                DocumentStore::new(endpoint.clone(), engine.clone(), index.clone())
-            }),
+            document: cx
+                .new(|_| DocumentStore::new(endpoint.clone(), engine.clone(), index.clone())),
             index,
             jobs: cx.new(|_| JobsStore::new(endpoint.clone())),
             catalog: cx.new(|_| CatalogStore::new(endpoint.clone())),
@@ -222,7 +252,9 @@ impl Workspace {
             }),
             cx.observe(parts.registry, |_, _, cx| cx.notify()),
             cx.observe(parts.shell, |_, _, cx| cx.notify()),
-            cx.subscribe(parts.field, |this, field, event, cx| this.on_typed(&field, event, cx)),
+            cx.subscribe(parts.field, |this, field, event, cx| {
+                this.on_typed(&field, event, cx)
+            }),
             cx.subscribe(parts.coordinate, |this, field, event, cx| {
                 this.on_coordinate_typed(&field, event, cx);
             }),
@@ -231,7 +263,8 @@ impl Workspace {
 
     fn on_engine(&mut self, store: &Entity<WorkspaceStore>, cx: &mut Context<Self>) {
         let published = store.read(cx).shelf().clone();
-        self.jobs.update(cx, |jobs, cx| jobs.reconcile(&published, cx));
+        self.jobs
+            .update(cx, |jobs, cx| jobs.reconcile(&published, cx));
         cx.notify();
     }
 
@@ -242,17 +275,48 @@ impl Workspace {
     /// would only ever photograph the loading state.
     #[cfg(feature = "preview")]
     fn stage_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(scene) = self.scene else {
-            return;
-        };
-        if crate::preview::stage(self, scene, window, cx) {
-            eprintln!("backend-desktop: opened in the {} scene", scene.name());
-            self.scene = None;
+        if let Some(scene) = self.scene {
+            if crate::preview::stage(self, scene, window, cx) {
+                eprintln!("backend-desktop: opened in the {} scene", scene.name());
+                self.scene = None;
+            }
         }
     }
 
+    /// Advances the production animation clock when a harness supplied a
+    /// deterministic timestamp. Live windows leave this as a no-op.
+    fn advance_capture_frame(&mut self, cx: &mut Context<Self>) {
+        if let Some(timestamp) = self.capture_time {
+            self.shell.update(cx, |shell, cx| {
+                shell.advance_capture(timestamp, cx);
+            });
+        }
+    }
+
+    /// Replaces the deterministic timestamp used by subsequent renders.
+    ///
+    /// Passing `None` returns ownership to the normal wall-clock animation
+    /// task. The shell clock is monotonic, making repeated renders of one
+    /// capture frame idempotent.
+    pub(crate) fn set_capture_time(
+        &mut self,
+        timestamp: Option<std::time::Duration>,
+        cx: &mut Context<Self>,
+    ) {
+        self.capture_time = timestamp;
+        self.shell.update(cx, |shell, cx| {
+            shell.set_capture_mode(timestamp.is_some(), cx);
+        });
+        cx.notify();
+    }
+
     /// Acts on a resolved add: index what was decided, or say why nothing was.
-    fn on_catalog(&mut self, catalog: &Entity<CatalogStore>, event: CatalogEvent, cx: &mut Context<Self>) {
+    fn on_catalog(
+        &mut self,
+        catalog: &Entity<CatalogStore>,
+        event: CatalogEvent,
+        cx: &mut Context<Self>,
+    ) {
         if event != CatalogEvent::Resolved {
             return;
         }
@@ -264,7 +328,9 @@ impl Workspace {
                 let coordinate = coordinate.to_owned();
                 self.add_fault = None;
                 self.adding = false;
-                self.coordinate.update(cx, |field, cx| field.emplace("", cx));
+                self.remove_transient(Transient::Add, cx);
+                self.coordinate
+                    .update(cx, |field, cx| field.emplace("", cx));
                 self.catalog.update(cx, CatalogStore::clear);
                 if let Some(notice) = resolution.notice() {
                     self.shell.update(cx, |shell, cx| shell.notify(notice, cx));
@@ -283,7 +349,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let text = field.read(cx).as_str().to_owned();
-        self.search.update(cx, |search, cx| search.set_text(text, cx));
+        self.search
+            .update(cx, |search, cx| search.set_text(text, cx));
+        self.sync_search_transient(cx);
     }
 
     fn on_coordinate_typed(
@@ -308,23 +376,103 @@ impl Workspace {
             prefs.reduced_motion(),
         )
     }
+
+    /// Keeps Escape ownership in step with the typed omnibar route.
+    pub(super) fn sync_search_transient(&mut self, cx: &mut Context<Self>) {
+        if !self.search.read(cx).is_open() {
+            self.remove_transient(Transient::Search, cx);
+            self.remove_transient(Transient::Palette, cx);
+            return;
+        }
+        let surface = if self.search.read(cx).parsed().mode() == &Mode::Palette {
+            Transient::Palette
+        } else {
+            Transient::Search
+        };
+        let restore = self
+            .transients
+            .restore_for(Transient::Search)
+            .or_else(|| self.transients.restore_for(Transient::Palette))
+            .unwrap_or_else(|| self.shell.read(cx).focus());
+        self.transients.replace_omnibar(surface, restore);
+    }
+
+    /// Removes a transient and restores its semantic route when it was topmost.
+    pub(super) fn remove_transient(
+        &mut self,
+        surface: Transient,
+        cx: &mut Context<Self>,
+    ) -> Option<Focus> {
+        let was_top = self.transients.top() == Some(surface);
+        let frame = if was_top {
+            self.transients.pop_if(surface)
+        } else {
+            self.transients.remove(surface)
+        }?;
+        if was_top {
+            self.shell
+                .update(cx, |shell, cx| shell.focus_on(frame.restore, cx));
+        }
+        Some(frame.restore)
+    }
+
+    /// Removes the active omnibar route and restores the route behind it.
+    pub(super) fn remove_omnibar(&mut self, cx: &mut Context<Self>) -> Option<Focus> {
+        let restore = self
+            .transients
+            .restore_for(Transient::Search)
+            .or_else(|| self.transients.restore_for(Transient::Palette));
+        let was_top = matches!(
+            self.transients.top(),
+            Some(Transient::Search | Transient::Palette)
+        );
+        self.transients.remove(Transient::Search);
+        self.transients.remove(Transient::Palette);
+        if was_top {
+            if let Some(restore) = restore {
+                self.shell
+                    .update(cx, |shell, cx| shell.focus_on(restore, cx));
+            }
+        }
+        restore
+    }
 }
 
 /// Navigation.
 impl Workspace {
     /// Opens one declaration, resolving its coordinate from the index.
-    pub(super) fn open_symbol(&mut self, symbol: SymbolKey, target: Target, cx: &mut Context<Self>) {
+    pub(super) fn open_symbol(
+        &mut self,
+        symbol: SymbolKey,
+        target: Target,
+        cx: &mut Context<Self>,
+    ) {
         self.document
             .update(cx, |document, cx| document.open_symbol(symbol, target, cx));
-        if let Some(coordinate) = self.index.read(cx).coordinate_of(symbol).map(ToOwned::to_owned) {
+        if let Some(coordinate) = self
+            .index
+            .read(cx)
+            .coordinate_of(symbol)
+            .map(ToOwned::to_owned)
+        {
             self.remember(Recent::Declaration { coordinate }, cx);
         }
         self.dismiss_sheet(cx);
     }
 
     /// Opens one registry package's page.
-    pub(crate) fn open_package(&mut self, coordinate: String, target: Target, cx: &mut Context<Self>) {
-        self.remember(Recent::Package { coordinate: coordinate.clone() }, cx);
+    pub(crate) fn open_package(
+        &mut self,
+        coordinate: String,
+        target: Target,
+        cx: &mut Context<Self>,
+    ) {
+        self.remember(
+            Recent::Package {
+                coordinate: coordinate.clone(),
+            },
+            cx,
+        );
         self.document.update(cx, |document, cx| {
             document.open(Subject::Package { coordinate }, target, cx);
         });
@@ -340,7 +488,9 @@ impl Workspace {
     pub(super) fn open_recent(&mut self, entry: &Recent, cx: &mut Context<Self>) {
         match entry {
             Recent::Project { coordinate } => self.open_project(coordinate.clone(), cx),
-            Recent::Package { coordinate } => self.open_package(coordinate.clone(), Target::Child, cx),
+            Recent::Package { coordinate } => {
+                self.open_package(coordinate.clone(), Target::Child, cx)
+            }
             Recent::Declaration { coordinate } => {
                 match self.index.read(cx).symbol_for(coordinate) {
                     Some(symbol) => self.open_symbol(symbol, Target::Child, cx),
@@ -352,18 +502,23 @@ impl Workspace {
 
     /// Pins or unpins one project or package for the browse page.
     pub(super) fn toggle_pin(&mut self, coordinate: &str, cx: &mut Context<Self>) {
-        let pinned = self.shell.update(cx, |shell, cx| shell.toggle_pin(coordinate, cx));
+        let pinned = self
+            .shell
+            .update(cx, |shell, cx| shell.toggle_pin(coordinate, cx));
         let notice = if pinned { "Pinned" } else { "Unpinned" };
         self.shell.update(cx, |shell, cx| shell.notify(notice, cx));
     }
 
     /// Moves focus into the omnibar field and drops the sheet.
     pub(super) fn focus_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let restore = self.shell.read(cx).focus();
         let handle = self.field.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
         self.shell
             .update(cx, |shell, cx| shell.focus_on(Focus::Omnibar, cx));
         self.search.update(cx, SearchStore::open);
+        self.transients.replace_omnibar(Transient::Search, restore);
+        self.sync_search_transient(cx);
     }
 
     /// Opens the browse page.
@@ -374,7 +529,12 @@ impl Workspace {
 
     /// Opens one project's page.
     pub(crate) fn open_project(&mut self, coordinate: String, cx: &mut Context<Self>) {
-        self.remember(Recent::Project { coordinate: coordinate.clone() }, cx);
+        self.remember(
+            Recent::Project {
+                coordinate: coordinate.clone(),
+            },
+            cx,
+        );
         self.document.update(cx, |document, cx| {
             document.open(Subject::Project { coordinate }, Target::Child, cx);
         });
@@ -411,13 +571,12 @@ impl Workspace {
     pub(super) fn dismiss_sheet_from_scrim(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.set_field(String::new(), cx);
         self.dismiss_sheet(cx);
-        window.focus(&self.focus, cx);
+        self.restore_focus(window, cx);
     }
 
     fn dismiss_sheet(&mut self, cx: &mut Context<Self>) {
         self.search.update(cx, SearchStore::dismiss);
-        self.shell
-            .update(cx, |shell, cx| shell.focus_on(Focus::Reader, cx));
+        self.remove_omnibar(cx);
     }
 
     /// Returns the identity of whatever the reader is showing.
@@ -434,7 +593,11 @@ impl Workspace {
     /// the engine publishes declarations, not files — so it scopes the omnibar
     /// to that file's project and searches for the file, which is the closest
     /// honest thing to "show me what is in here".
-    pub(super) fn open_crumb(&mut self, destination: &super::page::Destination, cx: &mut Context<Self>) {
+    pub(super) fn open_crumb(
+        &mut self,
+        destination: &super::page::Destination,
+        cx: &mut Context<Self>,
+    ) {
         match destination {
             super::page::Destination::Project(root) => self.open_project(root.clone(), cx),
             super::page::Destination::File(path) => {
@@ -460,7 +623,12 @@ impl Workspace {
     }
 
     /// Returns the symbol of the module one source file is, when published.
-    pub(super) fn module_symbol(&self, root: &str, path: &str, cx: &Context<Self>) -> Option<SymbolKey> {
+    pub(super) fn module_symbol(
+        &self,
+        root: &str,
+        path: &str,
+        cx: &Context<Self>,
+    ) -> Option<SymbolKey> {
         self.index
             .read(cx)
             .project(root)?
@@ -502,6 +670,9 @@ impl Workspace {
         self.shell.update(cx, |shell, cx| {
             shell.show_settings_page(crate::store::shell::SettingsPage::Agents, cx);
         });
+        let restore = self.shell.read(cx).focus_before_settings();
+        self.transients
+            .push_with_restore(Transient::Settings, restore);
     }
 
     /// Returns the merged shelf, for the preview scenes.
@@ -575,8 +746,8 @@ impl Render for Workspace {
         self.fit(window, cx);
         #[cfg(feature = "preview")]
         self.stage_preview(window, cx);
-        let frame = surface::ground(&theme)
-            .id("nudox-window")
+        self.advance_capture_frame(cx);
+        let frame = surface::ground(&theme)            .id("nudox-window")
             .key_context(WINDOW_CONTEXT)
             .track_focus(&self.focus)
             .size_full()
@@ -697,12 +868,15 @@ fn with_sheet_handlers<E: InteractiveElement>(element: E, cx: &mut Context<Works
 
 impl Workspace {
     fn focus_omnibar(&mut self, _: &FocusOmnibar, window: &mut Window, cx: &mut Context<Self>) {
+        let restore = self.shell.read(cx).focus();
         self.field.update(cx, EditableTextState::select_document);
         let handle = self.field.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
         self.shell
             .update(cx, |shell, cx| shell.focus_on(Focus::Omnibar, cx));
         self.search.update(cx, SearchStore::open);
+        self.transients.replace_omnibar(Transient::Search, restore);
+        self.sync_search_transient(cx);
     }
 
     fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
@@ -724,8 +898,18 @@ impl Workspace {
             .update(cx, |shell, cx| shell.toggle_panel(Side::Context, cx));
     }
 
-    fn open_settings(&mut self, _: &OpenSettings, _: &mut Window, cx: &mut Context<Self>) {
+    fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        let was_open = self.shell.read(cx).settings_open();
         self.shell.update(cx, ShellStore::toggle_settings);
+        if was_open {
+            self.remove_transient(Transient::Settings, cx);
+            self.restore_focus(window, cx);
+        } else {
+            let restore = self.shell.read(cx).focus_before_settings();
+            self.transients
+                .push_with_restore(Transient::Settings, restore);
+            window.focus(&self.settings_focus, cx);
+        }
     }
 
     fn go_back(&mut self, _: &GoBack, _: &mut Window, cx: &mut Context<Self>) {
@@ -740,12 +924,17 @@ impl Workspace {
         self.open_home(cx);
     }
 
-    fn open_source(&mut self, _: &OpenSource, _: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_source(cx);
+    fn open_source(&mut self, _: &OpenSource, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_source(window, cx);
     }
 
     fn open_editor(&mut self, _: &OpenEditor, _: &mut Window, cx: &mut Context<Self>) {
-        let site = match self.document.read(cx).tab().map(super::super::store::document::Tab::content) {
+        let site = match self
+            .document
+            .read(cx)
+            .tab()
+            .map(super::super::store::document::Tab::content)
+        {
             Some(super::super::store::document::Content::Page(page)) => super::page::site_of(page),
             _ => None,
         };
@@ -777,7 +966,11 @@ impl Workspace {
         let Some(identity) = self.active_identity(cx) else {
             return;
         };
-        self.copy("Identity copied", identity.coordinate().as_str().to_owned(), cx);
+        self.copy(
+            "Identity copied",
+            identity.coordinate().as_str().to_owned(),
+            cx,
+        );
     }
 
     fn copy_key(&mut self, _: &CopyKey, _: &mut Window, cx: &mut Context<Self>) {
@@ -827,8 +1020,7 @@ impl Workspace {
 
     fn reload(&mut self, _: &Reload, _: &mut Window, cx: &mut Context<Self>) {
         self.document.update(cx, DocumentStore::reload);
-        self.engine
-            .update(cx, WorkspaceStore::refresh_health);
+        self.engine.update(cx, WorkspaceStore::refresh_health);
     }
 
     fn toggle_appearance(&mut self, _: &ToggleAppearance, _: &mut Window, cx: &mut Context<Self>) {
@@ -849,30 +1041,68 @@ impl Workspace {
 /// Sheet navigation.
 impl Workspace {
     fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shell.read(cx).settings_open() {
-            self.shell.update(cx, ShellStore::toggle_settings);
+        if self.transients.top() == Some(Transient::Settings) || self.shell.read(cx).settings_open()
+        {
+            self.shell.update(cx, ShellStore::close_settings);
+            self.remove_transient(Transient::Settings, cx);
+            self.restore_focus(window, cx);
             return;
         }
-        if self.source_open {
+        if self.transients.top() == Some(Transient::Source) || self.source_open {
             self.close_source(cx);
+            self.restore_focus(window, cx);
             return;
         }
-        if self.adding {
+        if self.transients.top() == Some(Transient::Add) || self.adding {
             self.cancel_add(cx);
+            self.restore_focus(window, cx);
             return;
         }
-        if self.search.read(cx).is_open() {
+        if matches!(
+            self.transients.top(),
+            Some(Transient::Search | Transient::Palette)
+        ) || self.search.read(cx).is_open()
+        {
             self.set_field(String::new(), cx);
             self.dismiss_sheet(cx);
-            window.focus(&self.focus, cx);
+            self.restore_focus(window, cx);
+        }
+    }
+
+    /// Restores the concrete GPUI handle for the shell region remembered by
+    /// the modal focus state. This keeps Escape reversible even when settings
+    /// was opened from the omnibar rather than the reader.
+    pub(super) fn restore_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.shell.read(cx).focus() {
+            Focus::Omnibar => {
+                let handle = self.field.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            }
+            Focus::Settings | Focus::Reader => window.focus(&self.focus, cx),
+            Focus::Library => window.focus(&self.library_focus, cx),
+            Focus::Add => {
+                let handle = self.coordinate.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            }
+            Focus::Source => window.focus(&self.source_focus, cx),
         }
     }
 
     fn move_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
+        if self.shell.read(cx).settings_open() {
+            self.shell
+                .update(cx, |shell, cx| shell.step_settings(-1, cx));
+            return;
+        }
         self.step_selection(-1, cx);
     }
 
     fn move_down(&mut self, _: &MoveDown, _: &mut Window, cx: &mut Context<Self>) {
+        if self.shell.read(cx).settings_open() {
+            self.shell
+                .update(cx, |shell, cx| shell.step_settings(1, cx));
+            return;
+        }
         self.step_selection(1, cx);
     }
 
@@ -903,8 +1133,7 @@ impl Workspace {
         if !self.search.read(cx).is_open() {
             return;
         }
-        self.search
-            .update(cx, |search, cx| search.step(delta, cx));
+        self.search.update(cx, |search, cx| search.step(delta, cx));
     }
 
     fn accept(&mut self, _: &Accept, window: &mut Window, cx: &mut Context<Self>) {
@@ -920,8 +1149,7 @@ impl Workspace {
             if self.run_palette(command, &arguments, window, cx) {
                 return;
             }
-            self.search
-                .update(cx, |search, cx| search.run(command, cx));
+            self.search.update(cx, |search, cx| search.run(command, cx));
             return;
         }
         let Some(symbol) = self
@@ -967,6 +1195,7 @@ impl Workspace {
         });
         self.search
             .update(cx, |search, cx| search.set_text(text, cx));
+        self.sync_search_transient(cx);
     }
 
     /// Submits the add field: a folder or pinned URL at once, a name via the catalog.
@@ -996,7 +1225,9 @@ impl Workspace {
             Ok(coordinate) => {
                 self.add_fault = None;
                 self.adding = false;
-                self.coordinate.update(cx, |field, cx| field.emplace("", cx));
+                self.remove_transient(Transient::Add, cx);
+                self.coordinate
+                    .update(cx, |field, cx| field.emplace("", cx));
                 self.catalog.update(cx, CatalogStore::clear);
                 self.index_project(coordinate, cx);
             }

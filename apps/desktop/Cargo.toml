@@ -44,6 +44,7 @@ preview = []
 
 [dev-dependencies]
 blake3.workspace = true
+proptest.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 gpui_platform = { workspace = true, features = ["test-support"] }
 

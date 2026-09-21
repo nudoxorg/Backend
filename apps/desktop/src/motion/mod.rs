@@ -8,6 +8,7 @@
 //! ambient animation, no pulse, no shimmer.
 
 pub(crate) mod spring;
+pub(crate) mod clock;
 
 use gpui::{Animation, ease_out_quint, linear};
 use std::time::Duration;

@@ -22,6 +22,7 @@ use crate::store::document::{Subject, Target};
 use crate::views::workspace::Workspace;
 use backend_library::RowId;
 use gpui::{Context, Window, point, px};
+use std::time::Duration;
 
 /// The environment variable that names the scene to open in.
 pub(crate) const SCENE_ENV: &str = "BACKEND_DESKTOP_PREVIEW";
@@ -31,6 +32,21 @@ pub(crate) const SCENE_ENV: &str = "BACKEND_DESKTOP_PREVIEW";
 /// Its value is matched against the end of each published coordinate, so
 /// `glyph.rs:136::RelationLabel` opens that page without the project root.
 pub(crate) const COORDINATE_ENV: &str = "BACKEND_DESKTOP_PREVIEW_COORDINATE";
+
+/// Optional deterministic shell timestamp, in milliseconds from capture start.
+///
+/// The harness sets this before launching a preview window. It is read once
+/// while the workspace is built; rendered frames then use the exact same
+/// timestamp without consulting the environment or allocating per frame.
+pub(crate) const CAPTURE_TIME_ENV: &str = "BACKEND_DESKTOP_PREVIEW_TIME_MS";
+
+/// Reads one deterministic capture timestamp for the preview process.
+pub(crate) fn capture_time() -> Option<Duration> {
+    std::env::var(CAPTURE_TIME_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+}
 
 /// One state the window can be asked to open in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

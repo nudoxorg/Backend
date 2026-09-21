@@ -25,7 +25,7 @@ use crate::motion::{Beat, once};
 use crate::presentation::chips::Standing;
 use crate::presentation::crumb;
 use crate::store::search::{CommandRow, Mode, Reply, ResultRow, SearchStore};
-use crate::store::shell::Focus;
+use crate::store::shell::{Focus, Transient};
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Chrome, Radius, Space, TypeScale, hairline, radius, space, type_size};
@@ -67,7 +67,9 @@ impl Workspace {
             .gap(space(Space::Base))
             .border_b(hairline())
             .border_color(theme.paint(Paint::Hairline))
-            .when(platform.owns_drag(), |bar| bar.window_control_area(WindowControlArea::Drag))
+            .when(platform.owns_drag(), |bar| {
+                bar.window_control_area(WindowControlArea::Drag)
+            })
             .child(self.navigation(theme, cx))
             .child(
                 div()
@@ -91,15 +93,40 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(px(2.0))
-            .child(nav_button(theme, "nav-back", Icon::ArrowLeft, back, Tip::new("Back").key(keys::GO_BACK), cx.listener(|this, _, _, cx| {
-                this.document.update(cx, crate::store::document::DocumentStore::back);
-            })))
-            .child(nav_button(theme, "nav-forward", Icon::ArrowRight, forward, Tip::new("Forward").key(keys::GO_FORWARD), cx.listener(|this, _, _, cx| {
-                this.document.update(cx, crate::store::document::DocumentStore::forward);
-            })))
-            .child(nav_button(theme, "nav-home", Icon::Home, true, Tip::new("Home").detail("Pinned, recent, and the registry.").key(keys::GO_HOME), cx.listener(|this, _, _, cx| {
-                this.open_home(cx);
-            })))
+            .child(nav_button(
+                theme,
+                "nav-back",
+                Icon::ArrowLeft,
+                back,
+                Tip::new("Back").key(keys::GO_BACK),
+                cx.listener(|this, _, _, cx| {
+                    this.document
+                        .update(cx, crate::store::document::DocumentStore::back);
+                }),
+            ))
+            .child(nav_button(
+                theme,
+                "nav-forward",
+                Icon::ArrowRight,
+                forward,
+                Tip::new("Forward").key(keys::GO_FORWARD),
+                cx.listener(|this, _, _, cx| {
+                    this.document
+                        .update(cx, crate::store::document::DocumentStore::forward);
+                }),
+            ))
+            .child(nav_button(
+                theme,
+                "nav-home",
+                Icon::Home,
+                true,
+                Tip::new("Home")
+                    .detail("Pinned, recent, and the registry.")
+                    .key(keys::GO_HOME),
+                cx.listener(|this, _, _, cx| {
+                    this.open_home(cx);
+                }),
+            ))
     }
 
     fn titlebar_keys(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -117,9 +144,15 @@ impl Workspace {
             .gap(space(Space::Tight))
             .child(
                 button::icon_button(theme, "appearance", mark)
-                    .tip(Tip::new(if appearance.is_dark() { "Switch to Vellum" } else { "Switch to Ink" })
+                    .tip(
+                        Tip::new(if appearance.is_dark() {
+                            "Switch to Vellum"
+                        } else {
+                            "Switch to Ink"
+                        })
                         .detail("The light and dark palettes of this window.")
-                        .key(keys::TOGGLE_APPEARANCE))
+                        .key(keys::TOGGLE_APPEARANCE),
+                    )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.shell.update(cx, |shell, cx| {
                             let next = shell.prefs().appearance().flipped();
@@ -129,12 +162,24 @@ impl Workspace {
             )
             .child(
                 button::icon_button(theme, "settings", Icon::Gear)
-                    .tip(Tip::new("Settings")
-                        .detail("Appearance, editor, agents, diagnostics, legend.")
-                        .key(keys::OPEN_SETTINGS))
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .tip(
+                        Tip::new("Settings")
+                            .detail("Appearance, editor, agents, diagnostics, legend.")
+                            .key(keys::OPEN_SETTINGS),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let was_open = this.shell.read(cx).settings_open();
                         this.shell
                             .update(cx, super::super::store::shell::ShellStore::toggle_settings);
+                        if was_open {
+                            this.remove_transient(Transient::Settings, cx);
+                            this.restore_focus(window, cx);
+                        } else {
+                            let restore = this.shell.read(cx).focus_before_settings();
+                            this.transients
+                                .push_with_restore(Transient::Settings, restore);
+                            window.focus(&this.settings_focus, cx);
+                        }
                     })),
             )
     }
@@ -206,11 +251,14 @@ impl Workspace {
     }
 
     fn focus_omnibar_from_click(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let restore = self.shell.read(cx).focus();
         let handle = self.field.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
         self.shell
             .update(cx, |shell, cx| shell.focus_on(Focus::Omnibar, cx));
         self.search.update(cx, SearchStore::open);
+        self.transients.replace_omnibar(Transient::Search, restore);
+        self.sync_search_transient(cx);
     }
 }
 
@@ -234,6 +282,17 @@ fn nav_button(
         .when(enabled, |button| {
             button
                 .cursor_pointer()
+                .role(gpui::Role::Button)
+                .aria_label(match id {
+                    "nav-back" => "Back",
+                    "nav-forward" => "Forward",
+                    "nav-home" => "Home",
+                    _ => "Navigation",
+                })
+                .border(hairline())
+                .border_color(gpui::transparent_black())
+                .focusable()
+                .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
                 .hover(|style| style.bg(theme.paint(Paint::Hover)))
                 .on_click(listener)
         })
@@ -241,7 +300,11 @@ fn nav_button(
             theme,
             mark,
             14.0,
-            if enabled { Paint::TextDim } else { Paint::TextFaint },
+            if enabled {
+                Paint::TextDim
+            } else {
+                Paint::TextFaint
+            },
         ))
         .tip(tip)
 }
@@ -280,6 +343,9 @@ impl Workspace {
                     .child(
                         surface::raised(theme)
                             .id("omnibar-sheet")
+                            .role(gpui::Role::Dialog)
+                            .aria_label("Search results")
+                            .tab_group()
                             .w(px(Chrome::SHEET))
                             .max_h(px(Chrome::SHEET_MAX))
                             .flex()
@@ -370,7 +436,9 @@ impl Workspace {
         if search.len() > 0 || search.is_searching() {
             return None;
         }
-        if search.parsed().term().trim().is_empty() && !matches!(search.parsed().mode(), Mode::Palette) {
+        if search.parsed().term().trim().is_empty()
+            && !matches!(search.parsed().mode(), Mode::Palette)
+        {
             return Some(hints(theme).into_any_element());
         }
         Some(empty_sheet(theme, search).into_any_element())
@@ -436,6 +504,12 @@ impl Workspace {
             .py(space(Space::Snug))
             .when(selected, |row| row.bg(theme.paint(Paint::Selected)))
             .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .border(hairline())
+            .border_color(gpui::transparent_black())
+            .role(gpui::Role::Button)
+            .aria_label(record.identity().name())
+            .focusable()
+            .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
             .cursor_pointer()
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 if let Some(symbol) = symbol {
@@ -488,7 +562,14 @@ impl Workspace {
             if at == selected {
                 child = Some(elements.len());
             }
-            elements.push(Self::palette_row(theme, at, row, at == selected, reduced, cx));
+            elements.push(Self::palette_row(
+                theme,
+                at,
+                row,
+                at == selected,
+                reduced,
+                cx,
+            ));
         }
         (elements, child)
     }
@@ -509,10 +590,14 @@ impl Workspace {
             .gap(space(Space::Snug))
             .px(space(Space::Room))
             .py(space(Space::Snug))
-            .when(selected, |element| {
-                element.bg(theme.paint(Paint::Selected))
-            })
+            .when(selected, |element| element.bg(theme.paint(Paint::Selected)))
             .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .border(hairline())
+            .border_color(gpui::transparent_black())
+            .role(gpui::Role::Button)
+            .aria_label(spec.title.to_owned())
+            .focusable()
+            .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.search.update(cx, |search, cx| search.run(row, cx));
@@ -573,15 +658,11 @@ impl Workspace {
                 .into_any_element(),
             Reply::Capabilities(chips) => body
                 .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap(space(Space::Tight))
-                        .children(
-                            chips
-                                .iter()
-                                .map(|chip| chip::capability_chip(theme, chip).into_any_element()),
-                        ),
+                    div().flex().flex_wrap().gap(space(Space::Tight)).children(
+                        chips
+                            .iter()
+                            .map(|chip| chip::capability_chip(theme, chip).into_any_element()),
+                    ),
                 )
                 .into_any_element(),
             Reply::Faulted(fault) => body
@@ -648,7 +729,12 @@ fn trail_line(theme: &Theme, row: &ResultRow, term: &str) -> Div {
                 .text_size(type_size(TypeScale::Interface))
                 .text_color(theme.paint(Paint::Text))
                 .font_weight(FontWeight::MEDIUM)
-                .child(text::highlighted(theme, identity.name(), term, TypeScale::Interface)),
+                .child(text::highlighted(
+                    theme,
+                    identity.name(),
+                    term,
+                    TypeScale::Interface,
+                )),
         )
         .child(
             text::single_line(text::faint(theme))
@@ -737,10 +823,7 @@ fn empty_sheet(theme: &Theme, search: &SearchStore) -> Div {
         .gap(space(Space::Tight))
         .child(text::label(theme).child("No declarations match this text."))
         .when(unavailable > 0, |body| {
-            body.child(
-                text::dim(theme)
-                    .child("The chips above say which lanes did not answer."),
-            )
+            body.child(text::dim(theme).child("The chips above say which lanes did not answer."))
         })
 }
 
@@ -756,8 +839,9 @@ fn more_rows(theme: &Theme) -> Div {
         .border_t(hairline())
         .border_color(theme.paint(Paint::Hairline))
         .child(
-            text::faint(theme)
-                .child("More declarations match than this page holds. Narrow the text to see them."),
+            text::faint(theme).child(
+                "More declarations match than this page holds. Narrow the text to see them.",
+            ),
         )
 }
 

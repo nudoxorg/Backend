@@ -28,7 +28,9 @@ use crate::store::prefs::EditorScheme;
 use crate::store::shell::SettingsPage;
 use crate::theme::Theme;
 use crate::theme::palette::{Appearance, Paint};
-use crate::theme::tokens::{InterfaceSize, Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{
+    InterfaceSize, Radius, Space, TypeScale, hairline, radius, space, type_size,
+};
 use crate::ui::icon::{self, Icon};
 use crate::ui::{button, chip, glyph, surface, text};
 use gpui::prelude::FluentBuilder as _;
@@ -109,7 +111,11 @@ impl Workspace {
 /// The settings sheet.
 impl Workspace {
     /// Returns the settings sheet.
-    pub(super) fn settings_sheet(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn settings_sheet(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let page = self.shell.read(cx).settings_page();
         div()
             .absolute()
@@ -117,8 +123,11 @@ impl Workspace {
             .child(
                 surface::scrim(theme)
                     .id("settings-scrim")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.shell.update(cx, super::super::store::shell::ShellStore::toggle_settings);
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.shell
+                            .update(cx, super::super::store::shell::ShellStore::close_settings);
+                        this.remove_transient(crate::store::shell::Transient::Settings, cx);
+                        this.restore_focus(window, cx);
                     })),
             )
             .child(
@@ -132,6 +141,53 @@ impl Workspace {
                     .child(
                         surface::raised(theme)
                             .id("settings-sheet")
+                            .role(gpui::Role::Dialog)
+                            .aria_label("Settings")
+                            .key_context("NudoxSettings")
+                            .tab_group()
+                            .track_focus(&self.settings_focus)
+                            .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
+                            .tab_stop(false)
+                            .capture_key_down(cx.listener(
+                                |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if event.keystroke.key != "tab"
+                                        || event.keystroke.modifiers.control
+                                        || event.keystroke.modifiers.alt
+                                        || event.keystroke.modifiers.platform
+                                    {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    let backwards = event.keystroke.modifiers.shift;
+                                    let before_focus = window.focused(cx);
+                                    if backwards {
+                                        window.focus_prev(cx);
+                                    } else {
+                                        window.focus_next(cx);
+                                    }
+                                    // GPUI's tab map wraps the whole window. If the
+                                    // next stop escaped this modal group, continue
+                                    // in the same direction until the focus is back
+                                    // inside the sheet. The attempt cap protects a
+                                    // malformed render from turning Tab into a loop.
+                                    if !this.settings_focus.contains_focused(window, cx) {
+                                        let mut attempts = 0;
+                                        while !this.settings_focus.contains_focused(window, cx)
+                                            && attempts < 100
+                                        {
+                                            if backwards {
+                                                window.focus_prev(cx);
+                                            } else {
+                                                window.focus_next(cx);
+                                            }
+                                            attempts += 1;
+                                            if window.focused(cx) == before_focus {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                },
+                            ))
                             .occlude()
                             .w(px(SHEET_WIDTH))
                             .max_w(gpui::relative(1.0))
@@ -168,10 +224,19 @@ impl Workspace {
             .children(SettingsPage::ALL.map(|page| {
                 let selected = page == current;
                 div()
-                    .id(ElementId::Name(SharedString::from(format!("settings-nav-{}", page.label()))))
+                    .id(ElementId::Name(SharedString::from(format!(
+                        "settings-nav-{}",
+                        page.label()
+                    ))))
                     .px(space(Space::Snug))
                     .py(px(5.0))
                     .rounded(radius(Radius::Small))
+                    .border(hairline())
+                    .border_color(gpui::transparent_black())
+                    .role(gpui::Role::Button)
+                    .aria_label(page.label())
+                    .focusable()
+                    .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
                     .cursor_pointer()
                     .when(selected, |row| row.bg(theme.paint(Paint::Selected)))
                     .hover(|style| style.bg(theme.paint(Paint::Hover)))
@@ -196,7 +261,12 @@ impl Workspace {
             )
     }
 
-    fn settings_page(&mut self, theme: &Theme, page: SettingsPage, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    fn settings_page(
+        &mut self,
+        theme: &Theme,
+        page: SettingsPage,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
         let body: Vec<AnyElement> = match page {
             SettingsPage::Appearance => vec![
                 self.appearance_setting(theme, cx).into_any_element(),
@@ -207,6 +277,7 @@ impl Workspace {
             SettingsPage::Agents => vec![self.agents_setting(theme, cx).into_any_element()],
             SettingsPage::Diagnostics => vec![
                 self.service_setting(theme, cx).into_any_element(),
+                self.index_registry_setting(theme, cx).into_any_element(),
                 self.capability_setting(theme, cx).into_any_element(),
             ],
             SettingsPage::Legend => vec![legend_setting(theme).into_any_element()],
@@ -228,15 +299,17 @@ impl Workspace {
     fn appearance_setting(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.shell.read(cx).prefs().appearance();
         setting(theme, "Appearance", "The palette this window is lit with.").child(
-            div()
-                .flex()
-                .gap(space(Space::Tight))
-                .children([Appearance::Ink, Appearance::Vellum].map(|appearance| {
+            div().flex().gap(space(Space::Tight)).children(
+                [Appearance::Ink, Appearance::Vellum].map(|appearance| {
                     let selected = appearance == current;
                     button::button(
                         theme,
                         format!("appearance-{}", appearance.name()),
-                        if appearance.is_dark() { "Ink" } else { "Vellum" },
+                        if appearance.is_dark() {
+                            "Ink"
+                        } else {
+                            "Vellum"
+                        },
                         if selected {
                             button::Weight::Primary
                         } else {
@@ -247,13 +320,19 @@ impl Workspace {
                         this.shell
                             .update(cx, |shell, cx| shell.set_appearance(appearance, cx));
                     }))
-                })),
+                }),
+            ),
         )
     }
 
     fn size_setting(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.shell.read(cx).prefs().interface();
-        setting(theme, "Interface size", "Scales every measurement in the window.").child(
+        setting(
+            theme,
+            "Interface size",
+            "Scales every measurement in the window.",
+        )
+        .child(
             div()
                 .flex()
                 .items_center()
@@ -311,10 +390,15 @@ impl Workspace {
                         theme,
                         "motion-spring",
                         "Spring",
-                        if reduced { button::Weight::Regular } else { button::Weight::Primary },
+                        if reduced {
+                            button::Weight::Regular
+                        } else {
+                            button::Weight::Primary
+                        },
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.shell.update(cx, |shell, cx| shell.set_reduced_motion(false, cx));
+                        this.shell
+                            .update(cx, |shell, cx| shell.set_reduced_motion(false, cx));
                     })),
                 )
                 .child(
@@ -322,10 +406,15 @@ impl Workspace {
                         theme,
                         "motion-snap",
                         "Snap",
-                        if reduced { button::Weight::Primary } else { button::Weight::Regular },
+                        if reduced {
+                            button::Weight::Primary
+                        } else {
+                            button::Weight::Regular
+                        },
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.shell.update(cx, |shell, cx| shell.set_reduced_motion(true, cx));
+                        this.shell
+                            .update(cx, |shell, cx| shell.set_reduced_motion(true, cx));
                     })),
                 ),
         )
@@ -458,14 +547,22 @@ impl Workspace {
             .child(fact_row(theme, "endpoint", &endpoint))
             .child(fact_row(theme, "workspace", &data))
             .child(fact_row(theme, "project", &project))
-            .child(fact_row(theme, "revision", &format!("{revision} · {rows} rows")))
+            .child(fact_row(
+                theme,
+                "revision",
+                &format!("{revision} · {rows} rows"),
+            ))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
                     .gap(space(Space::Tight))
                     .pt(space(Space::Tight))
-                    .children(lanes.iter().map(|lane| chip::coverage_chip(theme, lane).into_any_element())),
+                    .children(
+                        lanes
+                            .iter()
+                            .map(|lane| chip::coverage_chip(theme, lane).into_any_element()),
+                    ),
             )
     }
 
@@ -481,16 +578,48 @@ impl Workspace {
             "{ready} ready · {probing} probing · {unavailable} unavailable"
         )))
         .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(space(Space::Tight))
-                .children(
-                    chips
-                        .iter()
-                        .map(|chip| chip::capability_chip(theme, chip).into_any_element()),
-                ),
+            div().flex().flex_wrap().gap(space(Space::Tight)).children(
+                chips
+                    .iter()
+                    .map(|chip| chip::capability_chip(theme, chip).into_any_element()),
+            ),
         )
+    }
+
+    fn index_registry_setting(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let index = self.index.read(cx);
+        let index_status = format!(
+            "{} projects · {} declarations",
+            index.project_count(),
+            index.declaration_count()
+        );
+        let registry = self.registry.read(cx);
+        let registry_status = match registry.page() {
+            crate::store::registry::Loadable::Idle => "idle · no request".to_owned(),
+            crate::store::registry::Loadable::Loading => "loading".to_owned(),
+            crate::store::registry::Loadable::Ready(rows) => {
+                format!("ready · {} packages", rows.len())
+            }
+            crate::store::registry::Loadable::Faulted(fault) => {
+                format!("fault · {}", fault.cause().sentence())
+            }
+        };
+        let query = registry.query().text();
+        setting(
+            theme,
+            "Index and registry",
+            "The local declaration index and the live package registry answer independently.",
+        )
+        .child(fact_row(theme, "index", &index_status))
+        .child(fact_row(
+            theme,
+            "registry",
+            &format!("{registry_status} · query {query:?}"),
+        ))
     }
 
     /// Assembles the MCP invocation for this machine.
@@ -506,7 +635,12 @@ impl Workspace {
             binary_present: binary.is_file(),
             binary: binary.to_string_lossy().into_owned(),
             workspace: self.shell.read(cx).data().to_string_lossy().into_owned(),
-            project: self.engine.read(cx).project().to_string_lossy().into_owned(),
+            project: self
+                .engine
+                .read(cx)
+                .project()
+                .to_string_lossy()
+                .into_owned(),
         }
     }
 }
@@ -610,58 +744,46 @@ fn legend_setting(theme: &Theme) -> Div {
         "Legend",
         "Every mark this window draws, and what it stands for.",
     )
+    .child(div().flex().flex_wrap().gap(space(Space::Snug)).children(
+        crate::theme::kind::ALL_KINDS.map(|kind| {
+            div()
+                .flex()
+                .items_center()
+                .gap(space(Space::Tight))
+                .child(glyph::kind_tile(theme, Some(kind), false))
+                .child(text::faint(theme).child(glyph::kind_label(Some(kind))))
+        }),
+    ))
+    .child(div().flex().flex_wrap().gap(space(Space::Snug)).children(
+        backend_present::Language::ALL.map(|language| {
+            let ink = theme.on_plane(crate::theme::language::hue(language));
+            div()
+                .flex()
+                .items_center()
+                .gap(space(Space::Tight))
+                .child(glyph::language_tag(theme, language))
+                .when_some(icon::Logo::of(language), |row, logo| {
+                    row.child(icon::logo(logo, 12.0, ink))
+                })
+                .child(text::faint(theme).child(crate::theme::language::label(language)))
+        }),
+    ))
     .child(
-        div()
-            .flex()
-            .flex_wrap()
-            .gap(space(Space::Snug))
-            .children(crate::theme::kind::ALL_KINDS.map(|kind| {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(space(Space::Tight))
-                    .child(glyph::kind_tile(theme, Some(kind), false))
-                    .child(text::faint(theme).child(glyph::kind_label(Some(kind))))
-            })),
-    )
-    .child(
-        div()
-            .flex()
-            .flex_wrap()
-            .gap(space(Space::Snug))
-            .children(backend_present::Language::ALL.map(|language| {
-                let ink = theme.on_plane(crate::theme::language::hue(language));
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(space(Space::Tight))
-                    .child(glyph::language_tag(theme, language))
-                    .when_some(icon::Logo::of(language), |row, logo| {
-                        row.child(icon::logo(logo, 12.0, ink))
-                    })
-                    .child(
-                        text::faint(theme)
-                            .child(crate::theme::language::label(language)),
-                    )
-            })),
-    )
-    .child(
-        div()
-            .flex()
-            .flex_wrap()
-            .gap(space(Space::Base))
-            .children([
+        div().flex().flex_wrap().gap(space(Space::Base)).children(
+            [
                 ("◐", "indexing or partial"),
                 ("✗", "failed or unavailable"),
                 ("○", "requested or empty"),
-            ].map(|(mark, means)| {
+            ]
+            .map(|(mark, means)| {
                 div()
                     .flex()
                     .items_center()
                     .gap(space(Space::Tight))
                     .child(text::dim(theme).child(mark))
                     .child(text::faint(theme).child(means))
-            })),
+            }),
+        ),
     )
 }
 

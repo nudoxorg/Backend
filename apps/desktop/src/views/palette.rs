@@ -12,7 +12,7 @@
 use super::workspace::Workspace;
 use crate::store::document::{Subject, Target};
 use crate::store::search::CommandRow;
-use crate::store::shell::SettingsPage;
+use crate::store::shell::{SettingsPage, Transient};
 use backend_library::{CommandId, SymbolKey};
 use backend_present::IdentityKey;
 use gpui::{Context, Focusable as _, Window};
@@ -30,9 +30,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> bool {
         let handled = match row.spec().id {
-            CommandId::Show | CommandId::Document | CommandId::Read | CommandId::Related | CommandId::Graph => {
-                self.open_named(arguments, false, cx)
-            }
+            CommandId::Show
+            | CommandId::Document
+            | CommandId::Read
+            | CommandId::Related
+            | CommandId::Graph => self.open_named(arguments, false, cx),
             CommandId::Source => self.open_named(arguments, true, cx),
             CommandId::Add => self.palette_add(arguments, window, cx),
             CommandId::Remove => self.palette_remove(arguments, cx),
@@ -53,13 +55,21 @@ impl Workspace {
                 self.shell.update(cx, |shell, cx| {
                     shell.show_settings_page(SettingsPage::Diagnostics, cx);
                 });
+                let restore = self.shell.read(cx).focus_before_settings();
+                self.transients
+                    .push_with_restore(Transient::Settings, restore);
                 true
             }
             _ => false,
         };
         if handled {
             self.set_field(String::new(), cx);
-            window.focus(&self.focus_handle(cx), cx);
+            self.remove_omnibar(cx);
+            if self.shell.read(cx).settings_open() {
+                window.focus(&self.settings_focus, cx);
+            } else {
+                window.focus(&self.focus_handle(cx), cx);
+            }
         }
         handled
     }
@@ -98,7 +108,12 @@ impl Workspace {
         }
     }
 
-    fn palette_add(&mut self, arguments: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn palette_add(
+        &mut self,
+        arguments: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if arguments.trim().is_empty() {
             self.begin_add(window, cx);
             return true;

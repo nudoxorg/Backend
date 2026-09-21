@@ -43,7 +43,11 @@ const EXIT_NO_SERVICE: u8 = 70;
 const WINDOW: (f32, f32) = (1380.0, 880.0);
 
 /// Smallest window this layout supports.
-const MINIMUM: (f32, f32) = (900.0, 600.0);
+// The shell collapses its two panels into rails below 1040/1240px and the
+// settings/omnibar sheets cap themselves to the viewport. Keeping the native
+// minimum at the compact layout boundary makes 640x480 a supported, usable
+// keyboard surface instead of a size the window manager refuses to exercise.
+const MINIMUM: (f32, f32) = (640.0, 480.0);
 
 /// Starts the native desktop application and its local owner.
 #[must_use]

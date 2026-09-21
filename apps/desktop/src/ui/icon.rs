@@ -70,6 +70,36 @@ pub(crate) enum Icon {
 }
 
 impl Icon {
+    /// Returns the spoken name used by the accessibility action tree.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Search => "Search",
+            Self::Command => "Command palette",
+            Self::Plus => "Add",
+            Self::Folder => "Choose folder",
+            Self::Close => "Close",
+            Self::ChevronLeft => "Collapse left panel",
+            Self::ChevronRight => "Collapse right panel",
+            Self::ChevronDown => "Expand",
+            Self::Copy => "Copy",
+            Self::Gear => "Settings",
+            Self::Sun => "Switch to Ink",
+            Self::Moon => "Switch to Vellum",
+            Self::Refresh => "Reload",
+            Self::External => "Open externally",
+            Self::Home => "Home",
+            Self::ArrowLeft => "Back",
+            Self::ArrowRight => "Forward",
+            Self::Minimize => "Minimize",
+            Self::Maximize => "Maximize",
+            Self::Restore => "Restore",
+            Self::Link => "Open link",
+            Self::Code => "Source",
+            Self::Spark => "Agent",
+            Self::Play => "Run",
+        }
+    }
+
     /// Returns the asset path this icon loads from.
     pub(crate) const fn path(self) -> &'static str {
         match self {

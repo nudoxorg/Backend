@@ -18,8 +18,9 @@ use backend_present::{Language, LanguageCount};
 use gpui::AppContext as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Animation, AnimationExt as _, AnyView, App, Div, ElementId, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    Animation, AnimationExt as _, AnyElement, AnyView, App, Div, ElementId, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement,
+    Styled, Window, div, px,
 };
 use std::time::Duration;
 
@@ -127,31 +128,38 @@ fn segments(theme: &Theme, counts: &[LanguageCount], total: u64, motion: Motion)
 }
 
 /// Returns the travelling highlight drawn over an indexing bar.
-fn sweep(theme: &Theme, id: &SharedString, motion: Motion, reduced: bool) -> impl IntoElement {
+fn sweep(theme: &Theme, id: &SharedString, motion: Motion, reduced: bool) -> AnyElement {
     let mut wash = theme.paint(Paint::TextStrong);
     wash.alpha = 0.55;
     let breathing = motion == Motion::Waiting;
-    div()
+    let band = div()
         .absolute()
         .top_0()
         .bottom_0()
         .w(gpui::relative(0.28))
         .rounded_full()
-        .bg(wash)
-        .with_animation(
-            ElementId::Name(SharedString::from(format!("sweep-{id}"))),
-            Animation::new(if reduced { Duration::from_millis(1) } else { SWEEP })
-                .repeat()
-                .with_easing(gpui::ease_in_out),
-            move |band, delta| {
-                if breathing {
-                    band.left(gpui::relative(0.36))
-                        .opacity((0.5 - delta).abs().mul_add(-1.2, 0.8).clamp(0.15, 0.8))
-                } else {
-                    band.left(gpui::relative(delta.mul_add(1.28, -0.28)))
-                }
-            },
-        )
+        .bg(wash);
+    if reduced {
+        return band
+            .left(gpui::relative(if breathing { 0.36 } else { 0.0 }))
+            .opacity(if breathing { 0.45 } else { 0.0 })
+            .into_any_element();
+    }
+    band.with_animation(
+        ElementId::Name(SharedString::from(format!("sweep-{id}"))),
+        Animation::new(SWEEP)
+            .repeat()
+            .with_easing(gpui::ease_in_out),
+        move |band, delta| {
+            if breathing {
+                band.left(gpui::relative(0.36))
+                    .opacity((0.5 - delta).abs().mul_add(-1.2, 0.8).clamp(0.15, 0.8))
+            } else {
+                band.left(gpui::relative(delta.mul_add(1.28, -0.28)))
+            }
+        },
+    )
+    .into_any_element()
 }
 
 /// One row of the hover tooltip: logo, name, share, count.

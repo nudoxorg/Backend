@@ -33,14 +33,13 @@ use crate::store::prefs::{EditorScheme, Preferences};
 use crate::store::search::{Mode, Parsed};
 use crate::theme::palette::{Appearance, Paint, Palette};
 use crate::theme::tokens::{InterfaceSize, PanelWidth};
-use backend_library::{
-    COMMANDS, CommandFailure, DeclarationKind, ViewRevision, view_state_root,
-};
+use backend_library::{COMMANDS, CommandFailure, DeclarationKind, ViewRevision, view_state_root};
 use backend_present::{
     Coordinate, Fault, GRAMMARS, Identity, IdentityShape, Language, Operand, Readiness, RowCount,
     domain_name, domains, registry_size,
 };
 use backend_replication::ReplicationError;
+use proptest::prelude::*;
 
 // ---------------------------------------------------------------- identity --
 
@@ -59,15 +58,18 @@ fn a_declaration_label_parses_into_its_project_module_and_leaf() {
         identity.project().expect("a project root").name(),
         "project"
     );
-    assert_eq!(identity.project().expect("a project root").root(), "/abs/project");
-    assert_eq!(identity.path().expect("a source path").as_str(), "src/lib.rs");
+    assert_eq!(
+        identity.project().expect("a project root").root(),
+        "/abs/project"
+    );
+    assert_eq!(
+        identity.path().expect("a source path").as_str(),
+        "src/lib.rs"
+    );
     assert_eq!(identity.line().expect("a source line").get(), 2);
     assert_eq!(identity.name(), "ferris");
     assert_eq!(identity.language(), Language::Rust);
-    assert_eq!(
-        crumb_labels(&identity),
-        vec!["project", "lib", "ferris"]
-    );
+    assert_eq!(crumb_labels(&identity), vec!["project", "lib", "ferris"]);
 }
 
 #[test]
@@ -75,7 +77,10 @@ fn a_pinned_package_row_parses_as_a_package_shaped_identity() {
     let identity = Identity::parse("pkg:cargo/memchr@2.7.4");
     assert_eq!(identity.shape(), IdentityShape::Package);
     assert_eq!(identity.name(), "memchr@2.7.4");
-    assert!(identity.path().is_none(), "a package row names no source file");
+    assert!(
+        identity.path().is_none(),
+        "a package row names no source file"
+    );
     assert!(identity.line().is_none(), "a package row names no line");
     assert_eq!(crumb_labels(&identity), vec!["memchr@2.7.4"]);
 }
@@ -84,27 +89,30 @@ fn a_pinned_package_row_parses_as_a_package_shaped_identity() {
 fn a_windows_label_keeps_its_drive_letter_and_still_finds_the_line() {
     let identity = Identity::parse(r"C:\proj::src\lib.rs:2::Thing");
     assert_eq!(identity.shape(), IdentityShape::Declaration);
-    assert_eq!(identity.project().expect("a project root").root(), r"C:\proj");
-    assert_eq!(identity.project().expect("a project root").name(), "proj");
-    assert_eq!(identity.path().expect("a source path").as_str(), r"src\lib.rs");
-    assert_eq!(identity.line().expect("a source line").get(), 2);
     assert_eq!(
-        crumb_labels(&identity),
-        vec!["proj", "lib", "Thing"]
+        identity.project().expect("a project root").root(),
+        r"C:\proj"
     );
+    assert_eq!(identity.project().expect("a project root").name(), "proj");
+    assert_eq!(
+        identity.path().expect("a source path").as_str(),
+        r"src\lib.rs"
+    );
+    assert_eq!(identity.line().expect("a source line").get(), 2);
+    assert_eq!(crumb_labels(&identity), vec!["proj", "lib", "Thing"]);
 }
 
 #[test]
 fn a_cyrillic_label_renders_its_own_script_in_every_crumb() {
     let identity = Identity::parse("/tmp/проект::src/файл.rs:9::Структура");
     assert_eq!(identity.project().expect("a project root").name(), "проект");
-    assert_eq!(identity.path().expect("a source path").as_str(), "src/файл.rs");
+    assert_eq!(
+        identity.path().expect("a source path").as_str(),
+        "src/файл.rs"
+    );
     assert_eq!(identity.line().expect("a source line").get(), 9);
     assert_eq!(identity.name(), "Структура");
-    assert_eq!(
-        crumb_labels(&identity),
-        vec!["проект", "файл", "Структура"]
-    );
+    assert_eq!(crumb_labels(&identity), vec!["проект", "файл", "Структура"]);
 }
 
 #[test]
@@ -112,10 +120,7 @@ fn an_arabic_identifier_survives_parsing_without_reordering() {
     let identity = Identity::parse("/tmp/مشروع::src/lib.rs:3::متغير");
     assert_eq!(identity.project().expect("a project root").name(), "مشروع");
     assert_eq!(identity.name(), "متغير");
-    assert_eq!(
-        crumb_labels(&identity),
-        vec!["مشروع", "lib", "متغير"]
-    );
+    assert_eq!(crumb_labels(&identity), vec!["مشروع", "lib", "متغير"]);
 }
 
 #[test]
@@ -146,7 +151,10 @@ fn eliding_a_long_label_keeps_both_of_its_ends() {
     let text = "/Users/reader/code/polyglot/crates/present/identity.rs";
     let elided = elide_middle(text, 24);
     assert_eq!(elided, "/Users/read…/identity.rs");
-    assert!(elided.starts_with("/Users/read"), "the head is never elided");
+    assert!(
+        elided.starts_with("/Users/read"),
+        "the head is never elided"
+    );
     assert!(elided.ends_with("identity.rs"), "the tail is never elided");
 }
 
@@ -375,7 +383,10 @@ fn a_spring_retarget_preserves_its_current_velocity() {
     assert!(spring.advance(step));
     assert!(spring.advance(step));
     let before = spring.value();
-    assert!(before > 0.0, "the spring must be moving before it is retargeted");
+    assert!(
+        before > 0.0,
+        "the spring must be moving before it is retargeted"
+    );
 
     // Retarget to a value the spring has already passed. A spring that kept
     // its speed carries on past it for at least one more step; a spring that
@@ -421,7 +432,10 @@ fn a_settled_spring_asks_for_no_further_frame_and_sits_on_its_target() {
     let mut frames = 0_u32;
     while spring.advance(Duration::from_millis(16)) {
         frames += 1;
-        assert!(frames < 600, "a panel spring must settle inside ten seconds");
+        assert!(
+            frames < 600,
+            "a panel spring must settle inside ten seconds"
+        );
     }
     assert!(
         (spring.value() - spring.target()).abs() <= f32::EPSILON,
@@ -449,6 +463,330 @@ fn reduced_motion_collapses_every_beat_to_nothing() {
     assert_eq!(Beat::Touch.duration(false), Duration::from_millis(90));
     assert_eq!(Beat::Reveal.duration(false), Duration::from_millis(140));
     assert_eq!(Beat::Unfold.duration(false), Duration::from_millis(220));
+}
+
+#[test]
+fn reduced_motion_panel_is_one_static_frame() {
+    use crate::motion::spring::{Spring, Stiffness};
+    use std::time::Duration;
+
+    let mut spring = Spring::at(0.0, Stiffness::PANEL);
+    spring.retarget(320.0);
+    spring.snap(spring.target());
+    assert_eq!(spring.value(), 320.0);
+    assert!(!spring.advance(Duration::from_millis(16)));
+}
+
+proptest! {
+    #[test]
+    fn interrupted_springs_remain_finite_and_reversible(
+        targets in proptest::collection::vec(-2_000.0_f32..2_000.0, 1..80),
+        deltas in proptest::collection::vec(0_u16..48, 1..80),
+    ) {
+        use crate::motion::spring::{Spring, Stiffness};
+        use std::time::Duration;
+
+        let mut spring = Spring::at(0.0, Stiffness::PANEL);
+        for (target, delta) in targets.into_iter().zip(deltas) {
+            spring.retarget(target);
+            let _ = spring.advance(Duration::from_millis(u64::from(delta)));
+            prop_assert!(spring.value().is_finite());
+            prop_assert!(spring.target().is_finite());
+            prop_assert!(spring.value().abs() < 100_000.0);
+        }
+    }
+
+    #[test]
+    fn settings_sidebar_navigation_never_leaves_the_declared_pages(
+        steps in proptest::collection::vec(-8_isize..8, 1..100),
+    ) {
+        use crate::store::shell::SettingsPage;
+
+        let mut page = SettingsPage::Appearance;
+        for step in steps {
+            page = page.step(step);
+            prop_assert!(SettingsPage::ALL.contains(&page));
+        }
+    }
+
+    #[test]
+    fn modal_focus_restoration_survives_repeated_open_close(
+        routes in proptest::collection::vec(0_u8..5, 1..100),
+    ) {
+        use crate::store::shell::{Focus, FocusMemory};
+
+        let mut memory = FocusMemory::default();
+        for route in routes {
+            let route = match route {
+                0 => Focus::Reader,
+                1 => Focus::Library,
+                2 => Focus::Omnibar,
+                3 => Focus::Add,
+                _ => Focus::Source,
+            };
+            memory = memory.set(route);
+            memory = memory.open_settings();
+            prop_assert_eq!(memory.active(), Focus::Settings);
+            prop_assert_eq!(memory.restore(), route);
+            memory = memory.open_settings();
+            prop_assert_eq!(memory.restore(), route);
+            memory = memory.close_settings();
+            prop_assert_eq!(memory.active(), route);
+            memory = memory.close_settings();
+            prop_assert_eq!(memory.active(), route);
+        }
+    }
+
+}
+
+#[test]
+fn nested_transients_unwind_in_lifo_order() {
+    use crate::store::shell::{Focus, Transient, TransientStack};
+
+    let mut stack = TransientStack::default();
+    stack.push_with_restore(Transient::Search, Focus::Library);
+    stack.push_with_restore(Transient::Source, Focus::Omnibar);
+    stack.push_with_restore(Transient::Settings, Focus::Source);
+    assert_eq!(stack.top(), Some(Transient::Settings));
+    assert_eq!(
+        stack.pop_if(Transient::Settings).map(|frame| frame.restore),
+        Some(Focus::Source)
+    );
+    assert_eq!(stack.top(), Some(Transient::Source));
+    assert_eq!(
+        stack.pop_if(Transient::Source).map(|frame| frame.restore),
+        Some(Focus::Omnibar)
+    );
+    assert_eq!(stack.top(), Some(Transient::Search));
+    assert_eq!(
+        stack.pop_if(Transient::Search).map(|frame| frame.restore),
+        Some(Focus::Library)
+    );
+    assert_eq!(stack.top(), None);
+}
+
+/// A small GPUI entity exercise for the product focus contract. The pure
+/// stack test above proves ownership; this one proves that each unwind routes
+/// through a real focus handle in a rendered window, which catches regressions
+/// where the semantic route is correct but the caret remains in the overlay.
+#[gpui::test]
+fn nested_transient_events_restore_concrete_focus(cx: &mut gpui::TestAppContext) {
+    use crate::store::shell::{Focus, Transient, TransientStack};
+    use gpui::{
+        Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render,
+        StatefulInteractiveElement, Window, div,
+    };
+
+    struct FocusJourney {
+        reader: FocusHandle,
+        source: FocusHandle,
+        settings: FocusHandle,
+        active: Focus,
+        transients: TransientStack,
+    }
+
+    impl FocusJourney {
+        fn new(cx: &mut Context<Self>) -> Self {
+            Self {
+                reader: cx.focus_handle(),
+                source: cx.focus_handle(),
+                settings: cx.focus_handle(),
+                active: Focus::Reader,
+                transients: TransientStack::default(),
+            }
+        }
+
+        fn handle(&self, focus: Focus) -> &FocusHandle {
+            match focus {
+                Focus::Reader => &self.reader,
+                Focus::Source => &self.source,
+                Focus::Settings => &self.settings,
+                _ => &self.reader,
+            }
+        }
+
+        fn open(
+            &mut self,
+            surface: Transient,
+            restore: Focus,
+            focus: Focus,
+            window: &mut Window,
+            cx: &mut Context<Self>,
+        ) {
+            self.transients.push_with_restore(surface, restore);
+            self.active = focus;
+            self.handle(focus).focus(window, cx);
+        }
+
+        fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+            let Some(surface) = self.transients.top() else {
+                return;
+            };
+            let frame = self.transients.pop_if(surface).expect("top frame");
+            self.active = frame.restore;
+            self.handle(self.active).focus(window, cx);
+        }
+    }
+
+    impl Render for FocusJourney {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("focus-journey")
+                .child(div().id("reader").track_focus(&self.reader).focusable())
+                .child(div().id("source").track_focus(&self.source).focusable())
+                .child(div().id("settings").track_focus(&self.settings).focusable())
+        }
+    }
+
+    let (view, window) = cx.add_window_view(|_, cx| FocusJourney::new(cx));
+    view.update_in(window, |journey, window, cx| {
+        journey.handle(Focus::Reader).focus(window, cx);
+        journey.open(Transient::Source, Focus::Reader, Focus::Source, window, cx);
+        journey.open(
+            Transient::Settings,
+            Focus::Source,
+            Focus::Settings,
+            window,
+            cx,
+        );
+    });
+    window.run_until_parked();
+    window.update(|window, app| {
+        let journey = view.read(app);
+        assert!(journey.settings.is_focused(window));
+        assert_eq!(journey.active, Focus::Settings);
+    });
+
+    view.update_in(window, |journey, window, cx| journey.escape(window, cx));
+    window.run_until_parked();
+    window.update(|window, app| {
+        let journey = view.read(app);
+        assert!(journey.source.is_focused(window));
+        assert_eq!(journey.active, Focus::Source);
+        assert_eq!(journey.transients.top(), Some(Transient::Source));
+    });
+
+    view.update_in(window, |journey, window, cx| journey.escape(window, cx));
+    window.run_until_parked();
+    window.update(|window, app| {
+        let journey = view.read(app);
+        assert!(journey.reader.is_focused(window));
+        assert_eq!(journey.active, Focus::Reader);
+        assert_eq!(journey.transients.top(), None);
+    });
+}
+
+#[test]
+fn retargeting_preserves_velocity_across_a_reversal() {
+    use crate::motion::spring::{Spring, Stiffness};
+    use std::time::Duration;
+
+    let mut spring = Spring::at(0.0, Stiffness::PANEL);
+    spring.retarget(1_000.0);
+    let _ = spring.advance(Duration::from_millis(24));
+    let velocity = spring.velocity();
+    spring.retarget(-1_000.0);
+
+    assert_eq!(spring.velocity(), velocity);
+    assert!(spring.value().is_finite());
+    assert!(spring.advance(Duration::from_millis(24)));
+    assert!(spring.value() < 1_000.0);
+}
+
+#[test]
+fn deterministic_capture_samples_first_mid_reverse_and_settled_frames() {
+    use crate::motion::clock::AnimationClock;
+    use crate::motion::spring::{Spring, Stiffness};
+    use std::time::Duration;
+
+    fn advance_to(clock: &mut AnimationClock, spring: &mut Spring, timestamp: Duration) -> f32 {
+        let mut remaining = clock.advance_to(timestamp);
+        while !remaining.is_zero() {
+            let step = remaining.min(Duration::from_millis(32));
+            let _ = spring.advance(step);
+            remaining = remaining.saturating_sub(step);
+        }
+        spring.value()
+    }
+
+    let mut clock = AnimationClock::new();
+    let mut spring = Spring::at(0.0, Stiffness::PANEL);
+    spring.retarget(100.0);
+    let first = advance_to(&mut clock, &mut spring, Duration::from_millis(16));
+    let middle = advance_to(&mut clock, &mut spring, Duration::from_millis(120));
+    assert!(0.0 < first && first < middle && middle < 100.0);
+
+    let velocity = spring.velocity();
+    spring.retarget(-100.0);
+    assert_eq!(spring.velocity(), velocity, "a reversal keeps momentum");
+    let reverse = advance_to(&mut clock, &mut spring, Duration::from_millis(240));
+    assert!(
+        reverse < middle,
+        "the reverse frame must move back through the path"
+    );
+
+    let settled = advance_to(&mut clock, &mut spring, Duration::from_secs(4));
+    assert!((settled + 100.0).abs() <= f32::EPSILON);
+    assert_eq!(
+        advance_to(&mut clock, &mut spring, Duration::from_secs(4)),
+        settled,
+        "replaying a settled timestamp cannot schedule another frame"
+    );
+}
+
+#[gpui::test]
+fn shell_capture_driver_keeps_retargeted_motion_sampleable(cx: &mut gpui::TestAppContext) {
+    use crate::store::prefs::Preferences;
+    use crate::store::shell::{ShellStore, Side};
+    use gpui::AppContext as _;
+    use std::time::Duration;
+
+    let data = std::env::temp_dir().join(format!(
+        "nudox-shell-capture-{}-{}",
+        std::process::id(),
+        cx.test_function_name().unwrap_or("test")
+    ));
+    std::fs::create_dir_all(&data).expect("capture test data root");
+    let shell = cx.new(|_| ShellStore::new(data.clone(), Preferences::default()));
+    shell.update(cx, |shell, cx| shell.set_capture_mode(true, cx));
+
+    let initial = shell.read_with(cx, |shell, _| shell.library_width());
+    shell.update(cx, |shell, cx| shell.toggle_panel(Side::Library, cx));
+    let first = shell.update(cx, |shell, cx| {
+        shell.advance_capture(Duration::from_millis(16), cx);
+        shell.library_width()
+    });
+    let middle = shell.update(cx, |shell, cx| {
+        shell.advance_capture(Duration::from_millis(120), cx);
+        shell.library_width()
+    });
+    assert!(middle < first && first < initial);
+
+    shell.update(cx, |shell, cx| shell.toggle_panel(Side::Library, cx));
+    let reverse = shell.update(cx, |shell, cx| {
+        shell.advance_capture(Duration::from_millis(240), cx);
+        shell.library_width()
+    });
+    assert!(
+        reverse > middle,
+        "retargeting back must reverse through the path"
+    );
+
+    let settled = shell.update(cx, |shell, cx| {
+        shell.advance_capture(Duration::from_secs(4), cx);
+        shell.library_width()
+    });
+    assert_eq!(settled, initial);
+    shell.update(cx, |shell, cx| {
+        shell.advance_capture(Duration::from_secs(4), cx);
+        assert_eq!(
+            shell.library_width(),
+            settled,
+            "replaying a frame is stable"
+        );
+    });
+    cx.run_until_parked();
+    let _ = std::fs::remove_dir_all(data);
 }
 
 // -------------------------------------------------------------------- prefs --
@@ -593,7 +931,10 @@ fn every_command_failure() -> Vec<(&'static str, CommandFailure)> {
     let observed = ViewRevision::from(view_state_root(&[("b".to_owned(), "two".to_owned())]));
     vec![
         ("not-found", CommandFailure::NotFound),
-        ("wrong-basis", CommandFailure::WrongBasis { expected, observed }),
+        (
+            "wrong-basis",
+            CommandFailure::WrongBasis { expected, observed },
+        ),
         (
             "invalid-query",
             CommandFailure::InvalidQuery("the query names no admitted field".to_owned()),
@@ -604,7 +945,10 @@ fn every_command_failure() -> Vec<(&'static str, CommandFailure)> {
             CommandFailure::IncoherentView("row 4 has no basis".to_owned()),
         ),
         ("sequence-overflow", CommandFailure::SequenceOverflow),
-        ("mutation-requires-owner", CommandFailure::MutationRequiresOwner),
+        (
+            "mutation-requires-owner",
+            CommandFailure::MutationRequiresOwner,
+        ),
     ]
 }
 
@@ -614,8 +958,14 @@ fn every_client_error() -> Vec<(&'static str, backend_client::ClientError)> {
     let observed = view_state_root(&[("b".to_owned(), "two".to_owned())]);
     vec![
         ("endpoint", Wire::Io("connection refused".to_owned())),
-        ("protocol", Wire::Protocol("frame 3 failed admission".to_owned())),
-        ("transport", Wire::Transport(ReplicationError::MessageTooLarge)),
+        (
+            "protocol",
+            Wire::Protocol("frame 3 failed admission".to_owned()),
+        ),
+        (
+            "transport",
+            Wire::Transport(ReplicationError::MessageTooLarge),
+        ),
         ("not-found", Wire::CommandFailed(CommandFailure::NotFound)),
         ("incoherent-view", Wire::IncoherentView),
         ("wrong-basis", Wire::BasisMismatch { expected, observed }),
@@ -644,7 +994,10 @@ fn every_command_failure_lowers_to_a_fault_with_an_operand_and_a_headline() {
             !fault.cause().sentence().is_empty(),
             "{slug} lowered without a sentence a reader can act on"
         );
-        assert!(!headline(&fault).is_empty(), "{slug} lowered without a headline");
+        assert!(
+            !headline(&fault).is_empty(),
+            "{slug} lowered without a headline"
+        );
         assert!(
             !operand_spelling(fault.operand()).is_empty(),
             "{slug} lost the thing it was about"
@@ -661,7 +1014,10 @@ fn every_client_error_lowers_to_a_fault_with_an_operand_and_a_headline() {
             !fault.cause().sentence().is_empty(),
             "{slug} lowered without a sentence a reader can act on"
         );
-        assert!(!headline(&fault).is_empty(), "{slug} lowered without a headline");
+        assert!(
+            !headline(&fault).is_empty(),
+            "{slug} lowered without a headline"
+        );
         assert!(
             !operand_spelling(fault.operand()).is_empty(),
             "{slug} lost the thing it was about"
@@ -705,8 +1061,14 @@ fn every_subscription_error() -> Vec<(&'static str, crate::transport::error::Cli
     use crate::transport::error::ClientError as Feed;
     vec![
         ("endpoint", Feed::Io("the socket closed".to_owned())),
-        ("protocol", Feed::Protocol("delta 2 failed admission".to_owned())),
-        ("transport", Feed::Transport(ReplicationError::MessageTooLarge)),
+        (
+            "protocol",
+            Feed::Protocol("delta 2 failed admission".to_owned()),
+        ),
+        (
+            "transport",
+            Feed::Transport(ReplicationError::MessageTooLarge),
+        ),
         ("incoherent-view", Feed::IncoherentRoot),
         (
             "wrong-basis",
@@ -729,7 +1091,10 @@ fn every_subscription_failure_names_the_endpoint_it_happened_on() {
             "/tmp/x.sock",
             "{slug} must say which endpoint dropped"
         );
-        assert!(!headline(&fault).is_empty(), "{slug} lowered without a headline");
+        assert!(
+            !headline(&fault).is_empty(),
+            "{slug} lowered without a headline"
+        );
         assert!(!fault.cause().sentence().is_empty());
     }
 }

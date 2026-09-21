@@ -11,6 +11,7 @@
 use super::events::ShellEvent;
 use super::marks::{self, Marks, Recent};
 use super::prefs::{self, EditorScheme, Preferences};
+use crate::motion::clock::AnimationClock;
 use crate::motion::spring::{Spring, Stiffness};
 use crate::theme::palette::Appearance;
 use crate::theme::tokens::{InterfaceSize, PanelWidth};
@@ -32,9 +33,148 @@ pub(crate) enum Focus {
     Omnibar,
     /// The library panel on the left.
     Library,
+    /// The inline add-project field in the library panel.
+    Add,
+    /// The source evidence sheet.
+    Source,
     /// The reader in the centre.
     #[default]
     Reader,
+    /// The modal settings surface. The previous region is restored on close.
+    Settings,
+}
+
+/// A transient surface that owns Escape and focus while it is open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Transient {
+    /// The search result sheet.
+    Search,
+    /// The command palette variant of the search sheet.
+    Palette,
+    /// The source evidence sheet.
+    Source,
+    /// The inline project add flow.
+    Add,
+    /// The settings dialog.
+    Settings,
+}
+
+/// One transient surface and the semantic focus route it covers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TransientFrame {
+    /// The surface that owns Escape and Tab while it is open.
+    pub(crate) surface: Transient,
+    /// The route to restore after this surface closes.
+    pub(crate) restore: Focus,
+}
+
+/// LIFO ownership for nested transient surfaces.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TransientStack {
+    entries: Vec<TransientFrame>,
+}
+
+impl TransientStack {
+    /// Places a surface on top, retaining the concrete semantic route behind it.
+    pub(crate) fn push_with_restore(&mut self, surface: Transient, restore: Focus) {
+        if self.top() != Some(surface) {
+            self.entries.push(TransientFrame { surface, restore });
+        }
+    }
+
+    /// Removes one surface after it closes, wherever it sits in the stack.
+    pub(crate) fn remove(&mut self, surface: Transient) -> Option<TransientFrame> {
+        self.entries
+            .iter()
+            .rposition(|held| held.surface == surface)
+            .map(|at| self.entries.remove(at))
+    }
+
+    /// Replaces either omnibar mode while preserving all outer surfaces.
+    pub(crate) fn replace_omnibar(&mut self, surface: Transient, restore: Focus) {
+        debug_assert!(matches!(surface, Transient::Search | Transient::Palette));
+        let previous = self
+            .entries
+            .iter()
+            .find(|held| matches!(held.surface, Transient::Search | Transient::Palette))
+            .map_or(restore, |held| held.restore);
+        self.remove(Transient::Search);
+        self.remove(Transient::Palette);
+        self.push_with_restore(surface, previous);
+    }
+
+    /// Returns the surface that Escape must unwind first.
+    pub(crate) fn top(&self) -> Option<Transient> {
+        self.entries.last().map(|frame| frame.surface)
+    }
+
+    /// Removes and returns the top frame when it owns the named surface.
+    pub(crate) fn pop_if(&mut self, surface: Transient) -> Option<TransientFrame> {
+        (self.top() == Some(surface)).then(|| self.entries.pop().expect("top frame"))
+    }
+
+    /// Returns the route behind one currently open surface.
+    pub(crate) fn restore_for(&self, surface: Transient) -> Option<Focus> {
+        self.entries
+            .iter()
+            .rfind(|frame| frame.surface == surface)
+            .map(|frame| frame.restore)
+    }
+}
+
+/// Focus ownership with one reversible modal boundary.
+///
+/// This is deliberately independent of GPUI handles: the shell owns the
+/// semantic route, while the workspace maps that route back to a concrete
+/// handle after an overlay closes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FocusMemory {
+    active: Focus,
+    restore: Focus,
+}
+
+impl Default for FocusMemory {
+    fn default() -> Self {
+        Self {
+            active: Focus::Reader,
+            restore: Focus::Reader,
+        }
+    }
+}
+
+impl FocusMemory {
+    /// Returns the currently active semantic region.
+    pub(crate) const fn active(self) -> Focus {
+        self.active
+    }
+
+    /// Returns the non-modal region remembered before a modal surface opened.
+    pub(crate) const fn restore(self) -> Focus {
+        self.restore
+    }
+
+    /// Moves focus to a normal shell region.
+    pub(crate) const fn set(mut self, focus: Focus) -> Self {
+        self.active = focus;
+        self
+    }
+
+    /// Enters settings while remembering the prior region exactly once.
+    pub(crate) fn open_settings(mut self) -> Self {
+        if self.active != Focus::Settings {
+            self.restore = self.active;
+            self.active = Focus::Settings;
+        }
+        self
+    }
+
+    /// Leaves settings and returns to the remembered region.
+    pub(crate) fn close_settings(mut self) -> Self {
+        if self.active == Focus::Settings {
+            self.active = self.restore;
+        }
+        self
+    }
 }
 
 /// Which side a panel is on.
@@ -101,6 +241,13 @@ impl SettingsPage {
             Self::Legend => "Legend",
         }
     }
+
+    /// Moves through the sidebar without wrapping past its ends.
+    pub(crate) fn step(self, delta: isize) -> Self {
+        let index = Self::ALL.iter().position(|page| *page == self).unwrap_or(0);
+        let next = (index as isize + delta).clamp(0, Self::ALL.len() as isize - 1);
+        Self::ALL[next as usize]
+    }
 }
 
 /// Panels, focus, notices, and preferences.
@@ -114,13 +261,15 @@ pub(crate) struct ShellStore {
     marks: Marks,
     library: Spring,
     context: Spring,
-    focus: Focus,
+    focus: FocusMemory,
     settings: bool,
     settings_page: SettingsPage,
     notice: Option<Notice>,
     notice_task: Option<Task<()>>,
     animation: Option<Task<()>>,
     animating: bool,
+    clock: AnimationClock,
+    capture_mode: bool,
     narrow: bool,
     context_only: bool,
     context_available: bool,
@@ -138,13 +287,15 @@ impl ShellStore {
                 Stiffness::PANEL,
             ),
             context: Spring::at(0.0, Stiffness::PANEL),
-            focus: Focus::Reader,
+            focus: FocusMemory::default(),
             settings: false,
             settings_page: SettingsPage::default(),
             notice: None,
             notice_task: None,
             animation: None,
             animating: false,
+            clock: AnimationClock::new(),
+            capture_mode: false,
             narrow: false,
             context_only: false,
             context_available: false,
@@ -165,6 +316,9 @@ impl ShellStore {
 
     /// Shows one settings page.
     pub(crate) fn show_settings_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
+        if !self.settings {
+            self.focus = self.focus.open_settings();
+        }
         self.settings_page = page;
         self.settings = true;
         cx.notify();
@@ -240,15 +394,19 @@ impl ShellStore {
         self.prefs.library_open()
     }
 
-
     /// Returns which region owns the keyboard.
     pub(crate) const fn focus(&self) -> Focus {
-        self.focus
+        self.focus.active()
     }
 
     /// Returns whether the settings sheet is showing.
     pub(crate) const fn settings_open(&self) -> bool {
         self.settings
+    }
+
+    /// Returns the focus region to restore after a modal surface closes.
+    pub(crate) const fn focus_before_settings(&self) -> Focus {
+        self.focus.restore()
     }
 
     /// Returns the current confirmation notice.
@@ -268,17 +426,59 @@ impl ShellStore {
 
     /// Moves keyboard ownership.
     pub(crate) fn focus_on(&mut self, focus: Focus, cx: &mut Context<Self>) {
-        if self.focus == focus {
+        if self.focus.active() == focus {
             return;
         }
-        self.focus = focus;
+        self.focus = self.focus.set(focus);
         cx.notify();
     }
 
     /// Opens or closes the settings sheet.
     pub(crate) fn toggle_settings(&mut self, cx: &mut Context<Self>) {
-        self.settings = !self.settings;
+        if self.settings {
+            self.close_settings(cx);
+        } else {
+            self.show_settings_page(self.settings_page, cx);
+        }
+    }
+
+    /// Closes settings and restores the focus region that opened it.
+    pub(crate) fn close_settings(&mut self, cx: &mut Context<Self>) {
+        if !self.settings {
+            return;
+        }
+        self.settings = false;
+        self.focus = self.focus.close_settings();
         cx.notify();
+    }
+
+    /// Switches shell motion to the deterministic capture driver.
+    ///
+    /// A preview process must not race an exact screenshot timestamp with the
+    /// wall-clock task. Dropping the live task here leaves one owner of the
+    /// springs: [`Self::advance_capture`].
+    pub(crate) fn set_capture_mode(&mut self, capture: bool, cx: &mut Context<Self>) {
+        if self.capture_mode == capture {
+            return;
+        }
+        self.capture_mode = capture;
+        if capture {
+            self.animation.take();
+            self.animating = false;
+        } else if !self.library.settled() || !self.context.settled() {
+            // A harness may hand motion back to the live window mid-flight.
+            // Re-arm the one wall-clock owner only when there is work left.
+            self.start(cx);
+        }
+        cx.notify();
+    }
+
+    /// Selects the adjacent settings page for keyboard navigation.
+    pub(crate) fn step_settings(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.settings {
+            self.settings_page = self.settings_page.step(delta);
+            cx.notify();
+        }
     }
 
     /// Opens or closes one panel and persists the choice.
@@ -342,6 +542,26 @@ impl ShellStore {
         cx.notify();
     }
 
+    /// Advances spring state to an exact screenshot timestamp.
+    ///
+    /// A harness can call this between deterministic renders without sleeping
+    /// or depending on a platform timer. The same spring state is used by the
+    /// live path, so captured reversal and settled frames are meaningful.
+    pub(crate) fn advance_capture(&mut self, timestamp: Duration, cx: &mut Context<Self>) -> bool {
+        let mut remaining = self.clock.advance_to(timestamp);
+        let mut moving = false;
+        while !remaining.is_zero() {
+            // Keep the live stall guard while still allowing a capture to
+            // jump to an exact timestamp. The loop is allocation-free and
+            // makes a 240 ms capture frame follow the same trajectory as
+            // eight ordinary 30 ms frames.
+            let step = remaining.min(Duration::from_millis(32));
+            moving = self.advance_springs(step, cx);
+            remaining = remaining.saturating_sub(step);
+        }
+        moving
+    }
+
     /// Chooses the external editor and persists it.
     pub(crate) fn set_editor(&mut self, editor: EditorScheme, cx: &mut Context<Self>) {
         self.prefs = self.prefs.with_editor(editor);
@@ -383,8 +603,7 @@ impl ShellStore {
             self.prefs.library_open() && !self.narrow,
             self.prefs.library_width(),
         ));
-        let context_open =
-            self.prefs.context_open() && !self.narrow && !self.context_only;
+        let context_open = self.prefs.context_open() && !self.narrow && !self.context_only;
         self.context.retarget(if self.context_available {
             open_width(context_open, self.prefs.context_width())
         } else {
@@ -397,6 +616,14 @@ impl ShellStore {
         if self.prefs.reduced_motion() {
             self.library.snap(self.library.target());
             self.context.snap(self.context.target());
+            self.animating = false;
+            cx.notify();
+            return;
+        }
+        if self.capture_mode {
+            // Capture mode owns progression through `advance_capture`; keep
+            // the current value and velocity so a retarget can be sampled in
+            // its first-moving and reversal frames.
             self.animating = false;
             cx.notify();
             return;
@@ -422,6 +649,11 @@ impl ShellStore {
     }
 
     fn advance(&mut self, delta: Duration, cx: &mut Context<Self>) -> bool {
+        let delta = self.clock.tick(delta);
+        self.advance_springs(delta, cx)
+    }
+
+    fn advance_springs(&mut self, delta: Duration, cx: &mut Context<Self>) -> bool {
         let library = self.library.advance(delta);
         let context = self.context.advance(delta);
         cx.notify();

@@ -15,6 +15,7 @@
 use super::keys;
 use super::workspace::Workspace;
 use crate::store::document::{Content, Target};
+use crate::store::shell::Transient;
 use crate::theme::Theme;
 use crate::theme::palette::{Appearance, Paint};
 use crate::theme::tokens::{Space, hairline, space};
@@ -26,7 +27,7 @@ use backend_present::{Page, Source};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, Context, Div, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, div, px,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 /// Widest the sheet grows, in pixels.
@@ -41,11 +42,23 @@ pub(crate) struct SourceCache {
 
 impl Workspace {
     /// Opens or closes the source sheet for the page being read.
-    pub(crate) fn toggle_source(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.source_open && self.open_page(cx).is_none() {
             return;
         }
         self.source_open = !self.source_open;
+        if self.source_open {
+            let restore = self.shell.read(cx).focus();
+            self.transients
+                .push_with_restore(Transient::Source, restore);
+            self.shell.update(cx, |shell, cx| {
+                shell.focus_on(crate::store::shell::Focus::Source, cx)
+            });
+            window.focus(&self.source_focus, cx);
+        } else {
+            self.close_source(cx);
+            self.restore_focus(window, cx);
+        }
         cx.notify();
     }
 
@@ -53,11 +66,18 @@ impl Workspace {
     #[cfg(feature = "preview")]
     pub(crate) fn preview_source(&mut self, cx: &mut Context<Self>) {
         self.source_open = true;
+        let restore = self.shell.read(cx).focus();
+        self.transients
+            .push_with_restore(Transient::Source, restore);
+        self.shell.update(cx, |shell, cx| {
+            shell.focus_on(crate::store::shell::Focus::Source, cx)
+        });
         cx.notify();
     }
 
     /// Closes the source sheet.
     pub(super) fn close_source(&mut self, cx: &mut Context<Self>) {
+        self.remove_transient(Transient::Source, cx);
         if self.source_open {
             self.source_open = false;
             cx.notify();
@@ -65,7 +85,11 @@ impl Workspace {
     }
 
     /// Returns the source sheet, when it is open over a page with a site.
-    pub(super) fn source_sheet(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn source_sheet(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if !self.source_open {
             return None;
         }
@@ -79,7 +103,10 @@ impl Workspace {
                 .child(
                     surface::scrim(theme)
                         .id("source-scrim")
-                        .on_click(cx.listener(|this, _, _, cx| this.close_source(cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.close_source(cx);
+                            this.restore_focus(window, cx);
+                        })),
                 )
                 .child(
                     div()
@@ -92,6 +119,8 @@ impl Workspace {
                         .child(
                             surface::raised(theme)
                                 .id("source-sheet")
+                                .track_focus(&self.source_focus)
+                                .tab_group()
                                 .occlude()
                                 .w(px(SHEET_WIDTH))
                                 .max_w(gpui::relative(1.0))
@@ -142,13 +171,20 @@ impl Workspace {
                     .font_family(theme.specimen())
                     .child(spelling),
             )
-            .when_some(facts, |head, facts| head.child(text::faint(theme).flex_none().child(facts)))
+            .when_some(facts, |head, facts| {
+                head.child(text::faint(theme).flex_none().child(facts))
+            })
             .child(
-                button::button(theme, "source-editor", "Open in editor", button::Weight::Regular)
-                    .tip(Tip::new("Open in editor").key(keys::OPEN_EDITOR))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_in_editor(&target, line, cx);
-                    })),
+                button::button(
+                    theme,
+                    "source-editor",
+                    "Open in editor",
+                    button::Weight::Regular,
+                )
+                .tip(Tip::new("Open in editor").key(keys::OPEN_EDITOR))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_in_editor(&target, line, cx);
+                })),
             )
             .child(
                 button::icon_button(theme, "source-copy", Icon::Copy)
@@ -160,7 +196,10 @@ impl Workspace {
             .child(
                 button::icon_button(theme, "source-close", Icon::Close)
                     .tip(Tip::new("Close").key(keys::DISMISS))
-                    .on_click(cx.listener(|this, _, _, cx| this.close_source(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_source(cx);
+                        this.restore_focus(window, cx);
+                    })),
             )
     }
 
@@ -209,7 +248,12 @@ impl Workspace {
     }
 
     /// Returns the highlighted view for one page, building it once.
-    fn source_view(&mut self, theme: &Theme, page: &Page, cx: &Context<Self>) -> Option<SourceView> {
+    fn source_view(
+        &mut self,
+        theme: &Theme,
+        page: &Page,
+        cx: &Context<Self>,
+    ) -> Option<SourceView> {
         let coordinate = page.identity().coordinate().as_str();
         let appearance = self.shell.read(cx).prefs().appearance();
         let fresh = self
@@ -231,7 +275,10 @@ impl Workspace {
         let (symbol, near) = match page.identity().key() {
             backend_present::IdentityKey::Symbol(symbol) => (
                 Some(symbol),
-                self.index.read(cx).project_of(symbol).map(|project| project.root().to_owned()),
+                self.index
+                    .read(cx)
+                    .project_of(symbol)
+                    .map(|project| project.root().to_owned()),
             ),
             _ => (None, None),
         };
@@ -246,7 +293,14 @@ impl Workspace {
                 .map(crate::store::index::Entry::symbol)
                 .filter(|found| Some(*found) != symbol)
         };
-        let view = SourceView::build(theme, page.language(), lines, site.line().get(), *truncation, &resolve);
+        let view = SourceView::build(
+            theme,
+            page.language(),
+            lines,
+            site.line().get(),
+            *truncation,
+            &resolve,
+        );
         self.source_cache = Some(SourceCache {
             coordinate: coordinate.to_owned(),
             appearance,
@@ -262,5 +316,4 @@ impl Workspace {
             _ => None,
         }
     }
-
 }
