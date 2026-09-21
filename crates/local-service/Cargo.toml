@@ -21,6 +21,7 @@ backend-frontend-python = { path = "../../frontends/python" }
 backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
 backend-library = { path = "../library" }
+backend-platform = { path = "../platform" }
 backend-runtime = { path = "../runtime" }
 backend-semantic = { path = "../semantic" }
 backend-store = { path = "../store" }

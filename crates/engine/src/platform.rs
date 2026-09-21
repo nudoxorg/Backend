@@ -7,7 +7,6 @@
 
 use std::path::Path;
 
-#[cfg(unix)]
 use std::io::Read;
 
 #[cfg(unix)]
@@ -91,7 +90,16 @@ pub fn read_authority_secret(path: &Path) -> Result<[u8; 32], AuthoritySecretErr
         .map(std::fs::File::from)
         .map_err(|error| AuthoritySecretError::Io(error.kind()))?
     };
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let mut file = {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| AuthoritySecretError::Io(error.kind()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(AuthoritySecretError::SymbolicLink);
+        }
+        std::fs::File::open(path).map_err(|error| AuthoritySecretError::Io(error.kind()))?
+    };
+    #[cfg(not(any(unix, windows)))]
     return Err(AuthoritySecretError::Unsupported);
 
     let metadata = file
@@ -111,6 +119,16 @@ pub fn read_authority_secret(path: &Path) -> Result<[u8; 32], AuthoritySecretErr
         }
         let owner = metadata.uid();
         if current_effective_uid().map_err(|_| AuthoritySecretError::WrongOwner)? != owner {
+            return Err(AuthoritySecretError::WrongOwner);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let owner = backend_platform::win32::identity::file_owner(path)
+            .map_err(|error| AuthoritySecretError::Io(error.kind()))?;
+        if !backend_platform::win32::identity::is_owned_by_current_user(&owner)
+            .map_err(|error| AuthoritySecretError::Io(error.kind()))?
+        {
             return Err(AuthoritySecretError::WrongOwner);
         }
     }

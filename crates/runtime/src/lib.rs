@@ -103,6 +103,8 @@ const SUN_PATH_CAPACITY: usize = 104;
 /// `bind(2)`/`connect(2)` require inside `sun_path` is reserved.
 #[cfg(unix)]
 const MAX_ENDPOINT_PATH_BYTES: usize = SUN_PATH_CAPACITY - 1;
+#[cfg(windows)]
+const MAX_ENDPOINT_PATH_BYTES: usize = 100;
 static SECRET_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// All local paths selected for one project session.
@@ -147,12 +149,27 @@ impl WorkspacePaths {
         // spelling. Reduce it to the same identity the workspace lock uses
         // before anything is derived from it.
         let data = normalize_identity(&data);
+        if let Some(workspace_project) = checkout_for_workspace(&data)
+            && !same_path_identity(&workspace_project, &project)
+        {
+            return Err(RuntimeError::WorkspaceProjectMismatch {
+                project,
+                workspace: data,
+                workspace_project,
+            });
+        }
         let endpoint = endpoint
             .or_else(|| std::env::var_os(ENDPOINT_ENV).map(PathBuf::from))
             .unwrap_or_else(|| default_endpoint(&data));
         if endpoint.as_os_str().is_empty() {
             return Err(RuntimeError::InvalidPath("endpoint path is empty"));
         }
+        // Windows canonicalization commonly yields a `\\?\\` verbatim
+        // spelling. Normalize the process-boundary path before deriving or
+        // comparing any local endpoint so the same socket is addressable from
+        // shells, desktop launches, and MCP hosts that use ordinary drive or
+        // UNC paths.
+        let endpoint = normalize_verbatim_prefix(&endpoint);
         validate_endpoint_length(&endpoint)?;
         let authority_secret = std::env::var_os(AUTHORITY_SECRET_ENV)
             .map_or_else(|| data.join(AUTHORITY_FILE), PathBuf::from);
@@ -263,20 +280,19 @@ impl LiveEndpoint {
 /// owner may hold the workspace lock and not yet have bound its listener, so
 /// callers that need certainty follow a `None` with a bounded retry rather
 /// than with a failure.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[must_use]
 pub fn try_attach(paths: &WorkspacePaths) -> Option<LiveEndpoint> {
-    use std::os::unix::net::UnixStream;
-
-    UnixStream::connect(paths.endpoint())
+    backend_platform::local::LocalStream::connect(paths.endpoint())
         .ok()
         .map(|_probe| LiveEndpoint {
             endpoint: paths.endpoint().to_path_buf(),
         })
 }
 
-/// Reports that endpoint probing is Unix-only.
-#[cfg(not(unix))]
+/// Reports that endpoint probing is unavailable on platforms without a local
+/// stream transport.
+#[cfg(not(any(unix, windows)))]
 #[must_use]
 pub fn try_attach(_paths: &WorkspacePaths) -> Option<LiveEndpoint> {
     None
@@ -289,19 +305,17 @@ pub fn try_attach(_paths: &WorkspacePaths) -> Option<LiveEndpoint> {
 /// connection — the kernel states that mean no process is listening. A
 /// non-socket, a permission failure, or any other error is left alone so a
 /// misconfigured path fails loudly at bind instead of being deleted here.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn unlink_dead_endpoint(endpoint: &Path) -> bool {
     use std::io::ErrorKind;
-    use std::os::unix::fs::FileTypeExt;
-    use std::os::unix::net::UnixStream;
 
     let Ok(metadata) = fs::symlink_metadata(endpoint) else {
         return false;
     };
-    if !metadata.file_type().is_socket() {
+    if !is_endpoint_file(&metadata) {
         return false;
     }
-    match UnixStream::connect(endpoint) {
+    match backend_platform::local::LocalStream::connect(endpoint) {
         Ok(_live) => false,
         Err(error)
             if matches!(
@@ -313,6 +327,17 @@ fn unlink_dead_endpoint(endpoint: &Path) -> bool {
         }
         Err(_) => false,
     }
+}
+
+#[cfg(unix)]
+fn is_endpoint_file(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    metadata.file_type().is_socket()
+}
+
+#[cfg(windows)]
+fn is_endpoint_file(metadata: &fs::Metadata) -> bool {
+    backend_platform::win32::security::is_endpoint_metadata(metadata)
 }
 
 /// Ensures the shared local daemon is accepting connections and returns its
@@ -327,10 +352,8 @@ fn unlink_dead_endpoint(endpoint: &Path) -> bool {
 /// # Errors
 /// Returns an error when setup, executable discovery, process startup, or the
 /// bounded readiness wait fails.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
-    use std::os::unix::net::UnixStream;
-
     if let Some(live) = try_attach(paths) {
         return Ok(live.into_endpoint());
     }
@@ -343,7 +366,8 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     // from "somebody else is already listening".
     unlink_dead_endpoint(paths.endpoint());
     let executable = locald_executable()?;
-    let mut child = Command::new(&executable)
+    let mut command = Command::new(&executable);
+    command
         .arg("--endpoint")
         .arg(paths.endpoint())
         .arg("--workspace")
@@ -352,13 +376,15 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
         .arg(paths.authority_secret())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    detach(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|source| RuntimeError::Spawn { executable, source })?;
     let mut deadline = Instant::now() + LIVE_START_TIMEOUT;
     let mut child_exit = None;
     loop {
-        if UnixStream::connect(paths.endpoint()).is_ok() {
+        if backend_platform::local::LocalStream::connect(paths.endpoint()).is_ok() {
             return Ok(paths.endpoint().to_path_buf());
         }
         if child_exit.is_none()
@@ -381,8 +407,23 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     }
 }
 
-/// Reports that automatic local daemon composition is Unix-only.
-#[cfg(not(unix))]
+/// Starts a spawned daemon outside the launching Windows console's control
+/// group. Unix has no equivalent setup requirement: its detached child simply
+/// inherits no terminal ownership from the parent process.
+#[cfg(windows)]
+fn detach(command: &mut Command) {
+    use std::os::windows::process::CommandExt as _;
+
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+}
+
+#[cfg(not(windows))]
+const fn detach(_command: &mut Command) {}
+
+/// Reports that automatic local daemon composition is unavailable on this platform.
+#[cfg(not(any(unix, windows)))]
 pub fn ensure_locald(_paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     Err(RuntimeError::Unsupported)
 }
@@ -406,7 +447,7 @@ fn normalize_identity(path: &Path) -> PathBuf {
     let mut suffix: Vec<OsString> = Vec::new();
     loop {
         if let Ok(resolved) = existing.canonicalize() {
-            let mut identity = resolved;
+            let mut identity = normalize_verbatim_prefix(&resolved);
             for component in suffix.iter().rev() {
                 identity.push(component);
             }
@@ -422,8 +463,9 @@ fn normalize_identity(path: &Path) -> PathBuf {
 
 /// Absolutizes and lexically reduces a path without touching the filesystem.
 fn lexically_absolute(path: &Path) -> PathBuf {
+    let path = normalize_verbatim_prefix(path);
     let absolute = if path.is_absolute() {
-        path.to_path_buf()
+        path
     } else {
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("/"))
@@ -443,6 +485,81 @@ fn lexically_absolute(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+/// Removes Windows' verbatim path marker at the process boundary.
+///
+/// `canonicalize` deliberately returns `\\?\\` paths on Windows. Those paths
+/// are valid for Win32 calls but leak an implementation spelling into package
+/// coordinates, MCP instructions, and continuation context. The marker does
+/// not identify a different file, so stripping it before lexical identity
+/// reduction keeps endpoint ownership stable while giving every surface one
+/// display spelling. UNC verbatim paths become ordinary UNC paths.
+fn normalize_verbatim_prefix(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.as_os_str().to_string_lossy();
+        // Compare bytes so an unrelated non-ASCII path prefix cannot panic
+        // on a slice that splits a UTF-8 code point.
+        if text
+            .as_bytes()
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(br"\\?\unc\"))
+        {
+            return PathBuf::from(format!(r"\\{}", &text[8..]));
+        }
+        if let Some(local) = text.strip_prefix(r"\\?\") {
+            // Only a verbatim drive path has a normal Win32 spelling. Keep
+            // device namespaces such as `GLOBALROOT` and `Volume{...}`
+            // verbatim: dropping their prefix would turn an absolute device
+            // path into a relative path and could change which object is
+            // addressed.
+            let drive = local.as_bytes().get(1).copied() == Some(b':');
+            if drive {
+                return PathBuf::from(local);
+            }
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Returns the canonical, user-facing spelling of a project or workspace
+/// path. This resolves the existing prefix and strips Windows' `\\?\\` marker
+/// without changing the filesystem identity used for ownership.
+#[must_use]
+pub fn normalize_surface_path(path: impl AsRef<Path>) -> PathBuf {
+    normalize_identity(path.as_ref())
+}
+
+/// Returns the checkout that owns the conventional `.backend/v2` state path.
+///
+/// A caller can intentionally choose a state directory elsewhere, so this
+/// check is limited to the layout this crate itself derives. That catches a
+/// stale MCP/CLI configuration pointing at another checkout while preserving
+/// explicit shared state locations for hosts that own their own identity
+/// policy.
+fn checkout_for_workspace(workspace: &Path) -> Option<PathBuf> {
+    let version = workspace.file_name()?.to_string_lossy();
+    let backend = workspace.parent()?.file_name()?.to_string_lossy();
+    if !version.eq_ignore_ascii_case("v2") || !backend.eq_ignore_ascii_case(".backend") {
+        return None;
+    }
+    workspace.parent()?.parent().map(normalize_identity)
+}
+
+/// Compares two normalized paths using the host filesystem's identity rules.
+/// Windows paths are case-insensitive even when callers spell a drive, UNC
+/// share, or directory component differently; Unix paths remain byte-exact.
+#[cfg(windows)]
+fn same_path_identity(left: &Path, right: &Path) -> bool {
+    left.as_os_str()
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+}
+
+#[cfg(not(windows))]
+fn same_path_identity(left: &Path, right: &Path) -> bool {
+    left == right
 }
 
 /// Returns the effective user identity folded into every derived endpoint.
@@ -536,7 +653,7 @@ fn default_endpoint(data: &Path) -> PathBuf {
 /// workspace's identity is unreachable" from an ordinary transient I/O fault.
 /// Catching it here, against an honestly derived platform limit, turns that
 /// into a typed, actionable error before a socket is ever touched.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn validate_endpoint_length(endpoint: &Path) -> Result<(), RuntimeError> {
     let bytes = endpoint.as_os_str().len();
     if bytes > MAX_ENDPOINT_PATH_BYTES {
@@ -549,7 +666,7 @@ fn validate_endpoint_length(endpoint: &Path) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 const fn validate_endpoint_length(_endpoint: &Path) -> Result<(), RuntimeError> {
     Ok(())
 }
@@ -577,9 +694,12 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
         fs::create_dir_all(parent).map_err(RuntimeError::Io)?;
     }
     let mut bytes = [0_u8; 32];
+    #[cfg(unix)]
     fs::File::open("/dev/urandom")
         .and_then(|mut source| source.read_exact(&mut bytes))
         .map_err(RuntimeError::Io)?;
+    #[cfg(windows)]
+    backend_platform::win32::random::fill(&mut bytes).map_err(RuntimeError::Io)?;
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -607,6 +727,11 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
         let _ = fs::remove_file(&temporary);
         return Err(error);
     }
+    #[cfg(windows)]
+    if let Err(error) = backend_platform::win32::security::restrict_to_current_user(&temporary) {
+        let _ = fs::remove_file(&temporary);
+        return Err(RuntimeError::Io(error));
+    }
     let published = fs::hard_link(&temporary, path);
     let _ = fs::remove_file(&temporary);
     match published {
@@ -620,10 +745,18 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
 
 fn validate_authority_secret(path: &Path) -> Result<(), RuntimeError> {
     let metadata = fs::metadata(path).map_err(RuntimeError::Io)?;
-    if metadata.is_file() && metadata.len() == 32 {
-        Ok(())
-    } else {
+    if !metadata.is_file() || metadata.len() != 32 {
         Err(RuntimeError::InvalidCredential(path.to_path_buf()))
+    } else {
+        #[cfg(windows)]
+        {
+            use backend_platform::win32::identity;
+            let owner = identity::file_owner(path).map_err(RuntimeError::Io)?;
+            if !identity::is_owned_by_current_user(&owner).map_err(RuntimeError::Io)? {
+                return Err(RuntimeError::InvalidCredential(path.to_path_buf()));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -634,10 +767,19 @@ pub enum RuntimeError {
     Io(std::io::Error),
     /// One selected path was empty.
     InvalidPath(&'static str),
+    /// The configured workspace state belongs to another checkout.
+    WorkspaceProjectMismatch {
+        /// Checkout selected by the caller.
+        project: PathBuf,
+        /// State directory selected by the caller.
+        workspace: PathBuf,
+        /// Checkout inferred from the conventional state layout.
+        workspace_project: PathBuf,
+    },
     /// The authority credential was not one private 32-byte file.
     InvalidCredential(PathBuf),
-    /// The endpoint path is longer than the platform `sockaddr_un.sun_path`
-    /// can hold, so it could never be bound or connected to.
+    /// The endpoint path is longer than the platform local-socket address can
+    /// hold, so it could never be bound or connected to.
     EndpointTooLong {
         /// The path that was rejected.
         endpoint: PathBuf,
@@ -669,6 +811,18 @@ impl fmt::Display for RuntimeError {
         match self {
             Self::Io(error) => write!(formatter, "local runtime I/O failed: {error}"),
             Self::InvalidPath(message) => formatter.write_str(message),
+            Self::WorkspaceProjectMismatch {
+                project,
+                workspace,
+                workspace_project,
+            } => write!(
+                formatter,
+                "workspace {} belongs to checkout {}, but the configured project is {}; choose --workspace {}/.backend/v2 for that project or remove the workspace override",
+                workspace.display(),
+                workspace_project.display(),
+                project.display(),
+                project.display(),
+            ),
             Self::InvalidCredential(path) => write!(
                 formatter,
                 "authority credential {} must be one 32-byte file",
@@ -697,7 +851,9 @@ impl fmt::Display for RuntimeError {
             Self::StartTimeout(path) => {
                 write!(formatter, "backend-locald did not open {}", path.display())
             }
-            Self::Unsupported => formatter.write_str("automatic local runtime requires Unix"),
+            Self::Unsupported => {
+                formatter.write_str("automatic local runtime requires Unix or Windows")
+            }
         }
     }
 }
@@ -758,6 +914,61 @@ mod tests {
     }
 
     #[test]
+    fn discover_rejects_state_from_a_different_checkout() {
+        let first = test_directory("checkout-a");
+        let second = test_directory("checkout-b");
+        fs::create_dir_all(&first).expect("create first checkout");
+        let workspace = second.join(STATE_DIRECTORY);
+        fs::create_dir_all(&workspace).expect("create state fixture");
+        let endpoint = PathBuf::from("/tmp/backend-v2-checkout-mismatch.sock");
+
+        let error =
+            WorkspacePaths::discover(Some(first.clone()), Some(workspace.clone()), Some(endpoint))
+                .expect_err("state from another checkout must be refused");
+        match &error {
+            RuntimeError::WorkspaceProjectMismatch {
+                project,
+                workspace: observed,
+                workspace_project,
+            } => {
+                assert_eq!(project, &normalize_identity(&first));
+                assert_eq!(observed, &normalize_identity(&workspace));
+                assert_eq!(workspace_project, &normalize_identity(&second));
+            }
+            other => panic!("expected workspace mismatch, got {other:?}"),
+        }
+        let message = error.to_string();
+        assert!(message.contains("belongs to checkout"), "{message}");
+        assert!(message.contains("--workspace"), "{message}");
+        assert!(
+            message.contains("remove the workspace override"),
+            "{message}"
+        );
+
+        fs::remove_dir_all(first).expect("remove first checkout");
+        fs::remove_dir_all(second).expect("remove second checkout");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_drive_and_unc_paths_share_display_identity_without_device_aliasing() {
+        let drive = PathBuf::from(r"C:\workspace\project");
+        let extended_drive = PathBuf::from(r"\\?\C:\workspace\project");
+        assert_eq!(
+            normalize_verbatim_prefix(&extended_drive),
+            drive,
+            "the \u{005c}\u{005c}?\u{005c} drive marker is a display spelling"
+        );
+
+        let unc = PathBuf::from(r"\\server\share\project");
+        let extended_unc = PathBuf::from(r"\\?\UNC\server\share\project");
+        assert_eq!(normalize_verbatim_prefix(&extended_unc), unc);
+
+        let device = PathBuf::from(r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1");
+        assert_eq!(normalize_verbatim_prefix(&device), device);
+    }
+
+    #[test]
     fn derived_endpoints_are_short_stable_and_workspace_specific() {
         let first = default_endpoint(Path::new("/a/very/long/project/data/path"));
         let repeated = default_endpoint(Path::new("/a/very/long/project/data/path"));
@@ -813,7 +1024,10 @@ mod tests {
         )
         .expect("discover divergent spelling");
         assert_eq!(discovered.endpoint(), canonical);
-        assert_eq!(discovered.data(), data.canonicalize().expect("canonical data"));
+        assert_eq!(
+            discovered.data(),
+            data.canonicalize().expect("canonical data")
+        );
 
         fs::remove_dir_all(root).expect("remove runtime fixture");
     }

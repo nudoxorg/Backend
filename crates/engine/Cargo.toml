@@ -19,6 +19,7 @@ blake3.workspace = true
 backend-compile = { path = "../compile" }
 flate2.workspace = true
 backend-library = { path = "../library" }
+backend-platform = { path = "../platform" }
 backend-frontend-clang = { path = "../../frontends/clang" }
 backend-frontend-csharp = { path = "../../frontends/csharp" }
 backend-frontend-go = { path = "../../frontends/go" }

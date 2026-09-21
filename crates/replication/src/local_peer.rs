@@ -8,8 +8,12 @@
 
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
+#[cfg(any(unix, windows))]
+use backend_platform::local::LocalStream as UnixStream;
+#[cfg(any(unix, windows))]
+pub use backend_platform::local::{LocalAddr, LocalListener, LocalStream};
+#[cfg(windows)]
+use backend_platform::win32::identity::UserSid;
 use std::path::Path;
 
 use backend_version::{
@@ -134,8 +138,21 @@ pub fn peer_is_same_effective_uid(stream: &UnixStream) -> Result<bool, PeerCrede
     Ok(peer == current)
 }
 
+/// Checks that an accepted Windows AF_UNIX peer runs as the same user as this
+/// process. The Windows adapter obtains the peer process ID from the socket
+/// and compares its process token with the current token.
+#[cfg(windows)]
+pub fn peer_is_same_effective_uid(stream: &UnixStream) -> Result<bool, PeerCredentialError> {
+    use backend_platform::win32::identity;
+
+    let inspect = |error: std::io::Error| PeerCredentialError::Io(error.kind());
+    let peer = identity::peer_user(stream).map_err(inspect)?;
+    let current = identity::current_user().map_err(inspect)?;
+    Ok(peer == current)
+}
+
 /// Failure while authenticating a local process peer for producer coverage.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalPeerAuthenticationError {
     /// The endpoint could not be inspected.
@@ -156,7 +173,7 @@ pub enum LocalPeerAuthenticationError {
     InvalidObservation,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl std::fmt::Display for LocalPeerAuthenticationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -182,7 +199,7 @@ impl std::fmt::Display for LocalPeerAuthenticationError {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl std::error::Error for LocalPeerAuthenticationError {}
 
 /// An owner-authenticated local process channel.
@@ -193,14 +210,17 @@ impl std::error::Error for LocalPeerAuthenticationError {}
 /// endpoint metadata and connected peer UID have been checked. A certificate
 /// still supplies the exact scope, producer, context, and evidence; this token
 /// only supplies the local owner authority needed to admit those claims.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Eq, PartialEq)]
 pub struct AuthenticatedLocalPeer {
+    #[cfg(unix)]
     effective_uid: u32,
+    #[cfg(windows)]
+    user: UserSid,
     endpoint_digest: [u8; 32],
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl AuthenticatedLocalPeer {
     /// Authenticates a connected peer against an owner-private Unix socket.
     ///
@@ -215,18 +235,24 @@ impl AuthenticatedLocalPeer {
     ) -> Result<Self, LocalPeerAuthenticationError> {
         let metadata = std::fs::symlink_metadata(endpoint)
             .map_err(|error| LocalPeerAuthenticationError::EndpointIo(error.kind()))?;
-        if !metadata.file_type().is_socket() {
-            return Err(LocalPeerAuthenticationError::EndpointNotSocket);
-        }
-        if metadata.mode() & 0o777 != 0o600 {
-            return Err(LocalPeerAuthenticationError::EndpointInsecurePermissions);
-        }
-        let owner = metadata.uid();
-        let effective_uid =
-            current_effective_uid().map_err(LocalPeerAuthenticationError::PeerCredentials)?;
-        if owner != effective_uid {
-            return Err(LocalPeerAuthenticationError::EndpointWrongOwner);
-        }
+        #[cfg(unix)]
+        let effective_uid = {
+            if !metadata.file_type().is_socket() {
+                return Err(LocalPeerAuthenticationError::EndpointNotSocket);
+            }
+            if metadata.mode() & 0o777 != 0o600 {
+                return Err(LocalPeerAuthenticationError::EndpointInsecurePermissions);
+            }
+            let owner = metadata.uid();
+            let effective_uid =
+                current_effective_uid().map_err(LocalPeerAuthenticationError::PeerCredentials)?;
+            if owner != effective_uid {
+                return Err(LocalPeerAuthenticationError::EndpointWrongOwner);
+            }
+            effective_uid
+        };
+        #[cfg(windows)]
+        let user = windows_endpoint_user(&metadata, endpoint)?;
         let peer_address = stream
             .peer_addr()
             .map_err(|_| LocalPeerAuthenticationError::PeerAddress)?;
@@ -241,12 +267,16 @@ impl AuthenticatedLocalPeer {
         let endpoint_digest =
             *blake3::hash(endpoint.as_os_str().to_string_lossy().as_bytes()).as_bytes();
         Ok(Self {
+            #[cfg(unix)]
             effective_uid,
+            #[cfg(windows)]
+            user,
             endpoint_digest,
         })
     }
 
     /// Returns the authenticated effective UID for diagnostics.
+    #[cfg(unix)]
     #[must_use]
     pub const fn effective_uid(&self) -> u32 {
         self.effective_uid
@@ -262,7 +292,31 @@ impl AuthenticatedLocalPeer {
     }
 }
 
-#[cfg(unix)]
+/// Checks a Windows endpoint's reparse-point metadata and owner before a peer
+/// is admitted. Windows AF_UNIX endpoints have no Unix mode bits; the platform
+/// adapter installs and verifies an owner-only protected DACL instead.
+#[cfg(windows)]
+fn windows_endpoint_user(
+    metadata: &std::fs::Metadata,
+    endpoint: &Path,
+) -> Result<UserSid, LocalPeerAuthenticationError> {
+    use backend_platform::win32::{identity, security};
+
+    if !security::is_endpoint_metadata(metadata) {
+        return Err(LocalPeerAuthenticationError::EndpointNotSocket);
+    }
+    let owner = identity::file_owner(endpoint)
+        .map_err(|error| LocalPeerAuthenticationError::EndpointIo(error.kind()))?;
+    let inspect = |error: std::io::Error| {
+        LocalPeerAuthenticationError::PeerCredentials(PeerCredentialError::Io(error.kind()))
+    };
+    if !identity::is_owned_by_current_user(&owner).map_err(inspect)? {
+        return Err(LocalPeerAuthenticationError::EndpointWrongOwner);
+    }
+    identity::current_user().map_err(inspect)
+}
+
+#[cfg(any(unix, windows))]
 impl ProducerObservationVerifier for AuthenticatedLocalPeer {
     type Error = LocalPeerAuthenticationError;
 

@@ -902,6 +902,46 @@ fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
 }
 
 #[test]
+fn the_mcp_context_exposes_a_project_and_launch_directory_mismatch() {
+    let mut server = Server::with_invocation_context(
+        Fake::default(),
+        PROJECT.to_owned(),
+        Some("/another/checkout".to_owned()),
+        [9; 32],
+    );
+    let initialized = server
+        .handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#)
+        .expect("initialize response");
+    let instructions = initialized["result"]["instructions"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        instructions.contains("selected project: /abs/polyglot"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("configuration mismatch"),
+        "{instructions}"
+    );
+
+    assert!(
+        server
+            .handle(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+            .is_none()
+    );
+    let status = request(
+        &mut server,
+        "resources/read",
+        &json!({ "uri": "backend://workspace/current" }),
+    );
+    let text = status["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.contains("selected project: /abs/polyglot"), "{text}");
+    assert!(text.contains("configuration mismatch"), "{text}");
+}
+
+#[test]
 fn newline_codec_is_bounded_and_compact() {
     let mut reader = io::BufReader::new(&b"{}\n"[..]);
     assert_eq!(read_line(&mut reader).expect("read"), Some(b"{}".to_vec()));

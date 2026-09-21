@@ -60,14 +60,23 @@ enum Repeatable {
 /// A product connection that reopens itself when the daemon retires it.
 pub(crate) struct Reconnecting<E: Endpoint> {
     endpoint: E,
-    product: E::Product,
+    /// The current transport lease, if one is available.
+    ///
+    /// A dead lease is dropped before opening its replacement. Keeping an
+    /// `Option` here is deliberate: when the replacement cannot be opened,
+    /// the next request starts from the endpoint rather than sending another
+    /// request through the same dead stream.
+    product: Option<E::Product>,
 }
 
 impl<E: Endpoint> Reconnecting<E> {
     /// Wraps an already-connected product together with the endpoint that
     /// produced it.
     pub(crate) const fn new(endpoint: E, product: E::Product) -> Self {
-        Self { endpoint, product }
+        Self {
+            endpoint,
+            product: Some(product),
+        }
     }
 
     /// Runs one call, reopening the connection if it is gone.
@@ -79,14 +88,42 @@ impl<E: Endpoint> Reconnecting<E> {
         repeatable: Repeatable,
         mut call: impl FnMut(&mut E::Product) -> Result<T, ClientError>,
     ) -> Result<T, ClientError> {
-        match call(&mut self.product) {
+        // A failed reconnect leaves no lease behind. The next invocation is
+        // therefore bounded to one fresh endpoint attempt rather than first
+        // touching an already-dead product again.
+        if self.product.is_none() {
+            self.product = Some(self.endpoint.connect()?);
+        }
+        let first = match self.product.as_mut() {
+            Some(product) => call(product),
+            None => Err(ClientError::Disconnected(std::io::ErrorKind::NotConnected)),
+        };
+        match first {
             Err(ClientError::Disconnected(kind)) => {
-                // Replace the connection either way: the agent's next call
-                // must not meet the same dead socket.
-                self.product = self.endpoint.connect()?;
+                // Drop the dead transport lease before opening a replacement
+                // either way: the agent's next call must not meet the same
+                // socket, even if opening the replacement fails.
+                self.product = None;
+                let mut replacement = self.endpoint.connect()?;
                 match repeatable {
-                    Repeatable::Yes => call(&mut self.product),
-                    Repeatable::No => Err(ClientError::Disconnected(kind)),
+                    Repeatable::Yes => {
+                        let result = call(&mut replacement);
+                        // The replacement can itself be retired while the
+                        // first retried read is in flight. Do not retain a
+                        // second dead lease: the following request should
+                        // begin at the endpoint and make one bounded fresh
+                        // connection attempt.
+                        self.product = if matches!(&result, Err(ClientError::Disconnected(_))) {
+                            None
+                        } else {
+                            Some(replacement)
+                        };
+                        result
+                    }
+                    Repeatable::No => {
+                        self.product = Some(replacement);
+                        Err(ClientError::Disconnected(kind))
+                    }
                 }
             }
             other => other,
@@ -122,7 +159,9 @@ const fn probe_is_repeatable(probe: &Probe<'_>) -> Repeatable {
 /// so does any command added after this was written.
 const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
     match command {
-        SurfaceCommand::Read { .. }
+        SurfaceCommand::Advisory { .. }
+        | SurfaceCommand::Read { .. }
+        | SurfaceCommand::References { .. }
         | SurfaceCommand::Diff { .. }
         | SurfaceCommand::Explore { .. }
         | SurfaceCommand::Package { .. }
@@ -135,7 +174,8 @@ const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
         | SurfaceCommand::PackageProfile { .. }
         | SurfaceCommand::Subscriptions
         | SurfaceCommand::Projects
-        | SurfaceCommand::Tree => Repeatable::Yes,
+        | SurfaceCommand::Tree
+        | SurfaceCommand::Releases { mark_seen: false } => Repeatable::Yes,
         _ => Repeatable::No,
     }
 }
@@ -176,11 +216,19 @@ impl<E: Endpoint> Product for Reconnecting<E> {
         &mut self,
         continuation: PageContinuation,
     ) -> Result<String, ClientError> {
-        self.product.encode_continuation(continuation)
+        if self.product.is_none() {
+            self.product = Some(self.endpoint.connect()?);
+        }
+        match self.product.as_mut() {
+            Some(product) => product.encode_continuation(continuation),
+            None => Err(ClientError::Disconnected(std::io::ErrorKind::NotConnected)),
+        }
     }
 
     fn decode_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError> {
-        self.product.decode_continuation(token)
+        self.attempt(Repeatable::Yes, |product| {
+            product.decode_continuation(token)
+        })
     }
 
     fn graph_page(
@@ -595,5 +643,92 @@ mod tests {
             "a live connection must not be thrown away over a product fault"
         );
         assert_eq!(calls(&log), vec!["live:other".to_owned()]);
+    }
+
+    #[test]
+    fn every_read_only_surface_variant_is_repeatable() {
+        let reads = [
+            SurfaceCommand::Advisory {
+                package: backend_library::PackageReference::parse("serde")
+                    .expect("package reference"),
+                override_evidence: None,
+            },
+            SurfaceCommand::References {
+                target: backend_library::ProductText::new("pkg::callee").expect("target text"),
+            },
+            SurfaceCommand::Releases { mark_seen: false },
+        ];
+        for command in reads {
+            assert_eq!(
+                surface_is_repeatable(&command),
+                Repeatable::Yes,
+                "read-only surface command was classified as a mutation: {:?}",
+                command.id()
+            );
+        }
+        assert_eq!(
+            surface_is_repeatable(&SurfaceCommand::Releases { mark_seen: true }),
+            Repeatable::No
+        );
+        assert_eq!(
+            surface_is_repeatable(&SurfaceCommand::Subscribe {
+                package: backend_library::PackageReference::parse("serde")
+                    .expect("package reference"),
+                project: None,
+            }),
+            Repeatable::No
+        );
+    }
+
+    /// A reconnect failure must discard the old lease. Once the endpoint is
+    /// available again, the next call starts with one fresh connection rather
+    /// than sending the request back into the stream that already died.
+    #[test]
+    fn failed_reconnect_does_not_reuse_the_dead_lease() {
+        struct Flaky {
+            inner: Fixture,
+            fail_connects: usize,
+        }
+
+        impl Endpoint for Flaky {
+            type Product = Connection;
+
+            fn connect(&mut self) -> Result<Self::Product, ClientError> {
+                if self.fail_connects > 0 {
+                    self.fail_connects -= 1;
+                    return Err(ClientError::Io("daemon is restarting".to_owned()));
+                }
+                self.inner.connect()
+            }
+        }
+
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let dead = Connection {
+            log: Arc::clone(&log),
+            alive: false,
+        };
+        let endpoint = Flaky {
+            inner: Fixture {
+                log: Arc::clone(&log),
+                connects: 0,
+            },
+            fail_connects: 1,
+        };
+        let mut handle = Reconnecting::new(endpoint, dead);
+
+        let first = handle
+            .probe(Probe::Packages)
+            .expect_err("the daemon is still restarting");
+        assert!(matches!(first, ClientError::Io(_)));
+
+        let reply = handle
+            .probe(Probe::Packages)
+            .expect("the next call must establish a new lease");
+        assert!(matches!(reply.reply, CommandReply::Packages(_)));
+        assert_eq!(
+            calls(&log),
+            vec!["dead:packages".to_owned(), "live:packages".to_owned(),]
+        );
+        assert_eq!(handle.endpoint.inner.connects, 1);
     }
 }

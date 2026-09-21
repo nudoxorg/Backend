@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 atomic-waker.workspace = true
 backend-discovery = { path = "../discovery" }
+backend-platform = { path = "../platform" }
 backend-version = { path = "../version" }
 blake3.workspace = true
 loom = { workspace = true, optional = true }

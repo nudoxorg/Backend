@@ -3,7 +3,7 @@
 //! The transport owns connection/session concerns only. Every request still
 //! enters the same JSON-RPC server and typed product session as stdio MCP.
 
-use crate::jsonrpc::{SessionProduct, Server};
+use crate::jsonrpc::{Server, SessionProduct};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
@@ -342,8 +342,7 @@ async fn serve(
 }
 
 fn canonical_project(path: &Path) -> String {
-    path.canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf())
+    backend_runtime::normalize_surface_path(path)
         .to_string_lossy()
         .into_owned()
 }

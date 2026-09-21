@@ -22,7 +22,7 @@ pub const ENDPOINT_ENV: &str = "BACKEND_LOCALD_ENDPOINT";
 
 mod client;
 mod error;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod http;
 mod jsonrpc;
 mod process;
@@ -32,7 +32,7 @@ mod transport;
 #[cfg(test)]
 mod tests;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use backend_client::Session;
 pub use backend_library::{
     Command, CommandDto, CoverageCapability, ReplyDto, WireCertificate, WireClaim, WireSchema,
@@ -49,7 +49,7 @@ pub use protocol::{
     decode_reply_with_certificate, decode_request, decode_request_against,
     decode_request_with_certificate, encode_request, frame, unframe,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use transport::UnixCommandTransport;
 pub use transport::{CertifiedCommandTransport, CommandTransport, InProcessTransport, LocalEngine};
 

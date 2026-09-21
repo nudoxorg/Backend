@@ -160,13 +160,13 @@ impl<E: LocalEngine + ?Sized> CertifiedCommandTransport for InProcessTransport<'
 }
 
 /// One authenticated Unix command connection.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub struct UnixCommandTransport {
-    stream: std::os::unix::net::UnixStream,
+    stream: backend_replication::LocalStream,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl UnixCommandTransport {
     /// Connects and authenticates the local endpoint owner.
     ///
@@ -176,12 +176,10 @@ impl UnixCommandTransport {
         let endpoint = backend_replication::UnixEndpointRef::new(path.as_ref())
             .map_err(|_| ClientError::Transport(ReplicationError::MessageTooLarge))?;
         let path = endpoint.as_path();
-        let stream = std::os::unix::net::UnixStream::connect(path)
-            .map_err(|error| ClientError::Io(error.to_string()))?;
+        let stream =
+            backend_replication::LocalStream::connect(path).map_err(map_endpoint_connect_error)?;
         let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, path)
-            .map_err(|error| {
-                ClientError::Io(format!("local peer authentication failed: {error}"))
-            })?;
+            .map_err(map_peer_authentication_error)?;
         configure(&stream)?;
         Ok(Self {
             stream,
@@ -191,7 +189,7 @@ impl UnixCommandTransport {
 
     /// Wraps a connected stream for tests and embedded transports.
     #[must_use]
-    pub fn from_stream(stream: std::os::unix::net::UnixStream) -> Self {
+    pub fn from_stream(stream: backend_replication::LocalStream) -> Self {
         let _ = configure(&stream);
         Self { stream, peer: None }
     }
@@ -223,7 +221,7 @@ impl UnixCommandTransport {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl CommandTransport for UnixCommandTransport {
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
         configure_request(&self.stream, &request)?;
@@ -235,7 +233,7 @@ impl CommandTransport for UnixCommandTransport {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl CertifiedCommandTransport for UnixCommandTransport {
     fn request_with_certificate(
         &mut self,
@@ -261,7 +259,7 @@ impl CertifiedCommandTransport for UnixCommandTransport {
 /// The session obtains the current immutable root and its producer proof only
 /// for commands that need freshness. Callers never assemble basis flags or
 /// identity certificates themselves.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub struct Session {
     endpoint: std::path::PathBuf,
     transport: UnixCommandTransport,
@@ -271,7 +269,7 @@ pub struct Session {
 
 /// One admitted health revision retained long enough to build a dependent
 /// query request without copying the view.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub struct Revision {
     /// Current immutable product view root.
     pub root: ViewStateRoot,
@@ -279,7 +277,7 @@ pub struct Revision {
     cursor: backend_library::Cursor,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Revision {
     /// Returns the exact owner cursor paired with this immutable root.
     #[must_use]
@@ -288,7 +286,7 @@ impl Revision {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Session {
     /// Connects one revision-aware session.
     ///
@@ -1044,7 +1042,7 @@ fn key_certificate(schema: WireSchema, id: &[u8; 32], value: &str) -> WireCertif
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn selected_symbol_certificate(certificate: WireCertificate, symbol: SymbolKey) -> WireCertificate {
     certificate.with_claim_once(WireClaim::KeyCommitment {
         schema: WireSchema::Symbol,
@@ -1052,14 +1050,14 @@ fn selected_symbol_certificate(certificate: WireCertificate, symbol: SymbolKey) 
     })
 }
 
-#[cfg(unix)]
-fn configure(stream: &std::os::unix::net::UnixStream) -> Result<(), ClientError> {
+#[cfg(any(unix, windows))]
+fn configure(stream: &backend_replication::LocalStream) -> Result<(), ClientError> {
     configure_timeout(stream, CLIENT_REQUEST_TIMEOUT)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn configure_request(
-    stream: &std::os::unix::net::UnixStream,
+    stream: &backend_replication::LocalStream,
     request: &CommandDto,
 ) -> Result<(), ClientError> {
     let timeout = match backend_library::command_spec(request.command.id()).mutation {
@@ -1069,9 +1067,9 @@ fn configure_request(
     configure_timeout(stream, timeout)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn configure_timeout(
-    stream: &std::os::unix::net::UnixStream,
+    stream: &backend_replication::LocalStream,
     timeout: Duration,
 ) -> Result<(), ClientError> {
     stream
@@ -1084,6 +1082,49 @@ fn configure_timeout(
                 ClientError::Io(error.to_string())
             }
         })
+}
+
+/// Lowers a failed endpoint dial into the same connection-lost class as a
+/// reset on an already-open stream. This matters during a daemon restart:
+/// the endpoint can exist while no listener is bound for a short interval,
+/// and the reconnect policy must be allowed to retry that bounded race.
+#[cfg(any(unix, windows))]
+fn map_endpoint_connect_error(error: std::io::Error) -> ClientError {
+    if is_disconnect(error.kind()) || error.kind() == std::io::ErrorKind::NotFound {
+        ClientError::Disconnected(error.kind())
+    } else {
+        ClientError::Io(error.to_string())
+    }
+}
+
+/// Authentication happens after a successful dial, so a daemon that exits in
+/// the small interval between those operations can look like a security
+/// failure even though the only thing that changed was the peer's lifetime.
+/// Preserve real owner/permission failures as ordinary I/O errors, while
+/// classifying endpoint disappearance and peer teardown as a reconnectable
+/// disconnect.
+#[cfg(any(unix, windows))]
+fn map_peer_authentication_error(
+    error: backend_replication::LocalPeerAuthenticationError,
+) -> ClientError {
+    use backend_replication::LocalPeerAuthenticationError as AuthenticationError;
+    use backend_replication::PeerCredentialError;
+
+    let disconnected = |kind| ClientError::Disconnected(kind);
+    match error {
+        AuthenticationError::EndpointIo(kind)
+            if is_disconnect(kind) || kind == std::io::ErrorKind::NotFound =>
+        {
+            disconnected(kind)
+        }
+        AuthenticationError::PeerAddress => disconnected(std::io::ErrorKind::ConnectionAborted),
+        AuthenticationError::PeerCredentials(PeerCredentialError::Io(kind))
+            if is_disconnect(kind) || kind == std::io::ErrorKind::NotFound =>
+        {
+            disconnected(kind)
+        }
+        other => ClientError::Io(format!("local peer authentication failed: {other}")),
+    }
 }
 
 /// Bounded deadline for one read-only command, including health and discovery.

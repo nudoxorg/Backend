@@ -187,27 +187,70 @@ impl Product for SessionProduct {
 /// has been idle for its read timeout, and an agent thinks for longer than
 /// that between tool calls. Remembering the endpoint is what lets the next
 /// call open a fresh connection instead of failing on a dead one.
-struct SessionEndpoint(std::path::PathBuf);
+struct SessionEndpoint {
+    /// The complete runtime selection, retained for reconnects that need to
+    /// compose a daemon after its previous process exited.
+    paths: backend_runtime::WorkspacePaths,
+}
 
 impl reconnect::Endpoint for SessionEndpoint {
     type Product = SessionProduct;
 
     fn connect(&mut self) -> Result<Self::Product, ClientError> {
-        Session::connect(&self.0).map(SessionProduct::new)
+        let endpoint =
+            backend_runtime::ensure_locald(&self.paths).map_err(map_runtime_connect_error)?;
+        Session::connect(endpoint).map(SessionProduct::new)
     }
+}
+
+/// Converts a daemon restart window into the same reconnectable class as a
+/// reset on an established stream. Startup/configuration failures remain
+/// ordinary client errors so a broken workspace is reported directly instead
+/// of being retried forever by a long-lived MCP process.
+fn map_runtime_connect_error(error: backend_runtime::RuntimeError) -> ClientError {
+    match error {
+        backend_runtime::RuntimeError::Io(error)
+            if is_disconnect_kind(error.kind()) || error.kind() == io::ErrorKind::NotFound =>
+        {
+            ClientError::Disconnected(error.kind())
+        }
+        other => ClientError::Io(other.to_string()),
+    }
+}
+
+const fn is_disconnect_kind(kind: io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::WouldBlock
+    )
 }
 
 /// Runs newline-delimited MCP stdio until the client closes stdin.
 pub(super) fn serve_stdio(
     session: Session,
+    paths: &backend_runtime::WorkspacePaths,
     project: String,
     cursor_secret: [u8; 32],
     reader: &mut impl BufRead,
     writer: &mut impl Write,
 ) -> io::Result<()> {
-    let endpoint = SessionEndpoint(session.endpoint().to_path_buf());
+    let endpoint = SessionEndpoint {
+        paths: paths.clone(),
+    };
     let product = reconnect::Reconnecting::new(endpoint, SessionProduct::new(session));
-    let mut server = Server::with_authority(product, project, cursor_secret);
+    let working_directory = std::env::current_dir()
+        .ok()
+        .map(backend_runtime::normalize_surface_path)
+        .map(|path| path.to_string_lossy().into_owned());
+    let mut server =
+        Server::with_invocation_context(product, project, working_directory, cursor_secret);
     loop {
         let Some(line) = read_line(reader)? else {
             return Ok(());
@@ -221,6 +264,7 @@ pub(super) fn serve_stdio(
 pub(super) struct Server<P> {
     product: P,
     project: String,
+    working_directory: Option<String>,
     handshake: HandshakeState,
     protocol: &'static str,
     cursor_secret: [u8; 32],
@@ -240,9 +284,19 @@ enum HandshakeState {
 
 impl<P: Product> Server<P> {
     pub(super) fn with_authority(product: P, project: String, cursor_secret: [u8; 32]) -> Self {
+        Self::with_invocation_context(product, project, None, cursor_secret)
+    }
+
+    pub(super) fn with_invocation_context(
+        product: P,
+        project: String,
+        working_directory: Option<String>,
+        cursor_secret: [u8; 32],
+    ) -> Self {
         Self {
             product,
             project,
+            working_directory,
             handshake: HandshakeState::AwaitInitialize,
             protocol: STABLE_PROTOCOL,
             cursor_secret,
@@ -320,7 +374,7 @@ impl<P: Product> Server<P> {
             "tools/call" => self.call_tool(params),
             "resources/list" => resources::list_resources(&mut self.product, params),
             "resources/templates/list" => resources::list_resource_templates(params),
-            "resources/read" => resources::read_resource(&mut self.product, params),
+            "resources/read" => self.read_resource(params),
             "prompts/list" => list_prompts(params),
             "prompts/get" => self.get_prompt(params),
             _ => Err(RpcError::new(-32601, "Method not found")),
@@ -347,8 +401,86 @@ impl<P: Product> Server<P> {
                 "title": "Backend Code Intelligence",
                 "version": SERVER_VERSION
             },
-            "instructions": INSTRUCTIONS
+            "instructions": self.instructions()
         }))
+    }
+
+    /// Adds the selected project and launch directory to the handshake so a
+    /// host can diagnose a stale project setting before querying an empty
+    /// index.
+    fn instructions(&self) -> String {
+        let mut instructions = String::with_capacity(INSTRUCTIONS.len() + self.project.len() + 160);
+        instructions.push_str(INSTRUCTIONS);
+        instructions.push_str("\n\nMCP workspace selection:\n- selected project: ");
+        instructions.push_str(&self.project);
+        match self.working_directory.as_deref() {
+            Some(directory) if directory != self.project => {
+                instructions.push_str("\n- process working directory: ");
+                instructions.push_str(directory);
+                instructions.push_str(
+                    "\n- status: configuration mismatch; use the selected project path when interpreting relative coordinates",
+                );
+            }
+            Some(directory) => {
+                instructions.push_str("\n- process working directory: ");
+                instructions.push_str(directory);
+                instructions.push_str("\n- status: configuration matches");
+            }
+            None => instructions.push_str("\n- process working directory: unavailable"),
+        }
+        instructions
+    }
+
+    fn read_resource(&mut self, params: &Value) -> Result<Value, RpcError> {
+        let is_workspace = params
+            .get("uri")
+            .and_then(Value::as_str)
+            .is_some_and(|uri| uri == "backend://workspace/current");
+        let mut value = resources::read_resource(&mut self.product, params)?;
+        // The legacy constructor intentionally keeps the resource byte-for-
+        // byte identical to `backend.status`; only process sessions that
+        // supplied launch context need the extra diagnostic block.
+        if !is_workspace || self.working_directory.is_none() {
+            return Ok(value);
+        }
+        let Some(text) = value
+            .get("contents")
+            .and_then(Value::as_array)
+            .and_then(|contents| contents.first())
+            .and_then(|content| content.get("text"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            return Ok(value);
+        };
+        if let Some(content) = value
+            .get_mut("contents")
+            .and_then(Value::as_array_mut)
+            .and_then(|contents| contents.first_mut())
+            .and_then(|content| content.get_mut("text"))
+        {
+            *content = Value::String(format!("{text}\n\n{}", self.instructions_context()));
+        }
+        Ok(value)
+    }
+
+    fn instructions_context(&self) -> String {
+        let mut context = String::from("## MCP workspace selection\n\n- selected project: ");
+        context.push_str(&self.project);
+        match self.working_directory.as_deref() {
+            Some(directory) if directory != self.project => {
+                context.push_str("\n- process working directory: ");
+                context.push_str(directory);
+                context.push_str("\n- status: configuration mismatch");
+            }
+            Some(directory) => {
+                context.push_str("\n- process working directory: ");
+                context.push_str(directory);
+                context.push_str("\n- status: configuration matches");
+            }
+            None => context.push_str("\n- process working directory: unavailable"),
+        }
+        context
     }
 
     fn call_tool(&mut self, params: &Value) -> Result<Value, RpcError> {
