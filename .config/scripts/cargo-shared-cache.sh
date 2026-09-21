@@ -22,7 +22,11 @@ if [ -z "${CARGO_BUILD_JOBS:-}" ]; then
   case "$logical_cpus" in
     ""|*[!0-9]*) logical_cpus=1 ;;
   esac
-  jobs="$((logical_cpus / slot_count))"
+  # Divide the host across warm lanes without discarding the remainder. On an
+  # 11-core host with four lanes, floor division leaves three cores idle even
+  # when all lanes are busy; ceiling division gives each lane a useful bound
+  # while Cargo's own scheduler still avoids exceeding it per invocation.
+  jobs="$(((logical_cpus + slot_count - 1) / slot_count))"
   if [ "$jobs" -lt 1 ]; then jobs=1; fi
   export CARGO_BUILD_JOBS="$jobs"
 fi
