@@ -957,6 +957,7 @@ fn claim_describes_cursor(claim: &WireClaim, cursor: backend_library::Cursor) ->
         }
         WireClaim::Root { schema, id, .. } => *schema == WireSchema::ViewRelation && id == &root,
         WireClaim::KeyCommitment { .. }
+        | WireClaim::RowIdentity { .. }
         | WireClaim::RootCommitment { .. }
         | WireClaim::Intent { .. }
         | WireClaim::Delta { .. }
