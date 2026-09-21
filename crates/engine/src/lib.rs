@@ -27,6 +27,17 @@ pub mod dispatch;
 pub mod driver;
 pub mod effects;
 pub mod fault;
+/// Typed, content-addressed source acquisition from code forges.
+pub mod forge;
+pub use forge::{
+    ForgeAcquisitionError, ForgeAcquisitionLimits, ForgeAcquisitionOutcome,
+    ForgeAcquisitionPolicy, ForgeAcquisitionResult, ForgeAcquisitionService, ForgeArchive,
+    ForgeArchiveFormat, ForgeAuthToken, ForgeCoordinate, ForgeCoordinateError,
+    ForgeDelegatedObject, ForgeDelegationRequest, ForgeFact, ForgeHashAlgorithm, ForgeObjectId,
+    ForgePackageManifest, ForgeProtocolError, ForgeProvider, ForgeReceipt, ForgeRefName,
+    ForgeRejectReason, ForgeRepositoryMetadata, ForgeResolution, ForgeRevision, ForgeTransport,
+    ForgeTransportError, ForgeUnavailableReason, HttpForgeTransport, verify_delegated_object,
+};
 pub mod index_build;
 pub mod index_publish;
 pub mod journal;
@@ -117,7 +128,8 @@ pub use backend_library::{
     ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector, ProjectionPage, Query,
     QueryLimit, Reason, ReferenceFact, ReferenceRecord, RegistryDownloadCount,
     RegistryEcosystem, RegistryFactAvailability, RegistryMetadata, RegistryPackageRecord,
-    RegistryReleaseStanding,
+    ForgeFact as ForgePackageFact, ForgeManifestRecord, ForgePackageRecord,
+    ForgeRepositoryMetadataRecord, RegistryReleaseStanding,
     ReleaseRecord, ReplyDto, Row, RowChange, RowId, RowIdentityPreimage, RowIdentityPreimageError,
     SemanticConfidence,
     SemanticDeclarationIdentity, SemanticGenerationId, SemanticLanguageProfile, SemanticLinkDelta,

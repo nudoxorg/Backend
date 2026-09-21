@@ -65,6 +65,10 @@ pub enum CommandId {
     Explore,
     /// Read one registry package profile.
     Package,
+    /// Acquire one pinned code-forge source.
+    ForgeAdd,
+    /// Reference one cached code-forge source.
+    ForgeReference,
     /// Read packages depending on one registry package.
     Dependents,
     /// Read the packages one registry package depends on.

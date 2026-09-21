@@ -1,7 +1,8 @@
 //! Durable typed owner for follows, projects, and the shared session tree.
 
 use backend_engine::{
-    DeclarationRecord, DependencyFacts, PackageDependencyRecord, PackageDependencySourceFacts,
+    DeclarationRecord, DependencyFacts, ForgeManifestRecord, ForgePackageFact, ForgePackageRecord,
+    ForgeRepositoryMetadataRecord, PackageDependencyRecord, PackageDependencySourceFacts,
     PackageReference, ProductText,
     ProductTreeNodeId as TreeNodeId, ProjectId,
     ProjectName, ProjectRecord, ProjectSelector, RegistryMetadata, RegistryPackageRecord,
@@ -115,6 +116,14 @@ impl ProductState {
             SurfaceCommand::Package { package } => {
                 (SurfaceReply::Package(packages(catalog, &package)), false)
             }
+            SurfaceCommand::ForgeAdd { coordinate } => (
+                SurfaceReply::ForgePackageAdded(forge_unavailable(&coordinate)),
+                false,
+            ),
+            SurfaceCommand::ForgeReference { coordinate } => (
+                SurfaceReply::ForgePackageReferenced(forge_unavailable(&coordinate)),
+                false,
+            ),
             SurfaceCommand::Dependencies { package } => (
                 SurfaceReply::Dependencies(dependencies(dependency_facts, &package)?),
                 false,
@@ -467,6 +476,39 @@ impl ProductState {
     }
 }
 
+fn forge_unavailable(coordinate: &ProductText) -> ForgePackageRecord {
+    let reason =
+        ProductText::from_static("forge acquisition authority is not configured in this owner");
+    let unavailable_text = || ForgePackageFact::<ProductText>::Unavailable(reason.clone());
+    let unavailable_topics =
+        || ForgePackageFact::<Box<[ProductText]>>::Unavailable(reason.clone());
+    let unavailable_number = || ForgePackageFact::<u64>::Unavailable(reason.clone());
+    let owner = ProductText::from_static("unknown");
+    let repository = ProductText::from_static("unknown");
+    let unavailable_metadata = ForgeRepositoryMetadataRecord {
+        owner: unavailable_text(),
+        description: unavailable_text(),
+        license: unavailable_text(),
+        readme: unavailable_text(),
+        topics: unavailable_topics(),
+        stars: unavailable_number(),
+        forks: unavailable_number(),
+    };
+    ForgePackageRecord {
+        coordinate: coordinate.clone(),
+        provider: ProductText::from_static("unknown"),
+        owner,
+        repository,
+        revision: coordinate.clone(),
+        subdir: None,
+        commit: unavailable_text(),
+        tree: unavailable_text(),
+        metadata: unavailable_metadata,
+        manifests: Box::new([] as [ForgeManifestRecord; 0]),
+        source: unavailable_text(),
+    }
+}
+
 fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -626,8 +668,7 @@ fn subject_title(subject: &TreeSubject) -> ProductText {
         | TreeSubject::Explore(Some(v)) => v.as_str(),
         TreeSubject::Explore(None) => "Explore",
     };
-    ProductText::new(text)
-        .unwrap_or_else(|_| ProductText::new("Untitled").unwrap_or_else(|_| unreachable!()))
+    ProductText::new(text).unwrap_or_else(|_| ProductText::from_static("Untitled"))
 }
 
 fn validate_lockfile(path: &Path) -> Result<(), String> {

@@ -110,6 +110,7 @@ pub use surface::{
     PackageCoordinate, PackageReference, ProductAdmissionError, ProductText, ProjectId,
     ProjectName, ProjectRecord, ProjectSelector, ReferenceRecord, RegistryDownloadCount,
     RegistryEcosystem, RegistryFactAvailability, RegistryMetadata, RegistryPackageRecord,
+    ForgeFact, ForgeManifestRecord, ForgePackageRecord, ForgeRepositoryMetadataRecord,
     RegistryReleaseStanding,
     ReleaseRecord, SemanticConfidence, SemanticDeclarationIdentity,
     SemanticGenerationId, SemanticLanguageProfile, SemanticLinkDelta, SemanticLinkEvidence,

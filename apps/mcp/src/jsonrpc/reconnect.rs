@@ -172,6 +172,7 @@ const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
         | SurfaceCommand::PackageVersions { .. }
         | SurfaceCommand::SemanticVersions { .. }
         | SurfaceCommand::PackageProfile { .. }
+        | SurfaceCommand::ForgeReference { .. }
         | SurfaceCommand::Subscriptions
         | SurfaceCommand::Projects
         | SurfaceCommand::Tree

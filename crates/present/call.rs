@@ -429,6 +429,12 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
         CommandId::Package => SurfaceCommand::Package {
             package: package(invocation, 0)?,
         },
+        CommandId::ForgeAdd => SurfaceCommand::ForgeAdd {
+            coordinate: text(invocation, 0)?,
+        },
+        CommandId::ForgeReference => SurfaceCommand::ForgeReference {
+            coordinate: text(invocation, 0)?,
+        },
         CommandId::Dependents => SurfaceCommand::Dependents {
             package: package(invocation, 0)?,
         },

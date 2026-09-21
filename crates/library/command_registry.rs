@@ -31,6 +31,8 @@ impl CommandSpec {
                 | CommandId::Diff
                 | CommandId::Explore
                 | CommandId::Package
+                | CommandId::ForgeAdd
+                | CommandId::ForgeReference
                 | CommandId::Dependents
                 | CommandId::Dependencies
                 | CommandId::Owner
@@ -82,7 +84,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 38] = [
+pub const COMMANDS: [CommandSpec; 40] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -387,6 +389,22 @@ pub const COMMANDS: [CommandSpec; 38] = [
         mutation: CommandMutation::Write,
         domain: CommandDomain::Session,
     },
+    CommandSpec {
+        id: CommandId::ForgeAdd,
+        name: "forge-add",
+        title: "Add Forge Source",
+        description: "Acquire a pinned GitHub, GitLab, Codeberg, or HTTPS Git source and discover its package manifests.",
+        mutation: CommandMutation::Write,
+        domain: CommandDomain::Registry,
+    },
+    CommandSpec {
+        id: CommandId::ForgeReference,
+        name: "forge-reference",
+        title: "Reference Forge Source",
+        description: "Read an exact code-forge source already present in the local content-addressed cache.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Registry,
+    },
 ];
 
 /// Finds one registry row.
@@ -431,6 +449,8 @@ pub fn command_spec(id: CommandId) -> CommandSpec {
         CommandId::Tree => 35,
         CommandId::TreeOpen => 36,
         CommandId::TreeClose => 37,
+        CommandId::ForgeAdd => 38,
+        CommandId::ForgeReference => 39,
     };
     COMMANDS[index]
 }

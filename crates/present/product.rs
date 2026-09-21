@@ -15,7 +15,8 @@
 use crate::fault::Fault;
 use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DiffRecord,
-    DependencyFacts, PackageDependencyRecord, PackageReference, ProjectRecord, RegistryMetadata,
+    DependencyFacts, ForgeFact, ForgePackageRecord, PackageDependencyRecord, PackageReference,
+    ProjectRecord, RegistryMetadata,
     RegistryPackageRecord, ReleaseRecord,
     SemanticVersionRecord, SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener,
     TreeSubject, encode_id,
@@ -171,6 +172,12 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         }
         SurfaceReply::Explored(records) => ProductView::rows("explore", registry_rows(records)),
         SurfaceReply::Package(records) => ProductView::rows("package", registry_rows(records)),
+        SurfaceReply::ForgePackageAdded(record) => {
+            ProductView::rows("forge-add", vec![forge_row(record)])
+        }
+        SurfaceReply::ForgePackageReferenced(record) => {
+            ProductView::rows("forge-reference", vec![forge_row(record)])
+        }
         SurfaceReply::IndexSearch(records) => {
             ProductView::rows("index-search", registry_rows(records))
         }
@@ -347,6 +354,22 @@ fn registry_row(record: &RegistryPackageRecord) -> ProductRecord {
         vec![
             format!("{:?}", record.ecosystem).to_lowercase(),
             format!("{} byte(s)", record.bytes),
+        ],
+    )
+}
+
+fn forge_row(record: &ForgePackageRecord) -> ProductRecord {
+    let source = match &record.source {
+        ForgeFact::Recorded(value) | ForgeFact::Unavailable(value) => value.as_str().to_owned(),
+    };
+    ProductRecord::new(
+        format!("{} / {}", record.owner.as_str(), record.repository.as_str()),
+        Some(record.coordinate.as_str().to_owned()),
+        vec![
+            format!("provider: {}", record.provider.as_str()),
+            format!("revision: {}", record.revision.as_str()),
+            format!("source: {source}"),
+            format!("manifests: {}", record.manifests.len()),
         ],
     )
 }

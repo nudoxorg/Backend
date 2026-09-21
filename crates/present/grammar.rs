@@ -29,6 +29,8 @@ pub enum ArgumentKind {
     PackageReference,
     /// A version-pinned package URL.
     PackageCoordinate,
+    /// A canonical forge repository URL with an explicit revision.
+    ForgeCoordinate,
     /// Free search or name text.
     Text,
     /// A project folder selected by stable identity or unique name.
@@ -60,6 +62,7 @@ impl ArgumentKind {
             Self::ProjectPath => "PATH",
             Self::PackageReference => "PACKAGE",
             Self::PackageCoordinate => "PURL",
+            Self::ForgeCoordinate => "FORGE",
             Self::Text => "TEXT",
             Self::ProjectSelector => "PROJECT",
             Self::ProjectName => "NAME",
@@ -274,6 +277,7 @@ impl CommandGrammar {
             | CommandId::Diff
             | CommandId::Explore
             | CommandId::Package
+            | CommandId::ForgeReference
             | CommandId::Dependents
             | CommandId::Dependencies
             | CommandId::Owner
@@ -291,6 +295,7 @@ impl CommandGrammar {
             | CommandId::ProjectSync
             | CommandId::Tree
             | CommandId::TreeOpen
+            | CommandId::ForgeAdd
             | CommandId::Health
             | CommandId::Revision => false,
         }
@@ -394,7 +399,7 @@ const LIMIT: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 38] = [
+pub const GRAMMARS: [CommandGrammar; 40] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",
@@ -891,5 +896,29 @@ pub const GRAMMARS: [CommandGrammar; 38] = [
             "Close the node's descendants too.",
         )],
         when: "Use to tidy the shared tree when a line of work is done.",
+    },
+    CommandGrammar {
+        name: "forge-add",
+        tool: "backend.forge_add",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "coordinate",
+            ArgumentKind::ForgeCoordinate,
+            "HTTPS forge repository URL with an explicit tag, branch, or commit; append #subdir for a monorepo package.",
+        )],
+        options: &[],
+        when: "Use to acquire a project or package that is absent from the configured registries.",
+    },
+    CommandGrammar {
+        name: "forge-reference",
+        tool: "backend.forge_reference",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "coordinate",
+            ArgumentKind::ForgeCoordinate,
+            "The exact forge coordinate previously acquired into the local cache.",
+        )],
+        options: &[],
+        when: "Use offline or during restart to read an exact source snapshot from the local cache.",
     },
 ];

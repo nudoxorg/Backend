@@ -38,6 +38,17 @@ impl ProductText {
             Ok(Self(trimmed.to_owned()))
         }
     }
+
+    /// Creates text from a compile-time literal that is part of the product
+    /// protocol. Callers use this only for fixed protocol reason strings;
+    /// user-authored values must continue through [`Self::new`].
+    #[must_use]
+    pub fn from_static(value: &'static str) -> Self {
+        debug_assert!(!value.trim().is_empty());
+        debug_assert!(value.len() <= MAX_PRODUCT_TEXT_BYTES);
+        debug_assert!(!value.bytes().any(|byte| byte == 0));
+        Self(value.to_owned())
+    }
     /// Returns the admitted text.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -391,6 +402,16 @@ pub enum SurfaceCommand {
         /// Package locator.
         package: PackageReference,
     },
+    /// Acquire a project or package directly from a pinned code-forge source.
+    ForgeAdd {
+        /// Canonical forge URL with an explicit tag, branch, or commit.
+        coordinate: ProductText,
+    },
+    /// Reference an already acquired code-forge source from the local cache.
+    ForgeReference {
+        /// Canonical forge URL with an explicit tag, branch, or commit.
+        coordinate: ProductText,
+    },
     /// Read reverse dependency metadata.
     Dependents {
         /// Package locator.
@@ -524,6 +545,8 @@ impl SurfaceCommand {
             Self::Diff { .. } => CommandId::Diff,
             Self::Explore { .. } => CommandId::Explore,
             Self::Package { .. } => CommandId::Package,
+            Self::ForgeAdd { .. } => CommandId::ForgeAdd,
+            Self::ForgeReference { .. } => CommandId::ForgeReference,
             Self::Dependents { .. } => CommandId::Dependents,
             Self::Dependencies { .. } => CommandId::Dependencies,
             Self::Owner { .. } => CommandId::Owner,
@@ -854,6 +877,80 @@ pub struct RegistryPackageRecord {
     pub advisory: AdvisoryPackageDto,
 }
 
+/// A bounded fact whose absence is preserved as a typed state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "kebab-case")]
+pub enum ForgeFact<T> {
+    /// The configured forge authority reported this value.
+    Recorded(T),
+    /// The authority did not report this value or it was unreachable.
+    Unavailable(ProductText),
+}
+
+/// Typed repository metadata shown on a forge-backed package page.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgeRepositoryMetadataRecord {
+    /// Repository owner or namespace.
+    pub owner: ForgeFact<ProductText>,
+    /// Description, when reported.
+    pub description: ForgeFact<ProductText>,
+    /// SPDX or forge license label, when reported.
+    pub license: ForgeFact<ProductText>,
+    /// README content or a bounded unavailable reason.
+    pub readme: ForgeFact<ProductText>,
+    /// Topics reported by the authority.
+    pub topics: ForgeFact<Box<[ProductText]>>,
+    /// Stars reported by the authority.
+    pub stars: ForgeFact<u64>,
+    /// Forks reported by the authority.
+    pub forks: ForgeFact<u64>,
+}
+
+/// One package manifest discovered in an acquired forge tree.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgeManifestRecord {
+    /// Path relative to the selected repository subdirectory.
+    pub path: ProductText,
+    /// Ecosystem recognized from the manifest.
+    pub ecosystem: ProductText,
+    /// Immutable package name when the manifest records one.
+    pub name: Option<ProductText>,
+    /// Immutable package version when the manifest records one.
+    pub version: Option<ProductText>,
+    /// Number of dependency rows admitted from the shared package graph.
+    pub dependency_count: u16,
+}
+
+/// Product DTO for a source acquired from GitHub, GitLab, Codeberg, or generic HTTPS Git.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgePackageRecord {
+    /// Canonical coordinate as entered by the client.
+    pub coordinate: ProductText,
+    /// Canonical provider spelling.
+    pub provider: ProductText,
+    /// Owner/namespace from the coordinate.
+    pub owner: ProductText,
+    /// Repository name from the coordinate.
+    pub repository: ProductText,
+    /// Explicit revision spelling.
+    pub revision: ProductText,
+    /// Optional monorepo subdirectory.
+    pub subdir: Option<ProductText>,
+    /// Exact resolved commit object, if available.
+    pub commit: ForgeFact<ProductText>,
+    /// Exact resolved tree object, if the authority reports one.
+    pub tree: ForgeFact<ProductText>,
+    /// Bounded repository metadata.
+    pub metadata: ForgeRepositoryMetadataRecord,
+    /// Manifests admitted into the shared dependency graph.
+    pub manifests: Box<[ForgeManifestRecord]>,
+    /// Archive/tree availability state.
+    pub source: ForgeFact<ProductText>,
+}
+
 /// Registry policy applied to an immutable release.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -994,6 +1091,10 @@ pub enum SurfaceReply {
     Explored(Box<[RegistryPackageRecord]>),
     /// Exact package records.
     Package(Box<[RegistryPackageRecord]>),
+    /// Result of acquiring a forge source.
+    ForgePackageAdded(ForgePackageRecord),
+    /// Result of referencing a cached forge source.
+    ForgePackageReferenced(ForgePackageRecord),
     /// Reverse dependency facts.
     Dependents(RegistryMetadata<Box<[RegistryPackageRecord]>>),
     /// Outgoing dependency facts.
@@ -1054,6 +1155,8 @@ impl SurfaceReply {
             Self::Diff(_) => CommandId::Diff,
             Self::Explored(_) => CommandId::Explore,
             Self::Package(_) => CommandId::Package,
+            Self::ForgePackageAdded(_) => CommandId::ForgeAdd,
+            Self::ForgePackageReferenced(_) => CommandId::ForgeReference,
             Self::Dependents(_) => CommandId::Dependents,
             Self::Dependencies(_) => CommandId::Dependencies,
             Self::Owner(_) => CommandId::Owner,
@@ -1172,6 +1275,10 @@ impl SurfaceReply {
             | Self::PackageVersions(records)
             | Self::Dependents(RegistryMetadata::Recorded(records))
             | Self::Owner(RegistryMetadata::Recorded(records)) => registry_records_bound(records),
+            Self::ForgePackageAdded(record) | Self::ForgePackageReferenced(record) => {
+                fixed_record_bound()
+                    .saturating_add(serde_json::to_vec(record).map_or(0, |bytes| bytes.len()))
+            }
             Self::SemanticVersions(records) => records.iter().fold(0_usize, |bound, record| {
                 bound
                     .saturating_add(fixed_record_bound())
