@@ -871,6 +871,13 @@ fn continuation_authority_binds_context_and_owner_payload() {
         server.verify_cursor_token(&token, b"query-a"),
         Some("pc1-owner-issued")
     );
+    // Verification is deliberately replayable: retrying a read page is safe,
+    // while the MAC still prevents moving that page to another authority
+    // context. This is the property a reconnecting MCP client needs.
+    assert_eq!(
+        server.verify_cursor_token(&token, b"query-a"),
+        Some("pc1-owner-issued")
+    );
     assert!(server.verify_cursor_token(&token, b"query-b").is_none());
     let tampered = token.replace("pc1-owner-issued", "pc1-owner-tampered");
     assert!(server.verify_cursor_token(&tampered, b"query-a").is_none());
@@ -878,17 +885,24 @@ fn continuation_authority_binds_context_and_owner_payload() {
     assert!(other_workspace
         .verify_cursor_token(&token, b"query-a")
         .is_none());
+    // Restarting with the persisted authority accepts the token; rotation
+    // invalidates every old token immediately, including one with identical
+    // workspace and query context.
     let restarted = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
     assert_eq!(
         restarted.verify_cursor_token(&token, b"query-a"),
         Some("pc1-owner-issued")
     );
+    let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
+    assert!(rotated.verify_cursor_token(&token, b"query-a").is_none());
     let expired = server.sign_cursor_token_at(
         unix_seconds().saturating_sub(1),
         "pc1-old",
         b"query-a",
     );
     assert!(server.verify_cursor_token(&expired, b"query-a").is_none());
+    let expires_now = server.sign_cursor_token_at(unix_seconds(), "pc1-now", b"query-a");
+    assert!(server.verify_cursor_token(&expires_now, b"query-a").is_none());
 }
 
 #[test]
@@ -905,6 +919,10 @@ fn continuation_context_binds_workspace_query_limit_and_detail() {
     assert_ne!(
         continuation_context(PROJECT, "backend.search", &first, Detail::Summary),
         continuation_context(PROJECT, "backend.search", &first, Detail::Full)
+    );
+    assert_ne!(
+        continuation_context(PROJECT, "backend.search", &first, Detail::Summary),
+        continuation_context(PROJECT, "backend.document", &first, Detail::Summary)
     );
     assert_ne!(
         continuation_context(PROJECT, "backend.search", &first, Detail::Summary),

@@ -542,7 +542,10 @@ impl<P: Product> Server<P> {
         let (body, encoded_mac) = body.rsplit_once('-')?;
         let (expiry, owner_token) = body.split_once('-')?;
         let expiry = expiry.parse::<u64>().ok()?;
-        if expiry < unix_seconds() {
+        // Treat the expiry second as closed: a token is valid strictly before
+        // its deadline. This avoids a one-second replay window at the exact
+        // boundary and makes rotation/expiry tests deterministic.
+        if expiry <= unix_seconds() {
             return None;
         }
         let expected = self.cursor_mac(body, context);
