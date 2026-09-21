@@ -2265,6 +2265,9 @@ fn registry_error_outcome(
             breaker.failure(now_millis());
             AcquisitionOutcome::Unavailable(Unavailable { source })
         }
+        RegistryAcquisitionError::AdvisoryDenied(_) => {
+            AcquisitionOutcome::Rejected(RejectReason::Policy)
+        }
         RegistryAcquisitionError::InvalidConfiguration
         | RegistryAcquisitionError::InvalidCoordinate
         | RegistryAcquisitionError::Bounds
