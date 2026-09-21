@@ -173,6 +173,18 @@ impl RegistryEndpoint {
     pub const fn ecosystem(&self) -> RegistryEcosystem {
         self.ecosystem
     }
+    /// Returns the credential-free normalized endpoint URL.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.url
+    }
+    pub(crate) fn with_id(&self, id: RegistryId) -> Self {
+        Self {
+            url: Arc::clone(&self.url),
+            id,
+            ecosystem: self.ecosystem,
+        }
+    }
     pub(crate) fn url(&self) -> &str {
         &self.url
     }

@@ -301,11 +301,48 @@ impl RegistryOwner {
         policy: AcquisitionPolicy,
         limits: AcquisitionLimits,
     ) -> Result<(Self, RegistryRecovery), AcquisitionError> {
+        Self::open_with_objects(root, endpoint, policy, limits, None)
+    }
+
+    /// Opens one source owner while placing immutable archive objects in a
+    /// caller-selected shared CAS directory.
+    ///
+    /// The journal, cursor, pending intent, and source catalog still live
+    /// below this endpoint's isolated [`storage_root`]. Only bytes whose
+    /// content-addressed identity is identical can be reused by another
+    /// source owner. This is the composition seam used by the multi-registry
+    /// router; the ordinary [`Self::open`] layout remains source-local for
+    /// compatibility with direct engine callers.
+    pub fn open_with_shared_objects(
+        root: impl AsRef<Path>,
+        endpoint: RegistryEndpoint,
+        policy: AcquisitionPolicy,
+        limits: AcquisitionLimits,
+        shared_objects: impl AsRef<Path>,
+    ) -> Result<(Self, RegistryRecovery), AcquisitionError> {
+        Self::open_with_objects(
+            root,
+            endpoint,
+            policy,
+            limits,
+            Some(shared_objects.as_ref()),
+        )
+    }
+
+    fn open_with_objects(
+        root: impl AsRef<Path>,
+        endpoint: RegistryEndpoint,
+        policy: AcquisitionPolicy,
+        limits: AcquisitionLimits,
+        shared_objects: Option<&Path>,
+    ) -> Result<(Self, RegistryRecovery), AcquisitionError> {
         let limits = limits.validate()?;
         let root = storage_root(root.as_ref(), &endpoint);
         fs::create_dir_all(&root)?;
-        let objects = ContentAddressedStore::open(root.join("registry-content"))
-            .map_err(content_store_error)?;
+        let objects_root = shared_objects
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| root.join("registry-content"));
+        let objects = ContentAddressedStore::open(objects_root).map_err(content_store_error)?;
         let (journal, recovery) =
             HashChainJournal::<RegistryLog>::open(root.join("registry.journal"))?;
         let mut cursor = FeedCursor::genesis(endpoint.id());

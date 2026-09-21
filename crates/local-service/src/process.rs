@@ -31,11 +31,12 @@
 use crate::listener::{ListenerConfig, ListenerError, RunReport, UnixListenerService};
 use crate::protocol::ProtocolError;
 use crate::service::{LocaldService, OwnerService};
-use backend_engine::UnixEndpointPath;
 use backend_engine::advisory::AdvisorySource;
 use backend_engine::registry::{
     AcquisitionLimits, AcquisitionPolicy, AuthenticationToken, RegistryEcosystem, RegistryEndpoint,
+    RegistrySource, RegistrySourceSet,
 };
+use backend_engine::UnixEndpointPath;
 use backend_engine::{AcquisitionGate, OfflinePolicy};
 use backend_runtime::WorkspacePaths;
 use std::fmt;
@@ -68,6 +69,13 @@ pub const REGISTRY_AUTH_FILE_ENV: &str = "BACKEND_REGISTRY_AUTH_FILE";
 pub const REGISTRY_NATIVE_ENV: &str = "BACKEND_REGISTRY_NATIVE";
 /// Environment variable disabling registry network effects.
 pub const REGISTRY_OFFLINE_ENV: &str = "BACKEND_REGISTRY_OFFLINE";
+/// Environment variable carrying comma-separated `ecosystem=endpoint` source
+/// overrides. It is an optional process adapter; zero-configuration uses the
+/// official source set instead.
+pub const REGISTRY_SOURCES_ENV: &str = "BACKEND_REGISTRY_SOURCES";
+/// Environment variable carrying comma-separated source-authority credentials
+/// in `authority=token` form. Values are scoped to the named source authority.
+pub const REGISTRY_AUTH_SCOPES_ENV: &str = "BACKEND_REGISTRY_AUTH_SCOPES";
 /// Environment variable selecting the advisory evidence policy.
 pub const ADVISORY_POLICY_ENV: &str = "BACKEND_ADVISORY_POLICY";
 /// Environment variable overriding the maximum admitted registry archive bytes.
@@ -144,18 +152,22 @@ pub struct AdvisoryConfig {
 
 /// Registry settings carried by the local process composition.
 ///
-/// The endpoint is optional so a local-only process has no registry startup
-/// dependency. When present, the endpoint, authentication, policy, and
-/// bounded transport settings are admitted before the owner is composed.
+/// `sources` is always populated with the typed official defaults, so a GUI,
+/// CLI, or MCP client can submit a package PURL without first learning a
+/// registry endpoint. The legacy fields remain optional override adapters for
+/// callers that still supply `--registry-endpoint` or the corresponding
+/// environment variables.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegistryConfig {
-    /// Configured registry endpoint, if remote acquisition is enabled.
+    /// Deterministic per-ecosystem source set.
+    pub sources: RegistrySourceSet,
+    /// Legacy configured registry endpoint, if supplied by an override.
     pub endpoint: Option<RegistryEndpoint>,
-    /// Optional authorization material for registry requests.
+    /// Legacy authorization material scoped to [`Self::endpoint`].
     pub authentication: Option<AuthenticationToken>,
-    /// Whether network effects are permitted.
+    /// Legacy global policy adapter.
     pub policy: AcquisitionPolicy,
-    /// Use the configured ecosystem's native metadata grammar.
+    /// Legacy native-mode adapter.
     pub native: bool,
     /// Resource and timeout bounds passed to the owner and transport.
     pub limits: AcquisitionLimits,
@@ -171,6 +183,8 @@ impl RegistryConfig {
         authentication_file: Option<String>,
         native: bool,
         offline: bool,
+        source_specs: Vec<String>,
+        auth_scopes: Vec<String>,
         listener: &ListenerConfig,
     ) -> Result<Self, ProcessError> {
         let endpoint_text = endpoint.or_else(|| std::env::var(REGISTRY_ENDPOINT_ENV).ok());
@@ -213,16 +227,114 @@ impl RegistryConfig {
         } else {
             AcquisitionPolicy::Online
         };
+        let limits = registry_limits(listener);
+        let mut sources = RegistrySourceSet::defaults()
+            .map_err(|error| ProcessError::Profile(error.to_string()))?;
+        let mut specs = source_specs;
+        if let Ok(value) = std::env::var(REGISTRY_SOURCES_ENV) {
+            specs.extend(
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+            );
+        }
+        for spec in specs {
+            let (ecosystem, endpoint) = parse_source_spec(&spec)?;
+            let endpoint = RegistryEndpoint::new(ecosystem, endpoint).map_err(|_| {
+                ProcessError::Usage(
+                    "registry source endpoint is not an admitted absolute HTTPS or loopback HTTP URL"
+                        .to_owned(),
+                )
+            })?;
+            sources
+                .insert(
+                    RegistrySource::new(endpoint)
+                        .with_priority(0)
+                        .with_policy(policy),
+                )
+                .map_err(|_| ProcessError::Usage("registry source is invalid".to_owned()))?;
+        }
+        if let Some(endpoint) = endpoint.as_ref() {
+            let source = RegistrySource::new(endpoint.clone())
+                .with_priority(0)
+                .with_policy(policy)
+                .with_native(native);
+            let source = authentication
+                .clone()
+                .map_or(source.clone(), |token| source.with_authentication(token));
+            sources
+                .override_ecosystem(source)
+                .map_err(|_| ProcessError::Usage("registry source is invalid".to_owned()))?;
+        }
+        if matches!(policy, AcquisitionPolicy::Offline) {
+            sources = sources.offline();
+        }
+        let mut auth_specs = auth_scopes;
+        if let Ok(value) = std::env::var(REGISTRY_AUTH_SCOPES_ENV) {
+            auth_specs.extend(
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+            );
+        }
+        for spec in auth_specs {
+            let (endpoint, token) = spec.split_once('=').ok_or_else(|| {
+                ProcessError::Usage(
+                    "registry auth scope must use endpoint=token spelling".to_owned(),
+                )
+            })?;
+            let token = AuthenticationToken::new(token.to_owned()).map_err(|_| {
+                ProcessError::Usage("registry authentication value is invalid".to_owned())
+            })?;
+            let endpoint = endpoint.trim();
+            let matched_authority = sources
+                .authenticate_authority(endpoint, token.clone())
+                .map_err(|_| ProcessError::Usage("registry auth scope is invalid".to_owned()))?;
+            if !(matched_authority
+                || sources
+                    .authenticate_endpoint(endpoint, token)
+                    .map_err(|_| {
+                        ProcessError::Usage("registry auth scope is invalid".to_owned())
+                    })?)
+            {
+                return Err(ProcessError::Usage(
+                    "registry auth scope must name a configured source authority".to_owned(),
+                ));
+            }
+        }
         let advisory_gate = advisory_gate_from_env()?;
         Ok(Self {
+            sources,
             endpoint,
             authentication,
             policy,
             native,
-            limits: registry_limits(listener),
+            limits,
             advisory_gate,
         })
     }
+}
+
+fn parse_source_spec(spec: &str) -> Result<(RegistryEcosystem, String), ProcessError> {
+    let (ecosystem, endpoint) = spec.split_once('=').ok_or_else(|| {
+        ProcessError::Usage("registry source must use ecosystem=endpoint spelling".to_owned())
+    })?;
+    let ecosystem = ecosystem.parse::<RegistryEcosystem>().map_err(|_| {
+        ProcessError::Usage(format!(
+            "{REGISTRY_SOURCES_ENV} contains an unsupported registry ecosystem"
+        ))
+    })?;
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        return Err(ProcessError::Usage(
+            "registry source endpoint is empty".to_owned(),
+        ));
+    }
+    Ok((ecosystem, endpoint.to_owned()))
 }
 
 impl AdvisoryConfig {
@@ -374,6 +486,8 @@ impl ProcessConfig {
             registry_auth_file,
             registry_native,
             registry_offline,
+            registry_sources,
+            registry_auth_scopes,
             advisory_osv,
             advisory_rustsec,
             advisory_ghsa,
@@ -451,6 +565,8 @@ impl ProcessConfig {
             registry_auth_file,
             registry_native,
             registry_offline,
+            registry_sources,
+            registry_auth_scopes,
             &listener,
         )?;
         let advisory = AdvisoryConfig::from_options(
@@ -489,6 +605,8 @@ struct ParsedOptions {
     registry_auth_file: Option<String>,
     registry_native: bool,
     registry_offline: bool,
+    registry_sources: Vec<String>,
+    registry_auth_scopes: Vec<String>,
     advisory_osv: Option<String>,
     advisory_rustsec: Option<String>,
     advisory_ghsa: Option<String>,
@@ -514,6 +632,8 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<ParsedOptions
         registry_auth_file: None,
         registry_native: false,
         registry_offline: false,
+        registry_sources: Vec::new(),
+        registry_auth_scopes: Vec::new(),
         advisory_osv: None,
         advisory_rustsec: None,
         advisory_ghsa: None,
@@ -572,6 +692,16 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<ParsedOptions
             }
             "--registry-native" => parsed.registry_native = true,
             "--registry-offline" => parsed.registry_offline = true,
+            "--registry-source" | "--registry-mirror" => {
+                parsed
+                    .registry_sources
+                    .push(next_value(&mut args, argument.as_str())?);
+            }
+            "--registry-auth-for" => {
+                parsed
+                    .registry_auth_scopes
+                    .push(next_value(&mut args, "--registry-auth-for")?);
+            }
             "--advisory-osv" => {
                 parsed.advisory_osv = Some(next_value(&mut args, "--advisory-osv")?);
             }
@@ -703,7 +833,7 @@ pub fn main_entry() -> ExitCode {
 
 fn print_help() {
     println!(
-        "usage: backend-locald [--endpoint PATH] [--workspace PATH] [--profile builtin|builtin-echo] [--worker-endpoint PATH] [--authority-secret-file PATH] [--registry-endpoint URL] [--registry-ecosystem NAME] [--registry-auth VALUE|--registry-auth-file PATH] [--registry-native] [--registry-offline] [--advisory-osv PATH|URL] [--advisory-rustsec PATH|URL] [--advisory-ghsa PATH|URL] [--advisory-offline] [--advisory-max-age-secs SECONDS] [--max-frame BYTES] [--max-clients COUNT] [--timeout-ms MS] [--idle-timeout-ms MS]"
+        "usage: backend-locald [--endpoint PATH] [--workspace PATH] [--profile builtin|builtin-echo] [--worker-endpoint PATH] [--authority-secret-file PATH] [--registry-source ECO=URL]... [--registry-auth-for URL=TOKEN]... [--registry-endpoint URL] [--registry-ecosystem NAME] [--registry-auth VALUE|--registry-auth-file PATH] [--registry-native] [--registry-offline] [--advisory-osv PATH|URL] [--advisory-rustsec PATH|URL] [--advisory-ghsa PATH|URL] [--advisory-offline] [--advisory-max-age-secs SECONDS] [--max-frame BYTES] [--max-clients COUNT] [--timeout-ms MS] [--idle-timeout-ms MS]"
     );
     println!(
         "without paths, locald opens .backend/v2 for the current project and derives a short local endpoint"
@@ -752,6 +882,54 @@ mod tests {
     fn configuration_derives_workspace_and_endpoint() {
         let result = ProcessConfig::parse(std::iter::empty());
         assert!(result.is_ok(), "zero-configuration locald: {result:?}");
+        let Ok(result) = result else { return };
+        assert_eq!(result.registry.sources.len(), 7);
+        assert!(result.registry.endpoint.is_none());
+    }
+
+    #[test]
+    fn source_mirrors_and_authority_credentials_are_optional_adapters() {
+        let result = ProcessConfig::parse([
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-registry-router.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-registry-router".to_owned(),
+            "--registry-mirror".to_owned(),
+            "cargo=https://mirror.example.test/cargo".to_owned(),
+            "--registry-auth-for".to_owned(),
+            "https://mirror.example.test/cargo/sparse=mirror-token".to_owned(),
+        ]);
+        assert!(result.is_ok(), "source mirror configuration: {result:?}");
+        let Ok(result) = result else { return };
+        let cargo = result
+            .registry
+            .sources
+            .for_ecosystem(RegistryEcosystem::Cargo);
+        let mirror = cargo
+            .iter()
+            .find(|source| source.endpoint().as_str() == "https://mirror.example.test/cargo")
+            .expect("configured cargo mirror");
+        assert_eq!(mirror.priority(), 0);
+        assert!(mirror.has_authentication());
+    }
+
+    #[test]
+    fn offline_adapter_marks_every_official_source_without_network_setup() {
+        let result = ProcessConfig::parse([
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-offline-router.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-offline-router".to_owned(),
+            "--registry-offline".to_owned(),
+        ]);
+        assert!(result.is_ok(), "offline source configuration: {result:?}");
+        let Ok(result) = result else { return };
+        assert_eq!(result.registry.sources.len(), 7);
+        assert!(result
+            .registry
+            .sources
+            .sources()
+            .all(|source| source.policy() == AcquisitionPolicy::Offline));
     }
 
     #[test]

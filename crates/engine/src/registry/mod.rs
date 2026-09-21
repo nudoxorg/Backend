@@ -25,6 +25,7 @@ mod facts;
 mod feed;
 mod identity;
 mod owner;
+mod router;
 mod transport;
 mod wire;
 
@@ -39,14 +40,19 @@ pub use facts::{DownloadCount, DownloadCountGap, ReleaseFacts, ReleaseStanding, 
 /// Preferred closed name for the seven native registry grammars.
 pub use identity::RegistryEcosystem as RegistryKind;
 pub use identity::{
-    AcquisitionLimits, AcquisitionPolicy, AuthenticationToken, CanonicalFeedV1, FeedCursor,
-    FeedSchema, PackageCoordinate, PackageName, PackageVersion, ProvenanceDigest,
-    PublishedArtifactClaim, RegistryCoordinate, RegistryEcosystem, RegistryEndpoint, RegistryId,
-    RemoteRegistry, admit_registry_coordinate,
+    admit_registry_coordinate, AcquisitionLimits, AcquisitionPolicy, AuthenticationToken,
+    CanonicalFeedV1, FeedCursor, FeedSchema, PackageCoordinate, PackageName, PackageVersion,
+    ProvenanceDigest, PublishedArtifactClaim, RegistryCoordinate, RegistryEcosystem,
+    RegistryEndpoint, RegistryId, RemoteRegistry,
 };
 pub use owner::{
-    AcquisitionError, AcquisitionIntent, AcquisitionOutcome, AcquisitionReceipt, PublishedPackage,
-    RegistryOwner, RegistryReadiness, RegistryRecovery, storage_root,
+    storage_root, AcquisitionError, AcquisitionIntent, AcquisitionOutcome, AcquisitionReceipt,
+    PublishedPackage, RegistryOwner, RegistryReadiness, RegistryRecovery,
+};
+pub use router::{
+    RegistryConfigurationError, RegistryRoute, RegistrySource, RegistrySourceSet,
+    CARGO_SPARSE_INDEX, CONAN_CENTER, GO_MODULE_PROXY, MAVEN_CENTRAL, NPM_REGISTRY, NUGET_V3,
+    PYPI_SIMPLE_API, REGISTRY_SOURCE_ROOT_VERSION,
 };
 pub use transport::{
     ArchiveArtifact, FeedPage, FeedRequest, HttpRegistryTransport, RegistryTransport,

@@ -11,8 +11,9 @@ use backend_engine::acquisition::{
     CorruptReason, RejectReason,
 };
 use backend_engine::registry::{
-    AcquisitionError, AcquisitionPolicy, EcosystemAdapter, HttpRegistryTransport,
-    PackageCoordinate, admit_registry_coordinate,
+    admit_registry_coordinate, AcquisitionError, AcquisitionPolicy, EcosystemAdapter,
+    HttpRegistryTransport, PackageCoordinate, RegistryId, RegistrySource, RegistrySourceSet,
+    REGISTRY_SOURCE_ROOT_VERSION,
 };
 use backend_library::is_hard_ignored_path;
 use flate2::read::{DeflateDecoder, GzDecoder};
@@ -22,25 +23,31 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
     atomic::{AtomicU64, Ordering},
+    Arc,
 };
 use std::time::Duration;
 
 /// Durable registry state attached to one local owner loop.
 pub(super) struct RegistryGateway {
-    service: AcquisitionService,
+    sources: RegistrySourceSet,
+    slots: BTreeMap<(RegistryId, bool), RegistrySlot>,
     config: RegistryConfig,
     workspace_root: PathBuf,
+    source_root: PathBuf,
+    shared_objects: PathBuf,
+    advisory: Arc<backend_engine::advisory::AdvisoryAuthority>,
     last_receipt: Option<Arc<backend_engine::acquisition::AcquisitionReceipt>>,
     last_snapshot: Option<Arc<backend_engine::acquisition::SourceSnapshot>>,
+}
+
+struct RegistrySlot {
+    service: Option<AcquisitionService>,
 }
 
 /// Typed terminal state returned while satisfying a remote package add.
 #[derive(Debug)]
 pub(super) enum RegistryAddError {
-    /// No endpoint was configured for a remote coordinate.
-    NotConfigured,
     /// The endpoint policy explicitly forbids network effects.
     Offline,
     /// The endpoint could not be reached within its configured deadline.
@@ -62,7 +69,6 @@ pub(super) enum RegistryAddError {
 impl fmt::Display for RegistryAddError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotConfigured => formatter.write_str("registry is not configured"),
             Self::Offline => formatter.write_str("registry acquisition is offline"),
             Self::Unavailable => formatter.write_str("registry is unavailable"),
             Self::RetryAfter(delay) => {
@@ -88,20 +94,29 @@ impl fmt::Display for RegistryAddError {
 
 impl RegistryGateway {
     /// Projects the complete recovered local catalog without network I/O.
-    pub(super) fn catalog(&self) -> Result<Vec<backend_engine::RegistryPackageRecord>, String> {
-        self.service
-            .published_packages()
-            .into_iter()
-            .map(|published| {
+    pub(super) fn catalog(&mut self) -> Result<Vec<backend_engine::RegistryPackageRecord>, String> {
+        let mut records = Vec::new();
+        let mut seen = BTreeSet::new();
+        for source in self.sources.sources().cloned().collect::<Vec<_>>() {
+            let service = self
+                .service_for(&source)
+                .map_err(|error| format!("open registry source: {error}"))?;
+            for published in service.published_packages() {
+                if !seen.insert(published.coordinate.clone()) {
+                    continue;
+                }
                 let admitted = admit_registry_coordinate(&published.coordinate)
-                    .map_err(|_| backend_engine::ProductAdmissionError::PackageReference)?;
-                Ok(backend_engine::RegistryPackageRecord {
+                    .map_err(|_| backend_engine::ProductAdmissionError::PackageReference)
+                    .map_err(|error| error.to_string())?;
+                records.push(backend_engine::RegistryPackageRecord {
                     ecosystem: admitted.ecosystem(),
                     coordinate: backend_engine::PackageReference::Purl(
                         published.coordinate.clone(),
                     ),
-                    name: backend_engine::ProductText::new(admitted.qualified_name().as_str())?,
-                    version: backend_engine::ProductText::new(admitted.version().as_str())?,
+                    name: backend_engine::ProductText::new(admitted.qualified_name().as_str())
+                        .map_err(|error| error.to_string())?,
+                    version: backend_engine::ProductText::new(admitted.version().as_str())
+                        .map_err(|error| error.to_string())?,
                     bytes: published.bytes,
                     standing: match published.facts.standing() {
                         backend_engine::registry::ReleaseStanding::Available => {
@@ -145,35 +160,47 @@ impl RegistryGateway {
                                     backend_engine::registry::DownloadCountGap::Unavailable => {
                                         "unavailable"
                                     }
-                                })?,
+                                })
+                                .map_err(|error| error.to_string())?,
                             )
                         }
                     },
                     facts_version: published.facts.version(),
                     advisory: published.advisory.clone(),
-                })
-            })
-            .collect::<Result<Vec<_>, backend_engine::ProductAdmissionError>>()
-            .map_err(|error| error.to_string())
+                });
+            }
+        }
+        records.sort_by(|left, right| left.coordinate.cmp(&right.coordinate));
+        Ok(records)
     }
 
     /// Returns dependency facts from the same immutable publication records as
     /// the catalog. Unknown and unavailable metadata stay typed all the way to
     /// the product surface; an empty known set is the only representation of
     /// a package that has no declared edges.
-    pub(super) fn dependency_facts(&self) -> Vec<backend_engine::PackageDependencySourceFacts> {
-        self.service
-            .published_packages()
-            .into_iter()
-            .filter_map(|published| {
-                backend_engine::PackageReference::parse(published.coordinate.as_str().to_owned())
-                    .ok()
-                    .map(|source| (source, published.dependency_facts.clone()))
-            })
-            .collect()
+    pub(super) fn dependency_facts(&mut self) -> Vec<backend_engine::PackageDependencySourceFacts> {
+        let mut facts = Vec::new();
+        let mut seen = BTreeSet::new();
+        for slot in self.slots.values() {
+            let Some(service) = slot.service.as_ref() else {
+                continue;
+            };
+            for published in service.published_packages() {
+                if !seen.insert(published.coordinate.clone()) {
+                    continue;
+                }
+                if let Ok(source) = backend_engine::PackageReference::parse(
+                    published.coordinate.as_str().to_owned(),
+                ) {
+                    facts.push((source, published.dependency_facts.clone()));
+                }
+            }
+        }
+        facts
     }
 
-    /// Opens the existing durable owner when a registry endpoint is present.
+    /// Composes the source set without opening a network connection or source
+    /// owner. Each owner is opened on the first catalog read or acquisition.
     pub(super) fn open(
         config: &RegistryConfig,
         root: impl AsRef<Path>,
@@ -183,27 +210,19 @@ impl RegistryGateway {
         let advisory_path = workspace_root.join("advisory-authority.json");
         let advisory = open_advisory_authority(&advisory_path, advisory_config)
             .map_err(|error| AcquisitionError::Io(std::io::Error::other(error)))?;
-        let Some(endpoint) = config.endpoint.clone() else {
-            return Ok(None);
-        };
-        let (owner, _) = backend_engine::registry::RegistryOwner::open(
-            &workspace_root,
-            endpoint,
-            config.policy,
-            config.limits,
-        )?;
-        let owner = owner
-            .with_advisory_gate(config.advisory_gate)
-            .with_advisory_resolver(
-                Arc::clone(&advisory) as Arc<dyn backend_engine::advisory::AdvisoryResolver>
-            );
-        let service =
-            AcquisitionService::from_owner(owner, workspace_root.join("registry-acquisition"))
-                .map_err(AcquisitionError::Io)?;
+        // Every source, including a legacy endpoint override, is composed
+        // below the versioned router root. This keeps cache migration and
+        // owner identity independent of the process adapter that selected it.
+        let source_root = workspace_root.join(REGISTRY_SOURCE_ROOT_VERSION);
+        let shared_objects = source_root.join("cas").join("objects");
         Ok(Some(Self {
-            service,
+            sources: config.sources.clone(),
+            slots: BTreeMap::new(),
             config: config.clone(),
             workspace_root,
+            source_root,
+            shared_objects,
+            advisory,
             last_receipt: None,
             last_snapshot: None,
         }))
@@ -214,28 +233,55 @@ impl RegistryGateway {
         &mut self,
         coordinate: &PackageCoordinate,
     ) -> Result<Vec<u8>, RegistryAddError> {
-        if self.config.endpoint.is_none() {
-            return Err(RegistryAddError::NotConfigured);
+        let route = self
+            .sources
+            .route(coordinate)
+            .map_err(RegistryAddError::Acquisition)?;
+        let mut last_fallback = None;
+        for source in route.candidates().iter().cloned() {
+            let outcome = self.acquire_from_source(&source, coordinate)?;
+            match outcome {
+                CandidateOutcome::Done(bytes) => return Ok(bytes),
+                CandidateOutcome::Fallback(error) => last_fallback = Some(error),
+                CandidateOutcome::Terminal(error) => return Err(error),
+            }
         }
-        let request = AcquisitionRequest::for_coordinate(
-            self.service.source_id(),
-            coordinate.to_string(),
-            1,
-            0,
-        )
-        .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?;
-        let outcome = if self.service.contains(coordinate)
-            || matches!(self.config.policy, AcquisitionPolicy::Offline)
-        {
+        Err(last_fallback.unwrap_or(RegistryAddError::Unavailable))
+    }
+
+    fn acquire_from_source(
+        &mut self,
+        source: &RegistrySource,
+        coordinate: &PackageCoordinate,
+    ) -> Result<CandidateOutcome, RegistryAddError> {
+        let source_id = self.service_for(source)?.source_id();
+        let slot_key = (
+            source.id(),
+            matches!(source.policy(), AcquisitionPolicy::Offline),
+        );
+        let contains = self
+            .slots
+            .get(&slot_key)
+            .and_then(|slot| slot.service.as_ref())
+            .is_some_and(|service| service.contains(coordinate));
+        let request =
+            AcquisitionRequest::for_coordinate(source_id, coordinate.to_string(), 1, 0)
+                .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?;
+        let outcome = if contains || matches!(source.policy(), AcquisitionPolicy::Offline) {
             // A repeated or explicitly offline add is a cache read. Rehydrate
-            // it from the durable owner catalog so a daemon restart does not
-            // create another network effect or cursor reservation.
-            self.service.ensure(&request)
+            // it from this source's durable catalog without a network effect.
+            let service = self.service_for(source)?;
+            service.ensure(&request)
         } else {
-            let mut transport = self.transport(coordinate)?;
-            self.service.acquire(&request, &mut transport)
+            let mut transport = self.transport(source, coordinate)?;
+            let service = self.service_for(source)?;
+            service.acquire(&request, &mut transport)
         };
-        self.finish_acquisition(outcome)
+        match self.finish_acquisition(outcome) {
+            Ok(bytes) => Ok(CandidateOutcome::Done(bytes)),
+            Err(error) if should_fallback(&error) => Ok(CandidateOutcome::Fallback(error)),
+            Err(error) => Ok(CandidateOutcome::Terminal(error)),
+        }
     }
 
     fn finish_acquisition(
@@ -319,13 +365,55 @@ impl RegistryGateway {
         stage_archive(coordinate, archive, &self.workspace_root)
     }
 
+    fn service_for(
+        &mut self,
+        source: &RegistrySource,
+    ) -> Result<&AcquisitionService, RegistryAddError> {
+        let source_id = source.id();
+        let slot_key = (
+            source_id,
+            matches!(source.policy(), AcquisitionPolicy::Offline),
+        );
+        let needs_open = self
+            .slots
+            .get(&slot_key)
+            .is_none_or(|slot| slot.service.is_none());
+        if needs_open {
+            let endpoint = source.endpoint_for_owner();
+            let (owner, _) = backend_engine::registry::RegistryOwner::open_with_shared_objects(
+                &self.source_root,
+                endpoint,
+                source.policy(),
+                self.config.limits,
+                &self.shared_objects,
+            )
+            .map_err(RegistryAddError::Acquisition)?;
+            let owner = owner
+                .with_advisory_gate(self.config.advisory_gate)
+                .with_advisory_resolver(Arc::clone(&self.advisory)
+                    as Arc<dyn backend_engine::advisory::AdvisoryResolver>);
+            let service = AcquisitionService::from_owner(
+                owner,
+                self.workspace_root.join("registry-acquisition"),
+            )
+            .map_err(|error| RegistryAddError::Acquisition(AcquisitionError::Io(error)))?;
+            self.slots
+                .entry(slot_key)
+                .or_insert_with(|| RegistrySlot { service: None })
+                .service = Some(service);
+        }
+        self.slots
+            .get(&slot_key)
+            .and_then(|slot| slot.service.as_ref())
+            .ok_or_else(|| RegistryAddError::Acquisition(AcquisitionError::InvalidConfiguration))
+    }
+
     fn transport(
         &self,
+        source: &RegistrySource,
         coordinate: &PackageCoordinate,
     ) -> Result<HttpRegistryTransport, RegistryAddError> {
-        let Some(endpoint) = self.config.endpoint.clone() else {
-            return Err(RegistryAddError::NotConfigured);
-        };
+        let endpoint = source.endpoint().clone();
         let admitted =
             admit_registry_coordinate(coordinate).map_err(RegistryAddError::Acquisition)?;
         if endpoint.ecosystem() != admitted.ecosystem() {
@@ -333,23 +421,31 @@ impl RegistryGateway {
                 AcquisitionError::InvalidConfiguration,
             ));
         }
-        if self.config.native {
+        if source.native() {
             let adapter = native_adapter(endpoint, coordinate)?;
-            HttpRegistryTransport::for_native(
-                adapter,
-                self.config.authentication.clone(),
-                self.config.limits,
-            )
-            .map_err(RegistryAddError::Acquisition)
+            HttpRegistryTransport::for_native(adapter, source.authentication(), self.config.limits)
+                .map_err(RegistryAddError::Acquisition)
         } else {
-            HttpRegistryTransport::new(
-                endpoint,
-                self.config.authentication.clone(),
-                self.config.limits,
-            )
-            .map_err(RegistryAddError::Acquisition)
+            HttpRegistryTransport::new(endpoint, source.authentication(), self.config.limits)
+                .map_err(RegistryAddError::Acquisition)
         }
     }
+}
+
+enum CandidateOutcome {
+    Done(Vec<u8>),
+    Fallback(RegistryAddError),
+    Terminal(RegistryAddError),
+}
+
+fn should_fallback(error: &RegistryAddError) -> bool {
+    matches!(
+        error,
+        RegistryAddError::NotFound
+            | RegistryAddError::Unavailable
+            | RegistryAddError::Offline
+            | RegistryAddError::RetryAfter(_)
+    )
 }
 
 fn current_millis() -> u64 {
@@ -384,18 +480,10 @@ fn open_advisory_authority(
     authority.set_max_age_secs(config.max_age_secs);
     authority.set_offline(config.offline);
     authority.configure_sources(config.sources.iter().map(|source| source.source));
-    if !config.offline {
-        for source in &config.sources {
-            match refresh_authority_source(&authority, source, config.max_feed_bytes) {
-                Ok(feed) => {
-                    authority.apply(feed).map_err(|error| error.to_string())?;
-                }
-                Err(_) => {
-                    authority.mark_unavailable(source.source, advisory_now());
-                }
-            }
-        }
-    }
+    // Advisory refresh is intentionally not part of process composition.
+    // A daemon must be able to bind and serve local/cached reads with no
+    // startup network dependency; a future explicit refresh command can use
+    // the existing bounded source adapter.
     authority.persist(path).map_err(|error| error.to_string())?;
     Ok(Arc::new(authority))
 }
@@ -1166,7 +1254,7 @@ fn hex(value: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::{Compression, write::GzEncoder};
+    use flate2::{write::GzEncoder, Compression};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);

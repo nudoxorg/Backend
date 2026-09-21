@@ -2230,12 +2230,12 @@ impl CommandAdapter {
             surface => {
                 let catalog = self
                     .registry
-                    .as_ref()
+                    .as_mut()
                     .map_or(Ok(Vec::new()), RegistryGateway::catalog)
                     .map_err(BuiltinModelError)?;
                 let dependency_facts = self
                     .registry
-                    .as_ref()
+                    .as_mut()
                     .map_or_else(Vec::new, RegistryGateway::dependency_facts);
                 futures_executor::block_on(self.sql_projection.synchronize_package_graph(
                     daemon.engine().daemon().library().view().root(),

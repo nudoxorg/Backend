@@ -902,13 +902,13 @@ pub(crate) fn compose_owner(
         // worker is offline.
         replication.start_reconnect();
     }
-    let registry = RegistryGateway::open(
+    let mut registry = RegistryGateway::open(
         &config.registry,
         config.workspace.join("registry"),
         &config.advisory,
     )
     .map_err(|error| ProcessError::Profile(format!("open registry owner: {error}")))?;
-    if let Some(registry) = registry.as_ref() {
+    if let Some(registry) = registry.as_mut() {
         let dependency_facts = registry.dependency_facts();
         futures_executor::block_on(sql_projection.synchronize_package_graph(
             daemon.engine().daemon().library().view().root(),
