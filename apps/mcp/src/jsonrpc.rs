@@ -43,6 +43,8 @@ use codec::{
 };
 use tools::{QUERY_TOOL, SURFACE_TOOL, list_tools};
 
+pub(crate) use tools::token_budget_tools as token_budget_tools_projection;
+
 const STABLE_PROTOCOL: &str = "2025-11-25";
 const CANDIDATE_PROTOCOL: &str = "2026-07-28";
 const SERVER_NAME: &str = "backend";

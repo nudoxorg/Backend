@@ -44,6 +44,16 @@ pub(super) fn list_tools(params: &Value) -> Result<Value, RpcError> {
     Ok(json!({ "tools": tools }))
 }
 
+/// Returns the canonical `tools/list` projection for the offline budget
+/// fixture generator. This is kept at the protocol edge so the generator
+/// cannot accidentally grow a second hand-written tool schema.
+pub(crate) fn token_budget_tools() -> Value {
+    match list_tools(&Value::Object(Map::new())) {
+        Ok(value) => value,
+        Err(_) => Value::Object(Map::new()),
+    }
+}
+
 /// Projects one registry row into one MCP tool definition.
 fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     let mut properties = Map::new();

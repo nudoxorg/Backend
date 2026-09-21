@@ -1,0 +1,15 @@
+{
+  "implementation": "tiktoken",
+  "package": "tiktoken",
+  "version": "0.11.0",
+  "encoding": "cl100k_base",
+  "model_policy": "mcp-cl100k-base-v1",
+  "artifact_sha256": "8613f818e5af318d868379772ce5234e3a3e8519b6c611d94cf708fdfc580fbc",
+  "hash_method": "sha256(canonical-json(sort_keys=true,separators=(',',':'),mergeable-ranks keys=hex,special-tokens,pattern))",
+  "caps": {
+    "default_bytes": 49152,
+    "default_tokens": 12000,
+    "hard_bytes": 262144,
+    "hard_tokens": 65536
+  }
+}

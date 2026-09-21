@@ -1370,6 +1370,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-token-budget"
+version = "0.1.0"
+dependencies = [
+ "allocation-counter",
+ "backend-library",
+ "backend-mcp",
+ "backend-present",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "backend-version"
 version = "0.1.0"
 dependencies = [

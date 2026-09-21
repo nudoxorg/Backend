@@ -680,6 +680,15 @@ mod tests {
     fn fixture_measurements_are_stable_and_budget_is_self_consistent() {
         let fixture: Value = serde_json::from_str(include_str!("fixtures/payload-budgets.json"))
             .expect("valid payload budget fixture");
+        assert_eq!(fixture["schema"], "backend-present.payload-budget/v2");
+        assert_eq!(fixture["tokenizer"]["implementation"], "tiktoken");
+        assert_eq!(fixture["tokenizer"]["version"], "0.11.0");
+        assert_eq!(fixture["tokenizer"]["encoding"], "cl100k_base");
+        assert_eq!(fixture["tokenizer"]["model_policy"], "mcp-cl100k-base-v1");
+        assert_eq!(fixture["tokenizer"]["caps"]["default_bytes"], 49_152);
+        assert_eq!(fixture["tokenizer"]["caps"]["default_tokens"], 12_000);
+        assert_eq!(fixture["tokenizer"]["caps"]["hard_bytes"], 262_144);
+        assert_eq!(fixture["tokenizer"]["caps"]["hard_tokens"], 65_536);
         let common = fixture["fixtures"]["common_empty_records_summary"]
             .as_object()
             .expect("common fixture");
@@ -692,6 +701,42 @@ mod tests {
         assert_eq!(worst["bytes"], 100_025);
         assert_eq!(worst["estimated_tokens"], 25_007);
         assert_eq!(worst["real_tokens"], 23_460);
+        for name in [
+            "unicode_rtl_records",
+            "long_page_document_source",
+            "continuation_envelope",
+            "shelf_summary",
+            "outline_summary",
+            "status_summary",
+            "product_summary",
+            "query_page",
+            "error_fault",
+            "oversized_fault",
+            "tool_schema",
+        ] {
+            assert!(
+                fixture["fixtures"][name]["bytes"].as_u64().is_some(),
+                "{name} bytes"
+            );
+            assert!(
+                fixture["fixtures"][name]["real_tokens"].as_u64().is_some(),
+                "{name} exact tokenizer count"
+            );
+            assert!(
+                fixture["fixtures"][name]["allocation_bytes"]
+                    .as_u64()
+                    .is_some(),
+                "{name} allocation observation"
+            );
+        }
+        assert_eq!(
+            fixture["fixtures"]["atomic_oversized_refusal"]["admitted"],
+            false
+        );
+        assert_eq!(
+            fixture["fixtures"]["atomic_oversized_refusal"]["partial_bytes"],
+            0
+        );
         assert!(
             worst["bytes"].as_u64().expect("worst bytes")
                 > common["bytes"].as_u64().expect("common bytes")

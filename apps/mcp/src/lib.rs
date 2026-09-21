@@ -52,3 +52,10 @@ pub use protocol::{
 #[cfg(unix)]
 pub use transport::UnixCommandTransport;
 pub use transport::{CertifiedCommandTransport, CommandTransport, InProcessTransport, LocalEngine};
+
+/// Exposes the canonical tools/list projection to the dev-only payload
+/// budget generator without putting tokenizer code in MCP request handling.
+#[doc(hidden)]
+pub fn token_budget_tools() -> serde_json::Value {
+    jsonrpc::token_budget_tools_projection()
+}

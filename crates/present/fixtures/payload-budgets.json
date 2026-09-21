@@ -1,22 +1,160 @@
 {
-  "schema": "backend-present.payload-budget/v1",
-  "tokenizer": {
-    "implementation": "tiktoken",
-    "version": "0.11.0",
-    "encoding": "cl100k_base",
-    "artifact_sha256": "8613f818e5af318d868379772ce5234e3a3e8519b6c611d94cf708fdfc580fbc",
-    "hash_method": "sha256(canonical-json(sort_keys=true,separators=(',',':'),mergeable-ranks keys=hex,special-tokens,pattern))"
-  },
   "fixtures": {
-    "common_empty_records_summary": {
-      "bytes": 334,
-      "estimated_tokens": 84,
-      "real_tokens": 87
-    },
-    "worst_200_full_records": {
+    "atomic_oversized_refusal": {
+      "admitted": false,
+      "allocation_bytes": 191716,
+      "allocation_count": 4612,
+      "budget_bytes": 49152,
       "bytes": 100025,
       "estimated_tokens": 25007,
+      "partial_bytes": 0,
       "real_tokens": 23460
+    },
+    "common_empty_records_summary": {
+      "allocation_bytes": 49869,
+      "allocation_count": 11,
+      "budget_bytes": 49152,
+      "bytes": 334,
+      "estimated_tokens": 84,
+      "fixture": "crates/present/fixtures/common-empty-records-summary.json",
+      "real_tokens": 87,
+      "sha256": "af31585a1a1a9b40e89fc2024fa4bdf007d7d4795fa4afd5a7e59d71490dadc2"
+    },
+    "continuation_envelope": {
+      "allocation_bytes": 49943,
+      "allocation_count": 11,
+      "budget_bytes": 49152,
+      "bytes": 408,
+      "estimated_tokens": 102,
+      "fixture": "crates/present/fixtures/continuation-envelope.json",
+      "real_tokens": 111,
+      "sha256": "5cdffbed51f7675e6a6bf1cec5fa9e8d415d953a6a6fe3367600f43a386776db"
+    },
+    "error_fault": {
+      "allocation_bytes": 128,
+      "allocation_count": 1,
+      "budget_bytes": 49152,
+      "bytes": 115,
+      "estimated_tokens": 29,
+      "fixture": "crates/present/fixtures/error-fault.json",
+      "real_tokens": 26,
+      "sha256": "4ad94a0e4c4311d51a30ae6ef745fd24002c45af5a76df209687a5cd8e059872"
+    },
+    "long_page_document_source": {
+      "allocation_bytes": 90744,
+      "allocation_count": 134,
+      "budget_bytes": 49152,
+      "bytes": 11054,
+      "estimated_tokens": 2764,
+      "fixture": "crates/present/fixtures/long-page-document-source.json",
+      "real_tokens": 2394,
+      "sha256": "677d2b077fb12bea0145cbabe38b0db369c8b289f76f6a52648d5e4cafca3138"
+    },
+    "outline_summary": {
+      "allocation_bytes": 49809,
+      "allocation_count": 14,
+      "budget_bytes": 49152,
+      "bytes": 348,
+      "estimated_tokens": 87,
+      "fixture": "crates/present/fixtures/outline-summary.json",
+      "real_tokens": 91,
+      "sha256": "7ca3c9b807608f7cb94c5e9f18e02ef8f8e377e78b5964d7c9dd7ed6e7886666"
+    },
+    "oversized_fault": {
+      "allocation_bytes": 384,
+      "allocation_count": 2,
+      "budget_bytes": 49152,
+      "bytes": 182,
+      "estimated_tokens": 46,
+      "fixture": "crates/present/fixtures/oversized-fault.json",
+      "real_tokens": 43,
+      "sha256": "f1ad8ea6f9161e8b9a583ef20c88fdfb5d1a37945c329f982bc6cca57ca79370"
+    },
+    "product_summary": {
+      "allocation_bytes": 49327,
+      "allocation_count": 4,
+      "budget_bytes": 49152,
+      "bytes": 156,
+      "estimated_tokens": 39,
+      "fixture": "crates/present/fixtures/product-summary.json",
+      "real_tokens": 40,
+      "sha256": "98c737e0e6e4209d4e6a58e75e02e70f48c8907ecdba8fbcc8d42f5aad32cbaf"
+    },
+    "query_page": {
+      "allocation_bytes": 49545,
+      "allocation_count": 2,
+      "budget_bytes": 49152,
+      "bytes": 393,
+      "estimated_tokens": 99,
+      "fixture": "crates/present/fixtures/query-page.json",
+      "real_tokens": 110,
+      "sha256": "f267439946b3746c25fa4fa486b742a35a972cb141f047fba6da50782bf77135"
+    },
+    "shelf_summary": {
+      "allocation_bytes": 50753,
+      "allocation_count": 20,
+      "budget_bytes": 49152,
+      "bytes": 507,
+      "estimated_tokens": 127,
+      "fixture": "crates/present/fixtures/shelf-summary.json",
+      "real_tokens": 112,
+      "sha256": "d04d446274fbefc81919a14043179af7eadcfe89ad45cd67f207fb32d984e206"
+    },
+    "status_summary": {
+      "allocation_bytes": 50836,
+      "allocation_count": 30,
+      "budget_bytes": 49152,
+      "bytes": 731,
+      "estimated_tokens": 183,
+      "fixture": "crates/present/fixtures/status-summary.json",
+      "real_tokens": 215,
+      "sha256": "b58aabaa427351add64687aa370aa9a5d3539b7b2341f8dcdd722d574845b73e"
+    },
+    "tool_schema": {
+      "allocation_bytes": 130944,
+      "allocation_count": 10,
+      "budget_bytes": 49152,
+      "bytes": 42948,
+      "estimated_tokens": 10737,
+      "fixture": "crates/present/fixtures/mcp-tool-schema.json",
+      "real_tokens": 8611,
+      "sha256": "fd6bfe53865ac5c757c13011daa93bfa2a89594e49bba8cb6991be86fb39d5b6"
+    },
+    "unicode_rtl_records": {
+      "allocation_bytes": 67728,
+      "allocation_count": 37,
+      "budget_bytes": 49152,
+      "bytes": 846,
+      "estimated_tokens": 212,
+      "fixture": "crates/present/fixtures/unicode-rtl-records.json",
+      "real_tokens": 251,
+      "sha256": "5616f6276699dbd40b3b20a5a513c450fe3d09dac0b1d0d271dfe519c4f5f2bf"
+    },
+    "worst_200_full_records": {
+      "allocation_bytes": 488349,
+      "allocation_count": 4615,
+      "budget_bytes": 262144,
+      "bytes": 100025,
+      "estimated_tokens": 25007,
+      "fixture": "crates/present/fixtures/worst-200-full-records.json",
+      "real_tokens": 23460,
+      "sha256": "b570b4e960126a9cf66f1698a2d5ea07dee770007b64e0ea0170a8051afe11f8"
     }
+  },
+  "schema": "backend-present.payload-budget/v2",
+  "tokenizer": {
+    "artifact_sha256": "8613f818e5af318d868379772ce5234e3a3e8519b6c611d94cf708fdfc580fbc",
+    "caps": {
+      "default_bytes": 49152,
+      "default_tokens": 12000,
+      "hard_bytes": 262144,
+      "hard_tokens": 65536
+    },
+    "encoding": "cl100k_base",
+    "hash_method": "sha256(canonical-json(sort_keys=true,separators=(',',':'),mergeable-ranks keys=hex,special-tokens,pattern))",
+    "implementation": "tiktoken",
+    "model_policy": "mcp-cl100k-base-v1",
+    "package": "tiktoken",
+    "version": "0.11.0"
   }
 }
