@@ -1284,6 +1284,7 @@ dependencies = [
  "backend-engine",
  "backend-extension-trustfall",
  "backend-library",
+ "backend-platform",
  "backend-present",
  "backend-replication",
  "backend-runtime",

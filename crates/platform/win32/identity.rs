@@ -143,7 +143,7 @@ pub fn peer_process_id(stream: &LocalStream) -> io::Result<u32> {
             ptr::null(),
             0,
             (&raw mut process_id).cast(),
-            size_of::<u32>() as u32,
+            std::mem::size_of::<u32>() as u32,
             &raw mut returned,
             ptr::null_mut(),
             None,
@@ -265,7 +265,7 @@ fn token_sid(process: HANDLE, class: TOKEN_INFORMATION_CLASS) -> io::Result<User
     }
     // A `usize` buffer keeps the pointer fields of the returned structure
     // correctly aligned.
-    let mut buffer = vec![0_usize; (needed as usize).div_ceil(size_of::<usize>())];
+    let mut buffer = vec![0_usize; (needed as usize).div_ceil(std::mem::size_of::<usize>())];
     // SAFETY: `buffer` holds at least `needed` writable bytes.
     if unsafe {
         GetTokenInformation(

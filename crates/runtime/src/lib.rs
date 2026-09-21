@@ -572,7 +572,18 @@ fn effective_uid() -> u32 {
 }
 
 #[cfg(not(unix))]
-const fn effective_uid() -> u32 {
+fn effective_uid() -> u32 {
+    #[cfg(windows)]
+    {
+        // Windows has no numeric effective UID. Fold the authenticated user
+        // SID into the endpoint identity so two users sharing a workspace
+        // root still derive different owner-protected endpoints.
+        if let Ok(user) = backend_platform::win32::identity::current_user() {
+            let digest = blake3::hash(user.as_bytes());
+            let bytes = digest.as_bytes();
+            return u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        }
+    }
     0
 }
 

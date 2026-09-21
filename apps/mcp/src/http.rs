@@ -13,6 +13,7 @@ use axum::{Json, Router};
 use backend_client::Session;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
@@ -68,8 +69,12 @@ impl BearerToken {
 
     fn generate() -> Result<Self, String> {
         let mut entropy = [0_u8; 32];
+        #[cfg(unix)]
         std::fs::File::open("/dev/urandom")
             .and_then(|mut source| source.read_exact(&mut entropy))
+            .map_err(|error| format!("could not generate {TOKEN_ENV}: {error}"))?;
+        #[cfg(windows)]
+        backend_platform::win32::random::fill(&mut entropy)
             .map_err(|error| format!("could not generate {TOKEN_ENV}: {error}"))?;
         Ok(Self(hex(&entropy).into()))
     }

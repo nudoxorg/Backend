@@ -59,7 +59,7 @@ impl LocalAddr {
         // bit pattern is a valid value.
         let unix = unsafe { storage.view_as::<SOCKADDR_UN>() };
         let available = length
-            .saturating_sub(size_of::<ADDRESS_FAMILY>())
+            .saturating_sub(std::mem::size_of::<ADDRESS_FAMILY>())
             .min(unix.sun_path.len());
         let bytes: Vec<u8> = unix.sun_path[..available]
             .iter()
