@@ -19,6 +19,7 @@
 //! ecosystem is a toggle, the version is optional, and the catalog resolves
 //! the rest. Collapsed, the panel becomes a rail rather than nothing.
 
+use super::actions::Accept;
 use super::keys;
 use super::workspace::Workspace;
 use crate::presentation::project::{self, Standing};
@@ -120,9 +121,14 @@ impl Workspace {
     ) -> AnyElement {
         let merged = self.jobs.read(cx).merge(self.engine.read(cx).shelf());
         let entries: Vec<ShelfEntry> = merged.entries().to_vec();
-        if width < PanelWidth::MIN_LIBRARY {
+        // The keyboard add flow is a modal surface in the shelf. Keep its
+        // field mounted even while narrow-window auto-collapse is animating
+        // the shelf to its rail; otherwise the second rapid AddProject opens
+        // semantic state without a dispatch node to receive the user's text.
+        if width < PanelWidth::MIN_LIBRARY && !self.adding {
             return self.library_rail(theme, width, &entries, cx);
         }
+        let width = width.max(PanelWidth::MIN_LIBRARY);
         let tree = self.document.read(cx).tree();
         let families = Family::all(&entries);
         let active = self.active_root(cx);
@@ -756,7 +762,22 @@ impl Workspace {
         self.catalog
             .update(cx, |catalog, cx| catalog.look_up(&text, cx));
         let handle = self.coordinate.read(cx).focus_handle(cx);
+        // The add field is backed by one long-lived CE InputState. A second
+        // add can therefore arrive while that handle still looks focused even
+        // though its element was removed for the completed first request.
+        // Explicitly hand focus back through the mounted workspace before
+        // requesting the new field; this makes remounts deterministic on both
+        // native and headless event loops.
+        window.blur();
         window.focus(&handle, cx);
+        self.coordinate
+            .update(cx, |field, cx| field.focus(window, cx));
+        // The add form is mounted by this state transition, so the handle is
+        // not necessarily present in the current dispatch tree when the
+        // shortcut arrives from an already-rendered shelf. Repeat the focus
+        // after GPUI has applied the transition; this keeps rapid keyboard
+        // add flows deterministic as well as pointer-driven ones.
+        window.defer(cx, move |window, cx| window.focus(&handle, cx));
         cx.notify();
     }
 
@@ -785,6 +806,20 @@ impl Workspace {
         let live = self.coordinate.read(cx).value().to_string();
         let hint = hint_for(&Ask::parse(&live));
         div()
+            .on_action(cx.listener(|this, _: &Accept, window, cx| {
+                this.submit_add_from_window(window, cx);
+            }))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key != "enter"
+                    || event.keystroke.modifiers.control
+                    || event.keystroke.modifiers.alt
+                    || event.keystroke.modifiers.platform
+                {
+                    return;
+                }
+                cx.stop_propagation();
+                this.submit_add_from_window(window, cx);
+            }))
             .flex()
             .flex_col()
             .gap(space(Space::Snug))

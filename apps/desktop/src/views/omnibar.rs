@@ -255,10 +255,16 @@ impl Workspace {
                     HeaderMenu::Language => unreachable!(),
                 }
             };
-            button::button(theme, menu.id(), &compact_label, button::Weight::Quiet)
-                .tip(Tip::new(label).detail("Open header details"))
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle_header_menu(menu, cx)))
-                .into_any_element()
+            button::button_labeled(
+                theme,
+                menu.id(),
+                &compact_label,
+                &label,
+                button::Weight::Quiet,
+            )
+            .tip(Tip::new(label).detail("Open header details"))
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_header_menu(menu, cx)))
+            .into_any_element()
         } else {
             button::button(theme, menu.id(), &label, button::Weight::Quiet)
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_header_menu(menu, cx)))

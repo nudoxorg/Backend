@@ -98,6 +98,9 @@ pub struct WorkspaceSemanticProbe {
     pub active_language: String,
     /// MCP connection verification state exposed by the setup journey.
     pub mcp_health: String,
+    /// Current inline-add value, exposed only so keyboard journeys can prove
+    /// that a second project is submitted from the real CE input.
+    pub add_coordinate: String,
     /// Motion preference read from the shell store.
     pub reduced_motion: bool,
     /// Stable focus identity used by keyboard and focus-trap assertions.
@@ -358,6 +361,39 @@ impl Workspace {
         if capture_time.is_some() {
             shell.update(cx, |shell, cx| shell.set_capture_mode(true, cx));
         }
+        let mut subscriptions = subscriptions;
+        subscriptions.push(cx.observe_keystrokes(
+            |workspace, event: &gpui::KeystrokeEvent, window, cx| {
+                // CE's text editor owns an `Enter` binding while the add
+                // field is focused, so the workspace action handler cannot
+                // see that keystroke on every platform. Observe the resolved
+                // event as a product-level fallback; if `Accept` already ran,
+                // `adding` is false and this is a no-op.
+                if workspace.adding
+                    && workspace.shell.read(cx).focus() == Focus::Add
+                    && !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                    && !event.keystroke.modifiers.platform
+                {
+                    let input = workspace.coordinate.read(cx).focus_handle(cx);
+                    if event.keystroke.key == "enter" {
+                        workspace.submit_add_from_window(window, cx);
+                    } else if !input.is_focused(window)
+                        && let Some(character) = event.keystroke.key_char.as_deref()
+                    {
+                        // A remounted CE input can miss the first native
+                        // text event while its dispatch node is being
+                        // registered. Preserve the user's keystroke at the
+                        // product boundary only when no input owns focus;
+                        // normal focused input dispatch remains untouched.
+                        workspace.coordinate.update(cx, |field, cx| {
+                            field.focus(window, cx);
+                            field.insert(character, window, cx);
+                        });
+                    }
+                }
+            },
+        ));
         Self {
             engine,
             search,
@@ -1094,6 +1130,7 @@ impl Workspace {
                     crate::theme::language::label(language).to_owned()
                 }),
             mcp_health: self.mcp_health(cx),
+            add_coordinate: self.coordinate.read(cx).value().to_string(),
             reduced_motion: shell.reduced_motion(),
             action_tree_route: action_tree.route().to_string(),
             action_tree_revision: action_tree.revision(),
@@ -2406,6 +2443,14 @@ impl Workspace {
     pub(super) fn submit_add_from_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.submit_add(cx);
         if !self.adding {
+            // `pending_coordinate` normally flushes at the next render. A
+            // second add shortcut can arrive before that paint, though, so
+            // clear the CE input synchronously while we still own the window
+            // handle. This keeps the next project independent of the one
+            // just admitted.
+            self.pending_coordinate = None;
+            self.coordinate
+                .update(cx, |field, cx| field.set_value(String::new(), window, cx));
             self.restore_focus(window, cx);
         }
     }

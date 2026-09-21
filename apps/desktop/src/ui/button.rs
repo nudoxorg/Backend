@@ -25,6 +25,26 @@ pub(crate) fn button(
     super::components::button(theme, id, label, weight)
 }
 
+/// Returns a button whose compact visual text keeps a complete accessible
+/// name for keyboard and assistive technology users.
+pub(crate) fn button_labeled(
+    theme: &Theme,
+    id: impl Into<SharedString>,
+    visual_label: &str,
+    accessible_label: &str,
+    weight: Weight,
+) -> gpui_component::button::Button {
+    super::components::button_with_state_and_accessible(
+        theme,
+        id,
+        visual_label,
+        accessible_label,
+        weight,
+        false,
+        true,
+    )
+}
+
 /// Returns a compact square button holding one icon.
 pub(crate) fn icon_button(
     theme: &Theme,

@@ -60,12 +60,30 @@ pub(crate) fn button_with_state(
     disabled: bool,
     visible: bool,
 ) -> Button {
+    let label = label.into();
+    button_with_state_and_accessible(theme, id, label.clone(), label, weight, disabled, visible)
+}
+
+/// Builds a text button with a compact visual label and a complete spoken
+/// name. Narrow chrome uses this to preserve discoverable controls after
+/// shortening their on-screen labels for the available width.
+pub(crate) fn button_with_state_and_accessible(
+    theme: &Theme,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    accessible_label: impl Into<SharedString>,
+    weight: Weight,
+    disabled: bool,
+    visible: bool,
+) -> Button {
     let id = id.into();
     let label = label.into();
+    let accessible_label = accessible_label.into();
     let (foreground, background, border) = paints(theme, weight);
     let id_element = ElementId::Name(id.clone());
     let button = Button::new(id_element)
         .label(label.clone())
+        .accessibility_label(accessible_label.clone())
         .rounded(ButtonRounded::Size(radius(Radius::Small)))
         .compact()
         .tab_index(0)
@@ -86,7 +104,7 @@ pub(crate) fn button_with_state(
         })
         .disabled(disabled);
     theme.register_action(
-        ActionMetadata::new(id.clone(), label.clone(), ActionRole::Button)
+        ActionMetadata::new(id.clone(), accessible_label, ActionRole::Button)
             .enabled(!disabled)
             .visible(visible),
     );

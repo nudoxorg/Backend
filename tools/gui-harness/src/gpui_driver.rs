@@ -428,6 +428,25 @@ fn apply_step(
         .update_window(window, |_, window, cx| input_hook(step, window, cx))
         .map_err(|error| CaptureError::Gpui(error.to_string()))?;
     context.run_until_parked();
+    // A real desktop presents a new frame after a state changing action
+    // before the next physical keystroke arrives. Headless journeys used to
+    // dispatch a whole same-timestamp burst against the previous dispatch
+    // tree, so a newly opened CE input could not receive the very next text
+    // event. Paint the product tree between actions as the platform does; this
+    // also makes focus transitions and semantic action snapshots observable
+    // instead of relying on a later screenshot to repair them.
+    context
+        .update_window(window, |_, window, cx| {
+            window.simulate_next_frame(cx);
+            let clear = window.draw(cx);
+            clear.clear(cx);
+        })
+        .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+    // Deferred focus work is scheduled against the next platform tick. Give
+    // that queue one deterministic tick before the next input event so a
+    // remounted CE field can actually own keyboard text.
+    context.advance_clock(std::time::Duration::from_millis(1));
+    context.run_until_parked();
     Ok(())
 }
 
@@ -448,6 +467,12 @@ fn dispatch_text(
                 window.dispatch_keystroke(keystroke, cx);
             })
             .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+        // Text input is delivered as a sequence of platform key events. Let
+        // CE's InputState consume each character before the next one arrives;
+        // otherwise a freshly-mounted field can lose the first character (or
+        // the entire burst) while its focus/selection transaction is still
+        // pending. This is the same event-loop boundary a native IME gives us.
+        context.run_until_parked();
     }
     Ok(())
 }

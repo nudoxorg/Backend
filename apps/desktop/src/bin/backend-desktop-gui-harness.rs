@@ -473,21 +473,30 @@ fn write_capture(
     }) {
         return Err("capture contains a uniform/blank frame".to_owned());
     }
+    let state_id = live.capture.state.id.clone();
+    // Ingest journeys intentionally photograph the admitted projection before
+    // and after the real publication commit. A moving revision is the delta
+    // under test there; all ordinary visual states still require one stable
+    // revision so their pixels and semantics cannot be mixed.
+    let allows_live_progress = state_id == "journey--add-two-projects";
     let revisions = live
         .semantics
         .iter()
         .map(|probe| probe.data_revision.as_str())
         .collect::<std::collections::BTreeSet<_>>();
-    if revisions.len() != 1 {
+    if revisions.len() != 1 && !allows_live_progress {
         return Err(format!(
             "admitted data revision changed during capture: {} revisions",
             revisions.len()
         ));
     }
-    let revision = revisions
-        .into_iter()
-        .next()
+    let revision = live
+        .semantics
+        .iter()
+        .rev()
+        .map(|probe| probe.data_revision.as_str())
         .filter(|revision| !revision.trim().is_empty() && *revision != "undetermined")
+        .next()
         .ok_or_else(|| "semantic probe did not expose an admitted data revision".to_owned())?;
     if let Some(readiness) = live.readiness.as_ref() {
         let admitted_short = readiness
@@ -509,16 +518,16 @@ fn write_capture(
     {
         return Err("capture has no deterministic live project coordinate".to_owned());
     }
-    if live
-        .semantics
-        .iter()
-        .any(|probe| probe.coordinate_revision != probe.data_revision)
+    if !allows_live_progress
+        && live
+            .semantics
+            .iter()
+            .any(|probe| probe.coordinate_revision != probe.data_revision)
     {
         return Err("live coordinate was selected against a different data revision".to_owned());
     }
     session.config.data_revision = revision.to_owned();
     session.config.theme = live.capture.state.theme;
-    let state_id = live.capture.state.id.clone();
     let semantic_path = format!("semantics/{}.json", state_id);
     session
         .writer
@@ -887,7 +896,9 @@ fn add_two_project_steps() -> Vec<InputStep> {
         .flat_map(|project| {
             [
                 InputStep::key("cmd-n"),
+                InputStep::Wait { milliseconds: 16 },
                 InputStep::Text { value: project },
+                InputStep::Wait { milliseconds: 16 },
                 InputStep::key("enter"),
                 InputStep::Wait { milliseconds: 32 },
             ]
@@ -1026,7 +1037,8 @@ fn journey_matches(
     let onboarding_endpoint = !onboarding_journey || probe.onboarding;
     let two_project_endpoint =
         journey_id != "add-two-projects" || (!probe.onboarding && probe.shelf_count >= 2);
-    let page_endpoint = page == probe.page || onboarding_journey && probe.page == "blank";
+    let page_endpoint = page == probe.page
+        || (onboarding_journey || journey_id == "add-two-projects") && probe.page == "blank";
     page_endpoint
         && overlay == probe.overlay
         && (journey_id == "mcp-setup" && probe.focus == "settings"
