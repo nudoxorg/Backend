@@ -38,6 +38,17 @@ let
       }
     else
       null;
+  # A bounded pool of Cargo 1.97 build directories shares intermediate
+  # artifacts without making parallel worktrees wait on one build lock.
+  # sccache also shares compiler results with overflow lanes.
+  parallelCargo = pkgs.writeShellApplication {
+    name = "cargo";
+    runtimeInputs = [ pkgs.coreutils pkgs.git pkgs.sccache ];
+    text = builtins.replaceStrings
+      [ "@cargo@" "@git@" "@sccache@" ]
+      [ "${toolchains.stable}/bin/cargo" "${pkgs.git}/bin/git" "${pkgs.sccache}/bin/sccache" ]
+      (builtins.readFile ../scripts/cargo-shared-cache.sh);
+  };
   # `luna-tools` is the cheap, pinned command closure used to enter a lane
   # and run Cargo checks. Keep it independent from the backend command
   # surface, GUI capture stack, corpus, and service binaries: those are
@@ -47,6 +58,7 @@ let
   lunaToolClosure = pkgs.buildEnv {
     name = "nudox-luna-tools";
     paths = [
+      (pkgs.lib.hiPrio parallelCargo)
       toolchains.stable
       pkgs.bash
       pkgs.coreutils
@@ -59,6 +71,7 @@ let
       pkgs.stdenv.cc
       pkgs.libiconv
       pkgs.zlib
+      pkgs.sccache
     ];
     pathsToLink = [
       "/bin"
@@ -537,6 +550,7 @@ in
     gpuiOutputHashes
     guiRuntime
     lunaTools
+    parallelCargo
     cargoDylint
     compilers
     dylintLink
@@ -548,11 +562,34 @@ in
     observabilityTools
     verifierTools
     ;
-  development = [ toolchains.stable ] ++ qualityTools ++ nativeCompilers ++ authorityHelpers;
-  compiler = [ toolchains.stable ] ++ qualityTools ++ nativeCompilers ++ authorityHelpers;
-  services = [ toolchains.stable ] ++ qualityTools ++ serviceTools;
-  observability = [ toolchains.stable ] ++ qualityTools ++ observabilityTools;
+  development = [
+    (pkgs.lib.hiPrio parallelCargo)
+    toolchains.stable
+  ]
+  ++ qualityTools
+  ++ nativeCompilers
+  ++ authorityHelpers;
+  compiler = [
+    (pkgs.lib.hiPrio parallelCargo)
+    toolchains.stable
+  ]
+  ++ qualityTools
+  ++ nativeCompilers
+  ++ authorityHelpers;
+  services = [
+    (pkgs.lib.hiPrio parallelCargo)
+    toolchains.stable
+  ]
+  ++ qualityTools
+  ++ serviceTools;
+  observability = [
+    (pkgs.lib.hiPrio parallelCargo)
+    toolchains.stable
+  ]
+  ++ qualityTools
+  ++ observabilityTools;
   verification = [
+    (pkgs.lib.hiPrio parallelCargo)
     toolchains.stable
     toolchains.nightly
   ]

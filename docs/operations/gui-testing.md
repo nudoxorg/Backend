@@ -11,10 +11,12 @@ Start a lane from its worktree with an explicit shell closure:
 nix shell path:.#gui-harness path:.#gui-tools --command backend gui validate
 ```
 
-The closure sets a repository-local `CARGO_TARGET_DIR` for each lane under
-`.local/gui-lanes/<lane>/target`. Keep `NUDOX_GUI_LANE` unique per worktree;
-this prevents Cargo locks and incremental artifacts from crossing long-running
-GUI slices. The harness exports fixed viewport, scale, locale, timezone, font,
+The closure keeps final artifacts lane-local and routes intermediate builds
+through the bounded warm-directory pool used by `luna-tools`. This avoids a
+single Cargo build lock while sharing dependency work; saturated lanes use
+their own overflow directory and still share `sccache`. Keep `NUDOX_GUI_LANE`
+unique per worktree so nextest, native outputs, and evidence never cross GUI
+slices. The harness exports fixed viewport, scale, locale, timezone, font,
 display, color profile, virtual clock, and reduced-motion inputs. It emits
 artifact manifests containing the revision, scenario hash, control-plane hash,
 image-byte hashes, frame timestamps, and driver transcript hashes.

@@ -49,7 +49,7 @@ in
       if not ($violations | is-empty) {
         error make {msg: ("luna-tools closure contains forbidden products: " + ($violations | str join ", "))}
       }
-      for command in ["cargo" "rustc" "rustfmt" "clippy-driver" "git" "jq" "nu"] {
+      for command in ["cargo" "rustc" "rustfmt" "clippy-driver" "git" "jq" "nu" "sccache"] {
         if (which $command | is-empty) {
           error make {msg: ("luna-tools is missing pinned command: " + $command)}
         }
