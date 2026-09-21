@@ -871,7 +871,6 @@ dependencies = [
  "blake3",
  "gpui-ce",
  "gpui_ce_components",
- "gpui_ce_elements",
  "gpui_ce_platform",
  "proptest",
  "serde",
@@ -3963,18 +3962,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "gpui_ce_elements"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae38938acdf71045384a69e14dc3488ecedf39b18409d48f73d054064c49c5fa"
-dependencies = [
- "gpui-ce",
- "palette",
- "smallvec",
- "unicode-segmentation",
 ]
 
 [[package]]

@@ -17,7 +17,9 @@ use gpui::{App, Global, Hsla, Pixels, SharedString};
 use palette::{Appearance, Contrast, Paint, Palette};
 use ramp::Hue;
 use std::rc::Rc;
-use tokens::{Density, InterfaceSize, Space, radius, space_at};
+use tokens::{
+    ControlState, Density, Elevation, InterfaceSize, Motion, Space, StateFrame, radius, space_at,
+};
 
 /// The lit palette and the reading preferences that scale it.
 #[derive(Clone, Debug)]
@@ -156,6 +158,26 @@ impl Theme {
     /// Returns whether motion is suppressed.
     pub(crate) const fn reduced_motion(&self) -> bool {
         self.reduced_motion
+    }
+
+    /// Returns the complete visual contract for one control state.
+    pub(crate) const fn state_frame(&self, state: ControlState) -> StateFrame {
+        StateFrame::for_state(state)
+    }
+
+    /// Returns the canonical elevation level for a surface.
+    pub(crate) const fn elevation(&self, level: Elevation) -> Elevation {
+        level
+    }
+
+    /// Returns a motion token, collapsing every animated transition when the
+    /// reader has opted into reduced motion.
+    pub(crate) const fn motion(&self, motion: Motion) -> Motion {
+        if self.reduced_motion {
+            Motion::Instant
+        } else {
+            motion
+        }
     }
 
     /// Returns the system UI face used by controls and navigation.

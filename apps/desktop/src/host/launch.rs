@@ -14,7 +14,7 @@ use crate::store::service::Endpoint;
 use crate::theme::Theme;
 use crate::transport::unix::UnixSubscriptionTransport;
 use crate::ui::icon::Assets;
-use crate::views::actions::{FIELD_CONTEXT, editing_bindings, window_bindings};
+use crate::views::actions::window_bindings;
 use crate::views::workspace::Workspace;
 use backend_library::{Cursor, ViewRoot};
 use gpui::{
@@ -131,7 +131,6 @@ fn install(cx: &mut App, preferences: Preferences) -> gpui::Result<()> {
     // semantic palette onto the unstyled component roots in `ui`.
     gpui_component::init(cx);
     crate::theme::fonts::install(cx)?;
-    cx.bind_keys(editing_bindings().as_keybindings(Some(FIELD_CONTEXT)));
     cx.bind_keys(window_bindings());
     let theme = Theme::new(
         preferences.appearance(),

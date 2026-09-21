@@ -499,12 +499,13 @@ impl Workspace {
                 let label = entry.item().label.clone();
                 let id = row.map(|row| row.id);
                 let enabled = row.is_some_and(|row| !row.loading);
-                let mut item = components::list_item(
+                let mut item = components::list_item_with_state(
                     &item_theme,
                     format!("tab-item-{at}"),
                     label.clone(),
                     enabled,
                     true,
+                    selected,
                 )
                 .selected(selected)
                 .child(

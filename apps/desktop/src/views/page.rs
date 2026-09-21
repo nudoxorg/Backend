@@ -41,6 +41,7 @@ use gpui::{
     px,
 };
 use std::sync::Arc;
+use gpui_component::button::{Button, ButtonRounded};
 
 /// How many members are drawn before a group offers to show the rest.
 const MEMBER_BUDGET: usize = 40;
@@ -1544,29 +1545,21 @@ fn relation_title(label: RelationLabel) -> String {
 }
 
 /// Returns the small specimen-face control that opens the source sheet.
-fn source_button(theme: &Theme) -> gpui::Stateful<Div> {
-    div()
-        .id("page-source")
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(3.0))
-        .px(space(Space::Snug))
-        .py(px(2.0))
-        .rounded(radius(Radius::Hair))
-        .border(hairline())
-        .border_color(theme.paint(Paint::Hairline))
+fn source_button(theme: &Theme) -> Button {
+    button::button(theme, "page-source", "src", button::Weight::Quiet)
+        .rounded(ButtonRounded::Size(radius(Radius::Hair)))
         .font_family(theme.specimen())
         .text_size(type_size(TypeScale::Micro))
-        .text_color(theme.paint(Paint::TextDim))
-        .cursor_pointer()
+        .px(space(Space::Snug))
+        .py(px(2.0))
+        .border(hairline())
+        .border_color(theme.paint(Paint::Hairline))
         .hover(|style| {
             style
                 .bg(theme.paint(Paint::Hover))
                 .text_color(theme.paint(Paint::TextStrong))
         })
         .child(icon::sized(theme, icon::Icon::Code, 11.0, Paint::TextDim))
-        .child("src")
 }
 
 fn preview_cell(theme: &Theme) -> Div {

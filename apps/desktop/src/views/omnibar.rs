@@ -222,7 +222,14 @@ impl Workspace {
             })
             .child(
                 div().flex_1().min_w(px(0.0)).child(
-                    components::search_input(theme, &self.field, "omnibar-field", placeholder)
+                    components::search_input_with_state(
+                        theme,
+                        &self.field,
+                        "omnibar-field",
+                        placeholder,
+                        self.field.read(cx).value(),
+                        self.field.read(cx).focus_handle(cx).is_focused(window),
+                    )
                         .appearance(false)
                         .bordered(false)
                         .text_size(type_size(TypeScale::Interface))
@@ -272,43 +279,9 @@ fn nav_button(
     enabled: bool,
     tip: Tip,
     listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
-) -> gpui::Stateful<Div> {
-    div()
-        .id(ElementId::Name(SharedString::new_static(id)))
-        .flex()
-        .flex_none()
-        .w(px(24.0))
-        .h(px(24.0))
-        .items_center()
-        .justify_center()
-        .rounded(radius(Radius::Small))
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .role(gpui::Role::Button)
-                .aria_label(match id {
-                    "nav-back" => "Back",
-                    "nav-forward" => "Forward",
-                    "nav-home" => "Home",
-                    _ => "Navigation",
-                })
-                .border(hairline())
-                .border_color(gpui::transparent_black())
-                .focusable()
-                .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
-                .hover(|style| style.bg(theme.paint(Paint::Hover)))
-                .on_click(listener)
-        })
-        .child(crate::ui::icon::sized(
-            theme,
-            mark,
-            14.0,
-            if enabled {
-                Paint::TextDim
-            } else {
-                Paint::TextFaint
-            },
-        ))
+) -> gpui_component::button::Button {
+    crate::ui::button::icon_button_state(theme, id, mark, !enabled)
+        .on_click(listener)
         .tip(tip)
 }
 

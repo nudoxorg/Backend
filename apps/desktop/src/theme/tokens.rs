@@ -6,7 +6,119 @@
 //! The spacing scale is a 4px grid at the default 16px root, the type scale is
 //! a modular ladder, and both are closed enums so no view can invent a value.
 
+use super::palette::Paint;
 use gpui::{Pixels, Rems, px, rems};
+
+/// The complete interaction-state vocabulary shared by controls and the
+/// semantic capture tree. A view cannot invent a seventh visual state and a
+/// disabled action cannot accidentally render as a normal one.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ControlState {
+    /// Resting, actionable control.
+    #[default]
+    Default,
+    /// Pointer or keyboard hover target.
+    Hover,
+    /// Pointer press or keyboard activation.
+    Pressed,
+    /// Keyboard focus ring owner.
+    Focus,
+    /// Present but unavailable.
+    Disabled,
+    /// Current selection in a list, tree, or toggle group.
+    Selected,
+    /// Action is executing and retains its geometry.
+    Loading,
+    /// Action has a recoverable or terminal error.
+    Error,
+}
+
+/// One fully specified visual state frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StateFrame {
+    /// The state this frame represents.
+    pub(crate) state: ControlState,
+    /// Surface role used by the component.
+    pub(crate) surface: Paint,
+    /// Text/icon role used by the component.
+    pub(crate) foreground: Paint,
+    /// Border/focus role used by the component.
+    pub(crate) border: Paint,
+    /// Opacity in hundredths, avoiding per-view floating-point literals.
+    pub(crate) opacity_hundredths: u8,
+    /// Motion regime used when entering this state.
+    pub(crate) motion: Motion,
+}
+
+impl StateFrame {
+    /// Returns the complete token frame for one interaction state.
+    pub(crate) const fn for_state(state: ControlState) -> Self {
+        match state {
+            ControlState::Default => Self::new(state, Paint::Panel, Paint::Text, Paint::Hairline, 100, Motion::Standard),
+            ControlState::Hover => Self::new(state, Paint::Hover, Paint::TextStrong, Paint::Focus, 100, Motion::Standard),
+            ControlState::Pressed => Self::new(state, Paint::Selected, Paint::TextStrong, Paint::GiltDim, 100, Motion::Instant),
+            ControlState::Focus => Self::new(state, Paint::GiltWash, Paint::TextStrong, Paint::Focus, 100, Motion::Standard),
+            ControlState::Disabled => Self::new(state, Paint::Sunken, Paint::TextFaint, Paint::Hairline, 52, Motion::Instant),
+            ControlState::Selected => Self::new(state, Paint::Selected, Paint::Gilt, Paint::GiltDim, 100, Motion::Standard),
+            ControlState::Loading => Self::new(state, Paint::Panel, Paint::TextDim, Paint::Caution, 82, Motion::Emphasis),
+            ControlState::Error => Self::new(state, Paint::Panel, Paint::Fault, Paint::Fault, 100, Motion::Emphasis),
+        }
+    }
+
+    const fn new(
+        state: ControlState,
+        surface: Paint,
+        foreground: Paint,
+        border: Paint,
+        opacity_hundredths: u8,
+        motion: Motion,
+    ) -> Self {
+        Self {
+            state,
+            surface,
+            foreground,
+            border,
+            opacity_hundredths,
+            motion,
+        }
+    }
+}
+
+/// A closed elevation vocabulary; shadows remain a theme decision rather than
+/// ad hoc blur values in individual views.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Elevation {
+    /// Content resting on its parent surface.
+    #[default]
+    Flat,
+    /// Cards and panels above the reading plane.
+    Raised,
+    /// Sheets, menus, and transient surfaces.
+    Floating,
+}
+
+/// Motion tokens shared by normal, reduced-motion, and capture rendering.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Motion {
+    /// No interpolation; used by reduced-motion and pressed transitions.
+    Instant,
+    /// The ordinary 160ms interface transition.
+    #[default]
+    Standard,
+    /// Emphasis motion for loading/error feedback.
+    Emphasis,
+}
+
+impl Motion {
+    /// Returns the canonical duration in milliseconds before reduced motion.
+    pub(crate) const fn duration_ms(self) -> u16 {
+        match self {
+            Self::Instant => 0,
+            Self::Standard => 160,
+            Self::Emphasis => 240,
+        }
+    }
+}
 
 /// The amount of space a control gives its label and pointer target.
 ///
@@ -272,7 +384,9 @@ impl Chrome {
 
 #[cfg(test)]
 mod tests {
-    use super::{Density, InterfaceSize, Space, space, space_at};
+    use super::{
+        ControlState, Density, InterfaceSize, Motion, Space, StateFrame, space, space_at,
+    };
 
     #[test]
     fn compact_density_preserves_the_reference_spacing_scale() {
@@ -294,5 +408,25 @@ mod tests {
     fn interface_size_clamps_before_it_reaches_geometry() {
         assert_eq!(InterfaceSize::percent(0).get(), InterfaceSize::MIN);
         assert_eq!(InterfaceSize::percent(u16::MAX).get(), InterfaceSize::MAX);
+    }
+
+    #[test]
+    fn every_control_state_has_an_explicit_complete_frame() {
+        let states = [
+            ControlState::Default,
+            ControlState::Hover,
+            ControlState::Pressed,
+            ControlState::Focus,
+            ControlState::Disabled,
+            ControlState::Selected,
+            ControlState::Loading,
+            ControlState::Error,
+        ];
+        for state in states {
+            let frame = StateFrame::for_state(state);
+            assert_eq!(frame.state, state);
+            assert!(frame.opacity_hundredths > 0);
+            assert!(frame.motion.duration_ms() <= Motion::Emphasis.duration_ms());
+        }
     }
 }

@@ -41,7 +41,6 @@ flate2 = "1.1.10"
 # Keep the entire CE family on one published GPUI type universe. Cargo.lock
 # records registry checksums for each of these exact versions.
 gpui = { package = "gpui-ce", version = "=0.2.2", default-features = false }
-gpui_elements = { package = "gpui_ce_elements", version = "=0.1.0" }
 gpui_platform = { package = "gpui_ce_platform", version = "=0.1.0", default-features = false }
 gpui_component = { package = "gpui_ce_components", version = "=0.2.0" }
 loom = "0.7.2"

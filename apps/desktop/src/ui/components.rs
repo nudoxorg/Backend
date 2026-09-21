@@ -108,6 +108,18 @@ pub(crate) fn icon_button(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
 ) -> Button {
+    icon_button_with_state(theme, id, label, false, true)
+}
+
+/// Builds an icon button while preserving the final CE disabled/visible
+/// semantics in the frame collector.
+pub(crate) fn icon_button_with_state(
+    theme: &Theme,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    disabled: bool,
+    visible: bool,
+) -> Button {
     let id = id.into();
     let label = label.into();
     let button = Button::new(ElementId::Name(id.clone()))
@@ -132,12 +144,13 @@ pub(crate) fn icon_button(
             style
                 .border_color(theme.paint(Paint::Focus))
                 .bg(theme.paint(Paint::GiltWash))
-        });
-    theme.register_action(ActionMetadata::new(
-        id.clone(),
-        label.clone(),
-        ActionRole::Button,
-    ));
+        })
+        .disabled(disabled);
+    theme.register_action(
+        ActionMetadata::new(id, label, ActionRole::Button)
+            .enabled(!disabled)
+            .visible(visible),
+    );
     button
 }
 
@@ -153,9 +166,26 @@ pub(crate) fn input(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
 ) -> Input {
+    input_with_state(theme, state, id, label, SharedString::default(), false)
+}
+
+/// Builds an input while projecting the CE state's current value and focus
+/// into the frame captured for accessibility and journey assertions.
+pub(crate) fn input_with_state(
+    theme: &Theme,
+    state: &Entity<InputState>,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    focused: bool,
+) -> Input {
     let id = id.into();
     let label = label.into();
-    theme.register_action(ActionMetadata::new(id, label.clone(), ActionRole::Input));
+    theme.register_action(
+        ActionMetadata::new(id, label.clone(), ActionRole::Input)
+            .focused(focused)
+            .with_value(value),
+    );
     input_element(theme, state, label)
 }
 
@@ -179,9 +209,26 @@ pub(crate) fn search_input(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
 ) -> Input {
+    search_input_with_state(theme, state, id, label, SharedString::default(), false)
+}
+
+/// Search variant of [`input_with_state`], preserving the current query in
+/// the semantic node while CE remains the owner of editing and focus.
+pub(crate) fn search_input_with_state(
+    theme: &Theme,
+    state: &Entity<InputState>,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    focused: bool,
+) -> Input {
     let id = id.into();
     let label = label.into();
-    theme.register_action(ActionMetadata::new(id, label.clone(), ActionRole::Search));
+    theme.register_action(
+        ActionMetadata::new(id, label.clone(), ActionRole::Search)
+            .focused(focused)
+            .with_value(value),
+    );
     input_element(theme, state, label).prefix(crate::ui::icon::sized(
         theme,
         crate::ui::icon::Icon::Search,
@@ -284,11 +331,24 @@ pub(crate) fn list_item(
     enabled: bool,
     visible: bool,
 ) -> ListItem {
+    list_item_with_state(theme, id, label, enabled, visible, false)
+}
+
+/// Builds a CE list item with selection included in the same semantic frame.
+pub(crate) fn list_item_with_state(
+    theme: &Theme,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    visible: bool,
+    selected: bool,
+) -> ListItem {
     let id = id.into();
     theme.register_action(
         ActionMetadata::new(id.clone(), label, ActionRole::TreeItem)
             .enabled(enabled)
-            .visible(visible),
+            .visible(visible)
+            .selected(selected),
     );
     ListItem::new(ElementId::Name(id))
 }
@@ -337,7 +397,39 @@ pub(crate) struct ActionMetadata {
     shortcut: Option<SharedString>,
     enabled: bool,
     visible: bool,
+    focused: bool,
+    selected: bool,
+    expanded: bool,
+    loading: bool,
+    error: Option<SharedString>,
+    value: Option<SharedString>,
+    bounds: SemanticBounds,
     focus_order: usize,
+}
+
+/// Stable, capture-friendly bounds attached to a rendered semantic node.
+///
+/// GPUI only resolves pixel bounds after layout. The adapter therefore keeps a
+/// small logical contract on the action itself and the capture harness can
+/// replace `Deferred` with the measured rectangle at the frame boundary. This
+/// makes a node complete in every frame without making render code borrow the
+/// mutable window while it is still constructing the tree.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum SemanticBounds {
+    /// Layout has not produced a rectangle for this node yet.
+    #[default]
+    Deferred,
+    /// A logical rectangle in the capture viewport's coordinate space.
+    Logical {
+        /// Horizontal origin.
+        x: u32,
+        /// Vertical origin.
+        y: u32,
+        /// Width.
+        width: u32,
+        /// Height.
+        height: u32,
+    },
 }
 
 impl ActionMetadata {
@@ -354,6 +446,13 @@ impl ActionMetadata {
             shortcut: None,
             enabled: true,
             visible: true,
+            focused: false,
+            selected: false,
+            expanded: false,
+            loading: false,
+            error: None,
+            value: None,
+            bounds: SemanticBounds::Deferred,
             focus_order: 0,
         }
     }
@@ -373,6 +472,49 @@ impl ActionMetadata {
     /// Marks an action absent from the current rendered tree.
     pub(crate) const fn visible(mut self, visible: bool) -> Self {
         self.visible = visible;
+        self
+    }
+
+    /// Records whether this node owns the concrete focus ring in the frame.
+    pub(crate) const fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// Records the CE selection state for list/tree items and toggles.
+    pub(crate) const fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    /// Records whether this disclosure or tree node is expanded.
+    pub(crate) const fn expanded(mut self, expanded: bool) -> Self {
+        self.expanded = expanded;
+        self
+    }
+
+    /// Records CE's loading state while retaining a stable semantic node.
+    pub(crate) const fn loading(mut self, loading: bool) -> Self {
+        self.loading = loading;
+        self
+    }
+
+    /// Records a typed error state without replacing the action's label.
+    pub(crate) fn error(mut self, error: impl Into<SharedString>) -> Self {
+        self.error = Some(error.into());
+        self
+    }
+
+    /// Records the value exposed by an input, combobox, or setting.
+    pub(crate) fn with_value(mut self, value: impl Into<SharedString>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    /// Replaces the deferred logical rectangle after a capture adapter has
+    /// measured the corresponding CE element.
+    pub(crate) const fn with_bounds(mut self, bounds: SemanticBounds) -> Self {
+        self.bounds = bounds;
         self
     }
 
@@ -398,6 +540,41 @@ impl ActionMetadata {
 
     pub(crate) const fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    /// Returns whether this action owns focus in the captured frame.
+    pub(crate) const fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Returns whether CE marked this node selected.
+    pub(crate) const fn is_selected(&self) -> bool {
+        self.selected
+    }
+
+    /// Returns whether this node is expanded.
+    pub(crate) const fn is_expanded(&self) -> bool {
+        self.expanded
+    }
+
+    /// Returns whether this node is loading.
+    pub(crate) const fn is_loading(&self) -> bool {
+        self.loading
+    }
+
+    /// Returns the semantic error, if one is currently exposed.
+    pub(crate) fn error_value(&self) -> Option<&SharedString> {
+        self.error.as_ref()
+    }
+
+    /// Returns the value exposed by the rendered control.
+    pub(crate) fn value(&self) -> Option<&SharedString> {
+        self.value.as_ref()
+    }
+
+    /// Returns the capture rectangle contract.
+    pub(crate) const fn bounds(&self) -> SemanticBounds {
+        self.bounds
     }
 
     pub(crate) const fn focus_order(&self) -> usize {
@@ -556,6 +733,11 @@ impl ActionTree {
     pub(crate) const fn revision(&self) -> u64 {
         self.revision
     }
+
+    /// Returns the per-window render generation represented by this tree.
+    pub(crate) const fn generation(&self) -> u64 {
+        self.revision
+    }
 }
 
 /// Registration boundary used while rendering component-backed controls.
@@ -596,7 +778,9 @@ fn paints(theme: &Theme, weight: Weight) -> (gpui::Hsla, gpui::Hsla, gpui::Hsla)
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionMetadata, ActionRole, ActionTree, Weight};
+    use super::{
+        ActionMetadata, ActionRole, ActionTree, SemanticBounds, Weight,
+    };
 
     #[test]
     fn action_tree_rejects_duplicate_or_empty_contracts_and_keeps_disabled_actions() {
@@ -654,7 +838,9 @@ mod tests {
         let search = frames.begin_id(21, "search");
         frames.register(
             search,
-            super::ActionMetadata::new("query", "Query", ActionRole::Input),
+            super::ActionMetadata::new("query", "Query", ActionRole::Input)
+                .focused(true)
+                .with_value("serde"),
         );
         frames.register(
             search,
@@ -677,6 +863,9 @@ mod tests {
         );
         assert_eq!(first.route().as_ref(), "search");
         assert_eq!(second.route().as_ref(), "other-window");
+        let query = first.iter().next().expect("input action");
+        assert!(query.is_focused());
+        assert_eq!(query.value().map(|value| value.as_ref()), Some("serde"));
     }
 
     #[test]
@@ -694,5 +883,89 @@ mod tests {
             super::ActionMetadata::new("current", "Current", ActionRole::Button),
         );
         assert_eq!(frames.snapshot_id(31).len(), 1);
+    }
+
+    #[test]
+    fn overlay_registration_is_ordered_and_generation_scoped() {
+        let frames = super::ActionFrames::default();
+        let first = frames.begin_id(41, "package");
+        frames.register(
+            first,
+            super::ActionMetadata::new("package-header", "Package", ActionRole::Navigation),
+        );
+        frames.register(
+            first,
+            super::ActionMetadata::new("source-overlay", "Source", ActionRole::Disclosure),
+        );
+        let visible = frames.snapshot_id(41);
+        assert_eq!(
+            visible
+                .iter()
+                .map(|action| action.id().as_ref())
+                .collect::<Vec<_>>(),
+            ["package-header", "source-overlay"]
+        );
+
+        let second = frames.begin_id(41, "package");
+        frames.register(
+            first,
+            super::ActionMetadata::new("late-overlay", "Late", ActionRole::Disclosure),
+        );
+        frames.register(
+            second,
+            super::ActionMetadata::new("package-header", "Package", ActionRole::Navigation),
+        );
+        assert_eq!(
+            frames
+                .snapshot_id(41)
+                .iter()
+                .map(|action| action.id().as_ref())
+                .collect::<Vec<_>>(),
+            ["package-header"]
+        );
+    }
+
+    #[test]
+    fn semantic_nodes_retain_every_rendered_component_state() {
+        let mut tree = ActionTree::default();
+        let mut registration = tree.registrar();
+        assert!(registration.record(
+            ActionMetadata::new("package", "serde", ActionRole::TreeItem)
+                .enabled(true)
+                .visible(true)
+                .focused(true)
+                .selected(true)
+                .expanded(true)
+                .loading(true)
+                .error("index unavailable")
+                .with_value("serde 1.0.0")
+                .with_bounds(SemanticBounds::Logical {
+                    x: 8,
+                    y: 16,
+                    width: 320,
+                    height: 36,
+                }),
+        ));
+        let node = tree.iter().next().expect("semantic node");
+        assert!(node.is_enabled());
+        assert!(node.is_visible());
+        assert!(node.is_focused());
+        assert!(node.is_selected());
+        assert!(node.is_expanded());
+        assert!(node.is_loading());
+        assert_eq!(
+            node.error_value().map(|value| value.as_ref()),
+            Some("index unavailable")
+        );
+        assert_eq!(node.value().map(|value| value.as_ref()), Some("serde 1.0.0"));
+        assert_eq!(
+            node.bounds(),
+            SemanticBounds::Logical {
+                x: 8,
+                y: 16,
+                width: 320,
+                height: 36,
+            }
+        );
     }
 }

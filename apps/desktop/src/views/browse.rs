@@ -42,6 +42,8 @@ use gpui::{
     Styled, Window, div, px,
 };
 use gpui_component::input::InputState;
+use gpui_component::button::{Button, ButtonRounded};
+use gpui_component::{FocusableExt as _, Selectable as _};
 
 /// Every ecosystem the engine's closed registry namespace admits.
 const ECOSYSTEMS: [RegistryEcosystem; 7] = [
@@ -187,7 +189,7 @@ impl Workspace {
     ) -> AnyElement {
         let chosen = ecosystem == current;
         let label = ecosystem.map_or("all", RegistryEcosystem::as_str);
-        toggle(theme, format!("browse-scope-{label}"), chosen)
+        toggle(theme, format!("browse-scope-{label}"), label, chosen)
             .when_some(ecosystem, |chip, ecosystem| {
                 chip.children(ecosystem_logo(theme, ecosystem, 12.0))
             })
@@ -210,6 +212,7 @@ impl Workspace {
                 toggle(
                     theme,
                     format!("browse-order-{}", order.label()),
+                    order.label(),
                     order == current,
                 )
                 .child(order.label())
@@ -315,16 +318,28 @@ impl Workspace {
 }
 
 /// Returns one chip-shaped toggle in its chosen or unchosen state.
-fn toggle(theme: &Theme, id: impl Into<SharedString>, chosen: bool) -> gpui::Stateful<Div> {
-    div()
-        .id(ElementId::Name(id.into()))
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(space(Space::Tight))
-        .px(space(Space::Snug))
-        .py(px(3.0))
-        .rounded(radius(Radius::Capsule))
+fn toggle(
+    theme: &Theme,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    chosen: bool,
+) -> Button {
+    let id = id.into();
+    let label = label.into();
+    theme.register_action(
+        crate::ui::components::ActionMetadata::new(
+            id.clone(),
+            label.clone(),
+            crate::ui::components::ActionRole::Button,
+        )
+        .selected(chosen),
+    );
+    Button::new(ElementId::Name(id))
+        .selected(chosen)
+        .compact()
+        .tab_index(0)
+        .focus_ring(true)
+        .rounded(ButtonRounded::Size(radius(Radius::Capsule)))
         .border(hairline())
         .border_color(theme.paint(if chosen {
             Paint::GiltDim
@@ -334,7 +349,6 @@ fn toggle(theme: &Theme, id: impl Into<SharedString>, chosen: bool) -> gpui::Sta
         .when(chosen, |chip| chip.bg(theme.paint(Paint::GiltWash)))
         .text_size(type_size(TypeScale::Tiny))
         .text_color(theme.paint(if chosen { Paint::Gilt } else { Paint::TextDim }))
-        .cursor_pointer()
         .hover(|style| style.bg(theme.paint(Paint::Hover)))
 }
 

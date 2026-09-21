@@ -35,6 +35,33 @@ pub(crate) fn icon_button(
         .child(super::icon::sized(theme, mark, 13.0, Paint::TextDim))
 }
 
+/// Returns a CE icon button with the disabled state projected into both the
+/// component and the rendered semantic frame.
+pub(crate) fn icon_button_state(
+    theme: &Theme,
+    id: impl Into<SharedString>,
+    mark: super::icon::Icon,
+    disabled: bool,
+) -> gpui_component::button::Button {
+    super::components::icon_button_with_state(
+        theme,
+        id,
+        icon_accessibility_label(mark),
+        disabled,
+        true,
+    )
+    .child(super::icon::sized(
+        theme,
+        mark,
+        13.0,
+        if disabled {
+            Paint::TextFaint
+        } else {
+            Paint::TextDim
+        },
+    ))
+}
+
 fn icon_accessibility_label(icon: super::icon::Icon) -> &'static str {
     match icon {
         super::icon::Icon::Search => "Search",

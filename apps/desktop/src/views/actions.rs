@@ -6,22 +6,15 @@
 //! hint a view draws are one value: `⌘K` on a Mac is `Ctrl+K` on Windows in
 //! both places or in neither.
 //!
-//! The editable-text element ships a default binding set that claims Enter,
-//! Tab, Escape, and the arrow keys. Those four are exactly the keys an omnibar
-//! needs, so this module declines the default set and rebuilds it without
-//! them: editing keys stay under the `EditableText` context, while navigation
-//! and command keys belong to the window. The result is that typing into the
-//! omnibar and driving it from the keyboard are the same activity.
+//! GPUI CE's `InputState` owns the editing context and its complete binding
+//! set. This module owns only Nudox window actions; keeping editing inside the
+//! CE component avoids a second, subtly divergent text-input implementation.
 
 use super::keys::{self, Chord};
-use gpui::{ActionBindingCollection, KeyBinding, actions};
-use gpui_elements::editable_text::actions as editing;
+use gpui::{KeyBinding, actions};
 
 /// The key context the root of this window advertises.
 pub(crate) const WINDOW_CONTEXT: &str = "Nudox";
-
-/// The key context the editable text element advertises.
-pub(crate) const FIELD_CONTEXT: &str = gpui_elements::editable_text::actions::DEFAULT_INPUT_CONTEXT;
 
 actions!(
     nudox,
@@ -182,56 +175,6 @@ fn navigation_bindings() -> Vec<KeyBinding> {
         bind(keys::tab_chord(8), Tab8, None),
         bind(keys::tab_chord(9), Tab9, None),
     ]
-}
-
-/// Returns the editing bindings, minus the five keys the omnibar needs.
-///
-/// The element's own `default_bindings` is deliberately not used: it claims
-/// `enter`, `tab`, `escape`, `up`, and `down`, which are the keys that drive a
-/// result list. Everything else about text editing is kept exactly as the
-/// element expects it.
-pub(crate) fn editing_bindings() -> ActionBindingCollection {
-    let bindings = ActionBindingCollection::default()
-        .with::<editing::DeleteLeft>("backspace")
-        .with::<editing::DeleteRight>("delete")
-        .with::<editing::NavLeft>("left")
-        .with::<editing::NavRight>("right")
-        .with::<editing::SelectLeft>("shift-left")
-        .with::<editing::SelectRight>("shift-right")
-        .with::<editing::SelectAll>(&Chord::primary("a").binding())
-        .with::<editing::Copy>(&Chord::primary("c").binding())
-        .with::<editing::Cut>(&Chord::primary("x").binding())
-        .with::<editing::Paste>(&Chord::primary("v").binding())
-        .with::<editing::Undo>(&Chord::primary("z").binding())
-        .with::<editing::Redo>(&Chord::primary("z").shift().binding());
-    platform_editing(bindings)
-}
-
-#[cfg(target_os = "macos")]
-fn platform_editing(bindings: ActionBindingCollection) -> ActionBindingCollection {
-    bindings
-        .with::<editing::DeleteWordLeft>("alt-backspace")
-        .with::<editing::DeleteWordRight>("alt-delete")
-        .with::<editing::DeleteToLineStart>("cmd-backspace")
-        .with::<editing::NavLineStart>("cmd-left")
-        .with::<editing::NavLineEnd>("cmd-right")
-        .with::<editing::NavWordLeft>("alt-left")
-        .with::<editing::NavWordRight>("alt-right")
-        .with::<editing::SelectWordLeft>("alt-shift-left")
-        .with::<editing::SelectWordRight>("alt-shift-right")
-}
-
-#[cfg(not(target_os = "macos"))]
-fn platform_editing(bindings: ActionBindingCollection) -> ActionBindingCollection {
-    bindings
-        .with::<editing::DeleteWordLeft>("ctrl-backspace")
-        .with::<editing::DeleteWordRight>("ctrl-delete")
-        .with::<editing::NavLineStart>("home")
-        .with::<editing::NavLineEnd>("end")
-        .with::<editing::NavWordLeft>("ctrl-left")
-        .with::<editing::NavWordRight>("ctrl-right")
-        .with::<editing::SelectWordLeft>("ctrl-shift-left")
-        .with::<editing::SelectWordRight>("ctrl-shift-right")
 }
 
 /// Returns the tab index one of the nine tab actions selects.
