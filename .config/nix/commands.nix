@@ -14,7 +14,6 @@
   workspaceRoot,
 }:
 let
-  backendControlRuntime = pkgs.lib.optional (tools.backendControl != null) tools.backendControl;
   sourceParts = [
     ../nu/core/failure.nu
     ../nu/core/control.nu
@@ -48,12 +47,7 @@ let
     pkgs.nuenv.writeShellApplication {
       name = "backend";
       text = source;
-      runtimeInputs =
-        tools.qualityTools
-        ++ tools.serviceTools
-        ++ gui.allPackages
-        ++ backendControlRuntime
-        ++ runtimeInputs;
+      runtimeInputs = tools.qualityTools ++ tools.serviceTools ++ gui.allPackages ++ runtimeInputs;
       runtimeEnv = {
         CARGO_TARGET_DIR = ".local/target";
         BACKEND_CONFIG_SNAPSHOT = toString ../.;
@@ -67,8 +61,12 @@ let
         BACKEND_COMMAND_CATALOG_DIGEST = builtins.hashString "sha256" source;
         BACKEND_STABLE_CARGO = toolchains.stableCargo;
         BACKEND_CONTROL_SOURCE = toString workspaceRoot;
-        BACKEND_CONTROL_BIN =
-          if tools.backendControl == null then "" else "${tools.backendControl}/bin/backend-control";
+        # The control binary remains available as the dedicated
+        # `.#backend-control` package. Keeping it out of this general shell
+        # prevents each Cargo.lock edit from vendoring and rebuilding the
+        # workspace before ordinary checks can begin; cutover commands retain
+        # their explicit pinned `cargo run` fallback.
+        BACKEND_CONTROL_BIN = "";
         BACKEND_DYLINT_TOOLCHAIN = toolchains.dylintToolchain;
         BACKEND_RUSTFMT = toolchains.rustfmt;
         BACKEND_GUI_CONFIG = "${gui.configFile}/share/nudox/gui-control-plane.json";
