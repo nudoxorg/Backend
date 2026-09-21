@@ -83,10 +83,9 @@ fn acquisition_service_coalesces_concurrent_registry_effects() {
         )
         .expect("open service"),
     );
-    let request = crate::acquisition::AcquisitionRequest::new(
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
         service.source_id(),
         package.coordinate.to_string(),
-        crate::acquisition::RawArchiveObjectId::from_bytes(&[]),
         1,
         0,
     )
@@ -200,10 +199,9 @@ fn acquisition_service_keeps_negative_facts_distinct_from_unavailable_and_circui
         root.join("service-coordination"),
     )
     .expect("open service");
-    let request = crate::acquisition::AcquisitionRequest::new(
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
         service.source_id(),
         coordinate.to_string(),
-        crate::acquisition::RawArchiveObjectId::from_bytes(&[]),
         1,
         0,
     )
@@ -240,10 +238,9 @@ fn acquisition_service_keeps_negative_facts_distinct_from_unavailable_and_circui
         circuit_root.join("service-coordination"),
     )
     .expect("open circuit service");
-    let request = crate::acquisition::AcquisitionRequest::new(
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
         circuit.source_id(),
         coordinate.to_string(),
-        crate::acquisition::RawArchiveObjectId::from_bytes(&[]),
         1,
         0,
     )
@@ -676,9 +673,7 @@ fn advisory_gate_denies_unknown_version_before_archive_staging() {
                         yanked: false,
                         unlisted: false,
                     }),
-                    archive_url: std::sync::Arc::from(
-                        "https://registry.example.test/demo.crate",
-                    ),
+                    archive_url: std::sync::Arc::from("https://registry.example.test/demo.crate"),
                 }],
             }))
         }
@@ -697,8 +692,8 @@ fn advisory_gate_denies_unknown_version_before_archive_staging() {
     let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
         .expect("endpoint");
     let root = temporary("advisory-gate");
-    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
-        .expect("owner");
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()).expect("owner");
     let mut owner = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
         offline: backend_advisory::OfflinePolicy::FailClosed,
     });
@@ -766,7 +761,8 @@ fn policy_delta_reuses_the_exact_archive_without_a_second_download() {
         .expect("endpoint");
     let root = temporary("policy-delta-reuse");
     let (mut owner, _) =
-        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()).expect("owner");
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("owner");
     let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
     let mut transport = PolicyDelta {
         archive: b"one immutable archive".to_vec(),
@@ -774,12 +770,273 @@ fn policy_delta_reuses_the_exact_archive_without_a_second_download() {
         archive_fetches: 0,
     };
     let _ = owner.poll(&mut transport).expect("initial release");
+    let first_epoch = owner.policy_epoch();
+    assert_ne!(first_epoch, 0);
     let first = owner.published(&coordinate).expect("published").artifact;
     let _ = owner.poll(&mut transport).expect("yank delta");
+    let second_epoch = owner.policy_epoch();
+    assert_ne!(second_epoch, first_epoch);
     let current = owner.published(&coordinate).expect("updated");
     assert_eq!(transport.archive_fetches, 1);
     assert_eq!(current.artifact, first);
     assert_eq!(current.facts.standing(), ReleaseStanding::Yanked);
+    drop(owner);
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("restart owner");
+    assert_eq!(owner.policy_epoch(), second_epoch);
+    let fail_closed = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
+        offline: backend_advisory::OfflinePolicy::FailClosed,
+    });
+    assert_ne!(fail_closed.policy_epoch(), second_epoch);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
+    struct MutableFacts {
+        archive: Vec<u8>,
+        page: u8,
+        pages: usize,
+        archives: usize,
+    }
+
+    impl RegistryTransport for MutableFacts {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            self.pages += 1;
+            self.page = self.page.saturating_add(1);
+            let coordinate = PackageCoordinate::parse("pkg:cargo/demo@2.0.0").expect("coordinate");
+            let standing = if self.page == 1 {
+                ReleaseStanding::Available
+            } else {
+                ReleaseStanding::Yanked
+            };
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [self.page; 32],
+                packages: vec![RemotePackage {
+                    coordinate,
+                    integrity: transport::ArchiveIntegrity::Canonical(
+                        *CapabilityArtifactId::from_value(&self.archive).as_bytes(),
+                    ),
+                    provenance: ProvenanceDigest::from_authenticated_feed([self.page; 32]),
+                    facts: ReleaseFacts::new(
+                        standing,
+                        DownloadCount::NotReported(DownloadCountGap::Unsupported),
+                        SecurityStanding::Unassessed,
+                    ),
+                    advisory: None,
+                    archive_url: Arc::from("https://registry.example.test/demo.crate"),
+                }],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            self.archives += 1;
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                self.archive.clone(),
+            )))
+        }
+    }
+
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("service-fact-refresh");
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()).expect("owner");
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("service");
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        "pkg:cargo/demo@2.0.0",
+        1,
+        0,
+    )
+    .expect("request");
+    let mut transport = MutableFacts {
+        archive: b"one archive, two fact frontiers".to_vec(),
+        page: 0,
+        pages: 0,
+        archives: 0,
+    };
+    let first = service.acquire(&request, &mut transport);
+    let crate::acquisition::AcquisitionOutcome::Hit(first) = first else {
+        panic!("initial acquisition must publish")
+    };
+    let epoch = first.receipt.policy_epoch;
+    assert_ne!(epoch, 0);
+    let wrong_hash = crate::acquisition::AcquisitionRequest::new(
+        service.source_id(),
+        "pkg:cargo/demo@2.0.0",
+        crate::acquisition::RawArchiveObjectId::from_bytes(b"wrong archive"),
+        1,
+        0,
+    )
+    .expect("wrong-hash request");
+    assert!(matches!(
+        service.ensure(&wrong_hash),
+        crate::acquisition::AcquisitionOutcome::Corrupt(
+            crate::acquisition::CorruptReason::Integrity
+        )
+    ));
+    let second = service.acquire(&request, &mut transport);
+    assert!(matches!(
+        second,
+        crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
+            kind: crate::acquisition::NegativeFactKind::Yanked,
+            ..
+        })
+    ));
+    assert_ne!(service.policy_epoch(), epoch);
+    assert_eq!(transport.pages, 2);
+    assert_eq!(transport.archives, 1);
+    drop(service);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn acquisition_service_preserves_offline_and_rejects_wrong_owner_requests() {
+    struct NeverTransport;
+    impl RegistryTransport for NeverTransport {
+        fn fetch_page(
+            &mut self,
+            _: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            panic!("offline or malformed requests must not reach transport")
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            panic!("offline or malformed requests must not reach transport")
+        }
+    }
+
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("service-offline-contract");
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Offline, limits()).expect("owner");
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("service");
+    let mut transport = NeverTransport;
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        "pkg:cargo/offline@1.0.0",
+        1,
+        0,
+    )
+    .expect("request");
+    assert!(matches!(
+        service.acquire(&request, &mut transport),
+        crate::acquisition::AcquisitionOutcome::Offline(_)
+    ));
+    let mut wrong_source = request.clone();
+    wrong_source.source = [8; 32];
+    assert!(matches!(
+        service.acquire(&wrong_source, &mut transport),
+        crate::acquisition::AcquisitionOutcome::Rejected(
+            crate::acquisition::RejectReason::Protocol
+        )
+    ));
+    let mut wrong_schema = request;
+    wrong_schema.schema = 99;
+    assert!(matches!(
+        service.acquire(&wrong_schema, &mut transport),
+        crate::acquisition::AcquisitionOutcome::Rejected(
+            crate::acquisition::RejectReason::Protocol
+        )
+    ));
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn cached_advisory_warning_is_rechecked_after_fail_closed_restart() {
+    struct AdvisorySource;
+    impl RegistryTransport for AdvisorySource {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            let archive = b"advisory-cached";
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [44; 32],
+                packages: vec![RemotePackage {
+                    coordinate: PackageCoordinate::parse("pkg:cargo/advisory@1.0.0")
+                        .expect("coordinate"),
+                    integrity: transport::ArchiveIntegrity::Canonical(
+                        *CapabilityArtifactId::from_value(archive).as_bytes(),
+                    ),
+                    provenance: ProvenanceDigest::from_authenticated_feed([44; 32]),
+                    facts: ReleaseFacts::default(),
+                    advisory: Some(backend_advisory::AdvisoryObservation {
+                        advisories: Box::new([]),
+                        coverage: backend_advisory::AdvisoryCoverage::Unknown,
+                        freshness: backend_advisory::FreshnessState::Unknown,
+                        offline: true,
+                        yanked: false,
+                        unlisted: false,
+                    }),
+                    archive_url: Arc::from("https://registry.example.test/advisory.crate"),
+                }],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                b"advisory-cached".to_vec(),
+            )))
+        }
+    }
+
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("cached-advisory-recheck");
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("owner");
+    let mut owner = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
+        offline: backend_advisory::OfflinePolicy::Warn,
+    });
+    owner
+        .poll(&mut AdvisorySource)
+        .expect("warn policy admits cache");
+    drop(owner);
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("restart owner");
+    let owner = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
+        offline: backend_advisory::OfflinePolicy::FailClosed,
+    });
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("service");
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        "pkg:cargo/advisory@1.0.0",
+        1,
+        0,
+    )
+    .expect("request");
+    assert!(matches!(
+        service.ensure(&request),
+        crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
+            kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
+            ..
+        })
+    ));
     fs::remove_dir_all(root).expect("cleanup");
 }
 

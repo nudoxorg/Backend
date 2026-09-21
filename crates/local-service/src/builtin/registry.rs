@@ -8,7 +8,7 @@
 use crate::process::RegistryConfig;
 use backend_engine::acquisition::{
     AcquisitionOutcome as TypedAcquisitionOutcome, AcquisitionRequest, AcquisitionService,
-    CorruptReason, RawArchiveObjectId, RejectReason,
+    CorruptReason, RejectReason,
 };
 use backend_engine::registry::{
     AcquisitionError, EcosystemAdapter, HttpRegistryTransport, PackageCoordinate,
@@ -199,24 +199,19 @@ impl RegistryGateway {
         if self.config.endpoint.is_none() {
             return Err(RegistryAddError::NotConfigured);
         }
-        if self.service.contains(coordinate) {
-            return self.ensure(coordinate);
-        }
         let mut transport = self.transport(coordinate)?;
-        let request = AcquisitionRequest::new(
+        let request = AcquisitionRequest::for_coordinate(
             self.service.source_id(),
             coordinate.to_string(),
-            RawArchiveObjectId::from_bytes(&[]),
             1,
             0,
         )
         .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?;
-        self.finish_acquisition(coordinate, self.service.acquire(&request, &mut transport))
+        self.finish_acquisition(self.service.acquire(&request, &mut transport))
     }
 
     fn finish_acquisition(
         &mut self,
-        coordinate: &PackageCoordinate,
         outcome: TypedAcquisitionOutcome<
             Arc<backend_engine::acquisition::RegistryAcquisitionResult>,
         >,
@@ -256,6 +251,7 @@ impl RegistryGateway {
                 Duration::from_millis(open.until_millis.saturating_sub(current_millis())),
             )),
             TypedAcquisitionOutcome::Unavailable(_) => Err(RegistryAddError::Unavailable),
+            TypedAcquisitionOutcome::Offline(_) => Err(RegistryAddError::Offline),
             TypedAcquisitionOutcome::Rejected(reason) => {
                 let error = match reason {
                     RejectReason::Bounds => AcquisitionError::Bounds,
@@ -296,42 +292,6 @@ impl RegistryGateway {
         archive: &[u8],
     ) -> Result<StagedProject, RegistryAddError> {
         stage_archive(coordinate, archive, &self.workspace_root)
-    }
-
-    fn ensure(&mut self, coordinate: &PackageCoordinate) -> Result<Vec<u8>, RegistryAddError> {
-        let published = self
-            .service
-            .published_packages()
-            .into_iter()
-            .find(|package| package.coordinate == *coordinate)
-            .ok_or(RegistryAddError::NotFound)?;
-        if matches!(
-            published.facts.standing(),
-            backend_engine::registry::ReleaseStanding::Yanked
-                | backend_engine::registry::ReleaseStanding::Retracted
-                | backend_engine::registry::ReleaseStanding::Removed
-        ) {
-            return Err(RegistryAddError::ReleasePolicy(published.facts.standing()));
-        }
-        if let backend_engine::registry::SecurityStanding::Affected {
-            advisories,
-            maximum_severity,
-        } = published.facts.security()
-        {
-            return Err(RegistryAddError::SecurityPolicy {
-                advisories,
-                maximum_severity,
-            });
-        }
-        let request = AcquisitionRequest::new(
-            self.service.source_id(),
-            coordinate.to_string(),
-            RawArchiveObjectId::from_bytes(&[]),
-            1,
-            0,
-        )
-        .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?;
-        self.finish_acquisition(coordinate, self.service.ensure(&request))
     }
 
     fn transport(

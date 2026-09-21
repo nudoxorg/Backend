@@ -9,7 +9,8 @@
 use crate::registry::{
     AcquisitionError, AcquisitionError as RegistryAcquisitionError,
     AcquisitionOutcome as RegistryOutcome,
-    PackageCoordinate, RegistryOwner, RegistryTransport, TransportFailure,
+    CanonicalFeedV1, FeedSchema, PackageCoordinate, RegistryOwner, RegistryTransport,
+    TransportFailure,
     admit_registry_coordinate,
 };
 use backend_execution::{
@@ -123,6 +124,8 @@ pub struct ReleaseClaim {
     pub version: Arc<str>,
     /// Claimed archive identity.
     pub archive: RawArchiveObjectId,
+    /// Mutable release-fact identity at which this claim was observed.
+    pub facts: [u8; ID_BYTES],
     /// Stable claim identity.
     pub id: ReleaseClaimId,
 }
@@ -135,6 +138,17 @@ impl ReleaseClaim {
         version: impl Into<String>,
         archive: RawArchiveObjectId,
     ) -> Result<Self, IdentityError> {
+        Self::new_with_facts(source, coordinate, version, archive, [0; ID_BYTES])
+    }
+
+    /// Admits a claim and binds its mutable release-fact frontier.
+    pub fn new_with_facts(
+        source: [u8; ID_BYTES],
+        coordinate: impl Into<String>,
+        version: impl Into<String>,
+        archive: RawArchiveObjectId,
+        facts: [u8; ID_BYTES],
+    ) -> Result<Self, IdentityError> {
         let coordinate = canonical_text(coordinate.into())?;
         let version = canonical_text(version.into())?;
         let coordinate: Arc<str> = Arc::from(coordinate);
@@ -144,12 +158,14 @@ impl ReleaseClaim {
             coordinate.as_bytes(),
             version.as_bytes(),
             archive.as_bytes(),
+            &facts,
         ]);
         Ok(Self {
             source,
             coordinate,
             version,
             archive,
+            facts,
             id,
         })
     }
@@ -762,6 +778,8 @@ pub enum AcquisitionOutcome<T> {
     CircuitOpen(CircuitOpen),
     /// The source could not be reached or completed within bounds.
     Unavailable(Unavailable),
+    /// The configured source is deliberately offline.
+    Offline(Offline),
     /// Policy or protocol rejected the request.
     Rejected(RejectReason),
     /// Persisted state or content failed integrity checks.
@@ -805,6 +823,13 @@ pub struct CircuitOpen {
 /// Unavailability observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Unavailable {
+    /// Stable source identity.
+    pub source: [u8; ID_BYTES],
+}
+
+/// Typed offline observation for one source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Offline {
     /// Stable source identity.
     pub source: [u8; ID_BYTES],
 }
@@ -1754,6 +1779,35 @@ impl RootPublisher {
     }
 }
 
+/// Explicit freshness frontier for mutable registry facts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FactFreshness {
+    /// Maximum age of an observed row. Zero revalidates every demand.
+    pub max_age_millis: u64,
+}
+
+impl FactFreshness {
+    /// Revalidates facts on every demand.
+    #[must_use]
+    pub const fn always() -> Self {
+        Self { max_age_millis: 0 }
+    }
+
+    /// Allows reuse for a bounded interval.
+    #[must_use]
+    pub const fn max_age_millis(max_age_millis: u64) -> Self {
+        Self { max_age_millis }
+    }
+
+    fn due(self, observed_at_millis: Option<u64>, now_millis: u64) -> bool {
+        let Some(observed) = observed_at_millis else {
+            return true;
+        };
+        self.max_age_millis == 0
+            || now_millis.saturating_sub(observed) >= self.max_age_millis
+    }
+}
+
 /// Exact key for one acquisition effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcquisitionRequest {
@@ -1761,12 +1815,14 @@ pub struct AcquisitionRequest {
     pub source: [u8; ID_BYTES],
     /// Canonical package coordinate.
     pub coordinate: Arc<str>,
-    /// Expected archive identity.
-    pub artifact: RawArchiveObjectId,
+    /// Optional expected archive identity. When present it is an assertion.
+    pub artifact: Option<RawArchiveObjectId>,
     /// Adapter protocol schema version.
     pub schema: u16,
     /// Policy epoch bound to this request.
     pub policy_epoch: u64,
+    /// Explicit freshness frontier for mutable registry facts.
+    pub facts: FactFreshness,
 }
 
 impl AcquisitionRequest {
@@ -1781,21 +1837,67 @@ impl AcquisitionRequest {
         Ok(Self {
             source,
             coordinate: Arc::from(canonical_text(coordinate.into())?),
-            artifact,
+            artifact: Some(artifact),
             schema,
             policy_epoch,
+            facts: FactFreshness::always(),
         })
+    }
+
+    /// Admits a coordinate lookup whose archive identity is not known yet.
+    pub fn for_coordinate(
+        source: [u8; ID_BYTES],
+        coordinate: impl Into<String>,
+        schema: u16,
+        policy_epoch: u64,
+    ) -> Result<Self, IdentityError> {
+        Ok(Self {
+            source,
+            coordinate: Arc::from(canonical_text(coordinate.into())?),
+            artifact: None,
+            schema,
+            policy_epoch,
+            facts: FactFreshness::always(),
+        })
+    }
+
+    /// Returns a request with an explicit facts freshness frontier.
+    #[must_use]
+    pub const fn with_fact_freshness(mut self, facts: FactFreshness) -> Self {
+        self.facts = facts;
+        self
+    }
+
+    /// Returns a request bound to a policy epoch.
+    #[must_use]
+    pub const fn with_policy_epoch(mut self, policy_epoch: u64) -> Self {
+        self.policy_epoch = policy_epoch;
+        self
     }
 
     /// Returns the exact process-local interner key.
     #[must_use]
     pub fn work_key(&self) -> WorkKey {
+        let mut frontier = Hasher::new();
+        frontier.update(b"backend.acquisition.fact-frontier.v1\0");
+        frontier.update(&self.policy_epoch.to_be_bytes());
+        frontier.update(&self.facts.max_age_millis.to_be_bytes());
+        let key_epoch = u64::from_be_bytes(
+            frontier.finalize().as_bytes()[..8]
+                .try_into()
+                .expect("fixed digest prefix"),
+        )
+        .max(1);
+        let artifact = self.artifact.map_or_else(
+            || digest(b"backend.acquisition.unknown-artifact.v1", &[]),
+            RawArchiveObjectId::to_bytes,
+        );
         acquisition_work_key(
             self.source,
             self.coordinate.as_bytes(),
-            self.artifact.to_bytes(),
+            artifact,
             self.schema,
-            self.policy_epoch,
+            key_epoch,
         )
     }
 }
@@ -1820,7 +1922,10 @@ impl Resolve {
     /// Admits decoded metadata supplied by a registry adapter.
     pub fn metadata(self, record: MetadataRecord) -> Result<Metadata, AcquisitionOutcome<()>> {
         if record.claim.source != self.request.source
-            || record.claim.archive != self.request.artifact
+            || self
+                .request
+                .artifact
+                .is_some_and(|artifact| record.claim.archive != artifact)
             || record.claim.coordinate.as_ref() != self.request.coordinate.as_ref()
         {
             return Err(AcquisitionOutcome::Rejected(RejectReason::Protocol));
@@ -1878,7 +1983,12 @@ impl Object {
         self,
         actual: RawArchiveObjectId,
     ) -> Result<VerifiedObject, AcquisitionOutcome<()>> {
-        if actual != self.object || actual != self.request.artifact {
+        if actual != self.object
+            || self
+                .request
+                .artifact
+                .is_some_and(|artifact| actual != artifact)
+        {
             return Err(AcquisitionOutcome::Corrupt(CorruptReason::Integrity));
         }
         Ok(VerifiedObject {
@@ -1931,17 +2041,20 @@ pub struct AcquisitionReceipt {
     pub target: SourceSnapshotId,
     /// Publication root identity.
     pub publication: PublicationRootId,
+    /// Policy/advisory frontier that authenticated this publication.
+    pub policy_epoch: u64,
 }
 
 impl AcquisitionReceipt {
     /// Returns the fixed canonical receipt preimage.
     #[must_use]
-    pub fn canonical_bytes(&self) -> [u8; ID_BYTES * 4] {
-        let mut encoded = [0_u8; ID_BYTES * 4];
+    pub fn canonical_bytes(&self) -> [u8; ID_BYTES * 4 + 8] {
+        let mut encoded = [0_u8; ID_BYTES * 4 + 8];
         encoded[..ID_BYTES].copy_from_slice(self.delta.as_bytes());
         encoded[ID_BYTES..ID_BYTES * 2].copy_from_slice(self.base.as_bytes());
         encoded[ID_BYTES * 2..ID_BYTES * 3].copy_from_slice(self.target.as_bytes());
-        encoded[ID_BYTES * 3..].copy_from_slice(self.publication.as_bytes());
+        encoded[ID_BYTES * 3..ID_BYTES * 4].copy_from_slice(self.publication.as_bytes());
+        encoded[ID_BYTES * 4..].copy_from_slice(&self.policy_epoch.to_be_bytes());
         encoded
     }
 }
@@ -1988,7 +2101,8 @@ pub struct AcquisitionService {
     negative: NegativeCache,
     breaker: CircuitBreaker,
     leases: LeaseStore,
-    policy_epoch: u64,
+    /// Process-local observations; restart forces mutable facts to refresh.
+    fact_observations: Arc<Mutex<BTreeMap<Arc<str>, u64>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -2022,7 +2136,7 @@ impl fmt::Debug for AcquisitionService {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("AcquisitionService")
-            .field("policy_epoch", &self.policy_epoch)
+            .field("policy_epoch", &self.policy_epoch())
             .finish_non_exhaustive()
     }
 }
@@ -2043,8 +2157,17 @@ impl AcquisitionService {
             negative: NegativeCache::new(256),
             breaker,
             leases,
-            policy_epoch: 0,
+            fact_observations: Arc::new(Mutex::new(BTreeMap::new())),
         })
+    }
+
+    /// Returns the stable nonzero policy/advisory frontier digest.
+    #[must_use]
+    pub fn policy_epoch(&self) -> u64 {
+        self.owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .policy_epoch()
     }
 
     /// Stable source identity for request construction.
@@ -2107,9 +2230,15 @@ impl AcquisitionService {
         request: &AcquisitionRequest,
         transport: &mut T,
     ) -> AcquisitionOutcome<Arc<RegistryAcquisitionResult>> {
+        let owner_source = self.source_id();
+        if request.source != owner_source || request.schema != CanonicalFeedV1::VERSION {
+            return AcquisitionOutcome::Rejected(RejectReason::Protocol);
+        }
+        let policy_epoch = self.policy_epoch();
+        let request = request.clone().with_policy_epoch(policy_epoch);
         let key = request.work_key();
         let now = now_millis();
-        if let Some(fact) = self.negative.get(*key.as_bytes(), now, self.policy_epoch) {
+        if let Some(fact) = self.negative.get(*key.as_bytes(), now, policy_epoch) {
             return AcquisitionOutcome::NegativeFact(fact);
         }
         let owner = Arc::clone(&self.owner);
@@ -2117,8 +2246,8 @@ impl AcquisitionService {
         let breaker = self.breaker.clone();
         let negative = self.negative.clone();
         let snapshot_cache = Arc::clone(&self.catalog_snapshots);
-        let policy_epoch = self.policy_epoch;
-        self.coordinator.coordinate_registry(request, || {
+        let fact_observations = Arc::clone(&self.fact_observations);
+        self.coordinator.coordinate_registry(&request, || {
             let _circuit = match breaker.allow(now_millis()) {
                 Ok(permit) => permit,
                 Err(open) => return AcquisitionOutcome::CircuitOpen(open),
@@ -2144,20 +2273,72 @@ impl AcquisitionService {
                     Ok(base) => base,
                     Err(outcome) => return promote_bytes_outcome(outcome),
                 };
-                if let Some(package) = owner_guard
+                let observed_at = fact_observations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(request.coordinate.as_ref())
+                    .copied();
+                let present = owner_guard
                     .published_packages()
                     .find(|package| package.coordinate.as_str() == requested)
-                    .cloned()
-                {
+                    .cloned();
+                let up_to_date = present.is_some()
+                    && (request.facts.max_age_millis == u64::MAX
+                        || !request.facts.due(observed_at, now_millis()));
+                if up_to_date {
+                    let package = present.expect("up-to-date acquisition has a package");
                     breaker.success();
-                    let target = Arc::clone(&base);
+                    let current_epoch = owner_guard.policy_epoch();
+                    fact_observations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(Arc::from(requested), now_millis());
+                    if matches!(
+                        package.facts.standing(),
+                        crate::registry::ReleaseStanding::Yanked
+                    ) {
+                        let cursor = owner_guard.cursor().token();
+                        let fact = NegativeFact {
+                            kind: NegativeFactKind::Yanked,
+                            authority: request.source,
+                            source_proof: cursor,
+                            cursor,
+                            observed_at_millis: now_millis(),
+                            expires_at_millis: now_millis().saturating_add(60_000),
+                            policy_epoch: current_epoch,
+                        };
+                        negative.record(*key.as_bytes(), fact);
+                        return AcquisitionOutcome::NegativeFact(fact);
+                    }
+                    if !owner_guard.cached_policy_allows(&package) {
+                        let cursor = owner_guard.cursor().token();
+                        let fact = NegativeFact {
+                            kind: NegativeFactKind::AdvisoryBlocked,
+                            authority: request.source,
+                            source_proof: cursor,
+                            cursor,
+                            observed_at_millis: now_millis(),
+                            expires_at_millis: now_millis().saturating_add(60_000),
+                            policy_epoch: current_epoch,
+                        };
+                        negative.record(*key.as_bytes(), fact);
+                        return AcquisitionOutcome::NegativeFact(fact);
+                    }
+                    let target = match registry_catalog_snapshot(
+                        &owner_guard,
+                        current_epoch,
+                        &snapshot_cache,
+                    ) {
+                        Ok(target) => target,
+                        Err(outcome) => return promote_bytes_outcome(outcome),
+                    };
                     let result = match registry_result(
                         &owner_guard,
                         &base,
                         target,
                         package,
-                        request,
-                        policy_epoch,
+                        &request,
+                        current_epoch,
                     ) {
                         Ok(result) => Arc::new(result),
                         Err(outcome) => return promote_bytes_outcome(outcome),
