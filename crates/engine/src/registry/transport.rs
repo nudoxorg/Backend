@@ -24,6 +24,12 @@ use super::{
 };
 use crate::capability::CapabilityArtifactId;
 use backend_advisory::AdvisoryObservation;
+use backend_library::DependencyFacts;
+
+const MAX_NUGET_REGISTRATION_PAGES: usize = 4096;
+const MAX_NUGET_REGISTRATION_DEPTH: usize = 32;
+const MAX_NUGET_REGISTRATION_LEAVES: usize = 100_000;
+const MAX_NUGET_REGISTRATION_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Request for the page following one durable cursor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -856,12 +862,29 @@ impl HttpRegistryTransport {
                 return Err(TransportFailure::Protocol);
             }
         };
-        let mut metadata = adapter.nuget_metadata(&registration, package_base)?;
+        let registration_root: serde_json::Value =
+            serde_json::from_slice(&registration).map_err(|_| TransportFailure::Protocol)?;
+        let mut leaves = Vec::new();
+        let mut visited_pages = BTreeSet::new();
+        // The root is already in hand. Marking it visited makes a malicious
+        // self-referential page descriptor terminate without a second fetch.
+        visited_pages.insert(url.clone());
+        let mut snapshot = Vec::with_capacity(registration.len());
+        self.collect_nuget_registration(
+            &registration_root,
+            &registration,
+            &mut leaves,
+            &mut visited_pages,
+            &mut snapshot,
+            0,
+        )?;
+        let leaf_refs = leaves.iter().collect::<Vec<_>>();
+        let mut metadata = adapter.nuget_metadata_from_leaves(leaf_refs, package_base)?;
         if let Some(target) = adapter.target_version() {
             metadata.retain(|release| release.version == target);
         }
         let total = metadata.len();
-        let (start, prefix) = adapter.page_start(&registration, request, total)?;
+        let (start, prefix) = adapter.page_start(&snapshot, request, total)?;
         let selected = metadata
             .into_iter()
             .skip(start)
@@ -903,15 +926,134 @@ impl HttpRegistryTransport {
         adapter.admit_window(releases, request, start, prefix, total)
     }
 
-    fn maven_page(
+    fn collect_nuget_registration(
         &self,
+        value: &serde_json::Value,
+        raw: &[u8],
+        leaves: &mut Vec<serde_json::Value>,
+        visited_pages: &mut BTreeSet<String>,
+        snapshot: &mut Vec<u8>,
+        depth: usize,
+    ) -> Result<(), TransportFailure> {
+        if depth > MAX_NUGET_REGISTRATION_DEPTH {
+            return Err(TransportFailure::Bounds);
+        }
+        snapshot
+            .len()
+            .checked_add(raw.len())
+            .filter(|length| *length <= MAX_NUGET_REGISTRATION_SNAPSHOT_BYTES)
+            .ok_or(TransportFailure::Overrun {
+                measured: u64::try_from(snapshot.len().saturating_add(raw.len()))
+                    .map_err(|_| TransportFailure::Bounds)?,
+                limit: u64::try_from(MAX_NUGET_REGISTRATION_SNAPSHOT_BYTES)
+                    .map_err(|_| TransportFailure::Bounds)?,
+            })?;
+        snapshot.extend_from_slice(raw);
+        let object = value.as_object().ok_or(TransportFailure::Protocol)?;
+        if object.contains_key("catalogEntry") {
+            if leaves.len() >= MAX_NUGET_REGISTRATION_LEAVES {
+                return Err(TransportFailure::Bounds);
+            }
+            leaves.push(value.clone());
+            return Ok(());
+        }
+        let Some(items) = object.get("items").and_then(serde_json::Value::as_array) else {
+            let page_url = object
+                .get("@id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(TransportFailure::Protocol)?;
+            if !visited_pages.insert(page_url.to_owned()) {
+                return Ok(());
+            }
+            if visited_pages.len() > MAX_NUGET_REGISTRATION_PAGES {
+                return Err(TransportFailure::Bounds);
+            }
+            let page = match self.get(page_url, self.limits.max_feed_bytes)? {
+                TransportResult::Available(value) => value,
+                TransportResult::Unavailable | TransportResult::RetryAfter(_) => {
+                    return Err(TransportFailure::DownloadUnavailable);
+                }
+                TransportResult::NotModified => return Err(TransportFailure::Protocol),
+            };
+            let page_value: serde_json::Value =
+                serde_json::from_slice(&page).map_err(|_| TransportFailure::Protocol)?;
+            return self.collect_nuget_registration(
+                &page_value,
+                &page,
+                leaves,
+                visited_pages,
+                snapshot,
+                depth.saturating_add(1),
+            );
+        };
+        for item in items {
+            if item
+                .as_object()
+                .is_some_and(|object| object.contains_key("catalogEntry"))
+            {
+                if leaves.len() >= MAX_NUGET_REGISTRATION_LEAVES {
+                    return Err(TransportFailure::Bounds);
+                }
+                leaves.push(item.clone());
+                continue;
+            }
+            if item
+                .as_object()
+                .is_some_and(|object| object.contains_key("items"))
+            {
+                // Some private feeds inline a page object inside the root
+                // document. Recurse into it directly rather than requiring
+                // an otherwise unnecessary network URL.
+                self.collect_nuget_registration(
+                    item,
+                    raw,
+                    leaves,
+                    visited_pages,
+                    snapshot,
+                    depth.saturating_add(1),
+                )?;
+                continue;
+            }
+            let Some(page_url) = item.get("@id").and_then(serde_json::Value::as_str) else {
+                return Err(TransportFailure::Protocol);
+            };
+            if !visited_pages.insert(page_url.to_owned()) {
+                continue;
+            }
+            if visited_pages.len() > MAX_NUGET_REGISTRATION_PAGES {
+                return Err(TransportFailure::Bounds);
+            }
+            let page = match self.get(page_url, self.limits.max_feed_bytes)? {
+                TransportResult::Available(value) => value,
+                TransportResult::Unavailable | TransportResult::RetryAfter(_) => {
+                    return Err(TransportFailure::DownloadUnavailable);
+                }
+                TransportResult::NotModified => return Err(TransportFailure::Protocol),
+            };
+            let page_value: serde_json::Value =
+                serde_json::from_slice(&page).map_err(|_| TransportFailure::Protocol)?;
+            self.collect_nuget_registration(
+                &page_value,
+                &page,
+                leaves,
+                visited_pages,
+                snapshot,
+                depth.saturating_add(1),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn maven_page(
+        &mut self,
         adapter: &EcosystemAdapter,
         metadata: Vec<u8>,
         request: FeedRequest,
     ) -> Result<FeedPage, TransportFailure> {
-        let mut versions = adapter.maven_versions(&metadata)?;
+        let parsed = adapter.maven_metadata(&metadata)?;
+        let mut versions = parsed.versions;
         if let Some(target) = adapter.target_version() {
-            versions.retain(|version| version == target);
+            versions.retain(|version| version.version == target);
         }
         let (start, prefix) = adapter.page_start(&metadata, request, versions.len())?;
         let selected = versions
@@ -924,9 +1066,64 @@ impl HttpRegistryTransport {
             // Maven's primary JAR is bytecode. The source classifier is the
             // real archive that can pass through the shared source ingester,
             // semantic pipeline, and desktop code-search journey.
-            let archive_url = adapter.maven_source_archive_url(version);
-            let (checksum, body) = self.maven_checksum(&archive_url)?;
-            releases.push(adapter.maven_release(version, checksum, &body)?);
+            let source_url = adapter.maven_source_archive_url_for(
+                &version.version,
+                version.timestamped_sources.as_deref(),
+            );
+            let (archive_url, checksum, mut provenance) = match self
+                .maven_artifact_evidence(&source_url)
+            {
+                Ok((checksum, body, signature)) => {
+                    let mut provenance = metadata.clone();
+                    provenance.extend_from_slice(&body);
+                    if let Some(signature) = signature {
+                        provenance.extend_from_slice(&signature);
+                    }
+                    (source_url, checksum, provenance)
+                }
+                Err(TransportFailure::DownloadUnavailable) => {
+                    let main_url = adapter.maven_archive_url_with_timestamped(
+                        &version.version,
+                        version.timestamped_jar.as_deref(),
+                    );
+                    let (checksum, body, signature) = self.maven_artifact_evidence(&main_url)?;
+                    let mut provenance = metadata.clone();
+                    provenance.extend_from_slice(&body);
+                    if let Some(signature) = signature {
+                        provenance.extend_from_slice(&signature);
+                    }
+                    (main_url, checksum, provenance)
+                }
+                Err(error) => return Err(error),
+            };
+            let pom_url =
+                adapter.maven_pom_url_for(&version.version, version.timestamped_pom.as_deref());
+            let dependency_facts = match self.get(&pom_url, self.limits.max_feed_bytes) {
+                Ok(TransportResult::Available(pom)) => {
+                    provenance.extend_from_slice(&pom);
+                    let coordinate = adapter.coordinate_for_version(&version.version)?;
+                    adapter.maven_dependencies(&pom, &coordinate, &provenance)?
+                }
+                Err(TransportFailure::Rejected(404)) => DependencyFacts::Unknown(
+                    backend_library::ProductText::new("Maven POM is not published")
+                        .map_err(|_| TransportFailure::Protocol)?,
+                ),
+                Ok(TransportResult::Unavailable | TransportResult::RetryAfter(_)) => {
+                    DependencyFacts::Unavailable(
+                        backend_library::ProductText::new("Maven POM could not be fetched")
+                            .map_err(|_| TransportFailure::Protocol)?,
+                    )
+                }
+                Ok(TransportResult::NotModified) => return Err(TransportFailure::Protocol),
+                Err(error) => return Err(error),
+            };
+            releases.push(adapter.maven_release_with_dependencies(
+                &version.version,
+                archive_url,
+                checksum,
+                &provenance,
+                dependency_facts,
+            )?);
         }
         adapter.admit_window(releases, request, start, prefix, versions.len())
     }
@@ -935,6 +1132,14 @@ impl HttpRegistryTransport {
         &self,
         archive_url: &str,
     ) -> Result<(RegistryChecksum, Vec<u8>), TransportFailure> {
+        self.maven_artifact_evidence(archive_url)
+            .map(|(checksum, body, _signature)| (checksum, body))
+    }
+
+    fn maven_artifact_evidence(
+        &self,
+        archive_url: &str,
+    ) -> Result<(RegistryChecksum, Vec<u8>, Option<Vec<u8>>), TransportFailure> {
         for (suffix, parser) in [
             (".sha256", ChecksumAlgorithm::Sha256),
             (".sha512", ChecksumAlgorithm::Sha512),
@@ -961,7 +1166,19 @@ impl HttpRegistryTransport {
                 ChecksumAlgorithm::Sha512 => RegistryChecksum::sha512_hex(token)?,
                 ChecksumAlgorithm::GoModule => return Err(TransportFailure::Protocol),
             };
-            return Ok((checksum, body));
+            // Signature sidecars are evidence rather than a trust decision:
+            // Maven Central publishes OpenPGP signatures, but key validation
+            // belongs to the configured advisory/signature authority. Fetch
+            // and retain the bounded bytes when available, while keeping a
+            // missing/temporarily unavailable signature a typed absence.
+            let signature = match self.get(&format!("{archive_url}.asc"), 128 * 1024) {
+                Ok(TransportResult::Available(signature)) => Some(signature),
+                Ok(TransportResult::Unavailable | TransportResult::RetryAfter(_))
+                | Err(TransportFailure::Rejected(404)) => None,
+                Ok(TransportResult::NotModified) => return Err(TransportFailure::Protocol),
+                Err(error) => return Err(error),
+            };
+            return Ok((checksum, body, signature));
         }
         Err(TransportFailure::DownloadUnavailable)
     }
@@ -1441,17 +1658,72 @@ fn trim_tar_nul(bytes: &[u8]) -> Result<&str, TransportFailure> {
 }
 
 fn nuget_resource<'a>(resources: &'a [serde_json::Value], prefix: &str) -> Option<&'a str> {
-    resources.iter().find_map(|resource| {
-        let matches = match resource.get("@type") {
-            Some(serde_json::Value::String(value)) => value.starts_with(prefix),
-            Some(serde_json::Value::Array(values)) => values
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .any(|value| value.starts_with(prefix)),
-            _ => false,
+    let mut selected: Option<((u64, u64, u64, bool), &'a str)> = None;
+    for resource in resources {
+        let Some(id) = resource.get("@id").and_then(serde_json::Value::as_str) else {
+            continue;
         };
-        matches.then(|| resource.get("@id").and_then(serde_json::Value::as_str))?
-    })
+        let types = match resource.get("@type") {
+            Some(serde_json::Value::String(value)) => std::slice::from_ref(value),
+            Some(serde_json::Value::Array(values)) => {
+                let mut best = None;
+                for value in values.iter().filter_map(serde_json::Value::as_str) {
+                    if let Some(version) = nuget_resource_version(value, prefix) {
+                        best = best.max(Some(version));
+                    }
+                }
+                let Some(version) = best else { continue };
+                let candidate = (version, id);
+                if selected.as_ref().is_none_or(|current| {
+                    candidate.0 > current.0 || (candidate.0 == current.0 && candidate.1 < current.1)
+                }) {
+                    selected = Some(candidate);
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        let Some(value) = types.first().map(String::as_str) else {
+            continue;
+        };
+        let Some(version) = nuget_resource_version(value, prefix) else {
+            continue;
+        };
+        if selected
+            .as_ref()
+            .is_none_or(|current| version > current.0 || (version == current.0 && id < current.1))
+        {
+            selected = Some((version, id));
+        }
+    }
+    selected.map(|(_, id)| id)
+}
+
+fn nuget_resource_version(value: &str, prefix: &str) -> Option<(u64, u64, u64, bool)> {
+    let suffix = value.strip_prefix(prefix)?;
+    let suffix = suffix.strip_prefix('/').unwrap_or(suffix);
+    if !suffix.is_empty() && !value.starts_with(&format!("{prefix}/")) {
+        return None;
+    }
+    let mut parts = suffix.splitn(4, '.');
+    let major = parts
+        .next()
+        .unwrap_or("0")
+        .split('-')
+        .next()?
+        .parse()
+        .ok()?;
+    let minor = parts
+        .next()
+        .unwrap_or("0")
+        .split('-')
+        .next()?
+        .parse()
+        .ok()?;
+    let patch_part = parts.next().unwrap_or("0");
+    let patch = patch_part.split('-').next()?.parse().ok()?;
+    let stable = !suffix.contains('-');
+    Some((major, minor, patch, stable))
 }
 
 fn hex_digest(bytes: &[u8]) -> String {

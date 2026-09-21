@@ -1871,6 +1871,263 @@ fn conan_v2_file_manifest_is_bounded_and_keeps_source_availability_typed() {
 }
 
 #[test]
+fn maven_metadata_resolves_snapshot_sidecars_and_rejects_xml_expansion() {
+    let adapter = EcosystemAdapter::new(
+        RegistryEndpoint::new(RegistryEcosystem::Maven, "https://repo.maven.apache.org")
+            .expect("maven endpoint"),
+        PackageName::new("demo").expect("artifact"),
+        Some(PackageName::new("com.example").expect("group")),
+    )
+    .expect("maven adapter");
+    let metadata = br#"
+        <?xml version="1.0" encoding="UTF-8"?>
+        <metadata>
+          <groupId>com.example</groupId><artifactId>demo</artifactId>
+          <versioning><latest>1.1.0</latest><release>1.1.0</release>
+            <versions><version>1.0-SNAPSHOT</version><version>1.1.0</version></versions>
+            <snapshotVersions>
+              <snapshotVersion><extension>jar</extension><value>1.0-20260921.120000-4</value></snapshotVersion>
+              <snapshotVersion><extension>jar</extension><classifier>sources</classifier><value>1.0-20260921.120000-4</value></snapshotVersion>
+              <snapshotVersion><extension>pom</extension><value>1.0-20260921.120000-4</value></snapshotVersion>
+            </snapshotVersions>
+          </versioning>
+        </metadata>
+    "#;
+    let parsed = adapter.maven_metadata(metadata).expect("metadata");
+    assert_eq!(parsed.group, "com.example");
+    assert_eq!(parsed.artifact, "demo");
+    assert_eq!(parsed.latest.as_deref(), Some("1.1.0"));
+    assert_eq!(parsed.release.as_deref(), Some("1.1.0"));
+    assert_eq!(parsed.versions.len(), 2);
+    assert_eq!(parsed.versions[0].version, "1.0-SNAPSHOT");
+    assert_eq!(
+        parsed.versions[0].timestamped_sources.as_deref(),
+        Some("1.0-20260921.120000-4")
+    );
+    assert!(
+        adapter
+            .maven_source_archive_url_for(
+                "1.0-SNAPSHOT",
+                parsed.versions[0].timestamped_sources.as_deref()
+            )
+            .ends_with("/com/example/demo/1.0-SNAPSHOT/demo-1.0-20260921.120000-4-sources.jar")
+    );
+
+    let xxe = br#"<!DOCTYPE metadata [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+        <metadata><groupId>com.example</groupId><artifactId>demo</artifactId>
+        <versioning><versions><version>&xxe;</version></versions></versioning></metadata>"#;
+    assert!(matches!(
+        adapter.maven_metadata(xxe),
+        Err(TransportFailure::Protocol)
+    ));
+
+    let oversized = vec![b'x'; 8 * 1024 * 1024 + 1];
+    assert!(matches!(
+        adapter.maven_metadata(&oversized),
+        Err(TransportFailure::Overrun { .. })
+    ));
+}
+
+#[test]
+fn maven_transport_fetches_checksum_signature_and_pom_dependencies() {
+    let source_archive = b"maven source archive";
+    let checksum = digest_hex(Sha256::digest(source_archive).as_slice());
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind maven fixture");
+    let address = listener.local_addr().expect("maven fixture address");
+    let endpoint_text = format!("http://{address}");
+    let metadata = br#"<?xml version="1.0" encoding="UTF-8"?>
+      <metadata><groupId>com.example</groupId><artifactId>demo</artifactId>
+      <versioning><latest>1.2.3</latest><release>1.2.3</release>
+      <versions><version>1.2.3</version></versions></versioning></metadata>"#
+        .to_vec();
+    let pom = br#"<?xml version="1.0" encoding="UTF-8"?>
+      <project><modelVersion>4.0.0</modelVersion>
+      <groupId>com.example</groupId><artifactId>demo</artifactId><version>1.2.3</version>
+      <dependencyManagement><dependencies><dependency><groupId>ignored</groupId>
+      <artifactId>management-only</artifactId><version>9.9.9</version></dependency></dependencies>
+      </dependencyManagement><dependencies>
+      <dependency><groupId>org.example</groupId><artifactId>runtime</artifactId>
+      <version>2.0.0</version></dependency>
+      <dependency><groupId>org.example</groupId><artifactId>tests</artifactId>
+      <version>3.0.0</version><scope>test</scope></dependency>
+      </dependencies></project>"#
+        .to_vec();
+    let server = thread::spawn(move || {
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().expect("accept maven request");
+            let mut request = [0_u8; 8192];
+            let length = stream.read(&mut request).expect("read maven request");
+            let request = String::from_utf8_lossy(&request[..length]);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .expect("request path");
+            let body = if path.ends_with("maven-metadata.xml") {
+                metadata.clone()
+            } else if path.ends_with("-sources.jar.sha256") {
+                checksum.as_bytes().to_vec()
+            } else if path.ends_with("-sources.jar.asc") {
+                b"signed-by-fixture".to_vec()
+            } else if path.ends_with(".pom") {
+                pom.clone()
+            } else {
+                panic!("unexpected Maven fixture path: {path}");
+            };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("maven headers");
+            stream.write_all(&body).expect("maven body");
+        }
+    });
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Maven, endpoint_text).expect("maven endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint.clone(),
+        PackageName::new("demo").expect("artifact"),
+        Some(PackageName::new("com.example").expect("group")),
+    )
+    .expect("maven adapter");
+    let mut transport =
+        HttpRegistryTransport::for_native(adapter, None, limits()).expect("maven transport");
+    let page = match transport
+        .fetch_page(FeedRequest {
+            cursor: FeedCursor::genesis(endpoint.id()),
+            max_items: 4,
+        })
+        .expect("maven page")
+    {
+        TransportResult::Available(page) => page,
+        other => panic!("expected available Maven page, got {other:?}"),
+    };
+    assert_eq!(page.packages.len(), 1);
+    let package = &page.packages[0];
+    assert!(
+        package
+            .archive_url
+            .ends_with("/com/example/demo/1.2.3/demo-1.2.3-sources.jar")
+    );
+    assert!(matches!(
+        &package.dependency_facts,
+        backend_library::DependencyFacts::Known(rows) if rows.len() == 2
+    ));
+    server.join().expect("maven server");
+}
+
+#[test]
+fn nuget_registration_retains_standing_security_downloads_and_dependencies() {
+    let archive = b"nuget registration archive";
+    let hash = STANDARD.encode(Sha512::digest(archive));
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Nuget, "https://api.nuget.org")
+        .expect("nuget endpoint");
+    let adapter = EcosystemAdapter::new(endpoint, PackageName::new("demo").expect("package"), None)
+        .expect("nuget adapter");
+    let metadata = format!(
+        r#"{{"items":[
+          {{"catalogEntry":{{"version":"1.0.0","listed":false,"downloads":7,
+            "vulnerabilities":[{{"severity":"3","advisoryUrl":"https://example.test/a"}}],
+            "dependencyGroups":[{{"targetFramework":"net8.0","dependencies":[{{"id":"dep","range":"[2.0.0]"}}]}},{{"targetFramework":"netstandard2.0"}}]}},
+           "packageContent":"https://api.nuget.org/v3-flatcontainer/demo/1.0.0/demo.1.0.0.nupkg","packageHash":"{hash}"}},
+          {{"catalogEntry":{{"version":"1.1.0","listed":true,"deprecation":{{"message":"use 2.x"}}}},
+           "packageContent":"https://api.nuget.org/v3-flatcontainer/demo/1.1.0/demo.1.1.0.nupkg","packageHash":"{hash}"}}
+        ]}}"#
+    );
+    let releases = adapter.decode(metadata.as_bytes()).expect("registration");
+    assert_eq!(releases.len(), 2);
+    assert_eq!(releases[0].facts.standing(), ReleaseStanding::Unlisted);
+    assert_eq!(releases[0].facts.downloads(), DownloadCount::Exact(7));
+    assert_eq!(
+        releases[0].facts.security(),
+        SecurityStanding::Affected {
+            advisories: 1,
+            maximum_severity: 3
+        }
+    );
+    assert!(matches!(
+        &releases[0].dependency_facts,
+        backend_library::DependencyFacts::Known(rows) if rows.len() == 1
+    ));
+    assert_eq!(releases[1].facts.standing(), ReleaseStanding::Deprecated);
+}
+
+#[test]
+fn nuget_v3_registration_pages_are_traversed_deterministically() {
+    let archive = b"nuget paged archive";
+    let hash = STANDARD.encode(Sha512::digest(archive));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind nuget fixture");
+    let address = listener.local_addr().expect("nuget fixture address");
+    let endpoint_text = format!("http://{address}");
+    let registration = format!("{endpoint_text}/v3/registration5-semver1");
+    let root_url = format!("{registration}/demo/index.json");
+    let page_url = format!("{registration}/demo/page0.json");
+    let service_index = format!(
+        r#"{{"resources":[
+          {{"@id":"{endpoint_text}/v3/registration3","@type":["RegistrationsBaseUrl/3.0.0"]}},
+          {{"@id":"{registration}/","@type":["RegistrationsBaseUrl","RegistrationsBaseUrl/3.6.0","RegistrationsBaseUrl/3.0.0"]}},
+          {{"@id":"{endpoint_text}/v3-flatcontainer","@type":"PackageBaseAddress/3.0.0"}}
+        ]}}"#
+    )
+    .into_bytes();
+    let registration_root = format!(
+        r#"{{"@id":"{root_url}","count":2,"items":[
+          {{"@id":"{page_url}","count":1,"lower":"1.0.0","upper":"1.0.0"}},
+          {{"catalogEntry":{{"version":"2.0.0","listed":true}},"packageContent":"{endpoint_text}/v3-flatcontainer/demo/2.0.0/demo.2.0.0.nupkg","packageHash":"{hash}"}}
+        ]}}"#
+    )
+    .into_bytes();
+    let registration_page = format!(
+        r#"{{"@id":"{page_url}","count":1,"items":[
+          {{"catalogEntry":{{"version":"1.0.0","listed":true}},"packageContent":"{endpoint_text}/v3-flatcontainer/demo/1.0.0/demo.1.0.0.nupkg","packageHash":"{hash}"}}
+        ]}}"#
+    )
+    .into_bytes();
+    let responses = [service_index, registration_root, registration_page];
+    let server = thread::spawn(move || {
+        for body in responses {
+            let (mut stream, _) = listener.accept().expect("accept nuget request");
+            let mut request = [0_u8; 8192];
+            let length = stream.read(&mut request).expect("read nuget request");
+            assert!(length > 0);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("nuget headers");
+            stream.write_all(&body).expect("nuget body");
+        }
+    });
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Nuget, endpoint_text).expect("nuget endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint.clone(),
+        PackageName::new("demo").expect("package"),
+        None,
+    )
+    .expect("nuget adapter");
+    let mut transport =
+        HttpRegistryTransport::for_native(adapter, None, limits()).expect("nuget transport");
+    let cursor = FeedCursor::genesis(endpoint.id());
+    let page = match transport
+        .fetch_page(FeedRequest {
+            cursor,
+            max_items: 4,
+        })
+        .expect("nuget page")
+    {
+        TransportResult::Available(page) => page,
+        other => panic!("expected available nuget page, got {other:?}"),
+    };
+    assert_eq!(page.packages.len(), 2);
+    assert_eq!(page.packages[0].coordinate.version(), "1.0.0");
+    assert_eq!(page.packages[1].coordinate.version(), "2.0.0");
+    server.join().expect("nuget server");
+}
+
+#[test]
 fn native_cargo_adapter_runs_through_shared_owner_and_cursor() {
     let archive = b"cargo archive through native adapter";
     let checksum = digest_hex(Sha256::digest(archive).as_slice());

@@ -5,26 +5,216 @@
 //! authenticated archive digest (Maven and Go); this module stays pure and
 //! never turns a missing claim into a fabricated checksum.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
-
 use backend_library::{
     DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
     PackageDependencyRecord, PackageDependencyTarget, PackageReference, ProductText,
     admit_dependency_rows,
 };
+use quick_xml::{events::Event, reader::Reader};
 use serde_json::Value;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Cursor,
+    sync::Arc,
+};
 
+use super::super::identity::coordinate_from_registry_parts;
 use super::super::transport::ArchiveIntegrity;
 use super::{
     EcosystemAdapter, NativeArtifact, NativeArtifactKind, NativeDistTag, NativeFeature,
-    RegistryChecksum, TransportFailure, component, resolve_archive_url,
+    PackageName, RegistryChecksum, TransportFailure, component, resolve_archive_url,
 };
 use crate::registry::{
     DownloadCount, DownloadCountGap, ReleaseFacts, ReleaseStanding, SecurityStanding,
 };
+
+/// Registry metadata is deliberately bounded before it is parsed. The HTTP
+/// transport applies the configured feed limit as well, but keeping the same
+/// guard at this adapter boundary makes direct fixture/replay calls safe.
+const MAX_NATIVE_XML_BYTES: usize = 8 * 1024 * 1024;
+const MAX_XML_DEPTH: usize = 64;
+const MAX_XML_NODES: usize = 100_000;
+const MAX_XML_TEXT_BYTES: usize = 1 * 1024 * 1024;
+const MAX_MAVEN_VERSIONS: usize = 100_000;
+const MAX_MAVEN_SNAPSHOT_ROWS: usize = 100_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MavenVersionKind {
+    Release,
+    Snapshot,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MavenVersionRecord {
+    pub(crate) version: String,
+    pub(crate) kind: MavenVersionKind,
+    pub(crate) timestamped_jar: Option<String>,
+    pub(crate) timestamped_sources: Option<String>,
+    pub(crate) timestamped_pom: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MavenMetadata {
+    pub(crate) group: String,
+    pub(crate) artifact: String,
+    pub(crate) latest: Option<String>,
+    pub(crate) release: Option<String>,
+    pub(crate) versions: Vec<MavenVersionRecord>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct XmlNode {
+    name: String,
+    text: String,
+    children: Vec<XmlNode>,
+}
+
+impl XmlNode {
+    fn child(&self, name: &str) -> Option<&Self> {
+        self.children.iter().find(|child| child.name == name)
+    }
+
+    fn children_named<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Self> {
+        self.children.iter().filter(move |child| child.name == name)
+    }
+
+    fn text_value(&self) -> &str {
+        self.text.trim()
+    }
+}
+
+fn bounded_xml(bytes: &[u8]) -> Result<XmlNode, TransportFailure> {
+    if bytes.len() > MAX_NATIVE_XML_BYTES {
+        return Err(TransportFailure::Overrun {
+            measured: u64::try_from(bytes.len()).map_err(|_| TransportFailure::Bounds)?,
+            limit: u64::try_from(MAX_NATIVE_XML_BYTES).map_err(|_| TransportFailure::Bounds)?,
+        });
+    }
+    let mut reader = Reader::from_reader(Cursor::new(bytes));
+    reader.config_mut().trim_text(true);
+    let mut buffer = Vec::with_capacity(4096);
+    let mut stack = Vec::<XmlNode>::new();
+    let mut root = None;
+    let mut nodes = 0usize;
+    let mut text_bytes = 0usize;
+    loop {
+        let event = reader
+            .read_event_into(&mut buffer)
+            .map_err(|_| TransportFailure::Protocol)?;
+        match event {
+            Event::Start(start) => {
+                if stack.len() >= MAX_XML_DEPTH {
+                    return Err(TransportFailure::Bounds);
+                }
+                let name = std::str::from_utf8(start.name().as_ref())
+                    .map_err(|_| TransportFailure::Protocol)?
+                    .to_owned();
+                // Attribute values are intentionally ignored. Parsing them
+                // still validates quotes/escapes without retaining untrusted
+                // extension metadata.
+                for attribute in start.attributes().with_checks(true) {
+                    attribute.map_err(|_| TransportFailure::Protocol)?;
+                }
+                nodes = nodes.checked_add(1).ok_or(TransportFailure::Bounds)?;
+                if nodes > MAX_XML_NODES {
+                    return Err(TransportFailure::Bounds);
+                }
+                stack.push(XmlNode {
+                    name,
+                    text: String::new(),
+                    children: Vec::new(),
+                });
+            }
+            Event::Empty(empty) => {
+                if stack.len() >= MAX_XML_DEPTH {
+                    return Err(TransportFailure::Bounds);
+                }
+                let name = std::str::from_utf8(empty.name().as_ref())
+                    .map_err(|_| TransportFailure::Protocol)?
+                    .to_owned();
+                for attribute in empty.attributes().with_checks(true) {
+                    attribute.map_err(|_| TransportFailure::Protocol)?;
+                }
+                nodes = nodes.checked_add(1).ok_or(TransportFailure::Bounds)?;
+                if nodes > MAX_XML_NODES {
+                    return Err(TransportFailure::Bounds);
+                }
+                attach_xml_node(
+                    XmlNode {
+                        name,
+                        text: String::new(),
+                        children: Vec::new(),
+                    },
+                    &mut stack,
+                    &mut root,
+                )?;
+            }
+            Event::Text(text) => {
+                let value = text.decode().map_err(|_| TransportFailure::Protocol)?;
+                text_bytes = text_bytes
+                    .checked_add(value.len())
+                    .ok_or(TransportFailure::Bounds)?;
+                if text_bytes > MAX_XML_TEXT_BYTES {
+                    return Err(TransportFailure::Bounds);
+                }
+                if let Some(node) = stack.last_mut() {
+                    node.text.push_str(&value);
+                } else if !value.trim().is_empty() {
+                    return Err(TransportFailure::Protocol);
+                }
+            }
+            Event::CData(text) => {
+                let value =
+                    std::str::from_utf8(text.as_ref()).map_err(|_| TransportFailure::Protocol)?;
+                text_bytes = text_bytes
+                    .checked_add(value.len())
+                    .ok_or(TransportFailure::Bounds)?;
+                if text_bytes > MAX_XML_TEXT_BYTES {
+                    return Err(TransportFailure::Bounds);
+                }
+                if let Some(node) = stack.last_mut() {
+                    node.text.push_str(value);
+                } else if !value.trim().is_empty() {
+                    return Err(TransportFailure::Protocol);
+                }
+            }
+            Event::End(end) => {
+                let node = stack.pop().ok_or(TransportFailure::Protocol)?;
+                if node.name.as_bytes() != end.name().as_ref() {
+                    return Err(TransportFailure::Protocol);
+                }
+                attach_xml_node(node, &mut stack, &mut root)?;
+            }
+            Event::Decl(_) | Event::Comment(_) => {}
+            // DTDs, processing instructions, and general entity references
+            // are rejected. This keeps the parser XML 1.0-only and makes
+            // external entity expansion impossible by construction.
+            Event::DocType(_) | Event::PI(_) | Event::GeneralRef(_) => {
+                return Err(TransportFailure::Protocol);
+            }
+            Event::Eof => {
+                if !stack.is_empty() || root.is_none() {
+                    return Err(TransportFailure::Protocol);
+                }
+                return root.ok_or(TransportFailure::Protocol);
+            }
+        }
+        buffer.clear();
+    }
+}
+
+fn attach_xml_node(
+    node: XmlNode,
+    stack: &mut Vec<XmlNode>,
+    root: &mut Option<XmlNode>,
+) -> Result<(), TransportFailure> {
+    if let Some(parent) = stack.last_mut() {
+        parent.children.push(node);
+    } else if root.replace(node).is_some() {
+        return Err(TransportFailure::Protocol);
+    }
+    Ok(())
+}
 
 impl EcosystemAdapter {
     pub(super) fn decode_cargo(
@@ -321,19 +511,120 @@ impl EcosystemAdapter {
             .collect()
     }
 
-    pub(crate) fn maven_versions(&self, bytes: &[u8]) -> Result<Vec<String>, TransportFailure> {
-        let text = std::str::from_utf8(bytes).map_err(|_| TransportFailure::Protocol)?;
-        let group = xml_text(text, "groupId")?;
-        let artifact = xml_text(text, "artifactId")?;
-        if group != self.namespace_name().ok_or(TransportFailure::Protocol)?
-            || artifact != self.package_name()
+    pub(crate) fn maven_metadata(&self, bytes: &[u8]) -> Result<MavenMetadata, TransportFailure> {
+        let root = bounded_xml(bytes)?;
+        if root.name != "metadata" {
+            return Err(TransportFailure::Protocol);
+        }
+        let group = root
+            .child("groupId")
+            .map(XmlNode::text_value)
+            .filter(|value| !value.is_empty())
+            .ok_or(TransportFailure::Protocol)?;
+        let artifact = root
+            .child("artifactId")
+            .map(XmlNode::text_value)
+            .filter(|value| !value.is_empty())
+            .ok_or(TransportFailure::Protocol)?;
+        let expected_group = self.namespace_name().ok_or(TransportFailure::Protocol)?;
+        if group != expected_group || artifact != self.package_name() {
+            return Err(TransportFailure::Protocol);
+        }
+        let versioning = root.child("versioning").ok_or(TransportFailure::Protocol)?;
+        let latest = optional_text(versioning.child("latest"));
+        let release = optional_text(versioning.child("release"));
+        let versions_node = versioning
+            .child("versions")
+            .ok_or(TransportFailure::Protocol)?;
+        let mut versions = Vec::new();
+        for version in versions_node.children_named("version") {
+            let value = version.text_value();
+            if value.is_empty() {
+                return Err(TransportFailure::Protocol);
+            }
+            if versions.len() >= MAX_MAVEN_VERSIONS {
+                return Err(TransportFailure::Bounds);
+            }
+            versions.push(MavenVersionRecord {
+                version: value.to_owned(),
+                kind: if value.ends_with("-SNAPSHOT") {
+                    MavenVersionKind::Snapshot
+                } else {
+                    MavenVersionKind::Release
+                },
+                timestamped_jar: None,
+                timestamped_sources: None,
+                timestamped_pom: None,
+            });
+        }
+        if versions.is_empty() {
+            return Err(TransportFailure::Protocol);
+        }
+        versions.sort_by(|left, right| left.version.cmp(&right.version));
+        if versions
+            .windows(2)
+            .any(|pair| pair[0].version == pair[1].version)
         {
             return Err(TransportFailure::Protocol);
         }
-        let mut versions = xml_values(xml_block(text, "versions")?, "version")?;
-        versions.sort();
-        versions.dedup();
-        Ok(versions)
+        if let Some(snapshot_versions) = versioning.child("snapshotVersions") {
+            let mut snapshot_values = BTreeMap::<(String, String), String>::new();
+            let mut rows = 0usize;
+            for row in snapshot_versions.children_named("snapshotVersion") {
+                rows = rows.checked_add(1).ok_or(TransportFailure::Bounds)?;
+                if rows > MAX_MAVEN_SNAPSHOT_ROWS {
+                    return Err(TransportFailure::Bounds);
+                }
+                let extension = row
+                    .child("extension")
+                    .map(XmlNode::text_value)
+                    .filter(|value| !value.is_empty())
+                    .ok_or(TransportFailure::Protocol)?;
+                let value = row
+                    .child("value")
+                    .map(XmlNode::text_value)
+                    .filter(|value| !value.is_empty())
+                    .ok_or(TransportFailure::Protocol)?;
+                let classifier = row
+                    .child("classifier")
+                    .map(XmlNode::text_value)
+                    .unwrap_or_default();
+                let key = (extension.to_owned(), classifier.to_owned());
+                if snapshot_values.insert(key, value.to_owned()).is_some() {
+                    return Err(TransportFailure::Protocol);
+                }
+            }
+            for record in &mut versions {
+                if record.kind != MavenVersionKind::Snapshot {
+                    continue;
+                }
+                record.timestamped_jar = snapshot_values
+                    .get(&(String::from("jar"), String::new()))
+                    .cloned();
+                record.timestamped_sources = snapshot_values
+                    .get(&(String::from("jar"), String::from("sources")))
+                    .cloned();
+                record.timestamped_pom = snapshot_values
+                    .get(&(String::from("pom"), String::new()))
+                    .cloned();
+            }
+        }
+        Ok(MavenMetadata {
+            group: group.to_owned(),
+            artifact: artifact.to_owned(),
+            latest,
+            release,
+            versions,
+        })
+    }
+
+    pub(crate) fn maven_versions(&self, bytes: &[u8]) -> Result<Vec<String>, TransportFailure> {
+        Ok(self
+            .maven_metadata(bytes)?
+            .versions
+            .into_iter()
+            .map(|version| version.version)
+            .collect())
     }
 
     pub(crate) fn maven_release(
@@ -354,6 +645,32 @@ impl EcosystemAdapter {
         )
     }
 
+    pub(crate) fn maven_release_with_dependencies(
+        &self,
+        version: &str,
+        archive_url: String,
+        checksum: RegistryChecksum,
+        provenance: &[u8],
+        dependency_facts: DependencyFacts<Box<[PackageDependencyRecord]>>,
+    ) -> Result<super::NativeRelease, TransportFailure> {
+        let mut release = self.release_from_checksum(
+            version,
+            archive_url,
+            checksum,
+            provenance,
+            facts(
+                if version.ends_with("-SNAPSHOT") {
+                    ReleaseStanding::Available
+                } else {
+                    ReleaseStanding::Available
+                },
+                DownloadCount::NotReported(DownloadCountGap::Unsupported),
+            ),
+        )?;
+        release.dependency_facts = dependency_facts;
+        Ok(release)
+    }
+
     pub(crate) fn maven_archive_url(&self, version: &str) -> String {
         self.maven_archive_url_with_classifier(version, "")
     }
@@ -362,11 +679,34 @@ impl EcosystemAdapter {
         self.maven_archive_url_with_classifier(version, "-sources")
     }
 
+    pub(crate) fn maven_source_archive_url_for(
+        &self,
+        version: &str,
+        timestamped: Option<&str>,
+    ) -> String {
+        self.maven_archive_url_with_classifier_and_value(version, "-sources", timestamped)
+    }
+
+    pub(crate) fn maven_archive_url_with_timestamped(
+        &self,
+        version: &str,
+        timestamped: Option<&str>,
+    ) -> String {
+        self.maven_archive_url_with_classifier_and_value(version, "", timestamped)
+    }
+
     fn maven_archive_url_with_classifier(&self, version: &str, classifier: &str) -> String {
-        let namespace = self
-            .namespace_name()
-            .map(|value| value.replace('.', "/"))
-            .unwrap_or_default();
+        self.maven_archive_url_with_classifier_and_value(version, classifier, None)
+    }
+
+    fn maven_archive_url_with_classifier_and_value(
+        &self,
+        version: &str,
+        classifier: &str,
+        value: Option<&str>,
+    ) -> String {
+        let namespace = self.maven_namespace_path();
+        let filename_version = value.unwrap_or(version);
         format!(
             "{}/{}/{}/{}/{}-{}{}.jar",
             self.endpoint_url(),
@@ -374,9 +714,118 @@ impl EcosystemAdapter {
             component(self.package_name()),
             component(version),
             component(self.package_name()),
-            component(version),
+            component(filename_version),
             classifier
         )
+    }
+
+    fn maven_namespace_path(&self) -> String {
+        self.namespace_name()
+            .map(|value| {
+                value
+                    .split('.')
+                    .map(component)
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn maven_pom_url_for(&self, version: &str, timestamped: Option<&str>) -> String {
+        format!(
+            "{}/{}/{}/{}/{}-{}.pom",
+            self.endpoint_url(),
+            self.maven_namespace_path(),
+            component(self.package_name()),
+            component(version),
+            component(self.package_name()),
+            component(timestamped.unwrap_or(version)),
+        )
+    }
+
+    pub(crate) fn coordinate_for_version(
+        &self,
+        version: &str,
+    ) -> Result<super::PackageCoordinate, TransportFailure> {
+        let name = match self.namespace.as_ref() {
+            None => self.package.clone(),
+            Some(namespace) => {
+                PackageName::new(format!("{}:{}", namespace.as_str(), self.package.as_str()))
+                    .map_err(|_| TransportFailure::Protocol)?
+            }
+        };
+        coordinate_from_registry_parts(self.endpoint.ecosystem(), name.as_str(), version)
+            .map_err(|_| TransportFailure::Protocol)
+    }
+
+    pub(crate) fn maven_dependencies(
+        &self,
+        bytes: &[u8],
+        source: &super::PackageCoordinate,
+        provenance: &[u8],
+    ) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
+        let root = bounded_xml(bytes)?;
+        if root.name != "project" {
+            return Err(TransportFailure::Protocol);
+        }
+        let Some(dependencies) = root.child("dependencies") else {
+            return Ok(DependencyFacts::Known(Box::new([])));
+        };
+        let mut rows = Vec::with_capacity(dependencies.children.len());
+        let mut seen = BTreeSet::new();
+        for dependency in dependencies.children_named("dependency") {
+            let group = dependency
+                .child("groupId")
+                .map(XmlNode::text_value)
+                .filter(|value| !value.is_empty())
+                .ok_or(TransportFailure::Protocol)?;
+            let artifact = dependency
+                .child("artifactId")
+                .map(XmlNode::text_value)
+                .filter(|value| !value.is_empty())
+                .ok_or(TransportFailure::Protocol)?;
+            let name = format!("{group}:{artifact}");
+            let requirement = dependency
+                .child("version")
+                .map(XmlNode::text_value)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("*");
+            let scope = match dependency
+                .child("scope")
+                .map(XmlNode::text_value)
+                .unwrap_or("compile")
+            {
+                "test" => DependencyScope::Development,
+                "provided" | "system" => DependencyScope::Build,
+                "runtime" | "compile" | "" => DependencyScope::Runtime,
+                _ => return Err(TransportFailure::Protocol),
+            };
+            let optional = match dependency.child("optional").map(XmlNode::text_value) {
+                None | Some("false") | Some("") => false,
+                Some("true") => true,
+                Some(_) => return Err(TransportFailure::Protocol),
+            };
+            let row = dependency_record(
+                source,
+                backend_semantic::vocabulary::RegistryEcosystem::Maven,
+                &name,
+                requirement,
+                if optional {
+                    DependencyScope::Optional
+                } else {
+                    scope
+                },
+                optional,
+                provenance,
+            )?;
+            if !seen.insert(row.facts_version) {
+                return Err(TransportFailure::Protocol);
+            }
+            rows.push(row);
+        }
+        Ok(DependencyFacts::Known(
+            admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+        ))
     }
 
     pub(crate) fn conan_revision(&self, bytes: &[u8]) -> Result<String, TransportFailure> {
@@ -488,10 +937,21 @@ impl EcosystemAdapter {
         let root: Value = serde_json::from_slice(bytes).map_err(|_| TransportFailure::Protocol)?;
         let mut leaves = Vec::new();
         collect_registration_leaves(&root, &mut leaves)?;
-        leaves
+        self.nuget_metadata_from_leaves(leaves, package_base)
+    }
+
+    pub(crate) fn nuget_metadata_from_leaves(
+        &self,
+        leaves: Vec<&Value>,
+        package_base: Option<&str>,
+    ) -> Result<Vec<NugetReleaseMetadata>, TransportFailure> {
+        let mut releases = leaves
             .into_iter()
             .map(|row| {
                 let entry = row.get("catalogEntry").ok_or(TransportFailure::Protocol)?;
+                if !entry.is_object() {
+                    return Err(TransportFailure::Protocol);
+                }
                 let version = field(entry, "version")?.to_owned();
                 let archive_url = row
                     .get("packageContent")
@@ -516,14 +976,19 @@ impl EcosystemAdapter {
                 };
                 let standing = if entry.get("listed").and_then(Value::as_bool) == Some(false) {
                     ReleaseStanding::Unlisted
+                } else if entry
+                    .get("deprecation")
+                    .is_some_and(|value| !value.is_null())
+                {
+                    ReleaseStanding::Deprecated
                 } else {
                     ReleaseStanding::Available
                 };
-                let facts = facts(
-                    standing,
+                let downloads = entry.get("downloads").and_then(Value::as_u64).map_or(
                     DownloadCount::NotReported(DownloadCountGap::Unsupported),
-                )
-                .with_security(nuget_security(entry)?);
+                    DownloadCount::Exact,
+                );
+                let facts = facts(standing, downloads).with_security(nuget_security(entry)?);
                 Ok(NugetReleaseMetadata {
                     version,
                     archive_url,
@@ -533,7 +998,20 @@ impl EcosystemAdapter {
                     facts,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        releases.sort_by(|left, right| {
+            left.version
+                .to_ascii_lowercase()
+                .cmp(&right.version.to_ascii_lowercase())
+                .then_with(|| left.version.cmp(&right.version))
+        });
+        if releases
+            .windows(2)
+            .any(|pair| pair[0].version.eq_ignore_ascii_case(&pair[1].version))
+        {
+            return Err(TransportFailure::Protocol);
+        }
+        Ok(releases)
     }
 
     pub(super) fn decode_nuget(
@@ -1141,10 +1619,16 @@ fn nuget_dependencies(
     let groups = groups.as_array().ok_or(TransportFailure::Protocol)?;
     let mut rows = Vec::new();
     for group in groups {
-        let dependencies = group
-            .get("dependencies")
-            .and_then(Value::as_array)
-            .ok_or(TransportFailure::Protocol)?;
+        let Some(dependencies) = group.get("dependencies") else {
+            // NuGet permits a target-framework group with no dependencies.
+            continue;
+        };
+        let Some(dependencies) = dependencies.as_array() else {
+            if dependencies.is_null() {
+                continue;
+            }
+            return Err(TransportFailure::Protocol);
+        };
         for dependency in dependencies {
             let name = field(dependency, "id")?;
             let requirement = dependency
@@ -1621,9 +2105,12 @@ fn nuget_security(entry: &Value) -> Result<SecurityStanding, TransportFailure> {
     let Some(vulnerabilities) = entry.get("vulnerabilities") else {
         return Ok(SecurityStanding::Unassessed);
     };
-    let vulnerabilities = vulnerabilities
-        .as_array()
-        .ok_or(TransportFailure::Protocol)?;
+    let Some(vulnerabilities) = vulnerabilities.as_array() else {
+        if vulnerabilities.is_null() {
+            return Ok(SecurityStanding::Unassessed);
+        }
+        return Err(TransportFailure::Protocol);
+    };
     if vulnerabilities.is_empty() {
         return Ok(SecurityStanding::NoKnownAdvisory);
     }
@@ -1643,43 +2130,8 @@ fn nuget_security(entry: &Value) -> Result<SecurityStanding, TransportFailure> {
     })
 }
 
-fn xml_block<'a>(text: &'a str, tag: &str) -> Result<&'a str, TransportFailure> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = text.find(&open).ok_or(TransportFailure::Protocol)?;
-    let content_start = start + open.len();
-    let end = text[content_start..]
-        .find(&close)
-        .map(|offset| content_start + offset)
-        .ok_or(TransportFailure::Protocol)?;
-    Ok(&text[content_start..end])
-}
-
-fn xml_text<'a>(text: &'a str, tag: &str) -> Result<&'a str, TransportFailure> {
-    let block = xml_block(text, tag)?;
-    if block.contains('<') {
-        return Err(TransportFailure::Protocol);
-    }
-    Ok(block.trim())
-}
-
-fn xml_values(text: &str, tag: &str) -> Result<Vec<String>, TransportFailure> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let mut rest = text;
-    let mut values = Vec::new();
-    while let Some(start) = rest.find(&open) {
-        let content = &rest[start + open.len()..];
-        let end = content.find(&close).ok_or(TransportFailure::Protocol)?;
-        let value = content[..end].trim();
-        if value.is_empty() || value.contains('<') || value.contains('>') {
-            return Err(TransportFailure::Protocol);
-        }
-        values.push(value.to_owned());
-        rest = &content[end + close.len()..];
-    }
-    if values.is_empty() {
-        return Err(TransportFailure::Protocol);
-    }
-    Ok(values)
+fn optional_text(node: Option<&XmlNode>) -> Option<String> {
+    node.map(XmlNode::text_value)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
