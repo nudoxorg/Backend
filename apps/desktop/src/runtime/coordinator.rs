@@ -123,6 +123,24 @@ impl DesktopRuntime {
                     cancel,
                 )
             }
+            EngineCommand::RefreshSurface {
+                command,
+                basis,
+                request,
+            } => {
+                let cancel = CancellationToken::new();
+                (
+                    request,
+                    EngineRequest::Surface {
+                        request,
+                        command,
+                        basis,
+                        cancel: cancel.clone(),
+                    },
+                    basis,
+                    cancel,
+                )
+            }
         };
         let lane = engine_request.coalesce_key();
         let older = self

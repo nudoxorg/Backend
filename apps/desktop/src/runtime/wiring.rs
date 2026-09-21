@@ -18,5 +18,6 @@ pub fn install_shell<C: EngineClient>(
     Ok(UiEntityGraph::install(
         cx,
         DesktopRuntime::new(snapshot, actor),
+        None,
     ))
 }

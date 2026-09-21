@@ -98,7 +98,25 @@ pub(crate) fn single_line(block: Div) -> Div {
 
 /// Shortens a path for display, eliding its middle and never its ends.
 pub(crate) fn elide(text: &str, budget: usize) -> SharedString {
-    SharedString::from(crate::presentation::crumb::elide_middle(text, budget))
+    SharedString::from(elide_middle(text, budget))
+}
+
+fn elide_middle(text: &str, budget: usize) -> String {
+    let characters: Vec<char> = text.chars().collect();
+    if characters.len() <= budget || budget < 6 {
+        return text.to_owned();
+    }
+    let keep = budget.saturating_sub(1);
+    let head = keep / 2;
+    let tail = keep.saturating_sub(head);
+    let mut out: String = characters.iter().take(head).collect();
+    out.push('…');
+    out.extend(
+        characters
+            .iter()
+            .skip(characters.len().saturating_sub(tail)),
+    );
+    out
 }
 
 /// Returns one line of text with the matched spans emphasised.

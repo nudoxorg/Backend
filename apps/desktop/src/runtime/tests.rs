@@ -17,6 +17,7 @@ impl EngineClient for EchoClient {
                 key: basis.with_generation(basis.generation.saturating_add(1)),
                 delta: None,
                 project: None,
+                catalog: None,
             }),
             EngineRequest::Object {
                 request,
@@ -30,6 +31,7 @@ impl EngineClient for EchoClient {
                 object: *object,
                 delta: *delta,
             }),
+            EngineRequest::Surface { .. } => Err(EngineFault::Cancelled),
         }
     }
 }

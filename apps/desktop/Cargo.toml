@@ -31,8 +31,14 @@ gpui_component.workspace = true
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
-toml.workspace = true
+
+[features]
+# Direct GPUI CE capture against the same live host/bootstrap as the product.
+visual-harness = ["dep:backend-gui-harness", "gpui_component/headless"]
+
+[dependencies.backend-gui-harness]
+path = "../../tools/gui-harness"
+optional = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { workspace = true, features = ["font-kit", "runtime_shaders"] }
@@ -43,21 +49,11 @@ gpui_platform = { workspace = true, features = ["x11", "wayland"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 gpui_platform = { workspace = true, features = ["wgpu"] }
 
-[features]
-# Rich design fixtures for screenshots and layout work without a live service.
-preview = []
-# Direct GPUI CE capture against the same live host/bootstrap as the product.
-visual-harness = ["dep:backend-gui-harness", "gpui_component/headless"]
-
 [dev-dependencies]
 blake3.workspace = true
 proptest.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 gpui_platform = { workspace = true, features = ["test-support"] }
-
-[dependencies.backend-gui-harness]
-path = "../../tools/gui-harness"
-optional = true
 
 [lints]
 workspace = true

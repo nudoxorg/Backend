@@ -121,6 +121,17 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
                 request,
             }));
         }
+        Intent::RefreshSurface {
+            command,
+            basis,
+            request,
+        } => {
+            effects.push(Effect::Engine(EngineCommand::RefreshSurface {
+                command,
+                basis,
+                request,
+            }));
+        }
         Intent::Action(action) => {
             if let Some(intent) = action.intent() {
                 return reduce(&next, intent);

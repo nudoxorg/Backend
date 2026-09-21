@@ -11,8 +11,8 @@ pub use persistence::{
 };
 pub use selectors::{KeyedSelectorCache, LayoutKey, RowHeightCache, SelectorKey};
 pub use snapshot::{
-    AppSnapshot, DeltaId, DocumentState, DocumentTab, ObjectId, ProjectState, SessionState,
-    SettingsState, ShelfItem, ShelfState,
+    AppSnapshot, CatalogState, DeltaId, DocumentState, DocumentTab, ObjectId, PackageSummary,
+    ProjectState, SessionState, SettingsState, ShelfItem, ShelfState,
 };
 pub use viewport::{
     DocumentViewportState, SourceViewportState, ViewportId, ViewportState, VirtualCollection,

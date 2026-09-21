@@ -2,6 +2,7 @@
 
 pub mod actor;
 pub mod animation;
+pub mod client;
 pub mod coordinator;
 pub mod mailbox;
 pub mod mapping;
@@ -18,10 +19,9 @@ pub use actor::{
 pub use animation::{
     AnimationId, AnimationTimeline, CaptureFrameClock, FrameClock, LiveFrameClock, Motion,
 };
+pub use client::LocalEngineClient;
 pub use coordinator::{DesktopRuntime, RuntimeEvent};
 pub use mailbox::{CoalesceKey, Coalescible, CoalescingMailbox, PushResult};
 pub use mapping::{MappingError, map_event};
-pub use ui_graph::{
-    FocusEntity, ModalEntity, PaletteEntity, SnapshotEntity, UiEntityGraph, UiRootEntity,
-};
+pub use ui_graph::{UiEntityGraph, UiRootEntity};
 pub use wiring::install_shell;

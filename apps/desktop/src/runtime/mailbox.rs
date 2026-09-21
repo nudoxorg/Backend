@@ -18,6 +18,8 @@ pub enum CoalesceKey {
     Root,
     /// Only the newest read for an object matters.
     Object(ObjectId),
+    /// Only the newest request for one typed product surface matters.
+    Surface(backend_library::CommandId),
     /// Persistence writes can be collapsed into the newest state.
     Persistence,
 }

@@ -73,16 +73,19 @@ current source/docs:
   CRDT/session/agent domain model is outside the Nudox desktop contract and is
   not reproduced here. Reviewed at source commit `394f925`.
 
-## Migration/deletion map
+## Cutover boundary
 
-The v3 modules are the replacement target for the current `store`, `reducer`,
-and transport-owned window state. The actor has bounded request and result
-mailboxes; background producers apply backpressure while the UI is paused, and
-`EngineActor::start` reports thread creation failures instead of returning a
-dead handle. Explicit `shutdown` joins from a non-UI owner; UI teardown closes
-both bounded channels and releases the handle without waiting for an arbitrary
-client call. During the visual-lane transition, old views remain buildable so
-visual work can migrate against the public ports. The final shell removes the
-old `store/*`, `reducer/*`, `transport/*`, and `host/launch.rs` state owners
-after the visual roots consume `UiEntityGraph`; no aliases or second state
-owner should be retained in that cutover.
+The v3 modules are the production implementation. The old `store/*`,
+`reducer/*`, `transport/*`, preview, motion, presentation, and workspace view
+modules are physically absent from the desktop crate; there are no aliases or
+compatibility shims that can reintroduce a second state owner. `host/launch.rs`
+only composes the local-first service, durable persistence, engine actor, and
+one `UiEntityGraph`.
+
+The actor has bounded request and result mailboxes; background producers apply
+backpressure while the UI is paused, and `EngineActor::start` reports thread
+creation failures instead of returning a dead handle. Explicit shutdown joins
+from a non-UI owner; UI teardown closes both bounded channels and releases the
+handle without waiting for an arbitrary client call. The visual harness is a
+small adapter over the same graph and host, so headless captures cannot drift
+onto fixture data or a parallel reducer.

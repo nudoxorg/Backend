@@ -1,9 +1,11 @@
 //! Engine DTO → immutable snapshot mapping.
 
 use super::actor::{EngineDto, EngineEvent, EngineFault};
+use super::client::package_summary;
 use crate::core::VersionedRoot;
-use crate::model::AppSnapshot;
+use crate::model::{AppSnapshot, CatalogState};
 use crate::navigation::RequestId;
+use std::sync::Arc;
 
 /// Mapping failures remain typed until the accessibility/presentation edge.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +51,7 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
             key,
             delta,
             project,
+            catalog,
         } => {
             if request != event_request {
                 return Err(MappingError::RequestMismatch {
@@ -72,8 +75,11 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
                 });
             }
             let snapshot = current.with_key(key, delta);
-            Ok(project.map_or(snapshot.clone(), |project| {
+            let snapshot = project.map_or(snapshot.clone(), |project| {
                 snapshot.with_project(project.into_model(), key)
+            });
+            Ok(catalog.map_or(snapshot.clone(), |packages| {
+                snapshot.with_catalog(CatalogState { packages }, key)
             }))
         }
         EngineDto::Object {
@@ -98,6 +104,47 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
             // admitted delta is still part of the immutable snapshot key for
             // selector/layout invalidation.
             Ok(current.with_key(current.key(), Some(delta)))
+        }
+        EngineDto::Surface {
+            request,
+            basis: dto_basis,
+            command: _,
+            reply,
+        } => {
+            if request != event_request {
+                return Err(MappingError::RequestMismatch {
+                    expected: event_request,
+                    observed: request,
+                });
+            }
+            if !dto_basis.same_authority(basis) {
+                return Err(MappingError::BasisMismatch {
+                    expected: basis,
+                    observed: dto_basis,
+                });
+            }
+            let packages = match reply {
+                backend_library::SurfaceReply::Explored(records)
+                | backend_library::SurfaceReply::Package(records)
+                | backend_library::SurfaceReply::IndexSearch(records)
+                | backend_library::SurfaceReply::PackageVersions(records) => Some(
+                    records
+                        .iter()
+                        .filter_map(package_summary)
+                        .collect::<Vec<_>>()
+                        .into(),
+                ),
+                backend_library::SurfaceReply::PackageProfile { latest, .. } => latest
+                    .as_ref()
+                    .and_then(package_summary)
+                    .map(|package| Arc::from([package])),
+                _ => None,
+            };
+            let snapshot = packages.map_or_else(
+                || current.with_key(current.key(), None),
+                |packages| current.with_catalog(CatalogState { packages }, current.key()),
+            );
+            Ok(snapshot)
         }
     }
 }
@@ -131,6 +178,7 @@ mod tests {
                     key: basis.with_generation(3).observed_at(100),
                     delta: None,
                     project: None,
+                    catalog: None,
                 }),
             },
         )
@@ -156,6 +204,7 @@ mod tests {
                     key: basis.with_generation(1).observed_at(1000),
                     delta: None,
                     project: None,
+                    catalog: None,
                 }),
             },
         )
@@ -181,6 +230,7 @@ mod tests {
                     key: current_key.with_generation(3),
                     delta: None,
                     project: None,
+                    catalog: None,
                 }),
             },
         )

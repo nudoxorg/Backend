@@ -133,6 +133,43 @@ pub struct ProjectState {
     pub packages: Arc<[PackageId]>,
 }
 
+/// One registry package record projected at the runtime boundary.
+///
+/// The desktop never carries a half-decoded wire record through the view tree.
+/// The producer owns the original `RegistryPackageRecord`; this compact value
+/// is the stable, copy-on-write projection used by package cards, the shelf,
+/// and deep links.  Every field is either a producer fact or an explicit
+/// availability spelling.  In particular, the UI never turns a missing
+/// download count into zero and never fabricates a README or repository URL.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageSummary {
+    /// Version-pinned package coordinate.
+    pub coordinate: PackageId,
+    /// Registry-native package name.
+    pub name: Arc<str>,
+    /// Immutable release version.
+    pub version: Arc<str>,
+    /// Closed producer ecosystem spelling.
+    pub ecosystem: Arc<str>,
+    /// Verified archive size.
+    pub bytes: u64,
+    /// Release standing, already projected from the producer enum.
+    pub standing: Arc<str>,
+    /// Download observation, preserving unavailable coverage.
+    pub downloads: Arc<str>,
+    /// Advisory state, preserving unavailable coverage.
+    pub advisory: Arc<str>,
+    /// Stable object identity for selectors and row caches.
+    pub object: ObjectId,
+}
+
+/// The live registry catalog admitted by the current producer root.
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub struct CatalogState {
+    /// Version-pinned package records in producer order.
+    pub packages: Arc<[PackageSummary]>,
+}
+
 /// Persistent settings exposed through the snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SettingsState {
@@ -186,6 +223,7 @@ struct SnapshotData {
     shelf: Arc<ShelfState>,
     documents: Arc<DocumentState>,
     project: Resource<ProjectState>,
+    catalog: Resource<CatalogState>,
     settings: Arc<SettingsState>,
     session: Arc<SessionState>,
     delta: Option<DeltaId>,
@@ -208,6 +246,7 @@ impl AppSnapshot {
                 shelf: Arc::new(ShelfState::default()),
                 documents: Arc::new(DocumentState::default()),
                 project: Resource::not_yet(),
+                catalog: Resource::not_yet(),
                 settings: Arc::new(SettingsState::default()),
                 session: Arc::new(SessionState::default()),
                 delta: None,
@@ -251,6 +290,12 @@ impl AppSnapshot {
         &self.data.project
     }
 
+    /// Returns the live package catalog for the admitted root.
+    #[must_use]
+    pub fn catalog(&self) -> &Resource<CatalogState> {
+        &self.data.catalog
+    }
+
     /// Returns the settings branch.
     #[must_use]
     pub fn settings(&self) -> &SettingsState {
@@ -290,6 +335,7 @@ impl AppSnapshot {
             shelf: Arc::clone(&self.data.shelf),
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
+            catalog: self.data.catalog.clone(),
             settings: Arc::clone(&self.data.settings),
             session: Arc::clone(&self.data.session),
             delta,
@@ -306,6 +352,7 @@ impl AppSnapshot {
             shelf: Arc::clone(&self.data.shelf),
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
+            catalog: self.data.catalog.clone(),
             settings: Arc::clone(&self.data.settings),
             session: Arc::new(session),
             delta: self.data.delta,
@@ -321,6 +368,7 @@ impl AppSnapshot {
             shelf: Arc::new(shelf),
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
+            catalog: self.data.catalog.clone(),
             settings: Arc::clone(&self.data.settings),
             session: Arc::clone(&self.data.session),
             delta: self.data.delta,
@@ -336,6 +384,7 @@ impl AppSnapshot {
             shelf: Arc::clone(&self.data.shelf),
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
+            catalog: self.data.catalog.clone(),
             settings: Arc::new(settings),
             session: Arc::clone(&self.data.session),
             delta: self.data.delta,
@@ -351,6 +400,23 @@ impl AppSnapshot {
             shelf: Arc::clone(&self.data.shelf),
             documents: Arc::clone(&self.data.documents),
             project: Resource::loaded_at(project, key),
+            catalog: self.data.catalog.clone(),
+            settings: Arc::clone(&self.data.settings),
+            session: Arc::clone(&self.data.session),
+            delta: self.data.delta,
+        });
+        next
+    }
+
+    /// Returns a copy with a producer-mapped registry catalog.
+    #[must_use]
+    pub(crate) fn with_catalog(&self, catalog: CatalogState, key: VersionedRoot) -> Self {
+        let mut next = self.clone();
+        next.data = Arc::new(SnapshotData {
+            shelf: Arc::clone(&self.data.shelf),
+            documents: Arc::clone(&self.data.documents),
+            project: self.data.project.clone(),
+            catalog: Resource::loaded_at(catalog, key),
             settings: Arc::clone(&self.data.settings),
             session: Arc::clone(&self.data.session),
             delta: self.data.delta,

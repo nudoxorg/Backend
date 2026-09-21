@@ -1,146 +1,106 @@
-//! The reader: whatever the active tab is showing, in one reading column.
-//! The previous page stays until the next one has arrived; nothing flashes.
-//! A failure renders here, in place, with the same weight a page would have.
-//!
-//! Tabs live in the projects panel as a tree, not here as a strip. With no
-//! tab at all the column shows the home page, so the window never opens on
-//! nothing and the first click a reader makes is the same click they will
-//! make every day.
-//!
-//! The column has two measures. A declaration page is prose and a signature,
-//! and reads best at a book's width; the home page holds a grid of package
-//! cards and a search field that should feel large, and takes the wider one.
+//! Version-pinned declaration and source reading projections.
 
-use super::workspace::Workspace;
-use crate::motion::{Beat, entering_opacity, once};
-use crate::store::document::Content;
+use super::primitives::{crumb, heading};
+use crate::model::AppSnapshot;
+use crate::navigation::{Intent, Route};
+use crate::runtime::UiRootEntity;
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Space, TypeScale, space};
-use crate::ui::{fault as fault_ui, surface, text};
-use backend_present::Identity;
+use crate::theme::tokens::{Space, TypeScale, space, type_size};
+use crate::ui::{components, surface, text};
 use gpui::prelude::FluentBuilder as _;
-use gpui::{
-    AnimationExt as _, AnyElement, Context, Div, ElementId, InteractiveElement, IntoElement,
-    ParentElement, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, div, px,
-};
+use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div, px};
 
-/// Widest a declaration page grows, in pixels.
-const MEASURE: f32 = 880.0;
-
-/// Widest the home page grows, in pixels: room for three package cards.
-const HOME_MEASURE: f32 = 1220.0;
-
-impl Workspace {
-    /// Returns the centre column.
-    pub(super) fn reader(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex_1()
-            .min_w(px(0.0))
-            .h_full()
-            .flex()
-            .flex_col()
-            .child(self.reader_body(theme, cx))
-    }
-
-    fn reader_body(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let tab = self.document.read(cx).tab();
-        let pending = tab.and_then(|tab| tab.pending().cloned());
-        let scroll = tab.map_or_else(ScrollHandle::new, |tab| tab.scroll().clone());
-        let content = tab.map_or(Content::Home, |tab| tab.content().clone());
-        let measure = match content {
-            Content::Home => HOME_MEASURE,
-            _ => MEASURE,
-        };
-        let regions = self.content(theme, &content, cx);
-        let reduced = theme.reduced_motion();
-        let generation = self.document.read(cx).generation();
-        div()
-            .id("reader-body")
-            .flex_1()
-            .min_h(px(0.0))
-            .w_full()
-            .max_w(px(measure))
-            .mx_auto()
-            .px(space(Space::Margin))
-            .py(space(Space::Gutter))
-            .overflow_y_scroll()
-            .track_scroll(&scroll)
-            .flex()
-            .flex_col()
-            .gap(space(Space::Gutter))
-            .when_some(pending, |body, identity| {
-                body.child(loading_bar(theme, &identity))
-            })
-            .children(regions)
-            .with_animation(
-                ElementId::Name(SharedString::from(format!("page-swap-{generation}"))),
-                once(Beat::Reveal, reduced),
-                |body, delta| body.opacity(entering_opacity(delta)),
-            )
-            .into_any_element()
-    }
-
-    fn content(
-        &mut self,
-        theme: &Theme,
-        content: &Content,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        match content {
-            Content::Blank => vec![reserved(theme).into_any_element()],
-            Content::Home => vec![self.home_page(theme, cx)],
-            Content::Page(page) => self.declaration_page(theme, page, cx),
-            Content::Project { coordinate } => {
-                vec![self.project_page(theme, coordinate, cx).into_any_element()]
-            }
-            Content::Outline { coordinate } => {
-                vec![self.project_page(theme, coordinate, cx).into_any_element()]
-            }
-            Content::Package { coordinate } => vec![self.package_page(theme, coordinate, cx)],
-            Content::Faulted(fault) => {
-                let actions = Self::affordances(theme, "reader", fault, "", cx);
-                vec![fault_ui::block(theme, fault, actions).into_any_element()]
-            }
-        }
-    }
-}
-
-/// Returns the reserved-geometry block a tab shows before its first page.
-fn reserved(theme: &Theme) -> Div {
-    div()
-        .w_full()
+pub(super) fn document_page(
+    root: &mut UiRootEntity,
+    theme: &Theme,
+    _snapshot: &AppSnapshot,
+    route: &crate::navigation::PageRoute,
+    cx: &mut Context<UiRootEntity>,
+) -> AnyElement {
+    let coordinate = route.coordinate.as_str().to_owned();
+    let source_route = Route::Source(crate::navigation::SourceRoute {
+        project: route.project.clone(),
+        package: route.package.clone(),
+        page: route.coordinate.clone(),
+        line: 1,
+        selected: route.selected,
+    });
+    let _ = root;
+    surface::panel(theme)
+        .p(px(28.0))
         .flex()
         .flex_col()
-        .gap(space(Space::Base))
-        .child(skeleton(theme, 280.0, 22.0))
-        .child(skeleton(theme, 520.0, 14.0))
-        .child(surface::sunken(theme).w_full().h(px(76.0)).flex_none())
-        .child(skeleton(theme, 640.0, 14.0))
-        .child(skeleton(theme, 480.0, 14.0))
-}
-
-fn skeleton(theme: &Theme, width: f32, height: f32) -> Div {
-    div()
-        .w(px(width))
-        .max_w(gpui::relative(1.0))
-        .h(px(height))
-        .bg(theme.paint(Paint::Tint))
-}
-
-/// Returns the thin bar that says which identity is arriving.
-fn loading_bar(theme: &Theme, identity: &Identity) -> Div {
-    div()
-        .w_full()
-        .flex()
-        .items_center()
-        .gap(space(Space::Snug))
-        .px(space(Space::Base))
-        .py(px(4.0))
-        .bg(theme.paint(Paint::Tint))
-        .child(text::faint(theme).child("reading"))
+        .gap(space(Space::Gutter))
+        .child(crumb(theme, &format!("{} / docs", route.package)))
+        .child(heading(theme, &coordinate))
         .child(
-            text::single_line(text::identity_text(theme, TypeScale::Tiny))
-                .child(identity.name().to_owned()),
+            div()
+                .flex()
+                .gap(space(Space::Tight))
+                .child(
+                    components::button_with_state(
+                        theme,
+                        "docs-source",
+                        "View source",
+                        components::Weight::Regular,
+                        false,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.queue(Intent::Navigate(source_route.clone()), cx);
+                    })),
+                )
+                .child(
+                    components::button_with_state(
+                        theme,
+                        "docs-graph",
+                        "Graph",
+                        components::Weight::Quiet,
+                        false,
+                        true,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.queue(Intent::OpenCommandPalette, cx);
+                    })),
+                ),
         )
+        .child(
+            surface::sunken(theme)
+                .p(px(22.0))
+                .child(text::single_line(text::body(theme)).child(
+                    "Documentation is read from the versioned declaration projection. Source, code search, and graph use the same package and object identity.",
+                )),
+        )
+        .into_any_element()
+}
+
+pub(super) fn source_page(
+    _root: &mut UiRootEntity,
+    theme: &Theme,
+    _snapshot: &AppSnapshot,
+    route: &crate::navigation::SourceRoute,
+    _cx: &mut Context<UiRootEntity>,
+) -> AnyElement {
+    surface::sunken(theme)
+        .p(px(28.0))
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(crumb(theme, &format!("{} / source", route.package)))
+        .child(heading(theme, route.page.as_str()))
+        .child(
+            div()
+                .mt(space(Space::Gutter))
+                .font_family(theme.specimen())
+                .text_size(type_size(TypeScale::Small))
+                .text_color(theme.paint(Paint::Silver1))
+                .child(format!(
+                    "{:>4}  // source is pinned to line {}",
+                    route.line, route.line
+                ))
+                .child("\n   1  // awaiting the live source projection")
+                .child("\n   2  // the object identity remains stable across deltas"),
+        )
+        .into_any_element()
 }

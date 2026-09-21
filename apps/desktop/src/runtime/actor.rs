@@ -2,7 +2,7 @@
 
 use super::mailbox::{CoalesceKey, Coalescible, CoalescingMailbox, PushResult};
 use crate::core::{ErrorValue, VersionedRoot};
-use crate::model::snapshot::{DeltaId, ObjectId, ProjectState};
+use crate::model::snapshot::{DeltaId, ObjectId, PackageSummary, ProjectState};
 use crate::navigation::RequestId;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,24 +62,41 @@ pub enum EngineRequest {
         /// Cancellation state.
         cancel: CancellationToken,
     },
+    /// Read one daemon-owned product surface at the caller's exact root.
+    Surface {
+        /// Request identity.
+        request: RequestId,
+        /// Typed surface command.
+        command: backend_library::SurfaceCommand,
+        /// Producer root basis.
+        basis: VersionedRoot,
+        /// Cancellation state.
+        cancel: CancellationToken,
+    },
 }
 
 impl EngineRequest {
     fn basis(&self) -> VersionedRoot {
         match self {
-            Self::Root { basis, .. } | Self::Object { basis, .. } => *basis,
+            Self::Root { basis, .. } | Self::Object { basis, .. } | Self::Surface { basis, .. } => {
+                *basis
+            }
         }
     }
 
     pub(crate) fn request(&self) -> RequestId {
         match self {
-            Self::Root { request, .. } | Self::Object { request, .. } => *request,
+            Self::Root { request, .. }
+            | Self::Object { request, .. }
+            | Self::Surface { request, .. } => *request,
         }
     }
 
     fn cancelled(&self) -> bool {
         match self {
-            Self::Root { cancel, .. } | Self::Object { cancel, .. } => cancel.is_cancelled(),
+            Self::Root { cancel, .. }
+            | Self::Object { cancel, .. }
+            | Self::Surface { cancel, .. } => cancel.is_cancelled(),
         }
     }
 }
@@ -89,6 +106,7 @@ impl Coalescible for EngineRequest {
         match self {
             Self::Root { .. } => Some(CoalesceKey::Root),
             Self::Object { object, .. } => Some(CoalesceKey::Object(*object)),
+            Self::Surface { command, .. } => Some(CoalesceKey::Surface(command.id())),
         }
     }
 }
@@ -109,6 +127,8 @@ pub enum EngineDto {
         delta: Option<DeltaId>,
         /// Optional mapped project read model.
         project: Option<ProjectDto>,
+        /// Live registry catalog, when the owner exposes it.
+        catalog: Option<Arc<[PackageSummary]>>,
     },
     /// An object response tied to one delta.
     Object {
@@ -120,6 +140,17 @@ pub enum EngineDto {
         object: ObjectId,
         /// Delta identity.
         delta: DeltaId,
+    },
+    /// A typed product surface response mapped at the runtime boundary.
+    Surface {
+        /// Request identity.
+        request: RequestId,
+        /// Basis that was requested.
+        basis: VersionedRoot,
+        /// Original typed command.
+        command: backend_library::SurfaceCommand,
+        /// Producer reply.
+        reply: backend_library::SurfaceReply,
     },
 }
 
@@ -175,6 +206,7 @@ impl Coalescible for EngineEvent {
         self.lane.or_else(|| match &self.result {
             Ok(EngineDto::Root { .. }) => Some(CoalesceKey::Root),
             Ok(EngineDto::Object { object, .. }) => Some(CoalesceKey::Object(*object)),
+            Ok(EngineDto::Surface { command, .. }) => Some(CoalesceKey::Surface(command.id())),
             Err(_) => None,
         })
     }
@@ -267,9 +299,9 @@ impl EngineActor {
         let result = self.mailbox.try_push(request, key);
         if let PushResult::Coalesced(old) = &result {
             match old {
-                EngineRequest::Root { cancel, .. } | EngineRequest::Object { cancel, .. } => {
-                    cancel.cancel()
-                }
+                EngineRequest::Root { cancel, .. }
+                | EngineRequest::Object { cancel, .. }
+                | EngineRequest::Surface { cancel, .. } => cancel.cancel(),
             }
         }
         result

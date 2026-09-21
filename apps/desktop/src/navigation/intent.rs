@@ -78,6 +78,15 @@ pub enum Intent {
         /// Request identity allocated by the UI coordinator.
         request: RequestId,
     },
+    /// Read one typed product surface at the exact snapshot root.
+    RefreshSurface {
+        /// Typed daemon-owned surface command.
+        command: backend_library::SurfaceCommand,
+        /// Root the response must match.
+        basis: VersionedRoot,
+        /// Request identity.
+        request: RequestId,
+    },
     /// Apply a stable action from a keymap or command palette.
     Action(ActionId),
     /// No-op used by deterministic replay and reducer laws.
@@ -100,6 +109,15 @@ pub enum EngineCommand {
         object: ObjectId,
         /// Delta basis.
         delta: DeltaId,
+        /// Root basis to match.
+        basis: VersionedRoot,
+        /// Request identity.
+        request: RequestId,
+    },
+    /// Read one typed product surface.
+    RefreshSurface {
+        /// Typed daemon-owned surface command.
+        command: backend_library::SurfaceCommand,
         /// Root basis to match.
         basis: VersionedRoot,
         /// Request identity.
