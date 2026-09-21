@@ -1941,6 +1941,20 @@ pub fn execute() {}
             first_preimage,
             reverse_method.expect("method identity is order independent")
         );
+
+        let mut unique = BTreeMap::new();
+        let (unique_id, unique_preimage) = super::declaration_symbol(
+            "fixture::src/index.ts:4::run",
+            backend_engine::DeclarationKind::Function,
+            "function run(): void",
+            false,
+            &mut unique,
+        );
+        assert_eq!(
+            unique_id,
+            RowId::Symbol(symbol_key("fixture::src/index.ts:4::run"))
+        );
+        assert!(unique_preimage.is_none(), "unique TypeScript rows stay compact");
     }
 
     /// Renders one row's parent as the coordinate it points at, or `-`.

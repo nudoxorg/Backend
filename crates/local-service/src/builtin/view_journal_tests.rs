@@ -101,6 +101,25 @@ fn roundtrip_re_admits_occurrence_disambiguated_row_identity() {
             .map(|value| value.as_str()),
         Some(preimage)
     );
+    for restart in 0..3 {
+        let reopened = ViewJournal::open(&path).expect("reopen occurrence journal");
+        let cold = reopened
+            .load_for_workspace(head.root(), &capability)
+            .expect("load occurrence row after restart")
+            .expect("occurrence snapshot after restart");
+        assert_eq!(cold.cursor, cursor, "cold restart {restart} changed revision");
+        assert_eq!(
+            cold.view.version(),
+            view.version(),
+            "cold restart {restart} changed version"
+        );
+        assert_eq!(cold.view.root(), view.root(), "cold restart {restart} changed root");
+        assert_eq!(
+            cold.view.rows(),
+            view.rows(),
+            "cold restart {restart} changed content"
+        );
+    }
     let _ = fs::remove_file(path);
 }
 

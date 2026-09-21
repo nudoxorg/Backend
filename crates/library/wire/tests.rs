@@ -289,7 +289,7 @@ fn occurrence_disambiguated_row_identity_is_admitted_from_its_explicit_preimage(
     let symbol = symbol_key(preimage);
     let row = Row::new(RowId::Symbol(symbol), basis, "pkg::src/lib.rs:1::run")
         .with_identity_preimage(
-            crate::RowIdentityPreimage::try_new(preimage).expect("bounded preimage"),
+            RowIdentityPreimage::try_new(preimage).expect("bounded preimage"),
         );
     let root = ViewRoot::new_checked(
         view_key(b"view"),
@@ -352,7 +352,7 @@ fn occurrence_disambiguated_row_identity_is_admitted_from_its_explicit_preimage(
     let mixed_view = ViewDto::new(
         9,
         ViewSnapshot {
-            root,
+            root: root.clone(),
             freshness: Freshness::Current,
             next: None,
             graph_relations: None,
@@ -361,6 +361,15 @@ fn occurrence_disambiguated_row_identity_is_admitted_from_its_explicit_preimage(
     .with_certificate(mixed);
     let mixed_encoded = serde_json::to_vec(&mixed_view).expect("encode mixed view");
     assert!(ViewDto::decode_with_certificate(&mixed_encoded, Some(capability(basis.object)))
+        .is_err());
+
+    let oversized = certificate(&root).with_claim(WireClaim::RowIdentity {
+        schema: WireSchema::Symbol,
+        id: encode_id(symbol.as_bytes()),
+        preimage: "x".repeat(MAX_ROW_IDENTITY_PREIMAGE_BYTES + 1),
+    });
+    assert!(oversized
+        .row_identity_preimage(WireSchema::Symbol, &encode_id(symbol.as_bytes()))
         .is_err());
 }
 
