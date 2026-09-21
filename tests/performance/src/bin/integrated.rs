@@ -1163,7 +1163,7 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
         status: "ok",
         size_class: class.name.to_owned(),
         operation: "cold_open_synchronize".to_owned(),
-        phase: "cold_then_warm".to_owned(),
+        phase: "cold_open".to_owned(),
         wall: stats(&mut vec![cold_timing]),
         rows: view.row_count() as usize,
         database_bytes,
@@ -1818,7 +1818,7 @@ fn main() -> BenchResult<()> {
     let gui = run_gui(gui_bin.as_deref());
     let (peak_rss_bytes, cpu_time_ns) = resource_sampler.finish();
     let mut notes = vec![
-        "CPU time and peak RSS are unavailable because this safe Rust runner does not make a platform-specific getrusage claim.".to_owned(),
+        "Host CPU time and peak RSS are sampled with ps; phase-level allocation counters and GUI child-process resources remain unavailable at the public Rust boundary.".to_owned(),
         "Network acquisition and cross-call singleflight are explicitly unavailable without a configured live remote transport; local persisted CAS resolution remains measured.".to_owned(),
         "GUI source-open/search and graph-delta subjourneys require a supplied live harness binary and are reported unavailable when absent.".to_owned(),
         format!("large corpus selection is deterministic and capped at {} files or {} MiB after canonical row-size filtering.", MAX_LARGE_CORPUS_FILES, MAX_LARGE_CORPUS_BYTES / (1024 * 1024)),
