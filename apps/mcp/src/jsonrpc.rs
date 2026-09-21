@@ -360,7 +360,7 @@ impl<P: Product> Server<P> {
             Some(Value::Object(arguments)) => arguments,
             Some(_) => return Err(RpcError::invalid("arguments must be an object")),
         };
-        let detail = response_detail(arguments)?;
+        let detail = response_detail(name, arguments)?;
         let context = continuation_context(&self.project, name, arguments, detail);
         let continuation = self.continuation(arguments, &context)?;
         if name == QUERY_TOOL {
@@ -955,15 +955,29 @@ impl Serialize for GraphValueRef<'_> {
     }
 }
 
-fn response_detail(arguments: &Map<String, Value>) -> Result<Detail, RpcError> {
+fn response_detail(tool: &str, arguments: &Map<String, Value>) -> Result<Detail, RpcError> {
     let Some(value) = arguments.get("detail") else {
-        return Ok(Detail::Summary);
+        return Ok(default_detail(tool));
     };
     let value = value
         .as_str()
         .ok_or_else(|| RpcError::invalid("detail must be summary, standard, or full"))?;
     Detail::parse(value)
         .ok_or_else(|| RpcError::invalid("detail must be summary, standard, or full"))
+}
+
+/// Returns the smallest projection that fulfils a tool's advertised promise.
+///
+/// A document or source lookup exists to return code, so reducing it to an
+/// identity-only summary by default makes a successful call unusable and
+/// forces a second round trip. Discovery and collection tools retain the
+/// context-efficient summary default; callers may still explicitly request
+/// any detail level for every tool.
+pub(super) fn default_detail(tool: &str) -> Detail {
+    match tool {
+        "backend.document" | "backend.source" => Detail::Standard,
+        _ => Detail::Summary,
+    }
 }
 
 fn bounded_text(text: &str) -> String {

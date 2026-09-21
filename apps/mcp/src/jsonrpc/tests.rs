@@ -412,6 +412,24 @@ fn the_tool_table_is_grouped_by_domain_in_registry_order() {
 }
 
 #[test]
+fn document_and_source_tools_advertise_their_useful_default_detail() {
+    let mut server = ready(Fake::default());
+    let listed = request(&mut server, "tools/list", &json!({}));
+    for name in ["backend.document", "backend.source"] {
+        let tool = tool_named(&listed["result"]["tools"], name);
+        assert_eq!(
+            tool["inputSchema"]["properties"]["detail"]["default"], "standard",
+            "{name} must advertise the same useful default that execution applies"
+        );
+    }
+    let search = tool_named(&listed["result"]["tools"], "backend.search");
+    assert_eq!(
+        search["inputSchema"]["properties"]["detail"]["default"],
+        "summary"
+    );
+}
+
+#[test]
 fn the_surface_escape_hatch_still_advertises_every_typed_operation() {
     let mut server = ready(Fake::default());
     let listed = request(&mut server, "tools/list", &json!({}));
@@ -472,6 +490,19 @@ fn a_document_call_returns_the_markdown_page_and_the_typed_answer() {
     assert_eq!(
         result["structuredContent"]["identity"]["trail"],
         "polyglot › src/lib.rs:2 › ferris"
+    );
+    assert_eq!(
+        result["structuredContent"]["signature"], "pub mod lib",
+        "a document's default projection must include the code it was requested to show"
+    );
+    assert_eq!(result["structuredContent"]["source"]["extent"], "complete");
+    assert!(
+        result["structuredContent"]["source"]["lines"]
+            .as_array()
+            .is_some_and(|lines| lines
+                .iter()
+                .any(|line| line == "pub fn ferris() -> Beacon {")),
+        "the default document projection lost its bounded source excerpt: {result}"
     );
 }
 

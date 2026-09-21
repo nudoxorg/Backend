@@ -114,11 +114,11 @@
       "allocation_bytes": 130944,
       "allocation_count": 10,
       "budget_bytes": 49152,
-      "bytes": 42948,
-      "estimated_tokens": 10737,
+      "bytes": 47633,
+      "estimated_tokens": 11909,
       "fixture": "crates/present/fixtures/mcp-tool-schema.json",
-      "real_tokens": 8611,
-      "sha256": "fd6bfe53865ac5c757c13011daa93bfa2a89594e49bba8cb6991be86fb39d5b6"
+      "real_tokens": 9514,
+      "sha256": "8b76e8107edc677ce8931d50b22827cf6fa2c685fb91c507b82852b0f2fd261b"
     },
     "unicode_rtl_records": {
       "allocation_bytes": 67728,

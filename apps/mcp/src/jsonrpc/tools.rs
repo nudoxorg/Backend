@@ -15,8 +15,8 @@
 //! say so: `backend.query`, the typed Trustfall lane, and `backend.surface`,
 //! the escape hatch that still takes a tagged `SurfaceCommand` verbatim.
 
-use super::RpcError;
 use super::codec::empty_cursor;
+use super::{RpcError, default_detail};
 use backend_library::CommandDomain;
 use backend_present::{
     ArgumentKind, ArgumentSpec, CommandGrammar, DEFAULT_LIMIT, DEFAULT_RESPONSE_BUDGET_BYTES,
@@ -85,13 +85,18 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     // Presentation controls are shared by every read tool. Keeping them out
     // of the command grammar avoids making a presentation preference look
     // like a daemon operand while still making the accepted JSON explicit.
+    let default_detail = match default_detail(grammar.tool()) {
+        Detail::Summary => "summary",
+        Detail::Standard => "standard",
+        Detail::Full => "full",
+    };
     properties.insert(
         "detail".to_owned(),
         json!({
             "type": "string",
             "enum": ["summary", "standard", "full"],
-            "default": "summary",
-            "description": "Response projection; summary is context-efficient, full opts into every available field."
+            "default": default_detail,
+            "description": "Response projection; summary is context-efficient, standard returns the tool's useful working set, and full opts into every available field."
         }),
     );
     if matches!(grammar.name(), "search" | "resolve" | "name" | "graph") {
