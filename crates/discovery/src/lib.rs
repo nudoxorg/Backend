@@ -33,7 +33,14 @@ pub const DEFAULT_IGNORED_DIRECTORIES: &[&str] = &[
     ".svelte-kit",
     ".turbo",
     ".cache",
+    ".vite",
+    ".parcel-cache",
+    ".webpack",
+    ".rollup.cache",
+    ".nx",
     "coverage",
+    "storybook-static",
+    ".nyc_output",
     "Library",
     ".venv",
     "venv",
@@ -48,6 +55,8 @@ pub const DEFAULT_IGNORED_DIRECTORIES: &[&str] = &[
     ".yarn",
     ".pnpm-store",
     "bower_components",
+    "jspm_packages",
+    "vendor",
 ];
 
 /// Compatibility alias for callers that used the original name.
@@ -478,7 +487,15 @@ impl Iterator for Discovery {
         loop {
             let result = self.inner.next()?;
             match result {
-                Ok(entry) if entry.path() == self.root => continue,
+                Ok(entry) if entry.path() == self.root => {
+                    if let Some(error) = entry.error() {
+                        return Some(Err(DiscoveryError::Io {
+                            path: self.root.clone(),
+                            detail: error.to_string(),
+                        }));
+                    }
+                    continue;
+                }
                 Ok(entry) => {
                     return Some(if let Some(error) = entry.error() {
                         Err(DiscoveryError::Io {
@@ -743,5 +760,18 @@ mod tests {
             }));
             let _ = fs::remove_dir_all(outside);
         }
+    }
+
+    #[test]
+    fn missing_root_is_a_typed_discovery_error() {
+        let scratch = Scratch::new("missing");
+        let missing = scratch.0.join("does-not-exist");
+        let results = DiscoveryPolicy::default()
+            .walk(&missing)
+            .collect::<Vec<_>>();
+        assert_eq!(results.len(), 1, "missing roots must report one error");
+        assert!(
+            matches!(results.into_iter().next(), Some(Err(DiscoveryError::Io { path, .. })) if path == missing)
+        );
     }
 }
