@@ -21,7 +21,8 @@ backend-client = { path = "../../crates/client" }
 backend-locald = { package = "backend-local-service", path = "../../crates/local-service" }
 backend-runtime = { path = "../../crates/runtime" }
 backend-worker = { path = "../../apps/worker" }
-backend-desktop = { path = "../../apps/desktop" }
+backend-desktop = { path = "../../apps/desktop", features = ["visual-harness"] }
+backend-gui-harness = { path = "../../tools/gui-harness" }
 backend-extension-turso = { path = "../../extensions/turso" }
 backend-compile = { path = "../../crates/compile" }
 backend-frontend-clang = { path = "../../frontends/clang" }
@@ -33,6 +34,7 @@ backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
 blake3.workspace = true
 flate2.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [[bin]]
@@ -54,6 +56,10 @@ path = "src/bin/cli.rs"
 [[bin]]
 name = "backend-journey-mcp"
 path = "src/bin/mcp.rs"
+
+[[bin]]
+name = "backend-journey-gui"
+path = "src/bin/gui.rs"
 
 [lints]
 workspace = true
