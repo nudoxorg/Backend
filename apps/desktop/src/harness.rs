@@ -302,10 +302,7 @@ fn capture_live_workspace_mode(
             // Mirror the visible launcher before the first frame. This is the
             // actual GPUI keymap, so journey keystrokes exercise production
             // action dispatch rather than a harness-side switch statement.
-            cx.bind_keys(
-                crate::views::actions::editing_bindings()
-                    .as_keybindings(Some(crate::views::actions::FIELD_CONTEXT)),
-            );
+            gpui_component::init(cx);
             cx.bind_keys(crate::views::actions::window_bindings());
             if let Err(error) = cx.text_system().add_fonts(
                 backend_gui_harness::bundled_font_bytes()
@@ -324,7 +321,7 @@ fn capture_live_workspace_mode(
             cx.set_global(HarnessLocale(locale));
             cx.set_global(HarnessDirection(config.text_direction.clone()));
             cx.set_global(HarnessActions(action_tree));
-            let workspace = cx.new(|cx| Workspace::new(opened, cx));
+            let workspace = cx.new(|cx| Workspace::new(opened, window, cx));
             if apply_initial_state {
                 if let Err(error) = workspace.update(cx, |workspace, cx| {
                     workspace.harness_set_appearance(appearance, cx);

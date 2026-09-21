@@ -644,7 +644,7 @@ impl Workspace {
         }
 
         if state.overlay.is_none() && state.page == Some(PageState::Source) {
-            self.toggle_source(cx);
+            self.toggle_source(window, cx);
         }
 
         match state.focus {
@@ -708,7 +708,7 @@ impl Workspace {
         } else if self.source_open {
             "source"
         } else if self.search.read(cx).is_open() {
-            if self.field.read(cx).as_str().starts_with('>') {
+            if self.field.read(cx).value().starts_with('>') {
                 "palette"
             } else {
                 "omnibar"
