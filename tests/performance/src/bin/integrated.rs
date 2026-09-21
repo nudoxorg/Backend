@@ -11,6 +11,12 @@
 use backend_client::LocalEngine;
 use backend_compile::{DeclarationKind, SourceExcerpt, SourceLocation};
 use backend_engine::{
+    acquisition::{AcquisitionOutcome, AcquisitionRequest, AcquisitionService, RawArchiveObjectId},
+    capability::CapabilityArtifactId,
+    registry::{
+        AcquisitionLimits as RegistryAcquisitionLimits, AcquisitionPolicy,
+        HttpRegistryTransport, RegistryEndpoint, RegistryEcosystem, RegistryOwner,
+    },
     AuthorityClaim, AuthorityEpoch, ChunkChain, ChunkParts, Frame, ImmutableObjectSchema,
     MerkleRoot, ObjectKey, ObjectVersion, TransportLimits, WireIdentity,
 };
@@ -37,10 +43,12 @@ use std::collections::BTreeSet;
 use std::env;
 use std::error::Error;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1484,6 +1492,153 @@ fn run_surfaces(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Surfac
     Ok(measurements)
 }
 
+const NETWORK_SINGLEFLIGHT_CALLERS: usize = 32;
+
+#[derive(Default)]
+struct LoopbackFixtureCounters {
+    requests: AtomicU64,
+    feed_requests: AtomicU64,
+    archive_requests: AtomicU64,
+    response_bytes: AtomicU64,
+    feed_response_bytes: AtomicU64,
+    archive_response_bytes: AtomicU64,
+}
+
+struct LoopbackFixtureReport {
+    requests: u64,
+    feed_requests: u64,
+    archive_requests: u64,
+    response_bytes: u64,
+    feed_response_bytes: u64,
+    archive_response_bytes: u64,
+}
+
+fn read_http_request(stream: &mut TcpStream) -> Result<String, String> {
+    let mut bytes = Vec::with_capacity(1024);
+    let mut chunk = [0_u8; 1024];
+    while bytes.len() < 8 * 1024 {
+        let read = stream
+            .read(&mut chunk)
+            .map_err(|error| format!("loopback fixture request read failed: {error}"))?;
+        if read == 0 {
+            return Err("loopback fixture client closed before request headers".to_owned());
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+            let line = bytes
+                .split(|byte| *byte == b'\n')
+                .next()
+                .ok_or_else(|| "loopback fixture request line was empty".to_owned())?;
+            return String::from_utf8(line.trim_ascii().to_vec())
+                .map_err(|_| "loopback fixture request line was not UTF-8".to_owned());
+        }
+    }
+    Err("loopback fixture request headers exceeded 8 KiB".to_owned())
+}
+
+fn serve_loopback_registry(
+    listener: TcpListener,
+    feed: Vec<u8>,
+    archive: Vec<u8>,
+    counters: Arc<LoopbackFixtureCounters>,
+) -> Result<LoopbackFixtureReport, String> {
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("loopback fixture nonblocking setup failed: {error}"))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while counters.requests.load(Ordering::Acquire) < 2 && Instant::now() < deadline {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .map_err(|error| format!("loopback fixture blocking setup failed: {error}"))?;
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .map_err(|error| format!("loopback fixture read timeout failed: {error}"))?;
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(1)))
+                    .map_err(|error| format!("loopback fixture write timeout failed: {error}"))?;
+                let request = read_http_request(&mut stream)?;
+                let path = request
+                    .split_ascii_whitespace()
+                    .nth(1)
+                    .ok_or_else(|| "loopback fixture request path was missing".to_owned())?;
+                let (kind, body) = if path.starts_with("/feed?") {
+                    ("feed", feed.as_slice())
+                } else if path == "/archive" {
+                    ("archive", archive.as_slice())
+                } else {
+                    return Err(format!("loopback fixture received unexpected path {path:?}"));
+                };
+                counters.requests.fetch_add(1, Ordering::AcqRel);
+                match kind {
+                    "feed" => {
+                        counters.feed_requests.fetch_add(1, Ordering::AcqRel);
+                        counters
+                            .feed_response_bytes
+                            .fetch_add(body.len() as u64, Ordering::AcqRel);
+                    }
+                    "archive" => {
+                        counters.archive_requests.fetch_add(1, Ordering::AcqRel);
+                        counters
+                            .archive_response_bytes
+                            .fetch_add(body.len() as u64, Ordering::AcqRel);
+                    }
+                    _ => unreachable!("fixture response kind is closed above"),
+                }
+                counters
+                    .response_bytes
+                    .fetch_add(body.len() as u64, Ordering::AcqRel);
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream
+                    .write_all(headers.as_bytes())
+                    .and_then(|_| stream.write_all(body))
+                    .map_err(|error| format!("loopback fixture response write failed: {error}"))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => return Err(format!("loopback fixture accept failed: {error}")),
+        }
+    }
+    let report = LoopbackFixtureReport {
+        requests: counters.requests.load(Ordering::Acquire),
+        feed_requests: counters.feed_requests.load(Ordering::Acquire),
+        archive_requests: counters.archive_requests.load(Ordering::Acquire),
+        response_bytes: counters.response_bytes.load(Ordering::Acquire),
+        feed_response_bytes: counters.feed_response_bytes.load(Ordering::Acquire),
+        archive_response_bytes: counters.archive_response_bytes.load(Ordering::Acquire),
+    };
+    if report.requests != 2 || report.feed_requests != 1 || report.archive_requests != 1 {
+        return Err(format!(
+            "loopback fixture deadline expired after {} requests (feed={}, archive={})",
+            report.requests, report.feed_requests, report.archive_requests
+        ));
+    }
+    Ok(report)
+}
+
+fn start_loopback_registry(
+    feed: Vec<u8>,
+    archive: Vec<u8>,
+) -> BenchResult<(
+    String,
+    Arc<LoopbackFixtureCounters>,
+    thread::JoinHandle<Result<LoopbackFixtureReport, String>>,
+)> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let address = listener.local_addr()?;
+    let counters = Arc::new(LoopbackFixtureCounters::default());
+    let thread_counters = Arc::clone(&counters);
+    let handle = thread::spawn(move || {
+        serve_loopback_registry(listener, feed, archive, thread_counters)
+    });
+    Ok((format!("http://{address}"), counters, handle))
+}
+
 fn run_acquisition(
     class: &CorpusClass,
     _profile: Profile,
@@ -1603,25 +1758,177 @@ fn run_acquisition(
             assertions: vec!["reopened CAS served an offline persisted object".to_owned()],
         },
     });
+    let archive = b"nudox integrated benchmark archive".to_vec();
+    let artifact = CapabilityArtifactId::from_value(&archive);
+    let endpoint_seed = format!(
+        concat!(
+            "{{\"schema\":1,\"next\":\"{}\",\"items\":[{{",
+            "\"name\":\"integrated-fixture\",\"version\":\"1.0.0\",",
+            "\"archive\":\"/archive\",\"blake3\":\"{}\",",
+            "\"provenance\":\"{}\"}}]}}"
+        ),
+        hex(&[7; 32]),
+        hex(artifact.as_bytes()),
+        hex(&[9; 32]),
+    );
+    let (endpoint_url, fixture_counters, fixture_thread) =
+        start_loopback_registry(endpoint_seed.as_bytes().to_vec(), archive.clone())?;
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_url)?;
+    let transport_endpoint = endpoint.clone();
+    let mut registry_limits = RegistryAcquisitionLimits::default();
+    registry_limits.max_items = 1;
+    registry_limits.max_feed_bytes = 64 * 1024;
+    registry_limits.max_archive_bytes = 64 * 1024;
+    registry_limits.max_page_archive_bytes = 128 * 1024;
+    registry_limits.max_catalog_items = 8;
+    registry_limits.connect_timeout = Duration::from_millis(500);
+    registry_limits.read_timeout = Duration::from_secs(1);
+    let registry_root = temp_root("network-singleflight");
+    let _ = fs::remove_dir_all(&registry_root);
+    let (owner, _) = RegistryOwner::open(
+        &registry_root,
+        endpoint,
+        AcquisitionPolicy::Online,
+        registry_limits,
+    )?;
+    let service = Arc::new(AcquisitionService::from_owner(
+        owner,
+        registry_root.join("service-coordination"),
+    )?);
+    let request = AcquisitionRequest::new(
+        service.source_id(),
+        "pkg:cargo/integrated-fixture@1.0.0",
+        RawArchiveObjectId::from_bytes(&archive),
+        1,
+        0,
+    )?;
+    let barrier = Arc::new(Barrier::new(NETWORK_SINGLEFLIGHT_CALLERS));
+    let (outcomes, receiver) = mpsc::channel();
+    let started = Instant::now();
+    let mut callers = Vec::with_capacity(NETWORK_SINGLEFLIGHT_CALLERS);
+    for _ in 0..NETWORK_SINGLEFLIGHT_CALLERS {
+        let service = Arc::clone(&service);
+        let barrier = Arc::clone(&barrier);
+        let request = request.clone();
+        let transport_endpoint = transport_endpoint.clone();
+        let outcomes = outcomes.clone();
+        callers.push(thread::spawn(move || {
+            barrier.wait();
+            let mut transport = HttpRegistryTransport::new(
+                transport_endpoint,
+                None,
+                registry_limits,
+            )
+            .expect("loopback transport is valid");
+            outcomes.send(service.acquire(&request, &mut transport)).ok();
+        }));
+    }
+    drop(outcomes);
+    let mut first: Option<Arc<backend_engine::acquisition::RegistryAcquisitionResult>> = None;
+    let mut same_result = true;
+    let mut received = 0usize;
+    let mut correctness_assertions = Vec::new();
+    let mut failure = None;
+    for _ in 0..NETWORK_SINGLEFLIGHT_CALLERS {
+        match receiver.recv_timeout(Duration::from_secs(4)) {
+            Ok(AcquisitionOutcome::Hit(result)) => {
+                received += 1;
+                if let Some(expected) = &first {
+                    same_result &= Arc::ptr_eq(expected, &result)
+                        && Arc::ptr_eq(&expected.receipt, &result.receipt)
+                        && Arc::ptr_eq(&expected.delta, &result.delta)
+                        && expected.receipt.target == result.receipt.target;
+                } else {
+                    first = Some(result);
+                }
+            }
+            Ok(_) => {
+                received += 1;
+                failure = Some("one or more callers returned a non-hit acquisition outcome".to_owned());
+            }
+            Err(error) => {
+                failure = Some(format!("acquisition caller completion was not bounded: {error}"));
+                break;
+            }
+        }
+    }
+    for caller in callers {
+        caller
+            .join()
+            .map_err(|_| "acquisition caller thread panicked".to_owned())?;
+    }
+    let elapsed = started.elapsed().as_nanos();
+    let fixture = fixture_thread
+        .join()
+        .map_err(|_| "loopback fixture thread panicked".to_owned())??;
+    let telemetry = service.telemetry();
+    let expected_network_bytes = endpoint_seed.len().saturating_add(archive.len());
+    let counters_match = fixture.requests == 2
+        && fixture.feed_requests == 1
+        && fixture.archive_requests == 1
+        && fixture.response_bytes as usize == expected_network_bytes
+        && fixture_counters.requests.load(Ordering::Acquire) == 2;
+    let downloaded_bytes = fixture.archive_response_bytes as usize;
+    let reused_bytes = downloaded_bytes.saturating_mul(NETWORK_SINGLEFLIGHT_CALLERS - 1);
+    let byte_accounting = fixture.feed_response_bytes as usize == endpoint_seed.len()
+        && downloaded_bytes == archive.len()
+        && reused_bytes == archive.len() * (NETWORK_SINGLEFLIGHT_CALLERS - 1)
+        && first.is_some();
+    let passed = failure.is_none()
+        && received == NETWORK_SINGLEFLIGHT_CALLERS
+        && first.is_some()
+        && same_result
+        && telemetry.leaders == 1
+        && telemetry.followers == (NETWORK_SINGLEFLIGHT_CALLERS - 1) as u64
+        && counters_match
+        && byte_accounting;
+    correctness_assertions.push(format!(
+        "{} synchronized callers completed with one shared immutable registry result",
+        received
+    ));
+    correctness_assertions.push(format!(
+        "registry coordinator reported {} leader and {} followers",
+        telemetry.leaders, telemetry.followers
+    ));
+    correctness_assertions.push(format!(
+        "loopback served one metadata page and one archive ({} response bytes)",
+        fixture.response_bytes
+    ));
+    correctness_assertions.push(format!(
+        "archive byte accounting: {} downloaded once and {} logical follower bytes reused",
+        downloaded_bytes,
+        reused_bytes
+    ));
+    if let Some(failure) = failure {
+        correctness_assertions.push(failure);
+    }
+    if !passed {
+        let _ = fs::remove_dir_all(&registry_root);
+        return Err(format!(
+            "network singleflight correctness failed: {}",
+            correctness_assertions.join("; ")
+        )
+        .into());
+    }
     measurements.push(AcquisitionMeasurement {
         schema: JSON_SCHEMA,
-        status: "unavailable",
+        status: "ok",
         operation: "network_singleflight_32_calls".to_owned(),
-        phase: "cold_and_warm".to_owned(),
-        wall: stats(&mut Vec::new()),
-        calls: 32,
-        buffer_ceiling_bytes: limits.max_chunk,
-        downloaded_bytes: 0,
-        reused_bytes: 0,
+        phase: "cold_loopback_network".to_owned(),
+        wall: stats(&mut vec![elapsed]),
+        calls: NETWORK_SINGLEFLIGHT_CALLERS,
+        buffer_ceiling_bytes: registry_limits.max_archive_bytes,
+        downloaded_bytes,
+        reused_bytes,
         memory_high_water_bytes: None,
         correctness: Correctness {
-            passed: false,
-            assertions: vec![
-                "live network transport and its singleflight coordinator were not configured"
-                    .to_owned(),
-            ],
+            passed,
+            assertions: correctness_assertions,
         },
     });
+    drop(first);
+    drop(service);
+    let _ = fs::remove_dir_all(registry_root);
     let _ = fs::remove_dir_all(path);
     Ok(measurements)
 }
