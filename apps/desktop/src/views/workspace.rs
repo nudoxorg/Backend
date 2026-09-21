@@ -144,7 +144,7 @@ pub(crate) struct Workspace {
     pub(super) revealed_row: Option<usize>,
     /// Revision-pinned graph projection and navigation state for the reader.
     pub(super) graph: crate::graph::ExplorerState,
-    focus: FocusHandle,
+    pub(super) focus: FocusHandle,
     pub(super) library_focus: FocusHandle,
     pub(super) source_focus: FocusHandle,
     pub(super) settings_focus: FocusHandle,
@@ -256,8 +256,6 @@ impl Workspace {
             field,
             coordinate,
             source_field,
-            pending_field: None,
-            pending_coordinate: None,
         } = stores;
         if capture_time.is_some() {
             shell.update(cx, |shell, cx| shell.set_capture_mode(true, cx));
@@ -274,6 +272,8 @@ impl Workspace {
             field,
             coordinate,
             source_field,
+            pending_field: None,
+            pending_coordinate: None,
             adding: false,
             add_fault: None,
             add_ecosystem: backend_library::RegistryEcosystem::Cargo,
@@ -717,6 +717,7 @@ impl Workspace {
             Some(crate::store::document::Content::Home) => ("browse", false),
             Some(crate::store::document::Content::Project { .. }) => ("project", false),
             Some(crate::store::document::Content::Package { .. }) => ("package", false),
+            Some(crate::store::document::Content::Outline { .. }) => ("code", false),
             Some(crate::store::document::Content::Page(_)) => ("declaration", false),
             Some(crate::store::document::Content::Faulted(_)) => ("fault", false),
             Some(crate::store::document::Content::Blank) if active_pending => ("declaration", true),

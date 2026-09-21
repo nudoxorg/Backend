@@ -23,7 +23,7 @@ use super::keys;
 use super::workspace::Workspace;
 use crate::presentation::project::{self, Standing};
 use crate::store::catalog::{Ask, Catalog, Suggestion};
-use crate::store::document::{Subject, TreeRow};
+use crate::store::document::{Subject, TabId, TreeRow};
 use crate::store::registry::{Spelling, version_rank};
 use crate::store::shell::Transient;
 use crate::store::shell::{Focus, Side};

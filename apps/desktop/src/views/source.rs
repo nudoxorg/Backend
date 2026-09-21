@@ -191,6 +191,7 @@ impl Workspace {
                     .child(components::search_input(
                         theme,
                         &self.source_field,
+                        "source-find-field",
                         "Find in source",
                     )),
             )
