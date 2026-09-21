@@ -995,6 +995,7 @@ impl Workspace {
         target: Target,
         cx: &mut Context<Self>,
     ) {
+        self.reset_package_navigation(cx);
         self.remember(
             Recent::Package {
                 coordinate: coordinate.clone(),

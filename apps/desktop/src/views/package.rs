@@ -49,6 +49,29 @@ const BUDGET: usize = 12;
 /// Height of the usage chart, in pixels.
 const CHART: u16 = 84;
 
+/// Internal package routes are mutually exclusive, like docs.rs's primary
+/// navigation. Keeping the keys together prevents two route bodies from
+/// opening under one selected tab.
+const PACKAGE_ROUTES: [&str; 5] = [
+    PackageRoute::Documentation.key(),
+    PackageRoute::Source.key(),
+    PackageRoute::Code.key(),
+    PackageRoute::Search.key(),
+    "package-security",
+];
+
+/// Content sections represented by the primary package navigation. Selecting
+/// one folds the other long sections so the tab line behaves like a document
+/// navigation strip rather than a collection of independent disclosures.
+const PACKAGE_SECTIONS: [&str; 6] = [
+    "readme",
+    "dependencies",
+    "dependents",
+    "versions",
+    "usage",
+    "owners",
+];
+
 /// Reserves the package page geometry while the first live read is installed.
 fn reserved_package_page(theme: &Theme, coordinate: &str) -> Div {
     div()
@@ -67,10 +90,19 @@ fn package_tab(
     id: &'static str,
     label: &'static str,
     fold_key: &'static str,
+    selected: bool,
     cx: &mut Context<Workspace>,
 ) -> impl IntoElement {
     button::button(theme, id, label, button::Weight::Quiet)
-        .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(fold_key, cx)))
+        .px(px(4.0))
+        .when(selected, |tab| {
+            tab.border_b(px(2.0))
+                .border_color(theme.paint(Paint::Gilt))
+                .text_color(theme.paint(Paint::Gilt))
+        })
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.select_package_section(fold_key, cx);
+        }))
 }
 
 fn package_route_tab(
@@ -78,13 +110,43 @@ fn package_route_tab(
     id: &'static str,
     label: &'static str,
     route: &'static str,
+    selected: bool,
     cx: &mut Context<Workspace>,
 ) -> impl IntoElement {
     button::button(theme, id, label, button::Weight::Quiet)
-        .on_click(cx.listener(move |this, _, _, cx| this.toggle_unfurl(route, cx)))
+        .px(px(4.0))
+        .when(selected, |tab| {
+            tab.border_b(px(2.0))
+                .border_color(theme.paint(Paint::Gilt))
+                .text_color(theme.paint(Paint::Gilt))
+        })
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.select_package_route(route, cx);
+        }))
 }
 
 impl Workspace {
+    /// Starts each package route at the README and closes stale route bodies.
+    /// Package sections are a single navigation strip; the longer metadata
+    /// sections remain available through their tabs without competing with
+    /// the README hero on first paint.
+    pub(super) fn reset_package_navigation(&mut self, cx: &mut Context<Self>) {
+        for key in PACKAGE_SECTIONS {
+            if key == "readme" {
+                if self.is_folded(key) {
+                    self.toggle_fold(key, cx);
+                }
+            } else if !self.is_folded(key) {
+                self.toggle_fold(key, cx);
+            }
+        }
+        for key in PACKAGE_ROUTES {
+            if self.is_unfurled(key) {
+                self.toggle_unfurl(key, cx);
+            }
+        }
+    }
+
     /// Returns the registry page for one pinned package coordinate.
     pub(super) fn package_page(
         &mut self,
@@ -105,11 +167,12 @@ impl Workspace {
         let reduced = theme.reduced_motion();
         div()
             .w_full()
+            .min_w(px(0.0))
             .flex()
             .flex_col()
             .gap(space(Space::Gutter))
             .child(self.package_header(theme, &dossier, cx))
-            .child(Self::package_tabs(theme, cx))
+            .child(self.package_tabs(theme, cx))
             .child(self.package_route_sections(theme, &dossier, cx))
             .child(self.primary_package_content(theme, &dossier, cx))
             .child(self.dependencies_section(theme, &dossier, cx))
@@ -128,10 +191,11 @@ impl Workspace {
     /// Returns the internal package information architecture. Each tab names a
     /// typed route in this live dossier; no route is synthesized from a package
     /// name or handed off to an external site.
-    fn package_tabs(theme: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    fn package_tabs(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         div()
             .id("package-tabs")
             .w_full()
+            .min_w(px(0.0))
             .flex()
             .flex_wrap()
             .items_center()
@@ -143,6 +207,7 @@ impl Workspace {
                 "package-tab-readme",
                 "Readme",
                 "readme",
+                !self.is_folded("readme"),
                 cx,
             ))
             .child(package_route_tab(
@@ -150,6 +215,7 @@ impl Workspace {
                 "package-tab-docs",
                 "Docs",
                 PackageRoute::Documentation.key(),
+                self.is_unfurled(PackageRoute::Documentation.key()),
                 cx,
             ))
             .child(package_route_tab(
@@ -157,6 +223,7 @@ impl Workspace {
                 "package-tab-source",
                 "Source",
                 PackageRoute::Source.key(),
+                self.is_unfurled(PackageRoute::Source.key()),
                 cx,
             ))
             .child(package_route_tab(
@@ -164,6 +231,7 @@ impl Workspace {
                 "package-tab-code",
                 "Code",
                 PackageRoute::Code.key(),
+                self.is_unfurled(PackageRoute::Code.key()),
                 cx,
             ))
             .child(package_route_tab(
@@ -171,6 +239,7 @@ impl Workspace {
                 "package-tab-search",
                 "Search",
                 PackageRoute::Search.key(),
+                self.is_unfurled(PackageRoute::Search.key()),
                 cx,
             ))
             .child(package_tab(
@@ -178,6 +247,7 @@ impl Workspace {
                 "package-tab-versions",
                 "Versions",
                 "versions",
+                !self.is_folded("versions"),
                 cx,
             ))
             .child(package_tab(
@@ -185,6 +255,7 @@ impl Workspace {
                 "package-tab-dependencies",
                 "Dependencies",
                 "dependencies",
+                !self.is_folded("dependencies"),
                 cx,
             ))
             .child(package_tab(
@@ -192,6 +263,7 @@ impl Workspace {
                 "package-tab-dependents",
                 "Dependents",
                 "dependents",
+                !self.is_folded("dependents"),
                 cx,
             ))
             .child(package_route_tab(
@@ -199,8 +271,38 @@ impl Workspace {
                 "package-tab-security",
                 "Security",
                 "package-security",
+                self.is_unfurled("package-security"),
                 cx,
             ))
+    }
+
+    /// Selects one internal route and clears any previously open route body.
+    /// The package page keeps the route handoff local to the admitted dossier;
+    /// it never constructs or opens an upstream URL.
+    fn select_package_route(&mut self, route: &'static str, cx: &mut Context<Self>) {
+        for key in PACKAGE_ROUTES {
+            if key != route && self.is_unfurled(key) {
+                self.toggle_unfurl(key, cx);
+            }
+        }
+        if !self.is_unfurled(route) {
+            self.toggle_unfurl(route, cx);
+        }
+        cx.notify();
+    }
+
+    /// Selects one primary package section while keeping its body open.
+    fn select_package_section(&mut self, section: &'static str, cx: &mut Context<Self>) {
+        for key in PACKAGE_SECTIONS {
+            if key == section {
+                if self.is_folded(key) {
+                    self.toggle_fold(key, cx);
+                }
+            } else if !self.is_folded(key) {
+                self.toggle_fold(key, cx);
+            }
+        }
+        cx.notify();
     }
 
     /// Returns the internal docs/source/code/search/security routes that a tab
@@ -214,6 +316,7 @@ impl Workspace {
     ) -> Div {
         div()
             .w_full()
+            .min_w(px(0.0))
             .flex()
             .flex_col()
             .gap(space(Space::Snug))
@@ -318,15 +421,18 @@ impl Workspace {
     ) -> Div {
         div()
             .w_full()
+            .min_w(px(0.0))
             .flex()
             .flex_wrap()
             .items_start()
             .gap(space(Space::Gutter))
             .child(
-                div()
-                    .flex_1()
-                    .min_w(px(300.0))
-                    .child(self.readme_section(theme, dossier, cx)),
+                div().flex_1().min_w(px(300.0)).child(
+                    surface::sunken(theme)
+                        .w_full()
+                        .p(space(Space::Room))
+                        .child(self.readme_section(theme, dossier, cx)),
+                ),
             )
             .child(self.metadata_rail(theme, dossier, cx))
     }
@@ -357,6 +463,7 @@ impl Workspace {
             .flex_none()
             .w(px(288.0))
             .max_w_full()
+            .min_w(px(0.0))
             .p(space(Space::Snug))
             .flex()
             .flex_col()
@@ -406,7 +513,7 @@ impl Workspace {
                             button::Weight::Quiet,
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.toggle_unfurl(PackageRoute::Documentation.key(), cx);
+                            this.select_package_route(PackageRoute::Documentation.key(), cx);
                         })),
                     )
                     .child(
@@ -417,7 +524,7 @@ impl Workspace {
                             button::Weight::Quiet,
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.toggle_unfurl(PackageRoute::Source.key(), cx);
+                            this.select_package_route(PackageRoute::Source.key(), cx);
                         })),
                     ),
             )
@@ -439,39 +546,51 @@ impl Workspace {
         let standing = registry::add_standing(&held, &coordinate);
         let precis = dossier.precis().ready();
         let unfurled = self.is_unfurled(&picker_key(&coordinate));
-        div()
+        surface::panel(theme)
             .w_full()
-            .flex()
-            .flex_col()
-            .gap(space(Space::Snug))
+            .min_w(px(0.0))
+            .p(space(Space::Room))
+            .rounded(radius(Radius::Medium))
+            .border(hairline())
+            .border_color(theme.paint(Paint::HairlineStrong))
             .child(
-                text::single_line(text::identity_text(theme, TypeScale::Small))
-                    .child(coordinate.clone()),
+                div()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .gap(space(Space::Snug))
+                    .child(
+                        text::single_line(text::identity_text(theme, TypeScale::Small))
+                            .child(coordinate.clone()),
+                    )
+                    .child(Self::title_row(theme, dossier, unfurled, cx))
+                    .when(unfurled, |header| {
+                        header.child(Self::version_menu(theme, dossier, cx))
+                    })
+                    .when_some(
+                        precis.filter(|_| !dossier.precis().provenance().is_not_recorded()),
+                        |header, precis| {
+                            header.child(Self::precis_block(theme, dossier.precis(), precis))
+                        },
+                    )
+                    .child(Self::meta_row(theme, dossier))
+                    .when_some(precis, |header, precis| {
+                        header.child(Self::link_row(
+                            theme,
+                            precis,
+                            dossier.precis().provenance(),
+                            cx,
+                        ))
+                    })
+                    .child(Self::action_row(
+                        theme,
+                        &coordinate,
+                        &dossier.spelling().label(),
+                        standing,
+                        cx,
+                    )),
             )
-            .child(Self::title_row(theme, dossier, unfurled, cx))
-            .when(unfurled, |header| {
-                header.child(Self::version_menu(theme, dossier, cx))
-            })
-            .when_some(
-                precis.filter(|_| !dossier.precis().provenance().is_not_recorded()),
-                |header, precis| header.child(Self::precis_block(theme, dossier.precis(), precis)),
-            )
-            .child(Self::meta_row(theme, dossier))
-            .when_some(precis, |header, precis| {
-                header.child(Self::link_row(
-                    theme,
-                    precis,
-                    dossier.precis().provenance(),
-                    cx,
-                ))
-            })
-            .child(Self::action_row(
-                theme,
-                &coordinate,
-                &dossier.spelling().label(),
-                standing,
-                cx,
-            ))
     }
 
     /// Returns the title line: logo, name, version picker, and yanked mark.
@@ -862,66 +981,6 @@ fn install_command(ecosystem: RegistryEcosystem, name: &str, version: &str) -> I
         }
     };
     InstallCapability::Available(command)
-}
-
-#[cfg(test)]
-fn documentation_url(ecosystem: RegistryEcosystem, name: &str, version: &str) -> Option<String> {
-    if name.is_empty() {
-        return None;
-    }
-    match ecosystem {
-        RegistryEcosystem::Cargo => Some(format!("https://docs.rs/{name}/{version}")),
-        RegistryEcosystem::Npm => Some(format!(
-            "https://www.npmjs.com/package/{}/v/{version}",
-            url_path_segment(name)
-        )),
-        RegistryEcosystem::Pypi => Some(format!("https://pypi.org/project/{name}/{version}/")),
-        RegistryEcosystem::Maven => {
-            let (group, artifact) = name.split_once(':')?;
-            Some(format!(
-                "https://javadoc.io/doc/{group}/{artifact}/{version}"
-            ))
-        }
-        RegistryEcosystem::Nuget => {
-            Some(format!("https://www.nuget.org/packages/{name}/{version}"))
-        }
-        RegistryEcosystem::Golang => Some(format!(
-            "https://pkg.go.dev/{}@{version}",
-            url_module_path(name)
-        )),
-        RegistryEcosystem::Cpp => None,
-    }
-}
-
-/// Escapes one package name as a URL path component while preserving the
-/// registry's case and version spelling.
-#[cfg(test)]
-fn url_path_segment(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            escaped.push(char::from(byte));
-        } else {
-            escaped.push('%');
-            escaped.push(hex(byte >> 4));
-            escaped.push(hex(byte & 0x0f));
-        }
-    }
-    escaped
-}
-
-#[cfg(test)]
-fn hex(nibble: u8) -> char {
-    char::from(b"0123456789ABCDEF"[usize::from(nibble)])
-}
-
-#[cfg(test)]
-fn url_module_path(value: &str) -> String {
-    value
-        .split('/')
-        .map(url_path_segment)
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 /// The README.
@@ -1623,7 +1682,8 @@ fn reserved_lines(theme: &Theme) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::{InstallCapability, documentation_url, install_command};
+    use super::{InstallCapability, PACKAGE_ROUTES, PACKAGE_SECTIONS, install_command};
+    use crate::store::dossier::PackageRoute;
     use backend_library::RegistryEcosystem;
 
     #[test]
@@ -1662,31 +1722,20 @@ mod tests {
     }
 
     #[test]
-    fn documentation_links_preserve_ecosystem_and_version_identity() {
-        assert_eq!(
-            documentation_url(RegistryEcosystem::Cargo, "serde", "1.0.0").as_deref(),
-            Some("https://docs.rs/serde/1.0.0")
+    fn package_capability_tabs_are_internal_and_stable() {
+        assert!(
+            PACKAGE_ROUTES
+                .iter()
+                .all(|route| route.starts_with("package-") && !route.contains("://"))
         );
-        assert_eq!(
-            documentation_url(RegistryEcosystem::Npm, "@scope/pkg", "4.2.0").as_deref(),
-            Some("https://www.npmjs.com/package/%40scope%2Fpkg/v/4.2.0")
-        );
-        assert_eq!(
-            documentation_url(RegistryEcosystem::Golang, "golang.org/x/tools", "v0.24.0")
-                .as_deref(),
-            Some("https://pkg.go.dev/golang.org/x/tools@v0.24.0")
-        );
-        assert_eq!(
-            documentation_url(RegistryEcosystem::Golang, "example.org/x/y z", "v1.0.0").as_deref(),
-            Some("https://pkg.go.dev/example.org/x/y%20z@v1.0.0")
-        );
-        assert_eq!(
-            documentation_url(RegistryEcosystem::Maven, "org.example:widget", "2.1.0").as_deref(),
-            Some("https://javadoc.io/doc/org.example/widget/2.1.0")
-        );
-        assert_eq!(
-            documentation_url(RegistryEcosystem::Cpp, "fmt", "11.0.0"),
-            None
-        );
+        assert_eq!(PACKAGE_SECTIONS[0], "readme");
+        assert_eq!(PackageRoute::Documentation.key(), "package-docs");
+        assert_eq!(PackageRoute::Source.key(), "package-source");
+        assert_eq!(PackageRoute::Code.key(), "package-code");
+        assert_eq!(PackageRoute::Search.key(), "package-search");
+        assert_eq!(PackageRoute::Documentation.title(), "Documentation");
+        assert_eq!(PackageRoute::Source.title(), "Source");
+        assert_eq!(PackageRoute::Code.title(), "Code");
+        assert_eq!(PackageRoute::Search.title(), "Search");
     }
 }
