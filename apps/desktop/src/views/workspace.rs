@@ -20,7 +20,8 @@ use crate::host::lease::HostMode;
 use crate::reducer::model::Model;
 use crate::store::catalog::{Ask, CatalogStore};
 use crate::store::document::{
-    DocumentStore, ReaderEntry, ReaderEntryFault, ReaderIntent, ReaderRoute, Subject, Target,
+    DocumentStore, ReaderEntry, ReaderEntryFault, ReaderIntent, ReaderRoute, ReaderSurface,
+    Subject, Target,
 };
 use crate::store::events::{CatalogEvent, DocumentEvent};
 use crate::store::index::IndexStore;
@@ -213,6 +214,8 @@ pub(crate) struct Workspace {
     pub(super) revealed_row: Option<usize>,
     /// Revision-pinned graph projection and navigation state for the reader.
     pub(super) graph: crate::graph::ExplorerState,
+    #[cfg(feature = "visual-harness")]
+    pending_harness_state: Option<GuiState>,
     pub(super) focus: FocusHandle,
     pub(super) library_focus: FocusHandle,
     pub(super) source_focus: FocusHandle,
@@ -367,6 +370,8 @@ impl Workspace {
             tab_tree_state: cx.new(|cx| TreeState::new(cx)),
             revealed_row: None,
             graph: crate::graph::ExplorerState::new(),
+            #[cfg(feature = "visual-harness")]
+            pending_harness_state: None,
             focus: cx.focus_handle(),
             library_focus: cx.focus_handle(),
             source_focus: cx.focus_handle(),
@@ -645,6 +650,61 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        if Self::harness_needs_registry_page(state.page)
+            && self.registry.read(cx).first_page_coordinate().is_none()
+        {
+            self.registry.update(cx, RegistryStore::ensure_page);
+            self.pending_harness_state = Some(state.clone());
+            cx.notify();
+            return Ok(());
+        }
+        self.apply_harness_state_now(state, window, cx)
+    }
+
+    #[cfg(feature = "visual-harness")]
+    fn harness_needs_registry_page(page: Option<PageState>) -> bool {
+        matches!(
+            page,
+            Some(
+                PageState::Package
+                    | PageState::Dependencies
+                    | PageState::Dependents
+                    | PageState::Releases
+                    | PageState::Security
+            )
+        )
+    }
+
+    /// Applies a state once a registry-backed route has an admitted row.
+    ///
+    /// This runs at the render boundary so the asynchronous registry read can
+    /// settle without blocking the UI thread. The route and any overlay are
+    /// then opened through the same typed methods as a user click.
+    #[cfg(feature = "visual-harness")]
+    fn resolve_pending_harness_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.pending_harness_state.clone() else {
+            return;
+        };
+        if Self::harness_needs_registry_page(state.page)
+            && self.registry.read(cx).first_page_coordinate().is_none()
+        {
+            return;
+        }
+        self.pending_harness_state = None;
+        if let Err(error) = self.apply_harness_state_now(&state, window, cx) {
+            self.shell.update(cx, |shell, cx| {
+                shell.notify(format!("Harness route unavailable: {error}"), cx)
+            });
+        }
+    }
+
+    #[cfg(feature = "visual-harness")]
+    fn apply_harness_state_now(
+        &mut self,
+        state: &GuiState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         match state.page {
             Some(PageState::Browse) | None => self.open_home(cx),
             Some(PageState::Project) => {
@@ -665,21 +725,60 @@ impl Workspace {
                     })?;
                 self.open_project(coordinate, cx);
             }
-            Some(PageState::Package) => {
+            Some(
+                PageState::Package
+                | PageState::Dependencies
+                | PageState::Dependents
+                | PageState::Releases
+                | PageState::Security,
+            ) => {
                 let coordinate = self
-                    .engine
+                    .registry
                     .read(cx)
-                    .shelf()
-                    .entries()
-                    .iter()
-                    .map(|entry| entry.identity().coordinate().as_str().to_owned())
-                    .find(|coordinate| coordinate.starts_with("pkg:"))
+                    .first_page_coordinate()
+                    .map(ToOwned::to_owned)
                     .ok_or_else(|| {
-                        "live admitted projection has no package page anchor".to_owned()
+                        "live admitted registry has no package page anchor".to_owned()
                     })?;
                 self.open_package(coordinate, Target::Here, cx);
+                match state.page {
+                    Some(PageState::Package) => {
+                        self.document.update(cx, |document, _| {
+                            document.set_active_surface(ReaderSurface::Package)
+                        });
+                    }
+                    Some(PageState::Dependencies) => {
+                        self.reset_package_navigation(cx);
+                        self.toggle_fold("dependencies", cx);
+                        self.document.update(cx, |document, _| {
+                            document.set_active_surface(ReaderSurface::Dependencies)
+                        });
+                    }
+                    Some(PageState::Dependents) => {
+                        self.reset_package_navigation(cx);
+                        self.toggle_fold("dependents", cx);
+                        self.document.update(cx, |document, _| {
+                            document.set_active_surface(ReaderSurface::Dependents)
+                        });
+                    }
+                    Some(PageState::Releases) => {
+                        self.reset_package_navigation(cx);
+                        self.toggle_fold("versions", cx);
+                        self.document.update(cx, |document, _| {
+                            document.set_active_surface(ReaderSurface::Releases)
+                        });
+                    }
+                    Some(PageState::Security) => {
+                        self.reset_package_navigation(cx);
+                        self.toggle_unfurl("package-security", cx);
+                        self.document.update(cx, |document, _| {
+                            document.set_active_surface(ReaderSurface::Security)
+                        });
+                    }
+                    _ => {}
+                }
             }
-            Some(PageState::Declaration) | Some(PageState::Source) => {
+            Some(PageState::Declaration | PageState::Graph | PageState::Source) => {
                 let symbol = self
                     .index
                     .read(cx)
@@ -689,12 +788,52 @@ impl Workspace {
                         "live admitted projection has no declaration page anchor".to_owned()
                     })?;
                 self.open_symbol(symbol, Target::Here, cx);
+                match state.page {
+                    Some(PageState::Graph) => {
+                        if !self.graph.expanded {
+                            self.graph.toggle_expanded();
+                        }
+                        self.document.update(cx, |document, _| {
+                            document.set_active_surface(ReaderSurface::Graph)
+                        });
+                    }
+                    Some(PageState::Source) => {
+                        self.document.update(cx, |document, _| {
+                            document.set_active_surface(ReaderSurface::Source)
+                        });
+                    }
+                    _ => {}
+                }
             }
-            Some(unsupported) => {
-                return Err(format!(
-                    "live Workspace has no registered route for page {}",
-                    unsupported.as_str()
-                ));
+            Some(PageState::Docs) | Some(PageState::Code) | Some(PageState::CodeSearch) => {
+                let coordinate = self
+                    .index
+                    .read(cx)
+                    .first_entry()
+                    .and_then(|entry| entry.identity().project())
+                    .map(|project| project.root().to_owned())
+                    .ok_or_else(|| {
+                        "live admitted projection has no package route anchor".to_owned()
+                    })?;
+                let intent = match state.page {
+                    Some(PageState::Docs) => ReaderIntent::Docs,
+                    Some(PageState::Code) => ReaderIntent::Code,
+                    Some(PageState::CodeSearch) => ReaderIntent::Search,
+                    _ => unreachable!(),
+                };
+                if state.page == Some(PageState::CodeSearch) {
+                    // Search is a real scoped omnibar route and does not own
+                    // a document tab. Keep a browse tab as its typed backing
+                    // route so the semantic probe can identify it precisely.
+                    self.open_home(cx);
+                }
+                self.open_package_route(coordinate, intent, window, cx)
+                    .map_err(|fault| format!("typed package route rejected: {fault:?}"))?;
+                if state.page == Some(PageState::CodeSearch) {
+                    self.document.update(cx, |document, _| {
+                        document.set_active_surface(ReaderSurface::CodeSearch)
+                    });
+                }
             }
         }
 
@@ -716,13 +855,14 @@ impl Workspace {
             Some(OverlayState::SettingsDiagnostics) => {
                 self.show_harness_settings(crate::store::shell::SettingsPage::Diagnostics, cx)
             }
+            Some(OverlayState::SettingsIndex) => {
+                self.show_harness_settings(crate::store::shell::SettingsPage::Index, cx)
+            }
+            Some(OverlayState::SettingsRegistry) => {
+                self.show_harness_settings(crate::store::shell::SettingsPage::Registry, cx)
+            }
             Some(OverlayState::SettingsLegend) => {
                 self.show_harness_settings(crate::store::shell::SettingsPage::Legend, cx)
-            }
-            Some(OverlayState::SettingsIndex | OverlayState::SettingsRegistry) => {
-                return Err(
-                    "live Workspace has no registered indexing/registry settings route".to_owned(),
-                );
             }
             Some(OverlayState::Fault | OverlayState::Notice) => {
                 return Err(
@@ -860,12 +1000,13 @@ impl Workspace {
                 focus_order: action.focus_order(),
             })
             .collect();
+        let route = format!("{}:{overlay}", document.active_surface().as_str());
         WorkspaceSemanticProbe {
             page: page.to_owned(),
             overlay: overlay.to_owned(),
             focus,
             focus_id: focus_id.to_owned(),
-            route: format!("{page}:{overlay}"),
+            route,
             actions,
             animation_phase: frame
                 .map_or_else(|| "unknown".to_owned(), |frame| frame.label.clone()),
@@ -911,14 +1052,17 @@ impl Workspace {
         let expected_page = match requested.page {
             None | Some(PageState::Browse) => "browse",
             Some(PageState::Project) => "project",
-            Some(PageState::Package) => "package",
-            Some(PageState::Declaration) | Some(PageState::Source) => "declaration",
-            Some(unsupported) => {
-                return Err(format!(
-                    "page {} has no registered semantic probe",
-                    unsupported.as_str()
-                ));
-            }
+            Some(
+                PageState::Package
+                | PageState::Dependencies
+                | PageState::Dependents
+                | PageState::Releases
+                | PageState::Security,
+            ) => "package",
+            Some(PageState::Declaration | PageState::Source | PageState::Graph) => "declaration",
+            Some(PageState::Code) => "code",
+            Some(PageState::Docs) => "project",
+            Some(PageState::CodeSearch) => "browse",
         };
         if probe.page != expected_page {
             return Err(format!(
@@ -946,9 +1090,7 @@ impl Workspace {
                     "failure and notice overlays require an admitted live condition".to_owned(),
                 );
             }
-            Some(OverlayState::SettingsIndex | OverlayState::SettingsRegistry) => {
-                return Err("indexing/registry settings routes are not registered".to_owned());
-            }
+            Some(OverlayState::SettingsIndex | OverlayState::SettingsRegistry) => "settings",
             Some(unsupported) => {
                 return Err(format!(
                     "overlay {} has no admitted live semantic condition",
@@ -960,6 +1102,44 @@ impl Workspace {
             return Err(format!(
                 "requested overlay {expected_overlay}, live Workspace reached {}",
                 probe.overlay
+            ));
+        }
+        let expected_settings_page = match requested.overlay {
+            Some(OverlayState::SettingsAppearance) => Some("Appearance"),
+            Some(OverlayState::SettingsEditor) => Some("Editor"),
+            Some(OverlayState::SettingsAgents) => Some("Agents"),
+            Some(OverlayState::SettingsDiagnostics) => Some("Diagnostics"),
+            Some(OverlayState::SettingsIndex) => Some("Index"),
+            Some(OverlayState::SettingsRegistry) => Some("Registry"),
+            Some(OverlayState::SettingsLegend) => Some("Legend"),
+            _ => None,
+        };
+        if probe.settings_page.as_deref() != expected_settings_page {
+            return Err(format!(
+                "requested settings page {expected_settings_page:?}, live Workspace reached {:?}",
+                probe.settings_page
+            ));
+        }
+        let expected_surface = match requested.page {
+            None | Some(PageState::Browse) => ReaderSurface::Browse,
+            Some(PageState::Project) => ReaderSurface::Project,
+            Some(PageState::Package) => ReaderSurface::Package,
+            Some(PageState::Declaration) => ReaderSurface::Declaration,
+            Some(PageState::Source) => ReaderSurface::Source,
+            Some(PageState::Code) => ReaderSurface::Code,
+            Some(PageState::Docs) => ReaderSurface::Docs,
+            Some(PageState::Graph) => ReaderSurface::Graph,
+            Some(PageState::Dependencies) => ReaderSurface::Dependencies,
+            Some(PageState::Dependents) => ReaderSurface::Dependents,
+            Some(PageState::Releases) => ReaderSurface::Releases,
+            Some(PageState::Security) => ReaderSurface::Security,
+            Some(PageState::CodeSearch) => ReaderSurface::CodeSearch,
+        };
+        let expected_route = format!("{}:{expected_overlay}", expected_surface.as_str());
+        if probe.route != expected_route {
+            return Err(format!(
+                "requested route {expected_route}, live Workspace reached {}",
+                probe.route
             ));
         }
         let expected_focus = match requested.focus {
@@ -1492,6 +1672,8 @@ impl Focusable for Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.flush_input_values(window, cx);
+        #[cfg(feature = "visual-harness")]
+        self.resolve_pending_harness_state(window, cx);
         let mut theme = self.theme(cx);
         theme.begin_action_frame(window, "workspace");
         window.set_rem_size(theme.root_pixels());

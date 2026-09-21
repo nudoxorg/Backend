@@ -818,12 +818,6 @@ impl LayoutCache {
                 .or_default()
                 .push(node);
         }
-        for node in graph.nodes.keys().copied() {
-            levels
-                .entry(*distance.get(&node).unwrap_or(&0))
-                .or_default()
-                .push(node);
-        }
         let mut work = 0usize;
         for (depth, mut nodes) in levels {
             nodes.sort_unstable();
@@ -1433,6 +1427,17 @@ mod tests {
                 .iter()
                 .all(|node| graph.nodes.contains_key(&node.id))
         );
+    }
+
+    #[test]
+    fn layout_work_counts_each_admitted_node_once() {
+        let graph = graph(4);
+        let mut cache = LayoutCache::default();
+        cache.sync(&graph);
+
+        assert_eq!(cache.work, graph.nodes.len());
+        assert!(cache.complete);
+        assert!(graph.nodes.keys().all(|id| cache.position(*id).is_some()));
     }
 
     #[test]

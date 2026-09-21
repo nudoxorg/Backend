@@ -276,10 +276,9 @@ impl GuiState {
             states.push(Self::new(page.as_str(), Some(page), None));
             // These surfaces are global shell controls and are legal over
             // every registered reader route. Data-dependent conditions such
-            // as offline, loading, fault, empty, and indexing are deliberately
+            // as offline, loading, fault, empty, and indexing results remain
             // absent until a live adapter can inject the corresponding
-            // admitted condition; a cross-product sweep would manufacture
-            // states the product cannot honestly reach.
+            // admitted condition; settings pages are stable shell routes.
             for overlay in [
                 OverlayState::Omnibar,
                 OverlayState::Palette,
@@ -287,6 +286,8 @@ impl GuiState {
                 OverlayState::SettingsEditor,
                 OverlayState::SettingsAgents,
                 OverlayState::SettingsDiagnostics,
+                OverlayState::SettingsIndex,
+                OverlayState::SettingsRegistry,
                 OverlayState::SettingsLegend,
             ] {
                 let id = format!("{}--{}", page.as_str(), overlay.as_str());
@@ -375,6 +376,8 @@ pub fn validate_catalog(states: &[GuiState]) -> Result<(), StateError> {
                     | OverlayState::SettingsEditor
                     | OverlayState::SettingsAgents
                     | OverlayState::SettingsDiagnostics
+                    | OverlayState::SettingsIndex
+                    | OverlayState::SettingsRegistry
                     | OverlayState::SettingsLegend
             )
         }) {
@@ -410,13 +413,18 @@ mod tests {
         let states = GuiState::catalog();
         assert_eq!(
             states.len(),
-            PageState::ALL.len() + (PageState::ALL.len() * 7) + 3
+            PageState::ALL.len() + (PageState::ALL.len() * 9) + 3
         );
         validate_catalog(&states).expect("catalog should be valid");
         assert!(
             states
                 .iter()
                 .any(|state| state.id == "package--settings-agents")
+        );
+        assert!(
+            states
+                .iter()
+                .any(|state| state.id == "package--settings-index")
         );
         assert!(!states.iter().any(|state| state.id == "package--loading"));
         assert!(states.iter().any(|state| state.id == "shell--vellum"));

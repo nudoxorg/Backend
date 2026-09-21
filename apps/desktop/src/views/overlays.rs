@@ -254,6 +254,10 @@ impl Workspace {
                 self.index_registry_setting(theme, cx).into_any_element(),
                 self.capability_setting(theme, cx).into_any_element(),
             ],
+            SettingsPage::Index => vec![self.index_registry_setting(theme, cx).into_any_element()],
+            SettingsPage::Registry => {
+                vec![self.index_registry_setting(theme, cx).into_any_element()]
+            }
             SettingsPage::Legend => vec![legend_setting(theme).into_any_element()],
         };
         div()

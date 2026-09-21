@@ -152,6 +152,44 @@ pub struct Viewport {
     pub scale: u8,
 }
 
+/// Resolves viewport changes that happen before the first captured frame.
+///
+/// Input journeys can resize a window or change its device scale at time zero.
+/// GPUI applies those changes before the first screenshot, so the capture
+/// contract must use the resulting logical size and backing scale when it
+/// crops, writes PNGs, and records a manifest. Changes after the first frame
+/// would produce a sequence with mixed physical dimensions; those are
+/// rejected until the artifact format can represent per-frame viewports.
+pub fn preflight_viewport(
+    viewport: Viewport,
+    actions: &[InputStep],
+    frames: &[AnimationFrame],
+) -> Result<Viewport, CaptureError> {
+    let first_frame = frames.first().map_or(0, |frame| frame.time_ms);
+    let mut elapsed = 0_u64;
+    let mut effective = viewport;
+    for step in actions {
+        match step {
+            InputStep::Wait { milliseconds } => {
+                elapsed = elapsed.saturating_add(u64::from(*milliseconds));
+            }
+            InputStep::Resize { width, height } if elapsed <= first_frame => {
+                effective = Viewport::new(*width, *height, effective.scale)?;
+            }
+            InputStep::Scale { factor } if elapsed <= first_frame => {
+                effective = Viewport::new(effective.width, effective.height, *factor)?;
+            }
+            InputStep::Resize { .. } | InputStep::Scale { .. } => {
+                return Err(CaptureError::InvalidConfig(
+                    "resize and scale must happen before the first capture frame".to_owned(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(effective)
+}
+
 impl Viewport {
     /// All required viewports at 1x.
     #[must_use]
@@ -412,6 +450,8 @@ pub struct CaptureRecord {
 pub struct CaptureSet {
     /// State identity.
     pub state: GuiState,
+    /// Effective logical viewport and device scale after preflight inputs.
+    pub viewport: Viewport,
     /// Captured timeline frames.
     pub frames: Vec<CaptureRecord>,
 }
@@ -457,7 +497,7 @@ impl CaptureSession {
         semantic_artifact: Option<&str>,
     ) -> Result<CaptureManifest, CaptureError> {
         let mut frames = Vec::with_capacity(capture.frames.len());
-        let expected_size = self.config.viewport.physical_size();
+        let expected_size = capture.viewport.physical_size();
         let mut baseline_within_policy = true;
         let mut missing_baseline = false;
         for record in &mut capture.frames {
@@ -469,7 +509,7 @@ impl CaptureSession {
                     record.image.height(),
                     expected_size.0,
                     expected_size.1,
-                    self.config.viewport.suffix(),
+                    capture.viewport.suffix(),
                 )));
             }
             let baseline = self.baseline_path(&capture.state.id, &record.label);
@@ -503,7 +543,10 @@ impl CaptureSession {
             .writer
             .write_filmstrip(&capture.state.id, &capture.frames)
             .map(Some)?;
-        let scenario = (&capture.state, &self.config, script_id);
+        let mut manifest_config = self.config.clone();
+        manifest_config.viewport = capture.viewport;
+        let scenario = (&capture.state, &manifest_config, script_id);
+        let scenario_sha256 = scenario_hash(&scenario)?;
         let sequence_sha256 = scenario_hash(&frames)?;
         let sequence = FrameSequenceMetadata {
             encoding: "png-sequence".to_owned(),
@@ -516,10 +559,10 @@ impl CaptureSession {
         let manifest = CaptureManifest {
             schema: 1,
             state: capture.state.clone(),
-            config: self.config.clone(),
+            config: manifest_config,
             frames,
             script_id: script_id.map(ToOwned::to_owned),
-            scenario_sha256: scenario_hash(&scenario)?,
+            scenario_sha256,
             sequence_sha256,
             sequence,
             source_revision: Some(self.provenance.source_revision.clone()),
@@ -691,6 +734,7 @@ mod tests {
             .expect("semantic artifact");
         let mut capture = CaptureSet {
             state: GuiState::new("browse", Some(PageState::Browse), None),
+            viewport: Viewport::new(640, 480, 1).expect("viewport"),
             frames: vec![CaptureRecord {
                 label: "start".to_owned(),
                 time_ms: 0,
@@ -703,6 +747,45 @@ mod tests {
         assert!(matches!(result, Err(CaptureError::BaselineMismatch(_))));
         assert!(output.join("manifests/browse.json").is_file());
         assert!(output.join("diffs/browse/start.png").is_file());
+        std::fs::remove_dir_all(root).expect("test cleanup");
+    }
+
+    #[test]
+    fn manifest_and_verifier_follow_the_effective_capture_viewport() {
+        let root = std::env::temp_dir().join(format!(
+            "backend-gui-harness-effective-viewport-{}",
+            std::process::id()
+        ));
+        let config = CaptureConfig::deterministic(Viewport::new(4, 3, 1).expect("viewport"));
+        let session = CaptureSession::new(config, &root).expect("capture session");
+        session
+            .writer
+            .write_json("semantics/edge.json", &serde_json::json!([]))
+            .expect("semantic artifact");
+        let mut image = RgbaImage::from_pixel(8, 6, image::Rgba([32, 32, 32, 255]));
+        image.put_pixel(7, 5, image::Rgba([255, 59, 48, 255]));
+        let mut capture = CaptureSet {
+            state: GuiState::new("edge", None, None),
+            viewport: Viewport::new(4, 3, 2).expect("effective viewport"),
+            frames: vec![CaptureRecord {
+                label: "start".to_owned(),
+                time_ms: 0,
+                image,
+                input_index: None,
+                diff: None,
+            }],
+        };
+        session
+            .write_set(&mut capture, None, Some("semantics/edge.json"))
+            .expect("write effective capture");
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("manifests/edge.json")).expect("manifest"),
+        )
+        .expect("manifest json");
+        assert_eq!(manifest["config"]["viewport"]["scale"], 2);
+        let verified = verify_run(&root).expect("verified run");
+        assert_eq!(verified.manifests, 1);
+        assert_eq!(verified.frames, 1);
         std::fs::remove_dir_all(root).expect("test cleanup");
     }
 }

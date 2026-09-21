@@ -193,6 +193,62 @@ pub(crate) enum ReaderIntent {
     Search,
 }
 
+/// The concrete reader route currently owning the active tab.
+///
+/// Page and overlay labels are harness vocabulary. This value stays in the
+/// document owner so semantic probes can distinguish a docs handoff from a
+/// declaration page even when both resolve to the same admitted `Page`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReaderSurface {
+    /// The browse landing page.
+    Browse,
+    /// A project outline/root.
+    Project,
+    /// A registry package landing page.
+    Package,
+    /// A declaration page.
+    Declaration,
+    /// A captured source sheet for a declaration.
+    Source,
+    /// An indexed code outline.
+    Code,
+    /// Documentation reached through a package handoff.
+    Docs,
+    /// The expanded declaration graph.
+    Graph,
+    /// Direct dependencies for a package.
+    Dependencies,
+    /// Reverse dependents for a package.
+    Dependents,
+    /// Release history for a package.
+    Releases,
+    /// Security/advisory details for a package.
+    Security,
+    /// Scoped code search.
+    CodeSearch,
+}
+
+impl ReaderSurface {
+    /// Stable route spelling used by semantic artifacts and assertions.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Browse => "browse",
+            Self::Project => "project",
+            Self::Package => "package",
+            Self::Declaration => "declaration",
+            Self::Source => "source",
+            Self::Code => "code",
+            Self::Docs => "docs",
+            Self::Graph => "graph",
+            Self::Dependencies => "dependencies",
+            Self::Dependents => "dependents",
+            Self::Releases => "releases",
+            Self::Security => "security",
+            Self::CodeSearch => "code-search",
+        }
+    }
+}
+
 /// A typed package-to-reader handoff.
 ///
 /// The entry carries both store generations observed when it was produced.
@@ -393,6 +449,7 @@ pub(crate) struct Tab {
     history: Vec<Subject>,
     cursor: usize,
     content: Content,
+    surface: ReaderSurface,
     pending: Option<Identity>,
     scroll: ScrollHandle,
     generation: u64,
@@ -400,12 +457,20 @@ pub(crate) struct Tab {
 
 impl Tab {
     fn new(id: TabId, parent: Option<TabId>, subject: Subject) -> Self {
+        let surface = match &subject {
+            Subject::Home => ReaderSurface::Browse,
+            Subject::Project { .. } => ReaderSurface::Project,
+            Subject::Package { .. } => ReaderSurface::Package,
+            Subject::Outline { .. } => ReaderSurface::Code,
+            Subject::Declaration { .. } => ReaderSurface::Declaration,
+        };
         Self {
             id,
             parent,
             history: vec![subject],
             cursor: 0,
             content: Content::Blank,
+            surface,
             pending: None,
             scroll: ScrollHandle::new(),
             generation: 0,
@@ -415,6 +480,11 @@ impl Tab {
     /// Returns what this tab is showing.
     pub(crate) const fn content(&self) -> &Content {
         &self.content
+    }
+
+    /// Returns the typed route owning this tab.
+    pub(crate) const fn surface(&self) -> ReaderSurface {
+        self.surface
     }
 
     /// Returns the subject at the history cursor.
@@ -627,13 +697,40 @@ impl DocumentStore {
         let route = entry.resolve(&self.index.read(cx));
         if let Ok(route) = &route {
             match route {
-                ReaderRoute::Docs { subject }
-                | ReaderRoute::Source { subject, .. }
-                | ReaderRoute::Code { subject } => self.open(subject.clone(), target, cx),
-                ReaderRoute::Search { .. } => {}
+                ReaderRoute::Docs { subject } => {
+                    self.open(subject.clone(), target, cx);
+                    self.set_active_surface(ReaderSurface::Docs);
+                }
+                ReaderRoute::Source { subject, .. } => {
+                    self.open(subject.clone(), target, cx);
+                    self.set_active_surface(ReaderSurface::Source);
+                }
+                ReaderRoute::Code { subject } => {
+                    self.open(subject.clone(), target, cx);
+                    self.set_active_surface(ReaderSurface::Code);
+                }
+                ReaderRoute::Search { .. } => {
+                    self.set_active_surface(ReaderSurface::CodeSearch);
+                }
             }
         }
         route
+    }
+
+    /// Changes the typed route of the active tab after a route adapter has
+    /// selected a capability within an already opened subject.
+    pub(crate) fn set_active_surface(&mut self, surface: ReaderSurface) {
+        if let Some(id) = self.active
+            && let Some(tab) = self.find_mut(id)
+        {
+            tab.surface = surface;
+        }
+    }
+
+    /// Returns the typed route of the active tab, or browse before a tab is
+    /// created.
+    pub(crate) fn active_surface(&self) -> ReaderSurface {
+        self.tab().map_or(ReaderSurface::Browse, Tab::surface)
     }
 
     /// Returns the tabs as a tree, parents before children, in creation order.

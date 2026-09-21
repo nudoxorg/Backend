@@ -37,11 +37,11 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnimationExt as _, AnyElement, Context, Div, ElementId, Entity, FontWeight, InteractiveElement,
     IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, PinchEvent,
-    Pixels, Role, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, canvas, div, point,
-    px,
+    Pixels, Role, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, canvas, div,
+    point, px,
 };
-use std::sync::Arc;
 use gpui_component::button::{Button, ButtonRounded};
+use std::sync::Arc;
 
 /// How many members are drawn before a group offers to show the rest.
 const MEMBER_BUDGET: usize = 40;
@@ -606,11 +606,14 @@ impl Workspace {
 
     fn prose_section(&mut self, theme: &Theme, page: &Page) -> impl IntoElement {
         let document = self.document.clone();
-        div()
-            .id("section-documentation")
-            .child(prose::blocks(theme, page.prose(), "page", move |symbol, _, cx| {
+        div().id("section-documentation").child(prose::blocks(
+            theme,
+            page.prose(),
+            "page",
+            move |symbol, _, cx| {
                 open_symbol(&document, symbol, cx);
-            }))
+            },
+        ))
     }
 }
 
@@ -799,7 +802,11 @@ impl Workspace {
             let _delta = self.graph.sync(projection);
         }
         if !self.graph.expanded {
-            let count = self.graph.graph.as_ref().map_or(0, |graph| graph.nodes.len());
+            let count = self
+                .graph
+                .graph
+                .as_ref()
+                .map_or(0, |graph| graph.nodes.len());
             return div()
                 .id("graph-launcher")
                 .w_full()
@@ -823,7 +830,12 @@ impl Workspace {
                 )
                 .into_any_element();
         }
-        let Some(availability) = self.graph.graph.as_ref().map(|graph| graph.availability.clone()) else {
+        let Some(availability) = self
+            .graph
+            .graph
+            .as_ref()
+            .map(|graph| graph.availability.clone())
+        else {
             return div().into_any_element();
         };
         let status = match &availability {
@@ -949,11 +961,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn graph_toolbar(
-        &mut self,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    fn graph_toolbar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Div {
         let filters = [
             RelationKind::Contains,
             RelationKind::Related,
@@ -1046,9 +1054,7 @@ impl Workspace {
                     .graph
                     .as_ref()
                     .is_some_and(|graph| graph.nodes.len() > 1),
-                |toolbar| {
-                toolbar.child(text::faint(theme).child("Alt+↓ / Alt+↑ selects nodes"))
-                },
+                |toolbar| toolbar.child(text::faint(theme).child("Alt+↓ / Alt+↑ selects nodes")),
             )
     }
 
@@ -1088,66 +1094,63 @@ impl Workspace {
             })
             .take(graph::MAX_VISIBLE_NODES)
             .filter_map(|node| {
-            let position = self.graph.layout.position(node.id)?;
-            let active = selected == Some(node.id);
-            let id = node.id;
-            let x = position.x * zoom + pan.x;
-            let y = position.y * zoom + pan.y;
-            let state_label = match node.state {
-                NodeState::Ready => "ready",
-                NodeState::Loading => "loading",
-                NodeState::Failed => "failed",
-                NodeState::Unavailable => "unavailable",
-            };
-            Some(
-                div()
-                    .id(ElementId::Name(SharedString::from(format!(
-                        "graph-node-{id:?}"
-                    ))))
-                    .absolute()
-                    .left(px(x))
-                    .top(px(y))
-                    .w(px(graph::NODE_WIDTH * zoom.max(0.75)))
-                    .min_h(px(graph::NODE_HEIGHT))
-                    .px(space(Space::Snug))
-                    .py(px(7.0))
-                    .rounded(radius(Radius::Small))
-                    .border(hairline())
-                    .border_color(if active {
-                        theme.paint(Paint::Gilt)
-                    } else {
-                        theme.paint(Paint::Hairline)
-                    })
-                    .role(Role::Button)
-                    .aria_label(format!(
-                        "Graph node {}, {}",
-                        node.label, state_label
-                    ))
-                    .aria_description(node.coordinate.clone())
-                    .tab_index(0)
-                    .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
-                    .bg(if active {
-                        theme.paint(Paint::GiltWash)
-                    } else {
-                        theme.paint(Paint::Panel)
-                    })
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.graph.selected = Some(id);
-                        cx.notify();
-                    }))
-                    .child(
-                        text::single_line(text::navigable(theme, TypeScale::Small, false))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(node.label.clone()),
-                    )
-                    .child(
-                        text::faint(theme)
-                            .font_family(theme.specimen())
-                            .child(state_label),
-                    ),
-            )
-        });
+                let position = self.graph.layout.position(node.id)?;
+                let active = selected == Some(node.id);
+                let id = node.id;
+                let x = position.x * zoom + pan.x;
+                let y = position.y * zoom + pan.y;
+                let state_label = match node.state {
+                    NodeState::Ready => "ready",
+                    NodeState::Loading => "loading",
+                    NodeState::Failed => "failed",
+                    NodeState::Unavailable => "unavailable",
+                };
+                Some(
+                    div()
+                        .id(ElementId::Name(SharedString::from(format!(
+                            "graph-node-{id:?}"
+                        ))))
+                        .absolute()
+                        .left(px(x))
+                        .top(px(y))
+                        .w(px(graph::NODE_WIDTH * zoom.max(0.75)))
+                        .h(px(graph::NODE_HEIGHT * zoom.max(0.75)))
+                        .px(space(Space::Snug))
+                        .py(px(7.0))
+                        .rounded(radius(Radius::Small))
+                        .border(hairline())
+                        .border_color(if active {
+                            theme.paint(Paint::Gilt)
+                        } else {
+                            theme.paint(Paint::Hairline)
+                        })
+                        .role(Role::Button)
+                        .aria_label(format!("Graph node {}, {}", node.label, state_label))
+                        .aria_description(node.coordinate.clone())
+                        .tab_index(0)
+                        .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
+                        .bg(if active {
+                            theme.paint(Paint::GiltWash)
+                        } else {
+                            theme.paint(Paint::Panel)
+                        })
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.graph.selected = Some(id);
+                            cx.notify();
+                        }))
+                        .child(
+                            text::single_line(text::navigable(theme, TypeScale::Small, false))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(node.label.clone()),
+                        )
+                        .child(
+                            text::faint(theme)
+                                .font_family(theme.specimen())
+                                .child(state_label),
+                        ),
+                )
+            });
         div()
             .id("graph-canvas")
             .role(Role::Group)
@@ -1235,6 +1238,7 @@ impl Workspace {
                 .aria_label(format!("Open graph node {}", node.label))
                 .aria_description(coordinate.clone())
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    this.graph.selected = Some(id);
                     this.open_symbol(id.symbol(), Target::Child, cx);
                 }))
                 .child(

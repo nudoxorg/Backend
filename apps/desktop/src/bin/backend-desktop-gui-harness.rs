@@ -12,7 +12,7 @@ use backend_desktop::{
 };
 use backend_gui_harness::{
     ActionDescriptor, CaptureConfig, CaptureSession, FocusState, GuiState, InputStep, OverlayState,
-    PageState, Viewport, animation_frames_for_state, verify_run,
+    PageState, Viewport, animation_frames_for_state, preflight_viewport, verify_run,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -207,19 +207,15 @@ fn capture_command(args: &[String]) -> Result<(), String> {
             }
             for journey in &journeys {
                 report.attempted_captures += 1;
-                let journey_config = config_for_journey(&config, journey.id);
-                report.requested_frames +=
-                    animation_frames_for_state(&journey_config, &journey.from).len();
-                let mut journey_session =
-                    CaptureSession::new(journey_config.clone(), &viewport_root)
-                        .map_err(|error| error.to_string())?;
-                let mut live = match capture_live_workspace_journey(
-                    journey_config.clone(),
-                    journey.from.clone(),
+                let mut journey_config = config_for_journey(&config, journey.id);
+                let journey_frames = animation_frames_for_state(&journey_config, &journey.from);
+                report.requested_frames += journey_frames.len();
+                let journey_viewport = match preflight_viewport(
+                    journey_config.viewport,
                     &journey.steps,
-                    &animation_frames_for_state(&journey_config, &journey.from),
+                    &journey_frames,
                 ) {
-                    Ok(live) => live,
+                    Ok(viewport) => viewport,
                     Err(error) => {
                         report.journeys.push(JourneyResult {
                             id: journey.id.to_owned(),
@@ -230,11 +226,54 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                             steps: journey.steps.clone(),
                             final_semantics: None,
                             passed: false,
-                            error: Some(error.clone()),
+                            error: Some(error.to_string()),
                         });
                         report.failures.push(Failure {
                             state: format!("journey--{}", journey.id),
                             viewport: config.viewport.suffix(),
+                            error: error.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                journey_config.viewport = journey_viewport;
+                let journey_suffix = journey_viewport.suffix();
+                if !report
+                    .viewports
+                    .iter()
+                    .any(|suffix| suffix == &journey_suffix)
+                {
+                    report.viewports.push(journey_suffix.clone());
+                }
+                let journey_root = output.join(&journey_suffix);
+                let mut journey_session = CaptureSession::new(journey_config.clone(), journey_root)
+                    .map_err(|error| error.to_string())?;
+                if let Some(baseline) = baseline.as_deref() {
+                    journey_session =
+                        journey_session.with_baseline_root(baseline.join(&journey_suffix));
+                }
+                let mut live = match capture_live_workspace_journey(
+                    journey_config.clone(),
+                    journey.from.clone(),
+                    &journey.steps,
+                    &journey_frames,
+                ) {
+                    Ok(live) => live,
+                    Err(error) => {
+                        report.journeys.push(JourneyResult {
+                            id: journey.id.to_owned(),
+                            from: journey.from.id.clone(),
+                            to: journey.to.id.clone(),
+                            viewport: journey_suffix.clone(),
+                            frame_count: 0,
+                            steps: journey.steps.clone(),
+                            final_semantics: None,
+                            passed: false,
+                            error: Some(error.clone()),
+                        });
+                        report.failures.push(Failure {
+                            state: format!("journey--{}", journey.id),
+                            viewport: journey_suffix.clone(),
                             error,
                         });
                         continue;
@@ -272,7 +311,7 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                 if !varied {
                     report.failures.push(Failure {
                         state: format!("journey--{}", journey.id),
-                        viewport: config.viewport.suffix(),
+                        viewport: journey_suffix.clone(),
                         error: "journey produced identical animation frames".to_owned(),
                     });
                 }
@@ -280,7 +319,7 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                     Ok(()) => report.captured_captures += 1,
                     Err(write_error) => report.failures.push(Failure {
                         state: format!("journey--{}", journey.id),
-                        viewport: config.viewport.suffix(),
+                        viewport: journey_suffix.clone(),
                         error: write_error,
                     }),
                 }
@@ -300,7 +339,7 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                 ) {
                     report.failures.push(Failure {
                         state: format!("journey--{}", journey.id),
-                        viewport: config.viewport.suffix(),
+                        viewport: journey_suffix.clone(),
                         error: write_error.to_string(),
                     });
                 } else {
@@ -314,7 +353,7 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                     id: journey.id.to_owned(),
                     from: journey.from.id.clone(),
                     to: journey.to.id.clone(),
-                    viewport: config.viewport.suffix(),
+                    viewport: journey_suffix.clone(),
                     frame_count,
                     steps: journey.steps.clone(),
                     final_semantics,
@@ -324,7 +363,7 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                 if !passed {
                     report.failures.push(Failure {
                         state: format!("journey--{}", journey.id),
-                        viewport: config.viewport.suffix(),
+                        viewport: journey_suffix,
                         error: "journey endpoint was not reached".to_owned(),
                     });
                 }

@@ -608,6 +608,18 @@ impl RegistryStore {
         &self.page
     }
 
+    /// Returns the first package coordinate from the admitted browse page.
+    ///
+    /// Harness state is resolved from this same live registry projection as
+    /// the browse cards. It must never fall back to a remembered string or a
+    /// shelf entry, because those can describe a different capability.
+    pub(crate) fn first_page_coordinate(&self) -> Option<&str> {
+        self.page
+            .ready()
+            .and_then(|rows| rows.first())
+            .map(PackageRow::coordinate)
+    }
+
     /// Returns whether a further page is worth offering.
     pub(crate) fn can_advance(&self) -> bool {
         self.query.can_advance()

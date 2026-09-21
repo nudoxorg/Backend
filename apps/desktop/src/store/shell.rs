@@ -217,17 +217,23 @@ pub(crate) enum SettingsPage {
     Agents,
     /// Capabilities, lanes, endpoint, revision.
     Diagnostics,
+    /// Local declaration index status and ingestion controls.
+    Index,
+    /// Registry selection, cache, and live catalog status.
+    Registry,
     /// Every mark and what it means.
     Legend,
 }
 
 impl SettingsPage {
     /// Every page, in sidebar order.
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Appearance,
         Self::Editor,
         Self::Agents,
         Self::Diagnostics,
+        Self::Index,
+        Self::Registry,
         Self::Legend,
     ];
 
@@ -238,6 +244,8 @@ impl SettingsPage {
             Self::Editor => "Editor",
             Self::Agents => "Agents",
             Self::Diagnostics => "Diagnostics",
+            Self::Index => "Index",
+            Self::Registry => "Registry",
             Self::Legend => "Legend",
         }
     }

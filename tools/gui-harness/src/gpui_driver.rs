@@ -2,7 +2,7 @@
 
 use crate::{
     AnimationFrame, CaptureError, CaptureRecord, CaptureSet, GuiState, InputError, InputStep,
-    Viewport,
+    Viewport, preflight_viewport,
 };
 use gpui::{
     AnyWindowHandle, App, AssetSource, Capslock, ClipboardItem, Entity, HeadlessAppContext,
@@ -141,6 +141,7 @@ where
     H: FnMut(&AnimationFrame, &mut Window, &mut App) -> Result<(), CaptureError>,
     I: FnMut(&InputStep, &mut Window, &mut App),
 {
+    let viewport = preflight_viewport(viewport, actions, frames)?;
     let platform = gpui_platform::current_platform(true);
     let text_system: Arc<dyn PlatformTextSystem> = platform.text_system();
     if options.require_renderer && gpui_platform::current_headless_renderer().is_none() {
@@ -242,6 +243,7 @@ where
     }
     Ok(CaptureSet {
         state,
+        viewport,
         frames: records,
     })
 }
@@ -576,6 +578,10 @@ fn normalize_capture_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{
+        AppContext, Context, InteractiveElement, IntoElement, ParentElement, Render, Styled,
+        Window, div, px, rgb,
+    };
     use image::Rgba;
 
     #[test]
@@ -614,5 +620,101 @@ mod tests {
         let viewport = Viewport::new(4, 3, 2).expect("viewport");
         let image = image::RgbaImage::new(4, 3);
         assert!(normalize_capture_image(image, viewport).is_err());
+    }
+
+    #[test]
+    fn time_zero_scale_preflight_keeps_a_far_edge_text_landmark() {
+        let initial = Viewport::new(4, 3, 1).expect("viewport");
+        let actions = [InputStep::Scale { factor: 2 }];
+        let frames = [AnimationFrame {
+            label: "start".to_owned(),
+            time_ms: 0,
+        }];
+        let effective = preflight_viewport(initial, &actions, &frames).expect("preflight");
+        assert_eq!(effective, Viewport::new(4, 3, 2).expect("viewport"));
+
+        // A tiny rasterized "EDGE" landmark occupies the last four columns
+        // of the physical scene. Cropping this as the original 1x viewport
+        // would erase the final two columns and make the scale claim false.
+        let mut image = image::RgbaImage::from_pixel(8, 6, Rgba([0, 0, 0, 255]));
+        for (column, mask) in [0b1111_u8, 0b1001, 0b1011, 0b1111].into_iter().enumerate() {
+            for row in 0..4 {
+                if mask & (1 << row) != 0 {
+                    image.put_pixel(4 + column as u32, row as u32, Rgba([255, 255, 255, 255]));
+                }
+            }
+        }
+        let normalized = normalize_capture_image(image, effective).expect("normalized image");
+        assert_eq!(normalized.dimensions(), effective.physical_size());
+        assert!(
+            normalized.get_pixel(7, 3).0[0] > 0,
+            "far edge landmark was cropped"
+        );
+    }
+
+    #[test]
+    fn viewport_changes_after_first_frame_are_rejected() {
+        let viewport = Viewport::new(4, 3, 1).expect("viewport");
+        let actions = [
+            InputStep::Wait { milliseconds: 1 },
+            InputStep::Scale { factor: 2 },
+        ];
+        let frames = [AnimationFrame {
+            label: "start".to_owned(),
+            time_ms: 0,
+        }];
+        assert!(preflight_viewport(viewport, &actions, &frames).is_err());
+    }
+
+    struct EdgeLandmark;
+
+    impl Render for EdgeLandmark {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .items_end()
+                .justify_end()
+                .bg(rgb(0x202020))
+                .child(
+                    div()
+                        .id("edge-landmark")
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(rgb(0xff3b30))
+                        .child("EDGE"),
+                )
+        }
+    }
+
+    #[test]
+    fn headless_scale_preflight_renders_the_right_edge_landmark() {
+        let viewport = Viewport::new(64, 32, 1).expect("viewport");
+        let frames = [AnimationFrame {
+            label: "start".to_owned(),
+            time_ms: 0,
+        }];
+        let capture = capture_gpui_state(
+            viewport,
+            GuiState::new("edge-landmark", None, None),
+            &[InputStep::Scale { factor: 2 }],
+            &frames,
+            GpuiCaptureOptions::default(),
+            |_, cx| cx.new(|_| EdgeLandmark),
+        )
+        .expect("headless capture");
+        assert_eq!(
+            capture.viewport,
+            Viewport::new(64, 32, 2).expect("viewport")
+        );
+        assert_eq!(capture.frames[0].image.dimensions(), (128, 64));
+        let edge = capture.frames[0].image.get_pixel(127, 63).0;
+        assert!(
+            edge[0] > 180 && edge[1] < 120,
+            "right edge control was cropped"
+        );
     }
 }
