@@ -6,6 +6,12 @@
 //! and the immutable delta applied to a source snapshot.
 #![allow(clippy::module_name_repetitions)]
 
+mod content_addressed;
+pub use content_addressed::{
+    ArchiveBudget, ArchiveManifest, ArchiveManifestBuilder, ContentAddressedStore,
+    ContentStoreError, ObjectAdmission, ResumableTransfer, TransferCheckpoint, TransferId,
+};
+
 use crate::registry::{
     AcquisitionError, AcquisitionError as RegistryAcquisitionError,
     AcquisitionOutcome as RegistryOutcome, CanonicalFeedV1, FeedSchema, PackageCoordinate,
