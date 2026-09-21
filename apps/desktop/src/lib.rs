@@ -11,6 +11,15 @@
 
 #![deny(unsafe_code)]
 
+/// Product-neutral identities and read-model ports for the v3 desktop shell.
+pub mod core;
+/// One immutable snapshot, selectors, viewports, and persistence schema.
+pub mod model;
+/// Typed routes, intents, effects, actions, focus, and pure reduction.
+pub mod navigation;
+/// Background actor, stale-result coordinator, motion clock, and GPUI graph.
+pub mod runtime;
+
 mod graph;
 #[cfg(unix)]
 mod host;
