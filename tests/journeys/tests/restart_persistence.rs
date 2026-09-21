@@ -193,6 +193,31 @@ fn authority_secret(workspace: &Path) -> PathBuf {
     path
 }
 
+/// Writes the small persisted project used by the restart journey. Keeping
+/// this corpus to the two historical identity cases makes a graph admission
+/// failure point at the restart contract instead of at an unrelated language
+/// specimen; the boundary project below still supplies a large real ingest.
+fn restart_project(root: &Path) -> PathBuf {
+    let project = root.join("restart-project");
+    std::fs::create_dir_all(project.join("src")).expect("create restart source");
+    std::fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"restart-project\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+    )
+    .expect("write restart manifest");
+    std::fs::write(
+        project.join("src/lib.rs"),
+        "pub fn RustBeaconEntry() -> u64 { 1 }\n",
+    )
+    .expect("write restart Rust source");
+    std::fs::write(
+        project.join("src/CSharpBeacon.cs"),
+        "public sealed class CSharpBeacon { }\n",
+    )
+    .expect("write restart C# source");
+    project.canonicalize().expect("canonical restart project")
+}
+
 fn large_project(root: &Path) -> PathBuf {
     let project = root.join("restart-boundary");
     std::fs::create_dir_all(project.join("src")).expect("create boundary source");
@@ -527,29 +552,61 @@ fn regression_snapshot(
     project: &Path,
 ) -> Option<RegressionSnapshot> {
     let cases = [
-        ("src/lib.rs", "trait_method_marker", "method"),
-        ("src/lib.rs", "impl_method_marker", "method"),
-        ("src/CSharpBeacon.cs", "RestartIdentityNamespace", "module"),
+        // The trait declaration and its impl are two valid declarations with
+        // one name.  The former regression tagged each as both a function and
+        // a method, so the public rows must be exactly these two methods.
+        ("src/lib.rs", "trait_method_marker", "method", 2),
+        ("src/lib.rs", "impl_method_marker", "method", 1),
+        (
+            "src/CSharpBeacon.cs",
+            "RestartIdentityNamespace",
+            "module",
+            1,
+        ),
     ];
     let mut rows = Vec::new();
-    for (path, name, expected_kind) in cases {
-        let value = search_json(endpoint, workspace, project, name);
-        let records = records_for(&value, path, name);
-        if records.len() != 1 {
+    for (path, name, expected_kind, expected_count) in cases {
+        let search_value = search_json(endpoint, workspace, project, name);
+        let search_records = records_for(&search_value, path, name);
+        let names_value = names_json(endpoint, workspace, project, name);
+        let names_records = records_for(&names_value, path, name);
+        if search_records.len() != expected_count || names_records.len() != expected_count {
             return None;
         }
-        let record = records[0];
-        if record["kind"].as_str() != Some(expected_kind) {
+        let mut search_rows = Vec::with_capacity(search_records.len());
+        for record in search_records {
+            if record["kind"].as_str() != Some(expected_kind) {
+                return None;
+            }
+            let identity = &record["identity"];
+            search_rows.push((
+                identity["coordinate"].as_str()?.to_owned(),
+                identity["path"].as_str()?.to_owned(),
+                identity["name"].as_str()?.to_owned(),
+                identity["key"].as_str()?.to_owned(),
+                record["kind"].as_str()?.to_owned(),
+            ));
+        }
+        let mut names_rows = Vec::with_capacity(names_records.len());
+        for record in names_records {
+            if record["kind"].as_str() != Some(expected_kind) {
+                return None;
+            }
+            let identity = &record["identity"];
+            names_rows.push((
+                identity["coordinate"].as_str()?.to_owned(),
+                identity["path"].as_str()?.to_owned(),
+                identity["name"].as_str()?.to_owned(),
+                identity["key"].as_str()?.to_owned(),
+                record["kind"].as_str()?.to_owned(),
+            ));
+        }
+        search_rows.sort();
+        names_rows.sort();
+        if search_rows != names_rows {
             return None;
         }
-        let identity = &record["identity"];
-        rows.push((
-            identity["coordinate"].as_str()?.to_owned(),
-            identity["path"].as_str()?.to_owned(),
-            identity["name"].as_str()?.to_owned(),
-            identity["key"].as_str()?.to_owned(),
-            record["kind"].as_str()?.to_owned(),
-        ));
+        rows.extend(search_rows);
     }
     rows.sort();
     Some(RegressionSnapshot(rows))
@@ -580,10 +637,11 @@ struct SurfaceEvidence {
     names: surface_matrix::RowIdentity,
     outline: BTreeSet<String>,
     query_revision: ViewRevision,
+    query_coordinates: BTreeSet<String>,
     regressions: RegressionSnapshot,
 }
 
-fn graph_query_revision(session: &mut Session) -> ViewRevision {
+fn graph_query_evidence(session: &mut Session) -> (ViewRevision, BTreeSet<String>) {
     let page = session
         .graph_query(
             "{ Declaration { coordinate @output } }".to_owned(),
@@ -597,7 +655,19 @@ fn graph_query_revision(session: &mut Session) -> ViewRevision {
         !page.rows.is_empty(),
         "graph query returned no declarations"
     );
-    page.revision
+    let coordinates = page
+        .rows
+        .iter()
+        .filter_map(|row| {
+            row.fields()
+                .iter()
+                .find_map(|(name, value)| match (name.as_str(), value) {
+                    ("coordinate", GraphValue::String(coordinate)) => Some(coordinate.clone()),
+                    _ => None,
+                })
+        })
+        .collect();
+    (page.revision, coordinates)
 }
 
 fn surface_evidence(
@@ -650,17 +720,28 @@ fn surface_evidence(
     );
 
     let mut query_session = Session::connect(endpoint).expect("connect query evidence session");
-    let query_revision = graph_query_revision(&mut query_session);
+    let (query_revision, query_coordinates) = graph_query_evidence(&mut query_session);
     assert_eq!(query_revision, ViewRevision::from(expected_root));
 
     let regressions = regression_snapshot(endpoint, workspace, project)
         .expect("identity regression rows changed kind or multiplicity");
+    for (coordinate, _, _, _, _) in &regressions.0 {
+        assert!(
+            outline.contains(coordinate),
+            "outline omitted identity regression {coordinate}"
+        );
+        assert!(
+            query_coordinates.contains(coordinate),
+            "graph query omitted identity regression {coordinate}"
+        );
+    }
     SurfaceEvidence {
         status,
         search,
         names,
         outline,
         query_revision,
+        query_coordinates,
         regressions,
     }
 }
@@ -967,7 +1048,7 @@ fn cli_add_registry(endpoint: &Path, workspace: &Path) -> Output {
 fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
     let total = Instant::now();
     let fixture = unique_root("journey");
-    let project = surface_matrix::write_polyglot(&fixture);
+    let project = restart_project(&fixture);
     write_identity_regressions(&project);
     write_ignored_javascript_outputs(&project);
     let boundary_project = large_project(&fixture);
@@ -1187,6 +1268,22 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
             .outline
             .contains(&before_graceful.search.coordinate),
         "outline lost the stable row after SIGKILL"
+    );
+    for (coordinate, _, _, _, _) in &before_graceful.regressions.0 {
+        assert!(
+            after_sigkill.outline.contains(coordinate),
+            "outline lost identity regression {coordinate} after SIGKILL"
+        );
+        assert!(
+            after_sigkill.query_coordinates.contains(coordinate),
+            "graph query lost identity regression {coordinate} after SIGKILL"
+        );
+    }
+    assert!(
+        after_sigkill
+            .query_coordinates
+            .is_superset(&before_graceful.query_coordinates),
+        "graph query lost rows after SIGKILL"
     );
     assert_eq!(
         after_sigkill.regressions, before_graceful.regressions,

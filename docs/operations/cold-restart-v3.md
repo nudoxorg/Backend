@@ -22,6 +22,12 @@ period. Recovery accepts only the previously committed root or the complete
 new root. A deliberately damaged journal must fail closed before it exposes a
 listener, after which the exact journal bytes are restored and reopened.
 
+The persisted fixture also keeps the historical identity cases: a Rust trait
+method and its impl with the same name (both `method` rows), an inherent Rust
+impl method, and a one-word block C# namespace (one `module` row). Search and
+name results, outline membership, and graph-query coordinates for those rows
+are checked before and after graceful and SIGKILL recovery.
+
 The registry journey serves a real feed and archive over loopback, verifies the
 configured authorization header, and checks that an offline process restart
 reuses the durable registry archive/cache without advancing the feed journal.
