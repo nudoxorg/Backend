@@ -38,6 +38,28 @@ let
       }
     else
       null;
+  # `luna-tools` is the cheap, pinned command closure used to enter a lane
+  # and run Cargo checks. Keep it independent from the backend command
+  # surface, GUI capture stack, corpus, and service binaries: those are
+  # separate products and must not be realized just to ask for `cargo
+  # --version`. The full role command bundle remains available as
+  # `commands.roleBundles."luna-pair"` for control-plane checks.
+  lunaTools = pkgs.buildEnv {
+    name = "nudox-luna-tools";
+    paths = [
+      toolchains.stable
+      pkgs.bash
+      pkgs.coreutils
+      pkgs.fd
+      pkgs.git
+      pkgs.jq
+      pkgs.nushell
+      pkgs.pkg-config
+      pkgs.ripgrep
+      pkgs.stdenv.cc
+    ];
+    pathsToLink = [ "/bin" ];
+  };
   dylintSource = pkgs.fetchFromGitHub {
     owner = "trailofbits";
     repo = "dylint";
@@ -493,6 +515,7 @@ in
     backendControl
     gpuiOutputHashes
     guiRuntime
+    lunaTools
     cargoDylint
     compilers
     dylintLink

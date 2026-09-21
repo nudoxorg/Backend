@@ -13,11 +13,46 @@
   helpers,
   toolchains,
   gui,
+  lunaTools,
 }:
 {
   nushell-command = commands.backend;
   agent-skills = commands.agentSkills;
   formatting = formatting.check;
+
+  # Guard the public `luna-tools` shell's actual Nix requisites. Checking
+  # PATH alone would allow a wrapper to hide an accidental backend/GUI
+  # dependency. The complete role bundle is checked separately below.
+  luna-tools-closure = helpers.nuCheck {
+    inherit pkgs;
+    name = "nudox-luna-tools-closure";
+    packages = [ lunaTools pkgs.nix ];
+    build = ''
+      let closure = (^nix-store --query --requisites ${lunaTools} | lines)
+      let forbidden = ["backend-control" "nudox-gui-runtime" "nudox-gui-tools" "bmake"]
+      let violations = ($closure | where {|path|
+        $forbidden | any {|needle| $path | str contains $needle }
+      })
+      if ($closure | length) > 512 {
+        error make {msg: ("luna-tools closure unexpectedly contains " + (($closure | length) | into string) + " requisites; inspect the package graph before merging")}
+      }
+      if not ($violations | is-empty) {
+        error make {msg: ("luna-tools closure contains forbidden products: " + ($violations | str join ", "))}
+      }
+      for command in ["cargo" "rustc" "rustfmt" "clippy-driver" "git" "jq" "nu"] {
+        if (which $command | is-empty) {
+          error make {msg: ("luna-tools is missing pinned command: " + $command)}
+        }
+      }
+      mkdir ($env.out | path join "share")
+      ^cargo --version | str trim | save --raw ($env.out | path join "share" "cargo-version")
+      {
+        package: "${lunaTools}"
+        closure_entries: ($closure | length)
+        forbidden_products: $forbidden
+      } | to json | save --raw ($env.out | path join "share" "luna-tools-closure.json")
+    '';
+  };
 
   gui-contract = helpers.nuCheck {
     inherit pkgs;

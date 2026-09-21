@@ -166,6 +166,7 @@ let
           toolchains
           tools
           ;
+        lunaTools = tools.lunaTools;
       };
     in
     {
@@ -203,7 +204,10 @@ in
       backend = value.commands.backend;
       backend-verifier = value.commands.backendVerifier;
       agent-skills = value.commands.agentSkills;
-      luna-tools = value.commands.roleBundles."luna-pair";
+      # Keep the public lane bootstrap cheap. The complete role command
+      # surface remains under this explicit name for policy/control checks.
+      luna-tools = value.tools.lunaTools;
+      luna-role-tools = value.commands.roleBundles."luna-pair";
       terra-tools = value.commands.roleBundles."terra-academic";
       reviewer-tools = value.commands.roleBundles."terra-reviewer";
       sol-tools = value.commands.roleBundles."sol-integrator";
