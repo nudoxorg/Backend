@@ -7,7 +7,8 @@
 #![allow(clippy::module_name_repetitions)]
 
 use crate::registry::{
-    AcquisitionError as RegistryAcquisitionError, AcquisitionOutcome as RegistryOutcome,
+    AcquisitionError, AcquisitionError as RegistryAcquisitionError,
+    AcquisitionOutcome as RegistryOutcome,
     PackageCoordinate, RegistryOwner, RegistryTransport, TransportFailure,
     admit_registry_coordinate,
 };
@@ -225,6 +226,18 @@ impl RawArchiveObjectId {
         Self::from_reader(&mut cursor, bytes.len() as u64)
             .unwrap_or_else(|_| Self::derive(&[bytes]))
     }
+
+    /// Rehydrates an archive identity from a durable verified claim without
+    /// reopening the archive bytes. Registry publication already authenticated
+    /// the claim and records its exact extent, so rebuilding a source root can
+    /// use this compact identity directly instead of allocating and hashing
+    /// every object in the catalog again.
+    pub(crate) fn from_verified_claim(length: u64, claim: [u8; ID_BYTES]) -> Self {
+        let mut payload = Vec::with_capacity(ID_BYTES + 8);
+        payload.extend_from_slice(&length.to_be_bytes());
+        payload.extend_from_slice(&claim);
+        Self::derive(&[&payload])
+    }
 }
 
 /// One canonical path/object row in a tree manifest.
@@ -253,11 +266,29 @@ impl TreeManifest {
             canonical_text(entry.path.to_string())?;
         }
         entries.sort_by(|left, right| left.path.cmp(&right.path));
+        Self::from_sorted(entries)
+    }
+
+    /// Admits an already canonical path sequence without sorting it again.
+    ///
+    /// Incremental source deltas maintain sorted order while merging, so this
+    /// constructor keeps a sparse update O(base + changes) and avoids a second
+    /// allocation/sort pass over a large unchanged manifest.
+    pub(crate) fn from_sorted(entries: Vec<ManifestEntry>) -> Result<Self, IdentityError> {
+        for entry in &entries {
+            canonical_text(entry.path.to_string())?;
+        }
         if entries
             .windows(2)
             .any(|window| window[0].path == window[1].path)
         {
             return Err(IdentityError::Duplicate);
+        }
+        if entries
+            .windows(2)
+            .any(|window| window[0].path > window[1].path)
+        {
+            return Err(IdentityError::Unsorted);
         }
         let mut canonical = Vec::new();
         for entry in &entries {
@@ -360,6 +391,7 @@ pub struct SourceSnapshot {
     source: [u8; ID_BYTES],
     cursor: [u8; ID_BYTES],
     policy_epoch: u64,
+    facts_frontier: [u8; ID_BYTES],
     manifest: Arc<TreeManifest>,
     claims: Arc<[ReleaseClaimId]>,
     id: SourceSnapshotId,
@@ -372,6 +404,21 @@ impl SourceSnapshot {
         cursor: [u8; ID_BYTES],
         policy_epoch: u64,
         manifest: Arc<TreeManifest>,
+        claims: Vec<ReleaseClaimId>,
+    ) -> Result<Self, IdentityError> {
+        Self::new_with_frontier(source, cursor, policy_epoch, [0; ID_BYTES], manifest, claims)
+    }
+
+    /// Creates a snapshot bound to the immutable release and mutable-facts
+    /// frontier observed by the catalog owner. The frontier is part of the
+    /// root identity so a yank/advisory refresh produces a metadata-only root
+    /// and never causes archive payload work to be repeated.
+    pub fn new_with_frontier(
+        source: [u8; ID_BYTES],
+        cursor: [u8; ID_BYTES],
+        policy_epoch: u64,
+        facts_frontier: [u8; ID_BYTES],
+        manifest: Arc<TreeManifest>,
         mut claims: Vec<ReleaseClaimId>,
     ) -> Result<Self, IdentityError> {
         claims.sort();
@@ -382,6 +429,7 @@ impl SourceSnapshot {
         encoded.extend_from_slice(&source);
         encoded.extend_from_slice(&cursor);
         encoded.extend_from_slice(&policy_epoch.to_be_bytes());
+        encoded.extend_from_slice(&facts_frontier);
         encoded.extend_from_slice(manifest.id().as_bytes());
         for claim in &claims {
             encoded.extend_from_slice(claim.as_bytes());
@@ -391,6 +439,7 @@ impl SourceSnapshot {
             source,
             cursor,
             policy_epoch,
+            facts_frontier,
             manifest,
             claims: Arc::from(claims),
             id,
@@ -417,6 +466,12 @@ impl SourceSnapshot {
     pub const fn policy_epoch(&self) -> u64 {
         self.policy_epoch
     }
+    /// Returns the content identity of mutable release facts and advisory
+    /// observations represented by this root.
+    #[must_use]
+    pub const fn facts_frontier(&self) -> [u8; ID_BYTES] {
+        self.facts_frontier
+    }
     /// Returns the immutable tree manifest.
     #[must_use]
     pub fn manifest(&self) -> &TreeManifest {
@@ -435,6 +490,7 @@ impl SourceSnapshot {
         encoded.extend_from_slice(&self.source);
         encoded.extend_from_slice(&self.cursor);
         encoded.extend_from_slice(&self.policy_epoch.to_be_bytes());
+        encoded.extend_from_slice(&self.facts_frontier);
         encoded.extend_from_slice(self.manifest.id().as_bytes());
         for claim in self.claims.iter() {
             encoded.extend_from_slice(claim.as_bytes());
@@ -450,8 +506,12 @@ pub struct DeltaChange {
     pub path: Arc<str>,
     /// Object expected in the base snapshot, if present.
     pub before: Option<RawArchiveObjectId>,
+    /// Complete base row mode bits, if present.
+    pub before_mode: Option<u32>,
     /// Object published in the target snapshot, if present.
     pub after: Option<RawArchiveObjectId>,
+    /// Complete target row mode bits, if present.
+    pub after_mode: Option<u32>,
 }
 
 /// Error applying a versioned acquisition delta.
@@ -477,6 +537,73 @@ impl fmt::Display for DeltaError {
 }
 impl std::error::Error for DeltaError {}
 
+fn merge_manifest_entries(
+    base_entries: &[ManifestEntry],
+    changes: &[DeltaChange],
+) -> Result<Vec<ManifestEntry>, DeltaError> {
+    let mut entries = Vec::with_capacity(
+        base_entries
+            .len()
+            .saturating_add(changes.iter().filter(|change| change.before.is_none()).count()),
+    );
+    let mut base_index = 0;
+    let mut change_index = 0;
+    while base_index < base_entries.len() || change_index < changes.len() {
+        match (base_entries.get(base_index), changes.get(change_index)) {
+            (Some(entry), Some(change)) if entry.path < change.path => {
+                entries.push(entry.clone());
+                base_index += 1;
+            }
+            (Some(entry), Some(change)) if entry.path == change.path => {
+                if Some(entry.object) != change.before || Some(entry.mode) != change.before_mode {
+                    return Err(DeltaError::BeforeMismatch);
+                }
+                if let Some(after) = change.after {
+                    entries.push(ManifestEntry {
+                        path: Arc::clone(&entry.path),
+                        object: after,
+                        mode: change.after_mode.unwrap_or_default(),
+                    });
+                }
+                base_index += 1;
+                change_index += 1;
+            }
+            (Some(_), Some(change)) => {
+                if change.before.is_some() {
+                    return Err(DeltaError::BeforeMismatch);
+                }
+                if let Some(after) = change.after {
+                    entries.push(ManifestEntry {
+                        path: Arc::clone(&change.path),
+                        object: after,
+                        mode: change.after_mode.unwrap_or_default(),
+                    });
+                }
+                change_index += 1;
+            }
+            (Some(entry), None) => {
+                entries.push(entry.clone());
+                base_index += 1;
+            }
+            (None, Some(change)) => {
+                if change.before.is_some() {
+                    return Err(DeltaError::BeforeMismatch);
+                }
+                if let Some(after) = change.after {
+                    entries.push(ManifestEntry {
+                        path: Arc::clone(&change.path),
+                        object: after,
+                        mode: change.after_mode.unwrap_or_default(),
+                    });
+                }
+                change_index += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    Ok(entries)
+}
+
 /// Immutable root-bound source delta.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcquisitionDelta {
@@ -501,6 +628,12 @@ impl AcquisitionDelta {
         {
             return Err(DeltaError::InvalidChanges(IdentityError::Duplicate));
         }
+        if changes.iter().any(|change| {
+            change.before.is_some() != change.before_mode.is_some()
+                || change.after.is_some() != change.after_mode.is_some()
+        }) {
+            return Err(DeltaError::InvalidChanges(IdentityError::NonCanonicalText));
+        }
         let mut canonical = Vec::new();
         for change in &changes {
             canonical_text(change.path.to_string()).map_err(DeltaError::InvalidChanges)?;
@@ -508,19 +641,41 @@ impl AcquisitionDelta {
             canonical
                 .extend_from_slice(&change.before.map_or([0; 32], RawArchiveObjectId::to_bytes));
             canonical.push(u8::from(change.before.is_some()));
+            canonical.extend_from_slice(&change.before_mode.unwrap_or_default().to_be_bytes());
             canonical
                 .extend_from_slice(&change.after.map_or([0; 32], RawArchiveObjectId::to_bytes));
             canonical.push(u8::from(change.after.is_some()));
+            canonical.extend_from_slice(&change.after_mode.unwrap_or_default().to_be_bytes());
         }
         let id =
             AcquisitionDeltaId::derive(&[base.id().as_bytes(), target.id().as_bytes(), &canonical]);
-        Ok(Self {
+        let delta = Self {
             id,
             base: base.id(),
             target: target.id(),
             target_snapshot: target,
             changes: Arc::from(changes),
-        })
+        };
+        // Bind the supplied change set to the target root at construction.
+        // This prevents a forged delta from using the target-id fast path to
+        // bypass before/mode validation later in `apply`.
+        let entries = merge_manifest_entries(base.manifest.entries(), &delta.changes)?;
+        let manifest = Arc::new(
+            TreeManifest::from_sorted(entries).map_err(DeltaError::InvalidChanges)?,
+        );
+        let computed = SourceSnapshot::new_with_frontier(
+            delta.target_snapshot.source,
+            delta.target_snapshot.cursor,
+            delta.target_snapshot.policy_epoch,
+            delta.target_snapshot.facts_frontier,
+            manifest,
+            delta.target_snapshot.claims.to_vec(),
+        )
+        .map_err(DeltaError::InvalidChanges)?;
+        if computed.id() != delta.target {
+            return Err(DeltaError::TargetMismatch);
+        }
+        Ok(delta)
     }
 
     /// Returns this delta's immutable identity.
@@ -553,9 +708,11 @@ impl AcquisitionDelta {
             canonical
                 .extend_from_slice(&change.before.map_or([0; 32], RawArchiveObjectId::to_bytes));
             canonical.push(u8::from(change.before.is_some()));
+            canonical.extend_from_slice(&change.before_mode.unwrap_or_default().to_be_bytes());
             canonical
                 .extend_from_slice(&change.after.map_or([0; 32], RawArchiveObjectId::to_bytes));
             canonical.push(u8::from(change.after.is_some()));
+            canonical.extend_from_slice(&change.after_mode.unwrap_or_default().to_be_bytes());
         }
         canonical
     }
@@ -572,31 +729,15 @@ impl AcquisitionDelta {
                 actual: base.id(),
             });
         }
-        let mut entries = base.manifest.entries().to_vec();
-        for change in self.changes.iter() {
-            let index = entries.iter().position(|entry| entry.path == change.path);
-            let actual = index.and_then(|index| Some(entries[index].object));
-            if actual != change.before {
-                return Err(DeltaError::BeforeMismatch);
-            }
-            match (index, change.after) {
-                (Some(index), Some(after)) => entries[index].object = after,
-                (Some(index), None) => {
-                    entries.remove(index);
-                }
-                (None, Some(after)) => entries.push(ManifestEntry {
-                    path: Arc::clone(&change.path),
-                    object: after,
-                    mode: 0,
-                }),
-                (None, None) => {}
-            }
-        }
-        let manifest = Arc::new(TreeManifest::new(entries).map_err(DeltaError::InvalidChanges)?);
-        let computed = SourceSnapshot::new(
+        let entries = merge_manifest_entries(base.manifest.entries(), &self.changes)?;
+        let manifest = Arc::new(
+            TreeManifest::from_sorted(entries).map_err(DeltaError::InvalidChanges)?,
+        );
+        let computed = SourceSnapshot::new_with_frontier(
             self.target_snapshot.source,
             self.target_snapshot.cursor,
             self.target_snapshot.policy_epoch,
+            self.target_snapshot.facts_frontier,
             manifest,
             self.target_snapshot.claims.to_vec(),
         )
@@ -1843,10 +1984,19 @@ pub struct RegistryAcquisitionResult {
 pub struct AcquisitionService {
     owner: Arc<Mutex<RegistryOwner>>,
     coordinator: AcquisitionCoordinator,
+    catalog_snapshots: Arc<Mutex<BTreeMap<CatalogSnapshotKey, Arc<SourceSnapshot>>>>,
     negative: NegativeCache,
     breaker: CircuitBreaker,
     leases: LeaseStore,
     policy_epoch: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct CatalogSnapshotKey {
+    source: [u8; ID_BYTES],
+    cursor: [u8; ID_BYTES],
+    policy_epoch: u64,
+    facts_frontier: [u8; ID_BYTES],
 }
 
 struct ExistingRegistryTransport;
@@ -1889,6 +2039,7 @@ impl AcquisitionService {
         Ok(Self {
             owner: Arc::new(Mutex::new(owner)),
             coordinator: AcquisitionCoordinator::new(64, 256),
+            catalog_snapshots: Arc::new(Mutex::new(BTreeMap::new())),
             negative: NegativeCache::new(256),
             breaker,
             leases,
@@ -1965,6 +2116,7 @@ impl AcquisitionService {
         let leases = self.leases.clone();
         let breaker = self.breaker.clone();
         let negative = self.negative.clone();
+        let snapshot_cache = Arc::clone(&self.catalog_snapshots);
         let policy_epoch = self.policy_epoch;
         self.coordinator.coordinate_registry(request, || {
             let _circuit = match breaker.allow(now_millis()) {
@@ -1976,34 +2128,68 @@ impl AcquisitionService {
                     source: request.source,
                 });
             };
-            let mut owner_guard = owner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let base = match registry_catalog_snapshot(&owner_guard, policy_epoch) {
-                Ok(base) => base,
-                Err(outcome) => return promote_bytes_outcome(outcome),
-            };
             let requested = request.coordinate.as_ref();
-            let mut up_to_date = false;
+            // A request may lose a reservation to another coordinate's
+            // deterministic commit. Retry from the newly visible cursor; the
+            // winning archive writes remain content-addressed and are reused.
             for _ in 0..256 {
-                if owner_guard
+                let mut owner_guard = owner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let base = match registry_catalog_snapshot(
+                    &owner_guard,
+                    policy_epoch,
+                    &snapshot_cache,
+                ) {
+                    Ok(base) => base,
+                    Err(outcome) => return promote_bytes_outcome(outcome),
+                };
+                if let Some(package) = owner_guard
                     .published_packages()
-                    .any(|package| package.coordinate.as_str() == requested)
+                    .find(|package| package.coordinate.as_str() == requested)
+                    .cloned()
                 {
-                    up_to_date = true;
-                    break;
+                    breaker.success();
+                    let target = Arc::clone(&base);
+                    let result = match registry_result(
+                        &owner_guard,
+                        &base,
+                        target,
+                        package,
+                        request,
+                        policy_epoch,
+                    ) {
+                        Ok(result) => Arc::new(result),
+                        Err(outcome) => return promote_bytes_outcome(outcome),
+                    };
+                    return AcquisitionOutcome::Hit(result);
                 }
-                match owner_guard.poll(transport) {
-                    Ok(RegistryOutcome::Offline { .. }) => {
-                        return AcquisitionOutcome::Rejected(RejectReason::Policy);
+                let intent = match owner_guard.begin_intent() {
+                    Ok(intent) => intent,
+                    Err(error) => {
+                        return promote_bytes_outcome(registry_error_outcome(
+                            error,
+                            request.source,
+                            &breaker,
+                        ));
                     }
-                    Ok(RegistryOutcome::Unavailable { .. }) => {
+                };
+                let feed_request = owner_guard.request_for_intent(intent);
+                let stage = owner_guard.archive_stage();
+                drop(owner_guard);
+
+                let page = match transport
+                    .fetch_page(feed_request)
+                    .map_err(AcquisitionError::Transport)
+                {
+                    Ok(crate::registry::TransportResult::Available(page)) => page,
+                    Ok(crate::registry::TransportResult::Unavailable) => {
                         breaker.failure(now_millis());
                         return AcquisitionOutcome::Unavailable(Unavailable {
                             source: request.source,
                         });
                     }
-                    Ok(RegistryOutcome::RetryAfter { delay, .. }) => {
+                    Ok(crate::registry::TransportResult::RetryAfter(delay)) => {
                         breaker.failure(now_millis());
                         let retry = RetryPolicy::default().delay(0, Some(delay));
                         return AcquisitionOutcome::RetryAt(RetryAt {
@@ -2012,11 +2198,166 @@ impl AcquisitionService {
                             attempt: 0,
                         });
                     }
-                    Ok(RegistryOutcome::UpToDate { .. }) => {
-                        up_to_date = true;
-                        break;
+                    Ok(crate::registry::TransportResult::NotModified) => {
+                        let mut owner_guard = owner
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        match owner_guard.settle_reserved(intent) {
+                            Ok(()) => {}
+                            Err(AcquisitionError::StaleReservation) => continue,
+                            Err(error) => {
+                                return promote_bytes_outcome(registry_error_outcome(
+                                    error,
+                                    request.source,
+                                    &breaker,
+                                ));
+                            }
+                        }
+                        let cursor = owner_guard.cursor().token();
+                        let fact = NegativeFact {
+                            kind: NegativeFactKind::NotFound,
+                            authority: request.source,
+                            source_proof: cursor,
+                            cursor,
+                            observed_at_millis: now_millis(),
+                            expires_at_millis: now_millis().saturating_add(60_000),
+                            policy_epoch,
+                        };
+                        negative.record(*key.as_bytes(), fact);
+                        return AcquisitionOutcome::NegativeFact(fact);
                     }
-                    Ok(RegistryOutcome::Published(_)) => {}
+                    Err(error) => {
+                        return promote_bytes_outcome(registry_error_outcome(
+                            error,
+                            request.source,
+                            &breaker,
+                        ));
+                    }
+                };
+                if page.base != intent.cursor || page.packages.len() > feed_request.max_items {
+                    return AcquisitionOutcome::Rejected(RejectReason::Protocol);
+                }
+                if page.packages.is_empty() && page.next_token == intent.cursor.token() {
+                    let mut owner_guard = owner
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    match owner_guard.settle_reserved(intent) {
+                        Ok(()) => {
+                            let cursor = owner_guard.cursor().token();
+                            let fact = NegativeFact {
+                                kind: NegativeFactKind::NotFound,
+                                authority: request.source,
+                                source_proof: cursor,
+                                cursor,
+                                observed_at_millis: now_millis(),
+                                expires_at_millis: now_millis().saturating_add(60_000),
+                                policy_epoch,
+                            };
+                            negative.record(*key.as_bytes(), fact);
+                            return AcquisitionOutcome::NegativeFact(fact);
+                        }
+                        Err(AcquisitionError::StaleReservation) => continue,
+                        Err(error) => {
+                            return promote_bytes_outcome(registry_error_outcome(
+                                error,
+                                request.source,
+                                &breaker,
+                            ));
+                        }
+                    }
+                }
+                let mut publications = Vec::with_capacity(page.packages.len());
+                let mut downloads = Vec::new();
+                {
+                    let owner_guard = owner
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    for package in &page.packages {
+                        let advisory = owner_guard.advisory_for(package);
+                        if matches!(advisory.decision, backend_advisory::AcquisitionDecision::Deny(_)) {
+                            return AcquisitionOutcome::Rejected(RejectReason::Policy);
+                        }
+                        if let Some(existing) = owner_guard.published(&package.coordinate) {
+                            if existing.upstream_integrity == package.integrity_version() {
+                                publications.push(crate::registry::PublishedPackage {
+                                    coordinate: existing.coordinate.clone(),
+                                    registry: existing.registry.clone(),
+                                    artifact: existing.artifact,
+                                    bytes: existing.bytes,
+                                    provenance: package.provenance,
+                                    upstream_integrity: package.integrity_version(),
+                                    facts: package.facts,
+                                    advisory,
+                                });
+                                continue;
+                            }
+                        }
+                        downloads.push((package.clone(), advisory));
+                    }
+                }
+                let mut page_bytes = 0usize;
+                for (package, advisory) in downloads {
+                    let artifact = match transport
+                        .fetch_archive(&package)
+                        .map_err(AcquisitionError::Transport)
+                    {
+                        Ok(crate::registry::TransportResult::Available(artifact)) => artifact,
+                        Ok(crate::registry::TransportResult::Unavailable) => {
+                            breaker.failure(now_millis());
+                            return AcquisitionOutcome::Unavailable(Unavailable {
+                                source: request.source,
+                            });
+                        }
+                        Ok(crate::registry::TransportResult::RetryAfter(delay)) => {
+                            breaker.failure(now_millis());
+                            let retry = RetryPolicy::default().delay(0, Some(delay));
+                            return AcquisitionOutcome::RetryAt(RetryAt {
+                                at_millis: now_millis().saturating_add(
+                                    retry.as_millis().min(u128::from(u64::MAX)) as u64,
+                                ),
+                                attempt: 0,
+                            });
+                        }
+                        Ok(crate::registry::TransportResult::NotModified) => {
+                            return AcquisitionOutcome::Rejected(RejectReason::Protocol);
+                        }
+                        Err(error) => {
+                            return promote_bytes_outcome(registry_error_outcome(
+                                error,
+                                request.source,
+                                &breaker,
+                            ));
+                        }
+                    };
+                    let artifact_bytes = match usize::try_from(artifact.length()) {
+                        Ok(bytes) => bytes,
+                        Err(_) => return AcquisitionOutcome::Rejected(RejectReason::Bounds),
+                    };
+                    page_bytes = page_bytes.saturating_add(artifact_bytes);
+                    let publication = match stage.verify_and_store(
+                        &package,
+                        artifact,
+                        page_bytes,
+                        advisory,
+                    ) {
+                        Ok(publication) => publication,
+                        Err(error) => {
+                            return promote_bytes_outcome(registry_error_outcome(
+                                error,
+                                request.source,
+                                &breaker,
+                            ));
+                        }
+                    };
+                    publications.push(publication);
+                }
+                publications.sort_by(|left, right| left.coordinate.cmp(&right.coordinate));
+                let mut owner_guard = owner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match owner_guard.commit_reserved_page(intent, &page, publications) {
+                    Ok(_) => {}
+                    Err(AcquisitionError::StaleReservation) => continue,
                     Err(error) => {
                         return promote_bytes_outcome(registry_error_outcome(
                             error,
@@ -2025,45 +2366,47 @@ impl AcquisitionService {
                         ));
                     }
                 }
-            }
-            if !up_to_date {
-                return AcquisitionOutcome::Rejected(RejectReason::Bounds);
-            }
-            let Some(package) = owner_guard
-                .published_packages()
-                .find(|package| package.coordinate.as_str() == requested)
-                .cloned()
-            else {
-                let cursor = owner_guard.cursor().token();
-                let fact = NegativeFact {
-                    kind: NegativeFactKind::NotFound,
-                    authority: request.source,
-                    source_proof: cursor,
-                    cursor,
-                    observed_at_millis: now_millis(),
-                    expires_at_millis: now_millis().saturating_add(60_000),
-                    policy_epoch,
+                let Some(package) = owner_guard
+                    .published_packages()
+                    .find(|package| package.coordinate.as_str() == requested)
+                    .cloned()
+                else {
+                    let cursor = owner_guard.cursor().token();
+                    let fact = NegativeFact {
+                        kind: NegativeFactKind::NotFound,
+                        authority: request.source,
+                        source_proof: cursor,
+                        cursor,
+                        observed_at_millis: now_millis(),
+                        expires_at_millis: now_millis().saturating_add(60_000),
+                        policy_epoch,
+                    };
+                    negative.record(*key.as_bytes(), fact);
+                    return AcquisitionOutcome::NegativeFact(fact);
                 };
-                negative.record(*key.as_bytes(), fact);
-                return AcquisitionOutcome::NegativeFact(fact);
-            };
-            breaker.success();
-            let target = match registry_catalog_snapshot(&owner_guard, policy_epoch) {
-                Ok(target) => target,
-                Err(outcome) => return promote_bytes_outcome(outcome),
-            };
-            let result = match registry_result(
-                &owner_guard,
-                &base,
-                target,
-                package,
-                request,
-                policy_epoch,
-            ) {
-                Ok(result) => Arc::new(result),
-                Err(outcome) => return promote_bytes_outcome(outcome),
-            };
-            AcquisitionOutcome::Hit(result)
+                breaker.success();
+                let target = match registry_catalog_snapshot(
+                    &owner_guard,
+                    policy_epoch,
+                    &snapshot_cache,
+                ) {
+                    Ok(target) => target,
+                    Err(outcome) => return promote_bytes_outcome(outcome),
+                };
+                let result = match registry_result(
+                    &owner_guard,
+                    &base,
+                    target,
+                    package,
+                    request,
+                    policy_epoch,
+                ) {
+                    Ok(result) => Arc::new(result),
+                    Err(outcome) => return promote_bytes_outcome(outcome),
+                };
+                return AcquisitionOutcome::Hit(result);
+            }
+            AcquisitionOutcome::Rejected(RejectReason::Bounds)
         })
     }
 
@@ -2081,16 +2424,34 @@ impl AcquisitionService {
 fn registry_catalog_snapshot(
     owner: &RegistryOwner,
     policy_epoch: u64,
+    cache: &Arc<Mutex<BTreeMap<CatalogSnapshotKey, Arc<SourceSnapshot>>>>,
 ) -> Result<Arc<SourceSnapshot>, AcquisitionOutcome<Arc<[u8]>>> {
     let source = owner.source_id().as_bytes();
-    let mut entries = Vec::new();
-    let mut claims = Vec::new();
+    let key = CatalogSnapshotKey {
+        source,
+        cursor: owner.cursor().token(),
+        policy_epoch,
+        facts_frontier: owner.facts_frontier(),
+    };
+    if let Some(snapshot) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .cloned()
+    {
+        return Ok(snapshot);
+    }
+    let mut entries = Vec::with_capacity(owner.published_packages().len());
+    let mut claims = Vec::with_capacity(owner.published_packages().len());
     for package in owner.published_packages() {
-        let object = owner
-            .read_artifact(&package.coordinate)
-            .map_err(|_| AcquisitionOutcome::Corrupt(CorruptReason::Journal))?
-            .ok_or(AcquisitionOutcome::Corrupt(CorruptReason::Journal))?;
-        let object = RawArchiveObjectId::from_bytes(object.bytes());
+        // The owner receipt contains a verified archive claim and exact byte
+        // extent. Rehydrate the object identity from those durable facts; a
+        // warm snapshot must never reopen or hash every archive in the
+        // catalog.
+        let object = RawArchiveObjectId::from_verified_claim(
+            package.bytes,
+            package.artifact.as_bytes(),
+        );
         let coordinate = Arc::from(package.coordinate.as_str());
         entries.push(ManifestEntry {
             path: coordinate,
@@ -2109,18 +2470,34 @@ fn registry_catalog_snapshot(
         claims.push(claim.id);
     }
     let manifest = Arc::new(
-        TreeManifest::new(entries)
+        TreeManifest::from_sorted(entries)
             .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))?,
     );
-    SourceSnapshot::new(
+    let snapshot = SourceSnapshot::new_with_frontier(
         source,
         owner.cursor().token(),
         policy_epoch,
+        owner.facts_frontier(),
         manifest,
         claims,
     )
     .map(Arc::new)
-    .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))
+    .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol));
+    if let Ok(snapshot) = &snapshot {
+        let mut cache = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.insert(key, Arc::clone(snapshot));
+        // The source cursor is monotonic; retaining a tiny tail keeps the
+        // prior root available for delta consumers while bounding memory.
+        while cache.len() > 8 {
+            let Some(oldest) = cache.keys().next().copied() else {
+                break;
+            };
+            cache.remove(&oldest);
+        }
+    }
+    snapshot
 }
 
 fn registry_result(
@@ -2135,7 +2512,10 @@ fn registry_result(
         .read_artifact(&package.coordinate)
         .map_err(|_| AcquisitionOutcome::Corrupt(CorruptReason::Journal))?
         .ok_or(AcquisitionOutcome::Corrupt(CorruptReason::Journal))?;
-    let object = RawArchiveObjectId::from_bytes(artifact.bytes());
+    let object = RawArchiveObjectId::from_verified_claim(
+        package.bytes,
+        package.artifact.as_bytes(),
+    );
     let admitted = admit_registry_coordinate(&package.coordinate)
         .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))?;
     let effective = AcquisitionRequest::new(
@@ -2219,23 +2599,70 @@ fn promote_bytes_outcome<T>(outcome: AcquisitionOutcome<Arc<[u8]>>) -> Acquisiti
 }
 
 fn snapshot_changes(base: &SourceSnapshot, target: &SourceSnapshot) -> Vec<DeltaChange> {
-    let mut all =
-        BTreeMap::<Arc<str>, (Option<RawArchiveObjectId>, Option<RawArchiveObjectId>)>::new();
-    for entry in base.manifest().entries() {
-        all.entry(Arc::clone(&entry.path)).or_default().0 = Some(entry.object);
+    let before = base.manifest().entries();
+    let after = target.manifest().entries();
+    let mut changes = Vec::with_capacity(before.len().abs_diff(after.len()));
+    let mut before_index = 0;
+    let mut after_index = 0;
+    while before_index < before.len() || after_index < after.len() {
+        match (before.get(before_index), after.get(after_index)) {
+            (Some(left), Some(right)) if left.path == right.path => {
+                if left.object != right.object || left.mode != right.mode {
+                    changes.push(DeltaChange {
+                        path: Arc::clone(&left.path),
+                        before: Some(left.object),
+                        before_mode: Some(left.mode),
+                        after: Some(right.object),
+                        after_mode: Some(right.mode),
+                    });
+                }
+                before_index += 1;
+                after_index += 1;
+            }
+            (Some(left), Some(right)) if left.path < right.path => {
+                changes.push(DeltaChange {
+                    path: Arc::clone(&left.path),
+                    before: Some(left.object),
+                    before_mode: Some(left.mode),
+                    after: None,
+                    after_mode: None,
+                });
+                before_index += 1;
+            }
+            (Some(_), Some(right)) => {
+                changes.push(DeltaChange {
+                    path: Arc::clone(&right.path),
+                    before: None,
+                    before_mode: None,
+                    after: Some(right.object),
+                    after_mode: Some(right.mode),
+                });
+                after_index += 1;
+            }
+            (Some(left), None) => {
+                changes.push(DeltaChange {
+                    path: Arc::clone(&left.path),
+                    before: Some(left.object),
+                    before_mode: Some(left.mode),
+                    after: None,
+                    after_mode: None,
+                });
+                before_index += 1;
+            }
+            (None, Some(right)) => {
+                changes.push(DeltaChange {
+                    path: Arc::clone(&right.path),
+                    before: None,
+                    before_mode: None,
+                    after: Some(right.object),
+                    after_mode: Some(right.mode),
+                });
+                after_index += 1;
+            }
+            (None, None) => break,
+        }
     }
-    for entry in target.manifest().entries() {
-        all.entry(Arc::clone(&entry.path)).or_default().1 = Some(entry.object);
-    }
-    all.into_iter()
-        .filter_map(|(path, (before, after))| {
-            (before != after).then_some(DeltaChange {
-                path,
-                before,
-                after,
-            })
-        })
-        .collect()
+    changes
 }
 
 fn registry_error_outcome(
@@ -2267,6 +2694,9 @@ fn registry_error_outcome(
         }
         RegistryAcquisitionError::AdvisoryDenied(_) => {
             AcquisitionOutcome::Rejected(RejectReason::Policy)
+        }
+        RegistryAcquisitionError::StaleReservation => {
+            AcquisitionOutcome::Unavailable(Unavailable { source })
         }
         RegistryAcquisitionError::InvalidConfiguration
         | RegistryAcquisitionError::InvalidCoordinate
@@ -2702,7 +3132,9 @@ mod tests {
             vec![DeltaChange {
                 path: Arc::from("src/lib.rs"),
                 before: Some(before),
+                before_mode: Some(0),
                 after: Some(after),
+                after_mode: Some(0),
             }],
         )
         .expect("delta");
@@ -2712,6 +3144,85 @@ mod tests {
             delta.apply(&snapshot(3)),
             Err(DeltaError::StaleBase { .. })
         ));
+    }
+
+    #[test]
+    fn sparse_delta_merges_a_large_manifest_without_suffix_shifts() {
+        let mut base_entries = Vec::with_capacity(4_096);
+        for index in 0..4_096 {
+            base_entries.push(ManifestEntry {
+                path: Arc::from(format!("src/{index:04}.rs")),
+                object: RawArchiveObjectId::from_bytes(&[index as u8]),
+                mode: 0o644,
+            });
+        }
+        let base_manifest = Arc::new(TreeManifest::from_sorted(base_entries).expect("base"));
+        let base = Arc::new(
+            SourceSnapshot::new([1; 32], [2; 32], 7, base_manifest, Vec::new())
+                .expect("snapshot"),
+        );
+        let mut target_entries = base.manifest().entries().to_vec();
+        target_entries[2_048].object = RawArchiveObjectId::from_bytes(b"changed");
+        let target_manifest = Arc::new(TreeManifest::from_sorted(target_entries).expect("target"));
+        let target = Arc::new(
+            SourceSnapshot::new([1; 32], [3; 32], 7, target_manifest, Vec::new())
+                .expect("snapshot"),
+        );
+        let delta = AcquisitionDelta::new(
+            &base,
+            Arc::clone(&target),
+            vec![DeltaChange {
+                path: Arc::from("src/2048.rs"),
+                before: Some(base.manifest().entries()[2_048].object),
+                before_mode: Some(0o644),
+                after: Some(target.manifest().entries()[2_048].object),
+                after_mode: Some(0o644),
+            }],
+        )
+        .expect("delta");
+        let applied = delta.apply(&base).expect("apply");
+        assert_eq!(applied.id(), target.id());
+        assert_eq!(applied.manifest().entries().len(), 4_096);
+        assert_eq!(applied.manifest().entries()[2_048].mode, 0o644);
+    }
+
+    #[test]
+    fn distinct_keys_run_in_parallel_while_same_key_remains_singleflight() {
+        let coordinator = Arc::new(AcquisitionCoordinator::new(64, 128));
+        let barrier = Arc::new(Barrier::new(32));
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let mut threads = Vec::new();
+        for index in 0..32_u8 {
+            let coordinator = Arc::clone(&coordinator);
+            let barrier = Arc::clone(&barrier);
+            let active = Arc::clone(&active);
+            let maximum = Arc::clone(&maximum);
+            threads.push(std::thread::spawn(move || {
+                let request = AcquisitionRequest::new(
+                    [index; 32],
+                    format!("pkg@{index}"),
+                    RawArchiveObjectId::from_bytes(&[index]),
+                    1,
+                    4,
+                )
+                .expect("request");
+                barrier.wait();
+                let outcome = coordinator.coordinate(&request, || {
+                    let now = active.fetch_add(1, Ordering::AcqRel) + 1;
+                    maximum.fetch_max(now, Ordering::AcqRel);
+                    std::thread::sleep(Duration::from_millis(20));
+                    active.fetch_sub(1, Ordering::AcqRel);
+                    AcquisitionOutcome::Hit(Arc::<[u8]>::from(&[index][..]))
+                });
+                assert!(matches!(outcome, AcquisitionOutcome::Hit(_)));
+            }));
+        }
+        for thread in threads {
+            thread.join().expect("parallel caller");
+        }
+        assert!(maximum.load(Ordering::Acquire) > 1);
+        assert_eq!(coordinator.telemetry().snapshot().leaders, 32);
     }
 
     #[test]

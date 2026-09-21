@@ -207,6 +207,10 @@ pub enum AcquisitionError {
     Injected(crate::fault::InjectedCrash),
     /// The selected version was denied by the configured advisory policy.
     AdvisoryDenied(AcquisitionDecision),
+    /// A network reservation was superseded by another deterministic commit.
+    /// The caller must discard its uncommitted receipt and retry from the
+    /// newly visible cursor.
+    StaleReservation,
 }
 impl fmt::Display for AcquisitionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -221,6 +225,7 @@ impl fmt::Display for AcquisitionError {
             Self::Journal(_) => "registry journal failed",
             Self::Injected(_) => "registry acquisition fault injected",
             Self::AdvisoryDenied(_) => "registry acquisition denied by advisory policy",
+            Self::StaleReservation => "registry acquisition reservation is stale",
         })
     }
 }
@@ -247,6 +252,7 @@ pub struct RegistryOwner<S: FeedSchema = CanonicalFeedV1> {
     pending: Option<AcquisitionIntent<S>>,
     last_receipt: Option<AcquisitionReceipt<S>>,
     catalog: BTreeMap<PackageCoordinate, PublishedPackage>,
+    facts_frontier: [u8; 32],
     faults: Arc<Faults>,
     readiness: RegistryReadiness,
     advisory_gate: Option<AcquisitionGate>,
@@ -344,6 +350,7 @@ impl RegistryOwner {
             }
         }
         let pending = pending.into_values().next();
+        let facts_frontier = catalog_facts_frontier(&catalog);
         let report = RegistryRecovery {
             cursor,
             pending,
@@ -371,6 +378,7 @@ impl RegistryOwner {
                 pending,
                 last_receipt,
                 catalog,
+                facts_frontier,
                 faults: Arc::new(Faults::default()),
                 readiness,
                 advisory_gate: None,
@@ -393,6 +401,108 @@ impl RegistryOwner {
     pub fn with_advisory_gate(mut self, gate: AcquisitionGate) -> Self {
         self.advisory_gate = Some(gate);
         self
+    }
+
+    /// Reserves the next feed effect while holding the owner lock only for
+    /// durable intent admission. The returned intent is safe to use for
+    /// network I/O after the lock is released.
+    pub(crate) fn begin_intent(&mut self) -> Result<AcquisitionIntent, AcquisitionError> {
+        if let Some(intent) = self.pending {
+            return Ok(intent);
+        }
+        let intent = AcquisitionIntent::new(self.cursor, self.limits.max_items);
+        self.faults
+            .trip(Boundary::EffectPrepared)
+            .map_err(AcquisitionError::Injected)?;
+        self.journal.append(&RegistryRecord::Prepared(intent))?;
+        self.pending = Some(intent);
+        Ok(intent)
+    }
+
+    /// Returns the bounded network request for a previously admitted intent.
+    pub(crate) const fn request_for_intent(
+        &self,
+        intent: AcquisitionIntent,
+    ) -> FeedRequest {
+        FeedRequest {
+            cursor: intent.cursor,
+            max_items: intent.max_items,
+        }
+    }
+
+    /// Builds an archive staging context. It contains only immutable owner
+    /// policy and paths, so the network and archive stream can run without
+    /// holding the owner mutex.
+    pub(crate) fn archive_stage(&self) -> ArchiveStageContext {
+        ArchiveStageContext {
+            objects: self.objects.clone(),
+            limits: self.limits,
+            faults: Arc::clone(&self.faults),
+        }
+    }
+
+    /// Projects policy for one page row without doing network or filesystem
+    /// work. Callers use this during the short reservation phase.
+    pub(crate) fn advisory_for(&self, package: &super::RemotePackage) -> AdvisoryPackageDto {
+        self.advisory_projection(package)
+    }
+
+    /// Commits a page staged outside the owner mutex. Cursor and intent checks
+    /// reject stale reservations before any journal mutation, preserving
+    /// deterministic source order under concurrent callers.
+    pub(crate) fn commit_reserved_page(
+        &mut self,
+        intent: AcquisitionIntent,
+        page: &super::FeedPage,
+        publications: Vec<PublishedPackage>,
+    ) -> Result<AcquisitionReceipt, AcquisitionError> {
+        if self.pending != Some(intent) || self.cursor != intent.cursor {
+            return Err(AcquisitionError::StaleReservation);
+        }
+        if page.base != intent.cursor || page.packages.len() > self.limits.max_items {
+            return Err(AcquisitionError::Transport(TransportFailure::Protocol));
+        }
+        let target = self.cursor.advance(page.next_token)?;
+        let receipt = AcquisitionReceipt {
+            effect: intent.key,
+            base: self.cursor,
+            target,
+            packages: publications,
+        };
+        validate_receipt_catalog(&self.catalog, &receipt, self.limits.max_catalog_items)?;
+        self.faults
+            .trip(Boundary::EffectConfirmed)
+            .map_err(AcquisitionError::Injected)?;
+        self.journal
+            .append(&RegistryRecord::Committed(intent, receipt.clone()))?;
+        apply_receipt_to_catalog(&mut self.catalog, &receipt);
+        self.facts_frontier = catalog_facts_frontier(&self.catalog);
+        self.cursor = target;
+        self.readiness = RegistryReadiness::Ready {
+            source: self.endpoint.id(),
+            cursor: target.sequence(),
+        };
+        self.pending = None;
+        self.last_receipt = Some(receipt.clone());
+        Ok(receipt)
+    }
+
+    /// Settles a metadata-only response after validating that its reservation
+    /// still names the current cursor.
+    pub(crate) fn settle_reserved(
+        &mut self,
+        intent: AcquisitionIntent,
+    ) -> Result<(), AcquisitionError> {
+        if self.pending != Some(intent) || self.cursor != intent.cursor {
+            return Err(AcquisitionError::StaleReservation);
+        }
+        self.journal.append(&RegistryRecord::Settled(intent))?;
+        self.pending = None;
+        self.readiness = RegistryReadiness::Ready {
+            source: self.endpoint.id(),
+            cursor: self.cursor.sequence(),
+        };
+        Ok(())
     }
     /// Current committed cursor.
     #[must_use]
@@ -424,6 +534,16 @@ impl RegistryOwner {
     /// or manufacture publication records, and iteration performs no network effect.
     pub fn published_packages(&self) -> impl ExactSizeIterator<Item = &PublishedPackage> {
         self.catalog.values()
+    }
+
+    /// Content identity of the mutable release-facts/advisory frontier.
+    ///
+    /// Archive claims are immutable and live in the receipt. This compact
+    /// digest lets consumers key metadata snapshots without reopening any
+    /// archive payloads.
+    #[must_use]
+    pub const fn facts_frontier(&self) -> [u8; 32] {
+        self.facts_frontier
     }
 
     /// Returns a constant-size status suitable for client readiness projection.
@@ -590,6 +710,7 @@ impl RegistryOwner {
         self.journal
             .append(&RegistryRecord::Committed(intent, receipt.clone()))?;
         apply_receipt_to_catalog(&mut self.catalog, &receipt);
+        self.facts_frontier = catalog_facts_frontier(&self.catalog);
         self.cursor = target;
         self.readiness = RegistryReadiness::Ready {
             source: self.endpoint.id(),
@@ -652,7 +773,62 @@ impl RegistryOwner {
         Ok(PageAcquisition::Ready(publications))
     }
 
-    fn verify_and_store(
+    pub(crate) fn verify_and_store(
+        &self,
+        package: &super::RemotePackage,
+        artifact: super::ArchiveArtifact,
+        page_bytes: usize,
+        advisory: AdvisoryPackageDto,
+    ) -> Result<PublishedPackage, AcquisitionError> {
+        self.archive_stage()
+            .verify_and_store(package, artifact, page_bytes, advisory)
+    }
+
+    fn advisory_projection(&self, package: &super::RemotePackage) -> AdvisoryPackageDto {
+        let Some(gate) = self.advisory_gate else {
+            return package
+                .advisory
+                .as_ref()
+                .map(|observation| {
+                    AdvisoryPackageDto::from_observation(
+                        observation,
+                        AcquisitionDecision::Allow,
+                    )
+                })
+                .unwrap_or_else(AdvisoryPackageDto::unknown);
+        };
+        let observation = package.advisory.as_ref().cloned().unwrap_or(AdvisoryObservation {
+            advisories: Box::new([]),
+            coverage: AdvisoryCoverage::Unknown,
+            freshness: FreshnessState::Unknown,
+            offline: true,
+            yanked: false,
+            unlisted: false,
+        });
+        let decision = gate.decide(&observation);
+        AdvisoryPackageDto::from_observation(&observation, decision)
+    }
+}
+
+enum PageAcquisition {
+    Ready(Vec<PublishedPackage>),
+    Unavailable,
+    RetryAfter(Duration),
+}
+
+/// Immutable archive-write authority detached from the registry owner's
+/// cursor mutex. It is safe to clone for speculative reservations: only the
+/// final journal commit mutates owner state, and content-addressed publishing
+/// is first-writer-wins.
+#[derive(Clone)]
+pub(crate) struct ArchiveStageContext {
+    objects: PathBuf,
+    limits: AcquisitionLimits,
+    faults: Arc<Faults>,
+}
+
+impl ArchiveStageContext {
+    pub(crate) fn verify_and_store(
         &self,
         package: &super::RemotePackage,
         artifact: super::ArchiveArtifact,
@@ -706,37 +882,6 @@ impl RegistryOwner {
             advisory,
         })
     }
-
-    fn advisory_projection(&self, package: &super::RemotePackage) -> AdvisoryPackageDto {
-        let Some(gate) = self.advisory_gate else {
-            return package
-                .advisory
-                .as_ref()
-                .map(|observation| {
-                    AdvisoryPackageDto::from_observation(
-                        observation,
-                        AcquisitionDecision::Allow,
-                    )
-                })
-                .unwrap_or_else(AdvisoryPackageDto::unknown);
-        };
-        let observation = package.advisory.as_ref().cloned().unwrap_or(AdvisoryObservation {
-            advisories: Box::new([]),
-            coverage: AdvisoryCoverage::Unknown,
-            freshness: FreshnessState::Unknown,
-            offline: true,
-            yanked: false,
-            unlisted: false,
-        });
-        let decision = gate.decide(&observation);
-        AdvisoryPackageDto::from_observation(&observation, decision)
-    }
-}
-
-enum PageAcquisition {
-    Ready(Vec<PublishedPackage>),
-    Unavailable,
-    RetryAfter(Duration),
 }
 
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -981,6 +1126,31 @@ fn apply_receipt_to_catalog(
     for package in &receipt.packages {
         catalog.insert(package.coordinate.clone(), package.clone());
     }
+}
+
+fn catalog_facts_frontier(
+    catalog: &BTreeMap<PackageCoordinate, PublishedPackage>,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.registry.facts-frontier.v1\0");
+    for package in catalog.values() {
+        let coordinate = package.coordinate.as_str().as_bytes();
+        hasher.update(&(coordinate.len() as u64).to_be_bytes());
+        hasher.update(coordinate);
+        hasher.update(&package.artifact.as_bytes());
+        hasher.update(&package.bytes.to_be_bytes());
+        hasher.update(&package.facts.version());
+        // Advisory DTOs are already the canonical wire projection. Keeping
+        // their serialized bytes in the frontier means withdrawals, coverage,
+        // and policy changes invalidate only metadata roots.
+        if let Ok(bytes) = serde_json::to_vec(&package.advisory) {
+            hasher.update(&(bytes.len() as u64).to_be_bytes());
+            hasher.update(&bytes);
+        } else {
+            hasher.update(&0_u64.to_be_bytes());
+        }
+    }
+    *hasher.finalize().as_bytes()
 }
 
 fn coordinate_key(coordinate: &PackageCoordinate) -> Vec<u8> {
