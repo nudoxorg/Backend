@@ -12,7 +12,7 @@ use backend_desktop::{
 };
 use backend_gui_harness::{
     ActionDescriptor, CaptureConfig, CaptureSession, FocusState, GuiState, InputStep, OverlayState,
-    PageState, Viewport, animation_frames, verify_run,
+    PageState, Viewport, animation_frames_for_state, verify_run,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -24,6 +24,7 @@ struct RunReport {
     output: String,
     viewports: Vec<String>,
     requested_states: usize,
+    requested_frames: usize,
     attempted_captures: usize,
     captured_captures: usize,
     captured_frames: usize,
@@ -65,7 +66,7 @@ struct JourneyArtifact {
     from: String,
     to: String,
     steps: Vec<InputStep>,
-    actions: Vec<ActionDescriptor>,
+    actions: Vec<backend_desktop::WorkspaceActionProbe>,
     observations: Vec<JourneyObservation>,
 }
 
@@ -153,7 +154,7 @@ fn capture_command(args: &[String]) -> Result<(), String> {
         requested_states: states.len(),
         viewports: Vec::new(),
         registered_actions,
-        action_tree_source: "production-window-bindings".to_owned(),
+        action_tree_source: "rendered-workspace-action-tree".to_owned(),
         ..RunReport::default()
     };
 
@@ -179,7 +180,8 @@ fn capture_command(args: &[String]) -> Result<(), String> {
             }
             for state in &states {
                 report.attempted_captures += 1;
-                let frames = animation_frames(&config, state.reduced_motion);
+                let frames = animation_frames_for_state(&config, state);
+                report.requested_frames += frames.len();
                 match capture_live_workspace_with_semantics(
                     config.clone(),
                     state.clone(),
@@ -206,6 +208,8 @@ fn capture_command(args: &[String]) -> Result<(), String> {
             for journey in &journeys {
                 report.attempted_captures += 1;
                 let journey_config = config_for_journey(&config, journey.id);
+                report.requested_frames +=
+                    animation_frames_for_state(&journey_config, &journey.from).len();
                 let mut journey_session =
                     CaptureSession::new(journey_config.clone(), &viewport_root)
                         .map_err(|error| error.to_string())?;
@@ -213,7 +217,7 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                     journey_config.clone(),
                     journey.from.clone(),
                     &journey.steps,
-                    &animation_frames(&journey_config, journey.from.reduced_motion),
+                    &animation_frames_for_state(&journey_config, &journey.from),
                 ) {
                     Ok(live) => live,
                     Err(error) => {
@@ -288,7 +292,9 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                         from: journey.from.id.clone(),
                         to: journey.to.id.clone(),
                         steps: journey.steps.clone(),
-                        actions: report.registered_actions.clone(),
+                        actions: final_semantics
+                            .as_ref()
+                            .map_or_else(Vec::new, |probe| probe.actions.clone()),
                         observations,
                     },
                 ) {
@@ -325,8 +331,6 @@ fn capture_command(args: &[String]) -> Result<(), String> {
             }
         }
     }
-    report.pass =
-        report.failures.is_empty() && report.captured_captures == report.attempted_captures;
     match verify_run(&output) {
         Ok(verified) => {
             report.verified_manifests = verified.manifests;
@@ -338,8 +342,13 @@ fn capture_command(args: &[String]) -> Result<(), String> {
             error: error.to_string(),
         }),
     }
-    report.pass =
-        report.failures.is_empty() && report.captured_captures == report.attempted_captures;
+    report.pass = report.attempted_captures > 0
+        && report.requested_frames > 0
+        && report.failures.is_empty()
+        && report.captured_captures == report.attempted_captures
+        && report.captured_frames == report.requested_frames
+        && report.verified_manifests == report.manifests.len()
+        && report.verified_frames == report.captured_frames;
     let report_path = output.join("run-report.json");
     std::fs::write(
         &report_path,
@@ -368,6 +377,28 @@ fn write_capture(
     report: &mut RunReport,
     script_id: Option<&str>,
 ) -> Result<(), String> {
+    if live.capture.frames.is_empty() || live.semantics.len() != live.capture.frames.len() {
+        return Err("capture produced no frames or an incomplete semantic timeline".to_owned());
+    }
+    if !live.capture.state.reduced_motion
+        && live.capture.frames.len() > 1
+        && live
+            .capture
+            .frames
+            .windows(2)
+            .all(|frames| frames[0].image == frames[1].image)
+    {
+        return Err("normal-motion capture produced identical animation evidence".to_owned());
+    }
+    if live.capture.state.reduced_motion
+        && live
+            .capture
+            .frames
+            .windows(2)
+            .any(|frames| frames[0].image != frames[1].image)
+    {
+        return Err("reduced-motion capture changed after settling".to_owned());
+    }
     if live.capture.frames.iter().any(|frame| {
         let mut pixels = frame.image.pixels();
         pixels
@@ -392,24 +423,37 @@ fn write_capture(
         .next()
         .filter(|revision| !revision.trim().is_empty() && *revision != "undetermined")
         .ok_or_else(|| "semantic probe did not expose an admitted data revision".to_owned())?;
+    if live
+        .semantics
+        .iter()
+        .any(|probe| probe.coordinate.trim().is_empty())
+    {
+        return Err("capture has no deterministic live project coordinate".to_owned());
+    }
+    if live
+        .semantics
+        .iter()
+        .any(|probe| probe.coordinate_revision != probe.data_revision)
+    {
+        return Err("live coordinate was selected against a different data revision".to_owned());
+    }
     session.config.data_revision = revision.to_owned();
     session.config.theme = live.capture.state.theme;
     let state_id = live.capture.state.id.clone();
-    let manifest = session
-        .write_set(&mut live.capture, script_id)
+    let semantic_path = format!("semantics/{}.json", state_id);
+    session
+        .writer
+        .write_json(&semantic_path, &live.semantics)
         .map_err(|error| error.to_string())?;
+    let manifest_result = session.write_set(&mut live.capture, script_id, Some(&semantic_path));
     let manifest_path = format!(
         "{}/manifests/{}.json",
         session.config.viewport.suffix(),
         state_id
     );
     report.manifests.push(manifest_path);
-    report.captured_frames += manifest.frames.len();
-    let semantic_path = format!("semantics/{}.json", state_id);
-    session
-        .writer
-        .write_json(&semantic_path, &live.semantics)
-        .map_err(|error| error.to_string())?;
+    report.captured_frames += live.capture.frames.len();
+    manifest_result.map_err(|error| error.to_string())?;
     report.semantic_artifacts.push(format!(
         "{}/{}",
         session.config.viewport.suffix(),

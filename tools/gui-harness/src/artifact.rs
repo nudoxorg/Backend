@@ -6,6 +6,7 @@ use image::{ExtendedColorType, GenericImage, ImageEncoder, Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use thiserror::Error;
 
 /// One PNG frame and its provenance.
@@ -50,6 +51,43 @@ pub struct CaptureManifest {
     pub sequence: FrameSequenceMetadata,
     /// Git revision supplied by the caller, if available.
     pub source_revision: Option<String>,
+    /// Complete environment provenance for this rendered artifact.
+    pub provenance: CaptureProvenance,
+    /// Semantic probe JSON written beside this manifest.
+    pub semantic_artifact: Option<String>,
+    /// Whether every requested baseline comparison satisfied its policy.
+    pub baseline_within_policy: bool,
+}
+
+/// Environment identity attached to every capture manifest.
+///
+/// A pixel artifact without its renderer and checkout identity is not a
+/// regression oracle. These values are collected at runtime so a copied
+/// artifact can be rejected when it is verified from another checkout.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CaptureProvenance {
+    /// Git commit that rendered the capture.
+    pub source_revision: String,
+    /// Whether the checkout had tracked or untracked changes at capture time.
+    pub dirty: bool,
+    /// Full rustc version and target information.
+    pub rustc: String,
+    /// Active rustup toolchain identity.
+    pub toolchain: String,
+    /// Resolved GPUI package identity.
+    pub gpui_revision: String,
+    /// Resolved GPUI CE package identity.
+    pub gpui_ce_revision: String,
+    /// Target operating system and architecture.
+    pub os: String,
+    /// Host hardware model or architecture fallback.
+    pub hardware: String,
+    /// Renderer identity used for the capture.
+    pub renderer: String,
+    /// Platform/backend identity used for the capture.
+    pub backend: String,
+    /// Deterministic image encoder configuration.
+    pub encoder: String,
 }
 
 /// Encoded animation-sequence metadata retained beside a capture manifest.
@@ -95,6 +133,8 @@ pub struct VerificationReport {
     pub frames: usize,
     /// Stable relative paths that failed verification.
     pub failures: Vec<String>,
+    /// Manifests whose baseline comparison or provenance was invalid.
+    pub failed_manifests: usize,
 }
 
 /// Filesystem and encoding failures from artifact writing.
@@ -115,19 +155,149 @@ pub enum ArtifactError {
     /// A durable artifact failed an independent verification check.
     #[error("screenshot artifact verification failed: {0}")]
     Verification(String),
+    /// Runtime provenance could not be established.
+    #[error("screenshot provenance unavailable: {0}")]
+    Provenance(String),
 }
 
 /// Verifies every manifest and PNG below a run root without trusting the
 /// capture process. This is intentionally independent of GPUI and can be
 /// used as a holdout gate in CI or after copying artifacts between machines.
 pub fn verify_run(root: &Path) -> Result<VerificationReport, ArtifactError> {
+    verify_run_inner(root, true)
+}
+
+/// Verifies a run before it is promoted to a baseline.
+///
+/// A first capture intentionally has no baseline (or contains an explicit
+/// mismatch). It still has to satisfy every structural, provenance, semantic,
+/// and hash check before its frames are allowed to become the oracle for
+/// future runs. This mode is the only supported escape hatch for the baseline
+/// policy gate.
+pub fn verify_run_for_baseline_update(root: &Path) -> Result<VerificationReport, ArtifactError> {
+    verify_run_inner(root, false)
+}
+
+fn verify_run_inner(
+    root: &Path,
+    enforce_baseline_policy: bool,
+) -> Result<VerificationReport, ArtifactError> {
     let mut manifests = Vec::new();
     collect_manifests(root, &mut manifests)?;
+    if manifests.is_empty() {
+        return Err(ArtifactError::Verification(
+            "run contains no capture manifests".to_owned(),
+        ));
+    }
+    let current_provenance = CaptureProvenance::collect()?;
     let mut report = VerificationReport::default();
+    let mut referenced_frames = std::collections::BTreeSet::new();
+    let mut referenced_semantics = std::collections::BTreeSet::new();
+    let mut manifest_ids = std::collections::BTreeSet::new();
     for manifest_path in manifests {
         let bytes = std::fs::read(&manifest_path)?;
         let manifest: CaptureManifest = serde_json::from_slice(&bytes)?;
         report.manifests += 1;
+        let manifest_id = manifest.state.id.clone();
+        let filename_id = manifest_path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if filename_id != manifest_id || !manifest_ids.insert(manifest_id.clone()) {
+            report.failures.push(format!(
+                "{}: stale or duplicate manifest identity",
+                manifest_path.display()
+            ));
+            report.failed_manifests += 1;
+        }
+        if manifest.frames.is_empty() || manifest.sequence.frame_count != manifest.frames.len() {
+            report.failures.push(format!(
+                "{}: manifest frame count is zero or inconsistent",
+                manifest_path.display()
+            ));
+            report.failed_manifests += 1;
+        }
+        let expected_scenario = scenario_hash(&(
+            &manifest.state,
+            &manifest.config,
+            manifest.script_id.as_deref(),
+        ))?;
+        if expected_scenario != manifest.scenario_sha256 {
+            report.failures.push(format!(
+                "{}: scenario hash mismatch",
+                manifest_path.display()
+            ));
+            report.failed_manifests += 1;
+        }
+        let expected_sequence = scenario_hash(&manifest.frames)?;
+        if expected_sequence != manifest.sequence_sha256
+            || manifest.sequence.duration_ms
+                != manifest.frames.last().map_or(0, |frame| frame.time_ms)
+        {
+            report.failures.push(format!(
+                "{}: frame sequence hash or duration mismatch",
+                manifest_path.display()
+            ));
+            report.failed_manifests += 1;
+        }
+        if manifest.provenance.source_revision != current_provenance.source_revision
+            || manifest.provenance.dirty != current_provenance.dirty
+            || manifest.provenance.rustc != current_provenance.rustc
+            || manifest.provenance.toolchain != current_provenance.toolchain
+            || manifest.provenance.gpui_revision != current_provenance.gpui_revision
+            || manifest.provenance.gpui_ce_revision != current_provenance.gpui_ce_revision
+            || manifest.provenance.renderer != current_provenance.renderer
+            || manifest.provenance.backend != current_provenance.backend
+            || manifest.provenance.encoder != current_provenance.encoder
+            || manifest.provenance.os != current_provenance.os
+            || manifest.provenance.hardware != current_provenance.hardware
+        {
+            report.failures.push(format!(
+                "{}: capture provenance does not match this checkout/runtime",
+                manifest_path.display()
+            ));
+            report.failed_manifests += 1;
+        }
+        if enforce_baseline_policy && !manifest.baseline_within_policy {
+            report.failures.push(format!(
+                "{}: baseline comparison exceeded policy",
+                manifest_path.display()
+            ));
+            report.failed_manifests += 1;
+        }
+        if let Some(semantic) = manifest.semantic_artifact.as_deref() {
+            let semantic = safe_relative_path(semantic)?;
+            let path = manifest_path
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| ArtifactError::Verification(manifest_path.display().to_string()))?
+                .join(&semantic);
+            referenced_semantics.insert(path.clone());
+            if !path.is_file() {
+                report.failures.push(format!(
+                    "{}: missing semantic artifact {}",
+                    manifest_path.display(),
+                    semantic.display(),
+                ));
+                report.failed_manifests += 1;
+            } else {
+                let semantic_bytes = std::fs::read(&path)?;
+                if serde_json::from_slice::<serde_json::Value>(&semantic_bytes).is_err() {
+                    report.failures.push(format!(
+                        "{}: invalid semantic artifact {}",
+                        manifest_path.display(),
+                        semantic.display()
+                    ));
+                    report.failed_manifests += 1;
+                }
+            }
+        } else {
+            report.failures.push(format!(
+                "{}: semantic artifact is not recorded",
+                manifest_path.display()
+            ));
+            report.failed_manifests += 1;
+        }
         let expected_size = manifest.config.viewport.physical_size();
         // Frame paths in a manifest are relative to the capture/session root,
         // while manifests live in its `manifests/` directory.
@@ -135,8 +305,21 @@ pub fn verify_run(root: &Path) -> Result<VerificationReport, ArtifactError> {
             .parent()
             .and_then(Path::parent)
             .ok_or_else(|| ArtifactError::Verification(manifest_path.display().to_string()))?;
+        let mut manifest_frame_paths = std::collections::BTreeSet::new();
         for frame in manifest.frames {
-            let path = base.join(&frame.path);
+            let frame_relative = safe_relative_path(&frame.path)?;
+            let path = base.join(&frame_relative);
+            if !manifest_frame_paths.insert(frame.path.clone())
+                || !referenced_frames.insert(path.clone())
+            {
+                report.failures.push(format!(
+                    "{}: duplicate frame reference {}",
+                    manifest_path.display(),
+                    frame.path
+                ));
+                report.failed_manifests += 1;
+                continue;
+            }
             let encoded = std::fs::read(&path)?;
             let relative = path
                 .strip_prefix(root)
@@ -153,6 +336,73 @@ pub fn verify_run(root: &Path) -> Result<VerificationReport, ArtifactError> {
             {
                 report.failures.push(relative);
             }
+            if enforce_baseline_policy
+                && frame.diff.as_ref().is_some_and(|diff| !diff.within_policy)
+            {
+                report.failures.push(format!(
+                    "{}: frame {} is outside baseline policy",
+                    manifest_path.display(),
+                    frame.label
+                ));
+                report.failed_manifests += 1;
+            }
+        }
+    }
+    let mut actual_frames = Vec::new();
+    collect_frames(root, &mut actual_frames)?;
+    for frame in actual_frames {
+        if !referenced_frames.contains(&frame) {
+            report.failures.push(format!(
+                "{}: orphan frame is not referenced by a manifest",
+                frame.display()
+            ));
+        }
+    }
+    let mut semantic_files = Vec::new();
+    collect_named_json(root, "semantics", &mut semantic_files)?;
+    for semantic in semantic_files {
+        if !referenced_semantics.contains(&semantic) {
+            report.failures.push(format!(
+                "{}: orphan semantic artifact is not referenced by a manifest",
+                semantic.display()
+            ));
+        }
+    }
+    let mut journey_files = Vec::new();
+    collect_named_json(root, "journeys", &mut journey_files)?;
+    for journey in journey_files {
+        let bytes = std::fs::read(&journey)?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+            ArtifactError::Verification(format!(
+                "{}: invalid journey artifact: {error}",
+                journey.display()
+            ))
+        })?;
+        let valid = value
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+            && value
+                .get("from")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+            && value
+                .get("to")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+            && value
+                .get("observations")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|observations| !observations.is_empty())
+            && value
+                .get("steps")
+                .and_then(serde_json::Value::as_array)
+                .is_some();
+        if !valid {
+            report.failures.push(format!(
+                "{}: stale or incomplete journey artifact",
+                journey.display()
+            ));
         }
     }
     if report.failures.is_empty() {
@@ -163,6 +413,50 @@ pub fn verify_run(root: &Path) -> Result<VerificationReport, ArtifactError> {
             report.failures.len()
         )))
     }
+}
+
+fn collect_frames(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), ArtifactError> {
+    for entry in std::fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_frames(&path, output)?;
+        } else if path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "frames")
+            && path.extension().is_some_and(|extension| extension == "png")
+        {
+            output.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn collect_named_json(
+    root: &Path,
+    directory: &str,
+    output: &mut Vec<PathBuf>,
+) -> Result<(), ArtifactError> {
+    let directory_root = root.join(directory);
+    if !directory_root.is_dir() {
+        return Ok(());
+    }
+    collect_named_json_inner(&directory_root, output)
+}
+
+fn collect_named_json_inner(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), ArtifactError> {
+    for entry in std::fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_named_json_inner(&path, output)?;
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            output.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn collect_manifests(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), ArtifactError> {
@@ -184,6 +478,119 @@ fn collect_manifests(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), Artif
         }
     }
     Ok(())
+}
+
+impl CaptureProvenance {
+    /// Captures the checkout and renderer identity that produced a run.
+    pub fn collect() -> Result<Self, ArtifactError> {
+        let root = find_source_root()?;
+        let source_revision = command_in(&root, "git", &["rev-parse", "HEAD"])?;
+        let dirty = !command_in(&root, "git", &["status", "--porcelain"])?
+            .trim()
+            .is_empty();
+        let rustc = command_output("rustc", &["--version", "--verbose"])?;
+        let toolchain = match command_output("rustup", &["show", "active-toolchain"]) {
+            Ok(toolchain) => toolchain,
+            Err(_) => std::env::var("RUSTUP_TOOLCHAIN").unwrap_or_else(|_| "unknown".to_owned()),
+        };
+        let gpui_revision = lock_revision(&root, "gpui");
+        let gpui_ce_revision = lock_revision(&root, "gpui-ce");
+        let os = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        let hardware = if cfg!(target_os = "macos") {
+            command_output("sysctl", &["-n", "hw.model"])
+                .or_else(|_| command_output("uname", &["-m"]))?
+        } else {
+            command_output("uname", &["-m"])?
+        };
+        Ok(Self {
+            source_revision,
+            dirty,
+            rustc,
+            toolchain,
+            gpui_revision,
+            gpui_ce_revision,
+            os: os.trim().to_owned(),
+            hardware: hardware.trim().to_owned(),
+            renderer: std::env::var("NUDOX_GUI_RENDERER")
+                .unwrap_or_else(|_| "gpui-headless".to_owned()),
+            backend: std::env::var("NUDOX_GUI_BACKEND")
+                .unwrap_or_else(|_| "gpui-platform-test".to_owned()),
+            encoder: "png:rgba8:fast:sub".to_owned(),
+        })
+    }
+}
+
+fn find_source_root() -> Result<PathBuf, ArtifactError> {
+    if let Ok(root) = std::env::var("NUDOX_SOURCE_ROOT") {
+        let root = PathBuf::from(root);
+        if root.join(".git").exists() {
+            return Ok(root);
+        }
+    }
+    let mut current = std::env::current_dir().map_err(|error| {
+        ArtifactError::Provenance(format!("cannot determine current directory: {error}"))
+    })?;
+    loop {
+        if current.join(".git").exists() {
+            return Ok(current);
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    Err(ArtifactError::Provenance(
+        "no git checkout found from current directory; set NUDOX_SOURCE_ROOT".to_owned(),
+    ))
+}
+
+fn command_in(root: &Path, command: &str, args: &[&str]) -> Result<String, ArtifactError> {
+    let output = Command::new(command)
+        .args(args)
+        .current_dir(root)
+        .output()
+        .map_err(|error| ArtifactError::Provenance(format!("run {command}: {error}")))?;
+    if !output.status.success() {
+        return Err(ArtifactError::Provenance(format!(
+            "{command} exited with {}",
+            output.status
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn command_output(command: &str, args: &[&str]) -> Result<String, ArtifactError> {
+    let output = Command::new(command)
+        .args(args)
+        .output()
+        .map_err(|error| ArtifactError::Provenance(format!("run {command}: {error}")))?;
+    if !output.status.success() {
+        return Err(ArtifactError::Provenance(format!(
+            "{command} exited with {}",
+            output.status
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn lock_revision(root: &Path, package: &str) -> String {
+    let lock = std::fs::read_to_string(root.join("Cargo.lock")).unwrap_or_default();
+    let mut in_package = false;
+    for line in lock.lines() {
+        if line == "[[package]]" {
+            in_package = false;
+        } else if let Some(name) = line
+            .strip_prefix("name = \"")
+            .and_then(|line| line.strip_suffix('"'))
+        {
+            in_package = name == package;
+        } else if in_package && line.starts_with("version = ") {
+            return format!(
+                "Cargo.lock:{package}:{}",
+                line.trim_start_matches("version = ")
+            );
+        }
+    }
+    format!("unresolved:{package}")
 }
 
 /// Writes immutable PNGs and JSON manifests under a run directory.

@@ -35,12 +35,10 @@ use crate::store::workspace::WorkspaceStore;
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::transport::unix::UnixSubscriptionTransport;
-use crate::ui::components::ActionFrames;
+use crate::ui::components::{ActionFrames, ActionRole, SemanticBounds};
 use crate::ui::surface;
 #[cfg(feature = "visual-harness")]
-use backend_gui_harness::{
-    ActionDescriptor, FocusState, GuiState, InputStep, OverlayState, PageState,
-};
+use backend_gui_harness::{FocusState, GuiState, InputStep, OverlayState, PageState};
 use backend_library::{SymbolKey, ViewRoot};
 use backend_present::{Identity, IdentityKey, Source};
 use gpui::prelude::FluentBuilder as _;
@@ -77,6 +75,10 @@ pub struct WorkspaceSemanticProbe {
     pub pending: bool,
     /// Short admitted projection revision.
     pub data_revision: String,
+    /// Deterministic project coordinate selected by the live host.
+    pub coordinate: String,
+    /// Revision at which the coordinate was selected.
+    pub coordinate_revision: String,
     /// Locale selected by the in-process harness adapter.
     pub locale: String,
     /// Text direction selected by the deterministic environment.
@@ -89,8 +91,16 @@ pub struct WorkspaceSemanticProbe {
     pub focus_id: String,
     /// Route identity observed from the product content tree.
     pub route: String,
-    /// Action tree installed by the rendered desktop adapter.
-    pub actions: Vec<ActionDescriptor>,
+    /// The action tree published by the rendered desktop frame. This is
+    /// intentionally the product tree, including its route and generation,
+    /// rather than the static keymap inventory used to bind GPUI actions.
+    pub actions: Vec<WorkspaceActionProbe>,
+    /// Route that owned the published action tree.
+    pub action_tree_route: String,
+    /// Monotonic revision of the published action tree.
+    pub action_tree_revision: u64,
+    /// Render generation represented by the tree.
+    pub action_tree_generation: u64,
     /// Animation phase that produced this semantic observation.
     pub animation_phase: String,
     /// Virtual animation time at this observation.
@@ -99,6 +109,61 @@ pub struct WorkspaceSemanticProbe {
     pub input_index: Option<usize>,
     /// Exact production input event, when a frame followed one.
     pub input: Option<InputStep>,
+}
+
+/// One serialized node from the action tree that was rendered for a frame.
+///
+/// The accessibility and screenshot artifacts must describe the controls that
+/// actually made it through the production component builders. Keeping this
+/// DTO here (at the workspace boundary) lets the internal CE metadata remain
+/// private while retaining every state bit needed by a replay or audit.
+#[cfg(feature = "visual-harness")]
+#[derive(Clone, Debug, Serialize)]
+pub struct WorkspaceActionProbe {
+    /// Stable component identity.
+    pub id: String,
+    /// Accessible label rendered for the component.
+    pub label: String,
+    /// GPUI CE semantic role.
+    pub role: String,
+    /// Product shortcut exposed by the component, when present.
+    pub shortcut: Option<String>,
+    /// Whether the component can currently be activated.
+    pub enabled: bool,
+    /// Whether the component is present in the rendered route.
+    pub visible: bool,
+    /// Whether the component owns keyboard focus.
+    pub focus: bool,
+    /// Whether CE marked the node selected.
+    pub selected: bool,
+    /// Whether CE marked the node expanded.
+    pub expanded: bool,
+    /// Whether the component is in its loading state.
+    pub loading: bool,
+    /// Error exposed by the component, when any.
+    pub error: Option<String>,
+    /// Value exposed by an input or setting, when any.
+    pub value: Option<String>,
+    /// Logical bounds published by the action metadata, when measured.
+    pub bounds: Option<WorkspaceBoundsProbe>,
+    /// Stable keyboard traversal order in this rendered tree.
+    pub focus_order: usize,
+}
+
+/// The measured/declared bounds of one semantic node. `None` in the parent
+/// action probe is an explicit deferred measurement; the harness never invents
+/// a rectangle when GPUI did not publish one.
+#[cfg(feature = "visual-harness")]
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct WorkspaceBoundsProbe {
+    /// Horizontal origin.
+    pub x: u32,
+    /// Vertical origin.
+    pub y: u32,
+    /// Width.
+    pub width: u32,
+    /// Height.
+    pub height: u32,
 }
 
 /// The window's root entity.
@@ -719,7 +784,11 @@ impl Workspace {
 
     /// Reads the actual semantic/accessibility-facing state used by scenario assertions.
     #[cfg(feature = "visual-harness")]
-    pub(crate) fn harness_semantic_probe(&self, cx: &Context<Self>) -> WorkspaceSemanticProbe {
+    pub(crate) fn harness_semantic_probe(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> WorkspaceSemanticProbe {
         let document = self.document.read(cx);
         let active_pending = document.tab().is_some_and(|tab| tab.pending().is_some());
         let (page, pending) = match document.tab().map(|tab| tab.content()) {
@@ -758,9 +827,39 @@ impl Workspace {
         };
         let frame = cx.try_global::<crate::harness::HarnessFrame>();
         let input = cx.try_global::<crate::harness::HarnessInput>();
-        let actions = cx
-            .try_global::<crate::harness::HarnessActions>()
-            .map_or_else(Vec::new, |actions| actions.0.clone());
+        let action_tree = self.action_tree(window, cx);
+        let actions = action_tree
+            .iter()
+            .map(|action| WorkspaceActionProbe {
+                id: action.id().to_string(),
+                label: action.label().to_string(),
+                role: action_role_name(action.role()).to_owned(),
+                shortcut: action.shortcut_value().map(ToString::to_string),
+                enabled: action.is_enabled(),
+                visible: action.is_visible(),
+                focus: action.is_focused(),
+                selected: action.is_selected(),
+                expanded: action.is_expanded(),
+                loading: action.is_loading(),
+                error: action.error_value().map(ToString::to_string),
+                value: action.value().map(ToString::to_string),
+                bounds: match action.bounds() {
+                    SemanticBounds::Deferred => None,
+                    SemanticBounds::Logical {
+                        x,
+                        y,
+                        width,
+                        height,
+                    } => Some(WorkspaceBoundsProbe {
+                        x,
+                        y,
+                        width,
+                        height,
+                    }),
+                },
+                focus_order: action.focus_order(),
+            })
+            .collect();
         WorkspaceSemanticProbe {
             page: page.to_owned(),
             overlay: overlay.to_owned(),
@@ -779,6 +878,13 @@ impl Workspace {
             tab_count: document.tree().len(),
             pending: active_pending || pending,
             data_revision: self.engine.read(cx).revision().to_owned(),
+            coordinate: self
+                .engine
+                .read(cx)
+                .project()
+                .to_string_lossy()
+                .into_owned(),
+            coordinate_revision: self.engine.read(cx).revision().to_owned(),
             locale: cx
                 .try_global::<crate::harness::HarnessLocale>()
                 .map_or_else(|| "undetermined".to_owned(), |locale| locale.0.clone()),
@@ -787,6 +893,9 @@ impl Workspace {
                 .map_or_else(|| "ltr".to_owned(), |direction| direction.0.clone()),
             theme: crate::theme::theme(cx).appearance().name().to_owned(),
             reduced_motion: shell.reduced_motion(),
+            action_tree_route: action_tree.route().to_string(),
+            action_tree_revision: action_tree.revision(),
+            action_tree_generation: action_tree.generation(),
         }
     }
 
@@ -794,10 +903,11 @@ impl Workspace {
     #[cfg(feature = "visual-harness")]
     pub(crate) fn assert_harness_state(
         &self,
+        window: &Window,
         requested: &GuiState,
         cx: &Context<Self>,
     ) -> Result<WorkspaceSemanticProbe, String> {
-        let probe = self.harness_semantic_probe(cx);
+        let probe = self.harness_semantic_probe(window, cx);
         let expected_page = match requested.page {
             None | Some(PageState::Browse) => "browse",
             Some(PageState::Project) => "project",
@@ -944,6 +1054,36 @@ impl Workspace {
     pub(crate) fn harness_set_reduced_motion(&mut self, reduced: bool, cx: &mut Context<Self>) {
         self.shell
             .update(cx, |shell, cx| shell.set_reduced_motion(reduced, cx));
+    }
+
+    /// Retargets the same production shell springs used by the visible window
+    /// at the harness' named animation phases. The harness calls this from the
+    /// capture clock boundary, so midpoint/reversal frames are real shell
+    /// transitions rather than labels attached to identical pixels.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn harness_drive_animation_phase(&mut self, phase: &str, cx: &mut Context<Self>) {
+        match phase {
+            "retarget" => self
+                .shell
+                .update(cx, |shell, cx| shell.toggle_panel(Side::Library, cx)),
+            "reversal" => self
+                .shell
+                .update(cx, |shell, cx| shell.toggle_panel(Side::Library, cx)),
+            _ => {}
+        }
+    }
+}
+
+#[cfg(feature = "visual-harness")]
+const fn action_role_name(role: ActionRole) -> &'static str {
+    match role {
+        ActionRole::Button => "button",
+        ActionRole::Input => "input",
+        ActionRole::Search => "search",
+        ActionRole::Disclosure => "disclosure",
+        ActionRole::Navigation => "navigation",
+        ActionRole::TreeItem => "tree-item",
+        ActionRole::Setting => "setting",
     }
 }
 

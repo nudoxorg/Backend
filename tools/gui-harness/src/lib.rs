@@ -22,8 +22,9 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 pub use artifact::{
-    ArtifactError, ArtifactWriter, CaptureManifest, FrameArtifact, FrameSequenceMetadata,
-    RunManifest, VerificationReport, frame_artifact, hash_bytes, scenario_hash, verify_run,
+    ArtifactError, ArtifactWriter, CaptureManifest, CaptureProvenance, FrameArtifact,
+    FrameSequenceMetadata, RunManifest, VerificationReport, frame_artifact, hash_bytes,
+    scenario_hash, verify_run, verify_run_for_baseline_update,
 };
 pub use diff::{DiffBounds, DiffError, DiffMetrics, DiffPolicy, compare, diff_image, write_diff};
 pub use gpui_driver::{
@@ -161,6 +162,21 @@ impl Viewport {
                 width,
                 height,
                 scale: 1,
+            })
+            .collect()
+    }
+
+    /// Complete required logical-size and device-scale matrix.
+    #[must_use]
+    pub fn required_matrix() -> Vec<Self> {
+        [1_u8, 2]
+            .into_iter()
+            .flat_map(|scale| {
+                REQUIRED_VIEWPORTS.iter().map(move |&(width, height)| Self {
+                    width,
+                    height,
+                    scale,
+                })
             })
             .collect()
     }
@@ -307,13 +323,40 @@ pub struct AnimationFrame {
 /// Builds the mandated motion phases, including reversal and reduced motion.
 #[must_use]
 pub fn animation_frames(config: &CaptureConfig, reduced_motion: bool) -> Vec<AnimationFrame> {
+    animation_frames_for_duration(config, reduced_motion, config.animation_duration_ms)
+}
+
+/// Builds a route-aware timeline using the same duration family as the
+/// production motion tokens: sheets and error/feedback surfaces get the
+/// emphasis duration while ordinary navigation uses the standard duration.
+#[must_use]
+pub fn animation_frames_for_state(config: &CaptureConfig, state: &GuiState) -> Vec<AnimationFrame> {
+    let duration = match state.overlay {
+        Some(OverlayState::SettingsAppearance)
+        | Some(OverlayState::SettingsEditor)
+        | Some(OverlayState::SettingsAgents)
+        | Some(OverlayState::SettingsDiagnostics)
+        | Some(OverlayState::SettingsLegend)
+        | Some(OverlayState::Fault)
+        | Some(OverlayState::Vulnerable)
+        | Some(OverlayState::Yanked)
+        | Some(OverlayState::Indexing) => config.animation_duration_ms.max(240),
+        _ => config.animation_duration_ms.min(160),
+    };
+    animation_frames_for_duration(config, state.reduced_motion, duration)
+}
+
+fn animation_frames_for_duration(
+    config: &CaptureConfig,
+    reduced_motion: bool,
+    duration: u64,
+) -> Vec<AnimationFrame> {
     if reduced_motion {
         return vec![AnimationFrame {
             label: "reduced-motion".to_owned(),
             time_ms: 0,
         }];
     }
-    let duration = config.animation_duration_ms;
     let midpoint = duration / 2;
     let first = config.frame_interval_ms.min(duration);
     let near_settled = duration.saturating_sub(config.frame_interval_ms.max(1));
@@ -380,6 +423,7 @@ pub struct CaptureSession {
     /// Artifact writer.
     pub writer: ArtifactWriter,
     baseline_root: Option<PathBuf>,
+    provenance: CaptureProvenance,
 }
 
 impl CaptureSession {
@@ -389,10 +433,12 @@ impl CaptureSession {
         output_root: impl Into<PathBuf>,
     ) -> Result<Self, CaptureError> {
         config.validate()?;
+        let provenance = CaptureProvenance::collect()?;
         Ok(Self {
             config,
             writer: ArtifactWriter::new(output_root)?,
             baseline_root: None,
+            provenance,
         })
     }
 
@@ -408,9 +454,12 @@ impl CaptureSession {
         &self,
         capture: &mut CaptureSet,
         script_id: Option<&str>,
+        semantic_artifact: Option<&str>,
     ) -> Result<CaptureManifest, CaptureError> {
         let mut frames = Vec::with_capacity(capture.frames.len());
         let expected_size = self.config.viewport.physical_size();
+        let mut baseline_within_policy = true;
+        let mut missing_baseline = false;
         for record in &mut capture.frames {
             if (record.image.width(), record.image.height()) != expected_size {
                 return Err(CaptureError::InvalidConfig(format!(
@@ -424,18 +473,24 @@ impl CaptureSession {
                 )));
             }
             let baseline = self.baseline_path(&capture.state.id, &record.label);
-            if let Some(path) = baseline.as_deref().filter(|path| path.is_file()) {
-                let image = image::open(path)?.into_rgba8();
-                record.diff = Some(compare(&image, &record.image, self.config.diff_policy)?);
-                if let Some(diff) = &record.diff {
-                    if diff.changed() {
-                        let relative = format!("diffs/{}/{}.png", capture.state.id, record.label);
-                        write_diff(
-                            &self.writer.root().join(&relative),
-                            &image,
-                            &record.image,
-                            self.config.diff_policy.channel_tolerance,
-                        )?;
+            if let Some(path) = baseline {
+                if !path.is_file() {
+                    missing_baseline = true;
+                } else {
+                    let image = image::open(path)?.into_rgba8();
+                    record.diff = Some(compare(&image, &record.image, self.config.diff_policy)?);
+                    if let Some(diff) = &record.diff {
+                        baseline_within_policy &= diff.within_policy;
+                        if diff.changed() {
+                            let relative =
+                                format!("diffs/{}/{}.png", capture.state.id, record.label);
+                            write_diff(
+                                &self.writer.root().join(&relative),
+                                &image,
+                                &record.image,
+                                self.config.diff_policy.channel_tolerance,
+                            )?;
+                        }
                     }
                 }
             }
@@ -467,10 +522,19 @@ impl CaptureSession {
             scenario_sha256: scenario_hash(&scenario)?,
             sequence_sha256,
             sequence,
-            source_revision: option_env!("NUDOX_SOURCE_REVISION").map(ToOwned::to_owned),
+            source_revision: Some(self.provenance.source_revision.clone()),
+            provenance: self.provenance.clone(),
+            semantic_artifact: semantic_artifact.map(ToOwned::to_owned),
+            baseline_within_policy,
         };
         self.writer
             .write_json(&format!("manifests/{}.json", capture.state.id), &manifest)?;
+        if missing_baseline {
+            return Err(CaptureError::BaselineMissing(capture.state.id.clone()));
+        }
+        if !baseline_within_policy {
+            return Err(CaptureError::BaselineMismatch(capture.state.id.clone()));
+        }
         Ok(manifest)
     }
 
@@ -518,6 +582,13 @@ pub enum CaptureError {
     /// The platform does not expose a direct offscreen renderer.
     #[error("the current GPUI platform has no direct offscreen renderer")]
     NoRenderer,
+    /// A configured baseline frame was absent.
+    #[error("baseline is missing for capture {0:?}")]
+    BaselineMissing(String),
+    /// One or more baseline comparisons exceeded policy. The manifest and
+    /// diff artifacts are still written before this error is returned.
+    #[error("baseline comparison exceeded policy for capture {0:?}")]
+    BaselineMismatch(String),
 }
 
 /// Validates all stable harness inputs before starting a long capture run.
@@ -593,5 +664,45 @@ mod tests {
     #[test]
     fn physical_size_rejects_overflowing_backing_dimensions() {
         assert!(Viewport::new(u32::MAX, 1, 2).is_err());
+    }
+
+    #[test]
+    fn one_pixel_baseline_mismatch_writes_evidence_and_fails_closed() {
+        let root = std::env::temp_dir().join(format!(
+            "backend-gui-harness-baseline-test-{}",
+            std::process::id()
+        ));
+        let baseline = root.join("baseline");
+        let output = root.join("output");
+        std::fs::create_dir_all(baseline.join("frames/browse")).expect("baseline directory");
+        let image = RgbaImage::from_pixel(640, 480, image::Rgba([0, 0, 0, 255]));
+        image
+            .save(baseline.join("frames/browse/start.png"))
+            .expect("baseline image");
+        let mut actual = image.clone();
+        actual.put_pixel(0, 0, image::Rgba([1, 0, 0, 255]));
+        let config = CaptureConfig::deterministic(Viewport::new(640, 480, 1).expect("viewport"));
+        let session = CaptureSession::new(config, &output)
+            .expect("capture session")
+            .with_baseline_root(&baseline);
+        session
+            .writer
+            .write_json("semantics/browse.json", &serde_json::json!([]))
+            .expect("semantic artifact");
+        let mut capture = CaptureSet {
+            state: GuiState::new("browse", Some(PageState::Browse), None),
+            frames: vec![CaptureRecord {
+                label: "start".to_owned(),
+                time_ms: 0,
+                image: actual,
+                input_index: None,
+                diff: None,
+            }],
+        };
+        let result = session.write_set(&mut capture, None, Some("semantics/browse.json"));
+        assert!(matches!(result, Err(CaptureError::BaselineMismatch(_))));
+        assert!(output.join("manifests/browse.json").is_file());
+        assert!(output.join("diffs/browse/start.png").is_file());
+        std::fs::remove_dir_all(root).expect("test cleanup");
     }
 }

@@ -57,7 +57,7 @@ pub use transport::subscription::{
 };
 #[cfg(all(unix, feature = "visual-harness"))]
 pub use harness::{
-    LiveCapture, WorkspaceSemanticProbe, capture_live_workspace,
+    LiveCapture, WorkspaceActionProbe, WorkspaceSemanticProbe, capture_live_workspace,
     capture_live_workspace_journey, capture_live_workspace_with_semantics,
     production_action_inventory,
 };
