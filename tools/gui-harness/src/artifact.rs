@@ -1,6 +1,6 @@
 //! Durable screenshot artifacts and manifests.
 
-use crate::{CaptureConfig, CaptureRecord, DiffMetrics, GuiState};
+use crate::{CaptureConfig, CaptureRecord, DiffMetrics, GuiState, ReferenceMetadata};
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, GenericImage, ImageEncoder, Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
@@ -52,11 +52,19 @@ pub struct CaptureManifest {
     /// Git revision supplied by the caller, if available.
     pub source_revision: Option<String>,
     /// Complete environment provenance for this rendered artifact.
+    #[serde(default)]
     pub provenance: CaptureProvenance,
     /// Semantic probe JSON written beside this manifest.
     pub semantic_artifact: Option<String>,
+    /// SHA-256 of the semantic probe bytes referenced by `semantic_artifact`.
+    #[serde(default)]
+    pub semantic_sha256: Option<String>,
     /// Whether every requested baseline comparison satisfied its policy.
+    #[serde(default)]
     pub baseline_within_policy: bool,
+    /// Exact design contract identity used for this rendered capture.
+    #[serde(default)]
+    pub reference: Option<ReferenceMetadata>,
 }
 
 /// Environment identity attached to every capture manifest.
@@ -64,7 +72,7 @@ pub struct CaptureManifest {
 /// A pixel artifact without its renderer and checkout identity is not a
 /// regression oracle. These values are collected at runtime so a copied
 /// artifact can be rejected when it is verified from another checkout.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CaptureProvenance {
     /// Git commit that rendered the capture.
     pub source_revision: String,
@@ -282,6 +290,18 @@ fn verify_run_inner(
                 report.failed_manifests += 1;
             } else {
                 let semantic_bytes = std::fs::read(&path)?;
+                if manifest
+                    .semantic_sha256
+                    .as_deref()
+                    .is_some_and(|expected| expected != hash_bytes(&semantic_bytes))
+                {
+                    report.failures.push(format!(
+                        "{}: semantic artifact {} has a stale SHA-256",
+                        manifest_path.display(),
+                        semantic.display()
+                    ));
+                    report.failed_manifests += 1;
+                }
                 if serde_json::from_slice::<serde_json::Value>(&semantic_bytes).is_err() {
                     report.failures.push(format!(
                         "{}: invalid semantic artifact {}",

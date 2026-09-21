@@ -11,8 +11,9 @@ use backend_desktop::{
     production_action_inventory,
 };
 use backend_gui_harness::{
-    ActionDescriptor, CaptureConfig, CaptureSession, FocusState, GuiState, InputStep, OverlayState,
-    PageState, Viewport, animation_frames_for_state, preflight_viewport, verify_run,
+    ActionDescriptor, CaptureConfig, CaptureSession, ConformancePolicy, DesignContract, FocusState,
+    GuiState, InputStep, OverlayState, PageState, Viewport, animation_frames_for_state,
+    preflight_viewport, resolve_contract_root, verify_capture_run, verify_run,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -35,6 +36,9 @@ struct RunReport {
     readiness: Vec<ReadinessArtifact>,
     verified_manifests: usize,
     verified_frames: usize,
+    conformance_pass: bool,
+    conformance_failures: usize,
+    conformance_report: Option<String>,
     registered_actions: Vec<ActionDescriptor>,
     action_tree_source: String,
     journeys: Vec<JourneyResult>,
@@ -156,6 +160,11 @@ fn capture_command(args: &[String]) -> Result<(), String> {
         })
         .transpose()?;
     let baseline = option(args, "--baseline").map(PathBuf::from);
+    let explicit_contract_root = option(args, "--design-contract-root").map(PathBuf::from);
+    let contract_root = resolve_contract_root(explicit_contract_root.as_deref())
+        .map_err(|error| error.to_string())?;
+    let design_contract =
+        DesignContract::extract(&contract_root).map_err(|error| error.to_string())?;
     let smoke = args.iter().any(|arg| arg == "--smoke");
 
     let (states, journeys) =
@@ -194,6 +203,9 @@ fn capture_command(args: &[String]) -> Result<(), String> {
             report.viewports.push(config.viewport.suffix());
             let viewport_root = output.join(config.viewport.suffix());
             let mut session = CaptureSession::new(config.clone(), &viewport_root)
+                .map_err(|error| error.to_string())?;
+            session = session
+                .with_design_contract(&design_contract)
                 .map_err(|error| error.to_string())?;
             if let Some(baseline) = baseline.as_deref() {
                 session = session.with_baseline_root(baseline.join(config.viewport.suffix()));
@@ -267,6 +279,9 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                 }
                 let journey_root = output.join(&journey_suffix);
                 let mut journey_session = CaptureSession::new(journey_config.clone(), journey_root)
+                    .map_err(|error| error.to_string())?;
+                journey_session = journey_session
+                    .with_design_contract(&design_contract)
                     .map_err(|error| error.to_string())?;
                 if let Some(baseline) = baseline.as_deref() {
                     journey_session =
@@ -407,13 +422,63 @@ fn capture_command(args: &[String]) -> Result<(), String> {
             error: error.to_string(),
         }),
     }
+    let conformance = verify_capture_run(
+        &output,
+        Some(&design_contract),
+        ConformancePolicy {
+            require_full_matrix: !smoke,
+            require_run_report: false,
+            ..ConformancePolicy::default()
+        },
+    );
+    let conformance_pass = match conformance {
+        Ok(conformance) => {
+            report.conformance_failures = conformance.failures.len();
+            let path = output.join("conformance-report.json");
+            match serde_json::to_vec_pretty(&conformance)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| {
+                    std::fs::write(&path, bytes)
+                        .map_err(|error| format!("write {}: {error}", path.display()))
+                }) {
+                Ok(()) => {
+                    report.conformance_report = Some("conformance-report.json".to_owned());
+                }
+                Err(error) => report.failures.push(Failure {
+                    state: "capture-conformance".to_owned(),
+                    viewport: "all".to_owned(),
+                    error,
+                }),
+            }
+            if !conformance.pass {
+                report.failures.push(Failure {
+                    state: "capture-conformance".to_owned(),
+                    viewport: "all".to_owned(),
+                    error: format!(
+                        "independent rendered-evidence gate found {} failure(s)",
+                        conformance.failures.len()
+                    ),
+                });
+            }
+            conformance.pass
+        }
+        Err(error) => {
+            report.failures.push(Failure {
+                state: "capture-conformance".to_owned(),
+                viewport: "all".to_owned(),
+                error: error.to_string(),
+            });
+            false
+        }
+    };
     report.pass = report.attempted_captures > 0
         && report.requested_frames > 0
         && report.failures.is_empty()
         && report.captured_captures == report.attempted_captures
         && report.captured_frames == report.requested_frames
         && report.verified_manifests == report.manifests.len()
-        && report.verified_frames == report.captured_frames;
+        && report.verified_frames == report.captured_frames
+        && conformance_pass;
     let report_path = output.join("run-report.json");
     std::fs::write(
         &report_path,
@@ -1085,7 +1150,7 @@ fn parse_viewport(value: &str) -> Result<Viewport, String> {
 
 fn print_help() {
     println!(
-        "backend-desktop-gui-harness\n\nCommands:\n  capture [--output DIR] [--state ID] [--scale 1|2] [--viewport WIDTHxHEIGHT@SCALE] [--baseline DIR] [--smoke]\n\nThe capture command starts the live desktop host, requests missing local indexes through the production service, waits for an admitted route anchor, renders every catalog state at every required viewport and scale, and writes PNG frame sequences, manifests, semantic probes, readiness proofs, and run-report.json. It exits nonzero when any live state cannot be reached or differs from baseline. Set NUDOX_GUI_HARNESS_READINESS_TIMEOUT_MS and NUDOX_GUI_HARNESS_READINESS_POLL_MS to bound a failure lane. --smoke runs only the production-input journey catalog at 640x480@1x."
+        "backend-desktop-gui-harness\n\nCommands:\n  capture [--output DIR] [--state ID] [--scale 1|2] [--viewport WIDTHxHEIGHT@SCALE] [--baseline DIR] [--design-contract-root DIR] [--smoke]\n\nThe capture command starts the live desktop host, requests missing local indexes through the production service, waits for an admitted route anchor, renders every catalog state at every required viewport and scale, and writes PNG frame sequences, manifests, semantic probes, readiness proofs, conformance-report.json, and run-report.json. It exits nonzero when any live state cannot be reached, physical evidence is inconsistent, or a baseline differs. Set NUDOX_GUI_HARNESS_READINESS_TIMEOUT_MS and NUDOX_GUI_HARNESS_READINESS_POLL_MS to bound a failure lane. --smoke runs only the production-input journey catalog at 640x480@1x."
     );
 }
 

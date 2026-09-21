@@ -9,6 +9,8 @@
 #![deny(unsafe_code)]
 
 mod artifact;
+mod conformance;
+mod design_contract;
 mod diff;
 mod input;
 mod journey;
@@ -25,6 +27,15 @@ pub use artifact::{
     ArtifactError, ArtifactWriter, CaptureManifest, CaptureProvenance, FrameArtifact,
     FrameSequenceMetadata, RunManifest, VerificationReport, frame_artifact, hash_bytes,
     scenario_hash, verify_run, verify_run_for_baseline_update,
+};
+pub use conformance::{
+    CONFORMANCE_SCHEMA, ConformanceError, ConformanceFailure, ConformancePolicy, ConformanceReport,
+    FrameEvidence, ManifestEvidence, MatrixEvidence, UniformRegion, verify_capture_run,
+};
+pub use design_contract::{
+    Artboard, CaptureMatrix, DESIGN_CONTRACT_SCHEMA, DesignArtifact, DesignContract,
+    DesignContractError, DesignSemantics, REQUIRED_ARTIFACTS, ReferenceArtifact, ReferenceMetadata,
+    StyleDeclaration, SvgGlyph, TokenDeclaration, resolve_contract_root, summarize_contract,
 };
 pub use diff::{DiffBounds, DiffError, DiffMetrics, DiffPolicy, compare, diff_image, write_diff};
 pub use gpui_driver::{
@@ -464,6 +475,7 @@ pub struct CaptureSession {
     pub writer: ArtifactWriter,
     baseline_root: Option<PathBuf>,
     provenance: CaptureProvenance,
+    reference: Option<ReferenceMetadata>,
 }
 
 impl CaptureSession {
@@ -479,6 +491,7 @@ impl CaptureSession {
             writer: ArtifactWriter::new(output_root)?,
             baseline_root: None,
             provenance,
+            reference: None,
         })
     }
 
@@ -487,6 +500,16 @@ impl CaptureSession {
     pub fn with_baseline_root(mut self, baseline_root: impl Into<PathBuf>) -> Self {
         self.baseline_root = Some(baseline_root.into());
         self
+    }
+
+    /// Attaches the exact source-contract identity to future manifests.
+    pub fn with_design_contract(mut self, contract: &DesignContract) -> Result<Self, CaptureError> {
+        self.reference = Some(
+            contract
+                .reference_metadata()
+                .map_err(|error| CaptureError::InvalidConfig(error.to_string()))?,
+        );
+        Ok(self)
     }
 
     /// Writes a capture set and its state manifest.
@@ -556,6 +579,13 @@ impl CaptureSession {
             keyframes: frames.iter().map(|frame| frame.label.clone()).collect(),
             filmstrip_path,
         };
+        let semantic_sha256 = semantic_artifact
+            .map(|relative| {
+                std::fs::read(self.writer.root().join(relative))
+                    .map(|bytes| hash_bytes(&bytes))
+                    .map_err(ArtifactError::Io)
+            })
+            .transpose()?;
         let manifest = CaptureManifest {
             schema: 1,
             state: capture.state.clone(),
@@ -568,7 +598,9 @@ impl CaptureSession {
             source_revision: Some(self.provenance.source_revision.clone()),
             provenance: self.provenance.clone(),
             semantic_artifact: semantic_artifact.map(ToOwned::to_owned),
+            semantic_sha256,
             baseline_within_policy,
+            reference: self.reference.clone(),
         };
         self.writer
             .write_json(&format!("manifests/{}.json", capture.state.id), &manifest)?;

@@ -1,8 +1,9 @@
 //! Command line control plane for the deterministic GUI harness.
 
 use backend_gui_harness::{
-    CaptureConfig, DiffPolicy, GuiState, TransitionScript, Viewport, animation_frames, compare,
-    diff_image, validate_run, verify_run, verify_run_for_baseline_update,
+    CaptureConfig, ConformancePolicy, DesignContract, DiffPolicy, GuiState, TransitionScript,
+    Viewport, animation_frames, compare, diff_image, resolve_contract_root, summarize_contract,
+    validate_run, verify_capture_run, verify_run, verify_run_for_baseline_update,
 };
 use std::{
     env, fs,
@@ -45,12 +46,121 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("validated {} states and {} transition scripts", states.len(), scripts.len());
             Ok(())
         }
+        "design-contract" => design_contract_command(&args[1..]),
+        "extract-design-contract" => {
+            let mut extract_args = vec!["extract".to_owned()];
+            extract_args.extend_from_slice(&args[1..]);
+            design_contract_command(&extract_args)
+        }
+        "verify-conformance" | "conformance" => conformance_command(&args[1..]),
         "compare" => compare_command(&args[1..]),
         "verify" => verify_command(&args[1..]),
         "accept-baseline" => accept_baseline_command(&args[1..]),
         "capture" => Err("capture requires an in-process desktop adapter; use the library's capture_gpui_state API from the desktop harness test target".to_owned()),
         other => Err(format!("unknown command {other:?}; use --help")),
     }
+}
+
+fn conformance_command(args: &[String]) -> Result<(), String> {
+    let run_root = args
+        .first()
+        .filter(|arg| !arg.starts_with('-'))
+        .ok_or("verify-conformance requires RUN_ROOT")?;
+    let mut policy = ConformancePolicy::default();
+    if args.iter().any(|arg| arg == "--allow-partial") {
+        policy.require_full_matrix = false;
+    }
+    if args.iter().any(|arg| arg == "--allow-missing-report") {
+        policy.require_run_report = false;
+    }
+    if args.iter().any(|arg| arg == "--allow-missing-reference") {
+        policy.require_reference = false;
+    }
+    let contract = if let Some(path) = option(args, "--contract") {
+        Some(DesignContract::read_json(Path::new(&path)).map_err(|error| error.to_string())?)
+    } else if let Some(root) = option(args, "--contract-root") {
+        Some(DesignContract::extract(Path::new(&root)).map_err(|error| error.to_string())?)
+    } else {
+        let root = resolve_contract_root(None).map_err(|error| error.to_string())?;
+        Some(DesignContract::extract(&root).map_err(|error| error.to_string())?)
+    };
+    let report = verify_capture_run(Path::new(run_root), contract.as_ref(), policy)
+        .map_err(|error| error.to_string())?;
+    let report_path = Path::new(run_root).join("conformance-report.json");
+    fs::write(
+        &report_path,
+        serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("write {}: {error}", report_path.display()))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?
+    );
+    if report.pass {
+        Ok(())
+    } else {
+        Err(format!(
+            "capture conformance failed with {} failure(s); see {}",
+            report.failures.len(),
+            report_path.display()
+        ))
+    }
+}
+
+fn design_contract_command(args: &[String]) -> Result<(), String> {
+    let subcommand = args.first().map(String::as_str).unwrap_or("extract");
+    match subcommand {
+        "extract" | "summary" => {
+            let root = option(args, "--root")
+                .map(PathBuf::from)
+                .or_else(|| args.get(1).map(PathBuf::from));
+            let root = resolve_contract_root(root.as_deref()).map_err(|error| error.to_string())?;
+            let contract = DesignContract::extract(&root).map_err(|error| error.to_string())?;
+            if subcommand == "summary" {
+                print!("{}", summarize_contract(&contract));
+                return Ok(());
+            }
+            let output = option(args, "--output")
+                .map(PathBuf::from)
+                .or_else(|| args.get(2).map(PathBuf::from));
+            if let Some(output) = output {
+                contract
+                    .write_json(&output)
+                    .map_err(|error| error.to_string())?;
+                println!("wrote {}", output.display());
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&contract).map_err(|error| error.to_string())?
+                );
+            }
+            Ok(())
+        }
+        "validate" => {
+            let path = args
+                .get(1)
+                .cloned()
+                .or_else(|| option(args, "--contract"))
+                .ok_or("design-contract validate requires CONTRACT.json")?;
+            let contract =
+                DesignContract::read_json(Path::new(&path)).map_err(|error| error.to_string())?;
+            println!("valid design contract {}", contract.contract_id);
+            Ok(())
+        }
+        "help" | "--help" | "-h" => {
+            println!(
+                "design-contract\n\nCommands:\n  extract [CONTRACT_ROOT] [OUTPUT.json]\n  summary [CONTRACT_ROOT]\n  validate CONTRACT.json\n\nThe extractor reads all four HTML artifacts without modifying the reference archive."
+            );
+            Ok(())
+        }
+        other => Err(format!("unknown design-contract command {other:?}")),
+    }
+}
+
+fn option(args: &[String], name: &str) -> Option<String> {
+    args.windows(2)
+        .find(|pair| pair[0] == name)
+        .map(|pair| pair[1].clone())
 }
 
 fn list_states(json: bool) -> Result<(), String> {
@@ -230,6 +340,6 @@ fn parse_viewport(value: &str) -> Result<Viewport, String> {
 
 fn print_help() {
     println!(
-        "backend-gui-harness\n\nCommands:\n  list-states [--json]\n  list-viewports\n  plan-animation WIDTHxHEIGHT@SCALE [--reduced-motion]\n  validate\n  compare BASELINE.png ACTUAL.png DIFF.png\n  verify RUN_ROOT\n  accept-baseline RUN_ROOT BASELINE_ROOT\n\naccept-baseline promotes only a structurally and provenance-verified run; it is the explicit baseline update operation.\nThe capture_gpui_state library API is used by the desktop adapter to render real GPUI scenes."
+        "backend-gui-harness\n\nCommands:\n  list-states [--json]\n  list-viewports\n  plan-animation WIDTHxHEIGHT@SCALE [--reduced-motion]\n  validate\n  design-contract extract [CONTRACT_ROOT] [OUTPUT.json]\n  design-contract summary [CONTRACT_ROOT]\n  design-contract validate CONTRACT.json\n  verify-conformance RUN_ROOT [--contract CONTRACT.json] [--allow-partial]\n  compare BASELINE.png ACTUAL.png DIFF.png\n  verify RUN_ROOT\n  accept-baseline RUN_ROOT BASELINE_ROOT\n\naccept-baseline promotes only a structurally and provenance-verified run; it is the explicit baseline update operation.\nThe capture_gpui_state library API is used by the desktop adapter to render real GPUI scenes."
     );
 }

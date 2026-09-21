@@ -134,6 +134,47 @@ Each lane hands off exact commands, selected shard and count, pass/fail totals,
 resource-lock manifests, artifact paths, image and perceptual comparisons,
 startup/resource observations, external limitations, and its isolated commit.
 
+## Design contract and rendered-evidence gate
+
+The four unmodified HTML references under `Nudox-Design-System/artifacts` are
+extracted into the checked-in machine-readable contract before a desktop run:
+
+```text
+nix shell path:.#gui-harness --command \
+  backend-gui-harness design-contract extract \
+  /absolute/path/to/Nudox-Design-System tools/gui-harness/design-contract.json
+```
+
+The contract records each declared artboard, exact source hash, palette,
+typography, spacing, bevel, cut, glyph, focus, and motion declaration, plus
+the wide/compact/narrow, 1x/2x, Ink/Glacier, reduced/full-motion, route,
+overlay, interaction, and keyboard matrix. Captures attach a compact
+`reference` identity to every manifest; it contains the contract hash and
+per-artifact hashes/artboards. The harness never generates a reference image.
+
+After a live run, the independent PNG/semantic gate reads the encoded bytes
+and writes `conformance-report.json`:
+
+```text
+nix shell path:.#gui-harness --command \
+  backend-gui-harness verify-conformance .artifacts/gui-harness \
+  --contract tools/gui-harness/design-contract.json
+```
+
+It fails when logical dimensions multiplied by scale disagree with PNG and
+frame metadata, when a large exact-color row/column indicates an upper-left
+crop or unused viewport remainder, or when the route/root, live data
+revision/coordinate, hashed semantic probe, action-tree focus order,
+accessibility roles, keyboard journey, or external reference identity is
+absent. Full-motion transitions
+must have monotonic deterministic frame times with positive elapsed duration and
+meaningful changed pixels;
+static states may remain unchanged and reduced motion must settle. When an
+external baseline is supplied, its full pixel metrics are retained and a
+policy violation fails the color/comparison gate. The report keeps geometry,
+color, typography, clipping, focus, and animation categories separate so a
+stale `run-report.json` cannot turn malformed evidence into a pass.
+
 ## Desktop onboarding and shell journeys
 
 The GPUI CE desktop adapter also exposes a production-input journey catalog in
