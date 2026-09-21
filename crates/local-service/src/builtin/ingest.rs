@@ -1322,7 +1322,7 @@ mod row_capacity_tests {
 /// The assertions are on rendered content - the surviving file's declaration
 /// names and the failing file's typed reason - because a scan that dropped
 /// every declaration would keep the same file count.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod robustness_tests {
     use super::*;
     use backend_engine::{DeclarationRetention, SourceUnavailableReason};

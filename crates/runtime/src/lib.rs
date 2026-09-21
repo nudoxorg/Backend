@@ -1059,6 +1059,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_dead_endpoint_is_unlinked_and_a_live_one_is_left_alone() {
         // A bindable endpoint must fit the platform `sun_path` budget, which
         // the per-session macOS temporary directory does not leave room for.
