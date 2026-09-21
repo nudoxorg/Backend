@@ -153,6 +153,8 @@ released=false
 worktree_lock_acquired=false
 cargo_pid=""
 
+# Invoked by the EXIT trap installed below.
+# shellcheck disable=SC2329
 release_all() {
   [ "$released" = true ] && return
   released=true
@@ -169,6 +171,8 @@ release_all() {
   fi
 }
 
+# Invoked by the signal traps installed below.
+# shellcheck disable=SC2329
 forward_signal() {
   signal="$1"
   status="$2"
