@@ -15,7 +15,6 @@
 }:
 let
   backendControlRuntime = pkgs.lib.optional (tools.backendControl != null) tools.backendControl;
-  guiRuntimeTools = pkgs.lib.optional (tools.guiRuntime != null) tools.guiRuntime;
   sourceParts = [
     ../nu/core/failure.nu
     ../nu/core/control.nu
@@ -50,7 +49,11 @@ let
       name = "backend";
       text = source;
       runtimeInputs =
-        tools.qualityTools ++ tools.serviceTools ++ gui.allPackages ++ backendControlRuntime ++ guiRuntimeTools ++ runtimeInputs;
+        tools.qualityTools
+        ++ tools.serviceTools
+        ++ gui.allPackages
+        ++ backendControlRuntime
+        ++ runtimeInputs;
       runtimeEnv = {
         CARGO_TARGET_DIR = ".local/target";
         BACKEND_CONFIG_SNAPSHOT = toString ../.;
@@ -64,14 +67,16 @@ let
         BACKEND_COMMAND_CATALOG_DIGEST = builtins.hashString "sha256" source;
         BACKEND_STABLE_CARGO = toolchains.stableCargo;
         BACKEND_CONTROL_SOURCE = toString workspaceRoot;
-        BACKEND_CONTROL_BIN = if tools.backendControl == null then "" else "${tools.backendControl}/bin/backend-control";
+        BACKEND_CONTROL_BIN =
+          if tools.backendControl == null then "" else "${tools.backendControl}/bin/backend-control";
         BACKEND_DYLINT_TOOLCHAIN = toolchains.dylintToolchain;
         BACKEND_RUSTFMT = toolchains.rustfmt;
         BACKEND_GUI_CONFIG = "${gui.configFile}/share/nudox/gui-control-plane.json";
         BACKEND_GUI_FONTCONFIG = gui.fontConfig;
         BACKEND_GUI_FONT_MANIFEST = "${gui.fontManifest}/share/nudox/fonts.sha256";
         NUDOX_GUI_GPUI_SOURCE_DIGEST = gui.gpuiSourceDigest;
-        NUDOX_GUI_GPUI_COMPONENT_SOURCE_DIGEST = if gui.gpuiComponentSourceDigest == null then "" else gui.gpuiComponentSourceDigest;
+        NUDOX_GUI_GPUI_COMPONENT_SOURCE_DIGEST =
+          if gui.gpuiComponentSourceDigest == null then "" else gui.gpuiComponentSourceDigest;
         NUDOX_GUI_GPUI_SOURCE_MANIFEST = gui.gpuiSourceManifest;
         NUDOX_GUI_DEPENDENCY_GRAPH_SHA256 = gui.dependencyGraphDigest;
         NUDOX_GUI_GPU_BACKEND = control.gui.gpu.defaultGpuBackend;
@@ -83,17 +88,9 @@ let
         NUDOX_GUI_TOOLCHAIN = toString toolchains.stable;
         NUDOX_GUI_ENCODER_VERSION = pkgs.ffmpeg.version;
         NUDOX_GUI_TOOL_CLOSURE = "${gui.toolsBundle}";
-        NUDOX_GUI_HARNESS = "nix shell .#gui-harness .#gui-tools";
+        NUDOX_GUI_HARNESS = "nix shell .#gui-harness .#gui-tools .#gui-runtime";
       }
-      // runtimeEnv
-      // pkgs.lib.optionalAttrs (tools.guiRuntime != null) {
-        NUDOX_GUI_LOCALD_BIN = "${tools.guiRuntime}/bin/backend-locald";
-        NUDOX_GUI_CLI_BIN = "${tools.guiRuntime}/bin/backend-cli";
-        NUDOX_GUI_MCP_BIN = "${tools.guiRuntime}/bin/backend-mcp";
-        NUDOX_GUI_SERVICE_COMMAND = "${tools.guiRuntime}/bin/nudox-gui-service";
-        NUDOX_GUI_READINESS_COMMAND = "${tools.guiRuntime}/bin/nudox-gui-probe";
-        NUDOX_GUI_GPUI_RUNTIME_PROVENANCE = "${tools.guiRuntime}/share/nudox/gpui-provenance.txt";
-      };
+      // runtimeEnv;
     };
 in
 rec {

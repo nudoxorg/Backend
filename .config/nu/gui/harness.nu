@@ -42,7 +42,7 @@ def gui-manifest [requested: string]: nothing -> string {
     let value = if ($requested | is-empty) {
         let configured = gui-control | get journeys.manifest
         configuration-root | path join $configured
-    } else if (($requested | path type) == "absolute") {
+    } else if ($requested | path type) == "absolute" {
         $requested | path expand
     } else {
         owned-path $requested
@@ -73,7 +73,7 @@ def gui-journeys [manifest: string]: nothing -> list<record> {
     let journeys = $document.journeys? | default []
     if ($journeys | is-empty) { tooling-fail "invalid-gui-manifest" "GUI journey manifest contains no journeys" }
     let ids = $journeys | each {|journey| $journey.id? | default "" }
-    if (($ids | length) != ($ids | uniq | length)) {
+    if ($ids | length) != ($ids | uniq | length) {
         tooling-fail "invalid-gui-manifest" "GUI journey identifiers must be unique"
     }
     for journey in $journeys {
@@ -124,7 +124,9 @@ def gui-service-endpoint []: nothing -> string {
     if ($endpoint | is-empty) {
         tooling-fail "missing-live-index" "NUDOX_GUI_LOCALD_ENDPOINT must point at the real locald framed endpoint" "start locald through the pinned service command before running journeys"
     }
-    let path = if ($endpoint | str starts-with "unix:") { $endpoint | str substring 5.. } else { $endpoint }
+    let path = if ($endpoint | str starts-with "unix:") {
+        $endpoint | str substring 5..
+    } else { $endpoint }
     if not ($path | path exists) {
         tooling-fail "missing-live-index" $"locald endpoint does not exist: ($path)"
     }
@@ -150,7 +152,9 @@ def gui-detected-gpu []: nothing -> record {
     let probe = $env.NUDOX_GUI_GPU_PROBE? | default ""
     if ($probe | is-empty) { tooling-fail "missing-gui-gpu-probe" "the pinned GPU probe is not available in the GUI closure" }
     let result = process-require $probe []
-    let report = try { $result.stdout | from json } catch { tooling-fail "invalid-gui-gpu-probe" "the pinned GPU probe did not return JSON" }
+    let report = try {
+        $result.stdout | from json
+    } catch { tooling-fail "invalid-gui-gpu-probe" "the pinned GPU probe did not return JSON" }
     for field in ["backend" "device"] {
         if $field not-in ($report | columns) or (($report | get $field | into string | str trim) | is-empty) {
             tooling-fail "incomplete-gui-gpu-probe" $"the pinned GPU probe lacks ($field)"
@@ -159,7 +163,12 @@ def gui-detected-gpu []: nothing -> record {
     $report
 }
 
-def gui-runtime [lane: string, run: string, artifacts: string, mode: string]: nothing -> record {
+def gui-runtime [
+    lane: string
+    run: string
+    artifacts: string
+    mode: string
+]: nothing -> record {
     let config = gui-control
     let viewport = $config.viewport
     let display = $config.display
@@ -197,8 +206,14 @@ def gui-runtime [lane: string, run: string, artifacts: string, mode: string]: no
         NUDOX_GUI_GPU_DEVICE: ($env.NUDOX_GUI_GPU_DEVICE? | default $config.gpu.expectedGpuDevice)
         NUDOX_GUI_GPU_PROBE: ($env.NUDOX_GUI_GPU_PROBE? | default "")
         WGPU_BACKEND: ($env.WGPU_BACKEND? | default $config.gpu.forceEnvironment.WGPU_BACKEND)
-        LIBGL_ALWAYS_SOFTWARE: ($env.LIBGL_ALWAYS_SOFTWARE? | default $config.gpu.forceEnvironment.LIBGL_ALWAYS_SOFTWARE)
-        MESA_LOADER_DRIVER_OVERRIDE: ($env.MESA_LOADER_DRIVER_OVERRIDE? | default $config.gpu.forceEnvironment.MESA_LOADER_DRIVER_OVERRIDE)
+        LIBGL_ALWAYS_SOFTWARE: (
+            $env.LIBGL_ALWAYS_SOFTWARE?
+            | default $config.gpu.forceEnvironment.LIBGL_ALWAYS_SOFTWARE
+        )
+        MESA_LOADER_DRIVER_OVERRIDE: (
+            $env.MESA_LOADER_DRIVER_OVERRIDE?
+            | default $config.gpu.forceEnvironment.MESA_LOADER_DRIVER_OVERRIDE
+        )
         NUDOX_GUI_TOOLCHAIN: ($env.NUDOX_GUI_TOOLCHAIN? | default "")
         NUDOX_GUI_ENCODER_VERSION: ($env.NUDOX_GUI_ENCODER_VERSION? | default "")
         NUDOX_GUI_DISPLAY_BACKEND: $backend
@@ -222,7 +237,12 @@ def gui-runtime [lane: string, run: string, artifacts: string, mode: string]: no
     }
 }
 
-def gui-lock [resource: string, run: string, lane: string, shard: int]: nothing -> string {
+def gui-lock [
+    resource: string
+    run: string
+    lane: string
+    shard: int
+]: nothing -> string {
     let config = gui-control
     if $resource not-in $config.locks.resources { tooling-fail "invalid-gui-lock" $"resource is not declared by the GUI control plane: ($resource)" }
     let root = gui-lock-root
@@ -266,7 +286,13 @@ def gui-unlock [resource: string, run: string]: nothing -> nothing {
     rm --recursive $path
 }
 
-def gui-with-lock [resource: string, run: string, lane: string, shard: int, action: closure]: nothing -> any {
+def gui-with-lock [
+    resource: string
+    run: string
+    lane: string
+    shard: int
+    action: closure
+]: nothing -> any {
     gui-lock $resource $run $lane $shard | ignore
     try { do $action } catch {|error| error make $error } finally { gui-unlock $resource $run }
 }
@@ -294,7 +320,15 @@ def gui-capture-one [path: string]: nothing -> record {
     }
 }
 
-def gui-artifact-manifest [run: string, lane: string, mode: string, manifest: string, frames: list<record>, root: string, fps: int]: nothing -> record {
+def gui-artifact-manifest [
+    run: string
+    lane: string
+    mode: string
+    manifest: string
+    frames: list<record>
+    root: string
+    fps: int
+]: nothing -> record {
     {
         schema: 1
         protocol: "nudox-gui-artifact-v1"
@@ -339,10 +373,7 @@ def gui-artifact-manifest [run: string, lane: string, mode: string, manifest: st
             required: true
             detects: ["allocation" "object" "timer"]
         }
-        redaction: {
-            rawTranscripts: false
-            privateMetadata: "redacted"
-        }
+        redaction: {rawTranscripts: false, privateMetadata: "redacted"}
         frames: $frames
         root: $root
     }
@@ -373,13 +404,12 @@ def "main gui validate" []: nothing -> record {
 
 # Starts, stops, or probes the declared real locald/index service command.
 # @class verification
-def "main gui service" [
-    --action: string = "status"
-    --endpoint: string = ""
-]: nothing -> record {
+def "main gui service" [--action: string = "status", --endpoint: string = ""]: nothing -> record {
     require-command "gui-service"
     if $action not-in ["start" "stop" "status"] { tooling-fail "invalid-gui-service-action" "service action must be start, stop, or status" }
-    let endpoint = if ($endpoint | is-empty) { $env.NUDOX_GUI_LOCALD_ENDPOINT? | default "" } else { $endpoint }
+    let endpoint = if ($endpoint | is-empty) {
+        $env.NUDOX_GUI_LOCALD_ENDPOINT? | default ""
+    } else { $endpoint }
     if ($endpoint | is-empty) { tooling-fail "missing-live-index" "a real locald endpoint is required" }
     let command = $env.NUDOX_GUI_SERVICE_COMMAND? | default ""
     if ($command | is-empty) { tooling-fail "missing-gui-service-command" "NUDOX_GUI_SERVICE_COMMAND must name the real locald/index supervisor" }
@@ -407,7 +437,9 @@ def "main gui provenance" [--driver: string = ""]: nothing -> record {
     let config = gui-control
     let driverPath = gui-driver $driver
     let result = process-require $driverPath ["provenance" "--protocol" "nudox-gui-driver-v1"]
-    let report = try { $result.stdout | from json } catch { tooling-fail "invalid-gui-provenance" "the GPUI driver did not return JSON provenance" }
+    let report = try {
+        $result.stdout | from json
+    } catch { tooling-fail "invalid-gui-provenance" "the GPUI driver did not return JSON provenance" }
     let detected = gui-detected-gpu
     let required = $config.provenance.requiredFields
     for field in $required {
@@ -421,15 +453,26 @@ def "main gui provenance" [--driver: string = ""]: nothing -> record {
     if $report.detectedGpuBackend != $detected.backend {
         tooling-fail "gui-gpu-report-drift" "driver GPU backend differs from the independent GPU probe"
     }
-    if not (($report.gpuDevice | into string | str lowercase | str contains ($detected.device | into string | str lowercase))) {
+    let reportedDevice = $report.gpuDevice | into string | str downcase
+    let detectedDevice = $detected.device | into string | str downcase
+    if not ($reportedDevice | str contains $detectedDevice) {
         tooling-fail "gui-gpu-device-drift" "driver GPU device differs from the independent GPU probe"
     }
     for pair in [
-        {field: "gpuiSourceDigest", expected: ($env.NUDOX_GUI_GPUI_SOURCE_DIGEST? | default "")}
-        {field: "gpuiComponentSourceDigest", expected: ($env.NUDOX_GUI_GPUI_COMPONENT_SOURCE_DIGEST? | default "")}
-        {field: "dependencyGraphSha256", expected: ($env.NUDOX_GUI_DEPENDENCY_GRAPH_SHA256? | default "")}
+        {
+            field: "gpuiSourceDigest"
+            expected: ($env.NUDOX_GUI_GPUI_SOURCE_DIGEST? | default "")
+        }
+        {
+            field: "gpuiComponentSourceDigest"
+            expected: ($env.NUDOX_GUI_GPUI_COMPONENT_SOURCE_DIGEST? | default "")
+        }
+        {
+            field: "dependencyGraphSha256"
+            expected: ($env.NUDOX_GUI_DEPENDENCY_GRAPH_SHA256? | default "")
+        }
     ] {
-        let observed = ($report | get $pair.field | into string)
+        let observed = $report | get $pair.field | into string
         if ($pair.expected | is-empty) or $observed != $pair.expected {
             tooling-fail "gui-source-drift" $"driver ($pair.field) differs from the Nix lock/source closure"
         }
@@ -443,7 +486,8 @@ def "main gui provenance" [--driver: string = ""]: nothing -> record {
         if $report.dependencyGraphSha256 != $runtimeGraph { tooling-fail "gui-runtime-graph-drift" "driver dependency graph differs from cargo metadata/tree evidence" }
     }
     let expectedDevice = $env.NUDOX_GUI_GPU_DEVICE? | default $config.gpu.expectedGpuDevice
-    if not (($detected.device | into string | str lowercase | str contains ($expectedDevice | str lowercase))) {
+    let normalizedExpectedDevice = $expectedDevice | str downcase
+    if not ($detectedDevice | str contains $normalizedExpectedDevice) {
         tooling-fail "gui-gpu-device-policy-drift" "the independently detected GPU device differs from the pinned control plane"
     }
     {
@@ -520,10 +564,10 @@ def "main gui capture" [
         0..($frames - 1)
         | each {|index|
             if $index > 0 {
-                let delay = (1000 / $actualFps | into int)
+                let delay = 1000 / $actualFps | into int
                 sleep ($delay * 1ms)
             }
-            $env.NUDOX_GUI_VIRTUAL_NOW_MS = (($index * (1000 / $actualFps)) | into int | into string)
+            $env.NUDOX_GUI_VIRTUAL_NOW_MS = $index * (1000 / $actualFps) | into int | into string
             let path = $frameRoot | path join $"frame-($index | fill -a right -c '0' -w 6).png"
             gui-capture-one $path | merge {index: $index, timestampMs: ($env.NUDOX_GUI_VIRTUAL_NOW_MS | into int)}
         }
@@ -532,7 +576,18 @@ def "main gui capture" [
     let artifactPath = $root | path join $config.artifacts.manifest
     $artifact | to json --indent 2 | save --raw $artifactPath
     if $video and $frames > 1 {
-        process-require "ffmpeg" ["-hide_banner" "-loglevel" "error" "-y" "-framerate" ($actualFps | into string) "-i" ($frameRoot | path join "frame-%06d.png") "-c:v" "libvpx-vp9" "-pix_fmt" "yuv420p" ($root | path join "animation.webm")] | ignore
+        process-require "ffmpeg" [
+            "-hide_banner"
+            "-loglevel" "error"
+            "-y"
+            "-framerate"
+            ($actualFps | into string)
+            "-i"
+            ($frameRoot | path join "frame-%06d.png")
+            "-c:v" "libvpx-vp9"
+            "-pix_fmt" "yuv420p"
+            ($root | path join "animation.webm")
+        ] | ignore
     }
     $artifact | merge {manifest: $artifactPath}
 }
@@ -560,7 +615,15 @@ def "main gui journey" [
         let modes = if ($mode | is-empty) { $journey.modes } else { [$mode] }
         $modes | each {|selectedMode| {id: $journey.id, route: $journey.route, mode: $selectedMode, tags: $journey.tags} }
     } | flatten
-    if $dry_run { return {lane: $lane, shard: $shard_index, shardCount: $shard_count, selected: $selected, driver: $driver} }
+    if $dry_run {
+        return {
+            lane: $lane
+            shard: $shard_index
+            shardCount: $shard_count
+            selected: $selected
+            driver: $driver
+        }
+    }
     let driverPath = gui-driver $driver
     let endpoint = gui-service-endpoint
     gui-service-readiness $endpoint | ignore
@@ -661,13 +724,18 @@ def "main gui acceptance" [
                 }
             }
         }
-        let verifierResult = process-result $verifierPath ["verify" "--protocol" "nudox-gui-driver-v1" "--holdout-manifest" $holdout "--artifacts" $root]
+        let verifierResult = process-result $verifierPath [
+            "verify"
+            "--protocol" "nudox-gui-driver-v1"
+            "--holdout-manifest" $holdout
+            "--artifacts" $root
+        ]
         {outcomes: $outcomes, verifier: $verifierResult}
     }
     let outcomes = $execution.outcomes
     let verifierResult = $execution.verifier
     let allOutcomes = $outcomes | append {
-        loop: "independent-holdout-verifier"
+        loop: "independent-holdout-verifier",
         cases: 1
         status: $verifierResult.status
         stdoutSha256: ($verifierResult.stdout | hash sha256)
@@ -686,17 +754,17 @@ def "main gui acceptance" [
 
 # Lists reclaimable GUI artifacts and performs deletion only after explicit confirmation.
 # @class closure
-def "main gui clean" [
-    --lane: string = ""
-    --older-than-hours: int = 168
-    --apply
-]: nothing -> record {
+def "main gui clean" [--lane: string = "", --older-than-hours: int = 168, --apply]: nothing -> record {
     require-command "gui-clean"
     if $older_than_hours < 1 { tooling-fail "invalid-cleanup-age" "cleanup age must be at least one hour" }
     let root = gui-root
     let lane = if ($lane | is-empty) { "" } else { gui-lane $lane }
-    let target = if ($lane | is-empty) { $root } else { $root | path join $lane }
-    let entries = if ($target | path exists) { ls $target | where type == "dir" } else { [] }
+    let target = if ($lane | is-empty) { $root } else {
+        $root | path join $lane
+    }
+    let entries = if ($target | path exists) {
+        ls $target | where type == "dir"
+    } else { [] }
     let cutoff = (date now) - ($older_than_hours * 1hr)
     let candidates = $entries | where modified < $cutoff | get name
     if $apply {
@@ -706,5 +774,12 @@ def "main gui clean" [
             rm --recursive $resolved
         }
     }
-    {root: $root, lane: $lane, olderThanHours: $older_than_hours, dryRun: (not $apply), candidates: $candidates, removed: (if $apply { $candidates } else { [] })}
+    {
+        root: $root
+        lane: $lane
+        olderThanHours: $older_than_hours
+        dryRun: (not $apply)
+        candidates: $candidates
+        removed: (if $apply { $candidates } else { [] })
+    }
 }
