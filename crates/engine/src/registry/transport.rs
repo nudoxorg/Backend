@@ -7,13 +7,14 @@ use std::{
     io::{Cursor, Read, Seek, SeekFrom, Write},
     net::IpAddr,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
     sync::Arc,
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
 use backend_version::Schema;
-use sha2::{Digest, Sha512};
+use flate2::read::GzDecoder;
+use sha2::{Digest, Sha256, Sha512};
 
 use super::{
     AcquisitionError, AcquisitionLimits, AuthenticationToken, CanonicalFeedV1, ChecksumAlgorithm,
@@ -851,7 +852,10 @@ impl HttpRegistryTransport {
                 return Err(TransportFailure::Protocol);
             }
         };
-        let metadata = adapter.nuget_metadata(&registration, package_base)?;
+        let mut metadata = adapter.nuget_metadata(&registration, package_base)?;
+        if let Some(target) = adapter.target_version() {
+            metadata.retain(|release| release.version == target);
+        }
         let total = metadata.len();
         let (start, prefix) = adapter.page_start(&registration, request, total)?;
         let selected = metadata
@@ -901,7 +905,10 @@ impl HttpRegistryTransport {
         metadata: Vec<u8>,
         request: FeedRequest,
     ) -> Result<FeedPage, TransportFailure> {
-        let versions = adapter.maven_versions(&metadata)?;
+        let mut versions = adapter.maven_versions(&metadata)?;
+        if let Some(target) = adapter.target_version() {
+            versions.retain(|version| version == target);
+        }
         let (start, prefix) = adapter.page_start(&metadata, request, versions.len())?;
         let selected = versions
             .iter()
@@ -910,7 +917,10 @@ impl HttpRegistryTransport {
             .collect::<Vec<_>>();
         let mut releases = Vec::with_capacity(selected.len());
         for version in selected {
-            let archive_url = adapter.maven_archive_url(version);
+            // Maven's primary JAR is bytecode. The source classifier is the
+            // real archive that can pass through the shared source ingester,
+            // semantic pipeline, and desktop code-search journey.
+            let archive_url = adapter.maven_source_archive_url(version);
             let (checksum, body) = self.maven_checksum(&archive_url)?;
             releases.push(adapter.maven_release(version, checksum, &body)?);
         }
@@ -958,7 +968,10 @@ impl HttpRegistryTransport {
         listing: Vec<u8>,
         request: FeedRequest,
     ) -> Result<FeedPage, TransportFailure> {
-        let versions = adapter.go_versions(&listing)?;
+        let mut versions = adapter.go_versions(&listing)?;
+        if let Some(target) = adapter.target_version() {
+            versions.retain(|version| version == target);
+        }
         let (start, prefix) = adapter.page_start(&listing, request, versions.len())?;
         let selected = versions
             .iter()
@@ -997,28 +1010,150 @@ impl HttpRegistryTransport {
         let files = self.required(&adapter.conan_files_url(&revision))?;
         let archive_name = adapter.conan_archive_name(&files)?;
         let archive_url = adapter.conan_archive_url(&revision, &archive_name);
-        let archive = match self.get_archive(&archive_url, self.limits.max_archive_bytes)? {
+        let recipe = match self.get_archive(&archive_url, self.limits.max_archive_bytes)? {
             TransportResult::Available(value) => value,
             TransportResult::Unavailable | TransportResult::RetryAfter(_) => {
                 return Err(TransportFailure::DownloadUnavailable);
             }
             TransportResult::NotModified => return Err(TransportFailure::Protocol),
         };
-        let checksum =
-            RegistryChecksum::sha256_hex(&archive.digest_hex(ChecksumAlgorithm::Sha256)?)?;
-        self.cache_archive(checksum.cache_key(), archive)?;
+        let recipe = recipe.into_bytes(self.limits.max_archive_bytes)?;
+        let (checksum, archive, source_url) = if let Some(source) = Self::conan_source_spec(
+            &recipe,
+            adapter.conan_recipe_version(),
+            self.limits.max_archive_bytes,
+        )? {
+            let mut integrity_failure = false;
+            let mut source_archive = None;
+            for url in source.urls {
+                // Conan's authenticated export is the authority that names
+                // this source mirror. Keep the mirror policy closed: a recipe
+                // cannot turn this package add into arbitrary HTTPS egress.
+                // Admit the host for this one bounded handoff before asking
+                // the shared archive transport to read it; redirects and
+                // credentials remain forbidden.
+                if !conan_source_mirror_allowed(&url) {
+                    return Err(TransportFailure::Configuration);
+                }
+                self.admit_resource_origin(&url)?;
+                let fetched = match self.get_archive(&url, self.limits.max_archive_bytes)? {
+                    TransportResult::Available(value) => value,
+                    TransportResult::Unavailable | TransportResult::RetryAfter(_) => continue,
+                    TransportResult::NotModified => return Err(TransportFailure::Protocol),
+                };
+                let bytes = fetched.into_bytes(self.limits.max_archive_bytes)?;
+                if source.checksum.verifies(&bytes) {
+                    source_archive = Some((url, bytes));
+                    break;
+                }
+                integrity_failure = true;
+            }
+            let Some((source_url, bytes)) = source_archive else {
+                return Err(if integrity_failure {
+                    TransportFailure::Integrity
+                } else {
+                    TransportFailure::DownloadUnavailable
+                });
+            };
+            let checksum = source.checksum;
+            self.cache_archive(checksum.cache_key(), ArchiveArtifact::from_bytes(bytes))?;
+            // The source mirror is the verified content origin, but the
+            // release descriptor must retain Conan as its authoritative
+            // archive authority. `fetch_archive` consumes the staged handoff
+            // keyed by this checksum, so this does not download the recipe
+            // a second time.
+            (checksum, archive_url.clone(), Some(source_url))
+        } else {
+            let checksum =
+                RegistryChecksum::sha256_hex(&hex_digest(Sha256::digest(&recipe).as_slice()))?;
+            self.cache_archive(checksum.cache_key(), ArchiveArtifact::from_bytes(recipe))?;
+            (checksum, archive_url.clone(), None)
+        };
         let mut provenance = Vec::with_capacity(revisions.len() + files.len());
         provenance.extend_from_slice(&revisions);
         provenance.extend_from_slice(&files);
+        provenance.extend_from_slice(archive.as_bytes());
+        if let Some(source_url) = source_url {
+            provenance.extend_from_slice(source_url.as_bytes());
+        }
         let release = adapter.release_from_checksum(
-            adapter.namespace_name().ok_or(TransportFailure::Protocol)?,
-            archive_url,
+            adapter.conan_recipe_version(),
+            archive,
             checksum,
             &provenance,
             ReleaseFacts::default(),
         )?;
         let (start, prefix) = adapter.page_start(&provenance, request, 1)?;
         adapter.admit_window(vec![release], request, start, prefix, 1)
+    }
+
+    fn conan_source_spec(
+        recipe: &[u8],
+        version: &str,
+        maximum: usize,
+    ) -> Result<Option<ConanSourceSpec>, TransportFailure> {
+        let Some(metadata) = conan_export_file(recipe, maximum)? else {
+            return Ok(None);
+        };
+        let text = std::str::from_utf8(&metadata).map_err(|_| TransportFailure::Protocol)?;
+        let mut in_sources = false;
+        let mut sources_indent = 0usize;
+        let mut in_target = false;
+        let mut target_indent = 0usize;
+        let mut in_urls = false;
+        let mut urls = Vec::new();
+        let mut checksum = None;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let indent = line.len() - line.trim_start_matches(' ').len();
+            if !in_sources {
+                if trimmed == "sources:" {
+                    in_sources = true;
+                    sources_indent = indent;
+                }
+                continue;
+            }
+            if !in_target {
+                if indent <= sources_indent {
+                    break;
+                }
+                if trimmed == format!("{version}:") {
+                    in_target = true;
+                    target_indent = indent;
+                }
+                continue;
+            }
+            if indent <= target_indent {
+                break;
+            }
+            if let Some(value) = trimmed.strip_prefix("sha256:") {
+                checksum = Some(RegistryChecksum::sha256_hex(value.trim())?);
+                in_urls = false;
+            } else if trimmed == "url:" {
+                in_urls = true;
+            } else if in_urls && indent > target_indent {
+                if let Some(value) = trimmed.strip_prefix("-") {
+                    let value = value.trim().trim_matches(['\'', '"']);
+                    if !value.is_empty() {
+                        urls.push(value.to_owned());
+                    }
+                } else {
+                    in_urls = false;
+                }
+            } else {
+                in_urls = false;
+            }
+        }
+        let Some(checksum) = checksum else {
+            return Err(TransportFailure::Protocol);
+        };
+        if urls.is_empty() {
+            return Err(TransportFailure::DownloadUnavailable);
+        }
+        Ok(Some(ConanSourceSpec { urls, checksum }))
     }
 
     fn required(&self, url: &str) -> Result<Vec<u8>, TransportFailure> {
@@ -1117,6 +1252,122 @@ impl HttpRegistryTransport {
             .push_back(ArchiveHandoff { key, artifact });
         Ok(())
     }
+}
+
+struct ConanSourceSpec {
+    urls: Vec<String>,
+    checksum: RegistryChecksum,
+}
+
+fn conan_export_file(archive: &[u8], maximum: usize) -> Result<Option<Vec<u8>>, TransportFailure> {
+    if !archive.starts_with(&[0x1f, 0x8b]) {
+        // Deterministic transports may provide a recipe export as an opaque
+        // byte payload. Keep the legacy Conan handoff path available; a real
+        // gzip export is parsed for its source declaration below.
+        return Ok(None);
+    }
+    let mut decoder = GzDecoder::new(Cursor::new(archive));
+    let mut tar = Vec::new();
+    decoder
+        .by_ref()
+        .take(
+            u64::try_from(maximum)
+                .map_err(|_| TransportFailure::Bounds)?
+                .saturating_add(1),
+        )
+        .read_to_end(&mut tar)
+        .map_err(|_| TransportFailure::Protocol)?;
+    if tar.len() > maximum {
+        return Err(TransportFailure::Overrun {
+            measured: u64::try_from(tar.len()).map_err(|_| TransportFailure::Bounds)?,
+            limit: u64::try_from(maximum).map_err(|_| TransportFailure::Bounds)?,
+        });
+    }
+    let mut offset = 0usize;
+    while offset.checked_add(512).is_some_and(|end| end <= tar.len()) {
+        let header = &tar[offset..offset + 512];
+        if header.iter().all(|byte| *byte == 0) {
+            return Ok(None);
+        }
+        validate_tar_checksum(header)?;
+        let size = tar_octal(&header[124..136])?;
+        let data_start = offset.checked_add(512).ok_or(TransportFailure::Bounds)?;
+        let data_end = data_start
+            .checked_add(size)
+            .ok_or(TransportFailure::Bounds)?;
+        if data_end > tar.len() {
+            return Err(TransportFailure::Protocol);
+        }
+        let name = trim_tar_nul(&header[..100])?;
+        if name == "conandata.yml" || name.ends_with("/conandata.yml") {
+            return Ok(Some(tar[data_start..data_end].to_vec()));
+        }
+        let padded = size.checked_add(511).ok_or(TransportFailure::Bounds)? / 512 * 512;
+        offset = data_start
+            .checked_add(padded)
+            .ok_or(TransportFailure::Bounds)?;
+    }
+    Err(TransportFailure::Protocol)
+}
+
+fn conan_source_mirror_allowed(url: &str) -> bool {
+    let Ok(uri) = url.parse::<ureq::http::Uri>() else {
+        return false;
+    };
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    // This is deliberately an exact public mirror allowlist. Conan recipes
+    // are remote input and must not be allowed to expand the local service's
+    // network authority to an arbitrary host or a DNS-rebinding target.
+    matches!(
+        authority.host().to_ascii_lowercase().as_str(),
+        "github.com" | "zlib.net"
+    )
+}
+
+fn validate_tar_checksum(header: &[u8]) -> Result<(), TransportFailure> {
+    let expected = tar_octal(&header[148..156])?;
+    let mut actual = 0_u64;
+    for (index, byte) in header.iter().copied().enumerate() {
+        actual = actual
+            .checked_add(u64::from(if (148..156).contains(&index) {
+                b' '
+            } else {
+                byte
+            }))
+            .ok_or(TransportFailure::Bounds)?;
+    }
+    (actual == u64::try_from(expected).map_err(|_| TransportFailure::Bounds)?)
+        .then_some(())
+        .ok_or(TransportFailure::Protocol)
+}
+
+fn tar_octal(bytes: &[u8]) -> Result<usize, TransportFailure> {
+    let mut value = 0usize;
+    let mut found = false;
+    for byte in bytes.iter().copied() {
+        if byte == 0 || byte == b' ' {
+            continue;
+        }
+        if !(b'0'..=b'7').contains(&byte) {
+            return Err(TransportFailure::Protocol);
+        }
+        found = true;
+        value = value
+            .checked_mul(8)
+            .and_then(|value| value.checked_add(usize::from(byte - b'0')))
+            .ok_or(TransportFailure::Bounds)?;
+    }
+    Ok(if found { value } else { 0 })
+}
+
+fn trim_tar_nul(bytes: &[u8]) -> Result<&str, TransportFailure> {
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    std::str::from_utf8(&bytes[..end]).map_err(|_| TransportFailure::Protocol)
 }
 
 fn nuget_resource<'a>(resources: &'a [serde_json::Value], prefix: &str) -> Option<&'a str> {

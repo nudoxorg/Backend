@@ -69,7 +69,7 @@ tree-sitter = "=0.27.0"
 trustfall = { git = "https://github.com/philocalyst/trustfall", rev = "5a0a8607fc5d972380437289b9a4ad1aa5150b09", features = ["async"] }
 trustfall_core = { git = "https://github.com/philocalyst/trustfall", rev = "5a0a8607fc5d972380437289b9a4ad1aa5150b09", features = ["async"] }
 turso = { version = "=0.8.0-pre.10", default-features = false }
-ureq = { version = "=3.4.0", default-features = false, features = ["gzip", "json"] }
+ureq = { version = "=3.4.0", default-features = false, features = ["gzip", "json", "rustls"] }
 zerocopy = { version = "0.8.56", default-features = false, features = ["derive"] }
 
 [workspace.lints.rust]

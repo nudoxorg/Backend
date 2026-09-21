@@ -2,7 +2,7 @@
 set -euo pipefail
 
 workspace="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
-target="$workspace/.local/target-live"
+target="$workspace/.local/live-target"
 mkdir -p "$target"
 
 # Keep the live lane explicit and reproducible. luna-tools supplies the

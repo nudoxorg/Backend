@@ -19,8 +19,6 @@ use backend_library::{
     SurfaceCommand, SurfaceReply,
 };
 use backend_mcp::{decode_reply, encode_request};
-use flate2::Compression;
-use flate2::write::ZlibEncoder;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::os::unix::fs::FileTypeExt;
@@ -225,6 +223,21 @@ fn run_bounded_with_input(command: &mut ProcessCommand, input: &[u8], label: &st
 }
 
 fn unique_root(case: LiveCase) -> PathBuf {
+    if let Some(base) = std::env::var_os("NUDOX_LIVE_WORKSPACE_ROOT") {
+        let path = PathBuf::from(base).join(case.lane);
+        if path.exists() {
+            if std::env::var_os("NUDOX_LIVE_RESET_WORKSPACE").is_some() {
+                std::fs::remove_dir_all(&path).expect("reset live workspace");
+            } else {
+                panic!(
+                    "live workspace {} already exists; set NUDOX_LIVE_RESET_WORKSPACE=1 to replace it",
+                    path.display()
+                );
+            }
+        }
+        std::fs::create_dir_all(&path).expect("create reusable live journey root");
+        return path;
+    }
     let serial = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
         "nudox-live-{}-{}-{}",
@@ -234,6 +247,10 @@ fn unique_root(case: LiveCase) -> PathBuf {
     ));
     std::fs::create_dir_all(&path).expect("create live journey root");
     path
+}
+
+fn keep_workspace() -> bool {
+    std::env::var_os("NUDOX_LIVE_KEEP_WORKSPACE").is_some()
 }
 
 fn endpoint_for(workspace: &Path) -> PathBuf {
@@ -398,7 +415,7 @@ fn assert_native_protocol_routes() {
     let maven = String::from_utf8(maven).expect("Maven metadata UTF-8");
     assert!(maven.contains("<version>2.16.1</version>"));
     let sha1 = curl_get(
-        "https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.16.1/jackson-annotations-2.16.1.jar.sha1",
+        "https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.16.1/jackson-annotations-2.16.1-sources.jar.sha1",
         "Maven archive sidecar",
     );
     assert_eq!(sha1.len(), 40, "Maven SHA-1 sidecar must be one digest");
@@ -569,7 +586,7 @@ fn assert_mcp_profile(output: &Output, purl: &str) {
     assert!(versions >= 1, "MCP profile omitted recorded versions");
 }
 
-fn assert_registry_facts(endpoint: &Path, coordinate: &str, package_name: &str) {
+fn assert_registry_facts(endpoint: &Path, coordinate: &str, package_name: &str) -> u64 {
     let package = PackageReference::parse(coordinate).expect("registry package reference");
     let mut session = Session::connect(endpoint).expect("registry facts session connect");
     let record = match session
@@ -624,6 +641,7 @@ fn assert_registry_facts(endpoint: &Path, coordinate: &str, package_name: &str) 
         SurfaceReply::Owner(backend_library::RegistryMetadata::Recorded(_))
             | SurfaceReply::Owner(backend_library::RegistryMetadata::NotRecorded(_))
     ));
+    record.bytes
 }
 
 fn assert_desktop_root(endpoint: &Path) -> (backend_library::ViewRoot, String) {
@@ -723,70 +741,15 @@ fn native_metadata_endpoint(case: LiveCase) -> String {
     }
 }
 
-fn png_chunk(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
-    let mut chunk = Vec::with_capacity(12 + payload.len());
-    chunk.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    chunk.extend_from_slice(kind);
-    chunk.extend_from_slice(payload);
-    let mut crc = 0xffff_ffff_u32;
-    for byte in kind.iter().chain(payload) {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 {
-            crc = if crc & 1 == 1 {
-                (crc >> 1) ^ 0xedb8_8320
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    chunk.extend_from_slice(&(crc ^ 0xffff_ffff).to_be_bytes());
-    chunk
-}
-
-/// Writes a deterministic, nonblank capture for the same action tree that
-/// drove the live surface. This is deliberately a tiny dependency-free PNG
-/// encoder: the release lane must retain visual evidence even on machines
-/// without a display server, while the action tree remains the authoritative
-/// replayable record of each GUI/CLI/MCP transition.
-fn write_surface_capture(path: &Path, seed: &str) {
-    const WIDTH: usize = 384;
-    const HEIGHT: usize = 128;
-    let mut scanlines = Vec::with_capacity((WIDTH + 1) * HEIGHT);
-    let mut state = blake3::hash(seed.as_bytes()).as_bytes()[0];
-    for y in 0..HEIGHT {
-        scanlines.push(0);
-        for x in 0..WIDTH {
-            state = state
-                .wrapping_mul(29)
-                .wrapping_add((x as u8).wrapping_add((y as u8).wrapping_mul(7)));
-            let grid = (x / 24 + y / 16) % 2 == 0;
-            let accent = (x + y * 3) % 47 == usize::from(state % 47);
-            scanlines.push(if accent {
-                230
-            } else if grid {
-                34
-            } else {
-                17
-            });
-        }
-    }
-    let mut compressed = ZlibEncoder::new(Vec::new(), Compression::fast());
-    compressed
-        .write_all(&scanlines)
-        .expect("encode deterministic live PNG");
-    let compressed = compressed.finish().expect("finish deterministic live PNG");
-    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
-    let mut header = Vec::with_capacity(13);
-    header.extend_from_slice(&(WIDTH as u32).to_be_bytes());
-    header.extend_from_slice(&(HEIGHT as u32).to_be_bytes());
-    header.extend_from_slice(&[8, 0, 0, 0, 0]);
-    png.extend_from_slice(&png_chunk(b"IHDR", &header));
-    png.extend_from_slice(&png_chunk(b"IDAT", &compressed));
-    png.extend_from_slice(&png_chunk(b"IEND", &[]));
-    std::fs::write(path, png).expect("write live surface capture");
-}
-
-fn write_live_artifacts(case: LiveCase, coordinate: &str, endpoint: &Path, action_names: &[&str]) {
+fn write_live_artifacts(
+    case: LiveCase,
+    coordinate: &str,
+    endpoint: &Path,
+    workspace: &Path,
+    action_names: &[&str],
+    archive_bytes: u64,
+    elapsed: Duration,
+) {
     let directory = live_artifact_root().join(case.lane);
     std::fs::create_dir_all(&directory).expect("create live artifact directory");
     let action_tree = serde_json::json!({
@@ -809,11 +772,20 @@ fn write_live_artifacts(case: LiveCase, coordinate: &str, endpoint: &Path, actio
         "schema": "nudox.live.registry-receipt.v1",
         "lane": case.lane,
         "coordinate": coordinate,
+        "workspace": workspace.display().to_string(),
         "metadata_endpoint": native_metadata_endpoint(case),
         "local_endpoint": endpoint.display().to_string(),
         "archive_authority": case.endpoint,
         "protocol": "native-release -> verified-archive -> confined-extraction -> durable-index",
+        "outcome": "passed",
+        "integrity": "verified",
+        "staging": "confined",
+        "index": "durable",
+        "archive_bytes": archive_bytes,
+        "elapsed_ms": elapsed.as_millis(),
         "surfaces": ["cli", "mcp", "desktop-model"],
+        "gui_prepopulate": true,
+        "gui_capture": "handoff-to-real-gpui-harness",
         "restart": true,
         "warm_offline_read": true,
         "actions": action_names,
@@ -823,9 +795,23 @@ fn write_live_artifacts(case: LiveCase, coordinate: &str, endpoint: &Path, actio
         serde_json::to_vec_pretty(&receipt).expect("encode live receipt"),
     )
     .expect("write live receipt");
-    write_surface_capture(&directory.join("surface.png"), coordinate);
+    let handoff = serde_json::json!({
+        "schema": "nudox.gui.live-handoff.v1",
+        "lane": case.lane,
+        "coordinate": coordinate,
+        "workspace": workspace.display().to_string(),
+        "scene": "package",
+        "requires_real_gpui": true,
+        "capture_command": "main gui journey --mode warm",
+        "note": "The registry journey records model/CLI/MCP evidence only; the GPUI harness owns rendered PNG capture."
+    });
+    std::fs::write(
+        directory.join("gui-handoff.json"),
+        serde_json::to_vec_pretty(&handoff).expect("encode GUI handoff"),
+    )
+    .expect("write GUI handoff");
     let mut checksums = serde_json::Map::new();
-    for artifact in ["receipt.json", "action-tree.json", "surface.png"] {
+    for artifact in ["receipt.json", "action-tree.json", "gui-handoff.json"] {
         let bytes = std::fs::read(directory.join(artifact)).expect("read live artifact");
         assert!(!bytes.is_empty(), "live artifact {artifact} is blank");
         checksums.insert(
@@ -905,7 +891,9 @@ fn unconfigured_registry_is_an_explicit_typed_empty_state() {
     );
     assert_eq!(versions, 0);
     owner.crash();
-    std::fs::remove_dir_all(root).expect("remove unconfigured journey root");
+    if !keep_workspace() {
+        std::fs::remove_dir_all(root).expect("remove unconfigured journey root");
+    }
 }
 
 #[test]
@@ -921,6 +909,7 @@ fn pinned_native_registries_ingest_through_cli_mcp_and_desktop() {
         let authority = authority_secret(&root);
         let purl = purl_with_version(case);
         let coordinate = purl.clone();
+        let started = Instant::now();
 
         let mut owner =
             ChildGuard::spawn(&locald_args(&endpoint, &workspace, &authority, case, false));
@@ -936,7 +925,7 @@ fn pinned_native_registries_ingest_through_cli_mcp_and_desktop() {
         } else {
             case.package_name
         };
-        assert_registry_facts(&endpoint, &coordinate, recorded_name);
+        let archive_bytes = assert_registry_facts(&endpoint, &coordinate, recorded_name);
         let profile = cli_surface(
             &endpoint,
             SurfaceCommand::PackageProfile {
@@ -1041,6 +1030,7 @@ fn pinned_native_registries_ingest_through_cli_mcp_and_desktop() {
             case,
             &coordinate,
             &endpoint,
+            &workspace,
             &[
                 "native-metadata",
                 "verified-archive",
@@ -1058,8 +1048,12 @@ fn pinned_native_registries_ingest_through_cli_mcp_and_desktop() {
                 "restart",
                 "warm-offline-read",
             ],
+            archive_bytes,
+            started.elapsed(),
         );
         drop(offline_owner);
-        std::fs::remove_dir_all(root).expect("remove live journey root");
+        if !keep_workspace() {
+            std::fs::remove_dir_all(root).expect("remove live journey root");
+        }
     }
 }

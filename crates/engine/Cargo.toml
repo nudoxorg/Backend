@@ -16,6 +16,7 @@ backend-version = { path = "../version" }
 base64.workspace = true
 blake3.workspace = true
 backend-compile = { path = "../compile" }
+flate2.workspace = true
 backend-library = { path = "../library" }
 backend-frontend-clang = { path = "../../frontends/clang" }
 backend-frontend-csharp = { path = "../../frontends/csharp" }

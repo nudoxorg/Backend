@@ -854,6 +854,56 @@ fn all_native_ecosystem_grammars_normalize_and_verify_archives() {
 }
 
 #[test]
+fn pypi_simple_api_accepts_current_minor_version() {
+    let archive = b"pypi simple api archive";
+    let sha256 = digest_hex(Sha256::digest(archive).as_slice());
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Pypi, "https://pypi.org").expect("pypi endpoint");
+    let adapter = EcosystemAdapter::new(endpoint, PackageName::new("demo").expect("package"), None)
+        .expect("adapter");
+    let metadata = format!(
+        "{{\"meta\":{{\"api-version\":\"1.4\"}},\"files\":[{{\"filename\":\"demo-1.2.3.tar.gz\",\"url\":\"https://files.pythonhosted.org/demo-1.2.3.tar.gz\",\"hashes\":{{\"sha256\":\"{sha256}\"}},\"yanked\":false}}]}}"
+    );
+    let releases = adapter
+        .decode(metadata.as_bytes())
+        .expect("decode current api");
+    assert_eq!(releases.len(), 1);
+    assert!(releases[0].checksum.verifies(archive));
+}
+
+#[test]
+fn version_pinned_native_adapter_admits_one_release_and_names_its_snapshot() {
+    let archive = b"npm target archive";
+    let integrity = STANDARD.encode(Sha512::digest(archive));
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Npm, "https://registry.npmjs.org")
+        .expect("npm endpoint");
+    let target = EcosystemAdapter::new_with_version(
+        endpoint.clone(),
+        PackageName::new("parser").expect("package"),
+        Some(PackageName::new("@babel").expect("namespace")),
+        PackageVersion::new("7.26.8").expect("version"),
+    )
+    .expect("target adapter");
+    let metadata = format!(
+        r#"{{"name":"@babel/parser","versions":{{"7.26.7":{{"dist":{{"integrity":"sha512-{integrity}","tarball":"https://registry.npmjs.org/parser-7.26.7.tgz"}}}},"7.26.8":{{"dist":{{"integrity":"sha512-{integrity}","tarball":"https://registry.npmjs.org/parser-7.26.8.tgz"}}}}}}}}"#
+    );
+    let releases = target.decode(metadata.as_bytes()).expect("target decode");
+    assert_eq!(releases.len(), 1);
+    assert_eq!(releases[0].coordinate.version(), "7.26.8");
+
+    let broad = EcosystemAdapter::new(
+        endpoint,
+        PackageName::new("parser").expect("package"),
+        Some(PackageName::new("@babel").expect("namespace")),
+    )
+    .expect("broad adapter");
+    assert_ne!(
+        target.page_identity(metadata.as_bytes()),
+        broad.page_identity(metadata.as_bytes())
+    );
+}
+
+#[test]
 fn protocol_phase_adapters_keep_maven_go_and_conan_typed() {
     let maven = EcosystemAdapter::new(
         RegistryEndpoint::new(RegistryEcosystem::Maven, "https://repo1.maven.org")

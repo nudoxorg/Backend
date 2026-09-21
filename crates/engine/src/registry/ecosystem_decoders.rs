@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use super::super::transport::ArchiveIntegrity;
-use super::{component, EcosystemAdapter, RegistryChecksum, TransportFailure};
+use super::{EcosystemAdapter, RegistryChecksum, TransportFailure, component};
 use crate::registry::{
     DownloadCount, DownloadCountGap, ReleaseFacts, ReleaseStanding, SecurityStanding,
 };
@@ -112,7 +112,14 @@ impl EcosystemAdapter {
             .and_then(|meta| meta.get("api-version"))
             .and_then(Value::as_str)
             .ok_or(TransportFailure::Protocol)?;
-        if api_version != "1.0" {
+        // The Simple API increments its minor version as fields are added
+        // (PyPI currently advertises 1.4). This decoder only consumes the
+        // stable file/name/hash subset, so admit every well-formed 1.x
+        // document while continuing to reject a future incompatible major.
+        let Some((major, minor)) = api_version.split_once('.') else {
+            return Err(TransportFailure::Protocol);
+        };
+        if major != "1" || minor.is_empty() || minor.parse::<u16>().is_err() {
             return Err(TransportFailure::Protocol);
         }
         let files = root
@@ -203,22 +210,9 @@ impl EcosystemAdapter {
         checksum: RegistryChecksum,
         checksum_body: &[u8],
     ) -> Result<super::NativeRelease, TransportFailure> {
-        let namespace = self
-            .namespace_name()
-            .ok_or(TransportFailure::Protocol)?
-            .replace('.', "/");
-        let base = format!(
-            "{}/{}/{}/{}/{}-{}.jar",
-            self.endpoint_url(),
-            namespace,
-            component(self.package_name()),
-            component(version),
-            component(self.package_name()),
-            component(version)
-        );
         self.release_from_checksum(
             version,
-            base,
+            self.maven_source_archive_url(version),
             checksum,
             checksum_body,
             facts(
@@ -229,29 +223,34 @@ impl EcosystemAdapter {
     }
 
     pub(crate) fn maven_archive_url(&self, version: &str) -> String {
+        self.maven_archive_url_with_classifier(version, "")
+    }
+
+    pub(crate) fn maven_source_archive_url(&self, version: &str) -> String {
+        self.maven_archive_url_with_classifier(version, "-sources")
+    }
+
+    fn maven_archive_url_with_classifier(&self, version: &str, classifier: &str) -> String {
         let namespace = self
             .namespace_name()
             .map(|value| value.replace('.', "/"))
             .unwrap_or_default();
         format!(
-            "{}/{}/{}/{}/{}-{}.jar",
+            "{}/{}/{}/{}/{}-{}{}.jar",
             self.endpoint_url(),
             namespace,
             component(self.package_name()),
             component(version),
             component(self.package_name()),
-            component(version)
+            component(version),
+            classifier
         )
     }
 
     pub(crate) fn conan_revision(&self, bytes: &[u8]) -> Result<String, TransportFailure> {
         let root: Value = serde_json::from_slice(bytes).map_err(|_| TransportFailure::Protocol)?;
         let reference = field(&root, "reference")?;
-        let expected_prefix = format!(
-            "{}/{}@",
-            self.package_name(),
-            self.namespace_name().ok_or(TransportFailure::Protocol)?
-        );
+        let expected_prefix = format!("{}/{}@", self.package_name(), self.conan_recipe_version());
         if !reference.starts_with(&expected_prefix) {
             return Err(TransportFailure::Protocol);
         }
@@ -270,7 +269,7 @@ impl EcosystemAdapter {
             "{}/v2/conans/{}/{}/_/_/revisions/{revision}/files",
             self.endpoint_url(),
             component(self.package_name()),
-            component(self.namespace_name().unwrap_or_default())
+            component(self.conan_recipe_version())
         )
     }
 
@@ -279,7 +278,7 @@ impl EcosystemAdapter {
             "{}/v2/conans/{}/{}/_/_/revisions/{revision}/files/{file}",
             self.endpoint_url(),
             component(self.package_name()),
-            component(self.namespace_name().unwrap_or_default())
+            component(self.conan_recipe_version())
         )
     }
 
@@ -418,7 +417,7 @@ impl EcosystemAdapter {
         request: super::FeedRequest,
         total: usize,
     ) -> Result<(usize, [u8; 24]), TransportFailure> {
-        let snapshot = blake3::hash(source);
+        let snapshot = self.page_identity(source);
         let mut prefix = [0_u8; 24];
         prefix.copy_from_slice(&snapshot.as_bytes()[..24]);
         let token = request.cursor.token();
@@ -460,6 +459,13 @@ impl EcosystemAdapter {
                 archive_url: std::sync::Arc::from(release.archive_url.as_str()),
             })
             .collect();
+        if releases.is_empty() && self.target_version().is_some() {
+            return Ok(super::FeedPage {
+                base: request.cursor,
+                next_token: request.cursor.token(),
+                packages,
+            });
+        }
         let mut next_token = [0_u8; 32];
         next_token[..24].copy_from_slice(&prefix);
         next_token[24..].copy_from_slice(

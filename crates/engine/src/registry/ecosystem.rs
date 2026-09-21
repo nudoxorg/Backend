@@ -4,7 +4,7 @@
 //! They normalize seven source grammars into one release descriptor consumed
 //! by the shared acquisition owner.
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::BTreeMap;
@@ -131,7 +131,7 @@ impl RegistryChecksum {
 /// Builds the Go module zip hash used by the public checksum database.
 ///
 /// Go does not publish a raw archive digest. `h1:` is the SHA-256 of sorted
-/// `sha256(file) filename\n` records, including the module-version directory
+/// `sha256(file)  filename\n` records, including the module-version directory
 /// prefix present in proxy zips. The `zip` crate handles central directories,
 /// data descriptors, ZIP64, CRC validation, and deflate decoding. We still
 /// apply an explicit size/path budget here because registry archives are
@@ -193,13 +193,17 @@ fn go_module_zip_hash_reader<R: Read + Seek>(reader: &mut R) -> Option<[u8; 32]>
     }
     let mut records = Vec::new();
     for (name, digest) in files {
-        let record_size = 65_usize.checked_add(name.len())?;
+        // Go's dirhash.Hash1 uses the `sha256sum` text format: two spaces
+        // separate the digest from the path. The second space is part of the
+        // signed summary and omitting it makes every proxy archive fail the
+        // public h1 checksum even though the individual file digests match.
+        let record_size = 66_usize.checked_add(name.len())?;
         let next = records.len().checked_add(record_size)?;
         if u64::try_from(next).ok()? > MAX_TOTAL_UNCOMPRESSED {
             return None;
         }
         records.extend(hex_bytes(&digest));
-        records.push(b' ');
+        records.extend_from_slice(b"  ");
         records.extend_from_slice(name.as_bytes());
         records.push(b'\n');
     }
@@ -247,6 +251,7 @@ pub struct EcosystemAdapter {
     endpoint: RegistryEndpoint,
     package: PackageName,
     namespace: Option<PackageName>,
+    target_version: Option<PackageVersion>,
 }
 
 impl EcosystemAdapter {
@@ -279,7 +284,27 @@ impl EcosystemAdapter {
             endpoint,
             package,
             namespace,
+            target_version: None,
         })
+    }
+
+    /// Admits one exact release from a native package feed.
+    ///
+    /// Native package documents commonly contain hundreds or thousands of
+    /// historical versions. A version-pinned product request must retain the
+    /// source document as its provenance while admitting only the requested
+    /// release, otherwise one `add` turns into an accidental full-registry
+    /// ingest. The target is part of the feed snapshot identity, so a cursor
+    /// for one release can never suppress a later release request.
+    pub fn new_with_version(
+        endpoint: RegistryEndpoint,
+        package: PackageName,
+        namespace: Option<PackageName>,
+        target_version: PackageVersion,
+    ) -> Result<Self, AcquisitionError> {
+        let mut adapter = Self::new(endpoint, package, namespace)?;
+        adapter.target_version = Some(target_version);
+        Ok(adapter)
     }
 
     /// Builds the fixed metadata URL for this ecosystem and package.
@@ -332,9 +357,7 @@ impl EcosystemAdapter {
                 },
             ),
             RegistryEcosystem::Cpp => {
-                let version = self
-                    .namespace_name()
-                    .expect("validated Conan version namespace");
+                let version = self.conan_recipe_version();
                 format!(
                     "{}/v2/conans/{}/{}/_/_/revisions",
                     self.endpoint.url(),
@@ -360,6 +383,9 @@ impl EcosystemAdapter {
             RegistryEcosystem::Golang => return Err(TransportFailure::DownloadUnavailable),
             RegistryEcosystem::Cpp => return Err(TransportFailure::Protocol),
         };
+        if let Some(target) = &self.target_version {
+            releases.retain(|release| release.coordinate.version() == target.as_str());
+        }
         releases.sort_by(|left, right| left.coordinate.cmp(&right.coordinate));
         if releases
             .windows(2)
@@ -376,7 +402,7 @@ impl EcosystemAdapter {
         request: FeedRequest,
     ) -> Result<FeedPage, TransportFailure> {
         let releases = self.decode(bytes)?;
-        let snapshot = blake3::hash(bytes);
+        let snapshot = self.page_identity(bytes);
         let mut prefix = [0_u8; 24];
         prefix.copy_from_slice(&snapshot.as_bytes()[..24]);
         let current = request.cursor.token();
@@ -404,6 +430,13 @@ impl EcosystemAdapter {
                 archive_url: Arc::from(release.archive_url.as_str()),
             })
             .collect();
+        if releases.is_empty() && self.target_version.is_some() {
+            return Ok(FeedPage {
+                base: request.cursor,
+                next_token: request.cursor.token(),
+                packages,
+            });
+        }
         let mut next_token = [0_u8; 32];
         next_token[..24].copy_from_slice(&prefix);
         next_token[24..].copy_from_slice(
@@ -520,6 +553,12 @@ impl EcosystemAdapter {
         self.namespace.as_ref().map(PackageName::as_str)
     }
 
+    pub(crate) fn conan_recipe_version(&self) -> &str {
+        self.target_version()
+            .or_else(|| self.namespace_name())
+            .expect("validated Conan recipe version")
+    }
+
     pub(crate) fn release_from_checksum(
         &self,
         version: &str,
@@ -537,7 +576,7 @@ impl EcosystemAdapter {
         source: &[u8],
         request: FeedRequest,
     ) -> Result<FeedPage, TransportFailure> {
-        let snapshot = blake3::hash(source);
+        let snapshot = self.page_identity(source);
         let mut prefix = [0_u8; 24];
         prefix.copy_from_slice(&snapshot.as_bytes()[..24]);
         let current = request.cursor.token();
@@ -565,6 +604,13 @@ impl EcosystemAdapter {
                 archive_url: Arc::from(release.archive_url.as_str()),
             })
             .collect();
+        if releases.is_empty() && self.target_version.is_some() {
+            return Ok(FeedPage {
+                base: request.cursor,
+                next_token: request.cursor.token(),
+                packages,
+            });
+        }
         let mut next_token = [0_u8; 32];
         next_token[..24].copy_from_slice(&prefix);
         next_token[24..].copy_from_slice(
@@ -577,6 +623,21 @@ impl EcosystemAdapter {
             next_token,
             packages,
         })
+    }
+
+    pub(crate) fn target_version(&self) -> Option<&str> {
+        self.target_version.as_ref().map(PackageVersion::as_str)
+    }
+
+    pub(crate) fn page_identity(&self, source: &[u8]) -> blake3::Hash {
+        let Some(target) = &self.target_version else {
+            return blake3::hash(source);
+        };
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(source);
+        hasher.update(b"\0nudox-target-release\0");
+        hasher.update(target.as_str().as_bytes());
+        hasher.finalize()
     }
 }
 
@@ -705,6 +766,12 @@ fn allowed_archive_authority(ecosystem: RegistryEcosystem, base: &str, archive: 
         && archive_authority
             .host()
             .eq_ignore_ascii_case("files.pythonhosted.org");
+    let official_conan_split = ecosystem == RegistryEcosystem::Cpp
+        && base
+            .authority()
+            .is_some_and(|authority| authority.host().eq_ignore_ascii_case("center2.conan.io"))
+        && (archive_authority.host().eq_ignore_ascii_case("zlib.net")
+            || archive_authority.host().eq_ignore_ascii_case("github.com"));
     // NuGet advertises its registration and flat-container authorities in the
     // service index. The transport admits those authorities from that signed
     // configuration before downloading the archive; the adapter only checks
@@ -720,5 +787,9 @@ fn allowed_archive_authority(ecosystem: RegistryEcosystem, base: &str, archive: 
                     .host()
                     .parse::<std::net::IpAddr>()
                     .is_ok_and(|address| address.is_loopback())))
-        && (same_authority || official_cargo_split || official_pypi_split || nuget_resource)
+        && (same_authority
+            || official_cargo_split
+            || official_pypi_split
+            || official_conan_split
+            || nuget_resource)
 }

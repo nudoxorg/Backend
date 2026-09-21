@@ -15,7 +15,7 @@ use backend_engine::registry::{
     admit_registry_coordinate,
 };
 use flate2::read::{DeflateDecoder, GzDecoder};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
@@ -393,10 +393,11 @@ fn native_adapter(
     coordinate: &PackageCoordinate,
 ) -> Result<EcosystemAdapter, RegistryAddError> {
     let admitted = admit_registry_coordinate(coordinate).map_err(RegistryAddError::Acquisition)?;
-    EcosystemAdapter::new(
+    EcosystemAdapter::new_with_version(
         endpoint,
         admitted.name().clone(),
         admitted.namespace().cloned(),
+        admitted.version().clone(),
     )
     .map_err(RegistryAddError::Acquisition)
 }
@@ -413,7 +414,9 @@ impl StagedProject {
 }
 
 const MAX_EXTRACTED_FILES: usize = 100_000;
-const MAX_EXTRACTED_FILE_BYTES: usize = 512 * 1024;
+// Preserve real declaration maps and generated sources during staging; the
+// compiler applies its own per-source limits after the archive is confined.
+const MAX_EXTRACTED_FILE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_EXTRACTED_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_EXPANSION_RATIO: usize = 200;
 const EXPANSION_SLACK_BYTES: usize = 1024 * 1024;
@@ -559,6 +562,8 @@ fn extract_archive(archive: &[u8], writer: &mut StageWriter) -> Result<(), Regis
 fn extract_tar(bytes: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAddError> {
     let mut offset = 0usize;
     let mut terminated = false;
+    let mut pending_path = None;
+    let mut global_path = None;
     while offset
         .checked_add(TAR_BLOCK_BYTES)
         .is_some_and(|end| end <= bytes.len())
@@ -580,9 +585,25 @@ fn extract_tar(bytes: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAdd
         if data_end > bytes.len() {
             return Err(RegistryAddError::UnsupportedArchive);
         }
+        let mut path = global_path
+            .clone()
+            .or(pending_path.take())
+            .unwrap_or_else(|| name.clone());
         match header[156] {
-            0 | b'0' => writer.file(&name, &bytes[data_start..data_end])?,
-            b'5' => StageWriter::directory(&name)?,
+            0 | b'0' => writer.file(&path, &bytes[data_start..data_end])?,
+            b'5' => StageWriter::directory(&path)?,
+            b'x' => pending_path = pax_path(&bytes[data_start..data_end])?,
+            b'g' => global_path = pax_path(&bytes[data_start..data_end])?,
+            b'L' => {
+                let end = bytes[data_start..data_end]
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .unwrap_or(data_end - data_start);
+                path = std::str::from_utf8(&bytes[data_start..data_start + end])
+                    .map_err(|_| RegistryAddError::UnsupportedArchive)?
+                    .to_owned();
+                pending_path = Some(path);
+            }
             // Links and special nodes are never materialized.
             _ => return Err(RegistryAddError::UnsupportedArchive),
         }
@@ -599,6 +620,36 @@ fn extract_tar(bytes: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAdd
         return Err(RegistryAddError::UnsupportedArchive);
     }
     Ok(())
+}
+
+fn pax_path(bytes: &[u8]) -> Result<Option<String>, RegistryAddError> {
+    let mut offset = 0usize;
+    let mut path = None;
+    while offset < bytes.len() {
+        let Some(space) = bytes[offset..].iter().position(|byte| *byte == b' ') else {
+            return Err(RegistryAddError::UnsupportedArchive);
+        };
+        let length = std::str::from_utf8(&bytes[offset..offset + space])
+            .map_err(|_| RegistryAddError::UnsupportedArchive)?
+            .parse::<usize>()
+            .map_err(|_| RegistryAddError::UnsupportedArchive)?;
+        let end = offset
+            .checked_add(length)
+            .ok_or(RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+        if length == 0 || end > bytes.len() || bytes[end - 1] != b'\n' {
+            return Err(RegistryAddError::UnsupportedArchive);
+        }
+        let record = &bytes[offset + space + 1..end - 1];
+        if let Some(value) = record.strip_prefix(b"path=") {
+            path = Some(
+                std::str::from_utf8(value)
+                    .map_err(|_| RegistryAddError::UnsupportedArchive)?
+                    .to_owned(),
+            );
+        }
+        offset = end;
+    }
+    Ok(path)
 }
 
 fn tar_name(header: &[u8]) -> Result<String, RegistryAddError> {
@@ -663,6 +714,14 @@ fn trim_nul(bytes: &[u8]) -> &str {
 }
 
 fn extract_zip(bytes: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAddError> {
+    // Go module proxies emit ZIP local headers with a data descriptor. Read
+    // the authenticated central directory first so those entries retain
+    // bounded sizes and checksums without trusting the local zero fields.
+    let central = match zip_central_entries(bytes) {
+        Ok(entries) => entries,
+        Err(RegistryAddError::UnsupportedArchive) => BTreeMap::new(),
+        Err(error) => return Err(error),
+    };
     let mut offset = 0usize;
     let mut entries = 0usize;
     while offset.checked_add(4).is_some_and(|end| end <= bytes.len()) {
@@ -678,11 +737,19 @@ fn extract_zip(bytes: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAdd
         }
         let flags = le_u16(bytes, offset + 6)?;
         let method = le_u16(bytes, offset + 8)?;
-        let expected_crc = le_u32(bytes, offset + 14)?;
-        let compressed = usize::try_from(le_u32(bytes, offset + 18)?)
+        let local_crc = le_u32(bytes, offset + 14)?;
+        let local_compressed = usize::try_from(le_u32(bytes, offset + 18)?)
             .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
-        let declared = usize::try_from(le_u32(bytes, offset + 22)?)
+        let local_declared = usize::try_from(le_u32(bytes, offset + 22)?)
             .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+        let (expected_crc, compressed, declared) = if flags & 0x0008 != 0 {
+            let entry = central
+                .get(&offset)
+                .ok_or(RegistryAddError::UnsupportedArchive)?;
+            (entry.crc, entry.compressed, entry.declared)
+        } else {
+            (local_crc, local_compressed, local_declared)
+        };
         admit_expansion(compressed, declared)?;
         let name_len = usize::from(le_u16(bytes, offset + 26)?);
         let extra_len = usize::from(le_u16(bytes, offset + 28)?);
@@ -694,7 +761,7 @@ fn extract_zip(bytes: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAdd
         let data_end = data_start
             .checked_add(compressed)
             .ok_or(RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
-        if data_end > bytes.len() || flags & 0x0001 != 0 || flags & 0x0008 != 0 {
+        if data_end > bytes.len() || flags & 0x0001 != 0 {
             return Err(RegistryAddError::UnsupportedArchive);
         }
         let name = std::str::from_utf8(
@@ -728,9 +795,88 @@ fn extract_zip(bytes: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAdd
             entries = entries.saturating_add(1);
         }
         offset = data_end;
+        if flags & 0x0008 != 0 {
+            let has_signature = le_u32(bytes, offset)? == 0x0807_4b50;
+            let descriptor = offset
+                .checked_add(if has_signature { 16 } else { 12 })
+                .ok_or(RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+            if descriptor > bytes.len() {
+                return Err(RegistryAddError::UnsupportedArchive);
+            }
+            let start = offset + usize::from(has_signature) * 4;
+            let tuple = (
+                le_u32(bytes, start)?,
+                usize::try_from(le_u32(bytes, start + 4)?)
+                    .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::Bounds))?,
+                usize::try_from(le_u32(bytes, start + 8)?)
+                    .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::Bounds))?,
+            );
+            if tuple != (expected_crc, compressed, declared) {
+                return Err(RegistryAddError::UnsupportedArchive);
+            }
+            offset = descriptor;
+        }
     }
     (entries > 0)
         .then_some(())
+        .ok_or(RegistryAddError::UnsupportedArchive)
+}
+
+struct ZipCentralEntry {
+    crc: u32,
+    compressed: usize,
+    declared: usize,
+}
+
+fn zip_central_entries(bytes: &[u8]) -> Result<BTreeMap<usize, ZipCentralEntry>, RegistryAddError> {
+    let eocd = bytes
+        .windows(4)
+        .rposition(|window| window == b"PK\x05\x06")
+        .ok_or(RegistryAddError::UnsupportedArchive)?;
+    let size = usize::try_from(le_u32(bytes, eocd + 12)?)
+        .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+    let start = usize::try_from(le_u32(bytes, eocd + 16)?)
+        .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+    let end = start
+        .checked_add(size)
+        .ok_or(RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+    if end > bytes.len() {
+        return Err(RegistryAddError::UnsupportedArchive);
+    }
+    let mut entries = BTreeMap::new();
+    let mut offset = start;
+    while offset < end {
+        if le_u32(bytes, offset)? != 0x0201_4b50 || offset + 46 > end {
+            return Err(RegistryAddError::UnsupportedArchive);
+        }
+        let name_len = usize::from(le_u16(bytes, offset + 28)?);
+        let extra_len = usize::from(le_u16(bytes, offset + 30)?);
+        let comment_len = usize::from(le_u16(bytes, offset + 32)?);
+        let next = offset
+            .checked_add(46)
+            .and_then(|value| value.checked_add(name_len))
+            .and_then(|value| value.checked_add(extra_len))
+            .and_then(|value| value.checked_add(comment_len))
+            .ok_or(RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+        if next > end || le_u16(bytes, offset + 8)? & 0x0001 != 0 {
+            return Err(RegistryAddError::UnsupportedArchive);
+        }
+        let local = usize::try_from(le_u32(bytes, offset + 42)?)
+            .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+        entries.insert(
+            local,
+            ZipCentralEntry {
+                crc: le_u32(bytes, offset + 16)?,
+                compressed: usize::try_from(le_u32(bytes, offset + 20)?)
+                    .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::Bounds))?,
+                declared: usize::try_from(le_u32(bytes, offset + 24)?)
+                    .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::Bounds))?,
+            },
+        );
+        offset = next;
+    }
+    (offset == end)
+        .then_some(entries)
         .ok_or(RegistryAddError::UnsupportedArchive)
 }
 
