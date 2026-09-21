@@ -197,7 +197,7 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                     &[],
                     &frames,
                 ) {
-                    Ok(live) => match write_capture(&session, live, &mut report, None) {
+                    Ok(live) => match write_capture(&mut session, live, &mut report, None) {
                         Ok(()) => {
                             report.captured_captures += 1;
                         }
@@ -221,8 +221,9 @@ fn capture_command(args: &[String]) -> Result<(), String> {
             }) {
                 report.attempted_captures += 1;
                 let journey_config = config_for_journey(&config, journey.id);
-                let journey_session = CaptureSession::new(journey_config.clone(), &viewport_root)
-                    .map_err(|error| error.to_string())?;
+                let mut journey_session =
+                    CaptureSession::new(journey_config.clone(), &viewport_root)
+                        .map_err(|error| error.to_string())?;
                 let mut live = match capture_live_workspace_journey(
                     journey_config.clone(),
                     journey.from.clone(),
@@ -288,7 +289,7 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                         error: "journey produced identical animation frames".to_owned(),
                     });
                 }
-                match write_capture(&journey_session, live, &mut report, Some(journey.id)) {
+                match write_capture(&mut journey_session, live, &mut report, Some(journey.id)) {
                     Ok(()) => report.captured_captures += 1,
                     Err(write_error) => report.failures.push(Failure {
                         state: format!("journey--{}", journey.id),
@@ -379,7 +380,7 @@ fn capture_command(args: &[String]) -> Result<(), String> {
 }
 
 fn write_capture(
-    session: &CaptureSession,
+    session: &mut CaptureSession,
     mut live: LiveCapture,
     report: &mut RunReport,
     script_id: Option<&str>,
@@ -392,6 +393,24 @@ fn write_capture(
     }) {
         return Err("capture contains a uniform/blank frame".to_owned());
     }
+    let revisions = live
+        .semantics
+        .iter()
+        .map(|probe| probe.data_revision.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if revisions.len() != 1 {
+        return Err(format!(
+            "admitted data revision changed during capture: {} revisions",
+            revisions.len()
+        ));
+    }
+    let revision = revisions
+        .into_iter()
+        .next()
+        .filter(|revision| !revision.trim().is_empty() && *revision != "undetermined")
+        .ok_or_else(|| "semantic probe did not expose an admitted data revision".to_owned())?;
+    session.config.data_revision = revision.to_owned();
+    session.config.theme = live.capture.state.theme;
     let state_id = live.capture.state.id.clone();
     let manifest = session
         .write_set(&mut live.capture, script_id)
@@ -582,9 +601,11 @@ fn journey_catalog() -> Vec<JourneySpec> {
 
 fn config_for_journey(base: &CaptureConfig, id: &str) -> CaptureConfig {
     let mut config = base.clone();
+    if matches!(id, "omnibar-ime-composition" | "rtl-reduced-motion") {
+        config.ime_mode = "marked-text".to_owned();
+    }
     if id == "rtl-reduced-motion" {
         config.text_direction = "rtl".to_owned();
-        config.ime_mode = "marked-text".to_owned();
     }
     config
 }
