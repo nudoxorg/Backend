@@ -72,6 +72,7 @@ fn snapshot(rows: Vec<Row>) -> ViewSnapshot {
         freshness: Freshness::Current,
         next: None,
         graph_relations: None,
+        rich_graph: None,
     }
 }
 

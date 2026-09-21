@@ -137,6 +137,7 @@ fn execute_semantic_graph(
                 continue;
             }
             let activated = activate_semantic_publication(compiler, key, *claim)?;
+            let binding = claim.binding();
             for bytes in activated.images() {
                 let image = backend_semantic::ir::SemanticImageView::reopen(bytes.as_ref())
                     .map_err(|error| {
@@ -149,10 +150,25 @@ fn execute_semantic_graph(
                     source_id,
                     include_incoming,
                 )? {
-                    return library
+                    let mut snapshot = library
                         .graph_from_semantic_relations(semantic_query, &relations)
-                        .map(Some)
-                        .map_err(|error| BuiltinModelError(error.to_string()));
+                        .map_err(|error| BuiltinModelError(error.to_string()))?;
+                    let graph_revision = backend_engine::RichGraphRevision::new(
+                        snapshot.root.root().to_bytes(),
+                        backend_engine::SemanticGenerationId::new(*binding.identity.as_ref()),
+                        *binding.generation.pinned_root.as_ref(),
+                    );
+                    let rich_graph = backend_engine::RichGraphSnapshot::from_view(
+                        &snapshot.root,
+                        source_id,
+                        &relations,
+                        graph_revision,
+                    )
+                    .map_err(|error| {
+                        BuiltinModelError(format!("build rich semantic graph: {error}"))
+                    })?;
+                    snapshot.rich_graph = Some(rich_graph);
+                    return Ok(Some(snapshot));
                 }
             }
         }

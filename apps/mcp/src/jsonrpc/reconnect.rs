@@ -330,6 +330,7 @@ mod tests {
             freshness: Freshness::Current,
             next: None,
             graph_relations: None,
+            rich_graph: None,
         }
     }
 

@@ -70,6 +70,7 @@ fn injected_transport_preserves_identity_and_freshness() {
         freshness: Freshness::Current,
         next: None,
         graph_relations: None,
+        rich_graph: None,
     };
     let mut transport = Checked {
         reply: Some(ReplyDto::new(7, CommandReply::Search(snapshot))),
@@ -99,6 +100,7 @@ fn mismatched_basis_and_unknown_freshness_are_rejected() {
         freshness: Freshness::Unknown,
         next: None,
         graph_relations: None,
+        rich_graph: None,
     };
     let result = admit_reply(&request, ReplyDto::new(1, CommandReply::Search(snapshot)));
     assert!(matches!(
@@ -115,6 +117,7 @@ fn replies_must_match_the_requested_command_shape() {
         freshness: Freshness::Current,
         next: None,
         graph_relations: None,
+        rich_graph: None,
     };
     assert!(matches!(
         admit_reply(&request, ReplyDto::new(1, CommandReply::Packages(snapshot))),
@@ -586,6 +589,7 @@ fn markdown_output_is_the_shared_renderer_and_json_is_the_typed_dto() {
         freshness: Freshness::Current,
         next: None,
         graph_relations: None,
+        rich_graph: None,
     };
     let list = backend_present::record_list("ferris", &snapshot);
     let answer = Answer::Records(Box::new(list.clone()));

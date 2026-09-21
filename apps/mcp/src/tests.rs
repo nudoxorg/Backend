@@ -138,6 +138,7 @@ fn injected_transport_checks_basis_and_freshness() {
         freshness: Freshness::Current,
         next: None,
         graph_relations: None,
+        rich_graph: None,
     };
     let mut transport = Checked {
         reply: Some(ReplyDto::new(9, CommandReply::Search(snapshot))),
@@ -172,6 +173,7 @@ fn replies_must_match_the_requested_command_shape() {
         freshness: Freshness::Current,
         next: None,
         graph_relations: None,
+        rich_graph: None,
     };
     assert!(matches!(
         admit_reply(&request, ReplyDto::new(1, CommandReply::Packages(snapshot))),

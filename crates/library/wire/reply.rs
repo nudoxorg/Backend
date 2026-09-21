@@ -104,6 +104,8 @@ pub(crate) struct SnapshotWire {
     pub(crate) next: Option<CursorWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) graph_relations: Option<GraphRelationsWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rich_graph: Option<crate::RichGraphSnapshot>,
 }
 
 /// Versioned typed-edge sidecar for graph snapshots. Keeping this outside the
@@ -508,6 +510,7 @@ pub(crate) fn snapshot_to_wire(snapshot: &ViewSnapshot) -> SnapshotWire {
                     .collect(),
             }
         }),
+        rich_graph: snapshot.rich_graph.clone(),
     }
 }
 
@@ -546,10 +549,25 @@ pub(crate) fn snapshot_from_wire_with_admission<A: CoverageAdmission>(
     }
     Ok(ViewSnapshot {
         graph_relations: graph_relations_from_wire(value.graph_relations, &root, certificate)?,
+        rich_graph: rich_graph_from_wire(value.rich_graph.as_ref(), &root)?,
         root,
         freshness,
         next,
     })
+}
+
+fn rich_graph_from_wire(
+    value: Option<&crate::RichGraphSnapshot>,
+    root: &ViewRoot,
+) -> Result<Option<crate::RichGraphSnapshot>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.revision.view_root != *root.root.as_bytes() {
+        return Err("rich graph view root does not match its snapshot".to_owned());
+    }
+    value.admit().map_err(|error| error.to_string())?;
+    Ok(Some(value.clone()))
 }
 
 fn graph_relations_from_wire(

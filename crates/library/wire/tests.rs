@@ -312,6 +312,7 @@ fn occurrence_disambiguated_row_identity_is_admitted_from_its_explicit_preimage(
             freshness: Freshness::Current,
             next: None,
             graph_relations: None,
+            rich_graph: None,
         },
     )
     .with_certificate(admitted_certificate);
@@ -331,6 +332,7 @@ fn occurrence_disambiguated_row_identity_is_admitted_from_its_explicit_preimage(
             freshness: Freshness::Current,
             next: None,
             graph_relations: None,
+            rich_graph: None,
         },
     )
     .with_certificate(forged);
@@ -356,6 +358,7 @@ fn occurrence_disambiguated_row_identity_is_admitted_from_its_explicit_preimage(
             freshness: Freshness::Current,
             next: None,
             graph_relations: None,
+            rich_graph: None,
         },
     )
     .with_certificate(mixed);
@@ -728,6 +731,7 @@ fn reply_round_trip_fixtures() -> (Basis, ViewStateRoot, Vec<CommandReply>) {
         freshness: Freshness::Current,
         next: None,
         graph_relations: None,
+        rich_graph: None,
     };
     let symbol = symbol_key("pkg::Thing");
     let package = crate::package_key("pkg");
@@ -804,21 +808,44 @@ fn reply_and_view_dtos_round_trip_every_reply_variant() {
         assert_eq!(decoded, dto);
     }
 
+    let view_root = ViewRoot::empty_checked(
+        view_key(b"view-dto"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, source_root, 0),
+        capability(basis.object),
+    )
+    .expect("checked view root");
+    let center = crate::GraphNodeId::for_symbol(symbol_key("pkg::Thing"));
+    let revision = crate::RichGraphRevision::new(
+        view_root.root().to_bytes(),
+        crate::SemanticGenerationId::new([7; 32]),
+        [8; 32],
+    );
+    let mut graph = crate::RichGraphBuilder::new(revision, center);
+    graph
+        .add_node(
+            crate::RichGraphNode::new(
+                center,
+                "Thing",
+                Some("pkg::Thing".to_owned()),
+                Some("struct".to_owned()),
+                crate::GraphAvailability::Ready,
+                None,
+            )
+            .expect("graph node"),
+        )
+        .expect("graph center");
+    let rich_graph = graph.finish().expect("rich graph");
     let view = ViewDto::new(
         13,
         ViewSnapshot {
-            root: ViewRoot::empty_checked(
-                view_key(b"view-dto"),
-                basis,
-                Frontier::new(basis.branch, basis.log, basis.schema, source_root, 0),
-                capability(basis.object),
-            )
-            .expect("checked view root"),
+            root: view_root,
             freshness: Freshness::Stale {
                 observed: source_root,
             },
             next: None,
             graph_relations: None,
+            rich_graph: Some(rich_graph),
         },
     );
     let encoded = serde_json::to_vec(&view).expect("encode view");
@@ -996,6 +1023,7 @@ fn subscription_projection_rejects_replayed_reset_and_incomplete_producer_root()
             freshness: Freshness::Current,
             next: None,
             graph_relations: None,
+            rich_graph: None,
         },
     );
     let reset = SubscriptionDto::try_reset(
@@ -1032,6 +1060,7 @@ fn subscription_projection_rejects_replayed_reset_and_incomplete_producer_root()
             freshness: Freshness::Current,
             next: None,
             graph_relations: None,
+            rich_graph: None,
         },
     );
     assert!(
@@ -1104,6 +1133,7 @@ fn forged_same_scope_certificate_cannot_mint_complete_coverage() {
             freshness: Freshness::Current,
             next: None,
             graph_relations: None,
+            rich_graph: None,
         },
     )
     .with_certificate(certificate(&root));
@@ -1284,6 +1314,7 @@ fn certified_subscription_rejects_wrong_root_schema_producer_and_replay() {
             freshness: Freshness::Current,
             next: None,
             graph_relations: None,
+            rich_graph: None,
         },
     )
     .with_certificate(certificate(&root));

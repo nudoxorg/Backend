@@ -474,6 +474,8 @@ pub struct ViewSnapshot {
     /// authority. Ordinary snapshots leave this absent, preserving their
     /// existing wire shape and meaning.
     pub graph_relations: Option<Box<[crate::GraphRelation]>>,
+    /// Versioned rich graph payload shared by local surfaces.
+    pub rich_graph: Option<crate::RichGraphSnapshot>,
 }
 
 /// Rejected update reason at the view boundary.

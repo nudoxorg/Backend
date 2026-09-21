@@ -807,6 +807,7 @@ impl Library {
             freshness: Freshness::Current,
             next,
             graph_relations: None,
+            rich_graph: None,
         })
     }
 

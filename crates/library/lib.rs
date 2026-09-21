@@ -25,6 +25,7 @@ mod cursor;
 mod delta;
 mod error;
 mod graph_query;
+mod rich_graph;
 mod package_graph;
 mod registry_native;
 /// Transport-independent application service and reply vocabulary.
@@ -95,6 +96,14 @@ pub use graph_query::{
     GraphQueryControl, GraphQueryError, GraphQueryPage, GraphQueryRequest, GraphQueryRow,
     GraphValue, MAX_GRAPH_QUERY_BYTES, MAX_GRAPH_QUERY_FIELDS, MAX_GRAPH_VALUE_BYTES,
     MAX_GRAPH_VALUE_DEPTH,
+};
+pub use rich_graph::{
+    GraphAuthority, GraphAvailability, GraphControl, GraphEdgeId, GraphEdgeKind,
+    GraphLayoutEdge, GraphLayoutInput, GraphNodeId, GraphPageTerminal, GraphProvenance,
+    GraphRelationFamily, MAX_RICH_GRAPH_DELTA_RECORDS, MAX_RICH_GRAPH_PAGE_EDGES,
+    MAX_RICH_GRAPH_PAGE_ROWS, RICH_GRAPH_SCHEMA_VERSION,
+    RichGraphBuilder, RichGraphCursor, RichGraphDelta, RichGraphEdge, RichGraphError,
+    RichGraphNode, RichGraphPage, RichGraphRequest, RichGraphRevision, RichGraphSnapshot,
 };
 pub use package_graph::{
     admit_dependency_rows, DependencyAuthority, DependencyEvidence, DependencyFacts,
