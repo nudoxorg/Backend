@@ -7,7 +7,7 @@
 
 use std::fmt;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -161,11 +161,11 @@ fn project_root_from(start: &Path) -> PathBuf {
 /// # Errors
 /// Returns an error when setup, executable discovery, process startup, or the
 /// bounded readiness wait fails.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
-    use std::os::unix::net::UnixStream;
+    use backend_platform::LocalStream;
 
-    if UnixStream::connect(paths.endpoint()).is_ok() {
+    if LocalStream::connect(paths.endpoint()).is_ok() {
         return Ok(paths.endpoint().to_path_buf());
     }
     paths.initialize()?;
@@ -188,7 +188,7 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     let deadline = Instant::now() + START_TIMEOUT;
     let mut child_exit = None;
     loop {
-        if UnixStream::connect(paths.endpoint()).is_ok() {
+        if LocalStream::connect(paths.endpoint()).is_ok() {
             return Ok(paths.endpoint().to_path_buf());
         }
         if child_exit.is_none()
@@ -210,8 +210,8 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     }
 }
 
-/// Reports that automatic local daemon composition is Unix-only.
-#[cfg(not(unix))]
+/// Reports that automatic local daemon composition needs a local transport.
+#[cfg(not(any(unix, windows)))]
 pub fn ensure_locald(_paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     Err(RuntimeError::Unsupported)
 }
@@ -253,9 +253,7 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
         fs::create_dir_all(parent).map_err(RuntimeError::Io)?;
     }
     let mut bytes = [0_u8; 32];
-    fs::File::open("/dev/urandom")
-        .and_then(|mut source| source.read_exact(&mut bytes))
-        .map_err(RuntimeError::Io)?;
+    fill_random(&mut bytes)?;
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -274,6 +272,18 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
         options.mode(0o600);
     }
     let mut file = options.open(&temporary).map_err(RuntimeError::Io)?;
+    // Restrict before the secret bytes land, so they are never on disk under
+    // an access-control list inherited from the project directory. The
+    // published path is a hard link to this same record, so the descriptor
+    // applied here is the one the credential keeps.
+    #[cfg(windows)]
+    if let Err(error) =
+        backend_platform::win32::security::restrict_to_current_user(&temporary)
+    {
+        drop(file);
+        let _ = fs::remove_file(&temporary);
+        return Err(RuntimeError::Io(error));
+    }
     let staged = file
         .write_all(&bytes)
         .and_then(|()| file.sync_all())
@@ -292,6 +302,28 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
         }
         Err(error) => Err(RuntimeError::Io(error)),
     }
+}
+
+/// Fills a fresh authority credential from the system random generator.
+#[cfg(unix)]
+fn fill_random(bytes: &mut [u8; 32]) -> Result<(), RuntimeError> {
+    use std::io::Read as _;
+
+    fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(bytes))
+        .map_err(RuntimeError::Io)
+}
+
+/// Fills a fresh authority credential from the Windows system random
+/// generator, the counterpart of reading `/dev/urandom`.
+#[cfg(windows)]
+fn fill_random(bytes: &mut [u8; 32]) -> Result<(), RuntimeError> {
+    backend_platform::win32::random::fill(bytes).map_err(RuntimeError::Io)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn fill_random(_bytes: &mut [u8; 32]) -> Result<(), RuntimeError> {
+    Err(RuntimeError::Unsupported)
 }
 
 fn validate_authority_secret(path: &Path) -> Result<(), RuntimeError> {

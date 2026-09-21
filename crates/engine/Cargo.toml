@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 backend-execution = { path = "../execution" }
 backend-flow = { path = "../flow" }
+backend-platform = { path = "../platform" }
 backend-replication = { path = "../replication" }
 backend-semantic = { path = "../semantic" }
 backend-store = { path = "../store" }

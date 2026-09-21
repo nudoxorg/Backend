@@ -751,6 +751,7 @@ dependencies = [
  "backend-execution",
  "backend-flow",
  "backend-library",
+ "backend-platform",
  "backend-replication",
  "backend-semantic",
  "backend-store",
@@ -942,6 +943,7 @@ dependencies = [
  "backend-frontend-python",
  "backend-frontend-rust",
  "backend-frontend-typescript",
+ "backend-platform",
  "backend-runtime",
  "futures-executor",
  "serde",
@@ -1007,6 +1009,7 @@ dependencies = [
 name = "backend-runtime"
 version = "0.1.0"
 dependencies = [
+ "backend-platform",
  "blake3",
 ]
 

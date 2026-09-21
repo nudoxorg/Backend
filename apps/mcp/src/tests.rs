@@ -311,9 +311,6 @@ fn unix_transport_executes_one_correlated_request() {
     let listener = UnixListener::bind(&path).expect("listener");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
         .expect("socket permissions");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-        .expect("socket permissions");
     let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut server, _) = listener.accept().expect("accept");

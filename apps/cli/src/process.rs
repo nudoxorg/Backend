@@ -1,6 +1,6 @@
 //! CLI process startup and local endpoint composition.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::UnixCommandTransport;
 use crate::command::{certificate_for_command, needs_basis, parse, parse_with_basis};
 use crate::{
@@ -134,7 +134,7 @@ fn emit_error(json: bool, request_id: u64, message: impl Into<String>) {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn command_from_endpoint(
     client: &mut UnixCommandTransport,
     args: &[String],
@@ -209,7 +209,7 @@ fn command_from_endpoint(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn run_endpoint(endpoint: String, args: &[String], json: bool) -> ExitCode {
     let mut client = match UnixCommandTransport::connect(endpoint) {
         Ok(client) => client,
@@ -303,7 +303,7 @@ pub fn main_entry() -> ExitCode {
             _ => {}
         }
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         let endpoint = match backend_runtime::ensure_locald(&session) {
             Ok(endpoint) => endpoint,
@@ -314,7 +314,7 @@ pub fn main_entry() -> ExitCode {
         };
         run_endpoint(endpoint.to_string_lossy().into_owned(), &args, json)
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = session;
         emit_error(

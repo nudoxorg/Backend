@@ -7,14 +7,14 @@
 
 use std::path::Path;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::io::Read;
 
+pub use backend_replication::{PeerCredentialError, current_effective_uid};
+#[cfg(any(unix, windows))]
+pub use backend_replication::peer_is_same_effective_uid;
 #[cfg(unix)]
-pub use backend_replication::{
-    PeerCredentialError, PeerCredentials, current_effective_uid, peer_credentials,
-    peer_is_same_effective_uid,
-};
+pub use backend_replication::{PeerCredentials, peer_credentials};
 
 /// Failure while loading a process authority credential.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,16 +86,39 @@ pub fn read_authority_secret(path: &Path) -> Result<[u8; 32], AuthoritySecretErr
         if current_effective_uid().map_err(|_| AuthoritySecretError::WrongOwner)? != owner {
             return Err(AuthoritySecretError::WrongOwner);
         }
+        let mut secret = [0_u8; 32];
+        let mut file =
+            std::fs::File::open(path).map_err(|error| AuthoritySecretError::Io(error.kind()))?;
+        file.read_exact(&mut secret)
+            .map_err(|error| AuthoritySecretError::Io(error.kind()))?;
+        Ok(secret)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        return Err(AuthoritySecretError::Unsupported);
-    }
+        use backend_platform::win32::identity;
 
-    let mut secret = [0_u8; 32];
-    let mut file =
-        std::fs::File::open(path).map_err(|error| AuthoritySecretError::Io(error.kind()))?;
-    file.read_exact(&mut secret)
-        .map_err(|error| AuthoritySecretError::Io(error.kind()))?;
-    Ok(secret)
+        // Windows has no mode bits. The endpoint trust seam in replication
+        // answers this same question for the same class of owner-private
+        // local file: the DACL is applied when the object is created, and the
+        // owner recorded in its security descriptor is what a reader checks.
+        // The owner is read from the open handle rather than the path, so the
+        // file that is checked is exactly the file that is then read.
+        let mut file =
+            std::fs::File::open(path).map_err(|error| AuthoritySecretError::Io(error.kind()))?;
+        let owner =
+            identity::owner_of(&file).map_err(|error| AuthoritySecretError::Io(error.kind()))?;
+        if !identity::is_owned_by_current_user(&owner)
+            .map_err(|error| AuthoritySecretError::Io(error.kind()))?
+        {
+            return Err(AuthoritySecretError::WrongOwner);
+        }
+        let mut secret = [0_u8; 32];
+        file.read_exact(&mut secret)
+            .map_err(|error| AuthoritySecretError::Io(error.kind()))?;
+        Ok(secret)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(AuthoritySecretError::Unsupported)
+    }
 }

@@ -1,6 +1,6 @@
 //! Shared command transport exports for the CLI surface.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use backend_client::UnixCommandTransport;
 pub use backend_client::{
     CertifiedCommandTransport, CommandTransport, InProcessTransport, LocalEngine,

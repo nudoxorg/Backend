@@ -17,10 +17,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "listener/transport.rs"]
 mod transport;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use transport::{
     ConnectionContext, configure_stream, connection_worker, prepare_socket_path,
     set_private_socket_permissions,
@@ -120,7 +120,7 @@ pub trait PeerPolicy: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns an error when peer credentials cannot be validated.
-    fn authorize(&self, stream: &std::os::unix::net::UnixStream) -> Result<(), PeerPolicyError>;
+    fn authorize(&self, stream: &backend_platform::LocalStream) -> Result<(), PeerPolicyError>;
 }
 
 /// Portable peer policy used when the host has no credential adapter.
@@ -128,7 +128,7 @@ pub trait PeerPolicy: Send + Sync + 'static {
 pub struct FilesystemPeerPolicy;
 
 impl PeerPolicy for FilesystemPeerPolicy {
-    fn authorize(&self, stream: &std::os::unix::net::UnixStream) -> Result<(), PeerPolicyError> {
+    fn authorize(&self, stream: &backend_platform::LocalStream) -> Result<(), PeerPolicyError> {
         let address = stream
             .peer_addr()
             .map_err(|error| PeerPolicyError::Io(error.kind()))?;
@@ -187,9 +187,9 @@ struct Inbound {
 }
 
 /// A single-owner bounded Unix listener.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub struct UnixListenerService<O> {
-    listener: std::os::unix::net::UnixListener,
+    listener: backend_platform::LocalListener,
     service: LocaldService<O>,
     path: PathBuf,
     stop: Arc<AtomicBool>,
@@ -199,12 +199,12 @@ pub struct UnixListenerService<O> {
     inbound: Receiver<Inbound>,
     inbound_sender: SyncSender<Inbound>,
     peer_policy: Arc<dyn PeerPolicy>,
-    streams: Arc<Mutex<std::collections::BTreeMap<usize, std::os::unix::net::UnixStream>>>,
+    streams: Arc<Mutex<std::collections::BTreeMap<usize, backend_platform::LocalStream>>>,
     next_connection_id: AtomicUsize,
     report: RunReport,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl<O: OwnerService + 'static> fmt::Debug for UnixListenerService<O>
 where
     O: fmt::Debug,
@@ -220,7 +220,7 @@ where
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl<O: OwnerService + 'static> UnixListenerService<O> {
     /// Binds a private Unix endpoint around one owner service.
     ///
@@ -246,7 +246,7 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
         config.validate()?;
         let path = config.path.clone();
         prepare_socket_path(&path)?;
-        let listener = std::os::unix::net::UnixListener::bind(&path)
+        let listener = backend_platform::LocalListener::bind(&path)
             .map_err(|error| ListenerError::Io(error.kind()))?;
         set_private_socket_permissions(&path)?;
         listener
@@ -432,7 +432,7 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl<O> Drop for UnixListenerService<O> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
@@ -482,11 +482,11 @@ impl fmt::Display for ListenerError {
 
 impl std::error::Error for ListenerError {}
 
-#[cfg(not(unix))]
-/// Unix endpoints are unavailable on this target.
+#[cfg(not(any(unix, windows)))]
+/// Local endpoints are unavailable on this target.
 pub struct UnixListenerService<O>(std::marker::PhantomData<O>);
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 impl<O> UnixListenerService<O> {
     /// Returns a platform error instead of silently selecting an alternate
     /// transport.

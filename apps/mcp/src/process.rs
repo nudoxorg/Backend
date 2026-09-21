@@ -1,6 +1,6 @@
 //! MCP process startup, stdio framing, and endpoint composition.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::UnixCommandTransport;
 use crate::{
     MAX_ENDPOINT_PATH, decode_request, dispatch_frame_with_transport, error_frame,
@@ -62,7 +62,7 @@ pub fn main_entry() -> ExitCode {
 }
 
 fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let result = (|| {
         let endpoint = backend_runtime::ensure_locald(paths).map_err(|error| error.to_string())?;
         let project = paths
@@ -84,7 +84,7 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
         )
         .map_err(|error| error.to_string())
     })();
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let result: Result<(), String> =
         Err("local Unix endpoint transport is unavailable on this platform".to_owned());
     match result {
@@ -97,7 +97,7 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
 }
 
 fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let (mut transport, connect_error) = match backend_runtime::ensure_locald(session) {
         Ok(path) => match UnixCommandTransport::connect(path) {
             Ok(transport) => (Some(transport), None),
@@ -105,7 +105,7 @@ fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
         },
         Err(error) => (None, Some(error.to_string())),
     };
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let (mut transport, connect_error): (Option<()>, Option<String>) = (
         None,
         Some("local Unix endpoint transport is unavailable on this platform".to_owned()),
@@ -128,7 +128,7 @@ fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
             }
         };
         let request_is_valid = decode_request(&input).is_ok();
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let output = match transport.as_mut() {
             Some(transport) => match dispatch_frame_with_transport(transport, &input) {
                 Ok(output) => output,
@@ -144,7 +144,7 @@ fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
                     .unwrap_or("local endpoint unavailable"),
             ),
         };
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         let output = {
             let _ = &mut transport;
             error_frame_for_input(

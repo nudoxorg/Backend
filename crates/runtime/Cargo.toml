@@ -7,6 +7,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The local stream, the system random generator, and the owner-only file
+# access list all live behind the audited platform seam.
+backend-platform = { path = "../platform" }
 blake3.workspace = true
 
 [lints]

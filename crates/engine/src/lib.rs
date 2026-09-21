@@ -238,7 +238,7 @@ pub fn encode_snapshot_page_dto(page: &SnapshotPageDto) -> Result<Vec<u8>, Strin
     serde_json::to_vec(page).map_err(|error| error.to_string())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use backend_replication::{AuthenticatedLocalPeer, LocalPeerAuthenticationError};
 pub use daemon::{
     CompletionNotice, Daemon, DaemonConfig, DaemonError, DaemonHandle, DaemonProtocolConfig,
@@ -278,12 +278,13 @@ pub use journal::{
     ChainHash, HashChainJournal, JournalCodec, JournalDomain, JournalError, JournalFrame,
     JournalLimits, JournalReceipt, JournalRecovery,
 };
-pub use platform::{AuthoritySecretError, read_authority_secret};
-#[cfg(unix)]
 pub use platform::{
-    PeerCredentialError, PeerCredentials, current_effective_uid, peer_credentials,
-    peer_is_same_effective_uid,
+    AuthoritySecretError, PeerCredentialError, current_effective_uid, read_authority_secret,
 };
+#[cfg(any(unix, windows))]
+pub use platform::peer_is_same_effective_uid;
+#[cfg(unix)]
+pub use platform::{PeerCredentials, peer_credentials};
 pub use queue::{
     BoundedQueue, FairQueues, QueueBudget, QueueError, QueueLane, QueueSized, QueueUsage,
 };

@@ -40,7 +40,7 @@ impl DesktopHost {
     /// Returns an error when credentials, composition, or binding fail.
     pub fn start_with_paths(paths: WorkspacePaths) -> Result<Self, HostError> {
         paths.initialize().map_err(HostError::Runtime)?;
-        if std::os::unix::net::UnixStream::connect(paths.endpoint()).is_ok() {
+        if backend_replication::LocalStream::connect(paths.endpoint()).is_ok() {
             return Ok(Self {
                 paths,
                 embedded: None,

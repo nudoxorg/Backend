@@ -17,6 +17,7 @@ backend-frontend-java = { path = "../../frontends/java" }
 backend-frontend-python = { path = "../../frontends/python" }
 backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
+backend-platform = { path = "../platform" }
 backend-runtime = { path = "../runtime" }
 futures-executor.workspace = true
 serde.workspace = true

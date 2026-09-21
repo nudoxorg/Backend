@@ -302,7 +302,17 @@ fn fresh_nonce() -> Result<[u8; NONCE_BYTES], TcpHandshakeError> {
     Ok(nonce)
 }
 
-#[cfg(not(unix))]
+/// Draws a handshake nonce from the Windows system random generator, the
+/// counterpart of reading `/dev/urandom`.
+#[cfg(windows)]
+fn fresh_nonce() -> Result<[u8; NONCE_BYTES], TcpHandshakeError> {
+    let mut nonce = [0_u8; NONCE_BYTES];
+    backend_platform::win32::random::fill(&mut nonce)
+        .map_err(|_| TcpHandshakeError::NonceUnavailable)?;
+    Ok(nonce)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn fresh_nonce() -> Result<[u8; NONCE_BYTES], TcpHandshakeError> {
     Err(TcpHandshakeError::NonceUnavailable)
 }

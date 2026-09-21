@@ -468,6 +468,41 @@ fn cancellation_fixture() -> (
     (worker, admission, request, entered, limits)
 }
 
+/// Returns two connected local streams for the streamed-cancellation test.
+///
+/// Unix keeps `socketpair`, which needs no filesystem entry. Windows has no
+/// `socketpair` for AF_UNIX, so the pair is formed by binding a private
+/// endpoint and accepting one connection; the path is unlinked as soon as both
+/// ends exist.
+#[cfg(unix)]
+fn connected_pair() -> (backend_platform::LocalStream, backend_platform::LocalStream) {
+    std::os::unix::net::UnixStream::pair()
+        .unwrap_or_else(|error| panic!("UnixStream::pair: {error}"))
+}
+
+#[cfg(windows)]
+fn connected_pair() -> (backend_platform::LocalStream, backend_platform::LocalStream) {
+    let path = std::env::temp_dir().join(format!(
+        "backend-worker-pair-{}-{}.sock",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let listener = backend_platform::LocalListener::bind(&path)
+        .unwrap_or_else(|error| panic!("local pair bind: {error}"));
+    let client = backend_platform::LocalStream::connect(&path)
+        .unwrap_or_else(|error| panic!("local pair connect: {error}"));
+    let (server, _) = listener
+        .accept()
+        .unwrap_or_else(|error| panic!("local pair accept: {error}"));
+    drop(listener);
+    let _ = std::fs::remove_file(&path);
+    (server, client)
+}
+
 #[test]
 fn stream_cancel_keeps_control_loop_live_and_releases_active_capacity() {
     let (mut worker, mut admission, request, entered, limits) = cancellation_fixture();
@@ -477,8 +512,7 @@ fn stream_cancel_keeps_control_loop_live_and_releases_active_capacity() {
         cancellation: request.cancellation,
         fence: request.fence,
     };
-    let (mut server, mut client) = std::os::unix::net::UnixStream::pair()
-        .unwrap_or_else(|error| panic!("UnixStream::pair: {error}"));
+    let (mut server, mut client) = connected_pair();
     let client_thread = thread::spawn(move || {
         let request = crate::protocol::frame(&TransportMessage::WireRecipeRequest(request), limits)
             .unwrap_or_else(|error| panic!("request frame: {error}"));
