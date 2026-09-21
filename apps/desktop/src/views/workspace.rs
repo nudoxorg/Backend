@@ -924,6 +924,16 @@ impl Workspace {
     pub(crate) fn harness_focus_window(&self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
     }
+
+    /// Applies the motion preference through the production shell store before
+    /// the first journey frame. GPUI's global reduced-motion flag controls
+    /// animation scheduling, while the shell preference controls the semantic
+    /// state reported by the rendered workspace; both must agree.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn harness_set_reduced_motion(&mut self, reduced: bool, cx: &mut Context<Self>) {
+        self.shell
+            .update(cx, |shell, cx| shell.set_reduced_motion(reduced, cx));
+    }
 }
 
 /// Navigation.

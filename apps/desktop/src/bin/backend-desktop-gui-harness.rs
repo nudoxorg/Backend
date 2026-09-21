@@ -273,11 +273,13 @@ fn capture_command(args: &[String]) -> Result<(), String> {
                     })
                     .collect::<Vec<_>>();
                 let varied = live.capture.frames.first().is_none_or(|first| {
-                    live.capture
-                        .frames
-                        .iter()
-                        .skip(1)
-                        .any(|frame| frame.image != first.image)
+                    live.capture.frames.len() <= 1
+                        || live
+                            .capture
+                            .frames
+                            .iter()
+                            .skip(1)
+                            .any(|frame| frame.image != first.image)
                 });
                 if !varied {
                     report.failures.push(Failure {

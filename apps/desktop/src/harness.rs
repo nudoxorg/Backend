@@ -322,6 +322,9 @@ fn capture_live_workspace_mode(
             cx.set_global(HarnessDirection(config.text_direction.clone()));
             cx.set_global(HarnessActions(action_tree));
             let workspace = cx.new(|cx| Workspace::new(opened, window, cx));
+            workspace.update(cx, |workspace, cx| {
+                workspace.harness_set_reduced_motion(reduced_motion, cx);
+            });
             if apply_initial_state {
                 if let Err(error) = workspace.update(cx, |workspace, cx| {
                     workspace.harness_set_appearance(appearance, cx);
