@@ -9,6 +9,9 @@
 #![cfg(test)]
 #![cfg_attr(test, allow(clippy::expect_used, clippy::panic, clippy::unwrap_used))]
 
+#[cfg(unix)]
+pub mod surface_matrix;
+
 use backend_desktop::{Model as DesktopModel, SubscriptionRequest};
 use backend_engine::dispatch::{
     Blake3AuthorityVerifier, CompleteSemanticCoverage, DispatchCompletion, DispatchError,
