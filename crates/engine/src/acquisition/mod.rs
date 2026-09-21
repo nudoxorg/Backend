@@ -31,6 +31,7 @@ use std::{
 
 const CHUNK_BYTES: usize = 64 * 1024;
 const ID_BYTES: usize = 32;
+const MAX_FACT_OBSERVATIONS: usize = 4_096;
 static TOKEN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn now_millis() -> u64 {
@@ -1792,6 +1793,54 @@ pub struct FactFreshness {
     pub max_age_millis: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FactObservation {
+    observed_at_millis: u64,
+    policy_epoch: u64,
+}
+
+fn observed_facts_at(
+    observations: &BTreeMap<Arc<str>, FactObservation>,
+    coordinate: &str,
+    policy_epoch: u64,
+) -> Option<u64> {
+    observations
+        .get(coordinate)
+        .filter(|observation| observation.policy_epoch == policy_epoch)
+        .map(|observation| observation.observed_at_millis)
+}
+
+fn remember_fact_observation(
+    observations: &mut BTreeMap<Arc<str>, FactObservation>,
+    coordinate: &str,
+    observed_at_millis: u64,
+    policy_epoch: u64,
+) {
+    if observations.len() >= MAX_FACT_OBSERVATIONS && !observations.contains_key(coordinate) {
+        if let Some(oldest) = observations
+            .iter()
+            .min_by(
+                |(coordinate_a, observation_a), (coordinate_b, observation_b)| {
+                    observation_a
+                        .observed_at_millis
+                        .cmp(&observation_b.observed_at_millis)
+                        .then_with(|| coordinate_a.cmp(coordinate_b))
+                },
+            )
+            .map(|(coordinate, _)| Arc::clone(coordinate))
+        {
+            observations.remove(&oldest);
+        }
+    }
+    observations.insert(
+        Arc::from(coordinate),
+        FactObservation {
+            observed_at_millis,
+            policy_epoch,
+        },
+    );
+}
+
 impl FactFreshness {
     /// Revalidates facts on every demand.
     #[must_use]
@@ -2107,7 +2156,7 @@ pub struct AcquisitionService {
     breaker: CircuitBreaker,
     leases: LeaseStore,
     /// Process-local observations; restart forces mutable facts to refresh.
-    fact_observations: Arc<Mutex<BTreeMap<Arc<str>, u64>>>,
+    fact_observations: Arc<Mutex<BTreeMap<Arc<str>, FactObservation>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -2280,11 +2329,13 @@ impl AcquisitionService {
                         source: request.source,
                     });
                 }
-                let observed_at = fact_observations
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(request.coordinate.as_ref())
-                    .copied();
+                let observed_at = observed_facts_at(
+                    &fact_observations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    request.coordinate.as_ref(),
+                    policy_epoch,
+                );
                 let present = owner_guard
                     .published_packages()
                     .find(|package| package.coordinate.as_str() == requested)
@@ -2296,10 +2347,14 @@ impl AcquisitionService {
                     let package = present.expect("up-to-date acquisition has a package");
                     breaker.success();
                     let current_epoch = owner_guard.policy_epoch();
-                    fact_observations
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(Arc::from(requested), now_millis());
+                    remember_fact_observation(
+                        &mut fact_observations
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                        requested,
+                        now_millis(),
+                        current_epoch,
+                    );
                     if matches!(
                         package.facts.standing(),
                         crate::registry::ReleaseStanding::Yanked
@@ -2577,10 +2632,14 @@ impl AcquisitionService {
                 };
                 breaker.success();
                 let current_epoch = owner_guard.policy_epoch();
-                fact_observations
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(Arc::from(requested), now_millis());
+                remember_fact_observation(
+                    &mut fact_observations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    requested,
+                    now_millis(),
+                    current_epoch,
+                );
                 if matches!(
                     package.facts.standing(),
                     crate::registry::ReleaseStanding::Yanked
@@ -3174,7 +3233,7 @@ impl AcquisitionCoordinator {
         FromShared: Fn(&SharedSlotValue) -> AcquisitionOutcome<T>,
     {
         let key = request.work_key();
-        let slot = {
+        let (slot, created_slot) = {
             let mut slots = self
                 .slots
                 .lock()
@@ -3191,15 +3250,37 @@ impl AcquisitionCoordinator {
                     source: request.source,
                 });
             }
-            Arc::clone(
-                slots
-                    .entry(key)
-                    .or_insert_with(|| Arc::new(SharedSlot::new())),
-            )
+            match slots.entry(key) {
+                std::collections::btree_map::Entry::Occupied(entry) => {
+                    (Arc::clone(entry.get()), false)
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let slot = Arc::new(SharedSlot::new());
+                    entry.insert(Arc::clone(&slot));
+                    (slot, true)
+                }
+            }
         };
         let interned = match self.interner.intern(key) {
             Ok(interned) => interned,
             Err(_) => {
+                if created_slot {
+                    let mut slots = self
+                        .slots
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if slots
+                        .get(&key)
+                        .is_some_and(|current| Arc::ptr_eq(current, &slot))
+                        && slot
+                            .result
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .is_none()
+                    {
+                        slots.remove(&key);
+                    }
+                }
                 return AcquisitionOutcome::Unavailable(Unavailable {
                     source: request.source,
                 });
@@ -3358,6 +3439,29 @@ mod tests {
             .expect("manifest"),
         );
         Arc::new(SourceSnapshot::new([1; 32], [2; 32], 7, manifest, Vec::new()).expect("snapshot"))
+    }
+
+    #[test]
+    fn fact_observations_are_epoch_bound_and_bounded() {
+        let mut observations = BTreeMap::new();
+        remember_fact_observation(&mut observations, "pkg:one@1", 0, 7);
+        assert_eq!(observed_facts_at(&observations, "pkg:one@1", 7), Some(0));
+        assert_eq!(observed_facts_at(&observations, "pkg:one@1", 8), None);
+
+        for index in 1..=MAX_FACT_OBSERVATIONS {
+            remember_fact_observation(
+                &mut observations,
+                &format!("pkg:{index}@1"),
+                index as u64,
+                7,
+            );
+        }
+        assert_eq!(observations.len(), MAX_FACT_OBSERVATIONS);
+        assert!(observed_facts_at(&observations, "pkg:one@1", 7).is_none());
+        assert_eq!(
+            observed_facts_at(&observations, &format!("pkg:{MAX_FACT_OBSERVATIONS}@1"), 7),
+            Some(MAX_FACT_OBSERVATIONS as u64)
+        );
     }
 
     #[test]
