@@ -274,7 +274,21 @@ impl GuiState {
         let mut states = Vec::new();
         for page in PageState::ALL {
             states.push(Self::new(page.as_str(), Some(page), None));
-            for overlay in OverlayState::ALL {
+            // These surfaces are global shell controls and are legal over
+            // every registered reader route. Data-dependent conditions such
+            // as offline, loading, fault, empty, and indexing are deliberately
+            // absent until a live adapter can inject the corresponding
+            // admitted condition; a cross-product sweep would manufacture
+            // states the product cannot honestly reach.
+            for overlay in [
+                OverlayState::Omnibar,
+                OverlayState::Palette,
+                OverlayState::SettingsAppearance,
+                OverlayState::SettingsEditor,
+                OverlayState::SettingsAgents,
+                OverlayState::SettingsDiagnostics,
+                OverlayState::SettingsLegend,
+            ] {
                 let id = format!("{}--{}", page.as_str(), overlay.as_str());
                 states.push(Self::new(id, Some(page), Some(overlay)));
             }
@@ -326,6 +340,9 @@ pub enum StateError {
     /// Two states share one artifact id.
     #[error("duplicate GUI state id {0:?}")]
     Duplicate(String),
+    /// A page/overlay pair is not a legal route in the production shell.
+    #[error("invalid GUI state combination {0:?}")]
+    Impossible(String),
 }
 
 /// Parses a state id against the canonical catalog.
@@ -348,6 +365,20 @@ pub fn validate_catalog(states: &[GuiState]) -> Result<(), StateError> {
                 "{} has neither a page nor an overlay",
                 state.id
             )));
+        }
+        if state.overlay.is_some_and(|overlay| {
+            !matches!(
+                overlay,
+                OverlayState::Omnibar
+                    | OverlayState::Palette
+                    | OverlayState::SettingsAppearance
+                    | OverlayState::SettingsEditor
+                    | OverlayState::SettingsAgents
+                    | OverlayState::SettingsDiagnostics
+                    | OverlayState::SettingsLegend
+            )
+        }) {
+            return Err(StateError::Impossible(state.id.clone()));
         }
     }
     Ok(())
@@ -379,7 +410,7 @@ mod tests {
         let states = GuiState::catalog();
         assert_eq!(
             states.len(),
-            PageState::ALL.len() + (PageState::ALL.len() * OverlayState::ALL.len()) + 3
+            PageState::ALL.len() + (PageState::ALL.len() * 7) + 3
         );
         validate_catalog(&states).expect("catalog should be valid");
         assert!(
@@ -387,6 +418,7 @@ mod tests {
                 .iter()
                 .any(|state| state.id == "package--settings-agents")
         );
+        assert!(!states.iter().any(|state| state.id == "package--loading"));
         assert!(states.iter().any(|state| state.id == "shell--vellum"));
     }
 
