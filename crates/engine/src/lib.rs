@@ -17,6 +17,7 @@ pub use blake3;
 pub use serde_json;
 
 pub mod application;
+pub mod advisory;
 pub mod builtin;
 pub mod capability;
 pub mod daemon;
