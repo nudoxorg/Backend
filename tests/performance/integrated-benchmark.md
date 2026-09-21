@@ -59,10 +59,17 @@ RegistryOwner and loopback HTTP transport, then records warm-cache and offline
 restart rows with receipt, delta, target-root, and archive identities. Each
 round requires one metadata response, one archive response, one leader, the
 remaining synchronized callers as followers, exact response-byte accounting,
-and an immutable artifact whose bytes exactly match the fixture archive. GUI
-phase fields are populated only from explicit harness phase timings; the full
-child-process wall is kept separate. GUI promotion requires captured_frames,
-verified_frames, and verified PNG artifacts all equal seven. null allocation
-fields mean the public Rust boundary does not expose an allocation counter;
-GUI child-process resources remain outside host totals. The fallback source
-tree is marked incomplete for promotion.
+and an immutable artifact whose bytes exactly match the fixture archive. The
+acquisition rows also report measured request count, response/downloaded and
+reused bytes, durable bytes written, delta-row count, signed registry storage
+growth, and whether the phase performed no remote/archive work. Warm and
+restart rows therefore expose no-op reuse separately from any journal bytes
+written during receipt accounting. `requests`, `response_bytes`,
+`written_bytes`, `delta_rows`, `storage_growth_bytes`, and `no_op_work` are
+null for the CAS-only rows because those values are outside the registry
+transport boundary. GUI phase fields are populated only from explicit harness
+phase timings; the full child-process wall is kept separate. GUI promotion
+requires captured_frames, verified_frames, and verified PNG artifacts all equal
+seven. null allocation fields mean the public Rust boundary does not expose an
+allocation counter; GUI child-process resources remain outside host totals. The
+fallback source tree is marked incomplete for promotion.

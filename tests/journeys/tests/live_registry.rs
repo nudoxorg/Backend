@@ -15,8 +15,9 @@
 use backend_client::Session;
 use backend_desktop::Model as DesktopModel;
 use backend_library::{
-    Command, CommandDto, CommandReply, PackageReference, ProductText, ProjectName, RowId,
-    SurfaceCommand, SurfaceReply,
+    AcquisitionDecision, Command, CommandDto, CommandReply, DependencyFacts, PackageReference,
+    ProductText, ProjectName, RegistryDownloadCount, RegistryMetadata, RowId, SurfaceCommand,
+    SurfaceReply,
 };
 use backend_mcp::{decode_reply, encode_request};
 use std::ffi::OsString;
@@ -602,6 +603,28 @@ fn assert_registry_facts(endpoint: &Path, coordinate: &str, package_name: &str) 
             assert_eq!(record.name.as_str(), package_name);
             assert!(record.bytes > 0, "package details omitted archive bytes");
             assert_ne!(record.facts_version, [0; 32]);
+            match &record.downloads {
+                RegistryDownloadCount::Exact(_) | RegistryDownloadCount::Approximate(_) => {}
+                RegistryDownloadCount::NotReported(reason) => assert!(
+                    !reason.as_str().is_empty(),
+                    "missing download data must carry a source gap"
+                ),
+            }
+            assert_ne!(record.advisory.schema, 0);
+            if matches!(
+                record.advisory.coverage,
+                backend_library::AdvisoryCoverage::Unknown
+                    | backend_library::AdvisoryCoverage::Unavailable
+            ) {
+                assert!(
+                    !matches!(record.advisory.decision, AcquisitionDecision::Allow),
+                    "unknown advisory coverage must not be projected as clean"
+                );
+            }
+            for advisory in &record.advisory.advisories {
+                assert!(!advisory.canonical_id.is_empty());
+                assert!(!advisory.source_ids.is_empty());
+            }
             record.clone()
         }
         reply => panic!("package details reply changed shape: {reply:?}"),
@@ -626,21 +649,49 @@ fn assert_registry_facts(endpoint: &Path, coordinate: &str, package_name: &str) 
             package: package.clone(),
         })
         .expect("registry dependents");
-    assert!(matches!(
-        dependents,
-        SurfaceReply::Dependents(backend_library::RegistryMetadata::Recorded(_))
-            | SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(_))
-    ));
+    match dependents {
+        SurfaceReply::Dependents(RegistryMetadata::Recorded(records)) => {
+            assert!(records.iter().all(|record| record.facts_version != [0; 32]));
+        }
+        SurfaceReply::Dependents(RegistryMetadata::NotRecorded(reason)) => {
+            assert!(!reason.as_str().is_empty());
+        }
+        reply => panic!("registry dependents reply changed shape: {reply:?}"),
+    }
+    let dependencies = session
+        .surface(SurfaceCommand::Dependencies {
+            package: package.clone(),
+        })
+        .expect("registry dependencies");
+    match dependencies {
+        SurfaceReply::Dependencies(DependencyFacts::Known(records)) => {
+            assert!(records.iter().all(|record| {
+                record.source == package.clone()
+                    && record.facts_version == record.recomputed_version()
+                    && record.evidence.frontier != [0; 32]
+                    && record.evidence.provenance != [0; 32]
+            }));
+        }
+        SurfaceReply::Dependencies(DependencyFacts::Unknown(reason))
+        | SurfaceReply::Dependencies(DependencyFacts::Unavailable(reason)) => {
+            assert!(!reason.as_str().is_empty());
+        }
+        reply => panic!("registry dependencies reply changed shape: {reply:?}"),
+    }
     let owner = session
         .surface(SurfaceCommand::Owner {
             owner: ProductText::new(package_name).expect("registry owner name"),
         })
         .expect("registry owner metadata");
-    assert!(matches!(
-        owner,
-        SurfaceReply::Owner(backend_library::RegistryMetadata::Recorded(_))
-            | SurfaceReply::Owner(backend_library::RegistryMetadata::NotRecorded(_))
-    ));
+    match owner {
+        SurfaceReply::Owner(RegistryMetadata::Recorded(records)) => {
+            assert!(records.iter().all(|record| record.facts_version != [0; 32]));
+        }
+        SurfaceReply::Owner(RegistryMetadata::NotRecorded(reason)) => {
+            assert!(!reason.as_str().is_empty());
+        }
+        reply => panic!("registry owner reply changed shape: {reply:?}"),
+    }
     record.bytes
 }
 

@@ -11,8 +11,8 @@ use backend_engine::acquisition::{
     CorruptReason, RejectReason,
 };
 use backend_engine::registry::{
-    AcquisitionError, EcosystemAdapter, HttpRegistryTransport, PackageCoordinate,
-    admit_registry_coordinate,
+    AcquisitionError, AcquisitionPolicy, EcosystemAdapter, HttpRegistryTransport,
+    PackageCoordinate, admit_registry_coordinate,
 };
 use backend_library::is_hard_ignored_path;
 use flate2::read::{DeflateDecoder, GzDecoder};
@@ -54,10 +54,7 @@ pub(super) enum RegistryAddError {
     /// Release exists but registry policy excludes it from a new add.
     ReleasePolicy(backend_engine::registry::ReleaseStanding),
     /// Active advisory policy excludes this exact release from a new add.
-    SecurityPolicy {
-        advisories: u32,
-        maximum_severity: u8,
-    },
+    SecurityPolicy,
     /// A typed registry acquisition or persistence failure.
     Acquisition(AcquisitionError),
 }
@@ -81,13 +78,9 @@ impl fmt::Display for RegistryAddError {
                     "registry release is {standing:?} and cannot be newly added"
                 )
             }
-            Self::SecurityPolicy {
-                advisories,
-                maximum_severity,
-            } => write!(
-                formatter,
-                "registry release matches {advisories} active advisories (maximum severity {maximum_severity})"
-            ),
+            Self::SecurityPolicy => {
+                formatter.write_str("registry release is excluded by advisory policy")
+            }
             Self::Acquisition(error) => error.fmt(formatter),
         }
     }
@@ -168,9 +161,7 @@ impl RegistryGateway {
     /// the catalog. Unknown and unavailable metadata stay typed all the way to
     /// the product surface; an empty known set is the only representation of
     /// a package that has no declared edges.
-    pub(super) fn dependency_facts(
-        &self,
-    ) -> Vec<backend_engine::PackageDependencySourceFacts> {
+    pub(super) fn dependency_facts(&self) -> Vec<backend_engine::PackageDependencySourceFacts> {
         self.service
             .published_packages()
             .into_iter()
@@ -226,7 +217,6 @@ impl RegistryGateway {
         if self.config.endpoint.is_none() {
             return Err(RegistryAddError::NotConfigured);
         }
-        let mut transport = self.transport(coordinate)?;
         let request = AcquisitionRequest::for_coordinate(
             self.service.source_id(),
             coordinate.to_string(),
@@ -234,13 +224,15 @@ impl RegistryGateway {
             0,
         )
         .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?;
-        let outcome = if self.service.contains(coordinate) {
-            // A repeated add is a request for the already admitted immutable
-            // release. Rehydrate it from the durable owner catalog so a
-            // daemon restart does not turn a warm/offline reuse into a new
-            // network effect or a second cursor reservation.
+        let outcome = if self.service.contains(coordinate)
+            || matches!(self.config.policy, AcquisitionPolicy::Offline)
+        {
+            // A repeated or explicitly offline add is a cache read. Rehydrate
+            // it from the durable owner catalog so a daemon restart does not
+            // create another network effect or cursor reservation.
             self.service.ensure(&request)
         } else {
+            let mut transport = self.transport(coordinate)?;
             self.service.acquire(&request, &mut transport)
         };
         self.finish_acquisition(outcome)
@@ -268,10 +260,7 @@ impl RegistryGateway {
                     ))
                 }
                 backend_engine::acquisition::NegativeFactKind::AdvisoryBlocked => {
-                    Err(RegistryAddError::SecurityPolicy {
-                        advisories: 1,
-                        maximum_severity: 4,
-                    })
+                    Err(RegistryAddError::SecurityPolicy)
                 }
                 backend_engine::acquisition::NegativeFactKind::Unsupported => {
                     Err(RegistryAddError::UnsupportedArchive)
@@ -1177,6 +1166,7 @@ fn hex(value: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{Compression, write::GzEncoder};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1291,6 +1281,32 @@ mod tests {
         assert_eq!(writer.source_files, 1);
         assert!(!root.join("package/node_modules").exists());
         assert!(root.join("package/src/index.js").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gzip_expansion_ratio_is_bounded_before_staging() {
+        let root = scratch();
+        let coordinate = PackageCoordinate::parse("pkg:cargo/bomb@1.0.0").expect("coordinate");
+        let tar = tar_file("package/src/large.rs", &vec![0_u8; 2 * 1024 * 1024]);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+        encoder.write_all(&tar).expect("compress archive");
+        let archive = encoder.finish().expect("finish archive");
+        assert!(
+            archive.len() < tar.len() / 200,
+            "fixture must exercise the ratio cap"
+        );
+        assert!(matches!(
+            stage_archive(&coordinate, &archive, &root),
+            Err(RegistryAddError::Acquisition(AcquisitionError::Bounds))
+        ));
+        assert_eq!(
+            fs::read_dir(root.join("registry-staging"))
+                .expect("staging root")
+                .count(),
+            0,
+            "rejected archive left a temporary staging directory"
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

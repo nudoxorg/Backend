@@ -153,6 +153,146 @@ fn acquisition_service_coalesces_concurrent_registry_effects() {
 }
 
 #[test]
+fn acquisition_service_reuses_a_cached_release_after_not_modified() {
+    struct RevalidatingTransport {
+        package: RemotePackage,
+        archive: Vec<u8>,
+        revalidate: bool,
+        pages: usize,
+        archives: usize,
+    }
+
+    impl RegistryTransport for RevalidatingTransport {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            self.pages += 1;
+            if self.revalidate {
+                return Ok(TransportResult::NotModified);
+            }
+            self.revalidate = true;
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [7; 32],
+                packages: vec![self.package.clone()],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _package: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            self.archives += 1;
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                self.archive.clone(),
+            )))
+        }
+    }
+
+    let endpoint = RegistryEndpoint::new(
+        RegistryEcosystem::Cargo,
+        "http://127.0.0.1:9/etag-revalidation",
+    )
+    .expect("admit endpoint");
+    let archive = b"etag cached archive".to_vec();
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/etag@1.0.0").expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(
+            *CapabilityArtifactId::from_value(&archive).as_bytes(),
+        ),
+        provenance: ProvenanceDigest::from_authenticated_feed([13; 32]),
+        facts: ReleaseFacts::default(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from("http://127.0.0.1:9/etag-revalidation/archive"),
+    };
+    let root = temporary("etag-revalidation");
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("open owner");
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("open acquisition service");
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        package.coordinate.to_string(),
+        1,
+        0,
+    )
+    .expect("request");
+    let refresh_request = request
+        .clone()
+        .with_fact_freshness(crate::acquisition::FactFreshness::always());
+    let mut transport = RevalidatingTransport {
+        package,
+        archive,
+        revalidate: false,
+        pages: 0,
+        archives: 0,
+    };
+
+    assert!(matches!(
+        service.acquire(
+            &request
+                .with_fact_freshness(crate::acquisition::FactFreshness::max_age_millis(u64::MAX)),
+            &mut transport,
+        ),
+        crate::acquisition::AcquisitionOutcome::Hit(_)
+    ));
+    let second = service.acquire(&refresh_request, &mut transport);
+    assert!(matches!(
+        second,
+        crate::acquisition::AcquisitionOutcome::Hit(_)
+    ));
+    assert_eq!(transport.pages, 2, "refresh must exercise the 304 branch");
+    assert_eq!(transport.archives, 1, "304 must reuse the durable archive");
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn not_modified_without_cached_coordinate_stays_unavailable() {
+    struct ValidatorOnlyTransport;
+
+    impl RegistryTransport for ValidatorOnlyTransport {
+        fn fetch_page(
+            &mut self,
+            _request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            Ok(TransportResult::NotModified)
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _package: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            panic!("a 304 without a cached coordinate must not fetch an archive")
+        }
+    }
+
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, "http://127.0.0.1:9/etag-missing")
+            .expect("admit endpoint");
+    let root = temporary("etag-missing");
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("open owner");
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("open acquisition service");
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        "pkg:cargo/etag-missing@1.0.0",
+        1,
+        0,
+    )
+    .expect("request");
+    assert!(matches!(
+        service.acquire(&request, &mut ValidatorOnlyTransport),
+        crate::acquisition::AcquisitionOutcome::Unavailable(_)
+    ));
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
 fn acquisition_service_keeps_negative_facts_distinct_from_unavailable_and_circuit_open() {
     struct EmptyTransport {
         pages: Arc<AtomicU64>,
@@ -321,6 +461,15 @@ fn one_response(
     extra_headers: &str,
     body: Vec<u8>,
 ) -> (String, thread::JoinHandle<()>) {
+    response_with_length(status, extra_headers, body, None)
+}
+
+fn response_with_length(
+    status: u16,
+    extra_headers: &str,
+    body: Vec<u8>,
+    declared_length: Option<usize>,
+) -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture registry");
     let address = listener.local_addr().expect("fixture address");
     let headers = extra_headers.to_owned();
@@ -328,10 +477,10 @@ fn one_response(
         let (mut stream, _) = listener.accept().expect("accept registry request");
         let mut request = [0_u8; 8192];
         let _ = stream.read(&mut request).expect("read request");
+        let content_length = declared_length.unwrap_or(body.len());
         write!(
             stream,
-            "HTTP/1.1 {status} TEST\r\nContent-Length: {}\r\n{headers}Connection: close\r\n\r\n",
-            body.len()
+            "HTTP/1.1 {status} TEST\r\nContent-Length: {content_length}\r\n{headers}Connection: close\r\n\r\n",
         )
         .expect("write headers");
         stream.write_all(&body).expect("write body");
@@ -1367,6 +1516,81 @@ fn rate_limit_preserves_and_clamps_the_server_retry_delay() {
         ));
         server.join().expect("server");
     }
+}
+
+#[test]
+fn server_failures_and_partial_bodies_remain_typed() {
+    let (endpoint_text, server) = one_response(500, "", Vec::new());
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("loopback endpoint");
+    let cursor = FeedCursor::genesis(endpoint.id());
+    let mut transport = HttpRegistryTransport::new(endpoint, None, limits()).expect("transport");
+    assert!(matches!(
+        transport.fetch_page(FeedRequest {
+            cursor,
+            max_items: 1
+        }),
+        Err(TransportFailure::Rejected(500))
+    ));
+    server.join().expect("500 server");
+
+    let (endpoint_text, server) = one_response(503, "Retry-After: 17\r\n", Vec::new());
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("loopback endpoint");
+    let cursor = FeedCursor::genesis(endpoint.id());
+    let mut transport = HttpRegistryTransport::new(endpoint, None, limits()).expect("transport");
+    assert!(matches!(
+        transport.fetch_page(FeedRequest { cursor, max_items: 1 }),
+        Ok(TransportResult::RetryAfter(delay)) if delay == std::time::Duration::from_secs(17)
+    ));
+    server.join().expect("503 server");
+
+    let body = b"{\"schema\":1}".to_vec();
+    let (endpoint_text, server) =
+        response_with_length(200, "", body.clone(), Some(body.len().saturating_add(1)));
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("loopback endpoint");
+    let cursor = FeedCursor::genesis(endpoint.id());
+    let mut transport = HttpRegistryTransport::new(endpoint, None, limits()).expect("transport");
+    assert!(matches!(
+        transport.fetch_page(FeedRequest {
+            cursor,
+            max_items: 1
+        }),
+        Err(TransportFailure::Protocol)
+    ));
+    server.join().expect("partial server");
+}
+
+#[test]
+fn metadata_404_becomes_a_durable_not_found_fact() {
+    let (endpoint_text, server) = one_response(404, "", Vec::new());
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("loopback endpoint");
+    let root = temporary("metadata-404");
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("open owner");
+    let service =
+        crate::acquisition::AcquisitionService::from_owner(owner, root.join("coordination"))
+            .expect("open acquisition service");
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        "pkg:cargo/missing@1.0.0",
+        1,
+        0,
+    )
+    .expect("request");
+    let mut transport = HttpRegistryTransport::new(endpoint, None, limits()).expect("transport");
+    assert!(matches!(
+        service.acquire(&request, &mut transport),
+        crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
+            kind: crate::acquisition::NegativeFactKind::NotFound,
+            ..
+        })
+    ));
+    server.join().expect("404 server");
+    fs::remove_dir_all(root).expect("cleanup");
 }
 
 #[test]

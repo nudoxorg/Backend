@@ -2447,6 +2447,10 @@ impl AcquisitionService {
                         let mut owner_guard = owner
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let package = owner_guard
+                            .published_packages()
+                            .find(|package| package.coordinate.as_str() == requested)
+                            .cloned();
                         match owner_guard.settle_reserved(intent) {
                             Ok(()) => {}
                             Err(AcquisitionError::StaleReservation) => continue,
@@ -2458,6 +2462,98 @@ impl AcquisitionService {
                                 ));
                             }
                         }
+                        let Some(package) = package else {
+                            // A 304 confirms that the previously observed
+                            // metadata representation is unchanged, but this
+                            // owner does not retain enough page evidence to
+                            // turn that validator response into an exact
+                            // absence claim for an unseen coordinate.
+                            return AcquisitionOutcome::Unavailable(Unavailable {
+                                source: request.source,
+                            });
+                        };
+                        breaker.success();
+                        let current_epoch = owner_guard.policy_epoch();
+                        remember_fact_observation(
+                            &mut fact_observations
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                            requested,
+                            now_millis(),
+                            current_epoch,
+                        );
+                        if matches!(
+                            package.facts.standing(),
+                            crate::registry::ReleaseStanding::Yanked
+                        ) {
+                            let cursor = owner_guard.cursor().token();
+                            let fact = NegativeFact {
+                                kind: NegativeFactKind::Yanked,
+                                authority: request.source,
+                                source_proof: cursor,
+                                cursor,
+                                observed_at_millis: now_millis(),
+                                expires_at_millis: now_millis().saturating_add(60_000),
+                                policy_epoch: current_epoch,
+                            };
+                            negative.record(*key.as_bytes(), fact);
+                            return AcquisitionOutcome::NegativeFact(fact);
+                        }
+                        if !owner_guard.cached_policy_allows(&package) {
+                            let cursor = owner_guard.cursor().token();
+                            let fact = NegativeFact {
+                                kind: NegativeFactKind::AdvisoryBlocked,
+                                authority: request.source,
+                                source_proof: cursor,
+                                cursor,
+                                observed_at_millis: now_millis(),
+                                expires_at_millis: now_millis().saturating_add(60_000),
+                                policy_epoch: current_epoch,
+                            };
+                            negative.record(*key.as_bytes(), fact);
+                            return AcquisitionOutcome::NegativeFact(fact);
+                        }
+                        let target = match registry_catalog_snapshot(
+                            &owner_guard,
+                            current_epoch,
+                            &snapshot_cache,
+                        ) {
+                            Ok(target) => target,
+                            Err(outcome) => return promote_bytes_outcome(outcome),
+                        };
+                        let result = match registry_result(
+                            &owner_guard,
+                            &base,
+                            target,
+                            package,
+                            &request,
+                            current_epoch,
+                        ) {
+                            Ok(result) => Arc::new(result),
+                            Err(outcome) => return promote_bytes_outcome(outcome),
+                        };
+                        return AcquisitionOutcome::Hit(result);
+                    }
+                    Err(AcquisitionError::Transport(TransportFailure::Rejected(404))) => {
+                        // A metadata 404 is a source-attested absence. Settle
+                        // the prepared intent before retaining the negative
+                        // fact so a restart cannot replay an already resolved
+                        // miss as an unfinished network effect.
+                        let mut owner_guard = owner
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        match owner_guard.settle_reserved(intent) {
+                            Ok(()) => {}
+                            Err(AcquisitionError::StaleReservation) => continue,
+                            Err(error) => {
+                                return promote_bytes_outcome(registry_error_outcome(
+                                    error,
+                                    request.source,
+                                    &breaker,
+                                ));
+                            }
+                        }
+                        breaker.success();
                         let cursor = owner_guard.cursor().token();
                         let current_epoch = owner_guard.policy_epoch();
                         let fact = NegativeFact {

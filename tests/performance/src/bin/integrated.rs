@@ -273,6 +273,12 @@ struct AcquisitionMeasurement {
     buffer_ceiling_bytes: usize,
     downloaded_bytes: usize,
     reused_bytes: usize,
+    requests: Option<usize>,
+    response_bytes: Option<usize>,
+    written_bytes: Option<usize>,
+    delta_rows: Option<usize>,
+    storage_growth_bytes: Option<i64>,
+    no_op_work: Option<bool>,
     memory_high_water_bytes: Option<usize>,
     receipt_id: Option<String>,
     delta_id: Option<String>,
@@ -1056,6 +1062,14 @@ fn dir_bytes(root: &Path) -> usize {
     let mut total = 0;
     recurse(root, &mut total);
     total
+}
+
+fn signed_storage_growth(before: usize, after: usize) -> i64 {
+    if after >= before {
+        after.saturating_sub(before).min(i64::MAX as usize) as i64
+    } else {
+        -(before.saturating_sub(after).min(i64::MAX as usize) as i64)
+    }
 }
 
 fn temp_root(label: &str) -> PathBuf {
@@ -2070,6 +2084,36 @@ struct NetworkRound {
     fixture: LoopbackFixtureReport,
     telemetry_leaders: u64,
     telemetry_followers: u64,
+    cold_metrics: NetworkPhaseMetrics,
+    warm_metrics: NetworkPhaseMetrics,
+    restart_metrics: NetworkPhaseMetrics,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct NetworkPhaseMetrics {
+    requests: usize,
+    response_bytes: usize,
+    downloaded_bytes: usize,
+    reused_bytes: usize,
+    written_bytes: usize,
+    delta_rows: usize,
+    storage_growth_bytes: i64,
+    no_op_work: bool,
+}
+
+impl NetworkPhaseMetrics {
+    fn add(&mut self, other: Self) {
+        self.requests = self.requests.saturating_add(other.requests);
+        self.response_bytes = self.response_bytes.saturating_add(other.response_bytes);
+        self.downloaded_bytes = self.downloaded_bytes.saturating_add(other.downloaded_bytes);
+        self.reused_bytes = self.reused_bytes.saturating_add(other.reused_bytes);
+        self.written_bytes = self.written_bytes.saturating_add(other.written_bytes);
+        self.delta_rows = self.delta_rows.saturating_add(other.delta_rows);
+        self.storage_growth_bytes = self
+            .storage_growth_bytes
+            .saturating_add(other.storage_growth_bytes);
+        self.no_op_work |= other.no_op_work;
+    }
 }
 
 fn run_network_round(
@@ -2094,6 +2138,7 @@ fn run_network_round(
         owner,
         registry_root.join("service-coordination"),
     )?);
+    let baseline_storage_bytes = dir_bytes(&registry_root);
     let request = AcquisitionRequest::new(
         service.source_id(),
         "pkg:cargo/integrated-fixture@1.0.0",
@@ -2150,6 +2195,7 @@ fn run_network_round(
         .map_err(|_| "loopback fixture thread panicked".to_owned())??;
     let cold_result = cold_result.ok_or("singleflight emitted no result")?;
     let telemetry = service.telemetry();
+    let cold_storage_bytes = dir_bytes(&registry_root);
     let expected_network_bytes = endpoint_seed.len().saturating_add(archive.len());
     let fixture_ok = fixture.requests == 2
         && fixture.feed_requests == 1
@@ -2174,8 +2220,7 @@ fn run_network_round(
     }
 
     let warm_started = Instant::now();
-    let mut warm_transport = HttpRegistryTransport::new(endpoint.clone(), None, registry_limits)?;
-    let warm_result = match service.acquire(&request, &mut warm_transport) {
+    let warm_result = match service.ensure(&request) {
         AcquisitionOutcome::Hit(result) => result,
         _ => return Err("warm registry cache resolution was not a hit".into()),
     };
@@ -2189,6 +2234,17 @@ fn run_network_round(
     if !warm_identity_ok {
         return Err("warm registry cache changed an immutable identity".into());
     }
+    let warm_storage_bytes = dir_bytes(&registry_root);
+    let warm_metrics = NetworkPhaseMetrics {
+        requests: 0,
+        response_bytes: 0,
+        downloaded_bytes: 0,
+        reused_bytes: archive.len(),
+        written_bytes: warm_storage_bytes.saturating_sub(cold_storage_bytes),
+        delta_rows: warm_result.delta.changes().len(),
+        storage_growth_bytes: signed_storage_growth(cold_storage_bytes, warm_storage_bytes),
+        no_op_work: true,
+    };
 
     drop(service);
     let (restarted_owner, _) = RegistryOwner::open(
@@ -2207,7 +2263,10 @@ fn run_network_round(
         RawArchiveObjectId::from_bytes(archive),
         1,
         0,
-    )?;
+    )?
+    .with_fact_freshness(backend_engine::acquisition::FactFreshness::max_age_millis(
+        u64::MAX,
+    ));
     let restart_started = Instant::now();
     let mut offline_transport = HttpRegistryTransport::new(
         RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_url)?,
@@ -2219,11 +2278,40 @@ fn run_network_round(
         other => return Err(format!("offline registry restart was not a hit: {other:?}").into()),
     };
     let restart_ns = restart_started.elapsed().as_nanos();
-    let restart_identity_ok = restart_result.receipt.target == cold_result.receipt.target
-        && restart_result.artifact.version().as_ref() == cold_result.artifact.version().as_ref();
+    let restart_identity_ok = restart_result.artifact.version().as_ref()
+        == cold_result.artifact.version().as_ref()
+        && restart_result.snapshot.source() == cold_result.snapshot.source()
+        && restart_result.snapshot.cursor() == cold_result.snapshot.cursor()
+        && restart_result.snapshot.facts_frontier() == cold_result.snapshot.facts_frontier()
+        && restart_result.snapshot.manifest().entries()
+            == cold_result.snapshot.manifest().entries()
+        && restart_result.snapshot.claims() == cold_result.snapshot.claims();
     if !restart_identity_ok {
-        return Err("restart registry cache changed an immutable identity".into());
+        return Err(
+            "restart registry cache changed an immutable archive or catalog identity".into(),
+        );
     }
+    let restart_storage_bytes = dir_bytes(&registry_root);
+    let restart_metrics = NetworkPhaseMetrics {
+        requests: 0,
+        response_bytes: 0,
+        downloaded_bytes: 0,
+        reused_bytes: archive.len(),
+        written_bytes: restart_storage_bytes.saturating_sub(warm_storage_bytes),
+        delta_rows: restart_result.delta.changes().len(),
+        storage_growth_bytes: signed_storage_growth(warm_storage_bytes, restart_storage_bytes),
+        no_op_work: true,
+    };
+    let cold_metrics = NetworkPhaseMetrics {
+        requests: fixture.requests as usize,
+        response_bytes: fixture.response_bytes as usize,
+        downloaded_bytes: fixture.response_bytes as usize,
+        reused_bytes: 0,
+        written_bytes: cold_storage_bytes.saturating_sub(baseline_storage_bytes),
+        delta_rows: cold_result.delta.changes().len(),
+        storage_growth_bytes: signed_storage_growth(baseline_storage_bytes, cold_storage_bytes),
+        no_op_work: false,
+    };
     let _ = fs::remove_dir_all(registry_root);
     Ok(NetworkRound {
         callers,
@@ -2236,6 +2324,9 @@ fn run_network_round(
         fixture,
         telemetry_leaders: telemetry.leaders,
         telemetry_followers: telemetry.followers,
+        cold_metrics,
+        warm_metrics,
+        restart_metrics,
     })
 }
 
@@ -2300,6 +2391,12 @@ fn run_acquisition(
         buffer_ceiling_bytes: limits.max_chunk,
         downloaded_bytes: bytes.len(),
         reused_bytes: 0,
+        requests: None,
+        response_bytes: None,
+        written_bytes: None,
+        delta_rows: None,
+        storage_growth_bytes: None,
+        no_op_work: None,
         memory_high_water_bytes: None,
         receipt_id: None,
         delta_id: None,
@@ -2332,6 +2429,12 @@ fn run_acquisition(
         buffer_ceiling_bytes: limits.max_chunk,
         downloaded_bytes: 0,
         reused_bytes: bytes.len() * 32,
+        requests: None,
+        response_bytes: None,
+        written_bytes: None,
+        delta_rows: None,
+        storage_growth_bytes: None,
+        no_op_work: None,
         memory_high_water_bytes: None,
         receipt_id: None,
         delta_id: None,
@@ -2360,6 +2463,12 @@ fn run_acquisition(
         buffer_ceiling_bytes: limits.max_chunk,
         downloaded_bytes: 0,
         reused_bytes: bytes.len(),
+        requests: None,
+        response_bytes: None,
+        written_bytes: None,
+        delta_rows: None,
+        storage_growth_bytes: None,
+        no_op_work: None,
         memory_high_water_bytes: None,
         receipt_id: None,
         delta_id: None,
@@ -2399,6 +2508,9 @@ fn run_acquisition(
         let mut cold = Vec::with_capacity(rounds);
         let mut warm = Vec::with_capacity(rounds);
         let mut restart = Vec::with_capacity(rounds);
+        let mut cold_metrics = NetworkPhaseMetrics::default();
+        let mut warm_metrics = NetworkPhaseMetrics::default();
+        let mut restart_metrics = NetworkPhaseMetrics::default();
         let mut latest = None;
         let mut assertions = Vec::new();
         for round in 0..rounds {
@@ -2412,6 +2524,9 @@ fn run_acquisition(
             cold.push(result.cold_ns);
             warm.push(result.warm_ns);
             restart.push(result.restart_ns);
+            cold_metrics.add(result.cold_metrics);
+            warm_metrics.add(result.warm_metrics);
+            restart_metrics.add(result.restart_metrics);
             assertions.push(format!(
                 "round {}: {} callers, {} leader, {} followers, one feed/archive and {} response bytes",
                 round + 1,
@@ -2437,8 +2552,7 @@ fn run_acquisition(
              operation: String,
              phase: String,
              timings: Vec<u128>,
-             downloaded_bytes: usize,
-             reused_bytes: usize,
+             metrics: NetworkPhaseMetrics,
              result: &Arc<backend_engine::acquisition::RegistryAcquisitionResult>| {
                 measurements.push(AcquisitionMeasurement {
                     schema: JSON_SCHEMA,
@@ -2448,8 +2562,14 @@ fn run_acquisition(
                     wall: stats(&mut timings.clone()),
                     calls: callers,
                     buffer_ceiling_bytes: registry_limits.max_archive_bytes,
-                    downloaded_bytes,
-                    reused_bytes,
+                    downloaded_bytes: metrics.downloaded_bytes,
+                    reused_bytes: metrics.reused_bytes,
+                    requests: Some(metrics.requests),
+                    response_bytes: Some(metrics.response_bytes),
+                    written_bytes: Some(metrics.written_bytes),
+                    delta_rows: Some(metrics.delta_rows),
+                    storage_growth_bytes: Some(metrics.storage_growth_bytes),
+                    no_op_work: Some(metrics.no_op_work),
                     memory_high_water_bytes: None,
                     receipt_id: Some(root_hex(result.receipt.id.as_bytes())),
                     delta_id: Some(root_hex(result.delta.id().as_bytes())),
@@ -2461,14 +2581,12 @@ fn run_acquisition(
                     },
                 });
             };
-        let rounds_bytes = rounds.saturating_mul(archive.len());
         push_network(
             &mut measurements,
             format!("network_singleflight_{callers}_calls"),
             "cold_loopback_network".to_owned(),
             cold,
-            rounds_bytes,
-            rounds_bytes.saturating_mul(callers.saturating_sub(1)),
+            cold_metrics,
             &latest.cold_result,
         );
         push_network(
@@ -2476,8 +2594,7 @@ fn run_acquisition(
             format!("network_warm_cache_{callers}_calls"),
             "warm_cache".to_owned(),
             warm,
-            0,
-            rounds_bytes,
+            warm_metrics,
             &latest.warm_result,
         );
         push_network(
@@ -2485,8 +2602,7 @@ fn run_acquisition(
             format!("network_restart_offline_{callers}_calls"),
             "warm_restart_offline".to_owned(),
             restart,
-            0,
-            rounds_bytes,
+            restart_metrics,
             &latest.restart_result,
         );
         debug_assert_eq!(
