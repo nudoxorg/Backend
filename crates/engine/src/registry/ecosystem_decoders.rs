@@ -5,12 +5,14 @@
 //! authenticated archive digest (Maven and Go); this module stays pure and
 //! never turns a missing claim into a fabricated checksum.
 
-use serde_json::Value;
+use std::collections::BTreeSet;
+
 use backend_library::{
     DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
     PackageDependencyRecord, PackageDependencyTarget, PackageReference, ProductText,
     admit_dependency_rows,
 };
+use serde_json::Value;
 
 use super::super::transport::ArchiveIntegrity;
 use super::{EcosystemAdapter, RegistryChecksum, TransportFailure, component};
@@ -57,11 +59,8 @@ impl EcosystemAdapter {
                     DownloadCount::NotReported(DownloadCountGap::Unsupported),
                 ),
             )?;
-            release.dependency_facts = cargo_dependencies(
-                &release.coordinate,
-                &row,
-                line.as_bytes(),
-            )?;
+            release.dependency_facts =
+                cargo_dependencies(&release.coordinate, &row, line.as_bytes())?;
             releases.push(release);
         }
         Ok(releases)
@@ -109,11 +108,7 @@ impl EcosystemAdapter {
                         DownloadCount::NotReported(DownloadCountGap::Unsupported),
                     ),
                 )?;
-                release.dependency_facts = npm_dependencies(
-                    &release.coordinate,
-                    row,
-                    &encoded,
-                )?;
+                release.dependency_facts = npm_dependencies(&release.coordinate, row, &encoded)?;
                 Ok(release)
             })
             .collect()
@@ -266,19 +261,35 @@ impl EcosystemAdapter {
 
     pub(crate) fn conan_revision(&self, bytes: &[u8]) -> Result<String, TransportFailure> {
         let root: Value = serde_json::from_slice(bytes).map_err(|_| TransportFailure::Protocol)?;
-        let reference = field(&root, "reference")?;
-        let expected_prefix = format!("{}/{}@", self.package_name(), self.conan_recipe_version());
-        if !reference.starts_with(&expected_prefix) {
-            return Err(TransportFailure::Protocol);
+        if let Some(reference) = root.get("reference").and_then(Value::as_str) {
+            let expected_prefix =
+                format!("{}/{}@", self.package_name(), self.conan_recipe_version());
+            if !reference.starts_with(&expected_prefix) {
+                return Err(TransportFailure::Protocol);
+            }
         }
-        root.get("revisions")
+        let revisions = root
+            .get("revisions")
             .and_then(Value::as_array)
-            .and_then(|revisions| revisions.first())
-            .and_then(|revision| revision.get("revision"))
-            .and_then(Value::as_str)
-            .filter(|revision| !revision.is_empty())
-            .map(str::to_owned)
-            .ok_or(TransportFailure::Protocol)
+            .ok_or(TransportFailure::Protocol)?;
+        let mut seen = BTreeSet::new();
+        let mut selected = None;
+        for row in revisions {
+            let revision = field(row, "revision")?;
+            if revision.is_empty() || revision.len() > 128 || !seen.insert(revision.to_owned()) {
+                return Err(TransportFailure::Protocol);
+            }
+            if let Some(time) = row.get("time").and_then(Value::as_str) {
+                if !valid_conan_timestamp(time) {
+                    return Err(TransportFailure::Protocol);
+                }
+            }
+            // Conan servers return newest first. The response order is part of
+            // the authenticated listing, so retaining the first row avoids
+            // inventing a local wall-clock ordering across mirrors.
+            selected.get_or_insert_with(|| revision.to_owned());
+        }
+        selected.ok_or(TransportFailure::DownloadUnavailable)
     }
 
     pub(crate) fn conan_files_url(&self, revision: &str) -> String {
@@ -295,21 +306,58 @@ impl EcosystemAdapter {
             "{}/v2/conans/{}/{}/_/_/revisions/{revision}/files/{file}",
             self.endpoint_url(),
             component(self.package_name()),
-            component(self.conan_recipe_version())
+            component(self.conan_recipe_version()),
+            file = component(file)
         )
     }
 
     pub(crate) fn conan_archive_name(&self, bytes: &[u8]) -> Result<String, TransportFailure> {
+        self.conan_file_manifest(bytes)?.preferred_archive_name()
+    }
+
+    pub(crate) fn conan_file_manifest(
+        &self,
+        bytes: &[u8],
+    ) -> Result<ConanFileManifest, TransportFailure> {
         let root: Value = serde_json::from_slice(bytes).map_err(|_| TransportFailure::Protocol)?;
         let files = root
             .get("files")
             .and_then(Value::as_object)
             .ok_or(TransportFailure::Protocol)?;
-        ["conan_export.tgz", "conan_sources.tgz"]
-            .iter()
-            .find(|name| files.contains_key(**name))
-            .map(|name| (*name).to_owned())
-            .ok_or(TransportFailure::DownloadUnavailable)
+        if files.is_empty() || files.len() > 4_096 {
+            return Err(if files.is_empty() {
+                TransportFailure::DownloadUnavailable
+            } else {
+                TransportFailure::Overrun {
+                    measured: u64::try_from(files.len()).map_err(|_| TransportFailure::Bounds)?,
+                    limit: 4_096,
+                }
+            });
+        }
+        let mut entries = Vec::with_capacity(files.len());
+        for (name, value) in files {
+            if !safe_conan_file_name(name) {
+                return Err(TransportFailure::Protocol);
+            }
+            let object = value.as_object().ok_or(TransportFailure::Protocol)?;
+            let sha256 = match object.get("sha256") {
+                Some(Value::String(value)) => Some(RegistryChecksum::sha256_hex(value)?),
+                Some(Value::Null) | None => None,
+                Some(_) => return Err(TransportFailure::Protocol),
+            };
+            let size = match object.get("size") {
+                Some(Value::Number(value)) => value.as_u64(),
+                Some(Value::Null) | None => None,
+                Some(_) => return Err(TransportFailure::Protocol),
+            };
+            entries.push(ConanFileEntry {
+                name: name.to_owned(),
+                sha256,
+                size,
+            });
+        }
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(ConanFileManifest { entries })
     }
 
     pub(crate) fn nuget_metadata(
@@ -399,21 +447,101 @@ impl EcosystemAdapter {
 
     pub(crate) fn go_versions(&self, bytes: &[u8]) -> Result<Vec<String>, TransportFailure> {
         let text = std::str::from_utf8(bytes).map_err(|_| TransportFailure::Protocol)?;
-        let mut versions = text
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(str::trim)
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        if versions
-            .iter()
-            .any(|version| version.split_whitespace().count() != 1)
-        {
+        let mut seen = BTreeSet::new();
+        let mut versions = Vec::new();
+        for line in text.lines() {
+            let version = line.trim();
+            if version.is_empty()
+                || version != line.trim_end_matches('\r')
+                || version.split_whitespace().count() != 1
+                || !valid_go_version(version)
+                || !seen.insert(version.to_owned())
+            {
+                // The proxy protocol is deliberately line-oriented. A blank
+                // line is harmless (many mirrors append one), but any other
+                // whitespace or duplicate is evidence that this is not the
+                // version list for the requested module. Silently deduping a
+                // changed listing would make the durable cursor non-replayable.
+                if version.is_empty() {
+                    continue;
+                }
+                return Err(TransportFailure::Protocol);
+            }
+            versions.push(version.to_owned());
+        }
+        versions.sort_by(|left, right| go_version_cmp(left, right));
+        Ok(versions)
+    }
+
+    /// Decodes the authenticated `.info` response for one exact version.
+    ///
+    /// The proxy specification permits future fields, but the version field
+    /// is the binding that prevents a branch/revision lookup from being
+    /// accidentally admitted under a different immutable coordinate.
+    pub(crate) fn go_info(
+        &self,
+        bytes: &[u8],
+        requested: &str,
+    ) -> Result<GoInfo, TransportFailure> {
+        let root: Value = serde_json::from_slice(bytes).map_err(|_| TransportFailure::Protocol)?;
+        let version = field(&root, "Version")?;
+        if version != requested || !valid_go_version(version) {
             return Err(TransportFailure::Protocol);
         }
-        versions.sort();
-        versions.dedup();
-        Ok(versions)
+        if let Some(time) = root.get("Time") {
+            let time = time.as_str().ok_or(TransportFailure::Protocol)?;
+            if !valid_rfc3339(time) {
+                return Err(TransportFailure::Protocol);
+            }
+        }
+        Ok(GoInfo {
+            version: version.to_owned(),
+            provenance: bytes.to_owned(),
+        })
+    }
+
+    /// Decodes a Go module file, retaining only facts that can be projected
+    /// into the shared package graph. Unknown directives remain forward
+    /// compatible, while malformed `require`/`retract` blocks fail closed.
+    pub(crate) fn go_mod(&self, bytes: &[u8], requested: &str) -> Result<GoMod, TransportFailure> {
+        let text = std::str::from_utf8(bytes).map_err(|_| TransportFailure::Protocol)?;
+        let module_path = self.go_module_path();
+        parse_go_mod(text, &module_path, requested)
+    }
+
+    pub(crate) fn go_dependencies(
+        &self,
+        source: &super::PackageCoordinate,
+        module: &GoMod,
+        provenance: &[u8],
+    ) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
+        let source = PackageReference::parse(source.as_str().to_owned())
+            .map_err(|_| TransportFailure::Protocol)?;
+        let digest = *blake3::hash(provenance).as_bytes();
+        let mut rows = Vec::with_capacity(module.requires.len());
+        for requirement in &module.requires {
+            let target = PackageDependencyTarget::new(
+                backend_semantic::vocabulary::RegistryEcosystem::Golang,
+                requirement.module.clone(),
+                requirement.version.clone(),
+                None,
+            )
+            .map_err(|_| TransportFailure::Protocol)?;
+            rows.push(PackageDependencyRecord::new(
+                source.clone(),
+                target,
+                DependencyScope::Runtime,
+                false,
+                DependencyEvidence {
+                    authority: DependencyAuthority::RegistryMetadata,
+                    frontier: digest,
+                    provenance: digest,
+                },
+            ));
+        }
+        Ok(DependencyFacts::Known(
+            admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+        ))
     }
 
     pub(crate) fn go_release(
@@ -533,6 +661,247 @@ impl EcosystemAdapter {
             component(version)
         )
     }
+
+    pub(crate) fn go_module_path(&self) -> String {
+        self.namespace.as_ref().map_or_else(
+            || self.package_name().to_owned(),
+            |namespace| format!("{}/{}", namespace.as_str(), self.package_name()),
+        )
+    }
+}
+
+/// Unauthenticated timestamp metadata from a Go proxy `.info` response.
+/// The raw response remains part of release provenance, but its timestamp is
+/// intentionally not used as an integrity claim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GoInfo {
+    pub(crate) version: String,
+    pub(crate) provenance: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GoMod {
+    pub(crate) module: String,
+    pub(crate) requires: Vec<GoRequire>,
+    pub(crate) retracts: Vec<GoRetract>,
+    pub(crate) provenance: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GoRequire {
+    pub(crate) module: String,
+    pub(crate) version: String,
+    pub(crate) indirect: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GoRetract {
+    pub(crate) lower: String,
+    pub(crate) upper: String,
+}
+
+impl GoRetract {
+    pub(crate) fn contains(&self, version: &str) -> bool {
+        go_version_cmp(&self.lower, version).is_le() && go_version_cmp(version, &self.upper).is_le()
+    }
+}
+
+fn valid_go_version(version: &str) -> bool {
+    let Some(rest) = version.strip_prefix('v') else {
+        return false;
+    };
+    if rest.is_empty() || rest.bytes().any(|byte| byte.is_ascii_whitespace()) {
+        return false;
+    }
+    let core = rest.split_once('+').map_or(rest, |(core, _)| core);
+    let core = core.split_once('-').map_or(core, |(core, _)| core);
+    let mut numbers = core.split('.');
+    let Some(major) = numbers.next() else {
+        return false;
+    };
+    let Some(minor) = numbers.next() else {
+        return false;
+    };
+    let Some(patch) = numbers.next() else {
+        return false;
+    };
+    numbers.next().is_none()
+        && !major.is_empty()
+        && !minor.is_empty()
+        && !patch.is_empty()
+        && major.parse::<u64>().is_ok()
+        && minor.parse::<u64>().is_ok()
+        && patch.parse::<u64>().is_ok()
+}
+
+fn go_version_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    let left_key = go_version_key(left);
+    let right_key = go_version_key(right);
+    left_key.cmp(&right_key).then_with(|| left.cmp(right))
+}
+
+fn go_version_key(value: &str) -> (u64, u64, u64, bool, String, String) {
+    let rest = value.strip_prefix('v').unwrap_or(value);
+    let (without_build, build) = rest.split_once('+').map_or((rest, ""), |parts| parts);
+    let (core, pre) = without_build
+        .split_once('-')
+        .map_or((without_build, ""), |parts| parts);
+    let mut numbers = core.split('.');
+    let major = numbers
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let minor = numbers
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let patch = numbers
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    (
+        major,
+        minor,
+        patch,
+        pre.is_empty(),
+        pre.to_owned(),
+        build.to_owned(),
+    )
+}
+
+fn valid_rfc3339(value: &str) -> bool {
+    // Keep this parser allocation-free and intentionally conservative. The Go
+    // protocol requires an RFC 3339 timestamp when Time is present; accepting
+    // only the canonical UTC form avoids locale/time-zone normalization in the
+    // content identity while still admitting real proxy responses.
+    value.len() >= 20
+        && value.as_bytes().get(4) == Some(&b'-')
+        && value.as_bytes().get(7) == Some(&b'-')
+        && value.as_bytes().get(10) == Some(&b'T')
+        && value.as_bytes().get(13) == Some(&b':')
+        && value.as_bytes().get(16) == Some(&b':')
+        && value.ends_with('Z')
+        && value.bytes().enumerate().all(|(index, byte)| {
+            matches!(index, 4 | 7 | 10 | 13 | 16)
+                || (index < value.len() - 1 && byte.is_ascii_digit())
+                || (index >= 19 && (byte.is_ascii_digit() || byte == b'.'))
+                || index == value.len() - 1
+        })
+}
+
+fn parse_go_mod(
+    text: &str,
+    expected_module: &str,
+    requested: &str,
+) -> Result<GoMod, TransportFailure> {
+    let mut module = None;
+    let mut requires = Vec::new();
+    let mut retracts = Vec::new();
+    let mut block = None;
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let (line, comment) = line.split_once("//").map_or((line, ""), |parts| parts);
+        let line = line.trim();
+        if line == ")" {
+            if block.take().is_none() {
+                return Err(TransportFailure::Protocol);
+            }
+            continue;
+        }
+        if let Some(kind) = block {
+            match kind {
+                GoModBlock::Require => parse_go_require_line(line, comment, &mut requires)?,
+                GoModBlock::Retract => parse_go_retract_line(line, &mut retracts)?,
+            }
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("module ") {
+            if module.replace(path.trim().to_owned()).is_some() || path.trim() != expected_module {
+                return Err(TransportFailure::Protocol);
+            }
+        } else if line == "require (" {
+            block = Some(GoModBlock::Require);
+        } else if line == "retract (" {
+            block = Some(GoModBlock::Retract);
+        } else if let Some(rest) = line.strip_prefix("require ") {
+            parse_go_require_line(rest, comment, &mut requires)?;
+        } else if let Some(rest) = line.strip_prefix("retract ") {
+            parse_go_retract_line(rest, &mut retracts)?;
+        }
+    }
+    if block.is_some() || module.as_deref() != Some(expected_module) {
+        return Err(TransportFailure::Protocol);
+    }
+    if retracts.iter().any(|range| range.contains(requested)) {
+        // The caller projects this into a mutable standing; retaining all
+        // ranges in the typed fact keeps later version-delta refreshes cheap.
+    }
+    Ok(GoMod {
+        module: expected_module.to_owned(),
+        requires,
+        retracts,
+        provenance: text.as_bytes().to_owned(),
+    })
+}
+
+#[derive(Clone, Copy)]
+enum GoModBlock {
+    Require,
+    Retract,
+}
+
+fn parse_go_require_line(
+    line: &str,
+    comment: &str,
+    requires: &mut Vec<GoRequire>,
+) -> Result<(), TransportFailure> {
+    let mut fields = line.split_ascii_whitespace();
+    let module = fields.next().ok_or(TransportFailure::Protocol)?;
+    let version = fields.next().ok_or(TransportFailure::Protocol)?;
+    if fields.next().is_some() || module.contains(char::is_whitespace) || !valid_go_version(version)
+    {
+        return Err(TransportFailure::Protocol);
+    }
+    requires.push(GoRequire {
+        module: module.to_owned(),
+        version: version.to_owned(),
+        indirect: comment.trim() == "indirect",
+    });
+    Ok(())
+}
+
+fn parse_go_retract_line(
+    line: &str,
+    retracts: &mut Vec<GoRetract>,
+) -> Result<(), TransportFailure> {
+    let mut fields = line.split_ascii_whitespace();
+    let first = fields.next().ok_or(TransportFailure::Protocol)?;
+    let second = fields.next();
+    if fields.next().is_some() {
+        return Err(TransportFailure::Protocol);
+    }
+    let (lower, upper) = if let Some(second) = second {
+        let lower = first
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(','))
+            .ok_or(TransportFailure::Protocol)?;
+        let upper = second.strip_suffix(']').ok_or(TransportFailure::Protocol)?;
+        (lower, upper)
+    } else {
+        (first, first)
+    };
+    if !valid_go_version(lower) || !valid_go_version(upper) || go_version_cmp(lower, upper).is_gt()
+    {
+        return Err(TransportFailure::Protocol);
+    }
+    retracts.push(GoRetract {
+        lower: lower.to_owned(),
+        upper: upper.to_owned(),
+    });
+    Ok(())
 }
 
 fn cargo_dependencies(
@@ -541,10 +910,10 @@ fn cargo_dependencies(
     provenance: &[u8],
 ) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
     let Some(values) = row.get("deps").and_then(Value::as_array) else {
-        return Ok(DependencyFacts::Unknown(ProductText::new(
-            "Cargo index row omits dependency metadata",
-        )
-        .map_err(|_| TransportFailure::Protocol)?));
+        return Ok(DependencyFacts::Unknown(
+            ProductText::new("Cargo index row omits dependency metadata")
+                .map_err(|_| TransportFailure::Protocol)?,
+        ));
     };
     let mut rows = Vec::with_capacity(values.len());
     for value in values {
@@ -569,7 +938,10 @@ fn cargo_dependencies(
             name,
             requirement,
             scope,
-            value.get("optional").and_then(Value::as_bool).unwrap_or(false),
+            value
+                .get("optional")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             provenance,
         )?);
     }
@@ -611,10 +983,10 @@ fn npm_dependencies(
         && row.get("peerDependencies").is_none()
         && row.get("devDependencies").is_none()
     {
-        return Ok(DependencyFacts::Unknown(ProductText::new(
-            "npm packument version omits dependency metadata",
-        )
-        .map_err(|_| TransportFailure::Protocol)?));
+        return Ok(DependencyFacts::Unknown(
+            ProductText::new("npm packument version omits dependency metadata")
+                .map_err(|_| TransportFailure::Protocol)?,
+        ));
     }
     Ok(DependencyFacts::Known(
         admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
@@ -627,10 +999,10 @@ fn nuget_dependencies(
     provenance: &[u8],
 ) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
     let Some(groups) = groups else {
-        return Ok(DependencyFacts::Unknown(ProductText::new(
-            "NuGet registration metadata omits dependency groups",
-        )
-        .map_err(|_| TransportFailure::Protocol)?));
+        return Ok(DependencyFacts::Unknown(
+            ProductText::new("NuGet registration metadata omits dependency groups")
+                .map_err(|_| TransportFailure::Protocol)?,
+        ));
     };
     let groups = groups.as_array().ok_or(TransportFailure::Protocol)?;
     let mut rows = Vec::new();
@@ -695,6 +1067,82 @@ pub(crate) struct NugetReleaseMetadata {
     pub(crate) provenance: Vec<u8>,
     pub(crate) dependency_groups: Option<Value>,
     pub(crate) facts: ReleaseFacts,
+}
+
+/// One authenticated Conan v2 recipe/package file row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ConanFileEntry {
+    pub(crate) name: String,
+    pub(crate) sha256: Option<RegistryChecksum>,
+    pub(crate) size: Option<u64>,
+}
+
+/// Bounded file manifest returned by a Conan v2 revision endpoint.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ConanFileManifest {
+    pub(crate) entries: Vec<ConanFileEntry>,
+}
+
+impl ConanFileManifest {
+    pub(crate) fn preferred_archive_name(&self) -> Result<String, TransportFailure> {
+        ["conan_sources.tgz", "conan_export.tgz", "conan_package.tgz"]
+            .iter()
+            .find(|name| self.entries.iter().any(|entry| entry.name == **name))
+            .map(|name| (*name).to_owned())
+            .ok_or(TransportFailure::DownloadUnavailable)
+    }
+
+    pub(crate) fn entry(&self, name: &str) -> Option<&ConanFileEntry> {
+        self.entries.iter().find(|entry| entry.name == name)
+    }
+
+    pub(crate) fn source_availability(&self) -> ConanSourceAvailability {
+        if self.entry("conan_sources.tgz").is_some() {
+            ConanSourceAvailability::Archive
+        } else if self.entry("conan_export.tgz").is_some() {
+            ConanSourceAvailability::RecipeOnly
+        } else {
+            ConanSourceAvailability::Unavailable
+        }
+    }
+}
+
+/// Explicit source availability for one Conan recipe revision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ConanSourceAvailability {
+    /// The registry has a source archive that can be ingested directly.
+    Archive,
+    /// Only the recipe export is present; source may still be fetched from a
+    /// verified `conandata.yml` mirror.
+    RecipeOnly,
+    /// No source or recipe archive is present at this revision.
+    Unavailable,
+}
+
+fn safe_conan_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 512
+        && !name.starts_with('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+        && name
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+fn valid_conan_timestamp(value: &str) -> bool {
+    // Conan's documented API uses `2024-12-17T09:16:40.334+0000`. Keep the
+    // accepted grammar bounded and timezone-aware without normalizing it.
+    value.len() >= 24
+        && value.as_bytes().get(4) == Some(&b'-')
+        && value.as_bytes().get(7) == Some(&b'-')
+        && value.as_bytes().get(10) == Some(&b'T')
+        && value.as_bytes().get(13) == Some(&b':')
+        && value.as_bytes().get(16) == Some(&b':')
+        && value.as_bytes().get(value.len().saturating_sub(5)) == Some(&b'+')
+        && value[value.len().saturating_sub(4)..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
 }
 
 fn facts(standing: ReleaseStanding, downloads: DownloadCount) -> ReleaseFacts {

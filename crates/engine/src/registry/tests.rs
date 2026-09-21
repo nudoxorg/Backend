@@ -1745,6 +1745,131 @@ fn protocol_phase_adapters_keep_maven_go_and_conan_typed() {
 }
 
 #[test]
+fn go_proxy_lists_pseudo_versions_and_rejects_ambiguous_rows() {
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Golang, "https://proxy.golang.org")
+        .expect("go endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint,
+        PackageName::new("errors").expect("name"),
+        Some(PackageName::new("github.com/pkg").expect("namespace")),
+    )
+    .expect("adapter");
+    let versions = adapter
+        .go_versions(b"v1.10.0\nv1.9.0\nv1.10.0-0.20240101120000-deadbeefdead\n")
+        .expect("pseudo version list");
+    assert_eq!(versions.len(), 3);
+    assert!(versions.contains(&"v1.10.0-0.20240101120000-deadbeefdead".to_owned()));
+    assert!(adapter.go_versions(b"v1.0.0\nv1.0.0\n").is_err());
+    assert!(adapter.go_versions(b" v1.0.0\n").is_err());
+    assert!(adapter.go_versions(b"v1.0\n").is_err());
+}
+
+#[test]
+fn go_info_mod_retractions_and_dependencies_are_retained_as_typed_facts() {
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Golang, "https://proxy.golang.org")
+        .expect("go endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint,
+        PackageName::new("mod").expect("name"),
+        Some(PackageName::new("example.com/acme").expect("namespace")),
+    )
+    .expect("adapter");
+    let info = adapter
+        .go_info(
+            br#"{"Version":"v1.2.3","Time":"2024-01-02T03:04:05Z","Future":true}"#,
+            "v1.2.3",
+        )
+        .expect("info");
+    assert_eq!(info.version, "v1.2.3");
+    assert!(
+        adapter
+            .go_info(br#"{"Version":"v1.2.4"}"#, "v1.2.3")
+            .is_err()
+    );
+
+    let module = adapter
+        .go_mod(
+            br#"module example.com/acme/mod
+
+go 1.22
+
+require (
+    example.com/dep v1.4.0
+    example.com/indirect v0.2.0 // indirect
+)
+
+retract [v1.2.0, v1.2.3]
+"#,
+            "v1.2.3",
+        )
+        .expect("go.mod");
+    assert_eq!(module.requires.len(), 2);
+    assert_eq!(module.requires[1].module, "example.com/indirect");
+    assert!(module.retracts[0].contains("v1.2.3"));
+    assert!(!module.retracts[0].contains("v1.2.4"));
+    let coordinate =
+        PackageCoordinate::parse("pkg:golang/example.com/acme/mod@v1.2.3").expect("coordinate");
+    let dependencies = adapter
+        .go_dependencies(&coordinate, &module, b"module frontier")
+        .expect("dependencies");
+    let backend_library::DependencyFacts::Known(rows) = dependencies else {
+        panic!("expected known Go dependencies");
+    };
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].target.ecosystem, RegistryEcosystem::Golang);
+}
+
+#[test]
+fn conan_v2_file_manifest_is_bounded_and_keeps_source_availability_typed() {
+    let adapter = EcosystemAdapter::new(
+        RegistryEndpoint::new(RegistryEcosystem::Cpp, "https://center2.conan.io")
+            .expect("Conan endpoint"),
+        PackageName::new("zlib").expect("package"),
+        Some(PackageName::new("1.3.1").expect("recipe version")),
+    )
+    .expect("adapter");
+    let source = b"source archive";
+    let digest = digest_hex(Sha256::digest(source).as_slice());
+    let manifest = adapter
+        .conan_file_manifest(
+            format!(
+                r#"{{"files":{{"conan_export.tgz":{{}},"conan_sources.tgz":{{"sha256":"{digest}","size":14}}}}}}"#
+            )
+            .as_bytes(),
+        )
+        .expect("manifest");
+    assert_eq!(
+        manifest.preferred_archive_name(),
+        Ok("conan_sources.tgz".to_owned())
+    );
+    assert_eq!(
+        manifest
+            .entry("conan_sources.tgz")
+            .and_then(|entry| entry.size),
+        Some(14)
+    );
+
+    let oversized = format!(
+        r#"{{"files":{{{}}}}}"#,
+        (0..=4096)
+            .map(|index| format!(r#""file-{index}":{{}}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    assert!(matches!(
+        adapter.conan_file_manifest(oversized.as_bytes()),
+        Err(TransportFailure::Overrun {
+            measured: 4097,
+            limit: 4096
+        })
+    ));
+    assert!(matches!(
+        adapter.conan_file_manifest(br#"{"files":{"../escape.tgz":{}}}"#),
+        Err(TransportFailure::Protocol)
+    ));
+}
+
+#[test]
 fn native_cargo_adapter_runs_through_shared_owner_and_cursor() {
     let archive = b"cargo archive through native adapter";
     let checksum = digest_hex(Sha256::digest(archive).as_slice());

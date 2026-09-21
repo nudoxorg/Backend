@@ -49,9 +49,8 @@ pub struct RemotePackage {
     /// fail-closed when an advisory gate is configured by the product composition.
     pub advisory: Option<AdvisoryObservation>,
     /// Native or archive dependency facts carried with the same source frontier.
-    pub dependency_facts: backend_library::DependencyFacts<
-        Box<[backend_library::PackageDependencyRecord]>,
-    >,
+    pub dependency_facts:
+        backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>>,
     pub(super) archive_url: Arc<str>,
 }
 
@@ -988,19 +987,29 @@ impl HttpRegistryTransport {
             let info = self.required(&adapter.go_info_url(version))?;
             let module = self.required(&adapter.go_mod_url(version))?;
             let sum = self.required(&adapter.go_sum_lookup_url(version))?;
-            let checksum = go_checksum(&sum, version)?;
-            let mut provenance =
-                Vec::with_capacity(listing.len() + info.len() + module.len() + sum.len());
+            let info = adapter.go_info(&info, version)?;
+            let module = adapter.go_mod(&module, version)?;
+            let checksum = go_checksum(&sum, &adapter.go_module_path(), version)?;
+            let mut provenance = Vec::with_capacity(
+                listing.len() + info.provenance.len() + module.provenance.len() + sum.len(),
+            );
             provenance.extend_from_slice(&listing);
-            provenance.extend_from_slice(&info);
-            provenance.extend_from_slice(&module);
+            provenance.extend_from_slice(&info.provenance);
+            provenance.extend_from_slice(&module.provenance);
             provenance.extend_from_slice(&sum);
-            releases.push(adapter.go_release(
-                version,
-                checksum,
-                &provenance,
-                ReleaseFacts::default(),
-            )?);
+            let standing = if module.retracts.iter().any(|range| range.contains(version)) {
+                super::ReleaseFacts::new(
+                    super::ReleaseStanding::Retracted,
+                    super::DownloadCount::NotReported(super::DownloadCountGap::Unsupported),
+                    super::SecurityStanding::Unassessed,
+                )
+            } else {
+                super::ReleaseFacts::default()
+            };
+            let mut release = adapter.go_release(version, checksum, &provenance, standing)?;
+            release.dependency_facts =
+                adapter.go_dependencies(&release.coordinate, &module, &provenance)?;
+            releases.push(release);
         }
         adapter.admit_window(releases, request, start, prefix, versions.len())
     }
@@ -1013,66 +1022,122 @@ impl HttpRegistryTransport {
     ) -> Result<FeedPage, TransportFailure> {
         let revision = adapter.conan_revision(&revisions)?;
         let files = self.required(&adapter.conan_files_url(&revision))?;
-        let archive_name = adapter.conan_archive_name(&files)?;
+        let manifest = adapter.conan_file_manifest(&files)?;
+        let archive_name = manifest.preferred_archive_name()?;
         let archive_url = adapter.conan_archive_url(&revision, &archive_name);
-        let recipe = match self.get_archive(&archive_url, self.limits.max_archive_bytes)? {
-            TransportResult::Available(value) => value,
-            TransportResult::Unavailable | TransportResult::RetryAfter(_) => {
-                return Err(TransportFailure::DownloadUnavailable);
-            }
-            TransportResult::NotModified => return Err(TransportFailure::Protocol),
-        };
-        let recipe = recipe.into_bytes(self.limits.max_archive_bytes)?;
-        let (checksum, archive, source_url) = if let Some(source) = Self::conan_source_spec(
-            &recipe,
-            adapter.conan_recipe_version(),
-            self.limits.max_archive_bytes,
-        )? {
-            let mut integrity_failure = false;
-            let mut source_archive = None;
-            for url in source.urls {
-                // Conan's authenticated export is the authority that names
-                // this source mirror. Keep the mirror policy closed: a recipe
-                // cannot turn this package add into arbitrary HTTPS egress.
-                // Admit the host for this one bounded handoff before asking
-                // the shared archive transport to read it; redirects and
-                // credentials remain forbidden.
-                if !conan_source_mirror_allowed(&url) {
-                    return Err(TransportFailure::Configuration);
+        let source_entry = manifest.entry("conan_sources.tgz");
+        let export_entry = manifest.entry("conan_export.tgz");
+        let (checksum, archive, source_url) = if let Some(entry) = source_entry {
+            // A Conan source archive is already content-addressed by the
+            // recipe file manifest. Prefer it over the recipe export so the
+            // shared source ingester sees the actual project tree and does not
+            // have to execute Python just to discover a mirror.
+            let fetched = match self.get_archive(&archive_url, self.limits.max_archive_bytes)? {
+                TransportResult::Available(value) => value,
+                TransportResult::Unavailable | TransportResult::RetryAfter(_) => {
+                    return Err(TransportFailure::DownloadUnavailable);
                 }
-                self.admit_resource_origin(&url)?;
-                let fetched = match self.get_archive(&url, self.limits.max_archive_bytes)? {
-                    TransportResult::Available(value) => value,
-                    TransportResult::Unavailable | TransportResult::RetryAfter(_) => continue,
-                    TransportResult::NotModified => return Err(TransportFailure::Protocol),
-                };
-                let bytes = fetched.into_bytes(self.limits.max_archive_bytes)?;
-                if source.checksum.verifies(&bytes) {
-                    source_archive = Some((url, bytes));
-                    break;
-                }
-                integrity_failure = true;
-            }
-            let Some((source_url, bytes)) = source_archive else {
-                return Err(if integrity_failure {
-                    TransportFailure::Integrity
-                } else {
-                    TransportFailure::DownloadUnavailable
-                });
+                TransportResult::NotModified => return Err(TransportFailure::Protocol),
             };
-            let checksum = source.checksum;
-            self.cache_archive(checksum.cache_key(), ArchiveArtifact::from_bytes(bytes))?;
-            // The source mirror is the verified content origin, but the
-            // release descriptor must retain Conan as its authoritative
-            // archive authority. `fetch_archive` consumes the staged handoff
-            // keyed by this checksum, so this does not download the recipe
-            // a second time.
-            (checksum, archive_url.clone(), Some(source_url))
+            let checksum = if let Some(expected) = &entry.sha256 {
+                let bytes = fetched.into_bytes(self.limits.max_archive_bytes)?;
+                if entry
+                    .size
+                    .is_some_and(|size| size != u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+                    || !expected.verifies(&bytes)
+                {
+                    return Err(TransportFailure::Integrity);
+                }
+                self.cache_archive(expected.cache_key(), ArchiveArtifact::from_bytes(bytes))?;
+                expected.clone()
+            } else {
+                let checksum =
+                    RegistryChecksum::sha256_hex(&fetched.digest_hex(ChecksumAlgorithm::Sha256)?)?;
+                self.cache_archive(checksum.cache_key(), fetched)?;
+                checksum
+            };
+            (checksum, archive_url.clone(), Some(archive_url.clone()))
         } else {
-            let checksum =
-                RegistryChecksum::sha256_hex(&hex_digest(Sha256::digest(&recipe).as_slice()))?;
-            self.cache_archive(checksum.cache_key(), ArchiveArtifact::from_bytes(recipe))?;
-            (checksum, archive_url.clone(), None)
+            let Some(export_entry) = export_entry else {
+                // A package binary without source is useful to a compiler
+                // resolver but is not source material. Keep that distinction
+                // explicit instead of silently indexing headers as a project.
+                return Err(TransportFailure::DownloadUnavailable);
+            };
+            let recipe = match self.get_archive(&archive_url, self.limits.max_archive_bytes)? {
+                TransportResult::Available(value) => value,
+                TransportResult::Unavailable | TransportResult::RetryAfter(_) => {
+                    return Err(TransportFailure::DownloadUnavailable);
+                }
+                TransportResult::NotModified => return Err(TransportFailure::Protocol),
+            };
+            let recipe = recipe.into_bytes(self.limits.max_archive_bytes)?;
+            if export_entry
+                .size
+                .is_some_and(|size| size != u64::try_from(recipe.len()).unwrap_or(u64::MAX))
+            {
+                return Err(TransportFailure::Integrity);
+            }
+            if let Some(expected) = &export_entry.sha256 {
+                if !expected.verifies(&recipe) {
+                    return Err(TransportFailure::Integrity);
+                }
+            }
+            let source = Self::conan_source_spec(
+                &recipe,
+                adapter.conan_recipe_version(),
+                self.limits.max_archive_bytes,
+            )?;
+            if let Some(source) = source {
+                let mut integrity_failure = false;
+                let mut source_archive = None;
+                for url in source.urls {
+                    // Conan's authenticated export is the authority that names
+                    // this source mirror. Keep the mirror policy closed: a recipe
+                    // cannot turn this package add into arbitrary HTTPS egress.
+                    // Admit the host for this one bounded handoff before asking
+                    // the shared archive transport to read it; redirects and
+                    // credentials remain forbidden.
+                    if !conan_source_mirror_allowed(&url) {
+                        return Err(TransportFailure::Configuration);
+                    }
+                    self.admit_resource_origin(&url)?;
+                    let fetched = match self.get_archive(&url, self.limits.max_archive_bytes)? {
+                        TransportResult::Available(value) => value,
+                        TransportResult::Unavailable | TransportResult::RetryAfter(_) => continue,
+                        TransportResult::NotModified => return Err(TransportFailure::Protocol),
+                    };
+                    let bytes = fetched.into_bytes(self.limits.max_archive_bytes)?;
+                    if source.checksum.verifies(&bytes) {
+                        source_archive = Some((url, bytes));
+                        break;
+                    }
+                    integrity_failure = true;
+                }
+                let Some((source_url, bytes)) = source_archive else {
+                    return Err(if integrity_failure {
+                        TransportFailure::Integrity
+                    } else {
+                        TransportFailure::DownloadUnavailable
+                    });
+                };
+                let checksum = source.checksum;
+                self.cache_archive(checksum.cache_key(), ArchiveArtifact::from_bytes(bytes))?;
+                // The source mirror is the verified content origin, but the
+                // release descriptor must retain Conan as its authoritative
+                // archive authority. `fetch_archive` consumes the staged handoff
+                // keyed by this checksum, so this does not download the recipe
+                // a second time.
+                (checksum, archive_url.clone(), Some(source_url))
+            } else {
+                let checksum = if let Some(expected) = &export_entry.sha256 {
+                    expected.clone()
+                } else {
+                    RegistryChecksum::sha256_hex(&hex_digest(Sha256::digest(&recipe).as_slice()))?
+                };
+                self.cache_archive(checksum.cache_key(), ArchiveArtifact::from_bytes(recipe))?;
+                (checksum, archive_url.clone(), None)
+            }
         };
         let mut provenance = Vec::with_capacity(revisions.len() + files.len());
         provenance.extend_from_slice(&revisions);
@@ -1398,18 +1463,43 @@ fn hex_digest(bytes: &[u8]) -> String {
     output
 }
 
-fn go_checksum(bytes: &[u8], version: &str) -> Result<RegistryChecksum, TransportFailure> {
+fn go_checksum(
+    bytes: &[u8],
+    module: &str,
+    version: &str,
+) -> Result<RegistryChecksum, TransportFailure> {
     let text = std::str::from_utf8(bytes).map_err(|_| TransportFailure::Protocol)?;
-    text.lines()
-        .find_map(|line| {
-            let mut fields = line.split_ascii_whitespace();
-            let _module = fields.next()?;
-            let candidate = fields.next()?;
-            let digest = fields.next()?;
-            (candidate == version).then_some(digest)
-        })
-        .map(RegistryChecksum::go_module_base64)
-        .ok_or(TransportFailure::DownloadUnavailable)?
+    let mut archive = None;
+    let mut module_file = None;
+    for line in text.lines() {
+        let mut fields = line.split_ascii_whitespace();
+        let Some(candidate_module) = fields.next() else {
+            continue;
+        };
+        let Some(candidate_version) = fields.next() else {
+            continue;
+        };
+        let Some(digest) = fields.next() else {
+            continue;
+        };
+        if fields.next().is_some() {
+            continue;
+        }
+        if candidate_module != module {
+            continue;
+        }
+        if candidate_version == version {
+            archive = Some(RegistryChecksum::go_module_base64(digest)?);
+        } else if candidate_version == format!("{version}/go.mod") {
+            module_file = Some(RegistryChecksum::go_module_base64(digest)?);
+        }
+    }
+    // The tree note and signed proof are deliberately not interpreted as
+    // module hashes. We require the exact module/version record and accept a
+    // missing /go.mod line because proxies may synthesize a module-only file.
+    let checksum = archive.ok_or(TransportFailure::DownloadUnavailable)?;
+    let _module_file = module_file;
+    Ok(checksum)
 }
 
 fn official_followup_host(base: &str, ecosystem: RegistryEcosystem, host: &str) -> bool {
