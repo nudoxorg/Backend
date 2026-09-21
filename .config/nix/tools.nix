@@ -79,27 +79,12 @@ let
     doCheck = false;
   };
   dylintLink = mkDylintTool "dylint-link";
-  # Cargo's locked GPUI and Trustfall git sources are shared by the control
-  # binary and the optional GUI runtime closure. Keeping this map in one let
-  # binding prevents one package from silently accepting a different source.
+  # Cargo's locked Git sources are shared by the control binary and the
+  # optional GUI runtime closure. GPUI CE and its component library are
+  # crates.io packages now, so Cargo.lock checksums authenticate them and they
+  # must not appear in this fixed-output Git map. Keeping the remaining Git
+  # sources here prevents one package from silently accepting another source.
   gpuiOutputHashes = {
-    "gpui-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_ce_util-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_collections-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_derive_refineable-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_elements-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_linux-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_macos-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_macros-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_media-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_platform-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_refineable-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_scheduler-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_shared_string-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_sum_tree-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_web-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_wgpu-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-    "gpui_windows-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
     "trustfall-0.8.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
     "trustfall_core-0.8.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
     "trustfall_derive-0.3.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
