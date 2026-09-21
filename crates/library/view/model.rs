@@ -3,6 +3,7 @@
 use crate::canonical::{
     BranchKey, LogKey, PackageKey, SemanticObject, SymbolKey, ViewStateRoot, encode_id,
 };
+use crate::surface::SemanticLinkKind;
 use backend_compile::{DeclarationKind, SourceExcerpt, SourceLocation};
 use backend_version::{AuthorizedCompleteCoverage, CoverageWitness, ScopeRoot};
 use core::fmt;
@@ -493,6 +494,31 @@ impl RowId {
             Self::Symbol(id) => format!("symbol:{}", encode_id(id.as_bytes())),
             Self::Object(id) => format!("object:{}", encode_id(id.as_bytes())),
         }
+    }
+}
+
+/// One typed edge in a compiler-owned graph neighborhood.
+///
+/// Graph neighborhoods are transported as a row snapshot for compatibility
+/// with the existing view protocol. This sidecar keeps the edge authority
+/// alongside that snapshot without changing canonical row identity or the
+/// view-root commitment. The `from`/`to` endpoints are always row identities
+/// admitted by the same snapshot.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct GraphRelation {
+    /// Source declaration of the directed relation.
+    pub from: RowId,
+    /// Target declaration of the directed relation.
+    pub to: RowId,
+    /// Compiler-defined semantic relation kind.
+    pub relation: SemanticLinkKind,
+}
+
+impl GraphRelation {
+    /// Creates one typed graph relation.
+    #[must_use]
+    pub const fn new(from: RowId, to: RowId, relation: SemanticLinkKind) -> Self {
+        Self { from, to, relation }
     }
 }
 

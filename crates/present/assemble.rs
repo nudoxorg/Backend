@@ -15,7 +15,7 @@
 
 use crate::coverage::CoverageLine;
 use crate::fault::Fault;
-use crate::glyph::RelationLabel;
+use crate::glyph::{RelationDirection, RelationLabel, relation_label};
 use crate::identity::{Identity, IdentityKey, KeyTag, LineNumber, PackagePath, ProjectRef};
 use crate::language::Language;
 use crate::outline::{OutlineEntry, OutlineTree, row_resolver};
@@ -26,8 +26,8 @@ use crate::record::{Record, RecordList};
 use crate::shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
 use crate::signature::Signature;
 use backend_library::{
-    Coverage, Document, Outline, PageContinuation, Row, RowId, RowState, SourceAvailability,
-    SourceExcerpt, SymbolKey, ViewRoot, ViewSnapshot,
+    Coverage, Document, GraphRelation, Outline, PageContinuation, Row, RowId, RowState,
+    SourceAvailability, SourceExcerpt, SymbolKey, ViewRoot, ViewSnapshot,
 };
 use std::collections::BTreeMap;
 
@@ -45,6 +45,21 @@ pub fn page_from_document(
     relations: &[Row],
     notes: Vec<Fault>,
 ) -> Page {
+    page_from_document_with_graph_relations(coordinate, document, members, relations, &[], notes)
+}
+
+/// Builds a declaration page while retaining typed edges selected by the
+/// compiler graph authority. The untyped [`page_from_document`] entry point
+/// remains the compatibility path for structural/fallback graph replies.
+#[must_use]
+pub fn page_from_document_with_graph_relations(
+    coordinate: &str,
+    document: &Document,
+    members: &[Row],
+    relations: &[Row],
+    graph_relations: &[GraphRelation],
+    notes: Vec<Fault>,
+) -> Page {
     let identity = Identity::parse_with_key(coordinate, IdentityKey::Symbol(document.symbol));
     let language = page_language(&identity, members, document.symbol);
     let source = source_from(&identity, &document.location, &document.excerpt);
@@ -60,7 +75,7 @@ pub fn page_from_document(
         .with_language(language)
         .with_prose(Prose::from_fragments(&document.fragments))
         .with_members(member_groups(members, document.symbol))
-        .with_relations(relation_groups(relations, document.symbol))
+        .with_relations(relation_groups(relations, document.symbol, graph_relations))
         .with_notes(notes);
     match signature {
         Some(value) => page.with_signature(value),
@@ -161,16 +176,50 @@ fn member_groups(rows: &[Row], parent: SymbolKey) -> Box<[MemberGroup]> {
     MemberGroup::group(members)
 }
 
-fn relation_groups(rows: &[Row], centre: SymbolKey) -> Box<[RelationGroup]> {
-    let relations = rows
-        .iter()
-        .filter(|row| row.id != RowId::Symbol(centre))
-        .map(|row| Relation::new(Identity::parse_with_key(&row.label, row.id.into()), row.kind))
-        .collect::<Vec<_>>();
-    if relations.is_empty() {
+fn relation_groups(
+    rows: &[Row],
+    centre: SymbolKey,
+    graph_relations: &[GraphRelation],
+) -> Box<[RelationGroup]> {
+    let mut groups = BTreeMap::<RelationLabel, Vec<Relation>>::new();
+    for row in rows.iter().filter(|row| row.id != RowId::Symbol(centre)) {
+        let typed = graph_relations.iter().filter_map(|edge| {
+            let (direction, matches) = match (edge.from, edge.to) {
+                (RowId::Symbol(from), RowId::Symbol(_to))
+                    if from == centre && edge.to == row.id =>
+                {
+                    (RelationDirection::Outgoing, true)
+                }
+                (RowId::Symbol(_from), RowId::Symbol(to))
+                    if to == centre && edge.from == row.id =>
+                {
+                    (RelationDirection::Incoming, true)
+                }
+                _ => (RelationDirection::Outgoing, false),
+            };
+            matches.then_some(relation_label(edge.relation, direction))
+        });
+        let labels = typed.collect::<Vec<_>>();
+        let labels = if labels.is_empty() {
+            vec![RelationLabel::Related]
+        } else {
+            labels
+        };
+        for label in labels {
+            groups.entry(label).or_default().push(Relation::new(
+                Identity::parse_with_key(&row.label, row.id.into()),
+                row.kind,
+            ));
+        }
+    }
+    if groups.is_empty() {
         return Box::new([]);
     }
-    vec![RelationGroup::new(RelationLabel::Related, relations)].into_boxed_slice()
+    groups
+        .into_iter()
+        .map(|(label, relations)| RelationGroup::new(label, relations.into_boxed_slice()))
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
 }
 
 /// Builds one result page from a bounded snapshot.

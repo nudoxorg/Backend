@@ -57,6 +57,7 @@ fn snapshot(rows: Vec<Row>) -> ViewSnapshot {
         root: root(rows),
         freshness: Freshness::Current,
         next: None,
+        graph_relations: None,
     }
 }
 

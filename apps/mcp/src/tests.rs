@@ -137,6 +137,7 @@ fn injected_transport_checks_basis_and_freshness() {
         .expect("incomplete root"),
         freshness: Freshness::Current,
         next: None,
+        graph_relations: None,
     };
     let mut transport = Checked {
         reply: Some(ReplyDto::new(9, CommandReply::Search(snapshot))),
@@ -170,6 +171,7 @@ fn replies_must_match_the_requested_command_shape() {
         .expect("incomplete root"),
         freshness: Freshness::Current,
         next: None,
+        graph_relations: None,
     };
     assert!(matches!(
         admit_reply(&request, ReplyDto::new(1, CommandReply::Packages(snapshot))),

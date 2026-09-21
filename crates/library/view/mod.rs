@@ -16,7 +16,7 @@ mod transition;
 pub(crate) use descriptor::DescriptorParts;
 pub use descriptor::{ViewRootDescriptor, ViewRootDescriptorClaim};
 pub use model::{
-    Basis, Coverage, CoverageCapability, Document, Fragment, Freshness, Lane,
+    Basis, Coverage, CoverageCapability, Document, Fragment, Freshness, GraphRelation, Lane,
     MAX_COVERAGE_EVIDENCE, NameRecord, Outline, OutlineExtent, OutlineNode, Reason, Row, RowId,
     RowState, SourceAvailability,
 };

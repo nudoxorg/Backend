@@ -273,6 +273,7 @@ mod tests {
             root,
             freshness: Freshness::Current,
             next: None,
+            graph_relations: None,
         }
     }
 

@@ -23,7 +23,10 @@
 //! because "I could not look" and "there are none" are different answers and a
 //! reader is owed the difference.
 
-use crate::assemble::{outline_tree, page_from_document, record_list, shelf_from_snapshot};
+use crate::assemble::{
+    outline_tree, page_from_document, page_from_document_with_graph_relations, record_list,
+    shelf_from_snapshot,
+};
 use crate::call::Request;
 use crate::fault::{Affordance, Fault, Operand};
 use crate::identity::{Coordinate, Identity, KeyTag};
@@ -35,8 +38,8 @@ use crate::shelf::Shelf;
 use crate::status::Status;
 use backend_client::ClientError;
 use backend_library::{
-    CommandReply, HealthReport, IntentId, PageContinuation, ReplyDto, Row, SurfaceCommand,
-    SurfaceReply, ViewSnapshot, ViewStateRoot,
+    CommandReply, GraphRelation, HealthReport, IntentId, PageContinuation, ReplyDto, Row,
+    SurfaceCommand, SurfaceReply, ViewSnapshot, ViewStateRoot,
 };
 
 /// Rows fetched for one page's members and relations.
@@ -340,10 +343,15 @@ fn page(engine: &mut dyn Engine, coordinate: &str) -> Result<Page, Fault> {
         return Err(shape("document"));
     };
     let mut notes = Vec::with_capacity(2);
-    let relations = probe_rows(engine, coordinate, &mut notes);
+    let relation_rows = probe_rows(engine, coordinate, &mut notes);
     let members = probe_members(engine, coordinate, &mut notes);
-    Ok(page_from_document(
-        coordinate, &document, &members, &relations, notes,
+    Ok(page_from_document_with_graph_relations(
+        coordinate,
+        &document,
+        &members,
+        &relation_rows.rows,
+        relation_rows.graph_relations.as_deref().unwrap_or(&[]),
+        notes,
     ))
 }
 
@@ -464,13 +472,25 @@ fn next_step(fault: Fault, probe: Probe<'_>) -> Fault {
     fault.with_affordance(Affordance::search(name))
 }
 
-/// Fetches the rows around one declaration, recording a note if it cannot.
-fn probe_rows(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Fault>) -> Vec<Row> {
+struct RelationRows {
+    rows: Vec<Row>,
+    graph_relations: Option<Box<[GraphRelation]>>,
+}
+
+/// Fetches graph rows and keeps the compiler-selected typed edge sidecar
+/// attached to the same response revision.
+fn probe_rows(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Fault>) -> RelationRows {
     match engine.probe(Probe::Related(coordinate)).map(|reply| reply.reply) {
-        Ok(CommandReply::Graph(snapshot)) => snapshot.root.rows().to_vec(),
+        Ok(CommandReply::Graph(snapshot)) => RelationRows {
+            rows: snapshot.root.rows().to_vec(),
+            graph_relations: snapshot.graph_relations,
+        },
         Ok(_) => {
             notes.push(shape("related"));
-            Vec::new()
+            RelationRows {
+                rows: Vec::new(),
+                graph_relations: None,
+            }
         }
         Err(error) => {
             notes.push(
@@ -483,7 +503,10 @@ fn probe_rows(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Fault>)
                     args: vec![coordinate.to_owned()].into_boxed_slice(),
                 }),
             );
-            Vec::new()
+            RelationRows {
+                rows: Vec::new(),
+                graph_relations: None,
+            }
         }
     }
 }

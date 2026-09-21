@@ -18,6 +18,8 @@
 
 use super::keys;
 use super::workspace::Workspace;
+use crate::graph::{self, GraphAvailability, NodeId, NodeState, RelationKind};
+use crate::motion::{self, Beat};
 use crate::presentation::crumb::{self, Crumb};
 use crate::store::document::Target;
 use crate::theme::Theme;
@@ -33,9 +35,12 @@ use backend_present::{
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, Context, Div, ElementId, Entity, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px,
+    AnimationExt as _, AnyElement, Context, Div, ElementId, Entity, FontWeight, InteractiveElement,
+    IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, PinchEvent,
+    Pixels, Role, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, canvas, div, point,
+    px,
 };
+use std::sync::Arc;
 
 /// How many members are drawn before a group offers to show the rest.
 const MEMBER_BUDGET: usize = 40;
@@ -61,6 +66,8 @@ enum Region {
     Members(usize),
     /// One relation group, addressed by its position among the groups.
     Relations(usize),
+    /// The bounded rich-IR graph for this declaration.
+    Graph,
 }
 
 /// Returns every region one page has, in the order the reader draws them.
@@ -75,6 +82,7 @@ fn regions(page: &Page) -> Vec<Region> {
     }
     regions.extend(member_order(page).into_iter().map(Region::Members));
     regions.extend((0..page.relations().len()).map(Region::Relations));
+    regions.push(Region::Graph);
     regions
 }
 
@@ -120,6 +128,81 @@ fn member_keys(page: &Page) -> Vec<backend_library::SymbolKey> {
         .collect()
 }
 
+/// Paints one graph edge as a clipped quadratic path with a directional tip.
+/// The canvas owns clipping, so diagonal and vertical edges cannot leak out
+/// of the responsive viewport the way a rotated one-pixel div can.
+fn paint_graph_edge(
+    bounds: gpui::Bounds<Pixels>,
+    from: graph::Position,
+    to: graph::Position,
+    zoom: f32,
+    pan: graph::Position,
+    color: gpui::Hsla,
+    window: &mut gpui::Window,
+) {
+    let mut start = (
+        from.x * zoom + pan.x + graph::NODE_WIDTH * zoom * 0.5,
+        from.y * zoom + pan.y + graph::NODE_HEIGHT * zoom * 0.5,
+    );
+    let mut end = (
+        to.x * zoom + pan.x + graph::NODE_WIDTH * zoom * 0.5,
+        to.y * zoom + pan.y + graph::NODE_HEIGHT * zoom * 0.5,
+    );
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    let length = dx.hypot(dy);
+    if length > 1.0 {
+        let trim = (graph::NODE_HEIGHT * zoom * 0.35).min(length * 0.35);
+        let ux = dx / length;
+        let uy = dy / length;
+        start.0 += ux * trim;
+        start.1 += uy * trim;
+        end.0 -= ux * trim;
+        end.1 -= uy * trim;
+    } else {
+        // Keep a self relation visible as a small loop rather than drawing a
+        // zero-length path that lyon correctly discards.
+        end.0 += 22.0 * zoom;
+        end.1 -= 22.0 * zoom;
+    }
+    let start = point(bounds.origin.x + px(start.0), bounds.origin.y + px(start.1));
+    let end = point(bounds.origin.x + px(end.0), bounds.origin.y + px(end.1));
+    let control = if length > 1.0 {
+        point(
+            bounds.origin.x + px((f32::from(start.x) + f32::from(end.x)) * 0.5),
+            bounds.origin.y + px((f32::from(start.y) + f32::from(end.y)) * 0.5),
+        )
+    } else {
+        point(start.x + px(36.0 * zoom), start.y - px(36.0 * zoom))
+    };
+    let mut line = PathBuilder::stroke(px(1.25));
+    line.move_to(start);
+    line.curve_to(end, control);
+    if let Ok(path) = line.build() {
+        window.paint_path(path, color);
+    }
+
+    let angle =
+        (f32::from(end.y) - f32::from(start.y)).atan2(f32::from(end.x) - f32::from(start.x));
+    let size = (6.0 * zoom).clamp(4.0, 9.0);
+    let left = point(
+        end.x - px(size * (angle - 0.55).cos()),
+        end.y - px(size * (angle - 0.55).sin()),
+    );
+    let right = point(
+        end.x - px(size * (angle + 0.55).cos()),
+        end.y - px(size * (angle + 0.55).sin()),
+    );
+    let mut tip = PathBuilder::fill();
+    tip.move_to(end);
+    tip.line_to(left);
+    tip.line_to(right);
+    tip.close();
+    if let Ok(path) = tip.build() {
+        window.paint_path(path, color);
+    }
+}
+
 impl Workspace {
     /// Returns each region of the declaration page as its own element.
     pub(super) fn declaration_page(
@@ -162,6 +245,7 @@ impl Workspace {
                 Some(group) => self.relation_group(theme, page, group, cx),
                 None => div().into_any_element(),
             },
+            Region::Graph => self.graph_region(theme, page, cx),
         }
     }
 
@@ -697,6 +781,506 @@ impl Workspace {
             folded,
         };
         Self::folding_section(theme, &head, body, cx)
+    }
+
+    /// Returns the live rich-IR graph for this declaration.
+    ///
+    /// The graph is synchronized against the same immutable root used to
+    /// assemble the page.  The renderer only receives the bounded projection
+    /// and its cached layout; it never walks the catalog or resolves names.
+    fn graph_region(&mut self, theme: &Theme, page: &Page, cx: &mut Context<Self>) -> AnyElement {
+        let root = self.engine.read(cx).root();
+        if self.graph.needs_sync(page, root) {
+            let projection = graph::GraphProjection::from_page(page, root);
+            let _delta = self.graph.sync(projection);
+        }
+        if !self.graph.expanded {
+            let count = self.graph.graph.as_ref().map_or(0, |graph| graph.nodes.len());
+            return div()
+                .id("graph-launcher")
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(space(Space::Snug))
+                .child(text::label(theme).child("Rich-IR graph"))
+                .child(text::faint(theme).child(format!("{count} admitted nodes")))
+                .child(div().flex_1())
+                .child(
+                    button::button(
+                        theme,
+                        "graph-expand",
+                        "Explore graph",
+                        button::Weight::Quiet,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.graph.toggle_expanded();
+                        cx.notify();
+                    })),
+                )
+                .into_any_element();
+        }
+        let Some(availability) = self.graph.graph.as_ref().map(|graph| graph.availability.clone()) else {
+            return div().into_any_element();
+        };
+        let status = match &availability {
+            GraphAvailability::Ready => "ready · complete graph evidence".to_owned(),
+            GraphAvailability::Partial { omitted } => {
+                return self.graph_partial(theme, *omitted, cx);
+            }
+            GraphAvailability::Loading => "loading · graph rows are arriving".to_owned(),
+            GraphAvailability::Unavailable(reason) => reason.clone(),
+            GraphAvailability::Error(reason) => reason.clone(),
+        };
+        let (node_count, edge_count, revision) = self
+            .graph
+            .graph
+            .as_ref()
+            .map(|graph| {
+                (
+                    graph.nodes.len(),
+                    graph.edges.len(),
+                    backend_library::encode_id(&graph.revision.view),
+                )
+            })
+            .unwrap_or_default();
+        let selected = self.graph.selected;
+        let reduced = theme.reduced_motion();
+        let state_notice = match &availability {
+            GraphAvailability::Ready | GraphAvailability::Partial { .. } => None,
+            GraphAvailability::Loading => Some((
+                "Loading graph rows from the live index…".to_owned(),
+                Paint::Caution,
+            )),
+            GraphAvailability::Unavailable(reason) => Some((reason.clone(), Paint::Caution)),
+            GraphAvailability::Error(reason) => Some((reason.clone(), Paint::Fault)),
+        };
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(space(Space::Snug))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space(Space::Snug))
+                    .flex_wrap()
+                    .child(
+                        text::label(theme)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.paint(Paint::TextStrong))
+                            .child("Graph"),
+                    )
+                    .child(
+                        text::faint(theme)
+                            .child(format!("{node_count} nodes · {edge_count} edges")),
+                    )
+                    .child(text::faint(theme).child(status))
+                    .child(div().flex_1().min_w(px(8.0)))
+                    .child(
+                        text::faint(theme)
+                            .font_family(theme.specimen())
+                            .child(format!("rev {revision}")),
+                    ),
+            )
+            .when_some(state_notice, |panel, (message, paint)| {
+                panel.child(
+                    div()
+                        .w_full()
+                        .px(space(Space::Snug))
+                        .py(space(Space::Tight))
+                        .rounded(radius(Radius::Small))
+                        .bg(theme.paint(Paint::Sunken))
+                        .text_color(theme.paint(paint))
+                        .child(message),
+                )
+            })
+            .child(self.graph_toolbar(theme, cx))
+            .child(self.graph_canvas(theme, selected, cx))
+            .child(self.graph_inspector(theme, selected, cx))
+            .with_animation(
+                ElementId::Name(SharedString::from(format!("graph-{revision}"))),
+                motion::once(Beat::Reveal, reduced),
+                |panel, delta| panel.opacity(motion::entering_opacity(delta)),
+            )
+            .into_any_element()
+    }
+
+    fn graph_partial(
+        &mut self,
+        theme: &Theme,
+        omitted: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // Keep the graph interactive in partial state: the selected and
+        // admitted nodes remain useful, while the missing relation count is
+        // visible beside the controls instead of being mistaken for no edges.
+        let mut body = self.graph_canvas(theme, self.graph.selected, cx);
+        body = body.child(text::faint(theme).child(format!(
+            "{omitted} relation endpoint(s) are outside this admitted revision"
+        )));
+        div()
+            .id("rich-ir-graph-partial")
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(space(Space::Snug))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space(Space::Snug))
+                    .child(
+                        text::label(theme)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.paint(Paint::TextStrong))
+                            .child("Graph · partial"),
+                    )
+                    .child(
+                        text::faint(theme).child("The owner has not admitted every endpoint yet."),
+                    ),
+            )
+            .child(self.graph_toolbar(theme, cx))
+            .child(body)
+            .into_any_element()
+    }
+
+    fn graph_toolbar(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let filters = [
+            RelationKind::Contains,
+            RelationKind::Related,
+            RelationKind::Calls,
+            RelationKind::MethodCall,
+            RelationKind::TypeReference,
+            RelationKind::Reads,
+            RelationKind::Writes,
+            RelationKind::Imports,
+            RelationKind::Implements,
+            RelationKind::Overrides,
+            RelationKind::Reexports,
+            RelationKind::Inherits,
+            RelationKind::Documents,
+        ];
+        div()
+            .flex()
+            .items_center()
+            .gap(space(Space::Tight))
+            .flex_wrap()
+            .child(
+                button::button(theme, "graph-collapse", "Hide graph", button::Weight::Quiet)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.graph.toggle_expanded();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                button::button(theme, "graph-zoom-out", "−", button::Weight::Quiet).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.graph.zoom_by(-0.15);
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(
+                button::button(theme, "graph-zoom-in", "+", button::Weight::Quiet).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.graph.zoom_by(0.15);
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(
+                button::button(theme, "graph-fit", "Fit", button::Weight::Quiet).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.graph.fit();
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(
+                button::button(theme, "graph-pan-left", "←", button::Weight::Quiet).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.graph.pan_by(80.0, 0.0);
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(
+                button::button(theme, "graph-pan-right", "→", button::Weight::Quiet).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.graph.pan_by(-80.0, 0.0);
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(text::faint(theme).child("Filter:"))
+            .children(filters.into_iter().map(|kind| {
+                let active = self.graph.filters.accepts(kind);
+                let id = format!("graph-filter-{}", kind.label());
+                button::button(
+                    theme,
+                    id,
+                    kind.label(),
+                    if active {
+                        button::Weight::Regular
+                    } else {
+                        button::Weight::Quiet
+                    },
+                )
+                .aria_label(format!("Toggle {} relation edges", kind.label()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.graph.toggle_filter(kind);
+                    cx.notify();
+                }))
+            }))
+            .when(
+                self.graph
+                    .graph
+                    .as_ref()
+                    .is_some_and(|graph| graph.nodes.len() > 1),
+                |toolbar| {
+                toolbar.child(text::faint(theme).child("Alt+↓ / Alt+↑ selects nodes"))
+                },
+            )
+    }
+
+    fn graph_canvas(
+        &mut self,
+        theme: &Theme,
+        selected: Option<NodeId>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let zoom = self.graph.zoom;
+        let pan = self.graph.pan;
+        let viewport = self.graph.viewport();
+        let edge_paths = self.graph.edge_geometry(viewport);
+        let Some(graph) = self.graph.graph.as_ref() else {
+            return div().id("graph-canvas").into();
+        };
+        let edge_color = theme.paint(Paint::Hairline);
+        let edge_paths_for_canvas = Arc::clone(&edge_paths);
+        let edge_canvas = canvas(
+            |_bounds, _window, _cx| {},
+            move |bounds, _state, window, _cx| {
+                for (_id, from, to) in edge_paths_for_canvas.iter().copied() {
+                    paint_graph_edge(bounds, from, to, zoom, pan, edge_color, window);
+                }
+            },
+        )
+        .absolute()
+        .inset_0();
+        let layout = &self.graph.layout;
+        let node_elements = graph
+            .nodes
+            .values()
+            .filter(|node| {
+                layout
+                    .position(node.id)
+                    .is_some_and(|position| viewport.contains(position, 180.0))
+            })
+            .take(graph::MAX_VISIBLE_NODES)
+            .filter_map(|node| {
+            let position = self.graph.layout.position(node.id)?;
+            let active = selected == Some(node.id);
+            let id = node.id;
+            let x = position.x * zoom + pan.x;
+            let y = position.y * zoom + pan.y;
+            let state_label = match node.state {
+                NodeState::Ready => "ready",
+                NodeState::Loading => "loading",
+                NodeState::Failed => "failed",
+                NodeState::Unavailable => "unavailable",
+            };
+            Some(
+                div()
+                    .id(ElementId::Name(SharedString::from(format!(
+                        "graph-node-{id:?}"
+                    ))))
+                    .absolute()
+                    .left(px(x))
+                    .top(px(y))
+                    .w(px(graph::NODE_WIDTH * zoom.max(0.75)))
+                    .min_h(px(graph::NODE_HEIGHT))
+                    .px(space(Space::Snug))
+                    .py(px(7.0))
+                    .rounded(radius(Radius::Small))
+                    .border(hairline())
+                    .border_color(if active {
+                        theme.paint(Paint::Gilt)
+                    } else {
+                        theme.paint(Paint::Hairline)
+                    })
+                    .role(Role::Button)
+                    .aria_label(format!(
+                        "Graph node {}, {}",
+                        node.label, state_label
+                    ))
+                    .aria_description(node.coordinate.clone())
+                    .tab_index(0)
+                    .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
+                    .bg(if active {
+                        theme.paint(Paint::GiltWash)
+                    } else {
+                        theme.paint(Paint::Panel)
+                    })
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.graph.selected = Some(id);
+                        cx.notify();
+                    }))
+                    .child(
+                        text::single_line(text::navigable(theme, TypeScale::Small, false))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(node.label.clone()),
+                    )
+                    .child(
+                        text::faint(theme)
+                            .font_family(theme.specimen())
+                            .child(state_label),
+                    ),
+            )
+        });
+        div()
+            .id("graph-canvas")
+            .role(Role::Group)
+            .aria_label("Rich semantic graph canvas")
+            .aria_description("Use Alt plus Up or Down to move through graph nodes. Use the middle mouse button to pan and the wheel to zoom.")
+            .relative()
+            .w_full()
+            .h(px(self.graph.canvas_height()))
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .rounded(radius(Radius::Small))
+            .border(hairline())
+            .border_color(theme.paint(Paint::Hairline))
+            .bg(theme.paint(Paint::Sunken))
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    this.graph.begin_drag(graph::Position {
+                        x: f32::from(event.position.x),
+                        y: f32::from(event.position.y),
+                    });
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if event.dragging() {
+                    this.graph.drag_to(graph::Position {
+                        x: f32::from(event.position.x),
+                        y: f32::from(event.position.y),
+                    });
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.graph.end_drag();
+                    cx.notify();
+                }),
+            )
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                let delta = event.delta.pixel_delta(px(16.0));
+                this.graph.zoom_by(f32::from(delta.y) / 240.0);
+                cx.notify();
+            }))
+            .on_pinch(cx.listener(|this, event: &PinchEvent, _, cx| {
+                this.graph.zoom_by(event.delta);
+                cx.notify();
+            }))
+            .child(edge_canvas)
+            .children(node_elements)
+    }
+
+    fn graph_inspector(
+        &self,
+        theme: &Theme,
+        selected: Option<NodeId>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let Some(graph) = self.graph.graph.as_ref() else {
+            return div().id("graph-inspector");
+        };
+        let rows = graph.nodes.values().take(24).map(|node| {
+            let id = node.id;
+            let active = selected == Some(id);
+            let coordinate = node.coordinate.clone();
+            let source = node.source.clone();
+            let row = div()
+                .id(ElementId::Name(SharedString::from(format!(
+                    "graph-inspector-{id:?}"
+                ))))
+                .flex()
+                .items_center()
+                .gap(space(Space::Snug))
+                .min_w(px(0.0))
+                .px(space(Space::Snug))
+                .py(px(3.0))
+                .rounded(radius(Radius::Hair))
+                .tab_index(0)
+                .focus_visible(|style| style.bg(theme.paint(Paint::Selected)))
+                .cursor_pointer()
+                .when(active, |row| row.bg(theme.paint(Paint::Selected)))
+                .hover(|style| style.bg(theme.paint(Paint::Hover)))
+                .role(Role::Button)
+                .aria_label(format!("Open graph node {}", node.label))
+                .aria_description(coordinate.clone())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_symbol(id.symbol(), Target::Child, cx);
+                }))
+                .child(
+                    text::single_line(text::navigable(theme, TypeScale::Small, false))
+                        .child(node.label.clone()),
+                )
+                .child(
+                    text::single_line(text::faint(theme))
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .font_family(theme.specimen())
+                        .child(coordinate),
+                )
+                .child(
+                    button::button(
+                        theme,
+                        format!("graph-source-{id:?}"),
+                        if source.is_some() { "src" } else { "open" },
+                        button::Weight::Quiet,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_graph_source(id.symbol(), cx);
+                    })),
+                );
+            if let Some((path, line)) = source {
+                row.child(
+                    button::button(
+                        theme,
+                        format!("graph-editor-{id:?}"),
+                        "editor",
+                        button::Weight::Quiet,
+                    )
+                    .aria_label(format!("Open {} in external editor", node.label))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_in_editor(&path, line, cx);
+                    })),
+                )
+            } else {
+                row
+            }
+        });
+        div()
+            .id("graph-inspector")
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(1.0))
+            .max_h(px(196.0))
+            .overflow_y_scroll()
+            .children(rows)
     }
 
     fn relation_row(

@@ -609,6 +609,7 @@ fn reply_round_trip_fixtures() -> (Basis, ViewStateRoot, Vec<CommandReply>) {
         root: root.clone(),
         freshness: Freshness::Current,
         next: None,
+        graph_relations: None,
     };
     let symbol = symbol_key("pkg::Thing");
     let package = crate::package_key("pkg");
@@ -699,6 +700,7 @@ fn reply_and_view_dtos_round_trip_every_reply_variant() {
                 observed: source_root,
             },
             next: None,
+            graph_relations: None,
         },
     );
     let encoded = serde_json::to_vec(&view).expect("encode view");
@@ -875,6 +877,7 @@ fn subscription_projection_rejects_replayed_reset_and_incomplete_producer_root()
             root: complete.clone(),
             freshness: Freshness::Current,
             next: None,
+            graph_relations: None,
         },
     );
     let reset = SubscriptionDto::try_reset(
@@ -910,6 +913,7 @@ fn subscription_projection_rejects_replayed_reset_and_incomplete_producer_root()
             root: incomplete,
             freshness: Freshness::Current,
             next: None,
+            graph_relations: None,
         },
     );
     assert!(
@@ -981,6 +985,7 @@ fn forged_same_scope_certificate_cannot_mint_complete_coverage() {
             root: root.clone(),
             freshness: Freshness::Current,
             next: None,
+            graph_relations: None,
         },
     )
     .with_certificate(certificate(&root));
@@ -1160,6 +1165,7 @@ fn certified_subscription_rejects_wrong_root_schema_producer_and_replay() {
             root: root.clone(),
             freshness: Freshness::Current,
             next: None,
+            graph_relations: None,
         },
     )
     .with_certificate(certificate(&root));

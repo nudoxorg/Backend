@@ -88,6 +88,10 @@ actions!(
         ToggleAppearance,
         /// Suppress or restore motion.
         ToggleMotion,
+        /// Select the next admitted graph node.
+        GraphNext,
+        /// Select the previous admitted graph node.
+        GraphPrevious,
         /// Activate the first tab.
         Tab1,
         /// Activate the second tab.
@@ -144,6 +148,16 @@ fn command_bindings() -> Vec<KeyBinding> {
         bind(keys::OPEN_EDITOR, OpenEditor, None),
         bind(keys::TOGGLE_APPEARANCE, ToggleAppearance, None),
         bind(keys::TOGGLE_MOTION, ToggleMotion, None),
+        bind(
+            Chord::primary("down").alt(),
+            GraphNext,
+            Some(WINDOW_CONTEXT),
+        ),
+        bind(
+            Chord::primary("up").alt(),
+            GraphPrevious,
+            Some(WINDOW_CONTEXT),
+        ),
     ]
 }
 

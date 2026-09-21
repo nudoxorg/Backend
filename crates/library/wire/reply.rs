@@ -28,8 +28,8 @@ use crate::canonical::{
     ViewVersionSchema, encode_id,
 };
 use crate::{
-    Basis, CommandReply, CoverageCapability, DeclarationKind, HealthReport, PageTerminal,
-    RevisionReceipt, Row, RowId, RowState, ViewRoot, ViewSnapshot,
+    Basis, CommandReply, CoverageCapability, DeclarationKind, GraphRelation, HealthReport,
+    PageTerminal, RevisionReceipt, Row, RowId, RowState, SemanticLinkKind, ViewRoot, ViewSnapshot,
 };
 use backend_version::ProducerObservationVerifier;
 use serde::{Deserialize, Serialize};
@@ -101,6 +101,28 @@ pub(crate) struct SnapshotWire {
     pub(crate) root: ViewRootWire,
     pub(crate) freshness: FreshnessWire,
     pub(crate) next: Option<CursorWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) graph_relations: Option<GraphRelationsWire>,
+}
+
+/// Versioned typed-edge sidecar for graph snapshots. Keeping this outside the
+/// committed view root means older row/view certificates remain valid while a
+/// receiver can reject an edge vocabulary it does not understand explicitly.
+pub(crate) const GRAPH_RELATIONS_SCHEMA: u16 = 1;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GraphRelationsWire {
+    pub(crate) schema: u16,
+    pub(crate) relations: Vec<GraphRelationWire>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GraphRelationWire {
+    pub(crate) from: RowIdWire,
+    pub(crate) to: RowIdWire,
+    pub(crate) relation: SemanticLinkKind,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -472,6 +494,19 @@ pub(crate) fn snapshot_to_wire(snapshot: &ViewSnapshot) -> SnapshotWire {
         root: view_root_to_wire(&snapshot.root),
         freshness: freshness_to_wire(snapshot.freshness),
         next: snapshot.next.map(cursor_to_wire),
+        graph_relations: snapshot.graph_relations.as_deref().map(|relations| {
+            GraphRelationsWire {
+                schema: GRAPH_RELATIONS_SCHEMA,
+                relations: relations
+                    .iter()
+                    .map(|relation| GraphRelationWire {
+                        from: row_id_to_wire(relation.from),
+                        to: row_id_to_wire(relation.to),
+                        relation: relation.relation,
+                    })
+                    .collect(),
+            }
+        }),
     }
 }
 
@@ -509,10 +544,38 @@ pub(crate) fn snapshot_from_wire_with_admission<A: CoverageAdmission>(
         _ => {}
     }
     Ok(ViewSnapshot {
+        graph_relations: graph_relations_from_wire(value.graph_relations, &root, certificate)?,
         root,
         freshness,
         next,
     })
+}
+
+fn graph_relations_from_wire(
+    value: Option<GraphRelationsWire>,
+    root: &ViewRoot,
+    certificate: &WireCertificate,
+) -> Result<Option<Box<[GraphRelation]>>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.schema != GRAPH_RELATIONS_SCHEMA {
+        return Err("unsupported graph relation sidecar schema".to_owned());
+    }
+    let mut relations = Vec::with_capacity(value.relations.len());
+    for relation in value.relations {
+        let from = row_id_from_wire(&relation.from, certificate)?;
+        let to = row_id_from_wire(&relation.to, certificate)?;
+        if root.row(from).is_none() || root.row(to).is_none() {
+            return Err("graph relation sidecar names an absent row".to_owned());
+        }
+        relations.push(GraphRelation::new(from, to, relation.relation));
+    }
+    relations.sort_unstable();
+    if relations.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("graph relation sidecar contains a duplicate edge".to_owned());
+    }
+    Ok(Some(relations.into_boxed_slice()))
 }
 
 pub(crate) fn view_root_to_wire(root: &ViewRoot) -> ViewRootWire {

@@ -6,8 +6,9 @@
 
 use super::*;
 use backend_library::{
-    Coverage, DeclarationKind, Fragment, Lane, OutlineExtent, OutlineNode, Reason, RowId,
-    SourceExcerpt, SourceExcerptExtent, SourceLocation, package_key, symbol_key, view_state_root,
+    Coverage, DeclarationKind, Document, Fragment, GraphRelation, Lane, OutlineExtent,
+    OutlineNode, Reason, RowId, SemanticLinkKind, SourceAvailability, SourceExcerpt,
+    SourceExcerptExtent, SourceLocation, package_key, symbol_key, view_state_root,
 };
 
 const PROJECT: &str = "/abs/polyglot";
@@ -478,6 +479,72 @@ fn declaration_row() -> backend_library::Row {
         SourceExcerpt::captured("pub fn ferris() -> Beacon {\n    Beacon\n}", SourceExcerptExtent::Complete)
             .expect("bounded excerpt"),
     )
+}
+
+#[test]
+fn compiler_graph_relation_kinds_survive_owner_page_assembly() {
+    let centre = symbol_key(DECLARATION);
+    let calls = symbol_key("/abs/polyglot::src/lib.rs:5::calls");
+    let implements = symbol_key("/abs/polyglot::src/lib.rs:8::implements");
+    let depends = symbol_key("/abs/polyglot::src/lib.rs:11::depends");
+    let calls_row = backend_library::Row::new(RowId::Symbol(calls), basis(), "calls")
+        .with_kind(DeclarationKind::Function);
+    let implements_row = backend_library::Row::new(
+        RowId::Symbol(implements),
+        basis(),
+        "implements",
+    )
+    .with_kind(DeclarationKind::Trait);
+    let depends_row = backend_library::Row::new(RowId::Symbol(depends), basis(), "depends")
+        .with_kind(DeclarationKind::Module);
+    let document = Document::new(
+        centre,
+        basis().root,
+        vec![Fragment::Text("ferris".to_owned())],
+    )
+    .with_location(SourceAvailability::NotCaptured);
+    let page = page_from_document_with_graph_relations(
+        DECLARATION,
+        &document,
+        &[declaration_row()],
+        &[calls_row, implements_row, depends_row],
+        &[
+            GraphRelation::new(
+                RowId::Symbol(centre),
+                RowId::Symbol(calls),
+                SemanticLinkKind::Calls,
+            ),
+            GraphRelation::new(
+                RowId::Symbol(centre),
+                RowId::Symbol(implements),
+                SemanticLinkKind::Implements,
+            ),
+            GraphRelation::new(
+                RowId::Symbol(centre),
+                RowId::Symbol(depends),
+                SemanticLinkKind::Imports,
+            ),
+        ],
+        Vec::new(),
+    );
+    let labels = page
+        .relations()
+        .iter()
+        .map(|group| group.label())
+        .collect::<Vec<_>>();
+    assert!(labels.contains(&RelationLabel::Typed(
+        SemanticLinkKind::Calls,
+        RelationDirection::Outgoing,
+    )));
+    assert!(labels.contains(&RelationLabel::Typed(
+        SemanticLinkKind::Implements,
+        RelationDirection::Outgoing,
+    )));
+    assert!(labels.contains(&RelationLabel::Typed(
+        SemanticLinkKind::Imports,
+        RelationDirection::Outgoing,
+    )));
+    assert!(!labels.contains(&RelationLabel::Related));
 }
 
 #[test]

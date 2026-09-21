@@ -470,6 +470,10 @@ pub struct ViewSnapshot {
     pub freshness: Freshness,
     /// Continuation cursor, if more bounded rows are available.
     pub next: Option<Cursor>,
+    /// Typed semantic edges when this snapshot came from the compiler graph
+    /// authority. Ordinary snapshots leave this absent, preserving their
+    /// existing wire shape and meaning.
+    pub graph_relations: Option<Box<[crate::GraphRelation]>>,
 }
 
 /// Rejected update reason at the view boundary.

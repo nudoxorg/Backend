@@ -3,7 +3,7 @@
 use super::Library;
 use crate::arrangement::ArrangementPage;
 use crate::{
-    Cursor, Document, DocumentQuery, Freshness, Frontier, GraphNeighborhoodQuery, LibraryError,
+    Cursor, Document, DocumentQuery, Freshness, Frontier, GraphNeighborhoodQuery, GraphRelation, LibraryError,
     NameQuery, Outline, OutlineExtent, OutlineNode, OutlineQuery, PackageKey, PageRequest,
     PageTerminal, ProjectionPage, Query, QueryLimit, RankedSearchSnapshot, ReadManifest, Row,
     RowId, SymbolKey, ViewRecipeId, ViewRevision, ViewRoot, ViewSnapshot, ViewStateRoot,
@@ -527,6 +527,71 @@ impl Library {
         self.snapshot_for(b"graph", rows, None, None, None)
     }
 
+    /// Builds a graph snapshot from compiler-proven semantic edges.
+    ///
+    /// This is the typed companion to [`Self::graph_from_semantic_ids`]. Row
+    /// payloads and canonical view commitments remain owned by the library;
+    /// the owner contributes only edges selected from its admitted semantic
+    /// image. The edge sidecar is explicitly versioned at the wire boundary
+    /// and does not alter the committed view root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when an endpoint is outside this immutable
+    /// view, the source is absent, an edge is repeated, or the bounded graph
+    /// contract is exceeded.
+    pub fn graph_from_semantic_relations(
+        &self,
+        query: GraphNeighborhoodQuery,
+        relations: &[GraphRelation],
+    ) -> Result<ViewSnapshot, LibraryError> {
+        self.check_basis(query.basis())?;
+        let source = RowId::Symbol(
+            query
+                .resolve_symbol(&self.view)
+                .ok_or(LibraryError::NotFound)?,
+        );
+        let mut ids = BTreeSet::from([source]);
+        let mut unique = BTreeSet::new();
+        for relation in relations {
+            if !unique.insert(*relation) {
+                return Err(LibraryError::InvalidQuery(
+                    "semantic graph contains a duplicate typed relation".to_owned(),
+                ));
+            }
+            if self.view.row(relation.from).is_none() || self.view.row(relation.to).is_none() {
+                return Err(LibraryError::InvalidQuery(
+                    "semantic graph relation endpoint is absent from the selected view"
+                        .to_owned(),
+                ));
+            }
+            ids.insert(relation.from);
+            ids.insert(relation.to);
+        }
+        if ids.len() > 1 + usize::from(QueryLimit::MAX)
+            || relations.len() > usize::from(QueryLimit::MAX)
+        {
+            return Err(LibraryError::InvalidQuery(
+                "semantic graph relations violate the bounded source contract".to_owned(),
+            ));
+        }
+        let rows = ids
+            .into_iter()
+            .map(|id| {
+                self.view.row(id).ok_or_else(|| {
+                    LibraryError::InvalidQuery(
+                        "semantic graph identity is absent from the selected view".to_owned(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.work.record_seek();
+        self.work.record_output(rows.len());
+        let mut snapshot = self.snapshot_for(b"graph", rows, None, None, None)?;
+        snapshot.graph_relations = Some(relations.to_vec().into_boxed_slice());
+        Ok(snapshot)
+    }
+
     /// Builds the find-references answer from compiler-verified occurrence
     /// facts against this library's immutable view.
     ///
@@ -741,6 +806,7 @@ impl Library {
             root,
             freshness: Freshness::Current,
             next,
+            graph_relations: None,
         })
     }
 

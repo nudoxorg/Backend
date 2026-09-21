@@ -10,16 +10,17 @@
 
 use super::actions::{
     Accept, AddProject, CloseTab, Complete, CopyIdentity, CopyKey, Dismiss, FocusOmnibar, GoBack,
-    GoForward, GoHome, GrowInterface, MoveDown, MoveUp, NextTab, OpenEditor, OpenPalette,
-    OpenSettings, OpenSource, PageDown, PageUp, PreviousTab, Reload, ResetInterface, SelectFirst,
-    SelectLast, ShrinkInterface, Tab1, Tab2, Tab3, Tab4, Tab5, Tab6, Tab7, Tab8, Tab9,
-    ToggleAppearance, ToggleContext, ToggleLibrary, ToggleMotion, WINDOW_CONTEXT, tab_index,
+    GoForward, GoHome, GraphNext, GraphPrevious, GrowInterface, MoveDown, MoveUp, NextTab,
+    OpenEditor, OpenPalette, OpenSettings, OpenSource, PageDown, PageUp, PreviousTab, Reload,
+    ResetInterface, SelectFirst, SelectLast, ShrinkInterface, Tab1, Tab2, Tab3, Tab4, Tab5, Tab6,
+    Tab7, Tab8, Tab9, ToggleAppearance, ToggleContext, ToggleLibrary, ToggleMotion, WINDOW_CONTEXT,
+    tab_index,
 };
 use crate::host::lease::HostMode;
 use crate::reducer::model::Model;
 use crate::store::catalog::{Ask, CatalogStore};
 use crate::store::document::{DocumentStore, Subject, Target};
-use crate::store::events::CatalogEvent;
+use crate::store::events::{CatalogEvent, DocumentEvent};
 use crate::store::index::IndexStore;
 use crate::store::jobs::{JobKind, JobsStore};
 use crate::store::marks::Recent;
@@ -35,7 +36,7 @@ use crate::transport::unix::UnixSubscriptionTransport;
 use crate::ui::components::ActionFrames;
 use crate::ui::surface;
 use backend_library::{SymbolKey, ViewRoot};
-use backend_present::Identity;
+use backend_present::{Identity, IdentityKey, Source};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement,
@@ -66,6 +67,9 @@ pub(crate) struct Workspace {
     pub(super) transients: TransientStack,
     pub(super) source_open: bool,
     pub(super) source_cache: Option<super::source::SourceCache>,
+    /// Graph source navigation waits for the internal document reader to
+    /// settle before opening its captured-source sheet.
+    pending_graph_source: Option<SymbolKey>,
     folded: Vec<String>,
     unfurled: Vec<String>,
     capture_time: Option<std::time::Duration>,
@@ -76,6 +80,8 @@ pub(crate) struct Workspace {
     pub(super) sheet_scroll: gpui::ScrollHandle,
     pub(super) tab_tree_state: Entity<TreeState>,
     pub(super) revealed_row: Option<usize>,
+    /// Revision-pinned graph projection and navigation state for the reader.
+    pub(super) graph: crate::graph::ExplorerState,
     focus: FocusHandle,
     pub(super) library_focus: FocusHandle,
     pub(super) source_focus: FocusHandle,
@@ -209,6 +215,7 @@ impl Workspace {
             transients: TransientStack::default(),
             source_open: false,
             source_cache: None,
+            pending_graph_source: None,
             folded: Vec::new(),
             unfurled: Vec::new(),
             capture_time,
@@ -219,6 +226,7 @@ impl Workspace {
             sheet_scroll: gpui::ScrollHandle::new(),
             tab_tree_state: cx.new(|cx| TreeState::new(cx)),
             revealed_row: None,
+            graph: crate::graph::ExplorerState::new(),
             focus: cx.focus_handle(),
             library_focus: cx.focus_handle(),
             source_focus: cx.focus_handle(),
@@ -260,6 +268,9 @@ impl Workspace {
             cx.observe(parts.engine, |this, store, cx| this.on_engine(&store, cx)),
             cx.observe(parts.search, |_, _, cx| cx.notify()),
             cx.observe(parts.document, |_, _, cx| cx.notify()),
+            cx.subscribe(parts.document, |this, _, event, cx| {
+                this.on_document(*event, cx);
+            }),
             cx.observe(parts.index, |_, _, cx| cx.notify()),
             cx.observe(parts.jobs, |_, _, cx| cx.notify()),
             cx.observe(parts.catalog, |_, _, cx| cx.notify()),
@@ -281,6 +292,13 @@ impl Workspace {
         let published = store.read(cx).shelf().clone();
         self.jobs
             .update(cx, |jobs, cx| jobs.reconcile(&published, cx));
+        cx.notify();
+    }
+
+    fn on_document(&mut self, event: DocumentEvent, cx: &mut Context<Self>) {
+        if event == DocumentEvent::Navigated {
+            self.finish_graph_source_navigation(cx);
+        }
         cx.notify();
     }
 
@@ -475,6 +493,36 @@ impl Workspace {
 
 /// Navigation.
 impl Workspace {
+    /// Navigates through the internal DocumentStore and opens the source
+    /// reader after the captured page arrives. The external editor remains a
+    /// separate, explicit action in the graph inspector.
+    pub(super) fn open_graph_source(&mut self, symbol: SymbolKey, cx: &mut Context<Self>) {
+        self.pending_graph_source = Some(symbol);
+        self.source_open = false;
+        self.source_cache = None;
+        self.open_symbol(symbol, Target::Here, cx);
+        self.finish_graph_source_navigation(cx);
+    }
+
+    fn finish_graph_source_navigation(&mut self, cx: &mut Context<Self>) {
+        let Some(symbol) = self.pending_graph_source else {
+            return;
+        };
+        let page = self.document.read(cx).tab().and_then(|tab| match tab.content() {
+            super::super::store::document::Content::Page(page)
+                if page.identity().key() == IdentityKey::Symbol(symbol) => Some(page.clone()),
+            _ => None,
+        });
+        let Some(page) = page else {
+            return;
+        };
+        self.pending_graph_source = None;
+        if matches!(page.source(), Source::Captured { .. }) {
+            self.source_open = true;
+            self.source_cache = None;
+        }
+    }
+
     /// Opens one declaration, resolving its coordinate from the index.
     pub(super) fn open_symbol(
         &mut self,
@@ -779,6 +827,9 @@ impl Render for Workspace {
         let mut theme = self.theme(cx);
         theme.begin_action_frame(window, "workspace");
         window.set_rem_size(theme.root_pixels());
+        let viewport = window.viewport_size();
+        self.graph
+            .set_viewport_size(f32::from(viewport.width), f32::from(viewport.height));
         self.fit(window, cx);
         #[cfg(feature = "preview")]
         self.stage_preview(window, cx);
@@ -887,7 +938,9 @@ impl<E: InteractiveElement> KeyHandlers for E {
             .on_action(cx.listener(Workspace::shrink_interface))
             .on_action(cx.listener(Workspace::reload))
             .on_action(cx.listener(Workspace::toggle_appearance))
-            .on_action(cx.listener(Workspace::toggle_motion));
+            .on_action(cx.listener(Workspace::toggle_motion))
+            .on_action(cx.listener(Workspace::graph_next))
+            .on_action(cx.listener(Workspace::graph_previous));
         with_sheet_handlers(with_tab_handlers(element, cx), cx)
     }
 }
@@ -1088,6 +1141,16 @@ impl Workspace {
             let next = !shell.reduced_motion();
             shell.set_reduced_motion(next, cx);
         });
+    }
+
+    fn graph_next(&mut self, _: &GraphNext, _: &mut Window, cx: &mut Context<Self>) {
+        self.graph.focus_next();
+        cx.notify();
+    }
+
+    fn graph_previous(&mut self, _: &GraphPrevious, _: &mut Window, cx: &mut Context<Self>) {
+        self.graph.focus_previous();
+        cx.notify();
     }
 }
 

@@ -12,8 +12,8 @@ use backend_engine::builtin::{
     SemanticPublicationCoverage, SemanticPublicationSelection, SemanticUnavailableReason,
 };
 use backend_engine::application::{
-    LocalCompilerClient, OwnedPackageSource, OwnedPackageSourceSet, PackageSemanticError,
-    PackageSemanticRuntimeError,
+    DocumentationSession, LocalCompilerClient, OwnedPackageSource, OwnedPackageSourceSet,
+    PackageSemanticError, PackageSemanticRuntimeError,
 };
 use backend_semantic::ir::{
     LinkTarget, SemanticReader as _, SemanticSnapshot, SemanticStableLinks, StableLinkKey,
@@ -140,11 +140,16 @@ fn execute_semantic_graph(
                     backend_semantic::ir::SemanticImageView::reopen(bytes.as_ref()).map_err(|error| {
                         BuiltinModelError(format!("reopen semantic graph image: {error}"))
                     })?;
-                if let Some(ids) =
-                    semantic_graph_ids(&image, package, source_symbol, source_id, include_incoming)?
+                if let Some(relations) = semantic_graph_relations(
+                    &image,
+                    package,
+                    source_symbol,
+                    source_id,
+                    include_incoming,
+                )?
                 {
                     return library
-                        .graph_from_semantic_ids(semantic_query, &ids)
+                        .graph_from_semantic_relations(semantic_query, &relations)
                         .map(Some)
                         .map_err(|error| BuiltinModelError(error.to_string()));
                 }
@@ -158,13 +163,13 @@ fn execute_semantic_graph(
     Ok(None)
 }
 
-fn semantic_graph_ids(
+fn semantic_graph_relations(
     image: &backend_semantic::ir::SemanticImageView<'_>,
     package: backend_engine::PackageKey,
     symbol: backend_engine::SymbolKey,
     source_id: backend_engine::RowId,
     include_incoming: bool,
-) -> Result<Option<Vec<backend_engine::RowId>>, BuiltinModelError> {
+) -> Result<Option<Vec<backend_engine::GraphRelation>>, BuiltinModelError> {
     let session = backend_engine::application::DocumentationSession::new(image);
     let source_entity = session
         .canonical_entities()
@@ -186,68 +191,78 @@ fn semantic_graph_ids(
     let Some(source_entity) = source_entity else {
         return Ok(None);
     };
-    let targets = semantic_graph_targets(image, source_entity, include_incoming)?;
     let image_identity = *blake3::hash(image.as_ref()).as_bytes();
-    let mut ids = BTreeSet::new();
-    ids.insert(source_id);
-    for target in targets {
-        let target = session
-            .entity(target)
-            .map_err(|error| BuiltinModelError(format!("read semantic graph target: {error}")))?;
-        ids.insert(backend_engine::RowId::Symbol(
-            super::view_build::semantic_symbol(package, target.entity.version.identity()),
+    let mut relations = BTreeSet::new();
+    for (_, link) in image.links_from(source_entity) {
+        let target = semantic_link_row_id(image, &session, package, image_identity, link.target)?;
+        relations.insert(backend_engine::GraphRelation::new(
+            source_id,
+            target,
+            semantic_link_kind(link.kind),
         ));
     }
-    for (_, link) in image.links_from(source_entity) {
-        if let LinkTarget::External(target) = link.target {
-            let identity =
-                backend_semantic::ir::ExternalTargetIdentity::capture(image, target).map_err(|error| {
-                    BuiltinModelError(format!("identify semantic graph target: {error}"))
-                })?;
-            ids.insert(backend_engine::RowId::Symbol(
-                super::view_build::external_semantic_symbol(package, image_identity, identity),
-            ));
+    if include_incoming {
+        for source in session.canonical_entities() {
+            let source = source.map_err(|error| {
+                BuiltinModelError(format!("read semantic graph source: {error}"))
+            })?;
+            for (_, link) in image.links_from(source.entity.id) {
+                if link.target != LinkTarget::Local(source_entity) {
+                    continue;
+                }
+                let from = backend_engine::RowId::Symbol(super::view_build::semantic_symbol(
+                    package,
+                    source.entity.version.identity(),
+                ));
+                relations.insert(backend_engine::GraphRelation::new(
+                    from,
+                    source_id,
+                    semantic_link_kind(link.kind),
+                ));
+            }
         }
     }
-    if ids.len() > 1 + usize::from(backend_engine::QueryLimit::MAX) {
+    let mut ids = BTreeSet::from([source_id]);
+    for relation in &relations {
+        ids.insert(relation.from);
+        ids.insert(relation.to);
+    }
+    if ids.len() > 1 + usize::from(backend_engine::QueryLimit::MAX)
+        || relations.len() > usize::from(backend_engine::QueryLimit::MAX)
+    {
         return Err(BuiltinModelError(
             "semantic graph exceeds the bounded result contract".to_owned(),
         ));
     }
-    Ok(Some(ids.into_iter().collect()))
+    Ok(Some(relations.into_iter().collect()))
 }
 
-fn semantic_graph_targets(
+fn semantic_link_row_id(
     image: &backend_semantic::ir::SemanticImageView<'_>,
-    source: backend_semantic::ir::EntityId,
-    include_incoming: bool,
-) -> Result<BTreeSet<backend_semantic::ir::EntityId>, BuiltinModelError> {
-    let cancellation = backend_semantic::graph_vector::Cancellation::new();
-    let graph = backend_extension_trustfall::server::SemanticTrustfallGraph::new(image, &cancellation);
-    futures_executor::block_on(async {
-        let mut targets = BTreeSet::new();
-        if include_incoming {
-            let mut outgoing = graph
-                .occurrence_neighbors(source)
-                .map_err(|error| error.to_string())?;
-            while let Some(hit) = outgoing.next().await {
-                targets.insert(hit.map_err(|error| error.to_string())?.entity());
-            }
-            let mut incoming = graph
-                .incoming_occurrence_neighbors(source)
-                .map_err(|error| error.to_string())?;
-            while let Some(hit) = incoming.next().await {
-                targets.insert(hit.map_err(|error| error.to_string())?.entity());
-            }
-        } else {
-            let mut outgoing = graph.neighbors(source).map_err(|error| error.to_string())?;
-            while let Some(hit) = outgoing.next().await {
-                targets.insert(hit.map_err(|error| error.to_string())?.entity);
-            }
+    session: &DocumentationSession<'_, backend_semantic::ir::SemanticImageView<'_>>,
+    package: backend_engine::PackageKey,
+    image_identity: [u8; 32],
+    target: LinkTarget,
+) -> Result<backend_engine::RowId, BuiltinModelError> {
+    match target {
+        LinkTarget::Local(target) => {
+            let target = session.entity(target).map_err(|error| {
+                BuiltinModelError(format!("read semantic graph target: {error}"))
+            })?;
+            Ok(backend_engine::RowId::Symbol(
+                super::view_build::semantic_symbol(package, target.entity.version.identity()),
+            ))
         }
-        Ok::<_, String>(targets)
-    })
-    .map_err(|error| BuiltinModelError(format!("query semantic graph: {error}")))
+        LinkTarget::External(target) => {
+            let identity = backend_semantic::ir::ExternalTargetIdentity::capture(image, target)
+                .map_err(|error| {
+                    BuiltinModelError(format!("identify semantic graph target: {error}"))
+                })?;
+            Ok(backend_engine::RowId::Symbol(
+                super::view_build::external_semantic_symbol(package, image_identity, identity),
+            ))
+        }
+    }
 }
 
 /// Answers "where is this declaration used" from the semantic occurrence

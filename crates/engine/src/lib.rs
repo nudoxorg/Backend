@@ -99,7 +99,7 @@ pub use backend_library::{
     EmbeddingCapabilityRecipe, EmbeddingEncoding, EmbeddingMetric, EmbeddingNormalization,
     EmbeddingPooling, EmbeddingRecipeId, EmbeddingSource, EventDto, FaultRows, Fragment, Freshness,
     Frontier, GraphNeighborhoodQuery, GraphQueryControl, GraphQueryPage, GraphQueryRequest,
-    GraphQueryRow, GraphValue, HealthReport, IngestProgress, IntentId, Lane, LanguageOracleTask,
+    GraphQueryRow, GraphRelation, GraphValue, HealthReport, IngestProgress, IntentId, Lane, LanguageOracleTask,
     LanguageRows, LogKey, MAX_PRODUCT_ROWS, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
     MAX_SNAPSHOT_PAGE_ROWS, MAX_SUBSCRIPTION_EVENTS, MAX_VIEW_PATCH_ROWS, Outline,
     PackageAuthorityIdentity, PackageCoordinate as ProductPackageCoordinate, PackageKey,

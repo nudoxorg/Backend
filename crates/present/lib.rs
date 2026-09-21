@@ -69,7 +69,7 @@ mod signature;
 mod status;
 
 pub use assemble::{
-    outline_tree, page_from_document, project_of, record_list, record_list_from_rows,
+    outline_tree, page_from_document, page_from_document_with_graph_relations, project_of, record_list, record_list_from_rows,
     shelf_from_root, shelf_from_snapshot,
 };
 pub use budget::{

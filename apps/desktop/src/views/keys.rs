@@ -44,6 +44,12 @@ impl Chord {
         self
     }
 
+    /// Adds the alternate modifier.
+    pub(crate) const fn alt(mut self) -> Self {
+        self.alt = true;
+        self
+    }
+
     /// Returns the keymap spelling GPUI parses.
     pub(crate) fn binding(self) -> String {
         let mut out = String::with_capacity(20);

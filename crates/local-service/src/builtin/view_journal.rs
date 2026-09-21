@@ -683,6 +683,7 @@ fn encode_view(view: &ViewRoot) -> Result<Vec<u8>, String> {
             root: view.clone(),
             freshness: Freshness::Current,
             next: None,
+            graph_relations: None,
         },
     )
     .with_certificate(certificate);

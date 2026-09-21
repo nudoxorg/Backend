@@ -476,6 +476,7 @@ impl ViewDto {
                 root,
                 freshness,
                 next,
+                graph_relations: None,
             },
             certificate: envelope.certificate,
         })

@@ -11,6 +11,7 @@
 
 #![deny(unsafe_code)]
 
+mod graph;
 #[cfg(unix)]
 mod host;
 mod motion;
