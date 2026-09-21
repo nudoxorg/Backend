@@ -14,6 +14,7 @@ pub(crate) mod events;
 pub(crate) mod index;
 pub(crate) mod jobs;
 pub(crate) mod marks;
+pub(crate) mod persist;
 pub(crate) mod prefs;
 pub(crate) mod registry;
 pub(crate) mod search;

@@ -98,6 +98,24 @@ fn limits() -> AcquisitionLimits {
     }
 }
 
+struct UnavailableTransport;
+
+impl RegistryTransport for UnavailableTransport {
+    fn fetch_page(
+        &mut self,
+        _: FeedRequest,
+    ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+        Ok(TransportResult::Unavailable)
+    }
+
+    fn fetch_archive(
+        &mut self,
+        _: &RemotePackage,
+    ) -> Result<TransportResult<Vec<u8>>, TransportFailure> {
+        panic!("archive called without a page")
+    }
+}
+
 #[test]
 fn http_publication_and_restart_advance_one_atomic_cursor() {
     let archive = b"verified package archive";
@@ -215,21 +233,6 @@ fn offline_policy_never_calls_transport_and_secrets_are_redacted() {
 
 #[test]
 fn unavailable_feed_retains_one_durable_retry_intent() {
-    struct UnavailableTransport;
-    impl RegistryTransport for UnavailableTransport {
-        fn fetch_page(
-            &mut self,
-            _: FeedRequest,
-        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
-            Ok(TransportResult::Unavailable)
-        }
-        fn fetch_archive(
-            &mut self,
-            _: &RemotePackage,
-        ) -> Result<TransportResult<Vec<u8>>, TransportFailure> {
-            panic!("archive called without a page")
-        }
-    }
     let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
         .expect("endpoint");
     let root = temporary("unavailable");
@@ -245,6 +248,75 @@ fn unavailable_feed_retains_one_durable_retry_intent() {
         .expect("recovery");
     assert_eq!(recovery.cursor.sequence(), 0);
     assert!(recovery.pending.is_some());
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn a_truncated_registry_tail_is_repaired_without_advancing_the_cursor() {
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("truncated-tail");
+    let (mut owner, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("owner");
+    assert!(matches!(
+        owner.poll(&mut UnavailableTransport),
+        Ok(AcquisitionOutcome::Unavailable { .. })
+    ));
+    drop(owner);
+
+    let journal = storage_root(&root, &endpoint).join("registry.journal");
+    let valid_length = fs::metadata(&journal).expect("journal metadata").len();
+    let mut append = fs::OpenOptions::new()
+        .append(true)
+        .open(&journal)
+        .expect("open journal tail");
+    append.write_all(&[0xa5]).expect("append interrupted byte");
+    append.sync_all().expect("sync interrupted byte");
+    drop(append);
+    assert_eq!(
+        fs::metadata(&journal).expect("tail metadata").len(),
+        valid_length + 1
+    );
+
+    let (_, recovery) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("repair restart");
+    assert!(recovery.repaired_tail);
+    assert_eq!(recovery.cursor.sequence(), 0);
+    assert!(
+        recovery.pending.is_some(),
+        "retry intent must remain durable"
+    );
+    assert_eq!(
+        fs::metadata(&journal).expect("repaired metadata").len(),
+        valid_length
+    );
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn a_corrupt_complete_registry_frame_fails_closed_on_restart() {
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("corrupt-frame");
+    let (mut owner, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("owner");
+    assert!(matches!(
+        owner.poll(&mut UnavailableTransport),
+        Ok(AcquisitionOutcome::Unavailable { .. })
+    ));
+    drop(owner);
+
+    let journal = storage_root(&root, &endpoint).join("registry.journal");
+    let mut bytes = fs::read(&journal).expect("read journal");
+    let index = bytes.len().checked_sub(1).expect("frame bytes");
+    bytes[index] ^= 0x01;
+    fs::write(&journal, bytes).expect("corrupt journal");
+    assert!(matches!(
+        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()),
+        Err(AcquisitionError::Journal(_)) | Err(AcquisitionError::CorruptJournal)
+    ));
     fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -1227,6 +1299,11 @@ fn read_artifact_unknown_is_none_and_tamper_is_corruption() {
     fs::write(&object_path, &tampered).expect("tamper");
     assert!(matches!(
         owner.read_artifact(&receipt.packages[0].coordinate),
+        Err(AcquisitionError::CorruptJournal)
+    ));
+    drop(owner);
+    assert!(matches!(
+        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()),
         Err(AcquisitionError::CorruptJournal)
     ));
     fs::remove_dir_all(root).expect("cleanup");

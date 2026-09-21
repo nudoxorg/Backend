@@ -82,7 +82,11 @@ fn run(opened: Opened) {
     let project = host.project().to_path_buf();
     let data = host.data().to_path_buf();
     let mode = host.mode();
-    let prefs = prefs::load(&data);
+    let loaded_prefs = prefs::load_with_diagnostic(&data);
+    if let Some(diagnostic) = loaded_prefs.diagnostic {
+        eprintln!("backend-desktop: preferences recovery: {diagnostic:?}");
+    }
+    let prefs = loaded_prefs.preferences;
     gpui::Application::with_platform(gpui_platform::current_platform(false))
         .with_assets(Assets)
         .run(move |cx: &mut App| {

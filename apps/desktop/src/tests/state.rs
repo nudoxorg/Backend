@@ -469,7 +469,7 @@ fn encoding_and_decoding_preferences_returns_every_changed_field() {
     let text = prefs.encode();
     assert_eq!(
         text,
-        "appearance = vellum\ninterface = 130\nlibrary-width = 300\ncontext-width = 200\n\
+        "schema = 1\nappearance = vellum\ninterface = 130\nlibrary-width = 300\ncontext-width = 200\n\
          library-open = false\ncontext-open = false\nreduced-motion = true\neditor = zed\n"
     );
     let decoded = Preferences::decode(&text);

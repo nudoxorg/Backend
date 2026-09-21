@@ -17,6 +17,8 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use super::persist;
+
 /// File name of the marks file inside the workspace data directory.
 pub(crate) const MARKS_FILE: &str = "desktop.marks";
 
@@ -143,7 +145,8 @@ impl Marks {
 
     /// Forgets every recent entry under one project root.
     pub(crate) fn forget_project(&mut self, root: &str) {
-        self.recent.retain(|held| !held.coordinate().starts_with(root));
+        self.recent
+            .retain(|held| !held.coordinate().starts_with(root));
     }
 
     /// Encodes the marks as the exact file text.
@@ -188,26 +191,166 @@ pub(crate) fn path_in(data: &Path) -> PathBuf {
 
 /// Reads marks, falling back to nothing marked for any read or parse failure.
 pub(crate) fn load(data: &Path) -> Marks {
+    load_with_diagnostic(data).marks
+}
+
+/// Typed reason a marks file was not admitted exactly as written.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MarksDiagnostic {
+    /// No file exists yet; an empty shelf is the expected first-run state.
+    Missing,
+    /// The file exceeded the bounded reader budget.
+    Oversized,
+    /// The file could not be read as UTF-8.
+    Unreadable,
+    /// At least one line was malformed or could not be admitted.
+    Malformed,
+}
+
+/// Marks plus a bounded, machine-checkable startup observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LoadedMarks {
+    /// Value installed in the shell.
+    pub(crate) marks: Marks,
+    /// Why the reader used defaults or discarded a line, when applicable.
+    pub(crate) diagnostic: Option<MarksDiagnostic>,
+}
+
+/// Reads marks while retaining a typed recovery observation.
+pub(crate) fn load_with_diagnostic(data: &Path) -> LoadedMarks {
     let path = path_in(data);
-    let Ok(metadata) = std::fs::metadata(&path) else {
-        return Marks::default();
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return LoadedMarks {
+                marks: Marks::default(),
+                diagnostic: Some(MarksDiagnostic::Missing),
+            };
+        }
+        Err(_) => {
+            return LoadedMarks {
+                marks: Marks::default(),
+                diagnostic: Some(MarksDiagnostic::Unreadable),
+            };
+        }
     };
     if metadata.len() > MAX_BYTES {
-        return Marks::default();
+        return LoadedMarks {
+            marks: Marks::default(),
+            diagnostic: Some(MarksDiagnostic::Oversized),
+        };
     }
-    std::fs::read_to_string(&path).map_or_else(|_| Marks::default(), |text| Marks::decode(&text))
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let marks = Marks::decode(&text);
+            let malformed = text.lines().any(|line| {
+                let Some((key, value)) = line.split_once('=') else {
+                    return !line.trim().is_empty();
+                };
+                match key.trim() {
+                    "pin" => value.trim().is_empty(),
+                    "recent" => Recent::decode(value.trim()).is_none(),
+                    _ => false,
+                }
+            });
+            LoadedMarks {
+                marks,
+                diagnostic: malformed.then_some(MarksDiagnostic::Malformed),
+            }
+        }
+        Err(_) => LoadedMarks {
+            marks: Marks::default(),
+            diagnostic: Some(MarksDiagnostic::Unreadable),
+        },
+    }
 }
 
 /// Writes marks atomically beside the workspace data directory.
 pub(crate) fn save(data: &Path, marks: &Marks) -> Result<(), std::io::Error> {
     let path = path_in(data);
-    let temporary = data.join(format!("{MARKS_FILE}.{}.tmp", std::process::id()));
-    std::fs::write(&temporary, marks.encode())?;
-    match std::fs::rename(&temporary, &path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = std::fs::remove_file(&temporary);
-            Err(error)
+    persist::atomic_write(&path, marks.encode().as_bytes())
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    use std::fs;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::thread;
+
+    static FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    fn data_directory(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "nudox-marks-{label}-{}-{}",
+            std::process::id(),
+            FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("marks fixture");
+        root
+    }
+
+    #[test]
+    fn marks_survive_a_cold_restart_in_the_same_order() {
+        let root = data_directory("restart");
+        let mut expected = Marks::default();
+        expected.toggle_pin("/workspace");
+        expected.remember(Recent::Project {
+            coordinate: "/workspace".to_owned(),
+        });
+        expected.remember(Recent::Package {
+            coordinate: "pkg:cargo/demo@1.0.0".to_owned(),
+        });
+        save(&root, &expected).expect("save marks");
+        assert_eq!(load(&root), expected);
+        fs::remove_dir_all(root).expect("remove marks fixture");
+    }
+
+    #[test]
+    fn concurrent_mark_saves_never_publish_a_torn_line() {
+        let root = Arc::new(data_directory("concurrent"));
+        let mut writers = Vec::new();
+        for index in 0..16_u8 {
+            let root = Arc::clone(&root);
+            writers.push(thread::spawn(move || {
+                let mut marks = Marks::default();
+                marks.toggle_pin(&format!("/workspace/{index}"));
+                save(&root, &marks).expect("save concurrent marks");
+            }));
         }
+        for writer in writers {
+            writer.join().expect("mark writer");
+        }
+        let loaded = load(&root);
+        assert_eq!(loaded.pinned().len(), 1, "a torn marks file was admitted");
+        assert!(loaded.pinned()[0].starts_with("/workspace/"));
+        fs::remove_dir_all(&*root).expect("remove marks fixture");
+    }
+
+    #[test]
+    fn truncated_marks_retain_valid_lines_with_a_typed_diagnostic() {
+        let root = data_directory("corrupt");
+        fs::write(path_in(&root), "pin = /workspace\nrecent = project").expect("truncated marks");
+        let loaded = load_with_diagnostic(&root);
+        assert_eq!(loaded.marks.pinned(), &[String::from("/workspace")]);
+        assert!(loaded.marks.recent().is_empty());
+        assert_eq!(loaded.diagnostic, Some(MarksDiagnostic::Malformed));
+        fs::remove_dir_all(root).expect("remove marks fixture");
+    }
+
+    #[test]
+    fn oversized_marks_are_not_partially_admitted() {
+        let root = data_directory("oversized");
+        fs::write(
+            path_in(&root),
+            vec![b'x'; (MAX_BYTES as usize).saturating_add(1)],
+        )
+        .expect("oversized marks");
+        let loaded = load_with_diagnostic(&root);
+        assert_eq!(loaded.marks, Marks::default());
+        assert_eq!(loaded.diagnostic, Some(MarksDiagnostic::Oversized));
+        fs::remove_dir_all(root).expect("remove marks fixture");
     }
 }

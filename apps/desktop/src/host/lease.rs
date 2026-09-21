@@ -258,12 +258,16 @@ mod tests {
         fs::write(project.join("src/lib.rs"), b"pub struct EmbeddedProof;\n")
             .expect("write source");
         let paths =
-            WorkspacePaths::discover(Some(project.clone()), Some(data), Some(endpoint.clone()))
+            WorkspacePaths::discover(
+                Some(project.clone()),
+                Some(data.clone()),
+                Some(endpoint.clone()),
+            )
                 .expect("explicit paths");
 
         let owner = DesktopHost::start_with_paths(paths.clone()).expect("embedded owner");
         assert_eq!(owner.mode(), HostMode::Embedded);
-        let attached = DesktopHost::start_with_paths(paths).expect("attached surface");
+        let attached = DesktopHost::start_with_paths(paths.clone()).expect("attached surface");
         assert_eq!(attached.mode(), HostMode::Attached);
 
         let mut session = Session::connect(&endpoint).expect("shared client session");
@@ -271,6 +275,7 @@ mod tests {
             .index(&project.to_string_lossy())
             .expect("index through embedded owner");
         let revision = session.revision().expect("read embedded revision");
+        let revision_root = revision.root.clone();
         assert_ne!(
             revision.root,
             backend_library::view_state_root(&[]),
@@ -286,6 +291,30 @@ mod tests {
         drop(attached);
         drop(session);
         drop(owner);
+
+        // A GUI process can be closed after indexing and reopened later. The
+        // new owner must select the same durable root before any window is
+        // drawn; this is the cold-open half of the owner/attach contract.
+        let reopened = DesktopHost::start_with_paths(paths.clone()).expect("reopen GUI owner");
+        assert_eq!(reopened.mode(), HostMode::Embedded);
+        assert_eq!(reopened.data(), paths.data());
+        assert_eq!(reopened.endpoint(), endpoint);
+        let mut reopened_session = Session::connect(&endpoint).expect("connect reopened GUI");
+        let reopened_revision = reopened_session
+            .revision()
+            .expect("read reopened GUI revision");
+        assert_eq!(reopened_revision.root, revision_root);
+        assert_eq!(
+            reopened_session
+                .health()
+                .expect("read reopened GUI health")
+                .revision()
+                .root(),
+            revision_root,
+            "cold GUI open must retain the same durable view root"
+        );
+        drop(reopened_session);
+        drop(reopened);
         fs::remove_dir_all(project).expect("remove project");
     }
 }

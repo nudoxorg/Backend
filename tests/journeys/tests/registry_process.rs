@@ -9,6 +9,8 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use backend_engine::capability::CapabilityArtifactId;
+use backend_engine::registry::{RegistryEcosystem, RegistryEndpoint, storage_root};
+use backend_runtime::WorkspacePaths;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -85,10 +87,14 @@ fn run_bounded(mut command: ProcessCommand, label: &str) -> Output {
         bytes
     });
     let deadline = Instant::now() + DEADLINE;
+    let mut poll_delay = Duration::from_millis(1);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => thread::yield_now(),
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(poll_delay);
+                poll_delay = (poll_delay * 2).min(Duration::from_millis(20));
+            }
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -157,6 +163,7 @@ fn authority_secret(root: &Path) -> PathBuf {
 
 fn wait_for_socket(path: &Path, child: &mut ChildGuard) {
     let deadline = Instant::now() + DEADLINE;
+    let mut poll_delay = Duration::from_millis(1);
     while Instant::now() < deadline {
         assert!(child.running(), "locald exited before readiness");
         if let Ok(metadata) = std::fs::symlink_metadata(path)
@@ -166,7 +173,8 @@ fn wait_for_socket(path: &Path, child: &mut ChildGuard) {
         {
             return;
         }
-        thread::yield_now();
+        thread::sleep(poll_delay);
+        poll_delay = (poll_delay * 2).min(Duration::from_millis(20));
     }
     panic!("timed out waiting for locald socket {}", path.display());
 }
@@ -267,24 +275,99 @@ fn locald_args(
     ]
 }
 
-fn cli_add(endpoint: &Path) -> Output {
+fn cli_add(endpoint: &Path, workspace: &Path) -> Output {
     let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_backend-journey-cli"));
     command
         .arg("--endpoint")
         .arg(endpoint)
+        .arg("--workspace")
+        .arg(workspace)
         .arg("add")
         .arg("pkg:cargo/demo@1.2.3");
     run_bounded(command, "backend-cli add")
 }
 
-fn cli_name(endpoint: &Path) -> Output {
+fn cli_name(endpoint: &Path, workspace: &Path) -> Output {
     let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_backend-journey-cli"));
     command
         .arg("--endpoint")
         .arg(endpoint)
+        .arg("--workspace")
+        .arg(workspace)
         .arg("name")
         .arg("from_registry");
     run_bounded(command, "backend-cli name")
+}
+
+fn mcp_packages(endpoint: &Path, workspace: &Path) -> Output {
+    let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_backend-journey-mcp"));
+    command
+        .arg("--endpoint")
+        .arg(endpoint)
+        .arg("--workspace")
+        .arg(workspace);
+    let input = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"restart-journey","version":"1"}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"backend.packages","arguments":{}}}"#,
+        "\n"
+    );
+    run_bounded_with_input(command, "backend-mcp packages", input.as_bytes())
+}
+
+fn run_bounded_with_input(mut command: ProcessCommand, label: &str, input: &[u8]) -> Output {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn {label}: {error}"));
+    let mut stdout = child.stdout.take().expect("command stdout");
+    let mut stderr = child.stderr.take().expect("command stderr");
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).expect("read command stdout");
+        bytes
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).expect("read command stderr");
+        bytes
+    });
+    let mut stdin = child.stdin.take().expect("command stdin");
+    stdin
+        .write_all(input)
+        .unwrap_or_else(|error| panic!("write {label}: {error}"));
+    drop(stdin);
+    let deadline = Instant::now() + DEADLINE;
+    let mut poll_delay = Duration::from_millis(1);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(poll_delay);
+                poll_delay = (poll_delay * 2).min(Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{label} exceeded its bounded deadline");
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("wait {label}: {error}");
+            }
+        }
+    };
+    Output {
+        status,
+        stdout: stdout_reader.join().expect("join command stdout"),
+        stderr: stderr_reader.join().expect("join command stderr"),
+    }
 }
 
 #[test]
@@ -293,6 +376,17 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
     let workspace = root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("create daemon workspace");
     let endpoint = derive_endpoint(&workspace);
+    let canonical_workspace = workspace.canonicalize().expect("canonical workspace");
+    let cli_identity =
+        WorkspacePaths::discover(None, Some(workspace.clone()), Some(endpoint.clone()))
+            .expect("derive CLI workspace identity");
+    let mcp_identity =
+        WorkspacePaths::discover(None, Some(workspace.clone()), Some(endpoint.clone()))
+            .expect("derive MCP workspace identity");
+    assert_eq!(cli_identity.data(), mcp_identity.data());
+    assert_eq!(cli_identity.endpoint(), mcp_identity.endpoint());
+    assert_eq!(cli_identity.data(), canonical_workspace);
+    assert_eq!(cli_identity.endpoint(), endpoint);
     let authority = authority_secret(&root);
     let archive = tar_archive("package/src/lib.rs", b"pub fn from_registry() {}\n");
     let (registry, server) = loopback_registry(archive);
@@ -300,14 +394,14 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
 
     let mut first = ChildGuard::spawn(&args);
     wait_for_socket(&endpoint, &mut first);
-    let added = cli_add(&endpoint);
+    let added = cli_add(&endpoint, &workspace);
     assert!(
         added.status.success(),
         "remote add failed: stdout={} stderr={}",
         String::from_utf8_lossy(&added.stdout),
         String::from_utf8_lossy(&added.stderr)
     );
-    let indexed = cli_name(&endpoint);
+    let indexed = cli_name(&endpoint, &workspace);
     assert!(
         indexed.status.success()
             && String::from_utf8_lossy(&indexed.stdout).contains("from_registry"),
@@ -316,7 +410,10 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
         String::from_utf8_lossy(&indexed.stderr)
     );
     server.join().expect("loopback registry server");
-    let journal = workspace.join("registry/registry.journal");
+    let registry_endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, registry.clone())
+        .expect("registry endpoint");
+    let journal =
+        storage_root(&workspace.join("registry"), &registry_endpoint).join("registry.journal");
     let journal_len = std::fs::metadata(&journal)
         .expect("registry journal after first add")
         .len();
@@ -324,14 +421,14 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
     drop(first);
     let mut second = ChildGuard::spawn(&args);
     wait_for_socket(&endpoint, &mut second);
-    let reused = cli_add(&endpoint);
+    let reused = cli_add(&endpoint, &workspace);
     assert!(
         reused.status.success(),
         "restart add did not reuse durable archive: stdout={} stderr={}",
         String::from_utf8_lossy(&reused.stdout),
         String::from_utf8_lossy(&reused.stderr)
     );
-    let still_indexed = cli_name(&endpoint);
+    let still_indexed = cli_name(&endpoint, &workspace);
     assert!(
         still_indexed.status.success()
             && String::from_utf8_lossy(&still_indexed.stdout).contains("from_registry"),
@@ -345,6 +442,14 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
             .len(),
         journal_len,
         "restart add unexpectedly advanced the registry cursor"
+    );
+
+    let mcp = mcp_packages(&endpoint, &workspace);
+    assert!(
+        mcp.status.success() && String::from_utf8_lossy(&mcp.stdout).contains("demo"),
+        "MCP restart query lost the persisted package: stdout={} stderr={}",
+        String::from_utf8_lossy(&mcp.stdout),
+        String::from_utf8_lossy(&mcp.stderr)
     );
 
     drop(second);
@@ -366,9 +471,8 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
 /// `sockaddr_un.sun_path`.
 #[test]
 fn derived_endpoint_fits_sun_path_even_under_a_long_tmpdir() {
-    let simulated_tmpdir = std::env::temp_dir().join(
-        "nix-shell.simulated-very-long-shell-scoped-temporary-directory-for-this-fixture",
-    );
+    let simulated_tmpdir = std::env::temp_dir()
+        .join("nix-shell.simulated-very-long-shell-scoped-temporary-directory-for-this-fixture");
     let workspace = simulated_tmpdir.join("backend-registry-process-fixture/workspace");
     std::fs::create_dir_all(&workspace).expect("create workspace under simulated long TMPDIR");
 
