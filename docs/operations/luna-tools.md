@@ -3,9 +3,9 @@
 Use the explicit `luna-tools` package to enter a lane for Cargo checks:
 
 ```sh
-nix shell path:.#luna-tools --command cargo --version
-nix shell path:.#luna-tools --command cargo test --workspace --offline
-nix build path:.#checks.aarch64-darwin.luna-tools-closure
+nix shell '.#luna-tools' --command cargo --version
+nix shell '.#luna-tools' --command cargo test --workspace --offline
+nix build '.#checks.aarch64-darwin.luna-tools-closure'
 ```
 
 The package is a small, pinned command closure containing the stable Fenix
@@ -13,7 +13,7 @@ toolchain, the lane's basic process and inspection tools, and the pinned C
 compiler authority. It does not realize the backend-control binary, GUI
 runtime/capture stack, service binaries, language corpus, or full role command
 bundle. This keeps a version probe and core Rust checks independent of the
-large product closures. `nix develop` is outside the lane contract.
+large product closures. `nix develop` is outside the lane contract. Invoke the repository as `.#…` (the Git flake); `path:.#…` copies ignored build targets and capture artifacts into the input before evaluation and scales with disposable disk state.
 
 The full Luna policy command surface is retained as the separate
 `luna-role-tools` package and is used by the control-plane checks. The
