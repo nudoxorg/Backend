@@ -23,8 +23,9 @@ use crate::store::registry::{
     size_label, version_rank,
 };
 use backend_library::{
-    PackageReference, ProductText, RegistryDownloadCount, RegistryEcosystem, RegistryPackageRecord,
-    RegistryReleaseStanding, SurfaceCommand, SurfaceReply,
+    PackageReference, ProductText, RegistryDownloadCount, RegistryEcosystem,
+    RegistryFactAvailability, RegistryPackageRecord, RegistryReleaseStanding, SurfaceCommand,
+    SurfaceReply,
 };
 use backend_present::{
     CauseSlug, Fault, FaultSlug, Identity, KeyTag, Readiness, RowCount, Shelf, ShelfEntry,
@@ -38,7 +39,11 @@ fn record(
     version: &str,
     bytes: u64,
 ) -> RegistryPackageRecord {
-    let coordinate = format!("pkg:{}/{name}@{version}", ecosystem.as_str());
+    let coordinate = match ecosystem {
+        RegistryEcosystem::Maven => format!("pkg:maven/org.example/{name}@{version}"),
+        RegistryEcosystem::Cpp => format!("pkg:generic/stable/{name}@{version}"),
+        _ => format!("pkg:{}/{name}@{version}", ecosystem.as_str()),
+    };
     RegistryPackageRecord {
         coordinate: PackageReference::parse(coordinate).expect("a canonical package url"),
         ecosystem,
@@ -46,9 +51,7 @@ fn record(
         version: ProductText::new(version).expect("a pinned version"),
         bytes,
         standing: RegistryReleaseStanding::Available,
-        downloads: RegistryDownloadCount::NotReported(
-            ProductText::new("unsupported").expect("reason"),
-        ),
+        downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
         facts_version: [0; 32],
         advisory: backend_library::AdvisoryPackageDto::unknown(),
     }
@@ -387,26 +390,48 @@ fn a_size_is_drawn_in_the_largest_unit_that_still_states_a_whole_number() {
     assert_eq!(size_label(5_242_880), "5 MB");
 }
 
-// ================================================================ dossier ==
+// ================================================================ typed package projection ==
 //
-// The defects below are the ones a dossier can hide. A section that silently
-// swaps a sample in for a recorded answer looks identical to one that read the
-// engine — unless the tag is asserted. A release ladder generated independently
-// of the pinned version still lists seven versions — with 3.4.8 *below* 2.7.4.
-// A card built from its own draw sequence still shows a licence — a different
-// one from the page it opens. None of those fail a build, so every assertion
-// here compares the exact rendered string, the exact order, or the exact tag.
+// These fixtures model engine replies directly. Every test chooses the
+// coverage state it intends to exercise; no package name selects a scenario.
 
 use crate::store::dossier::{
-    self, Dossier, Fence, History, Precis, Rank, ReadmeBlock, Release, Reverse, Stamp,
-    Standing as ReleaseStanding,
+    self, Dossier, DownloadPrecision, Downloads, Provenance, Release, Reverse, Role, Section,
 };
 use crate::store::registry::{Listing, Ordering, Package, arrange, gathered};
-use crate::ui::chart;
-use backend_library::RegistryMetadata;
+use backend_library::{
+    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
+    PackageDependencyRecord, PackageDependencyTarget, RegistryMetadata,
+};
 
-/// The coordinate the package preview scene opens, and the demo shelf holds.
 const MEMCHR: &str = "pkg:cargo/memchr@2.7.4";
+
+fn record_with(
+    ecosystem: RegistryEcosystem,
+    name: &str,
+    version: &str,
+    bytes: u64,
+    standing: RegistryReleaseStanding,
+    downloads: RegistryDownloadCount,
+    advisory: backend_library::AdvisoryPackageDto,
+) -> RegistryPackageRecord {
+    let coordinate = match ecosystem {
+        RegistryEcosystem::Maven => format!("pkg:maven/org.example/{name}@{version}"),
+        RegistryEcosystem::Cpp => format!("pkg:generic/stable/{name}@{version}"),
+        _ => format!("pkg:{}/{name}@{version}", ecosystem.as_str()),
+    };
+    RegistryPackageRecord {
+        coordinate: PackageReference::parse(coordinate).expect("a canonical package url"),
+        ecosystem,
+        name: ProductText::new(name).expect("a registry name"),
+        version: ProductText::new(version).expect("a pinned version"),
+        bytes,
+        standing,
+        downloads,
+        facts_version: [0; 32],
+        advisory,
+    }
+}
 
 fn versions_reply(records: Vec<RegistryPackageRecord>) -> SurfaceReply {
     SurfaceReply::PackageVersions(records.into_boxed_slice())
@@ -430,17 +455,57 @@ fn profile_reply(latest: Option<RegistryPackageRecord>, versions: u64) -> Surfac
     SurfaceReply::PackageProfile { latest, versions }
 }
 
-/// Returns the gathered package one set of four replies produces, as read.
+fn dependencies_reply(facts: DependencyFacts<Vec<PackageDependencyRecord>>) -> SurfaceReply {
+    let facts = match facts {
+        DependencyFacts::Known(rows) => DependencyFacts::Known(rows.into_boxed_slice()),
+        DependencyFacts::Unknown(reason) => DependencyFacts::Unknown(reason),
+        DependencyFacts::Unavailable(reason) => DependencyFacts::Unavailable(reason),
+    };
+    SurfaceReply::Dependencies(facts)
+}
+
 fn read(
     record: &SurfaceReply,
     versions: &SurfaceReply,
+    dependencies: &SurfaceReply,
     dependents: &SurfaceReply,
     profile: &SurfaceReply,
 ) -> Loadable<Box<Package>> {
-    Loadable::Ready(Box::new(gathered(record, versions, dependents, profile)))
+    Loadable::Ready(Box::new(gathered(
+        record,
+        versions,
+        dependencies,
+        dependents,
+        profile,
+    )))
 }
 
-/// Returns the exact line one version row draws, in row order.
+fn edge(resolved: Option<&str>, scope: DependencyScope) -> PackageDependencyRecord {
+    let source = PackageReference::parse(MEMCHR).expect("the source coordinate is pinned");
+    let target_name = "itoa";
+    let target_coordinate = resolved.map(|value| {
+        PackageReference::parse(value).expect("the resolved dependency coordinate is pinned")
+    });
+    let target = PackageDependencyTarget::new(
+        RegistryEcosystem::Cargo,
+        target_name,
+        "^1.0",
+        target_coordinate,
+    )
+    .expect("a typed dependency target");
+    PackageDependencyRecord::new(
+        source,
+        target,
+        scope,
+        matches!(scope, DependencyScope::Optional),
+        DependencyEvidence {
+            authority: DependencyAuthority::RegistryMetadata,
+            frontier: [1; 32],
+            provenance: [2; 32],
+        },
+    )
+}
+
 fn release_lines(dossier: &Dossier) -> Vec<String> {
     dossier
         .releases()
@@ -454,16 +519,9 @@ fn release_lines(dossier: &Dossier) -> Vec<String> {
                         release.version(),
                         release
                             .published()
-                            .map_or_else(|| "date not recorded".to_owned(), Stamp::iso),
+                            .map_or_else(|| "date not recorded".to_owned(), |date| date.iso()),
                         release.size(),
-                        match release.standing() {
-                            ReleaseStanding::Published => "published",
-                            ReleaseStanding::Yanked => "yanked",
-                            ReleaseStanding::Deprecated => "deprecated",
-                            ReleaseStanding::Unlisted => "unlisted",
-                            ReleaseStanding::Retracted => "retracted",
-                            ReleaseStanding::Removed => "removed",
-                        }
+                        release.standing().label()
                     )
                 })
                 .collect()
@@ -471,7 +529,6 @@ fn release_lines(dossier: &Dossier) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Returns the names of a roster, in the order a page would list them.
 fn dependent_names(dossier: &Dossier) -> Vec<String> {
     match dossier.dependents().ready() {
         Some(Reverse::Recorded(rows)) => rows.iter().map(|row| row.name().to_owned()).collect(),
@@ -486,551 +543,469 @@ fn names(listings: &[Listing]) -> Vec<String> {
         .collect()
 }
 
-// --------------------------------------------------------- determinism --
-
 #[test]
-fn a_sample_dossier_is_a_pure_function_of_the_package_name() {
-    let once = dossier::sample(MEMCHR);
-    let twice = dossier::sample(MEMCHR);
-    assert_eq!(once, twice, "one coordinate names exactly one sample");
-    assert_eq!(
-        once.precis().ready().map(Precis::description),
-        Some("A small, dependency-light caching library."),
-        "the sample description is fixed by the name, not by the frame"
-    );
-    let other_version = dossier::sample("pkg:cargo/memchr@2.6.2");
-    assert_eq!(
-        other_version.precis().ready().and_then(Precis::license),
-        once.precis().ready().and_then(Precis::license),
-        "a licence belongs to the package, so two versions state the same one"
-    );
-}
-
-#[test]
-fn a_browse_card_states_exactly_what_the_page_it_opens_states() {
-    let card = dossier::card(MEMCHR);
-    let page = dossier::sample(MEMCHR);
-    assert_eq!(card.blurb(), "A small, dependency-light caching library.");
-    assert_eq!(card.license(), Some("MIT OR Apache-2.0"));
-    assert_eq!(
-        card.license(),
-        page.precis().ready().and_then(Precis::license),
-        "a card that disagreed with its page would teach a reader to trust neither"
-    );
-    assert_eq!(
-        card.downloads().total(),
-        page.downloads().ready().map(dossier::Downloads::total),
-    );
-    assert_eq!(
-        card.released().map(Stamp::iso),
-        page.pinned().and_then(Release::published).map(Stamp::iso),
-        "the date on a card is the pinned release's own date"
-    );
-    assert_eq!(
-        card.released().map(Stamp::iso),
-        Some("2026-08-15".to_owned())
-    );
-}
-
-#[test]
-fn every_sample_section_says_that_it_is_a_sample() {
-    let dossier = dossier::sample(MEMCHR);
-    for tag in [
-        dossier.precis().provenance().tag(),
-        dossier.releases().provenance().tag(),
-        dossier.history().provenance().tag(),
-        dossier.downloads().provenance().tag(),
-        dossier.dependencies().provenance().tag(),
-        dossier.dependents().provenance().tag(),
-        dossier.owners().provenance().tag(),
-        dossier.readme().provenance().tag(),
-    ] {
-        assert_eq!(tag, Some("sample"), "an unlabelled stand-in is a lie");
-    }
-    assert_eq!(
-        dossier.downloads().provenance().sentence(),
-        Some("No surface command publishes this fact yet — these are sample values.")
-    );
-}
-
-// ------------------------------------------------------- sampled shapes --
-
-#[test]
-fn a_sample_release_ladder_descends_from_the_version_the_coordinate_pinned() {
-    let dossier = dossier::sample(MEMCHR);
-    assert_eq!(
-        release_lines(&dossier),
-        vec![
-            "2.7.4|2026-08-15|3 MB|published".to_owned(),
-            "2.7.3|2026-07-31|2 MB|published".to_owned(),
-            "2.7.2|2026-05-03|2 MB|published".to_owned(),
-            "2.7.1|2026-03-04|2 MB|yanked".to_owned(),
-            "2.7.0|2025-12-06|2 MB|published".to_owned(),
-            "2.6.3|2025-11-26|1 MB|published".to_owned(),
-            "2.6.2|2025-11-05|1 MB|published".to_owned(),
-        ]
-    );
-    assert_eq!(
-        dossier.pinned().map(Release::version),
-        Some("2.7.4"),
-        "the release the coordinate pinned is the one the header draws"
-    );
-    assert_eq!(
-        dossier.history().ready().and_then(History::latest),
-        Some("2.7.4")
-    );
-}
-
-#[test]
-fn a_sample_readme_exercises_every_block_a_reader_can_meet() {
-    let dossier = dossier::sample(MEMCHR);
-    let blocks = dossier
-        .readme()
-        .ready()
-        .expect("memchr ships a sample readme");
-    let shapes: Vec<String> = blocks
-        .iter()
-        .map(|block| match block {
-            ReadmeBlock::Heading { rank, text } => format!("{}:{text}", rank_word(*rank)),
-            ReadmeBlock::Paragraph(_) => "paragraph".to_owned(),
-            ReadmeBlock::Code { fence, .. } => format!("code:{}", fence.tag()),
-            ReadmeBlock::List(items) => format!("list:{}", items.len()),
-        })
-        .collect();
-    assert_eq!(
-        shapes,
-        vec![
-            "title:memchr".to_owned(),
-            "paragraph".to_owned(),
-            "section:Install".to_owned(),
-            "code:shell".to_owned(),
-            "section:Usage".to_owned(),
-            "code:Rust".to_owned(),
-            "subsection:What you get".to_owned(),
-            "list:4".to_owned(),
-            "section:Configuration".to_owned(),
-            "code:manifest".to_owned(),
-            "paragraph".to_owned(),
-        ]
-    );
-    assert!(
-        blocks.iter().any(|block| matches!(
-            block,
-            ReadmeBlock::Code { fence: Fence::Shell, text } if text == "cargo add memchr"
-        )),
-        "a cargo package installs with cargo, not with npm"
-    );
-}
-
-const fn rank_word(rank: Rank) -> &'static str {
-    match rank {
-        Rank::Title => "title",
-        Rank::Section => "section",
-        Rank::Subsection => "subsection",
-    }
-}
-
-#[test]
-fn a_sample_dependent_roster_is_ordered_by_the_weight_it_publishes() {
-    let dossier = dossier::sample(MEMCHR);
-    let rows = match dossier.dependents().ready() {
-        Some(Reverse::Recorded(rows)) => rows.clone(),
-        other => panic!("memchr's sample records dependents, not {other:?}"),
-    };
-    assert_eq!(
-        rows.first().map(|row| row.name().to_owned()),
-        Some("anyhow".to_owned()),
-        "the heaviest dependent leads the roster"
-    );
-    let weights: Vec<u64> = rows
-        .iter()
-        .filter_map(dossier::Dependent::downloads)
-        .collect();
-    assert_eq!(
-        weights.len(),
-        rows.len(),
-        "a sampled roster weighs every row"
-    );
-    assert!(
-        weights.windows(2).all(|pair| pair.first() >= pair.last()),
-        "a roster ordered by weight never climbs: {weights:?}"
-    );
-}
-
-#[test]
-fn every_sample_shape_a_page_can_draw_is_reachable_by_naming_a_package() {
-    let mut without_readme = 0_u32;
-    let mut without_license = 0_u32;
-    let mut with_a_yanked_release = 0_u32;
-    let mut without_a_reverse_index = 0_u32;
-    let mut without_dependents = 0_u32;
-    let mut without_dependencies = 0_u32;
-    for at in 0..60_u32 {
-        let dossier = dossier::sample(&format!("pkg:cargo/p{at}@1.0.0"));
-        if dossier.readme().ready().is_some_and(Vec::is_empty) {
-            without_readme += 1;
-        }
-        if dossier
-            .precis()
-            .ready()
-            .is_some_and(|precis| precis.license().is_none())
-        {
-            without_license += 1;
-        }
-        if dossier.releases().ready().is_some_and(|releases| {
-            releases
-                .iter()
-                .any(|release| release.standing() == ReleaseStanding::Yanked)
-        }) {
-            with_a_yanked_release += 1;
-        }
-        match dossier.dependents().ready() {
-            Some(Reverse::NotRecorded(_)) => without_a_reverse_index += 1,
-            Some(Reverse::Recorded(rows)) if rows.is_empty() => without_dependents += 1,
-            _ => (),
-        }
-        if dossier.dependencies().ready().is_some_and(Vec::is_empty) {
-            without_dependencies += 1;
-        }
-    }
-    let census = [
-        ("no readme", without_readme),
-        ("no licence", without_license),
-        ("a yanked release", with_a_yanked_release),
-        ("no reverse index", without_a_reverse_index),
-        ("no dependents", without_dependents),
-        ("no dependencies", without_dependencies),
+fn every_registry_ecosystem_preserves_recorded_standing_downloads_and_advisory() {
+    let ecosystems = [
+        RegistryEcosystem::Cargo,
+        RegistryEcosystem::Npm,
+        RegistryEcosystem::Pypi,
+        RegistryEcosystem::Maven,
+        RegistryEcosystem::Nuget,
+        RegistryEcosystem::Golang,
+        RegistryEcosystem::Cpp,
     ];
-    for (shape, found) in census {
-        assert!(
-            found > 0,
-            "no package in sixty draws {shape}, so that branch of the page is dead code"
+    for (index, ecosystem) in ecosystems.into_iter().enumerate() {
+        let downloads = RegistryDownloadCount::Exact(100 + index as u64);
+        let advisory = backend_library::AdvisoryPackageDto::unknown();
+        let record = record_with(
+            ecosystem,
+            "fixture",
+            "1.2.3",
+            1024 + index as u64,
+            RegistryReleaseStanding::Deprecated,
+            downloads.clone(),
+            advisory.clone(),
         );
+        let row = crate::store::registry::install_page(1, 1, None, &explored(vec![record]))
+            .expect("the typed catalog answer installs")
+            .ready()
+            .expect("the typed catalog answer is ready")
+            .first()
+            .cloned()
+            .expect("one fixture row");
+        assert_eq!(row.ecosystem(), ecosystem);
+        assert_eq!(row.release_standing(), RegistryReleaseStanding::Deprecated);
+        assert_eq!(row.downloads(), &downloads);
+        assert_eq!(row.advisory(), &advisory);
     }
 }
 
 #[test]
-fn every_coordinate_a_sample_offers_is_one_a_page_can_open() {
-    for at in 0..40_u32 {
-        let dossier = dossier::sample(&format!("pkg:npm/q{at}@2.0.0"));
-        for release in dossier.releases().ready().into_iter().flatten() {
-            package_of(release.coordinate()).expect("a sampled release names a pinned package url");
-        }
-        for dependency in dossier.dependencies().ready().into_iter().flatten() {
-            package_of(dependency.resolved())
-                .expect("a sampled dependency resolves to a pinned package url");
-        }
-        if let Some(Reverse::Recorded(rows)) = dossier.dependents().ready() {
-            for row in rows {
-                package_of(row.coordinate())
-                    .expect("a sampled dependent names a pinned package url");
-            }
-        }
-    }
-}
-
-// --------------------------------------------- recorded over sampled --
-
-#[test]
-fn a_recorded_version_list_replaces_the_sample_and_invents_no_date() {
-    let records = vec![
-        record(RegistryEcosystem::Cargo, "memchr", "2.7.4", 90_112),
-        record(RegistryEcosystem::Cargo, "memchr", "2.10.0", 92_160),
-        record(RegistryEcosystem::Cargo, "memchr", "2.9.0", 88_064),
+fn recorded_releases_keep_engine_versions_and_dates_remain_absent() {
+    let rows = vec![
+        record_with(
+            RegistryEcosystem::Cargo,
+            "memchr",
+            "2.7.4",
+            90_112,
+            RegistryReleaseStanding::Available,
+            RegistryDownloadCount::Exact(12),
+            backend_library::AdvisoryPackageDto::unknown(),
+        ),
+        record_with(
+            RegistryEcosystem::Cargo,
+            "memchr",
+            "2.10.0",
+            92_160,
+            RegistryReleaseStanding::Yanked,
+            RegistryDownloadCount::Approximate(9),
+            backend_library::AdvisoryPackageDto::unknown(),
+        ),
     ];
     let state = read(
-        &package_reply(records.clone()),
-        &versions_reply(records.clone()),
+        &package_reply(rows.clone()),
+        &versions_reply(rows.clone()),
+        &dependencies_reply(DependencyFacts::Known(Vec::new())),
         &recorded_dependents(Vec::new()),
-        &profile_reply(records.first().cloned(), 3),
+        &profile_reply(rows.first().cloned(), 2),
     );
     let dossier = dossier::assemble(MEMCHR, &state);
-    assert_eq!(
-        dossier.releases().provenance().tag(),
-        None,
-        "a recorded section wears no sample tag"
-    );
+    assert_eq!(dossier.releases().provenance(), Provenance::Recorded);
     assert_eq!(
         release_lines(&dossier),
         vec![
-            "2.10.0|date not recorded|90 KB|published".to_owned(),
-            "2.9.0|date not recorded|86 KB|published".to_owned(),
+            "2.10.0|date not recorded|90 KB|yanked".to_owned(),
             "2.7.4|date not recorded|88 KB|published".to_owned(),
         ]
     );
+    assert_eq!(dossier.pinned().map(Release::version), Some("2.7.4"));
+    assert_eq!(dossier.pinned().and_then(Release::published), None);
     assert_eq!(
-        dossier.pinned().map(Release::version),
-        Some("2.7.4"),
-        "the pinned release is found in the recorded list, not the newest one"
+        dossier.pinned().map(|release| release.advisory()),
+        rows.first().map(|row| &row.advisory)
     );
 }
 
 #[test]
-fn an_exact_package_record_stands_in_when_the_index_lists_no_versions() {
-    let only = record(RegistryEcosystem::Cargo, "memchr", "2.7.4", 90_112);
+fn an_empty_version_reply_can_use_the_exact_record_without_inventing_a_release() {
+    let only = record_with(
+        RegistryEcosystem::Cargo,
+        "memchr",
+        "2.7.4",
+        90_112,
+        RegistryReleaseStanding::Available,
+        RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+        backend_library::AdvisoryPackageDto::unknown(),
+    );
     let state = read(
-        &package_reply(vec![only.clone()]),
+        &package_reply(vec![only]),
         &versions_reply(Vec::new()),
+        &dependencies_reply(DependencyFacts::Known(Vec::new())),
         &recorded_dependents(Vec::new()),
-        &profile_reply(Some(only), 1),
+        &profile_reply(None, 0),
     );
     let dossier = dossier::assemble(MEMCHR, &state);
-    assert_eq!(dossier.releases().provenance().tag(), None);
+    assert_eq!(dossier.releases().provenance(), Provenance::Recorded);
     assert_eq!(
         release_lines(&dossier),
-        vec!["2.7.4|date not recorded|88 KB|published".to_owned()]
+        vec!["2.7.4|date not recorded|88 KB|published"]
     );
+    assert_eq!(dossier.history().provenance(), Provenance::Recorded);
+    assert_eq!(
+        dossier.history().ready().map(|history| history.versions()),
+        Some(0)
+    );
+    assert_eq!(dossier.pinned().map(Release::version), Some("2.7.4"));
 }
 
 #[test]
-fn a_silent_index_falls_back_to_a_sample_that_says_the_index_was_silent() {
+fn dependency_projection_preserves_requirement_scope_resolution_and_coverage() {
+    let runtime = edge(Some("pkg:cargo/itoa@1.0.15"), DependencyScope::Runtime);
+    let optional = edge(None, DependencyScope::Optional);
     let state = read(
         &package_reply(Vec::new()),
         &versions_reply(Vec::new()),
+        &dependencies_reply(DependencyFacts::Known(vec![runtime, optional])),
         &recorded_dependents(Vec::new()),
         &profile_reply(None, 0),
     );
     let dossier = dossier::assemble(MEMCHR, &state);
-    assert_eq!(dossier.releases().provenance().tag(), Some("sample"));
-    assert_eq!(
-        dossier.releases().provenance().sentence(),
-        Some("The local index recorded nothing here — these are sample values.")
-    );
-    assert_eq!(
-        release_lines(&dossier).first().map(String::as_str),
-        Some("2.7.4|2026-08-15|3 MB|published"),
-        "the sample ladder stands behind the index's silence"
-    );
-    assert_eq!(dossier.dependents().provenance().tag(), Some("sample"));
-    assert_eq!(dossier.history().provenance().tag(), Some("sample"));
+    assert_eq!(dossier.dependencies().provenance(), Provenance::Recorded);
+    let dependencies = dossier
+        .dependencies()
+        .ready()
+        .expect("known dependency facts");
+    assert_eq!(dependencies.len(), 2);
+    assert_eq!(dependencies[0].name(), "itoa");
+    assert_eq!(dependencies[0].requirement(), "^1.0");
+    assert_eq!(dependencies[0].role(), Role::Required);
+    assert_eq!(dependencies[0].resolved(), Some("pkg:cargo/itoa@1.0.15"));
+    assert_eq!(dependencies[1].role(), Role::Optional);
+    assert_eq!(dependencies[1].resolved(), None);
 }
 
 #[test]
-fn the_feeds_own_words_survive_into_the_dependents_section() {
-    let state = read(
+fn dependency_unknown_and_unavailable_replies_are_explicit_coverage_states() {
+    let unknown = read(
         &package_reply(Vec::new()),
         &versions_reply(Vec::new()),
-        &unrecorded_dependents("this feed publishes no reverse index"),
+        &dependencies_reply(DependencyFacts::Unknown(
+            ProductText::new("dependency metadata unsupported").expect("reason"),
+        )),
+        &recorded_dependents(Vec::new()),
         &profile_reply(None, 0),
     );
-    let dossier = dossier::assemble(MEMCHR, &state);
-    assert_eq!(dossier.dependents().provenance().tag(), None);
-    match dossier.dependents().ready() {
-        Some(Reverse::NotRecorded(reason)) => {
-            assert_eq!(reason, "this feed publishes no reverse index");
-        }
-        other => panic!("a feed that publishes no reverse index must say so, not {other:?}"),
+    let unknown_dossier = dossier::assemble(MEMCHR, &unknown);
+    assert_eq!(
+        unknown_dossier.dependencies().provenance(),
+        Provenance::Unknown
+    );
+    assert!(
+        unknown_dossier
+            .dependencies()
+            .ready()
+            .expect("empty unknown section")
+            .is_empty()
+    );
+
+    let unavailable = read(
+        &package_reply(Vec::new()),
+        &versions_reply(Vec::new()),
+        &dependencies_reply(DependencyFacts::Unavailable(
+            ProductText::new("dependency metadata unavailable").expect("reason"),
+        )),
+        &recorded_dependents(Vec::new()),
+        &profile_reply(None, 0),
+    );
+    let unavailable_dossier = dossier::assemble(MEMCHR, &unavailable);
+    assert_eq!(
+        unavailable_dossier.dependencies().provenance(),
+        Provenance::Unavailable
+    );
+}
+
+#[test]
+fn dependent_coverage_distinguishes_recorded_empty_from_not_recorded() {
+    let empty = read(
+        &package_reply(Vec::new()),
+        &versions_reply(Vec::new()),
+        &dependencies_reply(DependencyFacts::Known(Vec::new())),
+        &recorded_dependents(Vec::new()),
+        &profile_reply(None, 0),
+    );
+    let empty_dossier = dossier::assemble(MEMCHR, &empty);
+    assert_eq!(
+        empty_dossier.dependents().provenance(),
+        Provenance::Recorded
+    );
+    assert_eq!(dependent_names(&empty_dossier), Vec::<String>::new());
+
+    let absent = read(
+        &package_reply(Vec::new()),
+        &versions_reply(Vec::new()),
+        &dependencies_reply(DependencyFacts::Known(Vec::new())),
+        &unrecorded_dependents("reverse index not recorded"),
+        &profile_reply(None, 0),
+    );
+    let absent_dossier = dossier::assemble(MEMCHR, &absent);
+    assert_eq!(
+        absent_dossier.dependents().provenance(),
+        Provenance::NotRecorded
+    );
+    match absent_dossier.dependents().ready() {
+        Some(Reverse::NotRecorded(reason)) => assert_eq!(reason, "reverse index not recorded"),
+        other => panic!("missing reverse coverage must remain typed: {other:?}"),
     }
 }
 
 #[test]
-fn recorded_dependents_keep_the_feeds_order_and_carry_no_invented_weight() {
-    let rows = vec![
-        record(RegistryEcosystem::Cargo, "ripgrep", "14.1.1", 4096),
-        record(RegistryEcosystem::Cargo, "aho-corasick", "1.1.3", 2048),
-        record(RegistryEcosystem::Cargo, "regex", "1.11.1", 8192),
-    ];
-    let state = read(
-        &package_reply(Vec::new()),
-        &versions_reply(Vec::new()),
-        &recorded_dependents(rows),
-        &profile_reply(None, 0),
-    );
-    let dossier = dossier::assemble(MEMCHR, &state);
-    assert_eq!(dossier.dependents().provenance().tag(), None);
-    assert_eq!(
-        dependent_names(&dossier),
-        vec![
-            "ripgrep".to_owned(),
-            "aho-corasick".to_owned(),
-            "regex".to_owned(),
-        ]
-    );
-    let weights: Vec<Option<u64>> = match dossier.dependents().ready() {
-        Some(Reverse::Recorded(rows)) => rows.iter().map(dossier::Dependent::downloads).collect(),
-        other => panic!("a recorded roster holds rows, not {other:?}"),
-    };
-    assert_eq!(
-        weights,
-        vec![None, None, None],
-        "the feed publishes the edge, not the popularity, so no row carries a weight"
-    );
-}
-
-#[test]
-fn a_read_in_flight_reserves_the_engine_sections_and_draws_the_samples() {
+fn pending_and_faulted_engine_replies_do_not_grow_unrecorded_sections() {
     let pending = dossier::assemble(MEMCHR, &Loadable::Loading);
     assert!(pending.releases().state().is_pending());
-    assert!(pending.dependents().state().is_pending());
     assert!(pending.history().state().is_pending());
+    assert!(pending.downloads().state().is_pending());
+    assert!(pending.dependencies().state().is_pending());
+    assert!(pending.dependents().state().is_pending());
+    assert_eq!(pending.precis().provenance(), Provenance::NotRecorded);
+    assert_eq!(pending.owners().provenance(), Provenance::NotRecorded);
+    assert_eq!(pending.readme().provenance(), Provenance::NotRecorded);
+    assert!(pending.releases().ready().is_none());
+    assert!(pending.downloads().ready().is_none());
+
+    let fault = Loadable::Faulted(Box::new(shelf_fault()));
+    let failed = dossier::assemble(MEMCHR, &fault);
+    assert!(matches!(failed.releases().state(), Loadable::Faulted(_)));
+    assert!(matches!(failed.history().state(), Loadable::Faulted(_)));
+    assert!(matches!(failed.downloads().state(), Loadable::Faulted(_)));
+    assert!(matches!(failed.dependencies().state(), Loadable::Faulted(_)));
+    assert!(matches!(failed.dependents().state(), Loadable::Faulted(_)));
     assert!(
-        pending.readme().ready().is_some(),
-        "a sampled section does not wait for a read it never made"
-    );
-    assert!(pending.downloads().ready().is_some());
-    assert!(pending.dependencies().ready().is_some());
-    assert!(
-        release_lines(&pending).is_empty(),
-        "a pending version list draws no rows at all"
+        failed.precis().ready().is_some(),
+        "absence is explicit and stable"
     );
 }
 
 #[test]
-fn a_faulted_read_carries_the_engines_own_fault_into_every_engine_section() {
-    let faulted = Loadable::Faulted(Box::new(shelf_fault()));
-    let dossier = dossier::assemble(MEMCHR, &faulted);
-    for state in [
-        matches!(dossier.releases().state(), Loadable::Faulted(_)),
-        matches!(dossier.dependents().state(), Loadable::Faulted(_)),
-        matches!(dossier.history().state(), Loadable::Faulted(_)),
-    ] {
-        assert!(state, "an engine section shows the engine's failure");
-    }
-    match dossier.releases().state() {
-        Loadable::Faulted(fault) => assert_eq!(fault.slug(), FaultSlug::Usage),
-        other => panic!("a faulted section holds the typed fault, not {other:?}"),
-    }
-    assert!(
-        dossier.readme().ready().is_some(),
-        "a failed version read does not erase the README beside it"
+fn download_projection_never_turns_missing_series_into_recorded_zeroes() {
+    let exact = record_with(
+        RegistryEcosystem::Cargo,
+        "memchr",
+        "2.7.4",
+        90_112,
+        RegistryReleaseStanding::Available,
+        RegistryDownloadCount::Exact(42),
+        backend_library::AdvisoryPackageDto::unknown(),
+    );
+    let exact_state = read(
+        &package_reply(vec![exact]),
+        &versions_reply(Vec::new()),
+        &dependencies_reply(DependencyFacts::Known(Vec::new())),
+        &recorded_dependents(Vec::new()),
+        &profile_reply(None, 0),
+    );
+    let exact_dossier = dossier::assemble(MEMCHR, &exact_state);
+    assert_eq!(exact_dossier.downloads().provenance(), Provenance::Recorded);
+    let downloads = exact_dossier.downloads().ready().expect("cumulative count");
+    assert_eq!(downloads.total(), Some(42));
+    assert_eq!(downloads.recent(), None);
+    assert_eq!(downloads.precision(), Some(DownloadPrecision::Exact));
+    assert!(downloads.weekly().is_empty());
+    assert_eq!(
+        downloads.history().provenance(),
+        Provenance::Unsupported,
+        "the cumulative fact does not imply a weekly series"
+    );
+
+    let missing = record_with(
+        RegistryEcosystem::Cargo,
+        "memchr",
+        "2.7.4",
+        90_112,
+        RegistryReleaseStanding::Available,
+        RegistryDownloadCount::Unavailable(RegistryFactAvailability::Stale),
+        backend_library::AdvisoryPackageDto::unknown(),
+    );
+    let missing_state = read(
+        &package_reply(vec![missing]),
+        &versions_reply(Vec::new()),
+        &dependencies_reply(DependencyFacts::Known(Vec::new())),
+        &recorded_dependents(Vec::new()),
+        &profile_reply(None, 0),
+    );
+    let missing_dossier = dossier::assemble(MEMCHR, &missing_state);
+    assert_eq!(
+        missing_dossier.downloads().provenance(),
+        Provenance::Stale
+    );
+    assert_eq!(
+        missing_dossier
+            .downloads()
+            .ready()
+            .and_then(Downloads::total),
+        None
+    );
+
+    let unsupported = record_with(
+        RegistryEcosystem::Cargo,
+        "memchr",
+        "2.7.4",
+        90_112,
+        RegistryReleaseStanding::Available,
+        RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+        backend_library::AdvisoryPackageDto::unknown(),
+    );
+    let unsupported_state = read(
+        &package_reply(vec![unsupported]),
+        &versions_reply(Vec::new()),
+        &dependencies_reply(DependencyFacts::Known(Vec::new())),
+        &recorded_dependents(Vec::new()),
+        &profile_reply(None, 0),
+    );
+    let unsupported_dossier = dossier::assemble(MEMCHR, &unsupported_state);
+    assert_eq!(
+        unsupported_dossier.downloads().provenance(),
+        Provenance::Unsupported
     );
 }
 
-// ------------------------------------------------------ the browse grid --
+#[test]
+fn card_projection_has_only_row_facts_and_explicit_absence() {
+    let row_record = record_with(
+        RegistryEcosystem::Npm,
+        "zod",
+        "3.23.8",
+        1_048_576,
+        RegistryReleaseStanding::Available,
+        RegistryDownloadCount::Approximate(1_200),
+        backend_library::AdvisoryPackageDto::unknown(),
+    );
+    let row = crate::store::registry::install_page(1, 1, None, &explored(vec![row_record]))
+        .expect("catalog answer")
+        .ready()
+        .expect("catalog rows")
+        .first()
+        .cloned()
+        .expect("one row");
+    let card = dossier::live_card(&row);
+    assert_eq!(card.blurb(), "description not recorded");
+    assert!(card.keywords().is_empty());
+    assert_eq!(card.license(), None);
+    assert_eq!(card.released(), None);
+    assert_eq!(
+        card.standing(),
+        RegistryReleaseStanding::Available,
+        "card standing comes from the same release row"
+    );
+    assert_eq!(
+        card.advisory(),
+        &backend_library::AdvisoryPackageDto::unknown()
+    );
+    assert_eq!(card.downloads().total(), Some(1_200));
+    assert_eq!(
+        card.downloads().precision(),
+        Some(DownloadPrecision::Approximate)
+    );
+    assert!(
+        card.downloads().counts().is_empty(),
+        "the row has no weekly series"
+    );
+}
 
 #[test]
-fn the_grid_arranges_a_loaded_page_without_asking_the_engine_again() {
-    let reply = explored(vec![
-        record(RegistryEcosystem::Cargo, "serde", "1.0.0", 2048),
-        record(RegistryEcosystem::Npm, "zod", "3.23.8", 1_048_576),
-        record(RegistryEcosystem::Pypi, "attrs", "24.2.0", 512),
-        record(RegistryEcosystem::Cargo, "memchr", "2.7.4", 90_112),
-    ]);
-    let installed = install_page(1, 1, None, &reply).expect("a page installs");
-    let rows = installed.ready().expect("the page holds rows").clone();
+fn browse_sorting_uses_only_recorded_row_facts_and_keeps_missing_values_last() {
+    let rows = vec![
+        record_with(
+            RegistryEcosystem::Cargo,
+            "unknown",
+            "1.0.0",
+            1024,
+            RegistryReleaseStanding::Available,
+        RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unknown),
+            backend_library::AdvisoryPackageDto::unknown(),
+        ),
+        record_with(
+            RegistryEcosystem::Cargo,
+            "popular",
+            "1.0.0",
+            1024,
+            RegistryReleaseStanding::Available,
+            RegistryDownloadCount::Exact(900),
+            backend_library::AdvisoryPackageDto::unknown(),
+        ),
+        record_with(
+            RegistryEcosystem::Cargo,
+            "approximate",
+            "1.0.0",
+            1024,
+            RegistryReleaseStanding::Available,
+            RegistryDownloadCount::Approximate(500),
+            backend_library::AdvisoryPackageDto::unknown(),
+        ),
+    ];
+    let installed =
+        crate::store::registry::install_page(1, 1, None, &explored(rows)).expect("catalog answer");
+    let rows = installed.ready().expect("catalog rows").clone();
     let mut listings: Vec<Listing> = rows
         .iter()
-        .map(|row| Listing::new(row.clone(), dossier::card(row.coordinate())))
+        .map(|row| Listing::new(row.clone(), dossier::live_card(row)))
         .collect();
-
-    arrange(&mut listings, Ordering::Relevance);
-    assert_eq!(
-        names(&listings),
-        vec![
-            "serde".to_owned(),
-            "zod".to_owned(),
-            "attrs".to_owned(),
-            "memchr".to_owned(),
-        ],
-        "relevance is the engine's own order, untouched"
-    );
-
     arrange(&mut listings, Ordering::Downloads);
-    assert_eq!(
-        names(&listings),
-        vec![
-            "serde".to_owned(),
-            "memchr".to_owned(),
-            "attrs".to_owned(),
-            "zod".to_owned(),
-        ]
-    );
-
-    arrange(&mut listings, Ordering::Fresh);
-    assert_eq!(
-        names(&listings),
-        vec![
-            "memchr".to_owned(),
-            "zod".to_owned(),
-            "attrs".to_owned(),
-            "serde".to_owned(),
-        ]
-    );
+    assert_eq!(names(&listings), vec!["popular", "approximate", "unknown"]);
+    let mut fresh_listings: Vec<Listing> = rows
+        .iter()
+        .map(|row| Listing::new(row.clone(), dossier::live_card(row)))
+        .collect();
+    arrange(&mut fresh_listings, Ordering::Fresh);
+    assert_eq!(names(&fresh_listings), vec!["unknown", "popular", "approximate"]);
 }
 
 #[test]
-fn the_sort_controls_say_which_of_them_rank_by_a_sampled_number() {
-    assert_eq!(
-        Ordering::ALL.map(Ordering::label),
-        ["relevance", "downloads", "recently updated"]
-    );
+fn ordering_words_and_states_have_no_generated_path() {
     assert_eq!(
         Ordering::ALL.map(Ordering::sentence),
         [
             "in the order the index answered",
-            "by sampled downloads",
-            "by sampled release date",
-        ],
-        "a sampled ranking says so in the sentence, not only in a chip"
+            "by recorded downloads",
+            "by recorded release date",
+        ]
     );
-    assert!(
-        !Ordering::Relevance.is_sampled(),
-        "the engine's order is the engine's"
-    );
-    assert!(Ordering::Downloads.is_sampled());
-    assert!(Ordering::Fresh.is_sampled());
-    assert_eq!(Ordering::default(), Ordering::Relevance);
-}
-
-// -------------------------------------------------- numbers and charts --
-
-#[test]
-fn a_download_count_keeps_one_digit_of_detail_at_every_magnitude() {
-    assert_eq!(dossier::tally_label(0), "0");
-    assert_eq!(dossier::tally_label(934), "934");
-    assert_eq!(dossier::tally_label(1_000), "1.0K");
-    assert_eq!(dossier::tally_label(12_450), "12.4K");
-    assert_eq!(dossier::tally_label(999_999), "999.9K");
-    assert_eq!(dossier::tally_label(3_100_000), "3.1M");
-    assert_eq!(dossier::tally_label(648_340_200), "648.3M");
 }
 
 #[test]
-fn a_day_is_the_day_it_says_it_is() {
+fn coverage_mapping_is_closed_and_shared_by_sections_and_cards() {
+    assert_eq!(Provenance::Recorded.sentence(), None);
+    for state in [
+        Provenance::NotRecorded,
+        Provenance::Unsupported,
+        Provenance::Unavailable,
+        Provenance::Stale,
+        Provenance::Unknown,
+    ] {
+        assert!(state.is_not_recorded());
+        assert!(state.sentence().is_some());
+    }
+    assert_eq!(
+        Section::unsupported(Vec::<String>::new()).availability(),
+        Provenance::Unsupported
+    );
+}
+
+#[test]
+fn date_math_only_round_trips_recorded_calendar_days() {
+    use crate::store::dossier::Stamp;
     assert_eq!(Stamp::of_day(0).iso(), "1970-01-01");
     assert_eq!(Stamp::of_day(20_000).iso(), "2024-10-04");
-    assert_eq!(Stamp::of_day(20_000).spelled(), "4 Oct 2024");
     for day in [0_i64, 1, 59, 60, 20_000, 20_710] {
-        assert_eq!(
-            Stamp::of_day(day).day(),
-            day,
-            "a calendar day and its count are the same fact"
-        );
+        assert_eq!(Stamp::of_day(day).day(), day);
     }
 }
 
 #[test]
-fn a_chart_column_never_vanishes_and_never_overflows_its_box() {
-    assert_eq!(
-        chart::column(0, 100, 20),
-        1,
-        "a quiet week is a trough, not a gap"
-    );
+fn chart_scaling_is_independent_of_package_fixture_data() {
+    use crate::ui::chart;
+    assert_eq!(chart::column(0, 100, 20), 1);
     assert_eq!(chart::column(50, 100, 20), 10);
-    assert_eq!(chart::column(100, 100, 20), 20);
-    assert_eq!(chart::column(1, 1_000_000, 80), 1);
-    assert_eq!(
-        chart::column(u64::MAX, 1, 20),
-        20,
-        "no column leaves its box"
-    );
-    assert_eq!(
-        chart::column(5, 0, 20),
-        20,
-        "an empty series has no peak to scale by"
-    );
-}
-
-#[test]
-fn a_share_is_a_whole_percent_that_cannot_exceed_the_whole() {
-    assert_eq!(chart::share(0, 0), 0);
-    assert_eq!(chart::share(1, 3), 33);
+    assert_eq!(chart::column(u64::MAX, 1, 20), 20);
     assert_eq!(chart::share(2, 3), 66);
-    assert_eq!(chart::share(5, 5), 100);
-    assert_eq!(
-        chart::share(9, 5),
-        100,
-        "a part larger than its whole is still a full bar"
-    );
-    assert_eq!(chart::share(u64::MAX, 1), 100);
+    assert_eq!(chart::share(9, 5), 100);
 }

@@ -1,6 +1,6 @@
 //! The explore region: a real title, a real search field, and a card grid.
 //! A card says what a package *is*, which a dense row cannot say in one line.
-//! Every card mixes recorded facts with labelled samples, never silently.
+//! Every card carries the registry's recorded facts and explicit coverage.
 //!
 //! The design decision this region embodies is that browsing and scanning are
 //! different acts and want different shapes. A reader who already knows the
@@ -15,9 +15,8 @@
 //!
 //! Two honesty rules hold the region together. Cards are built for the loaded
 //! page only and "Show more" widens the engine's own window, so the grid can
-//! never claim more rows than the reply held. And the sort controls say when
-//! they rank by a sampled number: an ordering the registry never published is
-//! a useful convenience and a dishonest fact, and the difference is a word.
+//! never claim more rows than the reply held. Sort controls describe only
+//! orderings the registry actually publishes.
 
 use super::home::ecosystem_language;
 use super::workspace::Workspace;
@@ -215,9 +214,6 @@ impl Workspace {
                     order == current,
                 )
                 .child(order.label())
-                .when(order.is_sampled(), |chip| {
-                    chip.child(chart::sample_tag(theme))
-                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.registry
                         .update(cx, |registry, cx| registry.order_by(order, cx));
@@ -503,10 +499,7 @@ fn usage_row(theme: &Theme, ecosystem: RegistryEcosystem, card: &Card) -> Div {
                     text::text_at(theme, TypeScale::Tiny, Paint::Silver1)
                         .font_weight(FontWeight::MEDIUM)
                         .child(count_label),
-                )
-                .when(card.is_sampled(), |column| {
-                    column.child(chart::sample_tag(theme))
-                }),
+                ),
         )
 }
 

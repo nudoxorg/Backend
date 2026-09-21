@@ -21,7 +21,7 @@
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::theme::ramp::Hue;
-use crate::theme::tokens::{Space, TypeScale, hairline, space, type_size};
+use crate::theme::tokens::{Space, hairline, space};
 use gpui::{Div, ParentElement, Styled, div, px};
 
 /// Smallest height a column is drawn at, so a quiet week is still visible.
@@ -124,20 +124,4 @@ pub(crate) fn meter(theme: &Theme, hue: Hue, part: u64, whole: u64) -> Div {
 pub(crate) fn share(part: u64, whole: u64) -> u16 {
     let percent = part.saturating_mul(100) / whole.max(1);
     u16::try_from(percent).unwrap_or(100).min(100)
-}
-
-/// Returns the faint tag a sampled chart carries, in the one place it belongs.
-///
-/// A chart drawn from sample values wears its label on the chart rather than
-/// only in the section head, because a figure a reader screenshots leaves the
-/// section head behind.
-pub(crate) fn sample_tag(theme: &Theme) -> Div {
-    div()
-        .flex_none()
-        .px(px(4.0))
-        .py(px(1.0))
-        .bg(theme.paint(Paint::Tint))
-        .text_size(type_size(TypeScale::Micro))
-        .text_color(theme.paint(Paint::Silver3))
-        .child("sample")
 }

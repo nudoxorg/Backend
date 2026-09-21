@@ -700,12 +700,13 @@ impl Workspace {
                 dossier
                     .downloads()
                     .ready()
-                    .filter(|_| !dossier.downloads().provenance().is_not_recorded()),
-                |rail, downloads| {
+                    .filter(|_| !dossier.downloads().provenance().is_not_recorded())
+                    .and_then(Downloads::total),
+                |rail, total| {
                     rail.child(metadata_fact(
                         theme,
                         "Downloads",
-                        dossier::tally_label(downloads.total()),
+                        dossier::tally_label(total),
                     ))
                 },
             )
@@ -742,11 +743,14 @@ impl Workspace {
                     )),
             )
             .when(!links.is_empty(), |rail| {
-                rail.child(div().flex().flex_wrap().gap(space(Space::Tight)).children(
-                    links.iter().enumerate().map(|(at, link)| {
-                        Self::link_button(theme, at, link, precis.provenance(), cx)
-                    }),
-                ))
+                rail.child(
+                    div().flex().flex_wrap().gap(space(Space::Tight)).children(
+                        links
+                            .iter()
+                            .enumerate()
+                            .map(|(at, link)| Self::link_button(theme, at, link, cx)),
+                    ),
+                )
             })
     }
 }
@@ -788,12 +792,7 @@ impl Workspace {
                     .child(Self::meta_row(theme, dossier))
                     .child(Self::package_fact_row(theme, dossier))
                     .when_some(precis, |header, precis| {
-                        header.child(Self::link_row(
-                            theme,
-                            precis,
-                            dossier.precis().provenance(),
-                            cx,
-                        ))
+                        header.child(Self::link_row(theme, precis, cx))
                     })
                     .child(Self::action_row(
                         theme,
@@ -1112,26 +1111,19 @@ impl Workspace {
             .child(list)
     }
 
-    /// Returns the description, the keywords, and the sample tag over both.
-    fn precis_block(theme: &Theme, section: &Section<Precis>, precis: &Precis) -> Div {
+    /// Returns the recorded description and keywords.
+    fn precis_block(theme: &Theme, _section: &Section<Precis>, precis: &Precis) -> Div {
         div()
             .w_full()
             .flex()
             .flex_col()
             .gap(space(Space::Snug))
             .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(space(Space::Snug))
-                    .child(
-                        text::text_at(theme, TypeScale::Body, Paint::Silver1)
-                            .flex_1()
-                            .child(precis.description().to_owned()),
-                    )
-                    .when(section.provenance().is_sample(), |row| {
-                        row.child(chart::sample_tag(theme))
-                    }),
+                div().flex().items_start().gap(space(Space::Snug)).child(
+                    text::text_at(theme, TypeScale::Body, Paint::Silver1)
+                        .flex_1()
+                        .child(precis.description().to_owned()),
+                ),
             )
             .when(!precis.keywords().is_empty(), |block| {
                 block.child(
@@ -1159,13 +1151,13 @@ impl Workspace {
             ));
             facts.push(Self::advisory_decision_label(release.advisory()));
         }
-        if let Some(downloads) = dossier.downloads().ready()
-            && !dossier.downloads().provenance().is_not_recorded()
+        if let Some(total) = dossier
+            .downloads()
+            .ready()
+            .filter(|_| !dossier.downloads().provenance().is_not_recorded())
+            .and_then(Downloads::total)
         {
-            facts.push(format!(
-                "{} downloads",
-                dossier::tally_label(downloads.total())
-            ));
+            facts.push(format!("{} downloads", dossier::tally_label(total)));
         }
         if let Some(latest) = dossier
             .history()
@@ -1190,17 +1182,7 @@ impl Workspace {
     }
 
     /// Returns the external link buttons a package publishes about itself.
-    ///
-    /// A sampled link is copied rather than opened. The address is plausible
-    /// and unverified, and sending a reader's browser somewhere on the strength
-    /// of a stand-in is the one dishonesty a label cannot excuse; when the feed
-    /// starts publishing links the same buttons open them.
-    fn link_row(
-        theme: &Theme,
-        precis: &Precis,
-        provenance: Provenance,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    fn link_row(theme: &Theme, precis: &Precis, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .flex_wrap()
@@ -1211,22 +1193,12 @@ impl Workspace {
                     .links()
                     .iter()
                     .enumerate()
-                    .map(|(at, link)| Self::link_button(theme, at, link, provenance, cx)),
+                    .map(|(at, link)| Self::link_button(theme, at, link, cx)),
             )
-            .when(provenance.is_sample(), |row| {
-                row.child(chart::sample_tag(theme))
-            })
     }
 
-    fn link_button(
-        theme: &Theme,
-        at: usize,
-        link: &Link,
-        provenance: Provenance,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn link_button(theme: &Theme, at: usize, link: &Link, cx: &mut Context<Self>) -> AnyElement {
         let url = link.url().to_owned();
-        let sampled = provenance.is_sample();
         button::button(
             theme,
             format!("package-link-{at}"),
@@ -1234,12 +1206,8 @@ impl Workspace {
             button::Weight::Regular,
         )
         .child(icon::sized(theme, Icon::External, 11.0, Paint::Silver3))
-        .on_click(cx.listener(move |this, _, _, cx| {
-            if sampled {
-                this.copy("Sample link copied", url.clone(), cx);
-            } else {
-                cx.open_url(&url);
-            }
+        .on_click(cx.listener(move |_, _, _, cx| {
+            cx.open_url(&url);
         }))
         .into_any_element()
     }
@@ -1711,7 +1679,7 @@ impl Workspace {
         )
     }
 
-    /// Returns one page section with a fold control and a provenance tag.
+    /// Returns one page section with a fold control and coverage note.
     ///
     /// The head is the same shape for all seven sections, which is what lets a
     /// reader learn the page once: a chevron, a title, what the section holds,
@@ -1738,9 +1706,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(space(Space::Snug))
-            .child(section_head(
-                theme, key, title, provenance, note, folded, cx,
-            ))
+            .child(section_head(theme, key, title, note, folded, cx))
             .when(!folded, |section| {
                 section
                     .when_some(provenance.sentence(), |body, sentence| {
@@ -1756,7 +1722,6 @@ fn section_head(
     theme: &Theme,
     key: &'static str,
     title: &str,
-    provenance: Provenance,
     note: Option<String>,
     folded: bool,
     cx: &mut Context<Workspace>,
@@ -1786,9 +1751,6 @@ fn section_head(
     ));
     if let Some(note) = note {
         head = head.child(text::faint(theme).flex_none().child(note));
-    }
-    if provenance.tag().is_some() {
-        head = head.child(chart::sample_tag(theme));
     }
     head = head
         .child(div().flex_1().h(hairline()).bg(theme.paint(Paint::Rule1)))
@@ -1825,22 +1787,36 @@ fn usage_body(theme: &Theme, dossier: &Dossier, downloads: &Downloads) -> AnyEle
                 tally.week().iso()
             )
         });
-    div()
-        .w_full()
-        .flex()
-        .flex_col()
-        .gap(space(Space::Base))
-        .child(chart::histogram(
+    let chart = if downloads.history().provenance().is_not_recorded() {
+        text::dim(theme)
+            .child("Weekly download history is not recorded by the configured registry feed.")
+            .into_any_element()
+    } else {
+        chart::histogram(
             theme,
             hue,
             &downloads.counts(),
             CHART,
             (ends.0.as_str(), ends.1.as_str()),
-        ))
+        )
+        .into_any_element()
+    };
+    let recent = downloads.recent().map_or_else(
+        || "recent downloads not recorded".to_owned(),
+        dossier::tally_label,
+    );
+    let total = downloads.total().map_or_else(
+        || "lifetime downloads not recorded".to_owned(),
+        dossier::tally_label,
+    );
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(space(Space::Base))
+        .child(chart)
         .child(text::dim(theme).child(format!(
-            "{} downloads in the last ninety days, {} over the package's lifetime.",
-            dossier::tally_label(downloads.recent()),
-            dossier::tally_label(downloads.total())
+            "{recent} in the recent window; {total} over the package's lifetime."
         )))
         .when_some(peak, |body, peak| {
             body.child(text::faint(theme).child(peak))
@@ -1903,26 +1879,33 @@ fn version_row(
 
 /// Returns one dependency row, which opens the package it names.
 fn dependency_row(theme: &Theme, row: &Dependency, cx: &mut Context<Workspace>) -> AnyElement {
-    let opened = row.resolved().to_owned();
+    let opened = row.resolved().map(str::to_owned);
     let role = row
         .role()
         .tag()
         .map_or(String::new(), |tag| format!(" · {tag}"));
     let label = format!("{} · {}{role}", row.name(), row.requirement());
+    let id = format!("package-dependency-{}-{}", row.name(), row.requirement());
+    let tooltip = row.resolved().map_or_else(
+        || "Dependency resolution not recorded".to_owned(),
+        |coordinate| format!("Open dependency {coordinate}"),
+    );
     components::button_with_state(
         theme,
-        format!("package-dependency-{}", row.resolved()),
+        id,
         label.clone(),
         button::Weight::Quiet,
-        false,
+        opened.is_none(),
         true,
     )
     .w_full()
     .justify_start()
     .text_left()
-    .tooltip(format!("Open dependency {}", row.resolved()))
+    .tooltip(tooltip)
     .on_click(cx.listener(move |this, _, _, cx| {
-        this.open_package(opened.clone(), Target::Here, cx);
+        if let Some(coordinate) = opened.clone() {
+            this.open_package(coordinate, Target::Here, cx);
+        }
     }))
     .into_any_element()
 }

@@ -22,9 +22,9 @@ use super::dossier::{Card, Dossier, assemble, live_card};
 use super::events::RegistryEvent;
 use super::service::{Endpoint, Outcome, Request};
 use backend_library::{
-    AdvisoryPackageDto, MAX_PRODUCT_ROWS, PackageReference, ProductAdmissionError, ProductText,
-    RegistryDownloadCount, RegistryEcosystem, RegistryMetadata, RegistryPackageRecord,
-    RegistryReleaseStanding, SurfaceCommand, SurfaceReply,
+    AdvisoryPackageDto, DependencyFacts, MAX_PRODUCT_ROWS, PackageDependencyRecord,
+    PackageReference, ProductAdmissionError, ProductText, RegistryDownloadCount, RegistryEcosystem,
+    RegistryMetadata, RegistryPackageRecord, RegistryReleaseStanding, SurfaceCommand, SurfaceReply,
 };
 use backend_present::{
     Affordance, Cause, CauseSlug, Coordinate, Fault, FaultSlug, Operand, Readiness, Shelf,
@@ -279,6 +279,7 @@ impl Profile {
 pub(crate) struct Package {
     record: Loadable<Vec<PackageRow>>,
     versions: Loadable<Vec<PackageRow>>,
+    dependencies: Loadable<DependencyFacts<Vec<PackageDependencyRecord>>>,
     dependents: Loadable<Dependents>,
     profile: Loadable<Profile>,
 }
@@ -294,6 +295,13 @@ impl Package {
         &self.versions
     }
 
+    /// Returns the outgoing dependency facts, including typed coverage states.
+    pub(crate) const fn dependencies(
+        &self,
+    ) -> &Loadable<DependencyFacts<Vec<PackageDependencyRecord>>> {
+        &self.dependencies
+    }
+
     /// Returns the reverse dependency facts, or the absence of them.
     pub(crate) const fn dependents(&self) -> &Loadable<Dependents> {
         &self.dependents
@@ -307,11 +315,10 @@ impl Package {
 
 /// How the browse grid arranges the rows it has already loaded.
 ///
-/// This is a client-side arrangement of one loaded page, never a new request:
-/// the engine takes no sort operand, so asking it again for the same window
-/// would return the same rows in the same order. Two of the three orders rank
-/// by a sampled number, which is why [`Self::is_sampled`] exists — the control
-/// says so rather than implying the registry published a ranking.
+/// This is a client-side arrangement of one loaded page, never a new request.
+/// Download ordering uses only the count carried by each admitted registry row;
+/// release ordering uses a date only when a card has one. Missing values remain
+/// at the end and never receive a generated fallback.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum Ordering {
     /// The order the engine answered in.
@@ -336,26 +343,19 @@ impl Ordering {
         }
     }
 
-    /// Returns whether this order ranks by a sampled number.
-    pub(crate) const fn is_sampled(self) -> bool {
-        matches!(self, Self::Downloads | Self::Fresh)
-    }
-
     /// Returns the words the note under the grid uses for this order.
     ///
-    /// A note that said "by downloads" of an order the registry never
-    /// published would read as a registry ranking; naming the sample in the
-    /// sentence is what keeps the convenience from becoming a claim.
+    /// Returns the words the note under the grid uses for this order.
     pub(crate) const fn sentence(self) -> &'static str {
         match self {
             Self::Relevance => "in the order the index answered",
-            Self::Downloads => "by sampled downloads",
-            Self::Fresh => "by sampled release date",
+            Self::Downloads => "by recorded downloads",
+            Self::Fresh => "by recorded release date",
         }
     }
 }
 
-/// One browse row, with the sample facts its card draws beside it.
+/// One browse row, with the typed metadata card draws beside it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Listing {
     row: PackageRow,
@@ -363,7 +363,7 @@ pub(crate) struct Listing {
 }
 
 impl Listing {
-    /// Pairs one recorded row with the sample card drawn beside it.
+    /// Pairs one recorded row with the card projected from that row.
     pub(crate) const fn new(row: PackageRow, card: Card) -> Self {
         Self { row, card }
     }
@@ -373,7 +373,7 @@ impl Listing {
         &self.row
     }
 
-    /// Returns the sample facts the card draws.
+    /// Returns the metadata card for this row.
     pub(crate) const fn card(&self) -> &Card {
         &self.card
     }
@@ -666,7 +666,7 @@ impl RegistryStore {
             .map(|(_, dossier)| dossier.as_ref())
     }
 
-    /// Returns the sample card for one coordinate, from the page's own stock.
+    /// Returns the recorded card for one coordinate, from the page's own stock.
     fn card_of(&self, row: &PackageRow) -> Card {
         self.cards
             .iter()
@@ -676,10 +676,8 @@ impl RegistryStore {
 
     /// Builds one card per loaded row, keeping the cards a page already had.
     ///
-    /// A card is a projection of a sample dossier, so it is built once per
-    /// reply rather than once per frame: a grid that re-derived twenty-four
-    /// download series every frame would spend a frame's budget on arithmetic
-    /// whose answer never changes.
+    /// A card is a projection of one recorded row, so it is built once per
+    /// reply rather than once per frame.
     fn restock(&mut self) {
         let coordinates: Vec<String> = self
             .page
@@ -851,9 +849,8 @@ impl RegistryStore {
 
     /// Holds one package read, and the dossier assembled from it.
     ///
-    /// The dossier is assembled here rather than in the view so that a frame
-    /// draws a value instead of computing one, and so that the sample sections
-    /// are identical for every frame of one reply.
+    /// The dossier is assembled here rather than in the view so every frame
+    /// projects the same typed answer and its coverage state.
     fn hold(&mut self, coordinate: &str, state: Loadable<Box<Package>>) {
         let dossier = Box::new(assemble(coordinate, &state));
         self.details.retain(|(held, _)| held != coordinate);
@@ -865,7 +862,7 @@ impl RegistryStore {
     }
 }
 
-/// Reads all four registry sections for one package on a worker thread.
+/// Reads all five registry sections for one package on a worker thread.
 fn gather(endpoint: &Endpoint, coordinate: &str, package: &PackageReference) -> Package {
     Package {
         record: section(
@@ -883,6 +880,14 @@ fn gather(endpoint: &Endpoint, coordinate: &str, package: &PackageReference) -> 
                 package: package.clone(),
             },
             versions_of,
+        ),
+        dependencies: section(
+            endpoint,
+            coordinate,
+            SurfaceCommand::Dependencies {
+                package: package.clone(),
+            },
+            dependencies_of,
         ),
         dependents: section(
             endpoint,
@@ -903,16 +908,17 @@ fn gather(endpoint: &Endpoint, coordinate: &str, package: &PackageReference) -> 
     }
 }
 
-/// Builds one gathered package out of four real replies, for tests.
+/// Builds one gathered package out of the real surface replies, for tests.
 ///
 /// The admitters are the same four this module uses against the live service,
-/// so a test states a reply and gets exactly the [`Package`] a window would
-/// hold — there is no second, hand-built shape that could disagree with the
-/// one the product uses.
+/// so a test states typed replies and gets exactly the [`Package`] a window
+/// would hold — there is no second, hand-built shape that could disagree with
+/// the one the product uses.
 #[cfg(test)]
 pub(crate) fn gathered(
     record: &SurfaceReply,
     versions: &SurfaceReply,
+    dependencies: &SurfaceReply,
     dependents: &SurfaceReply,
     profile: &SurfaceReply,
 ) -> Package {
@@ -925,6 +931,7 @@ pub(crate) fn gathered(
     Package {
         record: admit(record, record_of),
         versions: admit(versions, versions_of),
+        dependencies: admit(dependencies, dependencies_of),
         dependents: admit(dependents, dependents_of),
         profile: admit(profile, profile_of),
     }
@@ -980,6 +987,21 @@ fn dependents_of(reply: &SurfaceReply) -> Option<Dependents> {
         ),
         SurfaceReply::Dependents(RegistryMetadata::NotRecorded(reason)) => {
             Some(Dependents::NotRecorded(reason.as_str().to_owned()))
+        }
+        _ => None,
+    }
+}
+
+fn dependencies_of(reply: &SurfaceReply) -> Option<DependencyFacts<Vec<PackageDependencyRecord>>> {
+    match reply {
+        SurfaceReply::Dependencies(DependencyFacts::Known(records)) => {
+            Some(DependencyFacts::Known(records.to_vec()))
+        }
+        SurfaceReply::Dependencies(DependencyFacts::Unknown(reason)) => {
+            Some(DependencyFacts::Unknown(reason.clone()))
+        }
+        SurfaceReply::Dependencies(DependencyFacts::Unavailable(reason)) => {
+            Some(DependencyFacts::Unavailable(reason.clone()))
         }
         _ => None,
     }
