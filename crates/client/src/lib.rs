@@ -1128,6 +1128,49 @@ fn map_peer_authentication_error(
     }
 }
 
+/// Lowers a failed endpoint dial into the same connection-lost class as a
+/// reset on an already-open stream. This matters during a daemon restart:
+/// the endpoint can exist while no listener is bound for a short interval,
+/// and the reconnect policy must be allowed to retry that bounded race.
+#[cfg(any(unix, windows))]
+fn map_endpoint_connect_error(error: std::io::Error) -> ClientError {
+    if is_disconnect(error.kind()) || error.kind() == std::io::ErrorKind::NotFound {
+        ClientError::Disconnected(error.kind())
+    } else {
+        ClientError::Io(error.to_string())
+    }
+}
+
+/// Authentication happens after a successful dial, so a daemon that exits in
+/// the small interval between those operations can look like a security
+/// failure even though the only thing that changed was the peer's lifetime.
+/// Preserve real owner/permission failures as ordinary I/O errors, while
+/// classifying endpoint disappearance and peer teardown as a reconnectable
+/// disconnect.
+#[cfg(any(unix, windows))]
+fn map_peer_authentication_error(
+    error: backend_replication::LocalPeerAuthenticationError,
+) -> ClientError {
+    use backend_replication::LocalPeerAuthenticationError as AuthenticationError;
+    use backend_replication::PeerCredentialError;
+
+    let disconnected = |kind| ClientError::Disconnected(kind);
+    match error {
+        AuthenticationError::EndpointIo(kind)
+            if is_disconnect(kind) || kind == std::io::ErrorKind::NotFound =>
+        {
+            disconnected(kind)
+        }
+        AuthenticationError::PeerAddress => disconnected(std::io::ErrorKind::ConnectionAborted),
+        AuthenticationError::PeerCredentials(PeerCredentialError::Io(kind))
+            if is_disconnect(kind) || kind == std::io::ErrorKind::NotFound =>
+        {
+            disconnected(kind)
+        }
+        other => ClientError::Io(format!("local peer authentication failed: {other}")),
+    }
+}
+
 /// Bounded deadline for one read-only command, including health and discovery.
 ///
 /// Every request re-arms this value, so a long mutation cannot make a later
