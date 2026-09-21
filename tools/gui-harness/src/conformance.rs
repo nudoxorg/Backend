@@ -1266,10 +1266,7 @@ fn overlay_name(overlay: Option<OverlayState>) -> Option<&'static str> {
 }
 
 fn theme_name(theme: ThemeState) -> &'static str {
-    match theme {
-        ThemeState::Ink => "ink",
-        ThemeState::Vellum => "glacier",
-    }
+    theme.as_str()
 }
 
 fn viewport_band(viewport: Viewport) -> &'static str {
