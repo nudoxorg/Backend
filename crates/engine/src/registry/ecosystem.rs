@@ -20,6 +20,14 @@ use super::{
 };
 use std::sync::Arc;
 
+/// Hard ceiling for a directly supplied native metadata body. HTTP callers
+/// normally apply the tighter [`AcquisitionLimits`] feed cap first; retaining
+/// this guard at the pure adapter boundary prevents an embedded caller from
+/// handing `serde_json` an unbounded allocation.
+pub(crate) const MAX_NATIVE_METADATA_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum number of release rows admitted from one package document.
+pub(crate) const MAX_NATIVE_RELEASES: usize = 1_000_000;
+
 /// Registry checksum algorithm declared by native metadata.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChecksumAlgorithm {
@@ -64,6 +72,32 @@ impl RegistryChecksum {
         }
         Ok(Self {
             algorithm: ChecksumAlgorithm::Sha512,
+            bytes: bytes.into_boxed_slice(),
+        })
+    }
+
+    pub(crate) fn sha1_base64(value: &str) -> Result<Self, TransportFailure> {
+        let bytes = STANDARD
+            .decode(value)
+            .map_err(|_| TransportFailure::Protocol)?;
+        if bytes.len() != 20 {
+            return Err(TransportFailure::Protocol);
+        }
+        Ok(Self {
+            algorithm: ChecksumAlgorithm::Sha1,
+            bytes: bytes.into_boxed_slice(),
+        })
+    }
+
+    pub(crate) fn sha256_base64(value: &str) -> Result<Self, TransportFailure> {
+        let bytes = STANDARD
+            .decode(value)
+            .map_err(|_| TransportFailure::Protocol)?;
+        if bytes.len() != 32 {
+            return Err(TransportFailure::Protocol);
+        }
+        Ok(Self {
+            algorithm: ChecksumAlgorithm::Sha256,
             bytes: bytes.into_boxed_slice(),
         })
     }
@@ -119,12 +153,145 @@ impl RegistryChecksum {
         self.algorithm
     }
 
+    /// Returns the authenticated digest bytes in their native algorithm width.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     pub(crate) fn cache_key(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"nudox.registry.archive-cache.v1\0");
         hasher.update(&[self.algorithm as u8]);
         hasher.update(self.bytes.as_ref());
         *hasher.finalize().as_bytes()
+    }
+}
+
+/// Kind of an artifact published alongside one native release.
+///
+/// Registry metadata often publishes several files for one version. The
+/// acquisition owner selects one verified source artifact, while the adapter
+/// retains the complete file set so a later policy or platform selection never
+/// needs to re-fetch metadata.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum NativeArtifactKind {
+    /// Cargo's `.crate` source archive.
+    CargoCrate,
+    /// npm's package tarball.
+    NpmTarball,
+    /// Python source distribution.
+    PythonSdist,
+    /// Python wheel distribution.
+    PythonWheel,
+    /// A detached Python distribution signature.
+    PythonSignature,
+    /// A registry file that is retained but is not a source distribution.
+    Other,
+}
+
+/// One complete, authenticated file claim from a native registry response.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeArtifact {
+    filename: Arc<str>,
+    url: Arc<str>,
+    checksum: RegistryChecksum,
+    kind: NativeArtifactKind,
+    requires_python: Option<Arc<str>>,
+    size: Option<u64>,
+    yanked: bool,
+    yanked_reason: Option<Arc<str>>,
+}
+
+impl NativeArtifact {
+    /// Registry filename, retained byte-for-byte after validation.
+    #[must_use]
+    pub fn filename(&self) -> &str {
+        &self.filename
+    }
+
+    /// Resolved archive or artifact URL.
+    #[must_use]
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Authenticated file checksum.
+    #[must_use]
+    pub fn checksum(&self) -> &RegistryChecksum {
+        &self.checksum
+    }
+
+    /// Native file classification.
+    #[must_use]
+    pub const fn kind(&self) -> NativeArtifactKind {
+        self.kind
+    }
+
+    /// Python interpreter constraint, when supplied by the registry.
+    #[must_use]
+    pub fn requires_python(&self) -> Option<&str> {
+        self.requires_python.as_deref()
+    }
+
+    /// Published byte length, when supplied by the registry.
+    #[must_use]
+    pub const fn size(&self) -> Option<u64> {
+        self.size
+    }
+
+    /// Whether the registry withdrew this individual file.
+    #[must_use]
+    pub const fn yanked(&self) -> bool {
+        self.yanked
+    }
+
+    /// Publisher-provided withdrawal reason, when one exists.
+    #[must_use]
+    pub fn yanked_reason(&self) -> Option<&str> {
+        self.yanked_reason.as_deref()
+    }
+}
+
+/// One Cargo feature declaration retained in canonical order.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct NativeFeature {
+    name: Arc<str>,
+    members: Box<[Arc<str>]>,
+}
+
+impl NativeFeature {
+    /// Feature name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Feature members in deterministic lexical order.
+    #[must_use]
+    pub fn members(&self) -> &[Arc<str>] {
+        &self.members
+    }
+}
+
+/// One npm dist-tag assignment retained in canonical lexical order.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct NativeDistTag {
+    name: Arc<str>,
+    version: Arc<str>,
+}
+
+impl NativeDistTag {
+    /// Dist-tag name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Version selected by this tag.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
     }
 }
 
@@ -244,9 +411,70 @@ pub struct NativeRelease {
     /// Mutable registry policy and observations, versioned independently.
     pub facts: ReleaseFacts,
     /// Dependency facts captured from the native metadata row.
-    pub dependency_facts: backend_library::DependencyFacts<
-        Box<[backend_library::PackageDependencyRecord]>,
-    >,
+    pub dependency_facts:
+        backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>>,
+    /// Every file advertised for this release, including non-source files.
+    pub artifacts: Box<[NativeArtifact]>,
+    /// Cargo feature declarations for this release.
+    pub features: Box<[NativeFeature]>,
+    /// npm dist-tags observed with the packument.
+    pub dist_tags: Arc<[NativeDistTag]>,
+    /// Publisher reason attached to a yanked or deprecated release.
+    pub standing_reason: Option<Arc<str>>,
+    /// Python `Requires-Python` of the selected artifact.
+    pub requires_python: Option<Arc<str>>,
+}
+
+impl NativeRelease {
+    /// Returns all files advertised for this release.
+    #[must_use]
+    pub fn artifacts(&self) -> &[NativeArtifact] {
+        &self.artifacts
+    }
+
+    /// Returns Cargo feature declarations.
+    #[must_use]
+    pub fn features(&self) -> &[NativeFeature] {
+        &self.features
+    }
+
+    /// Returns the packument's npm dist-tags.
+    #[must_use]
+    pub fn dist_tags(&self) -> &[NativeDistTag] {
+        &self.dist_tags
+    }
+
+    /// Returns a publisher's yanked/deprecation reason, if supplied.
+    #[must_use]
+    pub fn standing_reason(&self) -> Option<&str> {
+        self.standing_reason.as_deref()
+    }
+
+    /// Returns the selected Python artifact's interpreter constraint.
+    #[must_use]
+    pub fn requires_python(&self) -> Option<&str> {
+        self.requires_python.as_deref()
+    }
+
+    fn set_artifacts(&mut self, artifacts: Vec<NativeArtifact>) {
+        self.artifacts = artifacts.into_boxed_slice();
+    }
+
+    fn set_features(&mut self, features: Vec<NativeFeature>) {
+        self.features = features.into_boxed_slice();
+    }
+
+    fn set_dist_tags(&mut self, dist_tags: Arc<[NativeDistTag]>) {
+        self.dist_tags = dist_tags;
+    }
+
+    fn set_standing_reason(&mut self, reason: Option<Arc<str>>) {
+        self.standing_reason = reason;
+    }
+
+    fn set_requires_python(&mut self, requires_python: Option<Arc<str>>) {
+        self.requires_python = requires_python;
+    }
 }
 
 /// Stateless native registry adapter for one package feed.
@@ -378,6 +606,13 @@ impl EcosystemAdapter {
     /// Returns a protocol error for malformed coordinates, checksums, URLs,
     /// duplicate versions, or an unexpected source grammar.
     pub fn decode(&self, bytes: &[u8]) -> Result<Vec<NativeRelease>, TransportFailure> {
+        if bytes.len() > MAX_NATIVE_METADATA_BYTES {
+            return Err(TransportFailure::Overrun {
+                measured: u64::try_from(bytes.len()).map_err(|_| TransportFailure::Bounds)?,
+                limit: u64::try_from(MAX_NATIVE_METADATA_BYTES)
+                    .map_err(|_| TransportFailure::Bounds)?,
+            });
+        }
         let mut releases = match self.endpoint.ecosystem() {
             RegistryEcosystem::Cargo => self.decode_cargo(bytes)?,
             RegistryEcosystem::Npm => self.decode_npm(bytes)?,
@@ -482,6 +717,7 @@ impl EcosystemAdapter {
         facts: ReleaseFacts,
     ) -> Result<NativeRelease, TransportFailure> {
         let version = PackageVersion::new(version).map_err(|_| TransportFailure::Protocol)?;
+        let archive_url = resolve_archive_url(&self.metadata_url(), &archive_url)?;
         if !allowed_archive_authority(self.endpoint.ecosystem(), self.endpoint.url(), &archive_url)
         {
             return Err(TransportFailure::Configuration);
@@ -521,6 +757,11 @@ impl EcosystemAdapter {
                 backend_library::ProductText::new("native feed omits dependency metadata")
                     .map_err(|_| TransportFailure::Protocol)?,
             ),
+            artifacts: Box::new([]),
+            features: Box::new([]),
+            dist_tags: Arc::from([]),
+            standing_reason: None,
+            requires_python: None,
         })
     }
 
@@ -712,12 +953,121 @@ fn normalized_pypi_name(value: &str) -> String {
 }
 
 fn cargo_sparse_path(name: &str) -> String {
+    let name = name.to_ascii_lowercase();
     match name.len() {
         1 => format!("1/{name}"),
         2 => format!("2/{name}"),
         3 => format!("3/{}/{name}", &name[..1]),
         _ => format!("{}/{}/{name}", &name[..2], &name[2..4]),
     }
+}
+
+/// Resolves a native registry file URL against the metadata request URL.
+///
+/// PEP 691 explicitly permits relative file links and private mirrors often
+/// use them for all three supported ecosystems. Resolution is performed here,
+/// before the URL reaches the transport, so an adapter can validate the final
+/// authority exactly once and the transport never has to guess at URL bases.
+pub(crate) fn resolve_archive_url(base: &str, raw: &str) -> Result<String, TransportFailure> {
+    if raw.is_empty()
+        || raw
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+        || raw.contains(['#', '?', '\\'])
+    {
+        return Err(TransportFailure::Protocol);
+    }
+    let base_uri = base
+        .parse::<ureq::http::Uri>()
+        .map_err(|_| TransportFailure::Protocol)?;
+    let (scheme, authority) = (
+        base_uri.scheme_str().ok_or(TransportFailure::Protocol)?,
+        base_uri.authority().ok_or(TransportFailure::Protocol)?,
+    );
+
+    let absolute = raw.parse::<ureq::http::Uri>();
+    let is_absolute = absolute
+        .as_ref()
+        .is_ok_and(|uri| uri.scheme_str().is_some() && uri.authority().is_some());
+    let (resolved_scheme, resolved_authority, raw_path) = if is_absolute {
+        let uri = absolute.map_err(|_| TransportFailure::Protocol)?;
+        let scheme = uri.scheme_str().ok_or(TransportFailure::Protocol)?;
+        let authority = uri.authority().ok_or(TransportFailure::Protocol)?;
+        (
+            scheme.to_owned(),
+            authority.as_str().to_owned(),
+            uri.path().to_owned(),
+        )
+    } else if let Some(raw) = raw.strip_prefix("//") {
+        let uri = format!("{scheme}://{raw}")
+            .parse::<ureq::http::Uri>()
+            .map_err(|_| TransportFailure::Protocol)?;
+        let authority = uri.authority().ok_or(TransportFailure::Protocol)?;
+        (
+            scheme.to_owned(),
+            authority.as_str().to_owned(),
+            uri.path().to_owned(),
+        )
+    } else {
+        (
+            scheme.to_owned(),
+            authority.as_str().to_owned(),
+            raw.to_owned(),
+        )
+    };
+
+    let path = if is_absolute || raw.starts_with("//") {
+        raw_path
+    } else {
+        let base_path = base_uri.path();
+        let path = if raw.starts_with('/') {
+            raw.to_owned()
+        } else {
+            let directory = base_path.rsplit_once('/').map_or("/", |(prefix, _)| {
+                if prefix.is_empty() { "/" } else { prefix }
+            });
+            format!("{directory}/{raw}")
+        };
+        path
+    };
+    // Credentials in a registry-provided archive URL are never meaningful to
+    // the native feed: accepting them would let metadata smuggle secrets into
+    // the transport and makes authority checks ambiguous. Authentication is
+    // supplied by the configured registry transport instead.
+    if resolved_authority.contains('@') {
+        return Err(TransportFailure::Protocol);
+    }
+    let normalized_path = normalize_url_path(&path)?;
+    let resolved = format!("{resolved_scheme}://{resolved_authority}{normalized_path}");
+    let uri = resolved
+        .parse::<ureq::http::Uri>()
+        .map_err(|_| TransportFailure::Protocol)?;
+    if uri.scheme_str().is_none() || uri.authority().is_none() {
+        return Err(TransportFailure::Protocol);
+    }
+    Ok(resolved)
+}
+
+fn normalize_url_path(path: &str) -> Result<String, TransportFailure> {
+    if path.is_empty() || !path.starts_with('/') {
+        return Err(TransportFailure::Protocol);
+    }
+    let mut components = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop().ok_or(TransportFailure::Configuration)?;
+            }
+            value if value.bytes().any(|byte| byte.is_ascii_control()) => {
+                return Err(TransportFailure::Protocol);
+            }
+            value => components.push(value),
+        }
+    }
+    let mut normalized = String::from('/');
+    normalized.push_str(&components.join("/"));
+    Ok(normalized)
 }
 
 fn nuget_service_index_url(endpoint: &str) -> String {

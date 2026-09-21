@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 
+use super::ecosystem::{NativeArtifactKind, resolve_archive_url};
 use super::identity::RegistryCredentialPolicy;
 use super::*;
 use crate::{
@@ -2808,6 +2809,157 @@ fn legacy_unscoped_journal_path_is_never_aliased() {
     );
     assert_eq!(owner.cursor().sequence(), 0);
     fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn cargo_sparse_rows_retain_features_and_reject_typed_policy_shapes() {
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://index.crates.io")
+        .expect("Cargo endpoint");
+    let adapter = EcosystemAdapter::new(endpoint, PackageName::new("demo").expect("package"), None)
+        .expect("adapter");
+    let row = br#"{"name":"demo","vers":"1.2.3","deps":[{"name":"serde","req":"^1","kind":"normal","optional":true,"features":["derive"]}],"cksum":"0000000000000000000000000000000000000000000000000000000000000000","features":{"default":["std","dep:serde"],"std":[]},"yanked":true,"links":"demo-sys"}
+"#;
+    let releases = adapter.decode(row).expect("Cargo sparse row");
+    assert_eq!(releases.len(), 1);
+    let release = &releases[0];
+    assert_eq!(release.facts.standing(), ReleaseStanding::Yanked);
+    assert_eq!(release.features().len(), 2);
+    assert_eq!(release.features()[0].name(), "default");
+    assert_eq!(
+        release.features()[0].members(),
+        [Arc::from("dep:serde"), Arc::from("std")]
+    );
+    assert_eq!(release.artifacts().len(), 1);
+    assert_eq!(
+        release.artifacts()[0].kind(),
+        NativeArtifactKind::CargoCrate
+    );
+    let malformed = br#"{"name":"demo","vers":"1.2.3","cksum":"0000000000000000000000000000000000000000000000000000000000000000","yanked":"true"}"#;
+    assert!(matches!(
+        adapter.decode(malformed),
+        Err(TransportFailure::Protocol)
+    ));
+}
+
+#[test]
+fn npm_packument_retains_scoped_tags_deprecation_and_relative_integrity() {
+    let archive = b"npm package archive";
+    let sha512 = STANDARD.encode(Sha512::digest(archive));
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Npm, "https://registry.example.test")
+        .expect("npm endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint,
+        PackageName::new("parser").expect("name"),
+        Some(PackageName::new("@babel").expect("scope")),
+    )
+    .expect("adapter");
+    let body = format!(
+        r#"{{"name":"@babel/parser","dist-tags":{{"latest":"1.2.3","next":"1.3.0"}},"versions":{{"1.2.3":{{"name":"@babel/parser","version":"1.2.3","deprecated":"use 1.3.0","dist":{{"integrity":"sha512-{sha512}","tarball":"/-/parser-1.2.3.tgz","size":18}},"dependencies":{{"acorn":"^8"}}}},"1.3.0":{{"name":"@babel/parser","version":"1.3.0","dist":{{"shasum":"{}","tarball":"/-/parser-1.3.0.tgz"}}}}}}}}"#,
+        digest_hex(sha1::Sha1::digest(archive).as_slice())
+    );
+    let releases = adapter.decode(body.as_bytes()).expect("npm packument");
+    assert_eq!(releases.len(), 2);
+    assert_eq!(releases[0].dist_tags().len(), 2);
+    assert_eq!(releases[0].dist_tags()[0].name(), "latest");
+    let deprecated = &releases[0];
+    assert_eq!(deprecated.facts.standing(), ReleaseStanding::Deprecated);
+    assert_eq!(deprecated.standing_reason(), Some("use 1.3.0"));
+    assert_eq!(deprecated.artifacts().len(), 1);
+    assert_eq!(
+        deprecated.artifacts()[0].url(),
+        "https://registry.example.test/-/parser-1.2.3.tgz"
+    );
+    assert!(deprecated.artifacts()[0].checksum().verifies(archive));
+    assert_eq!(
+        releases[1].artifacts()[0].checksum().algorithm(),
+        ChecksumAlgorithm::Sha1
+    );
+}
+
+#[test]
+fn pypi_simple_retains_every_file_kind_requires_python_and_yank_reason() {
+    let sdist = b"python source distribution";
+    let wheel = b"python wheel distribution";
+    let signature = b"python signature";
+    let sdist_hash = digest_hex(Sha256::digest(sdist).as_slice());
+    let wheel_hash = digest_hex(Sha256::digest(wheel).as_slice());
+    let signature_hash = digest_hex(Sha256::digest(signature).as_slice());
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Pypi, "https://mirror.example.test")
+        .expect("PyPI endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint,
+        PackageName::new("Demo_Pkg").expect("package"),
+        None,
+    )
+    .expect("adapter");
+    let body = format!(
+        r#"{{"meta":{{"api-version":"1.4"}},"name":"demo-pkg","files":[{{"filename":"demo_pkg-1.2.3.tar.gz","url":"../../packages/demo_pkg-1.2.3.tar.gz","hashes":{{"sha256":"{sdist_hash}"}},"requires-python":">=3.8","size":24,"yanked":false}},{{"filename":"demo_pkg-1.2.3-py3-none-any.whl","url":"../../packages/demo_pkg-1.2.3-py3-none-any.whl","hashes":{{"sha256":"{wheel_hash}"}},"requires-python":">=3.9","size":25,"yanked":"superseded"}},{{"filename":"demo_pkg-1.2.3.tar.gz.asc","url":"../../packages/demo_pkg-1.2.3.tar.gz.asc","hashes":{{"sha256":"{signature_hash}"}}}}]}}"#
+    );
+    let releases = adapter
+        .decode(body.as_bytes())
+        .expect("PyPI simple response");
+    assert_eq!(releases.len(), 1);
+    let release = &releases[0];
+    assert_eq!(release.artifacts().len(), 3);
+    assert_eq!(
+        release.artifacts()[0].kind(),
+        NativeArtifactKind::PythonWheel
+    );
+    assert_eq!(
+        release.artifacts()[1].kind(),
+        NativeArtifactKind::PythonSdist
+    );
+    assert_eq!(
+        release.artifacts()[2].kind(),
+        NativeArtifactKind::PythonSignature
+    );
+    assert_eq!(release.artifacts()[0].requires_python(), Some(">=3.9"));
+    assert_eq!(release.requires_python(), Some(">=3.8"));
+    assert_eq!(release.facts.standing(), ReleaseStanding::Available);
+    assert_eq!(release.artifacts()[0].yanked_reason(), Some("superseded"));
+    assert!(
+        release.artifacts()[1]
+            .url()
+            .ends_with("/packages/demo_pkg-1.2.3.tar.gz")
+    );
+    assert!(release.artifacts()[1].checksum().verifies(sdist));
+
+    let all_yanked = body.replace("\"yanked\":false", "\"yanked\":\"withdrawn\"");
+    let releases = adapter
+        .decode(all_yanked.as_bytes())
+        .expect("withdrawn release");
+    assert_eq!(releases[0].facts.standing(), ReleaseStanding::Yanked);
+    assert_eq!(releases[0].standing_reason(), Some("withdrawn"));
+}
+
+#[test]
+fn native_adapters_keep_empty_deltas_and_reject_malformed_or_unsafe_links() {
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Pypi, "https://pypi.org").expect("PyPI endpoint");
+    let adapter = EcosystemAdapter::new(endpoint, PackageName::new("demo").expect("package"), None)
+        .expect("adapter");
+    assert!(
+        adapter
+            .decode(br#"{"meta":{"api-version":"1.4"},"files":[]}"#)
+            .expect("empty withdrawal delta")
+            .is_empty()
+    );
+    assert!(matches!(
+        adapter.decode(br#"{"meta":{"api-version":"1.4"},"files":[{"filename":"demo-1.0.0.tar.gz","url":"https://pypi.org/demo.tar.gz","hashes":{}}]}"#),
+        Err(TransportFailure::Protocol)
+    ));
+    assert!(matches!(
+        resolve_archive_url(
+            "https://pypi.org/simple/demo/",
+            "https://user:pass@evil.test/demo.tgz"
+        ),
+        Err(TransportFailure::Protocol)
+    ));
+    assert_eq!(
+        resolve_archive_url("https://pypi.org/simple/demo/", "../../packages/demo.tgz")
+            .expect("relative URL"),
+        "https://pypi.org/packages/demo.tgz"
+    );
 }
 
 fn digest_hex(bytes: &[u8]) -> String {

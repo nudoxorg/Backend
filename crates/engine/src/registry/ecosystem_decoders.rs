@@ -5,7 +5,10 @@
 //! authenticated archive digest (Maven and Go); this module stays pure and
 //! never turns a missing claim into a fabricated checksum.
 
-use std::collections::BTreeSet;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use backend_library::{
     DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
@@ -15,7 +18,10 @@ use backend_library::{
 use serde_json::Value;
 
 use super::super::transport::ArchiveIntegrity;
-use super::{EcosystemAdapter, RegistryChecksum, TransportFailure, component};
+use super::{
+    EcosystemAdapter, NativeArtifact, NativeArtifactKind, NativeDistTag, NativeFeature,
+    RegistryChecksum, TransportFailure, component, resolve_archive_url,
+};
 use crate::registry::{
     DownloadCount, DownloadCountGap, ReleaseFacts, ReleaseStanding, SecurityStanding,
 };
@@ -27,13 +33,23 @@ impl EcosystemAdapter {
     ) -> Result<Vec<super::NativeRelease>, TransportFailure> {
         let text = std::str::from_utf8(bytes).map_err(|_| TransportFailure::Protocol)?;
         let mut releases = Vec::new();
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        for (line_index, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if line.len() > 1024 * 1024 || releases.len() >= super::MAX_NATIVE_RELEASES {
+                return Err(TransportFailure::Overrun {
+                    measured: u64::try_from(line.len()).unwrap_or(u64::MAX),
+                    limit: 1024 * 1024,
+                });
+            }
             let row: Value = serde_json::from_str(line).map_err(|_| TransportFailure::Protocol)?;
             if field(&row, "name")? != self.package_name() {
                 return Err(TransportFailure::Protocol);
             }
             let version = field(&row, "vers")?;
             let checksum = RegistryChecksum::sha256_hex(field(&row, "cksum")?)?;
+            let yanked = strict_bool(&row, "yanked")?.unwrap_or(false);
             let download_root = if self.endpoint_url() == "https://index.crates.io" {
                 "https://static.crates.io"
             } else {
@@ -51,16 +67,25 @@ impl EcosystemAdapter {
                 checksum,
                 line.as_bytes(),
                 facts(
-                    if row.get("yanked").and_then(Value::as_bool).unwrap_or(false) {
-                        ReleaseStanding::Yanked
-                    } else {
-                        ReleaseStanding::Available
-                    },
+                    standing(yanked),
                     DownloadCount::NotReported(DownloadCountGap::Unsupported),
                 ),
             )?;
             release.dependency_facts =
                 cargo_dependencies(&release.coordinate, &row, line.as_bytes())?;
+            release.set_features(cargo_features(&row)?);
+            let archive_url = release.archive_url.clone();
+            release.set_artifacts(vec![NativeArtifact {
+                filename: Arc::from(format!("{}-{}.crate", self.package_name(), version)),
+                url: Arc::from(archive_url.as_str()),
+                checksum: release.checksum.clone(),
+                kind: NativeArtifactKind::CargoCrate,
+                requires_python: None,
+                size: None,
+                yanked,
+                yanked_reason: None,
+            }]);
+            let _ = line_index;
             releases.push(release);
         }
         Ok(releases)
@@ -75,6 +100,13 @@ impl EcosystemAdapter {
             .get("versions")
             .and_then(Value::as_object)
             .ok_or(TransportFailure::Protocol)?;
+        if versions.len() > super::MAX_NATIVE_RELEASES {
+            return Err(TransportFailure::Overrun {
+                measured: u64::try_from(versions.len()).map_err(|_| TransportFailure::Bounds)?,
+                limit: u64::try_from(super::MAX_NATIVE_RELEASES)
+                    .map_err(|_| TransportFailure::Bounds)?,
+            });
+        }
         let expected_name = self.namespace_name().map_or_else(
             || self.package_name().to_owned(),
             |namespace| format!("{namespace}/{}", self.package_name()),
@@ -82,33 +114,57 @@ impl EcosystemAdapter {
         if root.get("name").and_then(Value::as_str) != Some(expected_name.as_str()) {
             return Err(TransportFailure::Protocol);
         }
+        let dist_tags = npm_dist_tags(&root)?;
         versions
             .iter()
             .map(|(version, row)| {
+                let row_object = row.as_object().ok_or(TransportFailure::Protocol)?;
+                if let Some(row_name) = row_object.get("name") {
+                    if row_name.as_str() != Some(expected_name.as_str()) {
+                        return Err(TransportFailure::Protocol);
+                    }
+                }
+                if let Some(row_version) = row_object.get("version") {
+                    if row_version.as_str() != Some(version.as_str()) {
+                        return Err(TransportFailure::Protocol);
+                    }
+                }
                 let dist = row.get("dist").ok_or(TransportFailure::Protocol)?;
-                let integrity = field(dist, "integrity")?;
-                let checksum = RegistryChecksum::sha512_base64(
-                    integrity
-                        .strip_prefix("sha512-")
-                        .ok_or(TransportFailure::Protocol)?,
-                )?;
-                let standing = row
-                    .get("deprecated")
-                    .and_then(Value::as_str)
-                    .filter(|message| !message.is_empty())
-                    .map_or(ReleaseStanding::Available, |_| ReleaseStanding::Deprecated);
+                let dist = dist.as_object().ok_or(TransportFailure::Protocol)?;
+                let checksum = npm_checksum(dist)?;
+                let deprecated = match row.get("deprecated") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(message)) => {
+                        (!message.is_empty()).then_some(message.as_str())
+                    }
+                    Some(_) => return Err(TransportFailure::Protocol),
+                };
                 let encoded = serde_json::to_vec(row).map_err(|_| TransportFailure::Protocol)?;
                 let mut release = self.release_from_checksum(
                     version,
-                    field(dist, "tarball")?.to_owned(),
+                    field_value(dist, "tarball")?.to_owned(),
                     checksum,
                     &encoded,
                     facts(
-                        standing,
+                        deprecated
+                            .map_or(ReleaseStanding::Available, |_| ReleaseStanding::Deprecated),
                         DownloadCount::NotReported(DownloadCountGap::Unsupported),
                     ),
                 )?;
                 release.dependency_facts = npm_dependencies(&release.coordinate, row, &encoded)?;
+                release.set_dist_tags(Arc::from(dist_tags.clone().into_boxed_slice()));
+                release.set_standing_reason(deprecated.map(Arc::from));
+                let archive_url = release.archive_url.clone();
+                release.set_artifacts(vec![NativeArtifact {
+                    filename: npm_filename(&archive_url, expected_name.as_str(), version),
+                    url: Arc::from(archive_url.as_str()),
+                    checksum: release.checksum.clone(),
+                    kind: NativeArtifactKind::NpmTarball,
+                    requires_python: None,
+                    size: dist.get("size").and_then(Value::as_u64),
+                    yanked: false,
+                    yanked_reason: None,
+                }]);
                 Ok(release)
             })
             .collect()
@@ -134,69 +190,133 @@ impl EcosystemAdapter {
         if major != "1" || minor.is_empty() || minor.parse::<u16>().is_err() {
             return Err(TransportFailure::Protocol);
         }
+        if let Some(name) = root.get("name").and_then(Value::as_str) {
+            if super::normalized_pypi_name(name) != super::normalized_pypi_name(self.package_name())
+            {
+                return Err(TransportFailure::Protocol);
+            }
+        }
         let files = root
             .get("files")
             .and_then(Value::as_array)
             .ok_or(TransportFailure::Protocol)?;
-        let mut selected = std::collections::BTreeMap::<String, &Value>::new();
-        for file in files {
-            let filename = field(file, "filename")?;
-            let version = python_version(filename, self.package_name())?;
-            let hash = file
-                .get("hashes")
-                .and_then(|hashes| hashes.get("sha256"))
-                .and_then(Value::as_str)
-                .ok_or(TransportFailure::Protocol)?;
-            let rank = if is_sdist(filename) {
-                0
-            } else if is_wheel(filename) {
-                1
-            } else {
-                continue;
-            };
-            if !file
-                .get("url")
-                .and_then(Value::as_str)
-                .is_some_and(|url| !url.is_empty())
-            {
-                return Err(TransportFailure::Protocol);
-            }
-            let replace = selected.get(&version).is_none_or(|old| {
-                let old_name = old.get("filename").and_then(Value::as_str).unwrap_or("");
-                let old_rank = if is_sdist(old_name) { 0 } else { 1 };
-                (rank, filename) < (old_rank, old_name)
+        if files.len() > super::MAX_NATIVE_RELEASES {
+            return Err(TransportFailure::Overrun {
+                measured: u64::try_from(files.len()).map_err(|_| TransportFailure::Bounds)?,
+                limit: u64::try_from(super::MAX_NATIVE_RELEASES)
+                    .map_err(|_| TransportFailure::Bounds)?,
             });
-            let _ = RegistryChecksum::sha256_hex(hash)?;
-            if replace {
-                selected.insert(version, file);
-            }
         }
-        selected
+        let mut grouped = BTreeMap::<String, Vec<PythonFile>>::new();
+        for file in files {
+            let file_object = file.as_object().ok_or(TransportFailure::Protocol)?;
+            let filename = field_value(file_object, "filename")?;
+            if filename.len() > 1024 {
+                return Err(TransportFailure::Overrun {
+                    measured: u64::try_from(filename.len())
+                        .map_err(|_| TransportFailure::Bounds)?,
+                    limit: 1024,
+                });
+            }
+            let (version, kind) = python_file_identity(filename, self.package_name())?;
+            let checksum = python_checksum(file_object)?;
+            let url = field_value(file_object, "url")?;
+            let requires_python = match file_object.get("requires-python") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(value)) if !value.is_empty() => Some(Arc::from(value.as_str())),
+                Some(Value::String(_)) => return Err(TransportFailure::Protocol),
+                Some(_) => return Err(TransportFailure::Protocol),
+            };
+            let size = match file_object.get("size") {
+                None | Some(Value::Null) => None,
+                Some(Value::Number(value)) => value.as_u64(),
+                Some(_) => return Err(TransportFailure::Protocol),
+            };
+            let (yanked, yanked_reason) = python_yanked(file_object)?;
+            let encoded = serde_json::to_vec(file).map_err(|_| TransportFailure::Protocol)?;
+            grouped.entry(version).or_default().push(PythonFile {
+                filename: Arc::from(filename),
+                url: url.to_owned(),
+                checksum,
+                kind,
+                requires_python,
+                size,
+                yanked,
+                yanked_reason,
+                provenance: encoded,
+            });
+        }
+        grouped
             .into_iter()
-            .map(|(version, file)| {
-                let checksum = RegistryChecksum::sha256_hex(
-                    file.get("hashes")
-                        .and_then(|hashes| hashes.get("sha256"))
-                        .and_then(Value::as_str)
-                        .ok_or(TransportFailure::Protocol)?,
-                )?;
-                let standing = match file.get("yanked") {
-                    Some(Value::Bool(true)) => ReleaseStanding::Yanked,
-                    Some(Value::String(reason)) if !reason.is_empty() => ReleaseStanding::Yanked,
-                    Some(Value::Bool(false)) | None => ReleaseStanding::Available,
-                    Some(_) => return Err(TransportFailure::Protocol),
-                };
-                let encoded = serde_json::to_vec(file).map_err(|_| TransportFailure::Protocol)?;
-                self.release_from_checksum(
+            .map(|(version, mut files)| {
+                files.sort_by(|left, right| left.filename.cmp(&right.filename));
+                let primary_index = files
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, file)| {
+                        matches!(
+                            file.kind,
+                            NativeArtifactKind::PythonSdist | NativeArtifactKind::PythonWheel
+                        )
+                    })
+                    .min_by_key(|(_, file)| {
+                        (
+                            file.yanked,
+                            python_kind_rank(file.kind),
+                            file.filename.as_ref(),
+                        )
+                    })
+                    .map(|(index, _)| index)
+                    .ok_or(TransportFailure::DownloadUnavailable)?;
+                let primary = &files[primary_index];
+                let archive_url = resolve_archive_url(&self.metadata_url(), &primary.url)?;
+                let archive_checksum = primary.checksum.clone();
+                let all_yanked = files
+                    .iter()
+                    .filter(|file| {
+                        matches!(
+                            file.kind,
+                            NativeArtifactKind::PythonSdist | NativeArtifactKind::PythonWheel
+                        )
+                    })
+                    .all(|file| file.yanked);
+                let standing_reason = all_yanked.then(|| primary.yanked_reason.clone()).flatten();
+                let mut provenance = Vec::new();
+                for file in &files {
+                    provenance.extend_from_slice(&file.provenance);
+                    provenance.push(0);
+                }
+                let mut release = self.release_from_checksum(
                     &version,
-                    field(file, "url")?.to_owned(),
-                    checksum,
-                    &encoded,
+                    archive_url,
+                    archive_checksum,
+                    &provenance,
                     facts(
-                        standing,
+                        standing(all_yanked),
                         DownloadCount::NotReported(DownloadCountGap::Unsupported),
                     ),
-                )
+                )?;
+                release.set_standing_reason(standing_reason);
+                release.set_requires_python(primary.requires_python.clone());
+                release.set_artifacts(
+                    files
+                        .into_iter()
+                        .map(|file| {
+                            let url = resolve_archive_url(&self.metadata_url(), &file.url)?;
+                            Ok(NativeArtifact {
+                                filename: file.filename,
+                                url: Arc::from(url),
+                                checksum: file.checksum,
+                                kind: file.kind,
+                                requires_python: file.requires_python,
+                                size: file.size,
+                                yanked: file.yanked,
+                                yanked_reason: file.yanked_reason,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, TransportFailure>>()?,
+                );
+                Ok(release)
             })
             .collect()
     }
@@ -909,12 +1029,20 @@ fn cargo_dependencies(
     row: &Value,
     provenance: &[u8],
 ) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
-    let Some(values) = row.get("deps").and_then(Value::as_array) else {
+    let Some(raw_values) = row.get("deps") else {
         return Ok(DependencyFacts::Unknown(
             ProductText::new("Cargo index row omits dependency metadata")
                 .map_err(|_| TransportFailure::Protocol)?,
         ));
     };
+    let values = raw_values.as_array().ok_or(TransportFailure::Protocol)?;
+    if values.len() > super::MAX_NATIVE_RELEASES {
+        return Err(TransportFailure::Overrun {
+            measured: u64::try_from(values.len()).map_err(|_| TransportFailure::Bounds)?,
+            limit: u64::try_from(super::MAX_NATIVE_RELEASES)
+                .map_err(|_| TransportFailure::Bounds)?,
+        });
+    }
     let mut rows = Vec::with_capacity(values.len());
     for value in values {
         let name = value
@@ -932,16 +1060,14 @@ fn cargo_dependencies(
             Some("normal") | None => DependencyScope::Runtime,
             Some(_) => return Err(TransportFailure::Protocol),
         };
+        let optional = strict_bool(value, "optional")?.unwrap_or(false);
         rows.push(dependency_record(
             source,
             backend_semantic::vocabulary::RegistryEcosystem::Cargo,
             name,
             requirement,
             scope,
-            value
-                .get("optional")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            optional,
             provenance,
         )?);
     }
@@ -962,9 +1088,17 @@ fn npm_dependencies(
         ("peerDependencies", DependencyScope::Peer, false),
         ("devDependencies", DependencyScope::Development, true),
     ] {
-        let Some(values) = row.get(field_name).and_then(Value::as_object) else {
+        let Some(raw_values) = row.get(field_name) else {
             continue;
         };
+        let values = raw_values.as_object().ok_or(TransportFailure::Protocol)?;
+        if values.len() > super::MAX_NATIVE_RELEASES {
+            return Err(TransportFailure::Overrun {
+                measured: u64::try_from(values.len()).map_err(|_| TransportFailure::Bounds)?,
+                limit: u64::try_from(super::MAX_NATIVE_RELEASES)
+                    .map_err(|_| TransportFailure::Bounds)?,
+            });
+        }
         for (name, requirement) in values {
             let requirement = requirement.as_str().ok_or(TransportFailure::Protocol)?;
             rows.push(dependency_record(
@@ -1149,6 +1283,188 @@ fn facts(standing: ReleaseStanding, downloads: DownloadCount) -> ReleaseFacts {
     ReleaseFacts::new(standing, downloads, SecurityStanding::Unassessed)
 }
 
+fn standing(yanked: bool) -> ReleaseStanding {
+    if yanked {
+        ReleaseStanding::Yanked
+    } else {
+        ReleaseStanding::Available
+    }
+}
+
+fn strict_bool(value: &Value, name: &str) -> Result<Option<bool>, TransportFailure> {
+    match value.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(TransportFailure::Protocol),
+    }
+}
+
+fn cargo_features(row: &Value) -> Result<Vec<NativeFeature>, TransportFailure> {
+    let Some(raw_features) = row.get("features") else {
+        return Ok(Vec::new());
+    };
+    let features = raw_features.as_object().ok_or(TransportFailure::Protocol)?;
+    if features.len() > super::MAX_NATIVE_RELEASES {
+        return Err(TransportFailure::Overrun {
+            measured: u64::try_from(features.len()).map_err(|_| TransportFailure::Bounds)?,
+            limit: u64::try_from(super::MAX_NATIVE_RELEASES)
+                .map_err(|_| TransportFailure::Bounds)?,
+        });
+    }
+    let mut output = Vec::with_capacity(features.len());
+    for (name, members) in features {
+        if name.is_empty() || name.len() > 1024 {
+            return Err(TransportFailure::Protocol);
+        }
+        let members = members.as_array().ok_or(TransportFailure::Protocol)?;
+        let mut members = members
+            .iter()
+            .map(|member| {
+                let member = member.as_str().ok_or(TransportFailure::Protocol)?;
+                if member.is_empty() || member.len() > 1024 {
+                    return Err(TransportFailure::Protocol);
+                }
+                Ok(Arc::<str>::from(member))
+            })
+            .collect::<Result<Vec<_>, TransportFailure>>()?;
+        members.sort();
+        members.dedup();
+        output.push(NativeFeature {
+            name: Arc::from(name.as_str()),
+            members: members.into_boxed_slice(),
+        });
+    }
+    output.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(output)
+}
+
+fn npm_dist_tags(root: &Value) -> Result<Vec<NativeDistTag>, TransportFailure> {
+    let Some(raw_tags) = root.get("dist-tags") else {
+        return Ok(Vec::new());
+    };
+    let tags = raw_tags.as_object().ok_or(TransportFailure::Protocol)?;
+    let mut output = Vec::with_capacity(tags.len());
+    for (name, version) in tags {
+        let version = version.as_str().ok_or(TransportFailure::Protocol)?;
+        if name.is_empty() || version.is_empty() || name.len() > 128 || version.len() > 128 {
+            return Err(TransportFailure::Protocol);
+        }
+        output.push(NativeDistTag {
+            name: Arc::from(name.as_str()),
+            version: Arc::from(version),
+        });
+    }
+    output.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(output)
+}
+
+fn npm_checksum(
+    dist: &serde_json::Map<String, Value>,
+) -> Result<RegistryChecksum, TransportFailure> {
+    if let Some(integrity) = dist.get("integrity") {
+        let integrity = integrity.as_str().ok_or(TransportFailure::Protocol)?;
+        let mut candidates = Vec::new();
+        for token in integrity.split_ascii_whitespace() {
+            let Some((algorithm, value)) = token.split_once('-') else {
+                return Err(TransportFailure::Protocol);
+            };
+            candidates.push((algorithm, value));
+        }
+        for algorithm in ["sha512", "sha256", "sha1"] {
+            if let Some((_, value)) = candidates.iter().find(|(name, _)| *name == algorithm) {
+                return match algorithm {
+                    "sha512" => RegistryChecksum::sha512_base64(value),
+                    "sha256" => RegistryChecksum::sha256_base64(value),
+                    "sha1" => RegistryChecksum::sha1_base64(value),
+                    _ => unreachable!(),
+                };
+            }
+        }
+    }
+    dist.get("shasum")
+        .and_then(Value::as_str)
+        .ok_or(TransportFailure::Protocol)
+        .and_then(RegistryChecksum::sha1_hex)
+}
+
+fn field_value<'a>(
+    value: &'a serde_json::Map<String, Value>,
+    name: &str,
+) -> Result<&'a str, TransportFailure> {
+    value
+        .get(name)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or(TransportFailure::Protocol)
+}
+
+fn npm_filename(url: &str, package: &str, version: &str) -> Arc<str> {
+    url.rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || Arc::from(format!("{}-{}.tgz", package.replace('/', "-"), version)),
+            Arc::from,
+        )
+}
+
+struct PythonFile {
+    filename: Arc<str>,
+    url: String,
+    checksum: RegistryChecksum,
+    kind: NativeArtifactKind,
+    requires_python: Option<Arc<str>>,
+    size: Option<u64>,
+    yanked: bool,
+    yanked_reason: Option<Arc<str>>,
+    provenance: Vec<u8>,
+}
+
+fn python_checksum(
+    file: &serde_json::Map<String, Value>,
+) -> Result<RegistryChecksum, TransportFailure> {
+    let hashes = file
+        .get("hashes")
+        .and_then(Value::as_object)
+        .ok_or(TransportFailure::Protocol)?;
+    for algorithm in ["sha512", "sha256", "sha1"] {
+        if let Some(value) = hashes.get(algorithm) {
+            let value = value.as_str().ok_or(TransportFailure::Protocol)?;
+            return match algorithm {
+                "sha512" => RegistryChecksum::sha512_hex(value),
+                "sha256" => RegistryChecksum::sha256_hex(value),
+                "sha1" => RegistryChecksum::sha1_hex(value),
+                _ => unreachable!(),
+            };
+        }
+    }
+    Err(TransportFailure::Protocol)
+}
+
+fn python_yanked(
+    file: &serde_json::Map<String, Value>,
+) -> Result<(bool, Option<Arc<str>>), TransportFailure> {
+    match file.get("yanked") {
+        None | Some(Value::Bool(false)) => Ok((false, None)),
+        Some(Value::Bool(true)) => Ok((true, None)),
+        Some(Value::String(reason)) => Ok((
+            true,
+            (!reason.is_empty()).then(|| Arc::from(reason.as_str())),
+        )),
+        Some(_) => Err(TransportFailure::Protocol),
+    }
+}
+
+fn python_kind_rank(kind: NativeArtifactKind) -> u8 {
+    match kind {
+        NativeArtifactKind::PythonSdist => 0,
+        NativeArtifactKind::PythonWheel => 1,
+        NativeArtifactKind::PythonSignature => 2,
+        NativeArtifactKind::Other => 3,
+        NativeArtifactKind::CargoCrate | NativeArtifactKind::NpmTarball => 4,
+    }
+}
+
 fn field<'a>(value: &'a Value, name: &str) -> Result<&'a str, TransportFailure> {
     value
         .get(name)
@@ -1157,19 +1473,100 @@ fn field<'a>(value: &'a Value, name: &str) -> Result<&'a str, TransportFailure> 
 }
 
 fn is_sdist(filename: &str) -> bool {
-    filename.ends_with(".tar.gz") || filename.ends_with(".zip")
+    [".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".zip"]
+        .iter()
+        .any(|suffix| filename.ends_with(suffix))
 }
 
 fn is_wheel(filename: &str) -> bool {
     filename.ends_with(".whl")
 }
 
-fn python_version(filename: &str, package: &str) -> Result<String, TransportFailure> {
-    let stem = filename
-        .strip_suffix(".tar.gz")
-        .or_else(|| filename.strip_suffix(".zip"))
-        .or_else(|| filename.strip_suffix(".whl"))
-        .ok_or(TransportFailure::Protocol)?;
+fn python_file_identity(
+    filename: &str,
+    package: &str,
+) -> Result<(String, NativeArtifactKind), TransportFailure> {
+    let (candidate, kind) = if filename.ends_with(".asc") {
+        (
+            filename
+                .strip_suffix(".asc")
+                .ok_or(TransportFailure::Protocol)?,
+            NativeArtifactKind::PythonSignature,
+        )
+    } else if filename.ends_with(".sig") {
+        (
+            filename
+                .strip_suffix(".sig")
+                .ok_or(TransportFailure::Protocol)?,
+            NativeArtifactKind::PythonSignature,
+        )
+    } else if filename.ends_with(".metadata") {
+        (
+            filename
+                .strip_suffix(".metadata")
+                .ok_or(TransportFailure::Protocol)?,
+            NativeArtifactKind::Other,
+        )
+    } else {
+        (filename, NativeArtifactKind::Other)
+    };
+    let (stem, kind) = if let Some(stem) = candidate.strip_suffix(".whl") {
+        (
+            stem,
+            if matches!(kind, NativeArtifactKind::PythonSignature) {
+                kind
+            } else {
+                NativeArtifactKind::PythonWheel
+            },
+        )
+    } else if let Some(stem) = candidate.strip_suffix(".tar.gz") {
+        (
+            stem,
+            if matches!(kind, NativeArtifactKind::PythonSignature) {
+                kind
+            } else {
+                NativeArtifactKind::PythonSdist
+            },
+        )
+    } else if let Some(stem) = candidate.strip_suffix(".tar.bz2") {
+        (
+            stem,
+            if matches!(kind, NativeArtifactKind::PythonSignature) {
+                kind
+            } else {
+                NativeArtifactKind::PythonSdist
+            },
+        )
+    } else if let Some(stem) = candidate.strip_suffix(".tar.xz") {
+        (
+            stem,
+            if matches!(kind, NativeArtifactKind::PythonSignature) {
+                kind
+            } else {
+                NativeArtifactKind::PythonSdist
+            },
+        )
+    } else if let Some(stem) = candidate.strip_suffix(".tar.zst") {
+        (
+            stem,
+            if matches!(kind, NativeArtifactKind::PythonSignature) {
+                kind
+            } else {
+                NativeArtifactKind::PythonSdist
+            },
+        )
+    } else if let Some(stem) = candidate.strip_suffix(".zip") {
+        (
+            stem,
+            if matches!(kind, NativeArtifactKind::PythonSignature) {
+                kind
+            } else {
+                NativeArtifactKind::PythonSdist
+            },
+        )
+    } else {
+        (candidate, kind)
+    };
     let normalized_package = super::normalized_pypi_name(package);
     // PEP 503 normalizes the distribution component, while the filename
     // keeps its original separators. Find the boundary in the raw stem so
@@ -1183,15 +1580,22 @@ fn python_version(filename: &str, package: &str) -> Result<String, TransportFail
         })
         .ok_or(TransportFailure::Protocol)?;
     let tail = &stem[boundary + 1..];
-    let version = if is_wheel(filename) {
+    let version = if matches!(kind, NativeArtifactKind::PythonWheel) {
         // Wheel names are distribution-version-build-python-abi-platform.
-        tail.split('-').next().unwrap_or_default()
+        let mut parts = tail.split('-');
+        let version = parts.next().unwrap_or_default();
+        let tag_count = parts.count();
+        if tag_count < 3 {
+            return Err(TransportFailure::Protocol);
+        }
+        version
     } else {
-        tail
+        tail.split('-').next().unwrap_or_default()
     };
-    (!version.is_empty())
-        .then(|| version.to_owned())
-        .ok_or(TransportFailure::Protocol)
+    if version.is_empty() {
+        return Err(TransportFailure::Protocol);
+    }
+    Ok((version.to_owned(), kind))
 }
 
 fn collect_registration_leaves<'a>(
