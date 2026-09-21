@@ -160,6 +160,10 @@ pub fn normalize_version(
     }
     let (canonical, key) = match syntax {
         VersionSyntax::Semver | VersionSyntax::Go | VersionSyntax::Conan => {
+            // Build metadata does not participate in SemVer precedence.  Dropping it before
+            // parsing also admits the versions emitted by npm/Cargo registries verbatim instead
+            // of treating a harmless `+platform` suffix as an invalid release.
+            let value = value.split_once('+').map_or(value, |(value, _)| value);
             let canonical = value.strip_prefix('v').unwrap_or(value).to_owned();
             let key = parse_semver(&canonical)?;
             (canonical, key)
@@ -169,8 +173,8 @@ pub fn normalize_version(
             (canonical, key)
         }
         VersionSyntax::Maven => {
-            let canonical = value.to_owned();
-            let key = parse_maven(&canonical)?;
+            let key = parse_maven(value)?;
+            let canonical = canonical_maven(&key);
             (canonical, key)
         }
         VersionSyntax::Unsupported => {
@@ -695,5 +699,24 @@ fn parse_maven(value: &str) -> Result<VersionKey, VersionCompareError> {
             value: value.to_owned(),
         });
     }
+    // Maven treats trailing numeric zero segments as equivalent (`1.0`, `1.0.0`, and `1` are
+    // the same release).  Canonicalizing them once keeps range matching and cache keys stable.
+    while parts.len() > 1 && matches!(parts.last(), Some(MavenPart::Number(0))) {
+        parts.pop();
+    }
     Ok(VersionKey::Maven(parts.into_boxed_slice()))
+}
+
+fn canonical_maven(key: &VersionKey) -> String {
+    let VersionKey::Maven(parts) = key else {
+        return String::new();
+    };
+    parts
+        .iter()
+        .map(|part| match part {
+            MavenPart::Number(value) => value.to_string(),
+            MavenPart::Text(value) => value.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }

@@ -197,17 +197,40 @@ impl AcquisitionGate {
         package: &PackageIdentity,
         version: &str,
     ) -> Box<[&'a Advisory]> {
-        advisories
+        Self::matching_with_coverage(advisories, package, version).0
+    }
+
+    /// Resolves matches while retaining whether an affected claim had to be skipped because its
+    /// version grammar was not proven.  Callers use that bit to downgrade a seemingly clean
+    /// complete frontier to partial coverage instead of turning parser uncertainty into a false
+    /// negative.
+    pub(crate) fn matching_with_coverage<'a>(
+        advisories: impl IntoIterator<Item = &'a Advisory>,
+        package: &PackageIdentity,
+        version: &str,
+    ) -> (Box<[&'a Advisory]>, bool) {
+        let mut unresolved = false;
+        let matches = advisories
             .into_iter()
             .filter(|advisory| {
                 !advisory.is_withdrawn()
                     && advisory.affected.iter().any(|range| {
-                        range.package.ecosystem == package.ecosystem
-                            && range.package.name == package.name
-                            && range_matches(range, version).is_ok_and(|matched| matched)
+                        if range.package.ecosystem != package.ecosystem
+                            || range.package.name != package.name
+                        {
+                            return false;
+                        }
+                        match range_matches(range, version) {
+                            Ok(matched) => matched,
+                            Err(_) => {
+                                unresolved = true;
+                                false
+                            }
+                        }
                     })
             })
-            .collect()
+            .collect();
+        (matches, unresolved)
     }
 
     /// Highest severity in a matched set, useful for compact product DTOs.

@@ -28,7 +28,8 @@ pub use model::{
     SeverityLevel, VersionEvent, VersionEventKind, VersionMatcher, VersionSyntax,
 };
 pub use parse::{
-    GhsaParseError, ParseError, RustSecParseError, parse_ghsa_global, parse_osv, parse_rustsec,
+    GhsaParseError, MAX_ADVISORY_BATCH_OBJECTS, MAX_ADVISORY_DOCUMENT_BYTES, ParseError,
+    RustSecParseError, parse_ghsa_global, parse_osv, parse_rustsec,
 };
 pub use policy::{
     AcquisitionDecision, AcquisitionGate, AdvisoryCoverage, AdvisoryObservation, OfflinePolicy,
@@ -63,11 +64,11 @@ mod tests {
     fn osv_event_boundaries_are_not_lexicographic() {
         let advisory = object();
         let range = &advisory.affected[0];
-        assert!(!version::range_matches(range, "1.10.0").expect("semver"));
-        assert!(version::range_matches(range, "2.1.0").expect("last affected"));
-        assert!(!version::range_matches(range, "2.1.1").expect("after last affected"));
-        assert!(version::range_matches(range, "3.0.5").expect("limit interval"));
-        assert!(!version::range_matches(range, "3.1.0").expect("limit is exclusive"));
+        assert!(!range_matches(range, "1.10.0").expect("semver"));
+        assert!(range_matches(range, "2.1.0").expect("last affected"));
+        assert!(!range_matches(range, "2.1.1").expect("after last affected"));
+        assert!(range_matches(range, "3.0.5").expect("limit interval"));
+        assert!(!range_matches(range, "3.1.0").expect("limit is exclusive"));
     }
 
     #[test]
@@ -86,10 +87,10 @@ unaffected = ["< 1.0.0"]
 "#;
         let advisory = parse_rustsec(source, 9).expect("valid RustSec");
         let range = &advisory.affected[0];
-        assert!(!version::range_matches(range, "0.9.5").expect("unaffected"));
-        assert!(version::range_matches(range, "1.0.5").expect("outside unaffected"));
-        assert!(!version::range_matches(range, "1.2.0").expect("patched"));
-        assert!(version::range_matches(range, "1.1.0").expect("affected"));
+        assert!(!range_matches(range, "0.9.5").expect("unaffected"));
+        assert!(range_matches(range, "1.0.5").expect("outside unaffected"));
+        assert!(!range_matches(range, "1.2.0").expect("patched"));
+        assert!(range_matches(range, "1.1.0").expect("affected"));
         assert_eq!(advisory.statuses().as_ref(), &[AdvisoryStatus::Unsound]);
     }
 
@@ -225,6 +226,10 @@ unaffected = ["< 1.0.0"]
             journal
                 .get(&CanonicalAdvisoryId("OSV-TEST-1".to_owned()))
                 .is_none()
+        );
+        assert_eq!(
+            journal.tombstone_reason(&CanonicalAdvisoryId("OSV-TEST-1".to_owned())),
+            Some("snapshot-omitted")
         );
     }
 
@@ -398,5 +403,102 @@ unaffected = ["< 1.0.0"]
         assert!(matches!(dto.decision, AcquisitionDecision::Warn(_)));
         assert!(dto.reasons.contains(&PolicyReason::IncompleteCoverage));
         assert!(dto.reasons.contains(&PolicyReason::StaleEvidence));
+    }
+
+    #[test]
+    fn feed_ingestion_is_bounded_and_attaches_a_snapshot_identity() {
+        let oversized = vec![b' '; MAX_ADVISORY_DOCUMENT_BYTES + 1];
+        assert_eq!(
+            AuthorityFeed::parse(AdvisorySource::Osv, &oversized, 1, None, None),
+            Err(AuthorityParseError::BoundExceeded("document-bytes"))
+        );
+        let document = osv(r#"[{"introduced":"0"},{"fixed":"2.0.0"}]"#);
+        let feed = AuthorityFeed::parse(
+            AdvisorySource::Osv,
+            document.as_bytes(),
+            7,
+            Some("etag-advisory".to_owned()),
+            None,
+        )
+        .expect("bounded feed");
+        assert_eq!(feed.entries.len(), 1);
+        assert_eq!(
+            feed.entries[0].evidence.snapshot.as_deref(),
+            Some("etag-advisory")
+        );
+    }
+
+    #[test]
+    fn unsupported_range_downgrades_coverage_instead_of_claiming_clean() {
+        let source = br#"{"id":"OSV-UNSUPPORTED-1","affected":[{"package":{"ecosystem":"Cargo","name":"demo"},"ranges":[{"type":"RUBY","events":[{"introduced":"0"}]}]}]}"#;
+        let mut authority = AdvisoryAuthority::new(100);
+        authority
+            .apply(AuthorityFeed::parse(AdvisorySource::Osv, source, 1, None, None).expect("feed"))
+            .expect("admit");
+        let package = normalize_package("cargo", "demo").expect("package");
+        let observation = authority.observe(&package, "1.0.0", false, false, 1, false);
+        assert_eq!(observation.coverage, AdvisoryCoverage::Partial);
+        assert!(observation.advisories.is_empty());
+    }
+
+    #[test]
+    fn cross_authority_alias_conflicts_are_rejected_transactionally() {
+        let document = osv(r#"[{"introduced":"0"},{"fixed":"2.0.0"}]"#);
+        let first = AuthorityFeed::parse(AdvisorySource::Osv, document.as_bytes(), 1, None, None)
+            .expect("OSV");
+        let rustsec = br#"[advisory]
+id = "RUSTSEC-2026-0002"
+package = "other"
+aliases = ["CVE-OTHER"]
+[versions]
+patched = [">= 2.0.0"]
+"#;
+        let second =
+            AuthorityFeed::parse(AdvisorySource::RustSec, rustsec, 1, None, None).expect("RustSec");
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.apply(first).expect("first source");
+        authority.apply(second).expect("independent source root");
+        let third = br#"{"ghsa_id":"GHSA-conflict","malware_coverage":true,"identifiers":[{"value":"CVE-TEST-1"},{"value":"CVE-OTHER"}],"vulnerabilities":[{"package":{"ecosystem":"npm","name":"demo"},"vulnerable_version_range":">= 1.0.0, < 2.0.0"}]}"#;
+        let third = AuthorityFeed::parse(AdvisorySource::Ghsa, third, 1, None, None).expect("GHSA");
+        let error = authority.apply(third).expect_err("conflict");
+        assert!(matches!(error, AuthorityApplyError::AliasConflict(_)));
+        assert!(authority.frontier(AdvisorySource::Ghsa).is_none());
+    }
+
+    #[test]
+    fn malicious_claim_remains_independent_from_registry_yank() {
+        let source = br#"{"ghsa_id":"GHSA-malicious","malware_coverage":true,"database_specific":{"categories":["malware"]},"vulnerabilities":[{"package":{"ecosystem":"npm","name":"demo"},"vulnerable_version_range":">= 1.0.0, < 2.0.0"}]}"#;
+        let advisory = parse_ghsa_global(source, 1).expect("GHSA");
+        let observation = AdvisoryObservation {
+            advisories: Box::new([advisory]),
+            coverage: AdvisoryCoverage::Complete,
+            freshness: FreshnessState::Fresh,
+            offline: false,
+            yanked: true,
+            unlisted: false,
+            malware: MalwareCoverage::Covered,
+        };
+        let decision = (AcquisitionGate {
+            offline: OfflinePolicy::Warn,
+        })
+        .decide(&observation);
+        let AcquisitionDecision::Deny(reasons) = decision else {
+            panic!("malicious claim must deny");
+        };
+        assert!(reasons.contains(&PolicyReason::Advisory(AdvisoryStatus::Malicious)));
+        assert!(reasons.contains(&PolicyReason::Advisory(AdvisoryStatus::Yanked)));
+    }
+
+    #[test]
+    fn version_normalization_handles_registry_builds_and_maven_zero_padding() {
+        assert_eq!(
+            normalize_version(VersionSyntax::Semver, "1.2.3+arm64")
+                .expect("semver build metadata")
+                .canonical,
+            "1.2.3"
+        );
+        let maven_short = normalize_version(VersionSyntax::Maven, "1.0").expect("maven");
+        let maven_long = normalize_version(VersionSyntax::Maven, "1.0.0").expect("maven");
+        assert_eq!(maven_short, maven_long);
     }
 }

@@ -9,18 +9,21 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
 
+use super::parse::{parse_ghsa_value, parse_osv_value};
 use super::{
     AcquisitionDecision, AcquisitionGate, Advisory, AdvisoryCoverage, AdvisoryDelta,
     AdvisoryJournal, AdvisoryJournalError, AdvisoryObservation, AdvisorySource, AdvisorySync,
-    FeedFreshness, FreshnessState, GhsaParseError, MalwareCoverage, PackageIdentity, ParseError,
-    RustSecParseError, SyncMode,
+    AliasGraph, AliasGraphError, FeedFreshness, FreshnessState, GhsaParseError,
+    MAX_ADVISORY_BATCH_OBJECTS, MAX_ADVISORY_DOCUMENT_BYTES, MalwareCoverage, PackageIdentity,
+    ParseError, RustSecParseError, SyncMode,
 };
 
 /// A configured authority feed. The bytes are supplied by the composition
@@ -52,11 +55,23 @@ impl AuthorityFeed {
         etag: Option<String>,
         last_modified: Option<String>,
     ) -> Result<Self, AuthorityParseError> {
+        if bytes.len() > MAX_ADVISORY_DOCUMENT_BYTES {
+            return Err(AuthorityParseError::BoundExceeded("document-bytes"));
+        }
         let entries = match source {
             AdvisorySource::Osv => parse_osv_feed(bytes, observed_at)?,
             AdvisorySource::RustSec => vec![super::parse_rustsec(bytes, observed_at)?],
             AdvisorySource::Ghsa => parse_ghsa_feed(bytes, observed_at)?,
         };
+        let snapshot = etag
+            .clone()
+            .or_else(|| last_modified.clone())
+            .or_else(|| Some(blake3::hash(bytes).to_hex().to_string()));
+        let mut entries = entries;
+        for advisory in &mut entries {
+            advisory.evidence.snapshot = snapshot.clone();
+        }
+        entries.sort_by(|left, right| left.key.native.cmp(&right.key.native));
         Ok(Self {
             source,
             mode: SyncMode::Snapshot,
@@ -76,11 +91,18 @@ impl AuthorityFeed {
     #[must_use]
     pub fn from_entries(
         source: AdvisorySource,
-        entries: Vec<Advisory>,
+        mut entries: Vec<Advisory>,
         observed_at: u64,
         etag: Option<String>,
         last_modified: Option<String>,
     ) -> Self {
+        let snapshot = etag.clone().or_else(|| last_modified.clone());
+        for advisory in &mut entries {
+            if advisory.evidence.snapshot.is_none() {
+                advisory.evidence.snapshot = snapshot.clone();
+            }
+        }
+        entries.sort_by(|left, right| left.key.native.cmp(&right.key.native));
         Self {
             source,
             mode: SyncMode::Snapshot,
@@ -122,16 +144,12 @@ fn parse_osv_feed(bytes: &[u8], observed_at: u64) -> Result<Vec<Advisory>, Autho
     let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|_| AuthorityParseError::Osv(ParseError::InvalidJson))?;
     if let Some(values) = value.as_array() {
+        if values.len() > MAX_ADVISORY_BATCH_OBJECTS {
+            return Err(AuthorityParseError::BoundExceeded("batch-objects"));
+        }
         return values
             .iter()
-            .map(|value| {
-                serde_json::to_vec(value)
-                    .ok()
-                    .ok_or(AuthorityParseError::Osv(ParseError::InvalidJson))
-                    .and_then(|bytes| {
-                        super::parse_osv(&bytes, observed_at).map_err(AuthorityParseError::Osv)
-                    })
-            })
+            .map(|value| parse_osv_value(value, observed_at).map_err(AuthorityParseError::Osv))
             .collect();
     }
     let Some(object) = value.as_object() else {
@@ -142,19 +160,17 @@ fn parse_osv_feed(bytes: &[u8], observed_at: u64) -> Result<Vec<Advisory>, Autho
         .or_else(|| object.get("advisories"))
         .and_then(serde_json::Value::as_array);
     match values {
-        Some(values) => values
-            .iter()
-            .map(|value| {
-                serde_json::to_vec(value)
-                    .ok()
-                    .ok_or(AuthorityParseError::Osv(ParseError::InvalidJson))
-                    .and_then(|bytes| {
-                        super::parse_osv(&bytes, observed_at).map_err(AuthorityParseError::Osv)
-                    })
-            })
-            .collect(),
+        Some(values) => {
+            if values.len() > MAX_ADVISORY_BATCH_OBJECTS {
+                return Err(AuthorityParseError::BoundExceeded("batch-objects"));
+            }
+            values
+                .iter()
+                .map(|value| parse_osv_value(value, observed_at).map_err(AuthorityParseError::Osv))
+                .collect()
+        }
         None => Ok(vec![
-            super::parse_osv(bytes, observed_at).map_err(AuthorityParseError::Osv)?,
+            parse_osv_value(&value, observed_at).map_err(AuthorityParseError::Osv)?,
         ]),
     }
 }
@@ -163,17 +179,12 @@ fn parse_ghsa_feed(bytes: &[u8], observed_at: u64) -> Result<Vec<Advisory>, Auth
     let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|_| AuthorityParseError::Ghsa(GhsaParseError::InvalidJson))?;
     if let Some(values) = value.as_array() {
+        if values.len() > MAX_ADVISORY_BATCH_OBJECTS {
+            return Err(AuthorityParseError::BoundExceeded("batch-objects"));
+        }
         return values
             .iter()
-            .map(|value| {
-                serde_json::to_vec(value)
-                    .ok()
-                    .ok_or(AuthorityParseError::Ghsa(GhsaParseError::InvalidJson))
-                    .and_then(|bytes| {
-                        super::parse_ghsa_global(&bytes, observed_at)
-                            .map_err(AuthorityParseError::Ghsa)
-                    })
-            })
+            .map(|value| parse_ghsa_value(value, observed_at).map_err(AuthorityParseError::Ghsa))
             .collect();
     }
     let Some(object) = value.as_object() else {
@@ -183,21 +194,16 @@ fn parse_ghsa_feed(bytes: &[u8], observed_at: u64) -> Result<Vec<Advisory>, Auth
         .get("advisories")
         .and_then(serde_json::Value::as_array)
     {
+        if values.len() > MAX_ADVISORY_BATCH_OBJECTS {
+            return Err(AuthorityParseError::BoundExceeded("batch-objects"));
+        }
         return values
             .iter()
-            .map(|value| {
-                serde_json::to_vec(value)
-                    .ok()
-                    .ok_or(AuthorityParseError::Ghsa(GhsaParseError::InvalidJson))
-                    .and_then(|bytes| {
-                        super::parse_ghsa_global(&bytes, observed_at)
-                            .map_err(AuthorityParseError::Ghsa)
-                    })
-            })
+            .map(|value| parse_ghsa_value(value, observed_at).map_err(AuthorityParseError::Ghsa))
             .collect();
     }
     Ok(vec![
-        super::parse_ghsa_global(bytes, observed_at).map_err(AuthorityParseError::Ghsa)?,
+        parse_ghsa_value(&value, observed_at).map_err(AuthorityParseError::Ghsa)?,
     ])
 }
 
@@ -211,6 +217,8 @@ pub enum AuthorityParseError {
     RustSec(RustSecParseError),
     /// GHSA object or batch failed admission.
     Ghsa(GhsaParseError),
+    /// A feed exceeded a parser bound before allocation/admission.
+    BoundExceeded(&'static str),
 }
 
 impl std::fmt::Display for AuthorityParseError {
@@ -285,6 +293,11 @@ pub struct AdvisoryAuthority {
     /// bodies remain auditable but do not silently become active again.
     #[serde(default)]
     configured: BTreeSet<AdvisorySource>,
+    /// Cross-authority alias graph.  Per-source journals retain their own source-local graph for
+    /// transactional admission; this graph prevents OSV/RustSec/GHSA feeds from silently
+    /// disagreeing about one shared CVE/GHSA identity.
+    #[serde(default)]
+    aliases: AliasGraph,
     /// Per-source object journals.
     journals: BTreeMap<AdvisorySource, AdvisoryJournal>,
     /// Per-source durable frontier records.
@@ -300,6 +313,7 @@ impl AdvisoryAuthority {
             max_age_secs,
             offline: false,
             configured: BTreeSet::new(),
+            aliases: AliasGraph::default(),
             journals: BTreeMap::new(),
             frontiers: BTreeMap::new(),
         }
@@ -327,7 +341,15 @@ impl AdvisoryAuthority {
     pub fn open(path: impl AsRef<Path>, max_age_secs: u64) -> Result<Self, AuthorityStorageError> {
         let path = path.as_ref();
         match fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(AuthorityStorageError::Decode),
+            Ok(bytes) => {
+                let mut authority: Self =
+                    serde_json::from_slice(&bytes).map_err(AuthorityStorageError::Decode)?;
+                authority
+                    .rebuild_aliases()
+                    .map_err(AuthorityStorageError::AliasConflict)?;
+                authority.max_age_secs = max_age_secs;
+                Ok(authority)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(Self::new(max_age_secs))
             }
@@ -339,9 +361,25 @@ impl AdvisoryAuthority {
     pub fn persist(&self, path: impl AsRef<Path>) -> Result<(), AuthorityStorageError> {
         let path = path.as_ref();
         let parent = path.parent().ok_or(AuthorityStorageError::NoParent)?;
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
         fs::create_dir_all(parent).map_err(AuthorityStorageError::Io)?;
         let bytes = serde_json::to_vec(self).map_err(AuthorityStorageError::Encode)?;
-        let temporary = path.with_extension("json.tmp");
+        // A fixed sibling name turns a crash left behind by a previous process into a permanent
+        // persistence outage.  A process-local nonce keeps concurrent writers independent while
+        // the final rename remains the single atomic publication point.
+        static PERSIST_NONCE: AtomicU64 = AtomicU64::new(0);
+        let temporary = path.with_file_name(format!(
+            ".{}.{}.{}.tmp",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("advisory-authority"),
+            std::process::id(),
+            PERSIST_NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -350,7 +388,33 @@ impl AdvisoryAuthority {
         file.write_all(&bytes).map_err(AuthorityStorageError::Io)?;
         file.sync_all().map_err(AuthorityStorageError::Io)?;
         drop(file);
-        fs::rename(temporary, path).map_err(AuthorityStorageError::Io)
+        fs::rename(temporary, path).map_err(AuthorityStorageError::Io)?;
+        // The file is durable before the rename; syncing the directory makes the name update
+        // durable as well on filesystems which otherwise allow a power loss between the two.
+        match OpenOptions::new().read(true).open(parent) {
+            Ok(directory) => directory.sync_all().or_else(|error| {
+                // Windows and a few network filesystems do not expose directory fsync.  The
+                // atomic file rename still gives readers a complete old-or-new state there.
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
+                ) {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+        .map_err(AuthorityStorageError::Io)
     }
 
     /// Applies one source body transactionally and advances its frontier.
@@ -359,7 +423,20 @@ impl AdvisoryAuthority {
         feed: AuthorityFeed,
     ) -> Result<&AuthorityFrontier, AuthorityApplyError> {
         let source = feed.source;
-        self.configured.insert(source);
+        for advisory in &feed.entries {
+            if advisory.key.native.source != source {
+                return Err(AuthorityApplyError::SourceMismatch {
+                    expected: source,
+                    actual: advisory.key.native.source,
+                });
+            }
+        }
+        let mut aliases = self.aliases.clone();
+        for advisory in &feed.entries {
+            aliases
+                .admit_identity(advisory)
+                .map_err(AuthorityApplyError::AliasConflict)?;
+        }
         let mut journal = self.journals.get(&source).cloned().unwrap_or_default();
         if feed.freshness.not_modified && journal.checkpoint().is_none() {
             return Err(AuthorityApplyError::NotModifiedWithoutFrontier(source));
@@ -392,6 +469,8 @@ impl AdvisoryAuthority {
         };
         self.journals.insert(source, journal);
         self.frontiers.insert(source, frontier);
+        self.aliases = aliases;
+        self.configured.insert(source);
         self.frontiers
             .get(&source)
             .ok_or(AuthorityApplyError::Invariant)
@@ -403,6 +482,9 @@ impl AdvisoryAuthority {
         source: AdvisorySource,
         observed_at: u64,
     ) -> &AuthorityFrontier {
+        // A failed first fetch is still a configured source.  Exposing that distinction lets
+        // policy report `unavailable` instead of the much less actionable `unknown` state.
+        self.configured.insert(source);
         let previous = self.frontiers.get(&source);
         let frontier = AuthorityFrontier {
             source,
@@ -484,15 +566,14 @@ impl AdvisoryAuthority {
             }
             not_modified &= frontier.not_modified;
             if let Some(journal) = self.journals.get(source) {
-                advisories.extend(
-                    AcquisitionGate::matching(
-                        journal.iter().filter(|a| !a.is_withdrawn()),
-                        package,
-                        version,
-                    )
-                    .into_iter()
-                    .cloned(),
+                let (matches, unresolved) = AcquisitionGate::matching_with_coverage(
+                    journal.iter().filter(|a| !a.is_withdrawn()),
+                    package,
+                    version,
                 );
+                complete &= !unresolved;
+                partial |= unresolved;
+                advisories.extend(matches.into_iter().cloned());
             }
         }
         advisories.sort_by_key(|advisory| advisory.key.canonical.clone());
@@ -561,6 +642,19 @@ impl AdvisoryAuthority {
     pub fn iter(&self) -> impl Iterator<Item = &Advisory> {
         self.journals.values().flat_map(AdvisoryJournal::iter)
     }
+
+    fn rebuild_aliases(&mut self) -> Result<(), AliasGraphError> {
+        // Keep identity edges for withdrawn/snapshot-omitted objects.  They are part of the
+        // durable tombstone history: dropping them on a cold start would let a later feed reuse
+        // an old alias as an unrelated root.  Older state files may not have the field at all,
+        // so the `serde(default)` graph is augmented from the active journals below.
+        let mut aliases = self.aliases.clone();
+        for advisory in self.iter() {
+            aliases.admit_identity(advisory)?;
+        }
+        self.aliases = aliases;
+        Ok(())
+    }
 }
 
 impl AdvisoryResolver for AdvisoryAuthority {
@@ -605,6 +699,8 @@ pub enum AuthorityStorageError {
     Encode(serde_json::Error),
     /// Target path has no parent directory.
     NoParent,
+    /// Persisted source objects disagree about a shared alias.
+    AliasConflict(AliasGraphError),
 }
 impl std::fmt::Display for AuthorityStorageError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -618,6 +714,15 @@ impl std::error::Error for AuthorityStorageError {}
 pub enum AuthorityApplyError {
     /// A conditional validator was accepted before a body existed.
     NotModifiedWithoutFrontier(AdvisorySource),
+    /// A feed was labeled as one source but carried a native identity from another.
+    SourceMismatch {
+        /// Source selected by the transport/configuration.
+        expected: AdvisorySource,
+        /// Source carried by the parsed object.
+        actual: AdvisorySource,
+    },
+    /// An alias connected two incompatible source claims.
+    AliasConflict(AliasGraphError),
     /// The underlying copy-on-write journal rejected a semantic conflict.
     Journal(AdvisoryJournalError),
     /// Internal map insertion invariant failed.
@@ -642,18 +747,33 @@ fn unix_seconds() -> u64 {
 /// left to the local-service composition root, where its I/O policy belongs.
 pub fn read_feed(path: impl AsRef<Path>, maximum: usize) -> Result<Vec<u8>, AuthorityStorageError> {
     let metadata = fs::metadata(path.as_ref()).map_err(AuthorityStorageError::Io)?;
-    if metadata.len() > u64::try_from(maximum).unwrap_or(u64::MAX) {
+    let maximum = u64::try_from(maximum).unwrap_or(u64::MAX);
+    if metadata.len() > maximum {
         return Err(AuthorityStorageError::Io(std::io::Error::new(
             std::io::ErrorKind::FileTooLarge,
             "advisory source exceeds configured bound",
         )));
     }
-    fs::read(path).map_err(AuthorityStorageError::Io)
+    // Metadata can change after the stat.  Read one byte beyond the bound so a concurrent
+    // writer cannot turn an oversized source into an unbounded allocation.
+    let file = fs::File::open(path).map_err(AuthorityStorageError::Io)?;
+    let mut bytes = Vec::new();
+    file.take(maximum.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(AuthorityStorageError::Io)?;
+    if bytes.len() as u64 > maximum {
+        return Err(AuthorityStorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            "advisory source exceeds configured bound",
+        )));
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CanonicalAdvisoryId;
 
     fn osv() -> Vec<u8> {
         br#"{"schema_version":"1.3.1","id":"OSV-AUTH-1","modified":"2026-01-02T00:00:00Z","affected":[{"package":{"ecosystem":"Cargo","name":"demo"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}"#.to_vec()
@@ -745,6 +865,16 @@ mod tests {
     }
 
     #[test]
+    fn first_refresh_outage_is_unavailable_not_unknown() {
+        let mut authority = AdvisoryAuthority::new(100);
+        authority.mark_unavailable(AdvisorySource::Osv, 1);
+        let package = super::super::normalize_package("cargo", "demo").expect("identity");
+        let observation = authority.observe(&package, "1.0.0", false, false, 1, false);
+        assert_eq!(observation.coverage, AdvisoryCoverage::Unavailable);
+        assert_eq!(observation.freshness, FreshnessState::Fresh);
+    }
+
+    #[test]
     fn restart_preserves_frontier_and_unavailable_is_explicit() {
         let feed =
             AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 10, Some("etag-1".into()), None)
@@ -764,5 +894,47 @@ mod tests {
                 .and_then(|frontier| frontier.etag.as_deref()),
             Some("etag-1")
         );
+    }
+
+    #[test]
+    fn cold_persist_keeps_tombstones_and_alias_identity() {
+        let path = std::env::temp_dir().join(format!(
+            "nudox-advisory-authority-{}-{}.json",
+            std::process::id(),
+            1_u64
+        ));
+        let mut authority = AdvisoryAuthority::new(100);
+        authority
+            .apply(
+                AuthorityFeed::parse(AdvisorySource::Osv, &osv(), 10, Some("a".into()), None)
+                    .expect("OSV fixture"),
+            )
+            .expect("admit source");
+        authority
+            .apply(AuthorityFeed::from_entries(
+                AdvisorySource::Osv,
+                Vec::new(),
+                11,
+                Some("b".into()),
+                None,
+            ))
+            .expect("complete empty snapshot");
+        authority.persist(&path).expect("persist");
+
+        let restored = AdvisoryAuthority::open(&path, 7).expect("cold open");
+        assert_eq!(restored.max_age_secs, 7);
+        assert_eq!(
+            restored.aliases.resolve("OSV-AUTH-1"),
+            Some(CanonicalAdvisoryId("OSV-AUTH-1".to_owned()))
+        );
+        let key = CanonicalAdvisoryId("OSV-AUTH-1".to_owned());
+        assert_eq!(
+            restored
+                .journals
+                .get(&AdvisorySource::Osv)
+                .and_then(|journal| journal.tombstone_reason(&key)),
+            Some("snapshot-omitted")
+        );
+        let _ = fs::remove_file(path);
     }
 }

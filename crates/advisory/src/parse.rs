@@ -9,6 +9,16 @@ use super::model::{
 };
 use super::version::{PackageNormalizationError, normalize_package};
 
+/// Maximum size accepted by the standalone parsers.
+///
+/// The local service applies a tighter source-specific limit before calling us, but keeping a
+/// hard ceiling here prevents a caller which uses the portable crate directly from handing the
+/// JSON/TOML decoders an unbounded allocation.  Feed entries are capped separately by the
+/// authority parser.
+pub const MAX_ADVISORY_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum number of advisory objects admitted from one JSON batch.
+pub const MAX_ADVISORY_BATCH_OBJECTS: usize = 100_000;
+
 /// Errors common to OSV and GHSA object admission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParseError {
@@ -22,6 +32,8 @@ pub enum ParseError {
     InvalidRange(String),
     /// The object identifier is not admissible.
     InvalidIdentifier,
+    /// The source document exceeded the parser's hard bound.
+    BoundExceeded(&'static str),
 }
 
 /// RustSec-specific parse failures retain the TOML context.
@@ -37,6 +49,8 @@ pub enum RustSecParseError {
     InvalidRange(String),
     /// Identifier is malformed.
     InvalidIdentifier,
+    /// The source document exceeded the parser's hard bound.
+    BoundExceeded(&'static str),
 }
 
 /// GHSA global advisory parse failures.
@@ -52,6 +66,8 @@ pub enum GhsaParseError {
     Unsupported(PackageNormalizationError),
     /// Identifier is malformed.
     InvalidIdentifier,
+    /// The source document exceeded the parser's hard bound.
+    BoundExceeded(&'static str),
 }
 
 /// Parses one OSV JSON advisory object.
@@ -61,12 +77,28 @@ pub enum GhsaParseError {
 /// Returns a typed parse error when required fields, package identity, or range semantics are
 /// invalid.
 pub fn parse_osv(bytes: &[u8], observed_at: u64) -> Result<Advisory, ParseError> {
+    if bytes.len() > MAX_ADVISORY_DOCUMENT_BYTES {
+        return Err(ParseError::BoundExceeded("document-bytes"));
+    }
     let root: Value = serde_json::from_slice(bytes).map_err(|_| ParseError::InvalidJson)?;
+    parse_osv_value(&root, observed_at)
+}
+
+/// Parses one already-decoded OSV object without serializing it again.
+///
+/// This is `pub(crate)` so batch ingestion can retain the single decoder allocation and avoid
+/// an otherwise surprisingly expensive `Value -> Vec<u8> -> Value` round trip for every object.
+pub(crate) fn parse_osv_value(root: &Value, observed_at: u64) -> Result<Advisory, ParseError> {
     let object = root.as_object().ok_or(ParseError::InvalidJson)?;
     let id = NativeAdvisoryId::new(AdvisorySource::Osv, text(object, "id")?)
         .map_err(|_| ParseError::InvalidIdentifier)?;
     let aliases = aliases(object, AdvisorySource::Osv);
-    let affected = osv_affected(object)?;
+    let mut affected = osv_affected(object)?;
+    // OSV permits equivalent package rows in any order.  Stable ordering makes the durable
+    // object digest independent of transport/source-file ordering and lets downstream indexes
+    // compare one compact prefix before touching the ranges.
+    affected.sort();
+    affected.dedup();
     Ok(Advisory {
         schema: AdvisorySchema::V1,
         key: AdvisoryKey {
@@ -97,6 +129,9 @@ pub fn parse_osv(bytes: &[u8], observed_at: u64) -> Result<Advisory, ParseError>
 /// Returns a typed parse error when the document is malformed or its semver requirements cannot
 /// be proven.
 pub fn parse_rustsec(bytes: &[u8], observed_at: u64) -> Result<Advisory, RustSecParseError> {
+    if bytes.len() > MAX_ADVISORY_DOCUMENT_BYTES {
+        return Err(RustSecParseError::BoundExceeded("document-bytes"));
+    }
     let root: toml::Value = std::str::from_utf8(bytes)
         .map_err(|_| RustSecParseError::InvalidToml)?
         .parse()
@@ -144,10 +179,12 @@ pub fn parse_rustsec(bytes: &[u8], observed_at: u64) -> Result<Advisory, RustSec
             source: AdvisorySource::RustSec,
         })
         .collect::<Vec<_>>();
-    let categories = string_array(advisory.get("categories"))
+    let mut categories = string_array(advisory.get("categories"))
         .into_iter()
         .map(|value| category(&value))
         .collect::<Vec<_>>();
+    categories.sort();
+    categories.dedup();
     let published = advisory
         .get("date")
         .and_then(toml::Value::as_str)
@@ -207,7 +244,15 @@ pub fn parse_rustsec(bytes: &[u8], observed_at: u64) -> Result<Advisory, RustSec
 /// Returns a typed parse error when the malware declaration, advisory identity, package, or
 /// range is absent or unsupported.
 pub fn parse_ghsa_global(bytes: &[u8], observed_at: u64) -> Result<Advisory, GhsaParseError> {
+    if bytes.len() > MAX_ADVISORY_DOCUMENT_BYTES {
+        return Err(GhsaParseError::BoundExceeded("document-bytes"));
+    }
     let root: Value = serde_json::from_slice(bytes).map_err(|_| GhsaParseError::InvalidJson)?;
+    parse_ghsa_value(&root, observed_at)
+}
+
+/// Parses one already-decoded GHSA object without serializing it again.
+pub(crate) fn parse_ghsa_value(root: &Value, observed_at: u64) -> Result<Advisory, GhsaParseError> {
     let object = root.as_object().ok_or(GhsaParseError::InvalidJson)?;
     let malware = object
         .get("malware_coverage")
@@ -229,7 +274,7 @@ pub fn parse_ghsa_global(bytes: &[u8], observed_at: u64) -> Result<Advisory, Ghs
             .ok_or(GhsaParseError::MissingField("ghsa_id"))?,
     )
     .map_err(|_| GhsaParseError::InvalidIdentifier)?;
-    let aliases = object
+    let mut aliases = object
         .get("identifiers")
         .and_then(Value::as_array)
         .into_iter()
@@ -242,7 +287,11 @@ pub fn parse_ghsa_global(bytes: &[u8], observed_at: u64) -> Result<Advisory, Ghs
             source: AdvisorySource::Ghsa,
         })
         .collect::<Vec<_>>();
-    let affected = ghsa_affected(object)?;
+    aliases.sort();
+    aliases.dedup();
+    let mut affected = ghsa_affected(object)?;
+    affected.sort();
+    affected.dedup();
     let categories = ghsa_categories(object);
     let severity_text = object
         .get("severity")
@@ -356,11 +405,13 @@ fn ghsa_categories(object: &Map<String, Value>) -> Vec<AdvisoryCategory> {
     {
         categories.push(AdvisoryCategory::Malicious);
     }
+    categories.sort();
+    categories.dedup();
     categories
 }
 
 fn ghsa_references(object: &Map<String, Value>) -> Box<[Reference]> {
-    object
+    let mut references = object
         .get("references")
         .and_then(Value::as_array)
         .map(|items| {
@@ -373,9 +424,11 @@ fn ghsa_references(object: &Map<String, Value>) -> Box<[Reference]> {
                     kind: None,
                 })
                 .collect::<Vec<_>>()
-                .into_boxed_slice()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    references.sort();
+    references.dedup();
+    references.into_boxed_slice()
 }
 
 fn osv_affected(object: &Map<String, Value>) -> Result<Vec<AffectedRange>, ParseError> {
@@ -439,7 +492,7 @@ fn osv_affected(object: &Map<String, Value>) -> Result<Vec<AffectedRange>, Parse
                 }
             }
         }
-        let exact_versions = row
+        let mut exact_versions = row
             .get("versions")
             .and_then(Value::as_array)
             .map(|values| {
@@ -450,6 +503,8 @@ fn osv_affected(object: &Map<String, Value>) -> Result<Vec<AffectedRange>, Parse
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        exact_versions.sort();
+        exact_versions.dedup();
         let matcher = unsupported.map_or_else(
             || VersionMatcher::Events {
                 syntax,
@@ -537,7 +592,7 @@ fn syntax_for(ecosystem: &str) -> VersionSyntax {
 }
 
 fn aliases(object: &Map<String, Value>, source: AdvisorySource) -> Vec<Alias> {
-    object
+    let mut aliases: Vec<Alias> = object
         .get("aliases")
         .and_then(Value::as_array)
         .map(|items| {
@@ -550,11 +605,14 @@ fn aliases(object: &Map<String, Value>, source: AdvisorySource) -> Vec<Alias> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    aliases.sort();
+    aliases.dedup();
+    aliases
 }
 
 fn references(object: &Map<String, Value>) -> Box<[Reference]> {
-    object
+    let mut references: Vec<Reference> = object
         .get("references")
         .and_then(Value::as_array)
         .map(|items| {
@@ -573,9 +631,11 @@ fn references(object: &Map<String, Value>) -> Box<[Reference]> {
                         })
                 })
                 .collect::<Vec<_>>()
-                .into_boxed_slice()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    references.sort();
+    references.dedup();
+    references.into_boxed_slice()
 }
 
 fn package_object_purl(
@@ -597,7 +657,7 @@ fn package_object_purl(
 }
 
 fn categories(object: &Map<String, Value>) -> Box<[AdvisoryCategory]> {
-    object
+    let mut categories = object
         .get("database_specific")
         .and_then(Value::as_object)
         .and_then(|v| v.get("categories"))
@@ -608,10 +668,12 @@ fn categories(object: &Map<String, Value>) -> Box<[AdvisoryCategory]> {
                 .filter_map(Value::as_str)
                 .map(category)
                 .collect::<Vec<_>>()
-                .into_boxed_slice()
         })
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| Box::new([AdvisoryCategory::Vulnerability]))
+        .unwrap_or_else(|| vec![AdvisoryCategory::Vulnerability]);
+    categories.sort();
+    categories.dedup();
+    categories.into_boxed_slice()
 }
 
 fn category(value: &str) -> AdvisoryCategory {
@@ -685,7 +747,7 @@ fn decimal_score_hundredths(value: &str) -> Option<u16> {
 }
 
 fn string_array(value: Option<&toml::Value>) -> Vec<String> {
-    value
+    let mut strings: Vec<String> = value
         .and_then(toml::Value::as_array)
         .map(|items| {
             items
@@ -694,7 +756,10 @@ fn string_array(value: Option<&toml::Value>) -> Vec<String> {
                 .map(ToOwned::to_owned)
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    strings.sort();
+    strings.dedup();
+    strings
 }
 
 fn text<'a>(object: &'a Map<String, Value>, key: &'static str) -> Result<&'a str, ParseError> {

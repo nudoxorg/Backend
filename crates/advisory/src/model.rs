@@ -119,7 +119,7 @@ pub enum VersionEventKind {
 }
 
 /// A source-claimed affected range and exact-version set.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct AffectedRange {
     /// Package matched by this claim.
     pub package: PackageIdentity,
@@ -130,7 +130,7 @@ pub struct AffectedRange {
 }
 
 /// Version matcher with explicit semantics per ecosystem.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum VersionMatcher {
     /// OSV event stream interpreted under one proven grammar.
     Events {
@@ -405,6 +405,46 @@ impl AliasGraph {
         let canonical = candidate.admit_mut(advisory)?;
         *self = candidate;
         Ok(canonical)
+    }
+
+    /// Admits only the identity edges for a cross-authority graph.
+    ///
+    /// Source-local journals use [`Self::admit`] because they need to reject contradictory
+    /// package/range revisions.  A global graph sees the same advisory through several native
+    /// feeds, where equivalent ranges are commonly spelled in different grammars (for example
+    /// OSV events versus a RustSec requirement).  Requiring byte-identical range debug strings
+    /// there would reject valid multi-authority evidence, so the global graph validates only the
+    /// identity topology and leaves claim comparison to each source journal.
+    pub(crate) fn admit_identity(
+        &mut self,
+        advisory: &Advisory,
+    ) -> Result<CanonicalAdvisoryId, AliasGraphError> {
+        let own = advisory.key.native.id.clone();
+        let aliases: Vec<String> = advisory
+            .aliases
+            .iter()
+            .map(|alias| alias.value.clone())
+            .chain(std::iter::once(own.clone()))
+            .collect();
+        let mut roots = BTreeSet::new();
+        for alias in &aliases {
+            if self.parent.contains_key(alias) {
+                roots.insert(self.root(alias));
+            }
+        }
+        if roots.len() > 1 {
+            let mut roots = roots.into_iter();
+            return Err(AliasGraphError::AliasConflict {
+                alias: aliases[0].clone(),
+                left: roots.next().unwrap_or_default(),
+                right: roots.next().unwrap_or_default(),
+            });
+        }
+        let canonical = roots.into_iter().next().unwrap_or(own);
+        for alias in aliases {
+            self.parent.insert(alias, canonical.clone());
+        }
+        Ok(CanonicalAdvisoryId(canonical))
     }
 
     fn admit_mut(&mut self, advisory: &Advisory) -> Result<CanonicalAdvisoryId, AliasGraphError> {

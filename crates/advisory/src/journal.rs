@@ -109,6 +109,8 @@ pub enum AdvisoryJournalError {
     Conflict(AliasGraphError),
     /// The source attempted to complete a snapshot with an invalid identity.
     InvalidSnapshot,
+    /// One source snapshot repeated the same native identity.
+    Duplicate(CanonicalAdvisoryId),
     /// An internal transaction invariant was violated.
     InvariantViolation,
     /// Monotonic sequence space was exhausted.
@@ -146,6 +148,24 @@ impl AdvisoryJournal {
         self.withdrawals.get(key).map_or(&[], Box::as_ref)
     }
 
+    /// Returns the durable reason for a deleted or snapshot-omitted object.
+    #[must_use]
+    pub fn tombstone_reason(&self, key: &CanonicalAdvisoryId) -> Option<&str> {
+        self.tombstones.get(key).map(String::as_str)
+    }
+
+    /// Number of active objects at this frontier.
+    #[must_use]
+    pub fn active_len(&self) -> usize {
+        self.active.len()
+    }
+
+    /// Number of deletion tombstones retained for replay/audit.
+    #[must_use]
+    pub fn tombstone_len(&self) -> usize {
+        self.tombstones.len()
+    }
+
     /// Iterates active advisory objects in canonical identity order.
     pub fn iter(&self) -> impl Iterator<Item = &Advisory> {
         self.active.values()
@@ -159,9 +179,16 @@ impl AdvisoryJournal {
     pub fn apply(&mut self, sync: AdvisorySync) -> Result<&Checkpoint, AdvisoryJournalError> {
         let mut candidate = self.clone();
         let mut seen = BTreeSet::new();
+        let mut seen_native = BTreeSet::new();
         for entry in sync.entries {
             match entry {
                 AdvisoryDelta::Upsert(mut advisory) => {
+                    let native = advisory.key.native.id.clone();
+                    if !seen_native.insert(native) {
+                        return Err(AdvisoryJournalError::Duplicate(
+                            advisory.key.canonical.clone(),
+                        ));
+                    }
                     let canonical = candidate
                         .aliases
                         .admit(&advisory)
@@ -200,7 +227,19 @@ impl AdvisoryJournal {
             }
         }
         if sync.mode == SyncMode::Snapshot && sync.complete && !sync.freshness.not_modified {
-            candidate.active.retain(|key, _| seen.contains(key));
+            let removed = candidate
+                .active
+                .keys()
+                .filter(|key| !seen.contains(*key))
+                .cloned()
+                .collect::<Vec<_>>();
+            for key in removed {
+                candidate.active.remove(&key);
+                candidate
+                    .tombstones
+                    .entry(key)
+                    .or_insert_with(|| "snapshot-omitted".to_owned());
+            }
         } else if sync.mode == SyncMode::Snapshot && (!sync.complete || sync.freshness.not_modified)
         {
             // An incomplete snapshot is only a page.  Removing unseen objects would turn a
