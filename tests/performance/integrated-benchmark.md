@@ -8,7 +8,7 @@ correctness assertions are recorded beside every result.
 Run the checked-in smoke profile with the pinned shell:
 
 ```console
-nix shell .#backend --command cargo run --locked --offline \
+nix shell /nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16 --command cargo run --locked --offline \
   -p backend-performance-tests --bin integrated -- \
   --profile smoke --output tests/performance/results/integrated-smoke.json
 ```
@@ -19,7 +19,7 @@ reports success when the harness writes a verified seven-frame package
 manifest:
 
 ```console
-nix shell .#backend --command cargo run --locked --offline \
+nix shell /nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16 --command cargo run --locked --offline \
   -p backend-performance-tests --bin integrated -- \
   --profile smoke --output tests/performance/results/integrated-smoke.json \
   --gui-bin /absolute/path/to/backend-desktop-gui-harness
@@ -42,9 +42,16 @@ large class at 256 files or 4 MiB for a deterministic smoke duration. The
 artifact names that source kind explicitly; the fallback is a real source-tree
 corpus, not a mock.
 
-Network singleflight, registry/advisory traversal, and GUI subjourneys are
-reported as typed `unavailable` records when their production transport or live
-workspace is not configured. `null` allocation fields mean the current public
-Rust boundary does not expose an allocation counter. The runner samples its
-own macOS/Linux process RSS and CPU time with `ps`; GUI child-process resources
-are not folded into those host totals.
+The network singleflight row runs the production `RegistryOwner`,
+`HttpRegistryTransport`, and `AcquisitionService` against a bounded loopback
+HTTP fixture. It starts 32 synchronized callers with separate transports and
+fails the runner unless one metadata response, one archive response, one
+leader, 31 followers, one shared receipt/delta/root, exact response bytes, and
+the immutable archive handoff are all observed. This measures the coordinator
+and bounded HTTP path; it does not pretend to be an external-registry latency
+measurement. Registry/advisory traversal and GUI subjourneys remain typed
+`unavailable` records when their production surfaces are not configured.
+`null` allocation fields mean the current public Rust boundary does not expose
+an allocation counter. The runner samples its own macOS/Linux process RSS and
+CPU time with `ps`; GUI child-process resources are not folded into those host
+totals.

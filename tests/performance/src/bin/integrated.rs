@@ -1870,10 +1870,14 @@ fn run_acquisition(
         && fixture_counters.requests.load(Ordering::Acquire) == 2;
     let downloaded_bytes = fixture.archive_response_bytes as usize;
     let reused_bytes = downloaded_bytes.saturating_mul(NETWORK_SINGLEFLIGHT_CALLERS - 1);
+    let published_artifact_bytes = first
+        .as_ref()
+        .map(|result| result.artifact.bytes() == archive.as_slice())
+        .unwrap_or(false);
     let byte_accounting = fixture.feed_response_bytes as usize == endpoint_seed.len()
         && downloaded_bytes == archive.len()
         && reused_bytes == archive.len() * (NETWORK_SINGLEFLIGHT_CALLERS - 1)
-        && first.is_some();
+        && published_artifact_bytes;
     let passed = failure.is_none()
         && received == NETWORK_SINGLEFLIGHT_CALLERS
         && first.is_some()
@@ -1898,6 +1902,10 @@ fn run_acquisition(
         "archive byte accounting: {} downloaded once and {} logical follower bytes reused",
         downloaded_bytes,
         reused_bytes
+    ));
+    correctness_assertions.push(format!(
+        "published immutable artifact retained the exact {}-byte archive",
+        archive.len()
     ));
     if let Some(failure) = failure {
         correctness_assertions.push(failure);
@@ -2126,7 +2134,7 @@ fn main() -> BenchResult<()> {
     let (peak_rss_bytes, cpu_time_ns) = resource_sampler.finish();
     let mut notes = vec![
         "Host CPU time and peak RSS are sampled with ps; phase-level allocation counters and GUI child-process resources remain unavailable at the public Rust boundary.".to_owned(),
-        "Network acquisition and cross-call singleflight are explicitly unavailable without a configured live remote transport; local persisted CAS resolution remains measured.".to_owned(),
+        "Network acquisition uses a bounded loopback HTTP fixture through the production registry transport and records exact one-page/one-archive singleflight behavior; external-registry latency is intentionally not inferred from this fixture.".to_owned(),
         "GUI source-open/search and graph-delta subjourneys require a supplied live harness binary and are reported unavailable when absent.".to_owned(),
         format!("large corpus selection is deterministic and capped at {} files or {} MiB after canonical row-size filtering.", MAX_LARGE_CORPUS_FILES, MAX_LARGE_CORPUS_BYTES / (1024 * 1024)),
     ];
