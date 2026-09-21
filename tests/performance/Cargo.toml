@@ -7,14 +7,26 @@ license.workspace = true
 publish = false
 
 [dependencies]
+backend-cli = { path = "../../apps/cli" }
+backend-client = { path = "../../crates/client" }
+backend-compile = { path = "../../crates/compile" }
 backend-engine = { path = "../../crates/engine" }
+backend-extension-tantivy = { path = "../../extensions/tantivy" }
+backend-extension-turso = { path = "../../extensions/turso" }
 backend-execution = { path = "../../crates/execution" }
 backend-flow = { path = "../../crates/flow" }
+backend-library = { path = "../../crates/library" }
+backend-mcp = { path = "../../apps/mcp" }
+backend-present = { path = "../../crates/present" }
 backend-replication = { path = "../../crates/replication" }
 backend-semantic = { path = "../../crates/semantic" }
 backend-store = { path = "../../crates/store" }
 backend-version = { path = "../../crates/version" }
+backend-worker = { path = "../../apps/worker" }
 blake3.workspace = true
+futures-executor.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

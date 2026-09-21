@@ -1288,14 +1288,26 @@ dependencies = [
 name = "backend-performance-tests"
 version = "0.1.0"
 dependencies = [
+ "backend-cli",
+ "backend-client",
+ "backend-compile",
  "backend-engine",
  "backend-execution",
+ "backend-extension-tantivy",
+ "backend-extension-turso",
  "backend-flow",
+ "backend-library",
+ "backend-mcp",
+ "backend-present",
  "backend-replication",
  "backend-semantic",
  "backend-store",
  "backend-version",
+ "backend-worker",
  "blake3",
+ "futures-executor",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
