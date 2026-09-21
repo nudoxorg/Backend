@@ -138,6 +138,14 @@ fn capture_command(args: &[String]) -> Result<(), String> {
             }
         })
         .transpose()?;
+    if let (Some(viewport), Some(scale)) = (viewport_filter, scale_filter)
+        && viewport.scale != scale
+    {
+        return Err(format!(
+            "viewport scale {} conflicts with --scale {scale}",
+            viewport.scale
+        ));
+    }
     let baseline = option(args, "--baseline").map(PathBuf::from);
     let smoke = args.iter().any(|arg| arg == "--smoke");
 
@@ -152,9 +160,14 @@ fn capture_command(args: &[String]) -> Result<(), String> {
             return Err(format!("unknown state {filter:?}"));
         }
     }
-    let scales: Vec<u8> = scale_filter.map_or_else(
-        || if smoke { vec![1] } else { vec![1, 2] },
-        |scale| vec![scale],
+    let scales: Vec<u8> = viewport_filter.map_or_else(
+        || {
+            scale_filter.map_or_else(
+                || if smoke { vec![1] } else { vec![1, 2] },
+                |scale| vec![scale],
+            )
+        },
+        |viewport| vec![viewport.scale],
     );
     let registered_actions = production_action_inventory();
     if registered_actions.is_empty() {
@@ -172,14 +185,16 @@ fn capture_command(args: &[String]) -> Result<(), String> {
     };
 
     for scale in scales {
-        let configs = CaptureConfig::required_at_scale(scale)
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .filter(|config| viewport_filter.is_none_or(|viewport| viewport == config.viewport))
-            .filter(|config| {
-                !smoke || (config.viewport.width, config.viewport.height) == (640, 480)
-            })
-            .collect::<Vec<_>>();
+        let configs = viewport_filter.map_or_else(
+            || CaptureConfig::required_at_scale(scale),
+            |viewport| Ok(vec![CaptureConfig::deterministic(viewport)]),
+        )
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|config| {
+            !smoke || (config.viewport.width, config.viewport.height) == (640, 480)
+        })
+        .collect::<Vec<_>>();
         for config in configs {
             report.viewports.push(config.viewport.suffix());
             let viewport_root = output.join(config.viewport.suffix());
