@@ -19,6 +19,7 @@ let
     "apps"
     "tests"
     "tools"
+    "vendor/gpui_ce_components"
   ];
   workspaceSource =
     if workspaceAvailable then

@@ -20,6 +20,20 @@ let
     block: builtins.any (line: builtins.match "name = \"gpui_ce_components\"" line != null) (blockLines block)
   ) cargoLockBlocks;
   componentChecksumLines = if builtins.length componentBlocks == 1 then builtins.filter (line: builtins.match "checksum = \"[^\"]+\"" line != null) (blockLines (builtins.head componentBlocks)) else [ ];
+  vendoredComponentPath = if workspaceAvailable && builtins.pathExists (workspaceRoot + "/vendor/gpui_ce_components") then
+    builtins.path {
+      path = workspaceRoot + "/vendor/gpui_ce_components";
+      name = "nudox-gpui-ce-components-source";
+    }
+  else
+    null;
+  componentSourceIdentity =
+    if builtins.length componentChecksumLines == 1 then
+      builtins.head componentChecksumLines
+    else if vendoredComponentPath != null then
+      "vendored-source = \"${toString vendoredComponentPath}\""
+    else
+      null;
   packageProofLines = builtins.concatLists (map (
     block:
     let
@@ -41,15 +55,15 @@ let
   resolvedSourceLines = map (name: "resolved-source/${name}=${resolvedSourceHashes.${name}}") (builtins.attrNames resolvedSourceHashes);
   strictComponentContract = if builtins.length (builtins.attrNames resolvedSourceHashes) > 0 then
     assert builtins.length componentBlocks == 1;
-    assert builtins.length componentChecksumLines == 1;
+    assert componentSourceIdentity != null;
     true
   else true;
   componentSourceLines = if builtins.length componentBlocks == 1 then blockLines (builtins.head componentBlocks) else [ ];
-  componentSourceProofLines = componentSourceLines ++ componentChecksumLines;
+  componentSourceProofLines = componentSourceLines ++ pkgs.lib.optional (componentSourceIdentity != null) componentSourceIdentity;
   gpuiResolvedSourceLines = builtins.filter (line: builtins.match "resolved-source/gpui.*" line != null) resolvedSourceLines;
   gpuiSourceProofLines = packageProofLines ++ gpuiResolvedSourceLines;
   gpuiSourceDigest = builtins.hashString "sha256" (builtins.concatStringsSep "\n" gpuiSourceProofLines);
-  gpuiComponentSourceDigest = if builtins.length componentBlocks == 1 && builtins.length componentChecksumLines == 1 then builtins.hashString "sha256" (builtins.concatStringsSep "\n" componentSourceProofLines) else null;
+  gpuiComponentSourceDigest = if builtins.length componentBlocks == 1 && componentSourceIdentity != null then builtins.hashString "sha256" (builtins.concatStringsSep "\n" componentSourceProofLines) else null;
   dependencyGraphDigest = builtins.hashString "sha256" (cargoLock + builtins.concatStringsSep "\n" gpuiSourceProofLines);
   gpuiSourceManifest = pkgs.writeText "nudox-gui-gpui-source-manifest.txt" (assert strictComponentContract; builtins.concatStringsSep "\n" (
     [
