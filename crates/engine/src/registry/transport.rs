@@ -21,6 +21,7 @@ use super::{
     EcosystemAdapter, FeedCursor, FeedSchema, PackageCoordinate, ProvenanceDigest,
     RegistryChecksum, RegistryEcosystem, RegistryEndpoint, ReleaseFacts, RemoteRegistry,
 };
+use backend_advisory::AdvisoryObservation;
 use crate::capability::CapabilityArtifactId;
 
 /// Request for the page following one durable cursor.
@@ -43,6 +44,9 @@ pub struct RemotePackage {
     pub provenance: ProvenanceDigest,
     /// Mutable policy and observations detached from immutable archive identity.
     pub facts: ReleaseFacts,
+    /// Advisory observation for this exact selected version. `None` is typed absence and is
+    /// fail-closed when an advisory gate is configured by the product composition.
+    pub advisory: Option<AdvisoryObservation>,
     pub(super) archive_url: Arc<str>,
 }
 

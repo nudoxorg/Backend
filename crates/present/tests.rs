@@ -943,3 +943,44 @@ fn a_references_reply_renders_sites_with_their_provenance() {
         "the source span must survive rendering, tags are {tags:?}"
     );
 }
+
+#[test]
+fn advisory_reply_renders_typed_coverage_and_decision() {
+    let reply = backend_library::SurfaceReply::Advisory(
+        backend_library::AdvisoryPackageDto::unknown(),
+    );
+    let view = product_view(&reply);
+    assert_eq!(view.heading(), "advisory");
+    let summary = view.records().first().expect("decision summary");
+    assert!(summary.tags().iter().any(|tag| tag.contains("Unknown")));
+    assert!(summary.tags().iter().any(|tag| tag.contains("deny")));
+}
+
+#[test]
+fn advisory_override_is_one_typed_cli_and_mcp_command() {
+    let encoded = serde_json::json!({
+        "operation": "advisory",
+        "package": {"kind": "purl", "value": "pkg:cargo/demo@1.0.0"},
+        "override_evidence": {
+            "actor": "release-bot",
+            "reason": "reviewed emergency pin",
+            "policy_version": 7,
+            "expires_at": 2000000000
+        }
+    })
+    .to_string();
+    let request = lower_surface_json(&encoded).expect("shared surface command");
+    let Request::Surface(command) = request else {
+        panic!("advisory lowers to a surface request");
+    };
+    let backend_library::SurfaceCommand::Advisory {
+        package,
+        override_evidence: Some(evidence),
+    } = *command
+    else {
+        panic!("typed advisory override");
+    };
+    assert_eq!(package.as_str(), "pkg:cargo/demo@1.0.0");
+    assert_eq!(evidence.actor, "release-bot");
+    assert_eq!(evidence.policy_version, 7);
+}

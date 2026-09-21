@@ -18,7 +18,8 @@ pub use serde_json;
 
 pub mod acquisition;
 pub mod application;
-pub mod advisory;
+/// Typed advisory ingestion, durable frontier, and acquisition policy.
+pub use backend_advisory as advisory;
 pub mod builtin;
 pub mod capability;
 pub mod daemon;
@@ -88,11 +89,15 @@ pub use backend_replication::{
     write_frame as write_local_frame,
 };
 pub use backend_replication::{FramedStream, FramedStreamError};
+pub use backend_advisory::{AcquisitionGate, OfflinePolicy};
 // The process applications depend only on this composition crate. Keep the
 // portable library DTOs, version primitives, and closure types available here
 // so an application cannot accidentally grow a second direct dependency edge
 // into one of the lower crates.
 pub use backend_library::{
+    AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto, AdvisoryPackageDto, AdvisoryStatus,
+    AdvisorySurfaceDto, AffectedRange, AcquisitionDecision, FreshnessState, NativeAdvisoryId,
+    PolicyReason, SeverityLevel,
     Basis, BranchKey, CURSOR_CONTROL_BYTES, CURSOR_SCHEMA, CapabilityAuthority, CapabilityFamily,
     CapabilityId, CapabilityInventory, CapabilityLifecycle, CapabilityStatus, CapabilityTarget,
     CapabilityUnavailable, Command, CommandDto, CommandFailure, CommandReply, CommittedViewDelta,
@@ -108,7 +113,7 @@ pub use backend_library::{
     PackageReference, PageContinuation, PageRequest, PageTerminal, ProductAdmissionError,
     ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector, ProjectionPage, Query,
     QueryLimit, Reason, ReferenceFact, ReferenceRecord, RegistryDownloadCount, RegistryEcosystem,
-    RegistryMetadata, RegistryPackageRecord, RegistryReleaseStanding, RegistrySecurityStanding,
+    RegistryMetadata, RegistryPackageRecord, RegistryReleaseStanding,
     ReleaseRecord, ReplyDto, Row, RowChange, RowId, SemanticConfidence,
     SemanticDeclarationIdentity, SemanticGenerationId, SemanticLanguageProfile, SemanticLinkDelta,
     SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan,

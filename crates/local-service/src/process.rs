@@ -35,6 +35,7 @@ use backend_engine::UnixEndpointPath;
 use backend_engine::registry::{
     AcquisitionLimits, AcquisitionPolicy, AuthenticationToken, RegistryEcosystem, RegistryEndpoint,
 };
+use backend_engine::{AcquisitionGate, OfflinePolicy};
 use backend_runtime::WorkspacePaths;
 use std::fmt;
 use std::fs;
@@ -66,6 +67,8 @@ pub const REGISTRY_AUTH_FILE_ENV: &str = "BACKEND_REGISTRY_AUTH_FILE";
 pub const REGISTRY_NATIVE_ENV: &str = "BACKEND_REGISTRY_NATIVE";
 /// Environment variable disabling registry network effects.
 pub const REGISTRY_OFFLINE_ENV: &str = "BACKEND_REGISTRY_OFFLINE";
+/// Environment variable selecting the advisory evidence policy.
+pub const ADVISORY_POLICY_ENV: &str = "BACKEND_ADVISORY_POLICY";
 /// Environment variable overriding the maximum admitted registry archive bytes.
 pub const REGISTRY_MAX_ARCHIVE_BYTES_ENV: &str = "BACKEND_REGISTRY_MAX_ARCHIVE_BYTES";
 
@@ -118,6 +121,8 @@ pub struct RegistryConfig {
     pub native: bool,
     /// Resource and timeout bounds passed to the owner and transport.
     pub limits: AcquisitionLimits,
+    /// Explicit fail-closed advisory decision policy used before staging archives.
+    pub advisory_gate: AcquisitionGate,
 }
 
 impl RegistryConfig {
@@ -170,14 +175,34 @@ impl RegistryConfig {
         } else {
             AcquisitionPolicy::Online
         };
+        let advisory_gate = advisory_gate_from_env()?;
         Ok(Self {
             endpoint,
             authentication,
             policy,
             native,
             limits: registry_limits(listener),
+            advisory_gate,
         })
     }
+}
+
+fn advisory_gate_from_env() -> Result<AcquisitionGate, ProcessError> {
+    // Native registry adapters do not claim advisory authority. Unknown coverage is retained and
+    // warned about until a configured authority supplies a complete frontier; operators can still
+    // opt into fail-closed mode explicitly for controlled environments.
+    let value = std::env::var(ADVISORY_POLICY_ENV).unwrap_or_else(|_| "warn".to_owned());
+    let offline = match value.trim().to_ascii_lowercase().as_str() {
+        "allow-cached" | "allow_cached" => OfflinePolicy::AllowCached,
+        "warn" => OfflinePolicy::Warn,
+        "fail-closed" | "fail_closed" => OfflinePolicy::FailClosed,
+        _ => {
+            return Err(ProcessError::Usage(format!(
+                "{ADVISORY_POLICY_ENV} must be allow-cached, warn, or fail-closed"
+            )))
+        }
+    };
+    Ok(AcquisitionGate { offline })
 }
 
 fn read_authentication_file(path: &str) -> Result<String, ProcessError> {

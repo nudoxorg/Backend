@@ -35,7 +35,9 @@ use crate::theme::palette::Paint;
 use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
 use crate::ui::icon::Icon;
 use crate::ui::{button, chart, chip, fault as fault_ui, icon, surface, text};
-use backend_library::{RegistryEcosystem, RegistrySecurityStanding};
+use backend_library::{
+    AcquisitionDecision, AdvisoryPackageDto, AdvisoryStatus, FreshnessState, RegistryEcosystem,
+};
 use backend_present::Language;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -380,24 +382,29 @@ impl Workspace {
     }
 
     fn security_route(&self, theme: &Theme, dossier: &Dossier, cx: &mut Context<Workspace>) -> Div {
-        let (provenance, body) = dossier.pinned().map_or_else(
-            || {
-                (
-                    Provenance::NotRecorded,
-                    text::dim(theme)
-                        .child("Security status is not recorded by the configured registry feed.")
-                        .into_any_element(),
-                )
-            },
-            |release| {
-                (
-                    Provenance::Recorded,
-                    text::text_at(theme, TypeScale::Body, Paint::Text)
-                        .child(Self::security_label(release.security()))
-                        .into_any_element(),
-                )
-            },
-        );
+        let (provenance, body) = match dossier.releases().state() {
+            Loadable::Idle | Loadable::Loading => (
+                Provenance::Recorded,
+                text::dim(theme)
+                    .child("Loading advisory coverage and acquisition decision…")
+                    .into_any_element(),
+            ),
+            Loadable::Faulted(fault) => (
+                Provenance::Recorded,
+                fault_ui::block(theme, fault, Vec::new()).into_any_element(),
+            ),
+            Loadable::Ready(_) => dossier.pinned().map_or_else(
+                || {
+                    (
+                        Provenance::NotRecorded,
+                        text::dim(theme)
+                            .child("Security advisory state is not recorded by the configured registry feed.")
+                            .into_any_element(),
+                    )
+                },
+                |release| (Provenance::Recorded, Self::advisory_body(theme, release.advisory())),
+            ),
+        };
         self.folding(
             theme,
             "package-security",
@@ -407,6 +414,131 @@ impl Workspace {
             body,
             cx,
         )
+    }
+
+    /// Returns the advisory summary and detail owned by the shared product DTO.
+    fn advisory_body(theme: &Theme, advisory: &AdvisoryPackageDto) -> AnyElement {
+        let decision = match &advisory.decision {
+            AcquisitionDecision::Allow => "allow".to_owned(),
+            AcquisitionDecision::Warn(reasons) => {
+                format!("warn ({})", reasons.iter().map(Self::policy_reason_label).collect::<Vec<_>>().join(", "))
+            }
+            AcquisitionDecision::Deny(reasons) => {
+                format!("deny ({})", reasons.iter().map(Self::policy_reason_label).collect::<Vec<_>>().join(", "))
+            }
+        };
+        let coverage = format!(
+            "coverage: {} · freshness: {}",
+            Self::coverage_label(advisory.coverage),
+            Self::freshness_label(advisory.freshness)
+        );
+        let mut details = vec![format!("decision: {decision}"), coverage];
+        if advisory.yanked {
+            details.push("release: yanked".to_owned());
+        }
+        if advisory.unlisted {
+            details.push("release: unlisted".to_owned());
+        }
+        if advisory.advisories.is_empty() {
+            details.push("No matching advisory object was recorded.".to_owned());
+        } else {
+            for claim in &advisory.advisories {
+                let sources = claim
+                    .source_ids
+                    .iter()
+                    .map(|source| format!("{:?}:{}", source.source, source.id))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let aliases = if claim.aliases.is_empty() {
+                    "none".to_owned()
+                } else {
+                    claim.aliases.join(", ")
+                };
+                let categories = if claim.categories.is_empty() {
+                    "unspecified".to_owned()
+                } else {
+                    claim
+                        .categories
+                        .iter()
+                        .map(|category| format!("{category:?}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let ranges = claim
+                    .affected
+                    .iter()
+                    .map(|range| format!("{}:{:?}", range.package.name, range.matcher))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let fixed = if claim.fixed_ranges.is_empty() {
+                    "none".to_owned()
+                } else {
+                    claim.fixed_ranges.join(", ")
+                };
+                details.push(format!(
+                    "{} · severity {:?} · categories {} · sources {} · aliases {} · affected {} · fixed {}",
+                    claim.canonical_id,
+                    claim.severity,
+                    categories,
+                    sources,
+                    aliases,
+                    if ranges.is_empty() { "unspecified" } else { &ranges },
+                    fixed,
+                ));
+                if claim.statuses.contains(&AdvisoryStatus::Withdrawn) {
+                    details.push("advisory status: withdrawn".to_owned());
+                }
+            }
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(space(Space::Tight))
+            .children(details.into_iter().map(|detail| {
+                text::text_at(theme, TypeScale::Body, Paint::Text).child(detail)
+            }))
+            .into_any_element()
+    }
+
+    fn policy_reason_label(reason: &backend_library::PolicyReason) -> &'static str {
+        match reason {
+            backend_library::PolicyReason::Advisory(status) => match status {
+                AdvisoryStatus::Yanked => "yanked",
+                AdvisoryStatus::Unlisted => "unlisted",
+                AdvisoryStatus::Vulnerable => "vulnerable",
+                AdvisoryStatus::Malicious => "malicious",
+                AdvisoryStatus::Unmaintained => "unmaintained",
+                AdvisoryStatus::Unsound => "unsound",
+                AdvisoryStatus::Withdrawn => "withdrawn",
+                AdvisoryStatus::UnknownCoverage => "unknown-coverage",
+                AdvisoryStatus::Stale => "stale",
+                AdvisoryStatus::Unavailable => "unavailable",
+            },
+            backend_library::PolicyReason::IncompleteCoverage => "incomplete-coverage",
+            backend_library::PolicyReason::UnavailableEvidence => "unavailable-evidence",
+            backend_library::PolicyReason::StaleEvidence => "stale-evidence",
+            backend_library::PolicyReason::NoCachedEvidence => "no-cached-evidence",
+            backend_library::PolicyReason::OverrideAccepted(_) => "override-accepted",
+            backend_library::PolicyReason::CachedEvidenceAllowed => "cached-evidence-allowed",
+        }
+    }
+
+    fn coverage_label(coverage: backend_library::AdvisoryCoverage) -> &'static str {
+        match coverage {
+            backend_library::AdvisoryCoverage::Complete => "complete",
+            backend_library::AdvisoryCoverage::Partial => "partial",
+            backend_library::AdvisoryCoverage::Unknown => "unknown",
+            backend_library::AdvisoryCoverage::Unavailable => "unavailable",
+        }
+    }
+
+    fn freshness_label(freshness: FreshnessState) -> &'static str {
+        match freshness {
+            FreshnessState::Fresh => "fresh",
+            FreshnessState::NotModified => "not-modified",
+            FreshnessState::Stale => "stale",
+            FreshnessState::Unknown => "unknown",
+        }
     }
 
     /// Returns the primary docs.rs-like reading split: README first, with
@@ -451,7 +583,7 @@ impl Workspace {
                 format!(
                     "{} · {}",
                     release.standing().label(),
-                    Self::security_label(release.security())
+                    Self::advisory_decision_label(release.advisory())
                 )
             },
         );
@@ -748,7 +880,7 @@ impl Workspace {
                 || "publication date not recorded".to_owned(),
                 |stamp| format!("published {}", stamp.spelled()),
             ));
-            facts.push(Self::security_label(release.security()).to_owned());
+            facts.push(Self::advisory_decision_label(release.advisory()));
         }
         if let Some(downloads) = dossier.downloads().ready()
             && !dossier.downloads().provenance().is_not_recorded()
@@ -772,12 +904,11 @@ impl Workspace {
         text::faint(theme).child(facts.join(" · "))
     }
 
-    /// Returns the exact security coverage state published for the release.
-    fn security_label(standing: RegistrySecurityStanding) -> &'static str {
-        match standing {
-            RegistrySecurityStanding::Unassessed => "security unassessed",
-            RegistrySecurityStanding::NoKnownAdvisory => "no known advisories",
-            RegistrySecurityStanding::Affected { .. } => "security advisory affects this release",
+    fn advisory_decision_label(advisory: &AdvisoryPackageDto) -> String {
+        match &advisory.decision {
+            AcquisitionDecision::Allow => "security allow".to_owned(),
+            AcquisitionDecision::Warn(_) => "security warn".to_owned(),
+            AcquisitionDecision::Deny(_) => "security deny".to_owned(),
         }
     }
 

@@ -19,6 +19,10 @@ use crate::{
     fault::{Boundary, Faults},
     journal::{HashChainJournal, JournalError},
 };
+use backend_advisory::{
+    AcquisitionDecision, AcquisitionGate, AdvisoryObservation, AdvisoryPackageDto,
+    AdvisoryCoverage, FreshnessState,
+};
 
 use super::wire::{RegistryLog, RegistryRecord};
 use super::{
@@ -71,6 +75,8 @@ pub struct PublishedPackage {
     pub upstream_integrity: [u8; 32],
     /// Mutable release facts, independently content-versioned.
     pub facts: super::ReleaseFacts,
+    /// Versioned advisory facts and the policy decision admitted before staging.
+    pub advisory: AdvisoryPackageDto,
 }
 
 /// Receipt atomically pairing archive publication and cursor advancement.
@@ -199,6 +205,8 @@ pub enum AcquisitionError {
     Journal(JournalError),
     /// Configured fault boundary fired.
     Injected(crate::fault::InjectedCrash),
+    /// The selected version was denied by the configured advisory policy.
+    AdvisoryDenied(AcquisitionDecision),
 }
 impl fmt::Display for AcquisitionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -212,6 +220,7 @@ impl fmt::Display for AcquisitionError {
             Self::Io(_) => "registry persistence failed",
             Self::Journal(_) => "registry journal failed",
             Self::Injected(_) => "registry acquisition fault injected",
+            Self::AdvisoryDenied(_) => "registry acquisition denied by advisory policy",
         })
     }
 }
@@ -240,6 +249,7 @@ pub struct RegistryOwner<S: FeedSchema = CanonicalFeedV1> {
     catalog: BTreeMap<PackageCoordinate, PublishedPackage>,
     faults: Arc<Faults>,
     readiness: RegistryReadiness,
+    advisory_gate: Option<AcquisitionGate>,
 }
 
 impl<S: FeedSchema> fmt::Debug for RegistryOwner<S> {
@@ -363,6 +373,7 @@ impl RegistryOwner {
                 catalog,
                 faults: Arc::new(Faults::default()),
                 readiness,
+                advisory_gate: None,
             },
             report,
         ))
@@ -372,6 +383,15 @@ impl RegistryOwner {
     #[must_use]
     pub fn with_faults(mut self, faults: Arc<Faults>) -> Self {
         self.faults = faults;
+        self
+    }
+
+    /// Installs the explicit product advisory gate. The default engine owner leaves this unset
+    /// for compatibility fixtures; production compositions must choose a policy before network
+    /// acquisition is enabled.
+    #[must_use]
+    pub fn with_advisory_gate(mut self, gate: AcquisitionGate) -> Self {
+        self.advisory_gate = Some(gate);
         self
     }
     /// Current committed cursor.
@@ -588,6 +608,10 @@ impl RegistryOwner {
         let mut total = 0usize;
         let mut publications = Vec::with_capacity(packages.len());
         for package in packages {
+            let advisory = self.advisory_projection(package);
+            if matches!(advisory.decision, AcquisitionDecision::Deny(_)) {
+                return Err(AcquisitionError::AdvisoryDenied(advisory.decision));
+            }
             if let Some(existing) = self.catalog.get(&package.coordinate) {
                 let upstream_integrity = package.integrity_version();
                 if existing.upstream_integrity == upstream_integrity {
@@ -599,6 +623,7 @@ impl RegistryOwner {
                         provenance: package.provenance,
                         upstream_integrity,
                         facts: package.facts,
+                        advisory,
                     });
                     continue;
                 }
@@ -621,7 +646,7 @@ impl RegistryOwner {
             total = total
                 .checked_add(archive_bytes)
                 .ok_or(AcquisitionError::Bounds)?;
-            let publication = self.verify_and_store(package, artifact, total)?;
+            let publication = self.verify_and_store(package, artifact, total, advisory)?;
             publications.push(publication);
         }
         Ok(PageAcquisition::Ready(publications))
@@ -632,6 +657,7 @@ impl RegistryOwner {
         package: &super::RemotePackage,
         artifact: super::ArchiveArtifact,
         page_bytes: usize,
+        advisory: AdvisoryPackageDto,
     ) -> Result<PublishedPackage, AcquisitionError> {
         let bytes = usize::try_from(artifact.length()).map_err(|_| AcquisitionError::Bounds)?;
         if bytes > self.limits.max_archive_bytes {
@@ -677,7 +703,33 @@ impl RegistryOwner {
             provenance: package.provenance,
             upstream_integrity: package.integrity_version(),
             facts: package.facts,
+            advisory,
         })
+    }
+
+    fn advisory_projection(&self, package: &super::RemotePackage) -> AdvisoryPackageDto {
+        let Some(gate) = self.advisory_gate else {
+            return package
+                .advisory
+                .as_ref()
+                .map(|observation| {
+                    AdvisoryPackageDto::from_observation(
+                        observation,
+                        AcquisitionDecision::Allow,
+                    )
+                })
+                .unwrap_or_else(AdvisoryPackageDto::unknown);
+        };
+        let observation = package.advisory.as_ref().cloned().unwrap_or(AdvisoryObservation {
+            advisories: Box::new([]),
+            coverage: AdvisoryCoverage::Unknown,
+            freshness: FreshnessState::Unknown,
+            offline: true,
+            yanked: false,
+            unlisted: false,
+        });
+        let decision = gate.decide(&observation);
+        AdvisoryPackageDto::from_observation(&observation, decision)
     }
 }
 

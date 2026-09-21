@@ -1,6 +1,7 @@
 //! Canonical registry journal grammar.
 
 use super::identity::{admit_registry_coordinate, coordinate_from_registry_parts};
+use backend_advisory::AdvisoryPackageDto;
 use super::{
     AcquisitionError, AcquisitionIntent, AcquisitionReceipt, CanonicalFeedV1, DownloadCount,
     DownloadCountGap, FeedCursor, PackageName, PackageVersion, ProvenanceDigest,
@@ -13,7 +14,7 @@ pub(crate) enum RegistryLog {}
 impl JournalDomain for RegistryLog {
     const DOMAIN: u8 = 0x91;
     const TYPE: u16 = 1;
-    const VERSION: u8 = 2;
+    const VERSION: u8 = 3;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -130,6 +131,9 @@ fn put_package(out: &mut Vec<u8>, value: &PublishedPackage) {
     out.extend_from_slice(&value.provenance.as_bytes());
     out.extend_from_slice(&value.upstream_integrity);
     put_facts(out, value.facts);
+    let advisory = serde_json::to_vec(&value.advisory).unwrap_or_default();
+    put_u32(out, advisory.len());
+    out.extend_from_slice(&advisory);
 }
 fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, AcquisitionError> {
     let ecosystem = RegistryEcosystem::try_from(take_byte(bytes, at)?)
@@ -141,6 +145,12 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
     let provenance = take_array(bytes, at)?;
     let upstream_integrity = take_array(bytes, at)?;
     let facts = read_facts(bytes, at)?;
+    let advisory_len = usize::try_from(read_u32(bytes, at)?).map_err(|_| AcquisitionError::Bounds)?;
+    if advisory_len > 4 * 1024 * 1024 {
+        return Err(AcquisitionError::Bounds);
+    }
+    let advisory = serde_json::from_slice::<AdvisoryPackageDto>(take(bytes, at, advisory_len)?)
+        .map_err(|_| AcquisitionError::CorruptJournal)?;
     let coordinate = coordinate_from_registry_parts(ecosystem, name.as_str(), version.as_str())?;
     let registry = admit_registry_coordinate(&coordinate)?;
     Ok(PublishedPackage {
@@ -151,6 +161,7 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
         provenance: ProvenanceDigest::from_journal(provenance),
         upstream_integrity,
         facts,
+        advisory,
     })
 }
 

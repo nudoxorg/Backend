@@ -22,9 +22,9 @@ use super::dossier::{Card, Dossier, assemble, live_card};
 use super::events::RegistryEvent;
 use super::service::{Endpoint, Outcome, Request};
 use backend_library::{
-    MAX_PRODUCT_ROWS, PackageReference, ProductAdmissionError, ProductText, RegistryDownloadCount,
-    RegistryEcosystem, RegistryMetadata, RegistryPackageRecord, RegistryReleaseStanding,
-    RegistrySecurityStanding, SurfaceCommand, SurfaceReply,
+    AdvisoryPackageDto, MAX_PRODUCT_ROWS, PackageReference, ProductAdmissionError, ProductText,
+    RegistryDownloadCount, RegistryEcosystem, RegistryMetadata, RegistryPackageRecord,
+    RegistryReleaseStanding, SurfaceCommand, SurfaceReply,
 };
 use backend_present::{
     Affordance, Cause, CauseSlug, Coordinate, Fault, FaultSlug, Operand, Readiness, Shelf,
@@ -182,7 +182,7 @@ pub(crate) struct PackageRow {
     bytes: u64,
     standing: RegistryReleaseStanding,
     downloads: RegistryDownloadCount,
-    security: RegistrySecurityStanding,
+    advisory: AdvisoryPackageDto,
 }
 
 impl PackageRow {
@@ -227,8 +227,9 @@ impl PackageRow {
     }
 
     /// Returns advisory evaluation at the recorded frontier.
-    pub(crate) const fn security(&self) -> RegistrySecurityStanding {
-        self.security
+    /// Returns the versioned advisory decision recorded for this release.
+    pub(crate) const fn advisory(&self) -> &AdvisoryPackageDto {
+        &self.advisory
     }
 
     fn of(record: &RegistryPackageRecord) -> Self {
@@ -240,7 +241,7 @@ impl PackageRow {
             bytes: record.bytes,
             standing: record.standing,
             downloads: record.downloads.clone(),
-            security: record.security,
+            advisory: record.advisory.clone(),
         }
     }
 }

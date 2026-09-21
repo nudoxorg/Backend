@@ -14,9 +14,10 @@
 
 use crate::fault::Fault;
 use backend_library::{
-    DeclarationChange, DeclarationRecord, DiffRecord, PackageReference, ProjectRecord,
-    RegistryMetadata, RegistryPackageRecord, ReleaseRecord, SemanticVersionRecord,
-    SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener, TreeSubject, encode_id,
+    AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DiffRecord,
+    PackageReference, ProjectRecord, RegistryMetadata, RegistryPackageRecord, ReleaseRecord,
+    SemanticVersionRecord, SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener,
+    TreeSubject, encode_id,
 };
 
 use crate::identity::KeyTag;
@@ -175,6 +176,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::PackageVersions(records) => {
             ProductView::rows("package-versions", registry_rows(records))
         }
+        SurfaceReply::Advisory(advisory) => advisory_view(advisory),
         SurfaceReply::Dependents(metadata) => metadata_view("dependents", metadata),
         SurfaceReply::Owner(metadata) => metadata_view("owner", metadata),
         SurfaceReply::SemanticVersions(records) => ProductView::rows(
@@ -299,6 +301,100 @@ fn registry_row(record: &RegistryPackageRecord) -> ProductRecord {
             format!("{} byte(s)", record.bytes),
         ],
     )
+}
+
+fn advisory_view(advisory: &AdvisoryPackageDto) -> ProductView {
+    let decision = match &advisory.decision {
+        AcquisitionDecision::Allow => "allow".to_owned(),
+        AcquisitionDecision::Warn(reasons) => format!(
+            "warn ({})",
+            reasons
+                .iter()
+                .map(|reason| format!("{reason:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        AcquisitionDecision::Deny(reasons) => format!(
+            "deny ({})",
+            reasons
+                .iter()
+                .map(|reason| format!("{reason:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let mut rows = vec![ProductRecord::new(
+        "security decision",
+        None,
+        vec![
+            format!("decision: {decision}"),
+            format!("coverage: {:?}", advisory.coverage),
+            format!("freshness: {:?}", advisory.freshness),
+            format!("yanked: {}", advisory.yanked),
+            format!("unlisted: {}", advisory.unlisted),
+        ],
+    )];
+    if advisory.advisories.is_empty() {
+        rows.push(ProductRecord::new(
+            "no matching advisory object",
+            None,
+            vec!["coverage and freshness remain authoritative".to_owned()],
+        ));
+    } else {
+        rows.extend(advisory.advisories.iter().map(|claim| {
+            let sources = claim
+                .source_ids
+                .iter()
+                .map(|source| format!("{:?}:{}", source.source, source.id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let aliases = if claim.aliases.is_empty() {
+                "none".to_owned()
+            } else {
+                claim.aliases.join(", ")
+            };
+            let affected = claim
+                .affected
+                .iter()
+                .map(|range| format!("{}:{:?}", range.package.name, range.matcher))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let fixed = if claim.fixed_ranges.is_empty() {
+                "none".to_owned()
+            } else {
+                claim.fixed_ranges.join(", ")
+            };
+            ProductRecord::new(
+                claim.canonical_id.clone(),
+                None,
+                vec![
+                    format!("sources: {sources}"),
+                    format!("aliases: {aliases}"),
+                    format!("severity: {:?}", claim.severity),
+                    format!(
+                        "categories: {}",
+                        claim
+                            .categories
+                            .iter()
+                            .map(|category| format!("{category:?}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    format!(
+                        "affected: {}",
+                        if affected.is_empty() {
+                            "unspecified"
+                        } else {
+                            &affected
+                        }
+                    ),
+                    format!("fixed: {fixed}"),
+                    format!("statuses: {:?}", claim.statuses),
+                ],
+            )
+        }));
+    }
+    ProductView::rows("advisory", rows)
 }
 
 fn declaration_row(record: &DeclarationRecord) -> ProductRecord {

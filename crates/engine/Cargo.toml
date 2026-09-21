@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 [dependencies]
+backend-advisory = { path = "../advisory" }
 backend-execution = { path = "../execution" }
 backend-flow = { path = "../flow" }
 backend-replication = { path = "../replication" }

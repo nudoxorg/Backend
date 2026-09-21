@@ -64,12 +64,19 @@ fn admit_package(
     endpoint: &str,
 ) -> Result<RemotePackage, TransportFailure> {
     let row = value.as_object().ok_or(TransportFailure::Protocol)?;
-    if row.len() != 5 {
+    if !(5..=6).contains(&row.len()) {
         return Err(TransportFailure::Protocol);
     }
     let name = PackageName::new(text(row, "name")?).map_err(|_| TransportFailure::Protocol)?;
     let version =
         PackageVersion::new(text(row, "version")?).map_err(|_| TransportFailure::Protocol)?;
+    let advisory = row
+        .get("advisory")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value(value.clone()).map_err(|_| TransportFailure::Protocol)
+        })
+        .transpose()?;
     Ok(RemotePackage {
         coordinate: coordinate_from_registry_parts(ecosystem, name.as_str(), version.as_str())
             .map_err(|_| TransportFailure::Protocol)?,
@@ -79,6 +86,7 @@ fn admit_package(
             "provenance",
         )?)?),
         facts: super::ReleaseFacts::default(),
+        advisory,
         archive_url: Arc::from(admit_archive_url(endpoint, text(row, "archive")?)?),
     })
 }

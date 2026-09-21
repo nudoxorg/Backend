@@ -465,6 +465,7 @@ fn archive_stream_hashing_never_requests_a_buffer_over_64kib() {
         integrity: transport::ArchiveIntegrity::Canonical(digest),
         provenance: ProvenanceDigest::from_authenticated_feed([7; 32]),
         facts: ReleaseFacts::default(),
+        advisory: None,
         archive_url: std::sync::Arc::from("https://registry.example.test/large.crate"),
     };
     let mut reader = TrackingReader {
@@ -644,6 +645,75 @@ fn metadata_only_delta_advances_and_recovers_its_checkpoint() {
 }
 
 #[test]
+fn advisory_gate_denies_unknown_version_before_archive_staging() {
+    struct UnknownAdvisory {
+        archive_fetches: usize,
+    }
+
+    impl RegistryTransport for UnknownAdvisory {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            let archive = b"must never be staged";
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [23; 32],
+                packages: vec![RemotePackage {
+                    coordinate: PackageCoordinate::parse("pkg:cargo/demo@1.0.0")
+                        .expect("coordinate"),
+                    integrity: transport::ArchiveIntegrity::Canonical(
+                        *CapabilityArtifactId::from_value(archive).as_bytes(),
+                    ),
+                    provenance: ProvenanceDigest::from_authenticated_feed([23; 32]),
+                    facts: ReleaseFacts::default(),
+                    advisory: Some(backend_advisory::AdvisoryObservation {
+                        advisories: Box::new([]),
+                        coverage: backend_advisory::AdvisoryCoverage::Unknown,
+                        freshness: backend_advisory::FreshnessState::Unknown,
+                        offline: true,
+                        yanked: false,
+                        unlisted: false,
+                    }),
+                    archive_url: std::sync::Arc::from(
+                        "https://registry.example.test/demo.crate",
+                    ),
+                }],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            self.archive_fetches += 1;
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                b"must never be staged".to_vec(),
+            )))
+        }
+    }
+
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("advisory-gate");
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("owner");
+    let mut owner = owner.with_advisory_gate(backend_advisory::AcquisitionGate {
+        offline: backend_advisory::OfflinePolicy::FailClosed,
+    });
+    let mut transport = UnknownAdvisory { archive_fetches: 0 };
+    assert!(matches!(
+        owner.poll(&mut transport),
+        Err(AcquisitionError::AdvisoryDenied(
+            backend_advisory::AcquisitionDecision::Deny(_),
+        ))
+    ));
+    assert_eq!(transport.archive_fetches, 0);
+    assert_eq!(owner.cursor().sequence(), 0);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
 fn policy_delta_reuses_the_exact_archive_without_a_second_download() {
     struct PolicyDelta {
         archive: Vec<u8>,
@@ -676,6 +746,7 @@ fn policy_delta_reuses_the_exact_archive_without_a_second_download() {
                         DownloadCount::NotReported(DownloadCountGap::Unsupported),
                         SecurityStanding::Unassessed,
                     ),
+                    advisory: None,
                     archive_url: std::sync::Arc::from("https://registry.example.test/demo.crate"),
                 }],
             }))

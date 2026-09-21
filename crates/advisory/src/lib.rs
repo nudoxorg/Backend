@@ -33,7 +33,7 @@ pub use version::{
     NormalizedVersion, PackageNormalizationError, VersionCompareError, matches, normalize_package,
     normalize_version, range_matches,
 };
-pub use wire::{AdvisoryDecisionDto, AdvisorySurfaceDto};
+pub use wire::{AdvisoryDecisionDto, AdvisoryPackageDto, AdvisorySurfaceDto};
 
 #[cfg(test)]
 mod tests {
@@ -242,8 +242,11 @@ unaffected = ["< 1.0.0"]
         ));
         let clean = AdvisoryObservation {
             advisories: Box::new([]),
+            coverage: observation.coverage,
+            freshness: observation.freshness,
+            offline: observation.offline,
             yanked: true,
-            ..observation
+            unlisted: observation.unlisted,
         };
         assert!(matches!(gate.decide(&clean), AcquisitionDecision::Warn(_)));
         let override_evidence = OverrideEvidence {
@@ -259,7 +262,7 @@ unaffected = ["< 1.0.0"]
     }
 
     #[test]
-    fn withdrawal_delta_is_auditable_and_blocks_acquisition() {
+    fn withdrawal_delta_is_auditable_without_reactivating_a_match() {
         let advisory = object();
         let key = advisory.key.canonical.clone();
         let mut journal = AdvisoryJournal::new();
@@ -313,7 +316,7 @@ unaffected = ["< 1.0.0"]
                 offline: OfflinePolicy::Warn
             })
             .decide(&observation),
-            AcquisitionDecision::Deny(_)
+            AcquisitionDecision::Warn(_)
         ));
         let encoded = serde_json::to_vec(&journal).expect("serialize journal");
         let restored: AdvisoryJournal = serde_json::from_slice(&encoded).expect("restore journal");
@@ -338,16 +341,25 @@ unaffected = ["< 1.0.0"]
             AcquisitionDecision::Deny(_)
         ));
         let cached = AdvisoryObservation {
+            advisories: observation.advisories.clone(),
             freshness: FreshnessState::Stale,
             offline: true,
             coverage: AdvisoryCoverage::Complete,
-            ..observation
+            yanked: observation.yanked,
+            unlisted: observation.unlisted,
         };
         assert!(matches!(
             (AcquisitionGate {
                 offline: OfflinePolicy::AllowCached
             })
             .decide(&cached),
+            AcquisitionDecision::Warn(_)
+        ));
+        assert!(matches!(
+            (AcquisitionGate {
+                offline: OfflinePolicy::Warn
+            })
+            .decide(&observation),
             AcquisitionDecision::Warn(_)
         ));
     }

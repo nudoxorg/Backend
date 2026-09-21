@@ -26,7 +26,8 @@ impl CommandSpec {
     pub const fn is_surface(self) -> bool {
         matches!(
             self.id,
-            CommandId::Read
+            CommandId::Advisory
+                | CommandId::Read
                 | CommandId::Diff
                 | CommandId::Explore
                 | CommandId::Package
@@ -80,7 +81,15 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 36] = [
+pub const COMMANDS: [CommandSpec; 37] = [
+    CommandSpec {
+        id: CommandId::Advisory,
+        name: "advisory",
+        title: "Security Advisory",
+        description: "Show advisory sources, affected ranges, freshness, coverage, and the acquisition decision for one package version.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Registry,
+    },
     CommandSpec {
         id: CommandId::Packages,
         name: "packages",
@@ -375,42 +384,43 @@ pub const COMMANDS: [CommandSpec; 36] = [
 #[must_use]
 pub fn command_spec(id: CommandId) -> CommandSpec {
     let index = match id {
-        CommandId::Packages => 0,
-        CommandId::Add => 1,
-        CommandId::Remove => 2,
-        CommandId::Document | CommandId::Show => 3,
-        CommandId::Source => 4,
-        CommandId::Related => 5,
-        CommandId::References => 6,
-        CommandId::Read => 7,
-        CommandId::Diff => 8,
-        CommandId::Outline => 9,
-        CommandId::Name | CommandId::Resolve => 10,
-        CommandId::Search => 11,
-        CommandId::Graph | CommandId::GraphQuery => 12,
-        CommandId::Health | CommandId::Revision => 13,
-        CommandId::Explore => 14,
-        CommandId::Package => 15,
-        CommandId::Dependents => 16,
-        CommandId::Owner => 17,
-        CommandId::IndexSearch => 18,
-        CommandId::PackageVersions => 19,
-        CommandId::SemanticVersions => 20,
-        CommandId::SelectSemanticVersion => 21,
-        CommandId::PackageProfile => 22,
-        CommandId::Subscribe => 23,
-        CommandId::Unsubscribe => 24,
-        CommandId::Subscriptions => 25,
-        CommandId::Releases => 26,
-        CommandId::Projects => 27,
-        CommandId::ProjectCreate => 28,
-        CommandId::ProjectDelete => 29,
-        CommandId::ProjectAdd => 30,
-        CommandId::ProjectRemove => 31,
-        CommandId::ProjectSync => 32,
-        CommandId::Tree => 33,
-        CommandId::TreeOpen => 34,
-        CommandId::TreeClose => 35,
+        CommandId::Advisory => 0,
+        CommandId::Packages => 1,
+        CommandId::Add => 2,
+        CommandId::Remove => 3,
+        CommandId::Document | CommandId::Show => 4,
+        CommandId::Source => 5,
+        CommandId::Related => 6,
+        CommandId::References => 7,
+        CommandId::Read => 8,
+        CommandId::Diff => 9,
+        CommandId::Outline => 10,
+        CommandId::Name | CommandId::Resolve => 11,
+        CommandId::Search => 12,
+        CommandId::Graph | CommandId::GraphQuery => 13,
+        CommandId::Health | CommandId::Revision => 14,
+        CommandId::Explore => 15,
+        CommandId::Package => 16,
+        CommandId::Dependents => 17,
+        CommandId::Owner => 18,
+        CommandId::IndexSearch => 19,
+        CommandId::PackageVersions => 20,
+        CommandId::SemanticVersions => 21,
+        CommandId::SelectSemanticVersion => 22,
+        CommandId::PackageProfile => 23,
+        CommandId::Subscribe => 24,
+        CommandId::Unsubscribe => 25,
+        CommandId::Subscriptions => 26,
+        CommandId::Releases => 27,
+        CommandId::Projects => 28,
+        CommandId::ProjectCreate => 29,
+        CommandId::ProjectDelete => 30,
+        CommandId::ProjectAdd => 31,
+        CommandId::ProjectRemove => 32,
+        CommandId::ProjectSync => 33,
+        CommandId::Tree => 34,
+        CommandId::TreeOpen => 35,
+        CommandId::TreeClose => 36,
     };
     COMMANDS[index]
 }

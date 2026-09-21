@@ -16,7 +16,7 @@ use crate::grammar::{ArgumentKind, ArgumentSpec, CommandGrammar, grammar_for};
 use backend_library::{
     CommandId, PackageCoordinate, PackageReference, ProductText, ProjectName, ProjectSelector,
     SemanticGenerationId, SemanticLanguageProfile, SurfaceCommand, TreeNodeId, TreeOpener,
-    TreeSubject, decode_id,
+    OverrideEvidence, TreeSubject, decode_id,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
@@ -402,6 +402,10 @@ fn option_node(invocation: &Invocation, name: &str) -> Result<Option<TreeNodeId>
 
 fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fault> {
     let command = match id {
+        CommandId::Advisory => SurfaceCommand::Advisory {
+            package: package(invocation, 0)?,
+            override_evidence: override_evidence(invocation)?,
+        },
         CommandId::Read => SurfaceCommand::Read {
             locators: locators(invocation)?,
         },
@@ -448,6 +452,50 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
         _ => return home_or_session(invocation, id),
     };
     admit(&command)
+}
+
+fn override_evidence(invocation: &Invocation) -> Result<Option<OverrideEvidence>, Fault> {
+    let actor = optional_text(invocation, "override-actor")?;
+    let reason = optional_text(invocation, "override-reason")?;
+    let policy_version = invocation.option("override-policy-version");
+    let expires_at = invocation.option("override-expires-at");
+    if actor.is_none() && reason.is_none() && policy_version.is_none() && expires_at.is_none() {
+        return Ok(None);
+    }
+    let actor = actor.ok_or_else(|| {
+        Fault::usage(
+            "override-actor",
+            "an override requires actor, reason, and policy version",
+        )
+    })?;
+    let reason = reason.ok_or_else(|| {
+        Fault::usage(
+            "override-reason",
+            "an override requires actor, reason, and policy version",
+        )
+    })?;
+    let policy_version = policy_version
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            Fault::usage(
+                "override-policy-version",
+                "policy version must be a positive whole number",
+            )
+        })?;
+    let expires_at = expires_at
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                Fault::usage("override-expires-at", "expiry must be a Unix timestamp")
+            })
+        })
+        .transpose()?;
+    Ok(Some(OverrideEvidence {
+        actor: actor.as_str().to_owned(),
+        reason: reason.as_str().to_owned(),
+        policy_version,
+        expires_at,
+    }))
 }
 
 fn home_or_session(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fault> {

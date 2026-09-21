@@ -27,6 +27,8 @@ pub enum AdvisoryCoverage {
     Partial,
     /// No authority could evaluate it.
     Unknown,
+    /// An authority was configured, but its feed was unavailable for this decision.
+    Unavailable,
 }
 
 /// Runtime state used by the acquisition gate.
@@ -66,6 +68,8 @@ pub enum PolicyReason {
     Advisory(AdvisoryStatus),
     /// Feed lacks complete coverage.
     IncompleteCoverage,
+    /// Configured advisory authority could not be reached.
+    UnavailableEvidence,
     /// Feed is stale.
     StaleEvidence,
     /// No cache exists while offline.
@@ -109,7 +113,6 @@ impl AcquisitionGate {
         for advisory in &observation.advisories {
             if advisory.is_withdrawn() {
                 reasons.push(PolicyReason::Advisory(AdvisoryStatus::Withdrawn));
-                blocked = true;
                 continue;
             }
             let statuses = advisory.statuses();
@@ -125,10 +128,19 @@ impl AcquisitionGate {
                 reasons.push(PolicyReason::Advisory(status));
             }
         }
-        if observation.coverage != AdvisoryCoverage::Complete {
-            reasons.push(PolicyReason::IncompleteCoverage);
-            if self.offline == OfflinePolicy::FailClosed {
-                blocked = true;
+        match observation.coverage {
+            AdvisoryCoverage::Complete => {}
+            AdvisoryCoverage::Partial | AdvisoryCoverage::Unknown => {
+                reasons.push(PolicyReason::IncompleteCoverage);
+                if self.offline == OfflinePolicy::FailClosed {
+                    blocked = true;
+                }
+            }
+            AdvisoryCoverage::Unavailable => {
+                reasons.push(PolicyReason::UnavailableEvidence);
+                if self.offline == OfflinePolicy::FailClosed {
+                    blocked = true;
+                }
             }
         }
         if matches!(
@@ -136,7 +148,7 @@ impl AcquisitionGate {
             FreshnessState::Stale | FreshnessState::Unknown
         ) {
             reasons.push(PolicyReason::StaleEvidence);
-            if observation.offline && self.offline == OfflinePolicy::FailClosed {
+            if self.offline == OfflinePolicy::FailClosed {
                 blocked = true;
             }
         }

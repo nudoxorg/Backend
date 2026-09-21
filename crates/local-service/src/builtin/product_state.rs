@@ -77,6 +77,20 @@ impl ProductState {
     ) -> Result<SurfaceReply, String> {
         command.admit().map_err(|error| error.to_string())?;
         let (reply, changed) = match command {
+            SurfaceCommand::Advisory {
+                package,
+                override_evidence,
+            } => {
+                let advisory = catalog
+                    .iter()
+                    .find(|record| record.coordinate == package)
+                    .map(|record| record.advisory.clone())
+                    .unwrap_or_else(backend_engine::AdvisoryPackageDto::unknown);
+                let advisory = override_evidence.map_or(advisory.clone(), |evidence| {
+                    advisory.with_override(evidence, unix_seconds())
+                });
+                (SurfaceReply::Advisory(advisory), false)
+            }
             SurfaceCommand::Read { locators } => {
                 (SurfaceReply::Read(read(view, &locators)?), false)
             }
@@ -444,6 +458,12 @@ impl ProductState {
         }
         Ok(count)
     }
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRecord]>, String> {

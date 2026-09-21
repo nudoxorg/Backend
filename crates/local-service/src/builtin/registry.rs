@@ -155,22 +155,8 @@ impl RegistryGateway {
                             )
                         }
                     },
-                    security: match published.facts.security() {
-                        backend_engine::registry::SecurityStanding::Unassessed => {
-                            backend_engine::RegistrySecurityStanding::Unassessed
-                        }
-                        backend_engine::registry::SecurityStanding::NoKnownAdvisory => {
-                            backend_engine::RegistrySecurityStanding::NoKnownAdvisory
-                        }
-                        backend_engine::registry::SecurityStanding::Affected {
-                            advisories,
-                            maximum_severity,
-                        } => backend_engine::RegistrySecurityStanding::Affected {
-                            advisories,
-                            maximum_severity,
-                        },
-                    },
                     facts_version: published.facts.version(),
+                    advisory: published.advisory.clone(),
                 })
             })
             .collect::<Result<Vec<_>, backend_engine::ProductAdmissionError>>()
@@ -192,6 +178,7 @@ impl RegistryGateway {
             config.policy,
             config.limits,
         )?;
+        let owner = owner.with_advisory_gate(config.advisory_gate);
         let service =
             AcquisitionService::from_owner(owner, workspace_root.join("registry-acquisition"))
                 .map_err(AcquisitionError::Io)?;

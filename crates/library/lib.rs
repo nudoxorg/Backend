@@ -34,6 +34,11 @@ pub use arrangement::QueryWork;
 pub use backend_compile::{
     DeclarationKind, SourceExcerpt, SourceExcerptExtent, SourceLanguage, SourceLocation,
 };
+pub use backend_advisory::{
+    AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto, AdvisoryPackageDto,
+    AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, AcquisitionDecision, FreshnessState,
+    NativeAdvisoryId, OverrideEvidence, PolicyReason, SeverityLevel,
+};
 pub use backend_semantic::{Read, ReadManifest, ReadSelector};
 pub use backend_version::{
     AdmittedProducerObservation, AuthorityScopeClaim, AuthorizedCompleteCoverage, CoverageWitness,
@@ -91,7 +96,7 @@ pub use surface::{
     PackageCoordinate, PackageReference, ProductAdmissionError, ProductText, ProjectId,
     ProjectName, ProjectRecord, ProjectSelector, ReferenceRecord, RegistryDownloadCount,
     RegistryEcosystem, RegistryMetadata, RegistryPackageRecord, RegistryReleaseStanding,
-    RegistrySecurityStanding, ReleaseRecord, SemanticConfidence, SemanticDeclarationIdentity,
+    ReleaseRecord, SemanticConfidence, SemanticDeclarationIdentity,
     SemanticGenerationId, SemanticLanguageProfile, SemanticLinkDelta, SemanticLinkEvidence,
     SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan, SemanticVersionRecord,
     SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeId, TreeNodeRecord, TreeOpener,

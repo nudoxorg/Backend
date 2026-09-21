@@ -1,6 +1,7 @@
 //! Typed commands and results owned by the durable product service.
 
 use crate::CommandId;
+use backend_advisory::{AdvisoryPackageDto, OverrideEvidence};
 pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
@@ -354,6 +355,13 @@ impl SemanticVersionRecord {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum SurfaceCommand {
+    /// Read the complete advisory decision for one exact package version.
+    Advisory {
+        /// Package locator.
+        package: PackageReference,
+        /// Optional checked override for a blocked decision.
+        override_evidence: Option<OverrideEvidence>,
+    },
     /// Read several declarations independently.
     Read {
         /// Canonical declaration labels.
@@ -505,6 +513,7 @@ impl SurfaceCommand {
     #[must_use]
     pub const fn id(&self) -> CommandId {
         match self {
+            Self::Advisory { .. } => CommandId::Advisory,
             Self::Read { .. } => CommandId::Read,
             Self::References { .. } => CommandId::References,
             Self::Diff { .. } => CommandId::Diff,
@@ -833,10 +842,10 @@ pub struct RegistryPackageRecord {
     pub standing: RegistryReleaseStanding,
     /// Latest download observation, with missing data kept distinct from zero.
     pub downloads: RegistryDownloadCount,
-    /// Security evaluation at the recorded advisory frontier.
-    pub security: RegistrySecurityStanding,
-    /// Content identity of the three mutable fact groups above.
+    /// Content identity of the registry fact groups above.
     pub facts_version: [u8; 32],
+    /// Complete typed advisory evidence and acquisition decision for this version.
+    pub advisory: AdvisoryPackageDto,
 }
 
 /// Registry policy applied to an immutable release.
@@ -867,23 +876,6 @@ pub enum RegistryDownloadCount {
     Approximate(u64),
     /// Registry exposes no usable count, with a stable reason token.
     NotReported(ProductText),
-}
-
-/// Advisory evaluation at a specific versioned frontier.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "kebab-case")]
-pub enum RegistrySecurityStanding {
-    /// No advisory authority has evaluated the release.
-    Unassessed,
-    /// No active advisory matches at the recorded frontier.
-    NoKnownAdvisory,
-    /// Active canonical advisories match this release.
-    Affected {
-        /// Alias-coalesced advisory count.
-        advisories: u32,
-        /// Highest normalized severity, 0 through 4.
-        maximum_severity: u8,
-    },
 }
 
 /// Availability of registry facts not present in every configured feed.
@@ -956,6 +948,8 @@ pub struct TreeNodeRecord {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
 pub enum SurfaceReply {
+    /// Complete advisory facts and typed acquisition decision.
+    Advisory(AdvisoryPackageDto),
     /// Per-locator declaration results.
     Read(Box<[DeclarationRecord]>),
     /// Source-verified uses of one declaration.
@@ -1023,6 +1017,7 @@ impl SurfaceReply {
     #[must_use]
     pub const fn id(&self) -> CommandId {
         match self {
+            Self::Advisory(_) => CommandId::Advisory,
             Self::Read(_) => CommandId::Read,
             Self::References { .. } => CommandId::References,
             Self::Diff(_) => CommandId::Diff,
@@ -1065,6 +1060,7 @@ impl SurfaceReply {
             return Err(ProductAdmissionError::CommandMismatch);
         }
         let count = match self {
+            Self::Advisory(_) => 1,
             Self::Read(v) => v.len(),
             Self::References { references, .. } => references.len(),
             Self::Diff(rows) => rows.iter().try_fold(rows.len(), |count, row| {
@@ -1123,6 +1119,8 @@ impl SurfaceReply {
             Self::Read(records) => records.iter().fold(0_usize, |bound, record| {
                 bound.saturating_add(declaration_record_bound(record))
             }),
+            Self::Advisory(value) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(value).map_or(0, |bytes| bytes.len())),
             Self::References { target, references } => references.iter().fold(
                 fixed_record_bound().saturating_add(text_bound(target)),
                 |bound, record| {
@@ -1237,6 +1235,7 @@ fn registry_package_record_bound(record: &RegistryPackageRecord) -> usize {
         .saturating_add(package_reference_bound(&record.coordinate))
         .saturating_add(text_bound(&record.name))
         .saturating_add(text_bound(&record.version))
+        .saturating_add(serde_json::to_vec(&record.advisory).map_or(0, |bytes| bytes.len()))
 }
 
 fn subscription_record_bound(record: &SubscriptionRecord) -> usize {
@@ -1312,5 +1311,40 @@ impl core::fmt::Display for ProductAdmissionError {
             Self::DiffShape => "semantic diff has inconsistent identities or evidence",
             Self::SemanticVersionShape => "semantic version selection is inconsistent",
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advisory_command_and_reply_round_trip_with_safe_unknown_state() {
+        let command = SurfaceCommand::Advisory {
+            package: PackageReference::parse("pkg:cargo/demo@1.0.0").expect("package"),
+            override_evidence: Some(OverrideEvidence {
+                actor: "release-bot".to_owned(),
+                reason: "reviewed emergency pin".to_owned(),
+                policy_version: 3,
+                expires_at: Some(4_102_444_800),
+            }),
+        };
+        command.admit().expect("advisory command admission");
+        let command_json = serde_json::to_vec(&command).expect("command encoding");
+        let decoded: SurfaceCommand = serde_json::from_slice(&command_json).expect("command decoding");
+        assert_eq!(decoded, command);
+
+        let reply = SurfaceReply::Advisory(AdvisoryPackageDto::unknown());
+        reply.admit(CommandId::Advisory).expect("advisory reply admission");
+        let reply_json = serde_json::to_vec(&reply).expect("reply encoding");
+        let decoded: SurfaceReply = serde_json::from_slice(&reply_json).expect("reply decoding");
+        assert_eq!(decoded, reply);
+        let SurfaceReply::Advisory(dto) = decoded else {
+            panic!("advisory reply shape");
+        };
+        assert!(matches!(
+            dto.decision,
+            backend_advisory::AcquisitionDecision::Deny(_)
+        ));
     }
 }

@@ -274,6 +274,8 @@ pub enum AdvisoryStatus {
     UnknownCoverage,
     /// Source data has exceeded freshness policy.
     Stale,
+    /// A configured source could not be reached for this release.
+    Unavailable,
 }
 
 /// One fully admitted, versioned advisory object.

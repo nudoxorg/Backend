@@ -15,7 +15,7 @@
 
 use super::registry::{Dependents, Loadable, Package, PackageRow, Spelling, size_label};
 use backend_library::{
-    PackageReference, RegistryDownloadCount, RegistryEcosystem, RegistrySecurityStanding,
+    AdvisoryPackageDto, PackageReference, RegistryDownloadCount, RegistryEcosystem,
 };
 use backend_present::Fault;
 use backend_present::Language;
@@ -356,7 +356,7 @@ pub(crate) struct Release {
     bytes: u64,
     published: Option<Stamp>,
     standing: Standing,
-    security: RegistrySecurityStanding,
+    advisory: AdvisoryPackageDto,
 }
 
 impl Release {
@@ -385,9 +385,9 @@ impl Release {
         self.standing
     }
 
-    /// Returns the advisory evaluation recorded for this release.
-    pub(crate) const fn security(&self) -> RegistrySecurityStanding {
-        self.security
+    /// Returns the versioned advisory decision recorded for this release.
+    pub(crate) const fn advisory(&self) -> &AdvisoryPackageDto {
+        &self.advisory
     }
 }
 
@@ -1029,7 +1029,7 @@ fn release_of(row: &PackageRow) -> Release {
             backend_library::RegistryReleaseStanding::Retracted => Standing::Retracted,
             backend_library::RegistryReleaseStanding::Removed => Standing::Removed,
         },
-        security: row.security(),
+        advisory: row.advisory().clone(),
     }
 }
 
@@ -1486,7 +1486,7 @@ fn releases(
             } else {
                 Standing::Published
             },
-            security: RegistrySecurityStanding::Unassessed,
+            advisory: AdvisoryPackageDto::unknown(),
         });
         numbers = step_down(numbers, draw);
         day = day.saturating_sub(i64::try_from(draw.between(9, 160)).unwrap_or(30));

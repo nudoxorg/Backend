@@ -427,6 +427,7 @@ impl EcosystemAdapter {
                 integrity: ArchiveIntegrity::Native(release.checksum.clone()),
                 provenance: release.provenance,
                 facts: release.facts,
+                advisory: None,
                 archive_url: Arc::from(release.archive_url.as_str()),
             })
             .collect();
@@ -601,6 +602,7 @@ impl EcosystemAdapter {
                 integrity: ArchiveIntegrity::Native(release.checksum.clone()),
                 provenance: release.provenance,
                 facts: release.facts,
+                advisory: None,
                 archive_url: Arc::from(release.archive_url.as_str()),
             })
             .collect();

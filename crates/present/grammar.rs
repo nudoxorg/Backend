@@ -256,7 +256,8 @@ impl CommandGrammar {
             | CommandId::ProjectDelete
             | CommandId::ProjectRemove
             | CommandId::TreeClose => true,
-            CommandId::Packages
+            CommandId::Advisory
+            | CommandId::Packages
             | CommandId::Add
             | CommandId::Document
             | CommandId::Show
@@ -392,7 +393,24 @@ const LIMIT: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 36] = [
+pub const GRAMMARS: [CommandGrammar; 37] = [
+    CommandGrammar {
+        name: "advisory",
+        tool: "backend.advisory",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "package",
+            ArgumentKind::PackageReference,
+            "A pinned purl or an exact local package label.",
+        )],
+        options: &[
+            ArgumentSpec::optional("override-actor", ArgumentKind::Text, "Auditable actor identity for an exceptional allow."),
+            ArgumentSpec::optional("override-reason", ArgumentKind::Text, "Why the blocked release is being reviewed."),
+            ArgumentSpec::optional("override-policy-version", ArgumentKind::Text, "Positive policy version that granted the override."),
+            ArgumentSpec::optional("override-expires-at", ArgumentKind::Text, "Optional Unix timestamp at which the override expires."),
+        ],
+        when: "Use before adding a package to inspect source IDs, aliases, affected and fixed ranges, freshness, coverage, and the typed acquisition decision.",
+    },
     CommandGrammar {
         name: "packages",
         tool: "backend.packages",

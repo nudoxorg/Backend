@@ -24,7 +24,7 @@ use crate::store::registry::{
 };
 use backend_library::{
     PackageReference, ProductText, RegistryDownloadCount, RegistryEcosystem, RegistryPackageRecord,
-    RegistryReleaseStanding, RegistrySecurityStanding, SurfaceCommand, SurfaceReply,
+    RegistryReleaseStanding, SurfaceCommand, SurfaceReply,
 };
 use backend_present::{
     CauseSlug, Fault, FaultSlug, Identity, KeyTag, Readiness, RowCount, Shelf, ShelfEntry,
@@ -49,8 +49,8 @@ fn record(
         downloads: RegistryDownloadCount::NotReported(
             ProductText::new("unsupported").expect("reason"),
         ),
-        security: RegistrySecurityStanding::Unassessed,
         facts_version: [0; 32],
+        advisory: backend_library::AdvisoryPackageDto::unknown(),
     }
 }
 

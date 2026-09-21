@@ -27,6 +27,8 @@ pub struct ReferenceFact {
 /// Closed command identity shared by CLI, MCP, and desktop transports.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CommandId {
+    /// Read one package's advisory decision and evidence.
+    Advisory,
     /// List selected packages.
     Packages,
     /// Add one package.

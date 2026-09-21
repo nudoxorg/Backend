@@ -771,6 +771,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-advisory"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "backend-cli"
 version = "0.1.0"
 dependencies = [
@@ -887,6 +897,7 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
+ "backend-advisory",
  "backend-compile",
  "backend-execution",
  "backend-extension-qdrant",
@@ -1203,6 +1214,7 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
+ "backend-advisory",
  "backend-compile",
  "backend-execution",
  "backend-flow",
