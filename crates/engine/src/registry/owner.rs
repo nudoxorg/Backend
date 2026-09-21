@@ -4,14 +4,17 @@ use std::{
     collections::BTreeMap,
     fmt,
     fs::{self, File},
-    io::{self, Read, Seek, SeekFrom},
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
 use crate::{
-    acquisition::{ContentAddressedStore, ContentStoreError, RawArchiveObjectId, TransferId},
+    acquisition::{
+        ContentAddressedStore, ContentStoreError, RawArchiveObjectId, TransferId,
+        TransferResetReason,
+    },
     effects::{EffectKey, effect_key},
     fault::{Boundary, Faults},
     journal::{HashChainJournal, JournalError},
@@ -857,8 +860,11 @@ impl RegistryOwner {
                     continue;
                 }
             }
+            let stage = self.archive_stage();
+            let transfer = stage.open_transfer(package)?;
+            let checkpoint = transfer.checkpoint();
             let artifact = match transport
-                .fetch_archive(package)
+                .fetch_archive_resumable(package, checkpoint)
                 .map_err(AcquisitionError::Transport)?
             {
                 TransportResult::Available(artifact) => artifact,
@@ -875,7 +881,8 @@ impl RegistryOwner {
             total = total
                 .checked_add(archive_bytes)
                 .ok_or(AcquisitionError::Bounds)?;
-            let publication = self.verify_and_store(package, artifact, total, advisory)?;
+            let publication = stage
+                .verify_and_store_with_transfer(package, artifact, total, advisory, transfer)?;
             publications.push(publication);
         }
         Ok(PageAcquisition::Ready(publications))
@@ -952,6 +959,16 @@ pub(crate) struct ArchiveStageContext {
 }
 
 impl ArchiveStageContext {
+    pub(crate) fn open_transfer(
+        &self,
+        package: &super::RemotePackage,
+    ) -> Result<crate::acquisition::ResumableTransfer, AcquisitionError> {
+        let transfer_id = archive_transfer_id(package);
+        self.objects
+            .resume_or_start(transfer_id, None, None)
+            .map_err(content_store_error)
+    }
+
     pub(crate) fn verify_and_store(
         &self,
         package: &super::RemotePackage,
@@ -974,31 +991,72 @@ impl ArchiveStageContext {
                     .map_err(|_| AcquisitionError::Bounds)?,
             });
         }
+        let transfer = self.open_transfer(package)?;
+        self.verify_and_store_with_transfer(package, artifact, page_bytes, advisory, transfer)
+    }
+
+    pub(crate) fn verify_and_store_with_transfer(
+        &self,
+        package: &super::RemotePackage,
+        artifact: super::ArchiveArtifact,
+        page_bytes: usize,
+        advisory: AdvisoryPackageDto,
+        mut transfer: crate::acquisition::ResumableTransfer,
+    ) -> Result<PublishedPackage, AcquisitionError> {
+        let bytes = usize::try_from(artifact.length()).map_err(|_| AcquisitionError::Bounds)?;
+        if bytes > self.limits.max_archive_bytes {
+            return Err(AcquisitionError::Overrun {
+                measured: u64::try_from(bytes).map_err(|_| AcquisitionError::Bounds)?,
+                limit: u64::try_from(self.limits.max_archive_bytes)
+                    .map_err(|_| AcquisitionError::Bounds)?,
+            });
+        }
+        if page_bytes > self.limits.max_page_archive_bytes {
+            return Err(AcquisitionError::Overrun {
+                measured: u64::try_from(page_bytes).map_err(|_| AcquisitionError::Bounds)?,
+                limit: u64::try_from(self.limits.max_page_archive_bytes)
+                    .map_err(|_| AcquisitionError::Bounds)?,
+            });
+        }
+        let bytes = u64::try_from(bytes).map_err(|_| AcquisitionError::Bounds)?;
+        let offset = transfer.resume_offset();
+        let start = artifact.start_offset();
+        if let Some(reason) = artifact.reset_reason() {
+            transfer
+                .restart_from_zero(Some(reason))
+                .map_err(content_store_error)?;
+        } else if start == 0 && offset != 0 {
+            // A custom adapter or a server that ignored Range returned a full
+            // representation. Replaying it from zero is safe; appending it to
+            // the old prefix would create a sparse/overlapping object.
+            transfer
+                .restart_from_zero(Some(TransferResetReason::RangeIgnored))
+                .map_err(content_store_error)?;
+        }
+        if transfer.resume_offset() != start {
+            return Err(AcquisitionError::CorruptJournal);
+        }
+        if start != 0 && artifact.validator().is_none() {
+            return Err(AcquisitionError::Transport(TransportFailure::Protocol));
+        }
+        if let Some(validator) = artifact.validator().cloned() {
+            transfer
+                .set_validator(Some(validator))
+                .map_err(content_store_error)?;
+        }
+        let total_length = artifact.length();
+        transfer
+            .bind_expected_length(total_length)
+            .map_err(content_store_error)?;
         let mut reader = artifact
             .into_reader(self.limits.max_archive_bytes)
             .map_err(AcquisitionError::Transport)?;
-        let bytes = u64::try_from(bytes).map_err(|_| AcquisitionError::Bounds)?;
-        let registry = super::admit_registry_coordinate(&package.coordinate)?;
-        let mut transfer_key = Vec::with_capacity(
-            package.coordinate.as_str().len() + std::mem::size_of_val(&package.integrity_version()),
-        );
-        transfer_key.extend_from_slice(package.coordinate.as_str().as_bytes());
-        transfer_key.extend_from_slice(&package.integrity_version());
-        let transfer_id = TransferId::from_parts(&transfer_key, None, Some(bytes));
-        let mut transfer = self
-            .objects
-            .resume_or_start(transfer_id, None, Some(bytes))
-            .map_err(content_store_error)?;
-        let offset = transfer.resume_offset();
-        if offset > reader.length() {
-            return Err(AcquisitionError::CorruptJournal);
-        }
-        reader
-            .seek(SeekFrom::Start(offset))
-            .map_err(|_| AcquisitionError::Transport(TransportFailure::Protocol))?;
         transfer
-            .append(&mut reader, bytes)
+            .append(&mut reader, total_length)
             .map_err(content_store_error)?;
+        if transfer.resume_offset() != total_length {
+            return Err(AcquisitionError::Transport(TransportFailure::Protocol));
+        }
         if let Err(error) = self.faults.trip(Boundary::ObjectWrite) {
             return Err(AcquisitionError::Injected(error));
         }
@@ -1017,6 +1075,7 @@ impl ArchiveStageContext {
             return Err(AcquisitionError::CorruptJournal);
         }
         let capability = capability.ok_or(AcquisitionError::CorruptJournal)?;
+        let registry = super::admit_registry_coordinate(&package.coordinate)?;
         Ok(PublishedPackage {
             coordinate: package.coordinate.clone(),
             registry,
@@ -1051,11 +1110,21 @@ fn content_store_error(error: ContentStoreError) -> AcquisitionError {
         }
         ContentStoreError::LengthMismatch { .. }
         | ContentStoreError::TransferStateMismatch
+        | ContentStoreError::TransferValidatorChanged
         | ContentStoreError::TransferBusy
         | ContentStoreError::CorruptObject { .. }
         | ContentStoreError::InvalidArchivePath
         | ContentStoreError::DuplicateArchivePath => AcquisitionError::CorruptJournal,
     }
+}
+
+fn archive_transfer_id(package: &super::RemotePackage) -> TransferId {
+    let mut transfer_key = Vec::with_capacity(
+        package.coordinate.as_str().len() + std::mem::size_of_val(&package.integrity_version()),
+    );
+    transfer_key.extend_from_slice(package.coordinate.as_str().as_bytes());
+    transfer_key.extend_from_slice(&package.integrity_version());
+    TransferId::from_parts(&transfer_key, None, None)
 }
 
 fn verify_receipt_objects(

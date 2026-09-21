@@ -23,8 +23,9 @@ use std::{
 const CHUNK_BYTES: usize = 64 * 1024;
 const ID_BYTES: usize = 32;
 const OBJECT_DOMAIN: &[u8] = b"backend.acquisition.archive.v1\0";
-const TRANSFER_MAGIC: &[u8; 8] = b"NDOXTR01";
+const TRANSFER_MAGIC: &[u8; 8] = b"NDOXTR02";
 const TEMP_TTL: Duration = Duration::from_secs(15 * 60);
+const MAX_VALIDATOR_BYTES: usize = 1024;
 
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -106,6 +107,9 @@ pub enum ContentStoreError {
     },
     /// A resumable transfer has inconsistent state and bytes.
     TransferStateMismatch,
+    /// A resumable response was authenticated by a different representation
+    /// validator than the bytes already persisted for the transfer.
+    TransferValidatorChanged,
     /// Another process or thread owns the transfer lease.
     TransferBusy,
     /// A claimed object on disk failed an explicit integrity verification.
@@ -148,6 +152,9 @@ impl fmt::Display for ContentStoreError {
             }
             Self::TransferStateMismatch => {
                 formatter.write_str("resumable transfer state is inconsistent")
+            }
+            Self::TransferValidatorChanged => {
+                formatter.write_str("resumable transfer representation validator changed")
             }
             Self::TransferBusy => {
                 formatter.write_str("resumable transfer is owned by another writer")
@@ -881,8 +888,127 @@ impl TransferId {
     }
 }
 
-/// Durable progress exposed to a range-capable transport adapter.
+/// HTTP representation validators persisted alongside an incomplete transfer.
+///
+/// The raw header values are retained because `If-Range` has deliberately
+/// different rules for strong entity tags and HTTP dates.  The transport
+/// chooses the strongest usable value when it constructs a request.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct TransferValidator {
+    etag: Option<Box<str>>,
+    last_modified: Option<Box<str>>,
+}
+
+impl TransferValidator {
+    /// Creates a validator from response header values, dropping empty values.
+    #[must_use]
+    pub fn new(etag: Option<&str>, last_modified: Option<&str>) -> Option<Self> {
+        let etag = bounded_header(etag);
+        let last_modified = bounded_http_date(last_modified);
+        (etag.is_some() || last_modified.is_some()).then_some(Self {
+            etag,
+            last_modified,
+        })
+    }
+
+    /// Returns the entity tag, if the origin supplied one.
+    #[must_use]
+    pub fn etag(&self) -> Option<&str> {
+        self.etag.as_deref()
+    }
+
+    /// Returns the last-modified date, if the origin supplied one.
+    #[must_use]
+    pub fn last_modified(&self) -> Option<&str> {
+        self.last_modified.as_deref()
+    }
+
+    /// Returns a safe `If-Range` value. Weak entity tags cannot be used for
+    /// range validation, so a last-modified date is preferred in that case.
+    #[must_use]
+    pub fn if_range(&self) -> Option<&str> {
+        self.etag
+            .as_deref()
+            .filter(|value| is_strong_etag(value))
+            .or(self.last_modified())
+    }
+}
+
+fn bounded_header(value: Option<&str>) -> Option<Box<str>> {
+    let value = value?.trim();
+    (!value.is_empty()
+        && value.len() <= MAX_VALIDATOR_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii() && byte >= 0x20 && byte != 0x7f))
+    .then(|| value.into())
+}
+
+fn is_strong_etag(value: &str) -> bool {
+    value.len() >= 2 && !value.starts_with("W/") && value.starts_with('"') && value.ends_with('"')
+}
+
+fn bounded_http_date(value: Option<&str>) -> Option<Box<str>> {
+    let value = bounded_header(value)?;
+    let bytes = value.as_bytes();
+    if bytes.len() != 29
+        || bytes[3] != b','
+        || bytes[4] != b' '
+        || bytes[7] != b' '
+        || bytes[11] != b' '
+        || bytes[16] != b' '
+        || bytes[19] != b':'
+        || bytes[22] != b':'
+        || bytes[25] != b' '
+        || &bytes[26..] != b"GMT"
+        || !bytes[..3].iter().all(u8::is_ascii_alphabetic)
+        || !bytes[5..7].iter().all(u8::is_ascii_digit)
+        || !bytes[8..11].iter().all(u8::is_ascii_alphabetic)
+        || !bytes[12..16].iter().all(u8::is_ascii_digit)
+        || !bytes[17..19].iter().all(u8::is_ascii_digit)
+        || !bytes[20..22].iter().all(u8::is_ascii_digit)
+        || !bytes[23..25].iter().all(u8::is_ascii_digit)
+    {
+        return None;
+    }
+    Some(value)
+}
+
+/// Why an in-flight response forces a transfer to restart at byte zero.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransferResetReason {
+    /// The origin supplied a different representation validator.
+    ValidatorChanged,
+    /// The origin ignored a requested range and returned a full body.
+    RangeIgnored,
+}
+
+impl TransferResetReason {
+    /// Stable edge label for telemetry, diagnostics, and quarantine names.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::ValidatorChanged => "validator-change",
+            Self::RangeIgnored => "range-ignored",
+        }
+    }
+
+    const fn quarantine_prefix(self) -> bool {
+        matches!(self, Self::ValidatorChanged)
+    }
+}
+
+/// Byte accounting for one archive transfer attempt.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TransferTelemetry {
+    /// Bytes already present locally when the transfer was opened.
+    pub resumed_bytes: u64,
+    /// Bytes read from the current upstream response.
+    pub downloaded_bytes: u64,
+}
+
+/// Durable progress exposed to a range-capable transport adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransferCheckpoint {
     /// Transfer identity.
     pub id: TransferId,
@@ -892,6 +1018,8 @@ pub struct TransferCheckpoint {
     pub expected_length: Option<u64>,
     /// Bytes already durably appended.
     pub received: u64,
+    /// Representation validator authenticated for the persisted prefix.
+    pub validator: Option<TransferValidator>,
 }
 
 /// A durable append-only transfer that survives process restart.
@@ -904,6 +1032,7 @@ pub struct ResumableTransfer {
     owner_token: [u8; ID_BYTES],
     file: Option<File>,
     hasher: Option<Hasher>,
+    telemetry: TransferTelemetry,
     finished: bool,
 }
 
@@ -939,16 +1068,36 @@ impl ResumableTransfer {
                 .write(true)
                 .append(true)
                 .open(&data_path)?;
-            let received = file.metadata()?.len();
-            if let Some(saved) = read_checkpoint(&state_path)? {
+            let file_length = file.metadata()?.len();
+            let saved_checkpoint = read_checkpoint(&state_path)?;
+            let persisted_length = saved_checkpoint
+                .as_ref()
+                .and_then(|saved| saved.expected_length);
+            if let Some(saved) = &saved_checkpoint {
                 if saved.id != id
                     || saved.expected != expected
-                    || saved.expected_length != expected_length
-                    || saved.received != received
+                    || expected_length.is_some_and(|length| saved.expected_length != Some(length))
+                    || saved.received > file_length
                 {
                     return Err(ContentStoreError::TransferStateMismatch);
                 }
+                // The checkpoint is the commit record for each append.  A
+                // kill between durable data and durable checkpoint leaves an
+                // uncommitted tail; discard only that tail and resume from
+                // the last authenticated offset.
+                if file_length > saved.received {
+                    file.set_len(saved.received)?;
+                    file.sync_data()?;
+                }
+            } else if file_length != 0 {
+                // Bytes without a checkpoint were never authenticated by the
+                // transfer protocol. Treat them as an interrupted first
+                // write instead of admitting an orphaned prefix.
+                file.set_len(0)?;
+                file.sync_data()?;
             }
+            let received = saved_checkpoint.as_ref().map_or(0, |saved| saved.received);
+            let expected_length = expected_length.or(persisted_length);
             if expected_length.is_some_and(|length| received > length) {
                 return Err(ContentStoreError::LengthMismatch {
                     expected: expected_length.unwrap_or(received),
@@ -972,8 +1121,9 @@ impl ResumableTransfer {
                 expected,
                 expected_length,
                 received,
+                validator: saved_checkpoint.and_then(|saved| saved.validator),
             };
-            write_checkpoint(&state_path, checkpoint)?;
+            write_checkpoint(&state_path, &checkpoint)?;
             Ok(Self {
                 store: store.clone(),
                 checkpoint,
@@ -983,6 +1133,10 @@ impl ResumableTransfer {
                 owner_token,
                 file: Some(file),
                 hasher: Some(hasher),
+                telemetry: TransferTelemetry {
+                    resumed_bytes: received,
+                    downloaded_bytes: 0,
+                },
                 finished: false,
             })
         })();
@@ -1000,8 +1154,99 @@ impl ResumableTransfer {
 
     /// Returns the latest durable checkpoint.
     #[must_use]
-    pub const fn checkpoint(&self) -> TransferCheckpoint {
-        self.checkpoint
+    pub fn checkpoint(&self) -> TransferCheckpoint {
+        self.checkpoint.clone()
+    }
+
+    /// Returns the validator bound to the persisted prefix.
+    #[must_use]
+    pub fn validator(&self) -> Option<&TransferValidator> {
+        self.checkpoint.validator.as_ref()
+    }
+
+    /// Returns byte accounting for this transfer handle.
+    #[must_use]
+    pub const fn telemetry(&self) -> TransferTelemetry {
+        self.telemetry
+    }
+
+    /// Binds the representation validator before appending a response body.
+    pub fn set_validator(
+        &mut self,
+        validator: Option<TransferValidator>,
+    ) -> Result<(), ContentStoreError> {
+        if self.checkpoint.received != 0
+            && self.checkpoint.validator.is_some()
+            && self.checkpoint.validator != validator
+        {
+            return Err(ContentStoreError::TransferValidatorChanged);
+        }
+        self.checkpoint.validator = validator;
+        write_checkpoint(&self.state_path, &self.checkpoint)
+    }
+
+    /// Binds the authenticated final extent once a response exposes it.
+    pub fn bind_expected_length(&mut self, length: u64) -> Result<(), ContentStoreError> {
+        if let Some(expected) = self.checkpoint.expected_length
+            && expected != length
+        {
+            return Err(ContentStoreError::LengthMismatch {
+                expected,
+                actual: length,
+            });
+        }
+        if self.checkpoint.received > length {
+            return Err(ContentStoreError::LengthMismatch {
+                expected: length,
+                actual: self.checkpoint.received,
+            });
+        }
+        self.checkpoint.expected_length = Some(length);
+        write_checkpoint(&self.state_path, &self.checkpoint)
+    }
+
+    /// Restarts the transfer at byte zero, preserving no unvalidated prefix.
+    pub fn restart_from_zero(
+        &mut self,
+        reason: Option<TransferResetReason>,
+    ) -> Result<(), ContentStoreError> {
+        let had_prefix = self.checkpoint.received != 0;
+        if had_prefix {
+            // Publish the reset in the checkpoint before moving or truncating
+            // bytes. A kill in either window then reopens as an empty transfer
+            // and can safely discard any uncommitted old tail.
+            self.checkpoint.received = 0;
+            self.checkpoint.validator = None;
+            if reason.is_some() {
+                self.checkpoint.expected_length = None;
+            }
+            write_checkpoint(&self.state_path, &self.checkpoint)?;
+            if let Some(reason) = reason
+                && reason.quarantine_prefix()
+            {
+                self.quarantine_prefix(reason)?;
+            }
+        }
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| ContentStoreError::Io(io::Error::other("transfer is closed")))?;
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        self.checkpoint.received = 0;
+        self.checkpoint.validator = None;
+        if reason.is_some() {
+            // A validator change means this is a different representation;
+            // its final extent must be learned from the new response.
+            self.checkpoint.expected_length = None;
+        }
+        self.telemetry.resumed_bytes = 0;
+        self.hasher = Some({
+            let mut hasher = Hasher::new();
+            hasher.update(OBJECT_DOMAIN);
+            hasher
+        });
+        write_checkpoint(&self.state_path, &self.checkpoint)
     }
 
     /// Renews the transfer lease while a remote range request is in flight.
@@ -1066,7 +1311,7 @@ impl ResumableTransfer {
                 return Err(error.into());
             }
             self.checkpoint.received = next;
-            if let Err(error) = write_checkpoint(&self.state_path, self.checkpoint) {
+            if let Err(error) = write_checkpoint(&self.state_path, &self.checkpoint) {
                 self.checkpoint.received = previous;
                 self.rollback_append(previous)?;
                 return Err(error);
@@ -1075,6 +1320,8 @@ impl ResumableTransfer {
                 .as_mut()
                 .ok_or_else(|| ContentStoreError::Io(io::Error::other("transfer has no digest")))?
                 .update(&buffer[..read]);
+            self.telemetry.downloaded_bytes =
+                self.telemetry.downloaded_bytes.saturating_add(read as u64);
         }
         Ok(self.checkpoint.received)
     }
@@ -1086,6 +1333,27 @@ impl ResumableTransfer {
             .ok_or_else(|| ContentStoreError::Io(io::Error::other("transfer is closed")))?;
         file.set_len(previous)?;
         file.seek(SeekFrom::End(0))?;
+        Ok(())
+    }
+
+    fn quarantine_prefix(&mut self, reason: TransferResetReason) -> Result<(), ContentStoreError> {
+        if let Some(file) = self.file.take() {
+            file.sync_all()?;
+        }
+        let destination = self.store.root.join("quarantine").join(format!(
+            "{}.{}.prefix",
+            hex(&self.owner_token),
+            reason.code()
+        ));
+        fs::rename(&self.data_path, destination)?;
+        self.file = Some(
+            OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .append(true)
+                .open(&self.data_path)?,
+        );
         Ok(())
     }
 
@@ -1239,8 +1507,8 @@ fn acquire_transfer_owner(path: &Path, token: [u8; ID_BYTES]) -> Result<(), Cont
     }
 }
 
-fn write_checkpoint(path: &Path, checkpoint: TransferCheckpoint) -> Result<(), ContentStoreError> {
-    let mut bytes = Vec::with_capacity(8 + ID_BYTES + 1 + ID_BYTES + 8 + 8);
+fn write_checkpoint(path: &Path, checkpoint: &TransferCheckpoint) -> Result<(), ContentStoreError> {
+    let mut bytes = Vec::with_capacity(8 + ID_BYTES + 1 + ID_BYTES + 8 + 8 + 2 + 2 + 16_384);
     bytes.extend_from_slice(TRANSFER_MAGIC);
     bytes.extend_from_slice(&checkpoint.id.0);
     match checkpoint.expected {
@@ -1255,6 +1523,22 @@ fn write_checkpoint(path: &Path, checkpoint: TransferCheckpoint) -> Result<(), C
     }
     bytes.extend_from_slice(&checkpoint.expected_length.unwrap_or(u64::MAX).to_be_bytes());
     bytes.extend_from_slice(&checkpoint.received.to_be_bytes());
+    for value in [
+        checkpoint
+            .validator
+            .as_ref()
+            .and_then(|validator| validator.etag()),
+        checkpoint
+            .validator
+            .as_ref()
+            .and_then(|validator| validator.last_modified()),
+    ] {
+        let value = value.unwrap_or_default().as_bytes();
+        let length =
+            u16::try_from(value.len()).map_err(|_| ContentStoreError::TransferStateMismatch)?;
+        bytes.extend_from_slice(&length.to_be_bytes());
+        bytes.extend_from_slice(value);
+    }
     let temporary = path.with_extension("state.tmp");
     {
         let mut file = OpenOptions::new()
@@ -1275,8 +1559,8 @@ fn read_checkpoint(path: &Path) -> Result<Option<TransferCheckpoint>, ContentSto
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let expected_length = 8 + ID_BYTES + 1 + ID_BYTES + 8 + 8;
-    if bytes.len() != expected_length || &bytes[..8] != TRANSFER_MAGIC {
+    const PREFIX: usize = 8 + ID_BYTES + 1 + ID_BYTES + 8 + 8;
+    if bytes.len() < PREFIX || &bytes[..8] != TRANSFER_MAGIC {
         return Err(ContentStoreError::TransferStateMismatch);
     }
     let mut id = [0; ID_BYTES];
@@ -1290,13 +1574,54 @@ fn read_checkpoint(path: &Path) -> Result<Option<TransferCheckpoint>, ContentSto
     let mut extent = [0; 8];
     extent.copy_from_slice(&bytes[9 + ID_BYTES * 2..9 + ID_BYTES * 2 + 8]);
     let mut received = [0; 8];
-    received.copy_from_slice(&bytes[17 + ID_BYTES * 2..]);
+    received.copy_from_slice(&bytes[PREFIX - 8..PREFIX]);
+    let mut at = PREFIX;
+    let read_value =
+        |bytes: &[u8], at: &mut usize| -> Result<Option<Box<str>>, ContentStoreError> {
+            if bytes.len().saturating_sub(*at) < 2 {
+                return Err(ContentStoreError::TransferStateMismatch);
+            }
+            let mut length = [0_u8; 2];
+            length.copy_from_slice(&bytes[*at..*at + 2]);
+            *at += 2;
+            let length = usize::from(u16::from_be_bytes(length));
+            let end = (*at)
+                .checked_add(length)
+                .ok_or(ContentStoreError::TransferStateMismatch)?;
+            if end > bytes.len() {
+                return Err(ContentStoreError::TransferStateMismatch);
+            }
+            let value = std::str::from_utf8(&bytes[*at..end])
+                .map_err(|_| ContentStoreError::TransferStateMismatch)?;
+            *at = end;
+            Ok((!value.is_empty()).then(|| value.into()))
+        };
+    let etag = read_value(&bytes, &mut at)?;
+    let last_modified = read_value(&bytes, &mut at)?;
+    if at != bytes.len() {
+        return Err(ContentStoreError::TransferStateMismatch);
+    }
+    let validator = TransferValidator::new(etag.as_deref(), last_modified.as_deref());
+    if etag.is_some_and(|_| {
+        validator
+            .as_ref()
+            .and_then(TransferValidator::etag)
+            .is_none()
+    }) || last_modified.is_some_and(|_| {
+        validator
+            .as_ref()
+            .and_then(TransferValidator::last_modified)
+            .is_none()
+    }) {
+        return Err(ContentStoreError::TransferStateMismatch);
+    }
     Ok(Some(TransferCheckpoint {
         id: TransferId(id),
         expected: (marker == 1).then(|| RawArchiveObjectId::from_encoded(object_bytes)),
         expected_length: (u64::from_be_bytes(extent) != u64::MAX)
             .then_some(u64::from_be_bytes(extent)),
         received: u64::from_be_bytes(received),
+        validator,
     }))
 }
 
@@ -1310,6 +1635,11 @@ mod tests {
             Arc, Barrier,
             atomic::{AtomicUsize, Ordering},
         },
+    };
+    #[cfg(unix)]
+    use std::{
+        io::{BufRead, BufReader, Read},
+        process::{Command, Stdio},
     };
 
     fn root(label: &str) -> PathBuf {
@@ -1472,6 +1802,194 @@ mod tests {
             11
         );
         clean(&path);
+    }
+
+    #[test]
+    fn interrupted_transfer_discards_uncheckpointed_tail_on_reopen() {
+        let path = root("resume-crash-tail");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let id = TransferId::from_parts(b"https://example/crash-tail", None, Some(11));
+        let mut transfer = store.resume_or_start(id, None, Some(11)).expect("start");
+        transfer
+            .append(&b"hello"[..], 11)
+            .expect("checkpoint prefix");
+        drop(transfer);
+
+        let part = path.join("transfers").join(format!("{}.part", hex(&id.0)));
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&part)
+            .expect("open simulated crash tail");
+        file.write_all(b"uncheckpointed").expect("write crash tail");
+        file.sync_all().expect("sync crash tail");
+        drop(file);
+
+        let mut resumed = store.resume_or_start(id, None, Some(11)).expect("reopen");
+        assert_eq!(resumed.resume_offset(), 5);
+        assert_eq!(fs::metadata(&part).expect("part metadata").len(), 5);
+        resumed.append(&b" world"[..], 11).expect("finish suffix");
+        assert_eq!(resumed.finish().expect("finish").bytes(), 11);
+        clean(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigkill_transfer_child() {
+        let Ok(root) = std::env::var("NUDOX_SIGKILL_TRANSFER_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let store = ContentAddressedStore::open(&root).expect("child store");
+        let id = TransferId::from_parts(b"https://example/sigkill", None, Some(11));
+        let mut transfer = store
+            .resume_or_start(id, None, Some(11))
+            .expect("child start");
+        transfer
+            .append(&b"hello"[..], 11)
+            .expect("child checkpoint prefix");
+        let part = root.join("transfers").join(format!("{}.part", hex(&id.0)));
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&part)
+            .expect("child open part");
+        file.write_all(b"uncheckpointed").expect("child write tail");
+        file.sync_all().expect("child sync tail");
+        drop(file);
+        // Expire only the lease so the parent can model a restarted process
+        // without waiting for the production lease TTL.
+        let owner = root.join("transfers").join(format!("{}.owner", hex(&id.0)));
+        let mut lease = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(owner)
+            .expect("child open lease");
+        lease.write_all(&[0; ID_BYTES]).expect("child lease token");
+        lease
+            .write_all(&0_u64.to_be_bytes())
+            .expect("child lease expiry");
+        lease.sync_all().expect("child sync lease");
+        println!("ready");
+        io::stdout().flush().expect("flush child readiness");
+        let mut input = Vec::new();
+        let _ = io::stdin().read_to_end(&mut input);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigkill_transfer_reopens_from_last_durable_checkpoint() {
+        let path = root("resume-sigkill");
+        clean(&path);
+        let mut child = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "acquisition::content_addressed::tests::sigkill_transfer_child",
+                "--nocapture",
+            ])
+            .env("NUDOX_SIGKILL_TRANSFER_ROOT", &path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn sigkill child");
+        let stdout = child.stdout.take().expect("child stdout");
+        let mut lines = BufReader::new(stdout).lines();
+        let mut ready = false;
+        while let Some(line) = lines.next() {
+            if line.expect("read child output") == "ready" {
+                ready = true;
+                break;
+            }
+        }
+        assert!(ready, "child did not reach durable interruption point");
+        child.kill().expect("kill child");
+        let status = child.wait().expect("wait child");
+        assert!(!status.success(), "child unexpectedly exited cleanly");
+
+        let store = ContentAddressedStore::open(&path).expect("reopen after sigkill");
+        let id = TransferId::from_parts(b"https://example/sigkill", None, Some(11));
+        let part = path.join("transfers").join(format!("{}.part", hex(&id.0)));
+        let mut resumed = store
+            .resume_or_start(id, None, Some(11))
+            .expect("resume after kill");
+        assert_eq!(resumed.resume_offset(), 5);
+        assert_eq!(fs::metadata(part).expect("part metadata").len(), 5);
+        resumed
+            .append(&b" world"[..], 11)
+            .expect("finish after kill");
+        assert_eq!(resumed.finish().expect("publish after kill").bytes(), 11);
+        clean(&path);
+    }
+
+    #[test]
+    fn interrupted_transfer_reopens_with_validator_at_multiple_offsets() {
+        for (index, offset) in [1_u64, 65_535, 65_536, 131_073].into_iter().enumerate() {
+            let path = root(&format!("resume-validator-{index}"));
+            clean(&path);
+            let store = ContentAddressedStore::open(&path).expect("store");
+            let bytes = vec![0x4d; 192 * 1024];
+            let id = TransferId::from_parts(b"https://example/archive", None, None);
+            let validator = TransferValidator::new(Some("\"stable-v1\""), None).expect("validator");
+            let mut transfer = store.resume_or_start(id, None, None).expect("start");
+            transfer
+                .set_validator(Some(validator.clone()))
+                .expect("persist validator");
+            transfer
+                .bind_expected_length(bytes.len() as u64)
+                .expect("persist extent");
+            transfer
+                .append(&bytes[..offset as usize], bytes.len() as u64)
+                .expect("append prefix");
+            drop(transfer);
+
+            let mut resumed = store.resume_or_start(id, None, None).expect("reopen");
+            assert_eq!(resumed.resume_offset(), offset);
+            assert_eq!(resumed.validator(), Some(&validator));
+            assert_eq!(resumed.telemetry().resumed_bytes, offset);
+            resumed
+                .append(&bytes[offset as usize..], bytes.len() as u64)
+                .expect("append suffix");
+            assert_eq!(
+                resumed.telemetry().downloaded_bytes,
+                (bytes.len() - offset as usize) as u64
+            );
+            let result = resumed.finish().expect("finish");
+            assert_eq!(result.bytes(), bytes.len() as u64);
+            clean(&path);
+        }
+    }
+
+    #[test]
+    fn transfer_validator_persists_etag_and_last_modified_rules() {
+        let strong =
+            TransferValidator::new(Some("\"strong\""), Some("Wed, 21 Oct 2015 07:28:00 GMT"))
+                .expect("strong validator");
+        assert_eq!(strong.etag(), Some("\"strong\""));
+        assert_eq!(
+            strong.last_modified(),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT")
+        );
+        assert_eq!(strong.if_range(), Some("\"strong\""));
+
+        let weak =
+            TransferValidator::new(Some("W/\"weak\""), Some("Wed, 21 Oct 2015 07:28:00 GMT"))
+                .expect("weak validator");
+        assert_eq!(weak.if_range(), Some("Wed, 21 Oct 2015 07:28:00 GMT"));
+        assert!(
+            TransferValidator::new(Some("W/\"weak\""), None)
+                .expect("weak-only validator")
+                .if_range()
+                .is_none()
+        );
+        let empty = TransferValidator::new(Some("  "), Some(""));
+        assert!(empty.is_none());
+        let too_long = "x".repeat(MAX_VALIDATOR_BYTES + 1);
+        assert!(TransferValidator::new(Some(&too_long), None).is_none());
+        let control = TransferValidator::new(Some("\"ok\""), Some("Wed\n21 Oct"))
+            .expect("valid etag survives invalid date");
+        assert_eq!(control.last_modified(), None);
+        let malformed_date = TransferValidator::new(Some("\"ok\""), Some("not-a-date"))
+            .expect("valid etag survives malformed date");
+        assert_eq!(malformed_date.last_modified(), None);
     }
 
     #[test]

@@ -10,6 +10,7 @@ mod content_addressed;
 pub use content_addressed::{
     ArchiveBudget, ArchiveManifest, ArchiveManifestBuilder, ContentAddressedStore,
     ContentStoreError, ObjectAdmission, ResumableTransfer, TransferCheckpoint, TransferId,
+    TransferResetReason, TransferTelemetry, TransferValidator,
 };
 
 use crate::registry::{
@@ -2651,8 +2652,19 @@ impl AcquisitionService {
                 }
                 let mut page_bytes = 0usize;
                 for (package, advisory) in downloads {
+                    let transfer = match stage.open_transfer(&package) {
+                        Ok(transfer) => transfer,
+                        Err(error) => {
+                            return promote_bytes_outcome(registry_error_outcome(
+                                error,
+                                request.source,
+                                &breaker,
+                            ));
+                        }
+                    };
+                    let checkpoint = transfer.checkpoint();
                     let artifact = match transport
-                        .fetch_archive(&package)
+                        .fetch_archive_resumable(&package, checkpoint)
                         .map_err(AcquisitionError::Transport)
                     {
                         Ok(crate::registry::TransportResult::Available(artifact)) => artifact,
@@ -2688,17 +2700,18 @@ impl AcquisitionService {
                         Err(_) => return AcquisitionOutcome::Rejected(RejectReason::Bounds),
                     };
                     page_bytes = page_bytes.saturating_add(artifact_bytes);
-                    let publication =
-                        match stage.verify_and_store(&package, artifact, page_bytes, advisory) {
-                            Ok(publication) => publication,
-                            Err(error) => {
-                                return promote_bytes_outcome(registry_error_outcome(
-                                    error,
-                                    request.source,
-                                    &breaker,
-                                ));
-                            }
-                        };
+                    let publication = match stage.verify_and_store_with_transfer(
+                        &package, artifact, page_bytes, advisory, transfer,
+                    ) {
+                        Ok(publication) => publication,
+                        Err(error) => {
+                            return promote_bytes_outcome(registry_error_outcome(
+                                error,
+                                request.source,
+                                &breaker,
+                            ));
+                        }
+                    };
                     publications.push(publication);
                 }
                 publications.sort_by(|left, right| left.coordinate.cmp(&right.coordinate));

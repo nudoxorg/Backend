@@ -22,6 +22,9 @@ use super::{
     EcosystemAdapter, FeedCursor, FeedSchema, PackageCoordinate, ProvenanceDigest,
     RegistryChecksum, RegistryEcosystem, RegistryEndpoint, ReleaseFacts, RemoteRegistry,
 };
+use crate::acquisition::{
+    TransferCheckpoint, TransferResetReason, TransferTelemetry, TransferValidator,
+};
 use crate::capability::CapabilityArtifactId;
 use backend_advisory::AdvisoryObservation;
 use backend_library::DependencyFacts;
@@ -70,7 +73,18 @@ pub struct RemotePackage {
 /// still coalescing metadata and publication into one upstream download.
 pub struct ArchiveArtifact {
     source: ArchiveArtifactSource,
+    /// Total authenticated representation length, including any persisted
+    /// prefix that the response resumes after.
     length: u64,
+    /// Byte extent carried by this response body.
+    body_length: u64,
+    /// Absolute byte offset represented by the first response byte.
+    start_offset: u64,
+    /// Validator observed for the representation, if supplied by the origin.
+    validator: Option<TransferValidator>,
+    /// Whether the caller must quarantine/reset the old prefix before using
+    /// this full response.
+    reset_reason: Option<TransferResetReason>,
 }
 
 enum ArchiveArtifactSource {
@@ -82,6 +96,8 @@ impl fmt::Debug for ArchiveArtifact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ArchiveArtifact")
             .field("length", &self.length)
+            .field("body_length", &self.body_length)
+            .field("start_offset", &self.start_offset)
             .finish_non_exhaustive()
     }
 }
@@ -91,14 +107,29 @@ impl ArchiveArtifact {
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         Self {
             length: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            body_length: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            start_offset: 0,
+            validator: None,
+            reset_reason: None,
             source: ArchiveArtifactSource::Bytes(bytes),
         }
     }
 
-    fn from_file(path: PathBuf, length: u64) -> Self {
+    fn from_range_file(
+        path: PathBuf,
+        start_offset: u64,
+        total_length: u64,
+        body_length: u64,
+        validator: Option<TransferValidator>,
+        reset_reason: Option<TransferResetReason>,
+    ) -> Self {
         Self {
             source: ArchiveArtifactSource::File(path),
-            length,
+            length: total_length,
+            body_length,
+            start_offset,
+            validator,
+            reset_reason,
         }
     }
 
@@ -106,8 +137,31 @@ impl ArchiveArtifact {
         self.length
     }
 
+    pub(crate) fn body_length(&self) -> u64 {
+        self.body_length
+    }
+
+    pub(crate) const fn start_offset(&self) -> u64 {
+        self.start_offset
+    }
+
+    pub(crate) fn validator(&self) -> Option<&TransferValidator> {
+        self.validator.as_ref()
+    }
+
+    pub(crate) const fn reset_reason(&self) -> Option<TransferResetReason> {
+        self.reset_reason
+    }
+
+    pub(crate) const fn telemetry(&self) -> TransferTelemetry {
+        TransferTelemetry {
+            resumed_bytes: self.start_offset,
+            downloaded_bytes: self.body_length,
+        }
+    }
+
     pub(crate) fn into_reader(self, maximum: usize) -> Result<ArchiveReader, TransportFailure> {
-        let length = usize::try_from(self.length).map_err(|_| TransportFailure::Bounds)?;
+        let length = usize::try_from(self.body_length).map_err(|_| TransportFailure::Bounds)?;
         if length > maximum {
             return Err(TransportFailure::Overrun {
                 measured: self.length,
@@ -120,7 +174,6 @@ impl ArchiveArtifact {
             ArchiveArtifactSource::Bytes(bytes) => Ok(ArchiveReader {
                 source: ArchiveReaderSource::Bytes(Cursor::new(bytes)),
                 cleanup: None,
-                length: this.length,
             }),
             ArchiveArtifactSource::File(path) => {
                 let file = match File::open(&path) {
@@ -133,14 +186,13 @@ impl ArchiveArtifact {
                 Ok(ArchiveReader {
                     source: ArchiveReaderSource::File(file),
                     cleanup: Some(path),
-                    length: this.length,
                 })
             }
         }
     }
 
     pub(crate) fn into_bytes(self, maximum: usize) -> Result<Vec<u8>, TransportFailure> {
-        let length = usize::try_from(self.length).map_err(|_| TransportFailure::Bounds)?;
+        let length = usize::try_from(self.body_length).map_err(|_| TransportFailure::Bounds)?;
         if length > maximum {
             return Err(TransportFailure::Overrun {
                 measured: self.length,
@@ -155,7 +207,7 @@ impl ArchiveArtifact {
                 let result = (|| {
                     let mut file = File::open(&path).map_err(|_| TransportFailure::Protocol)?;
                     let mut bytes = Vec::with_capacity(length);
-                    file.take(this.length.saturating_add(1))
+                    file.take(this.body_length.saturating_add(1))
                         .read_to_end(&mut bytes)
                         .map_err(|_| TransportFailure::Protocol)?;
                     if bytes.len() != length {
@@ -211,7 +263,7 @@ impl ArchiveArtifact {
             }
             ChecksumAlgorithm::GoModule => return Err(TransportFailure::Protocol),
         };
-        if total != self.length {
+        if total != self.body_length {
             return Err(TransportFailure::Protocol);
         }
         Ok(digest)
@@ -253,18 +305,11 @@ impl DigestReader<'_> {
 pub(crate) struct ArchiveReader {
     source: ArchiveReaderSource,
     cleanup: Option<PathBuf>,
-    length: u64,
 }
 
 enum ArchiveReaderSource {
     Bytes(Cursor<Vec<u8>>),
     File(File),
-}
-
-impl ArchiveReader {
-    pub(crate) fn length(&self) -> u64 {
-        self.length
-    }
 }
 
 impl Read for ArchiveReader {
@@ -300,10 +345,10 @@ struct ArchiveHandoff {
 
 static NEXT_ARCHIVE_FILE: AtomicU64 = AtomicU64::new(0);
 
-fn stage_archive<R: Read>(
+fn stage_archive_body<R: Read>(
     reader: &mut R,
     maximum: usize,
-) -> Result<ArchiveArtifact, TransportFailure> {
+) -> Result<(PathBuf, u64), TransportFailure> {
     let mut path = std::env::temp_dir();
     let process = std::process::id();
     let nonce = NEXT_ARCHIVE_FILE.fetch_add(1, Ordering::Relaxed);
@@ -350,7 +395,7 @@ fn stage_archive<R: Read>(
         }
     }
     drop(file);
-    Ok(ArchiveArtifact::from_file(
+    Ok((
         path,
         u64::try_from(total).map_err(|_| TransportFailure::Bounds)?,
     ))
@@ -577,6 +622,18 @@ pub trait RegistryTransport<S: FeedSchema = CanonicalFeedV1> {
         &mut self,
         package: &RemotePackage,
     ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure>;
+
+    /// Fetches an archive using the durable checkpoint when the transport can
+    /// authenticate a byte range.  The default keeps every deterministic and
+    /// custom transport source-compatible: it returns a complete body and the
+    /// staging boundary safely restarts from zero when necessary.
+    fn fetch_archive_resumable(
+        &mut self,
+        package: &RemotePackage,
+        _checkpoint: TransferCheckpoint,
+    ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+        self.fetch_archive(package)
+    }
 }
 
 /// Bounded authenticated HTTP(S) implementation of the production registry protocol.
@@ -740,6 +797,33 @@ impl HttpRegistryTransport {
         url: &str,
         maximum: usize,
     ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+        self.get_archive_full(url, maximum, None)
+    }
+
+    fn get_archive_resumable(
+        &self,
+        url: &str,
+        maximum: usize,
+        checkpoint: TransferCheckpoint,
+    ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+        if checkpoint.received == 0
+            || checkpoint
+                .validator
+                .as_ref()
+                .and_then(TransferValidator::if_range)
+                .is_none()
+        {
+            return self.get_archive_full(url, maximum, None);
+        }
+        self.get_archive_range(url, maximum, checkpoint)
+    }
+
+    fn get_archive_full(
+        &self,
+        url: &str,
+        maximum: usize,
+        reset_reason: Option<TransferResetReason>,
+    ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
         if !self.followup_url_is_admitted(url) {
             return Err(TransportFailure::Configuration);
         }
@@ -768,8 +852,183 @@ impl HttpRegistryTransport {
                     if !(200..300).contains(&status) {
                         return Err(TransportFailure::Rejected(status));
                     }
+                    if status != 200 {
+                        return Err(TransportFailure::Protocol);
+                    }
+                    let declared = content_length(&response)?;
+                    let validator = response_validator(&response);
                     let mut reader = response.body_mut().as_reader();
-                    return stage_archive(&mut reader, maximum).map(TransportResult::Available);
+                    let (path, body_length) = stage_archive_body(&mut reader, maximum)?;
+                    if declared.is_some_and(|length| length != body_length) {
+                        let _ = fs::remove_file(&path);
+                        return Err(TransportFailure::Protocol);
+                    }
+                    let total = declared.unwrap_or(body_length);
+                    return Ok(TransportResult::Available(
+                        ArchiveArtifact::from_range_file(
+                            path,
+                            0,
+                            total,
+                            body_length,
+                            validator,
+                            reset_reason,
+                        ),
+                    ));
+                }
+                Err(_) if attempt == self.limits.attempts.get() => {
+                    return Ok(TransportResult::Unavailable);
+                }
+                Err(_) => {}
+            }
+        }
+        Ok(TransportResult::Unavailable)
+    }
+
+    fn get_archive_range(
+        &self,
+        url: &str,
+        maximum: usize,
+        checkpoint: TransferCheckpoint,
+    ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+        if !self.followup_url_is_admitted(url) {
+            return Err(TransportFailure::Configuration);
+        }
+        let start = checkpoint.received;
+        let if_range = checkpoint
+            .validator
+            .as_ref()
+            .and_then(TransferValidator::if_range)
+            .ok_or(TransportFailure::Protocol)?;
+        for attempt in 1..=self.limits.attempts.get() {
+            let request = self
+                .agent
+                .get(url)
+                .header("accept-encoding", "identity")
+                .header("range", format!("bytes={start}-"))
+                .header("if-range", if_range);
+            let request = match self.credentials.authorization_for(url) {
+                Some(value) => request.header("authorization", value),
+                None => request,
+            };
+            match request.call() {
+                Ok(mut response) => {
+                    let status = response.status().as_u16();
+                    if status == 429 {
+                        return Ok(TransportResult::RetryAfter(retry_after(&response)));
+                    }
+                    if matches!(status, 408 | 502 | 503 | 504) {
+                        let delay = retry_after(&response);
+                        if attempt == self.limits.attempts.get() {
+                            return Ok(TransportResult::RetryAfter(delay));
+                        }
+                        continue;
+                    }
+                    let validator = response_validator(&response);
+                    if status == 200 {
+                        let reset = Some(if validator.as_ref() != checkpoint.validator.as_ref() {
+                            TransferResetReason::ValidatorChanged
+                        } else {
+                            TransferResetReason::RangeIgnored
+                        });
+                        let declared = content_length(&response)?;
+                        let mut reader = response.body_mut().as_reader();
+                        let (path, body_length) = stage_archive_body(&mut reader, maximum)?;
+                        if declared.is_some_and(|length| length != body_length) {
+                            let _ = fs::remove_file(&path);
+                            return Err(TransportFailure::Protocol);
+                        }
+                        let total = declared.unwrap_or(body_length);
+                        return Ok(TransportResult::Available(
+                            ArchiveArtifact::from_range_file(
+                                path,
+                                0,
+                                total,
+                                body_length,
+                                validator,
+                                reset,
+                            ),
+                        ));
+                    }
+                    if status == 416 {
+                        let total = unsatisfied_range_total(&response)?;
+                        if validator.as_ref() != checkpoint.validator.as_ref() {
+                            drop(response);
+                            return self.get_archive_full(
+                                url,
+                                maximum,
+                                Some(TransferResetReason::ValidatorChanged),
+                            );
+                        }
+                        if total != start {
+                            return Err(TransportFailure::Protocol);
+                        }
+                        let (path, body_length) =
+                            stage_archive_body(&mut Cursor::new([]), maximum)?;
+                        return Ok(TransportResult::Available(
+                            ArchiveArtifact::from_range_file(
+                                path,
+                                start,
+                                total,
+                                body_length,
+                                validator,
+                                None,
+                            ),
+                        ));
+                    }
+                    if status != 206 {
+                        if !(200..300).contains(&status) {
+                            return Err(TransportFailure::Rejected(status));
+                        }
+                        return Err(TransportFailure::Protocol);
+                    }
+                    let Some((range_start, range_end, total)) = content_range(&response)? else {
+                        return Err(TransportFailure::Protocol);
+                    };
+                    if range_start != start || range_end < range_start || total <= range_end {
+                        return Err(TransportFailure::Protocol);
+                    }
+                    if validator.as_ref() != checkpoint.validator.as_ref() {
+                        drop(response);
+                        return self.get_archive_full(
+                            url,
+                            maximum,
+                            Some(TransferResetReason::ValidatorChanged),
+                        );
+                    }
+                    let expected_body = range_end
+                        .checked_sub(range_start)
+                        .and_then(|length| length.checked_add(1))
+                        .ok_or(TransportFailure::Bounds)?;
+                    if usize::try_from(expected_body).map_err(|_| TransportFailure::Bounds)?
+                        > maximum
+                    {
+                        return Err(TransportFailure::Overrun {
+                            measured: total,
+                            limit: u64::try_from(maximum).map_err(|_| TransportFailure::Bounds)?,
+                        });
+                    }
+                    if content_length(&response)?.is_some_and(|length| length != expected_body) {
+                        return Err(TransportFailure::Protocol);
+                    }
+                    let mut reader = response.body_mut().as_reader();
+                    let (path, body_length) = stage_archive_body(
+                        &mut reader,
+                        usize::try_from(expected_body).map_err(|_| TransportFailure::Bounds)?,
+                    )?;
+                    if body_length != expected_body {
+                        let _ = fs::remove_file(&path);
+                        return Err(TransportFailure::Protocol);
+                    }
+                    return Ok(TransportResult::Available(
+                        ArchiveArtifact::from_range_file(
+                            path,
+                            start,
+                            total,
+                            body_length,
+                            validator,
+                            None,
+                        ),
+                    ));
                 }
                 Err(_) if attempt == self.limits.attempts.get() => {
                     return Ok(TransportResult::Unavailable);
@@ -1806,6 +2065,70 @@ fn retry_after(response: &ureq::http::Response<ureq::Body>) -> Duration {
         .unwrap_or(Duration::from_secs(1))
 }
 
+fn response_validator(response: &ureq::http::Response<ureq::Body>) -> Option<TransferValidator> {
+    TransferValidator::new(
+        response
+            .headers()
+            .get("etag")
+            .and_then(|value| value.to_str().ok()),
+        response
+            .headers()
+            .get("last-modified")
+            .and_then(|value| value.to_str().ok()),
+    )
+}
+
+fn content_length(
+    response: &ureq::http::Response<ureq::Body>,
+) -> Result<Option<u64>, TransportFailure> {
+    response
+        .headers()
+        .get("content-length")
+        .map(|value| {
+            value
+                .to_str()
+                .map_err(|_| TransportFailure::Protocol)?
+                .parse::<u64>()
+                .map_err(|_| TransportFailure::Protocol)
+        })
+        .transpose()
+}
+
+fn content_range(
+    response: &ureq::http::Response<ureq::Body>,
+) -> Result<Option<(u64, u64, u64)>, TransportFailure> {
+    let Some(value) = response.headers().get("content-range") else {
+        return Ok(None);
+    };
+    let value = value.to_str().map_err(|_| TransportFailure::Protocol)?;
+    let Some(value) = value.strip_prefix("bytes ") else {
+        return Err(TransportFailure::Protocol);
+    };
+    let (range, total) = value.split_once('/').ok_or(TransportFailure::Protocol)?;
+    let total = total
+        .parse::<u64>()
+        .map_err(|_| TransportFailure::Protocol)?;
+    let (start, end) = range.split_once('-').ok_or(TransportFailure::Protocol)?;
+    let start = start
+        .parse::<u64>()
+        .map_err(|_| TransportFailure::Protocol)?;
+    let end = end.parse::<u64>().map_err(|_| TransportFailure::Protocol)?;
+    Ok(Some((start, end, total)))
+}
+
+fn unsatisfied_range_total(
+    response: &ureq::http::Response<ureq::Body>,
+) -> Result<u64, TransportFailure> {
+    let Some(value) = response.headers().get("content-range") else {
+        return Err(TransportFailure::Protocol);
+    };
+    let value = value.to_str().map_err(|_| TransportFailure::Protocol)?;
+    let Some(value) = value.strip_prefix("bytes */") else {
+        return Err(TransportFailure::Protocol);
+    };
+    value.parse::<u64>().map_err(|_| TransportFailure::Protocol)
+}
+
 impl RegistryTransport for HttpRegistryTransport {
     fn fetch_page(
         &mut self,
@@ -1864,6 +2187,32 @@ impl RegistryTransport for HttpRegistryTransport {
             TransportResult::NotModified => return Err(TransportFailure::Protocol),
         };
         Ok(TransportResult::Available(artifact))
+    }
+
+    fn fetch_archive_resumable(
+        &mut self,
+        package: &RemotePackage,
+        checkpoint: TransferCheckpoint,
+    ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+        if let Some(index) = self
+            .archive_handoffs
+            .iter()
+            .position(|handoff| handoff.key == package.integrity_version())
+        {
+            let handoff = self
+                .archive_handoffs
+                .remove(index)
+                .ok_or(TransportFailure::Protocol)?;
+            self.archive_handoff_bytes = self
+                .archive_handoff_bytes
+                .saturating_sub(usize::try_from(handoff.artifact.length()).unwrap_or(usize::MAX));
+            return Ok(TransportResult::Available(handoff.artifact));
+        }
+        self.get_archive_resumable(
+            &package.archive_url,
+            self.limits.max_archive_bytes,
+            checkpoint,
+        )
     }
 }
 pub(crate) fn hex(value: &[u8; 32]) -> String {

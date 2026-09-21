@@ -16,6 +16,7 @@ use super::ecosystem::{NativeArtifactKind, resolve_archive_url};
 use super::identity::RegistryCredentialPolicy;
 use super::*;
 use crate::{
+    acquisition::{TransferResetReason, TransferValidator},
     capability::CapabilityArtifactId,
     fault::{Boundary, Faults},
 };
@@ -869,6 +870,618 @@ fn registry_archive_stage_restarts_from_its_durable_transfer_checkpoint() {
                 .and_then(|ext| ext.to_str())
                 != Some("part")))
     );
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn http_archive_resume_uses_authenticated_range_and_reopens_at_multiple_offsets() {
+    let archive = (0..(192 * 1024))
+        .map(|value| (value % 251) as u8)
+        .collect::<Vec<_>>();
+    let digest = *CapabilityArtifactId::from_value(&archive).as_bytes();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind range fixture");
+    let address = listener.local_addr().expect("range fixture address");
+    let endpoint_text = format!("http://{address}");
+    let server_archive = archive.clone();
+    let server = thread::spawn(move || {
+        for attempt in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept range request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).expect("read request");
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") || read == 0 {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
+            if attempt == 0 {
+                assert!(!request.contains("range:"));
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n",
+                    server_archive.len()
+                )
+                .expect("write initial headers");
+                stream
+                    .write_all(&server_archive)
+                    .expect("write initial body");
+                continue;
+            }
+            let range = request
+                .lines()
+                .find_map(|line| line.strip_prefix("range: bytes="))
+                .and_then(|value| value.strip_suffix('-'))
+                .and_then(|value| value.parse::<usize>().ok())
+                .expect("range start");
+            assert!(request.contains("if-range: \"v1\""));
+            let end = server_archive.len() - 1;
+            let suffix = &server_archive[range..];
+            write!(
+                stream,
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {range}-{end}/{}\r\nContent-Length: {}\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n",
+                server_archive.len(),
+                suffix.len()
+            )
+            .expect("write range headers");
+            stream.write_all(suffix).expect("write range body");
+        }
+    });
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text.clone()).expect("endpoint");
+    let mut range_limits = limits();
+    range_limits.max_archive_bytes = archive.len() + 1024;
+    range_limits.max_page_archive_bytes = archive.len() + 1024;
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/range@1.0.0").expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(digest),
+        provenance: ProvenanceDigest::from_authenticated_feed([6; 32]),
+        facts: ReleaseFacts::default(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from(format!("{endpoint_text}/archive")),
+    };
+    let root = temporary("http-range-resume");
+    let (owner, _) = RegistryOwner::open(
+        &root,
+        endpoint.clone(),
+        AcquisitionPolicy::Online,
+        range_limits,
+    )
+    .expect("owner");
+    let stage = owner.archive_stage();
+    let mut transport =
+        HttpRegistryTransport::new(endpoint.clone(), None, range_limits).expect("transport");
+    let mut transfer = stage.open_transfer(&package).expect("transfer");
+    let first = match transport
+        .fetch_archive_resumable(&package, transfer.checkpoint())
+        .expect("initial request")
+    {
+        TransportResult::Available(artifact) => artifact,
+        other => panic!("unexpected initial response: {other:?}"),
+    };
+    let total = first.length();
+    let validator = first.validator().cloned();
+    transfer
+        .set_validator(validator)
+        .expect("persist validator");
+    transfer
+        .bind_expected_length(total)
+        .expect("persist length");
+    let prefix = 65_537_u64;
+    let mut reader = first
+        .into_reader(range_limits.max_archive_bytes)
+        .expect("initial body");
+    transfer
+        .append((&mut reader).take(prefix), total)
+        .expect("persist interrupted prefix");
+    drop(transfer);
+
+    let transfer = stage.open_transfer(&package).expect("reopen transfer");
+    assert_eq!(transfer.resume_offset(), prefix);
+    assert_eq!(
+        transfer.validator().and_then(TransferValidator::etag),
+        Some("\"v1\"")
+    );
+    let checkpoint = transfer.checkpoint();
+    let suffix = match transport
+        .fetch_archive_resumable(&package, checkpoint)
+        .expect("range request")
+    {
+        TransportResult::Available(artifact) => artifact,
+        other => panic!("unexpected range response: {other:?}"),
+    };
+    assert_eq!(suffix.start_offset(), prefix);
+    assert_eq!(suffix.length(), archive.len() as u64);
+    assert_eq!(suffix.telemetry().resumed_bytes, prefix);
+    assert_eq!(
+        suffix.telemetry().downloaded_bytes,
+        archive.len() as u64 - prefix
+    );
+    let publication = stage
+        .verify_and_store_with_transfer(
+            &package,
+            suffix,
+            archive.len(),
+            backend_advisory::AdvisoryPackageDto::unknown(),
+            transfer,
+        )
+        .expect("publish resumed archive");
+    assert_eq!(
+        publication.raw_object,
+        crate::acquisition::RawArchiveObjectId::from_bytes(&archive)
+    );
+    server.join().expect("range server");
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn http_archive_resume_reconciles_a_completed_prefix_from_416() {
+    let archive = b"already-complete-on-disk".repeat(4_096);
+    let archive_len = archive.len();
+    let digest = *CapabilityArtifactId::from_value(&archive).as_bytes();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind 416 fixture");
+    let address = listener.local_addr().expect("416 fixture address");
+    let endpoint_text = format!("http://{address}");
+    let total = archive.len();
+    let server_archive = archive.clone();
+    let server = thread::spawn(move || {
+        for attempt in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept 416 request");
+            let mut request = [0_u8; 8192];
+            let read = stream.read(&mut request).expect("read 416 request");
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            if attempt == 0 {
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nETag: \"complete-v1\"\r\nConnection: close\r\n\r\n"
+                )
+                .expect("write 416 initial headers");
+                stream
+                    .write_all(&server_archive)
+                    .expect("write 416 initial body");
+            } else {
+                assert!(request.contains(&format!("range: bytes={total}-")));
+                write!(
+                    stream,
+                    "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total}\r\nETag: \"complete-v1\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .expect("write 416 response");
+            }
+        }
+    });
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text.clone()).expect("endpoint");
+    let mut range_limits = limits();
+    range_limits.max_archive_bytes = archive_len + 1024;
+    range_limits.max_page_archive_bytes = archive_len + 1024;
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/range-416@1.0.0").expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(digest),
+        provenance: ProvenanceDigest::from_authenticated_feed([8; 32]),
+        facts: ReleaseFacts::default(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from(format!("{endpoint_text}/archive")),
+    };
+    let root = temporary("http-range-416");
+    let (owner, _) = RegistryOwner::open(
+        &root,
+        endpoint.clone(),
+        AcquisitionPolicy::Online,
+        range_limits,
+    )
+    .expect("owner");
+    let stage = owner.archive_stage();
+    let mut transport =
+        HttpRegistryTransport::new(endpoint.clone(), None, range_limits).expect("transport");
+    let mut transfer = stage.open_transfer(&package).expect("transfer");
+    let first = match transport
+        .fetch_archive_resumable(&package, transfer.checkpoint())
+        .expect("initial request")
+    {
+        TransportResult::Available(artifact) => artifact,
+        other => panic!("unexpected initial response: {other:?}"),
+    };
+    let validator = first.validator().cloned();
+    let mut reader = first
+        .into_reader(range_limits.max_archive_bytes)
+        .expect("initial body");
+    transfer
+        .set_validator(validator)
+        .expect("persist validator");
+    transfer
+        .bind_expected_length(total as u64)
+        .expect("persist extent");
+    transfer
+        .append(&mut reader, total as u64)
+        .expect("persist complete prefix");
+    let checkpoint = transfer.checkpoint();
+    let complete = match transport
+        .fetch_archive_resumable(&package, checkpoint)
+        .expect("416 request")
+    {
+        TransportResult::Available(artifact) => artifact,
+        other => panic!("unexpected 416 response: {other:?}"),
+    };
+    assert_eq!(complete.start_offset(), total as u64);
+    assert_eq!(complete.length(), total as u64);
+    assert_eq!(complete.body_length(), 0);
+    let publication = stage
+        .verify_and_store_with_transfer(
+            &package,
+            complete,
+            total,
+            backend_advisory::AdvisoryPackageDto::unknown(),
+            transfer,
+        )
+        .expect("reconcile complete prefix");
+    assert_eq!(
+        publication.raw_object,
+        crate::acquisition::RawArchiveObjectId::from_bytes(&archive)
+    );
+    server.join().expect("416 server");
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn http_archive_resume_restarts_when_origin_ignores_range() {
+    let archive = b"origin-ignored-range".repeat(8_192);
+    let archive_len = archive.len();
+    let digest = *CapabilityArtifactId::from_value(&archive).as_bytes();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fallback fixture");
+    let address = listener.local_addr().expect("fallback fixture address");
+    let endpoint_text = format!("http://{address}");
+    let server_archive = archive.clone();
+    let server = thread::spawn(move || {
+        for attempt in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept fallback request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).expect("read fallback request");
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") || read == 0 {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
+            if attempt == 0 {
+                assert!(!request.contains("range:"));
+            } else {
+                assert!(request.contains("range: bytes="));
+                assert!(request.contains("if-range: \"fallback-v1\""));
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {archive_len}\r\nETag: \"fallback-v1\"\r\nConnection: close\r\n\r\n"
+            )
+            .expect("write fallback headers");
+            stream
+                .write_all(&server_archive)
+                .expect("write fallback body");
+        }
+    });
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text.clone()).expect("endpoint");
+    let mut range_limits = limits();
+    range_limits.max_archive_bytes = archive_len + 1024;
+    range_limits.max_page_archive_bytes = archive_len + 1024;
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/range-fallback@1.0.0").expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(digest),
+        provenance: ProvenanceDigest::from_authenticated_feed([10; 32]),
+        facts: ReleaseFacts::default(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from(format!("{endpoint_text}/archive")),
+    };
+    let root = temporary("http-range-fallback");
+    let (owner, _) = RegistryOwner::open(
+        &root,
+        endpoint.clone(),
+        AcquisitionPolicy::Online,
+        range_limits,
+    )
+    .expect("owner");
+    let stage = owner.archive_stage();
+    let mut transport =
+        HttpRegistryTransport::new(endpoint.clone(), None, range_limits).expect("transport");
+    let mut transfer = stage.open_transfer(&package).expect("transfer");
+    let first = match transport
+        .fetch_archive_resumable(&package, transfer.checkpoint())
+        .expect("initial request")
+    {
+        TransportResult::Available(artifact) => artifact,
+        other => panic!("unexpected initial response: {other:?}"),
+    };
+    let mut reader = first
+        .into_reader(range_limits.max_archive_bytes)
+        .expect("initial body");
+    let prefix = 12_345_u64;
+    transfer
+        .set_validator(TransferValidator::new(Some("\"fallback-v1\""), None))
+        .expect("persist validator");
+    transfer
+        .bind_expected_length(archive_len as u64)
+        .expect("persist length");
+    transfer
+        .append((&mut reader).take(prefix), archive_len as u64)
+        .expect("persist interrupted prefix");
+    drop(transfer);
+
+    let transfer = stage.open_transfer(&package).expect("reopen transfer");
+    let fallback = match transport
+        .fetch_archive_resumable(&package, transfer.checkpoint())
+        .expect("fallback request")
+    {
+        TransportResult::Available(artifact) => artifact,
+        other => panic!("unexpected fallback response: {other:?}"),
+    };
+    assert_eq!(fallback.start_offset(), 0);
+    assert_eq!(fallback.length(), archive_len as u64);
+    assert_eq!(
+        fallback.reset_reason(),
+        Some(TransferResetReason::RangeIgnored)
+    );
+    assert_eq!(fallback.telemetry().resumed_bytes, 0);
+    assert_eq!(fallback.telemetry().downloaded_bytes, archive_len as u64);
+    let publication = stage
+        .verify_and_store_with_transfer(
+            &package,
+            fallback,
+            archive_len,
+            backend_advisory::AdvisoryPackageDto::unknown(),
+            transfer,
+        )
+        .expect("publish fallback archive");
+    assert_eq!(
+        publication.raw_object,
+        crate::acquisition::RawArchiveObjectId::from_bytes(&archive)
+    );
+    let quarantine = storage_root(&root, &endpoint).join("registry-content/quarantine");
+    assert!(
+        fs::read_dir(quarantine)
+            .expect("quarantine directory")
+            .all(|entry| entry.ok().is_none_or(|entry| !entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "prefix")))
+    );
+    server.join().expect("fallback server");
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn http_archive_resume_quarantines_prefix_when_validator_changes() {
+    let old_archive = b"old representation".repeat(4_096);
+    let new_archive = b"new representation".repeat(4_096);
+    assert_eq!(old_archive.len(), new_archive.len());
+    let archive_len = new_archive.len();
+    let digest = *CapabilityArtifactId::from_value(&new_archive).as_bytes();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind validator fixture");
+    let address = listener.local_addr().expect("validator fixture address");
+    let endpoint_text = format!("http://{address}");
+    let server_old = old_archive.clone();
+    let server_new = new_archive.clone();
+    let server = thread::spawn(move || {
+        for attempt in 0..3 {
+            let (mut stream, _) = listener.accept().expect("accept validator request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).expect("read validator request");
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") || read == 0 {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
+            match attempt {
+                0 => {
+                    assert!(!request.contains("range:"));
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {archive_len}\r\nETag: \"validator-v1\"\r\nConnection: close\r\n\r\n"
+                    )
+                    .expect("write validator initial headers");
+                    stream
+                        .write_all(&server_old)
+                        .expect("write validator initial body");
+                }
+                1 => {
+                    let range = request
+                        .lines()
+                        .find_map(|line| line.strip_prefix("range: bytes="))
+                        .and_then(|value| value.strip_suffix('-'))
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .expect("validator range start");
+                    assert!(request.contains("if-range: \"validator-v1\""));
+                    let end = server_old.len() - 1;
+                    let suffix = &server_old[range..];
+                    write!(
+                        stream,
+                        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {range}-{end}/{archive_len}\r\nContent-Length: {}\r\nETag: \"validator-v2\"\r\nConnection: close\r\n\r\n",
+                        suffix.len()
+                    )
+                    .expect("write validator changed range headers");
+                    stream
+                        .write_all(suffix)
+                        .expect("write validator changed range body");
+                }
+                _ => {
+                    assert!(!request.contains("range:"));
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {archive_len}\r\nETag: \"validator-v2\"\r\nConnection: close\r\n\r\n"
+                    )
+                    .expect("write validator reset headers");
+                    stream
+                        .write_all(&server_new)
+                        .expect("write validator reset body");
+                }
+            }
+        }
+    });
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text.clone()).expect("endpoint");
+    let mut range_limits = limits();
+    range_limits.max_archive_bytes = archive_len + 1024;
+    range_limits.max_page_archive_bytes = archive_len + 1024;
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/range-validator@1.0.0")
+            .expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(digest),
+        provenance: ProvenanceDigest::from_authenticated_feed([11; 32]),
+        facts: ReleaseFacts::default(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from(format!("{endpoint_text}/archive")),
+    };
+    let root = temporary("http-range-validator");
+    let (owner, _) = RegistryOwner::open(
+        &root,
+        endpoint.clone(),
+        AcquisitionPolicy::Online,
+        range_limits,
+    )
+    .expect("owner");
+    let stage = owner.archive_stage();
+    let mut transport =
+        HttpRegistryTransport::new(endpoint.clone(), None, range_limits).expect("transport");
+    let mut transfer = stage.open_transfer(&package).expect("transfer");
+    let first = match transport
+        .fetch_archive_resumable(&package, transfer.checkpoint())
+        .expect("initial request")
+    {
+        TransportResult::Available(artifact) => artifact,
+        other => panic!("unexpected initial response: {other:?}"),
+    };
+    let mut reader = first
+        .into_reader(range_limits.max_archive_bytes)
+        .expect("initial body");
+    let prefix = 12_345_u64;
+    transfer
+        .set_validator(TransferValidator::new(Some("\"validator-v1\""), None))
+        .expect("persist validator");
+    transfer
+        .bind_expected_length(archive_len as u64)
+        .expect("persist length");
+    transfer
+        .append((&mut reader).take(prefix), archive_len as u64)
+        .expect("persist interrupted prefix");
+    drop(transfer);
+
+    let transfer = stage.open_transfer(&package).expect("reopen transfer");
+    let reset = match transport
+        .fetch_archive_resumable(&package, transfer.checkpoint())
+        .expect("validator-change request")
+    {
+        TransportResult::Available(artifact) => artifact,
+        other => panic!("unexpected validator response: {other:?}"),
+    };
+    assert_eq!(reset.start_offset(), 0);
+    assert_eq!(
+        reset.reset_reason(),
+        Some(TransferResetReason::ValidatorChanged)
+    );
+    assert_eq!(
+        reset.validator().and_then(TransferValidator::etag),
+        Some("\"validator-v2\"")
+    );
+    let publication = stage
+        .verify_and_store_with_transfer(
+            &package,
+            reset,
+            archive_len,
+            backend_advisory::AdvisoryPackageDto::unknown(),
+            transfer,
+        )
+        .expect("publish changed representation");
+    assert_eq!(
+        publication.raw_object,
+        crate::acquisition::RawArchiveObjectId::from_bytes(&new_archive)
+    );
+    let quarantine = storage_root(&root, &endpoint).join("registry-content/quarantine");
+    assert!(
+        fs::read_dir(quarantine)
+            .expect("quarantine directory")
+            .any(|entry| entry.ok().is_some_and(|entry| entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "prefix")))
+    );
+    server.join().expect("validator server");
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn http_archive_resume_rejects_sparse_or_malformed_206() {
+    let archive = vec![0x41; 64];
+    let digest = *CapabilityArtifactId::from_value(&archive).as_bytes();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind malformed range fixture");
+    let address = listener
+        .local_addr()
+        .expect("malformed range fixture address");
+    let endpoint_text = format!("http://{address}");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept malformed range request");
+        let mut request = [0_u8; 4096];
+        let read = stream
+            .read(&mut request)
+            .expect("read malformed range request");
+        let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+        assert!(request.contains("range: bytes=5-"));
+        assert!(request.contains("if-range: \"malformed-v1\""));
+        write!(
+            stream,
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 3-63/64\r\nContent-Length: 61\r\nETag: \"malformed-v1\"\r\nConnection: close\r\n\r\n"
+        )
+        .expect("write malformed range headers");
+    });
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text.clone()).expect("endpoint");
+    let mut range_limits = limits();
+    range_limits.max_archive_bytes = archive.len() + 32;
+    range_limits.max_page_archive_bytes = archive.len() + 32;
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/range-malformed@1.0.0")
+            .expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(digest),
+        provenance: ProvenanceDigest::from_authenticated_feed([12; 32]),
+        facts: ReleaseFacts::default(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from(format!("{endpoint_text}/archive")),
+    };
+    let root = temporary("http-range-malformed");
+    let (owner, _) = RegistryOwner::open(
+        &root,
+        endpoint.clone(),
+        AcquisitionPolicy::Online,
+        range_limits,
+    )
+    .expect("owner");
+    let stage = owner.archive_stage();
+    let mut transfer = stage.open_transfer(&package).expect("transfer");
+    transfer
+        .set_validator(TransferValidator::new(Some("\"malformed-v1\""), None))
+        .expect("validator");
+    transfer
+        .bind_expected_length(archive.len() as u64)
+        .expect("extent");
+    transfer
+        .append(&archive[..5], archive.len() as u64)
+        .expect("prefix");
+    let mut transport =
+        HttpRegistryTransport::new(endpoint, None, range_limits).expect("transport");
+    assert!(matches!(
+        transport.fetch_archive_resumable(&package, transfer.checkpoint()),
+        Err(TransportFailure::Protocol)
+    ));
+    drop(transfer);
+    server.join().expect("malformed range server");
     fs::remove_dir_all(root).expect("cleanup");
 }
 
