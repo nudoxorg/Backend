@@ -18,7 +18,7 @@
 //! publish reverse dependencies is a different statement from a package that
 //! has none.
 
-use super::dossier::{Card, Dossier, assemble, card};
+use super::dossier::{Card, Dossier, assemble, live_card};
 use super::events::RegistryEvent;
 use super::service::{Endpoint, Outcome, Request};
 use backend_library::{
@@ -627,7 +627,7 @@ impl RegistryStore {
             .ready()
             .map(|rows: &Vec<PackageRow>| {
                 rows.iter()
-                    .map(|row| Listing::new(row.clone(), self.card_of(row.coordinate())))
+                    .map(|row| Listing::new(row.clone(), self.card_of(row)))
                     .collect()
             })
             .unwrap_or_default();
@@ -644,11 +644,11 @@ impl RegistryStore {
     }
 
     /// Returns the sample card for one coordinate, from the page's own stock.
-    fn card_of(&self, coordinate: &str) -> Card {
+    fn card_of(&self, row: &PackageRow) -> Card {
         self.cards
             .iter()
-            .find(|(held, _)| held == coordinate)
-            .map_or_else(|| card(coordinate), |(_, held)| held.clone())
+            .find(|(held, _)| held == row.coordinate())
+            .map_or_else(|| live_card(row), |(_, held)| held.clone())
     }
 
     /// Builds one card per loaded row, keeping the cards a page already had.
@@ -667,8 +667,13 @@ impl RegistryStore {
             .unwrap_or_default();
         let mut stocked: Vec<(String, Card)> = Vec::with_capacity(coordinates.len());
         for coordinate in coordinates {
-            let held = self.card_of(&coordinate);
-            stocked.push((coordinate, held));
+            if let Some(row) = self
+                .page
+                .ready()
+                .and_then(|rows| rows.iter().find(|row| row.coordinate() == coordinate))
+            {
+                stocked.push((coordinate, live_card(row)));
+            }
         }
         self.cards = stocked;
     }

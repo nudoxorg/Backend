@@ -22,8 +22,8 @@
 use super::home::ecosystem_language;
 use super::workspace::Workspace;
 use crate::motion::{Beat, entering_opacity, once};
-use crate::store::dossier::{self, Card};
 use crate::store::document::Target;
+use crate::store::dossier::{self, Card};
 use crate::store::registry::{
     self, Listing, Loadable, Ordering, PackageRow, Query, RegistryStore, Standing,
 };
@@ -97,8 +97,16 @@ impl Workspace {
             .child(Self::browse_field(theme, &field))
             .child(Self::scope_row(theme, query.ecosystem(), cx))
             .child(Self::order_row(theme, order, cx))
-            .child(Self::browse_note(theme, &query, &state, listings.len(), order))
-            .child(Self::browse_body(theme, &query, &state, &listings, &held, cx))
+            .child(Self::browse_note(
+                theme,
+                &query,
+                &state,
+                listings.len(),
+                order,
+            ))
+            .child(Self::browse_body(
+                theme, &query, &state, &listings, &held, cx,
+            ))
             .when(more, |region| region.child(Self::more_row(theme, cx)))
             .into_any_element()
     }
@@ -122,16 +130,11 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(px(2.0))
-            .child(
-                text::heading(theme, TypeScale::Title)
-                    .child("Explore the registry"),
-            )
-            .child(
-                text::text_at(theme, TypeScale::Body, Paint::TextDim).child(
-                    "Every package the local index holds records for. Search by name, narrow \
+            .child(text::heading(theme, TypeScale::Title).child("Explore the registry"))
+            .child(text::text_at(theme, TypeScale::Body, Paint::TextDim).child(
+                "Every package the local index holds records for. Search by name, narrow \
                      to one ecosystem, then put anything on the shelf to read its source.",
-                ),
-            )
+            ))
     }
 
     /// Returns the large search field, which teaches by example.
@@ -165,11 +168,7 @@ impl Workspace {
 
 /// The filter and sort controls.
 impl Workspace {
-    fn scope_row(
-        theme: &Theme,
-        current: Option<RegistryEcosystem>,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    fn scope_row(theme: &Theme, current: Option<RegistryEcosystem>, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .flex_wrap()
@@ -211,16 +210,20 @@ impl Workspace {
             .gap(space(Space::Tight))
             .child(text::faint(theme).flex_none().child("Sort by"))
             .children(Ordering::ALL.into_iter().map(|order| {
-                toggle(theme, format!("browse-order-{}", order.label()), order == current)
-                    .child(order.label())
-                    .when(order.is_sampled(), |chip| {
-                        chip.child(chart::sample_tag(theme))
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.registry
-                            .update(cx, |registry, cx| registry.order_by(order, cx));
-                    }))
-                    .into_any_element()
+                toggle(
+                    theme,
+                    format!("browse-order-{}", order.label()),
+                    order == current,
+                )
+                .child(order.label())
+                .when(order.is_sampled(), |chip| {
+                    chip.child(chart::sample_tag(theme))
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.registry
+                        .update(cx, |registry, cx| registry.order_by(order, cx));
+                }))
+                .into_any_element()
             }))
     }
 
@@ -346,7 +349,11 @@ pub(super) fn ecosystem_logo(
 ) -> Option<gpui::Svg> {
     let language = ecosystem_language(ecosystem);
     let mark = Logo::of(language)?;
-    Some(icon::logo(mark, side, theme.on_plane(language_hue(language))))
+    Some(icon::logo(
+        mark,
+        side,
+        theme.on_plane(language_hue(language)),
+    ))
 }
 
 /// Returns one browse card: what it is, whether it is used, and one action.
@@ -463,10 +470,15 @@ fn keyword_row(theme: &Theme, card: &Card) -> Div {
         }))
 }
 
-/// Returns the sparkline, the lifetime count, and the sample tag over both.
+/// Returns the published download count. A registry row may omit telemetry;
+/// in that case the card states that absence instead of drawing a zero.
 fn usage_row(theme: &Theme, ecosystem: RegistryEcosystem, card: &Card) -> Div {
     let hue = language_hue(ecosystem_language(ecosystem));
     let downloads = card.downloads();
+    let counts = downloads.counts();
+    let count_label = downloads
+        .total()
+        .map_or_else(|| "downloads not reported".to_owned(), dossier::tally_label);
     div()
         .flex()
         .items_end()
@@ -475,7 +487,7 @@ fn usage_row(theme: &Theme, ecosystem: RegistryEcosystem, card: &Card) -> Div {
             div()
                 .flex_1()
                 .min_w(px(0.0))
-                .child(chart::sparkline(theme, hue, &downloads.counts(), SPARK)),
+                .child(chart::sparkline(theme, hue, &counts, SPARK)),
         )
         .child(
             div()
@@ -487,9 +499,11 @@ fn usage_row(theme: &Theme, ecosystem: RegistryEcosystem, card: &Card) -> Div {
                 .child(
                     text::text_at(theme, TypeScale::Tiny, Paint::Text)
                         .font_weight(FontWeight::MEDIUM)
-                        .child(dossier::tally_label(downloads.total())),
+                        .child(count_label),
                 )
-                .child(chart::sample_tag(theme)),
+                .when(card.is_sampled(), |column| {
+                    column.child(chart::sample_tag(theme))
+                }),
         )
 }
 

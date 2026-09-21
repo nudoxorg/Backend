@@ -2,38 +2,38 @@
 //! Each section states where it came from, so a stand-in can never pass as a fact.
 //! Nothing here reaches the service; a dossier is assembled from a reply.
 //!
-//! The design decision this module embodies is that a browse surface showing
-//! only what today's engine publishes is not worth building, and one that
-//! invents the rest is worth less than nothing. So every section carries a
-//! [`Provenance`]: either the engine answered and the section holds exactly
-//! what it said, or no command publishes that fact yet and a deterministic
-//! sample stands in wearing a label. A download count a reader cannot tell
-//! apart from a real one is a lie; the same count beside the word `sample` is
-//! a specification of the section that will replace it.
+//! The production dossier is a projection of the live registry reply. Every
+//! section carries a [`Provenance`]: either the engine answered and the
+//! section holds exactly what it said, or the configured feed does not publish
+//! that fact and the page says so. Test-only fixtures exercise the full visual
+//! state matrix without being compiled into the application.
 //!
-//! Two rules keep that boundary sharp. A `Recorded` section never contains a
-//! fabricated field — where the feed is silent the field is `None` and the page
-//! draws "not recorded" rather than something plausible. And a sample is a pure
-//! function of the package name, so the same package draws the same dossier on
-//! every frame, in every process, and in a test: the *shape* varies across
-//! packages — some ship no README, some have no dependents, some carry a yanked
-//! release, some publish no licence — precisely so that every branch of the
-//! page is reachable by naming a package rather than by editing code.
+//! A `Recorded` section never contains a fabricated field — where the feed is
+//! silent the field is `None` and the page draws "not recorded" rather than
+//! something plausible. Download telemetry keeps an explicit missing state so
+//! a real zero cannot be confused with an unavailable count.
 
 use super::registry::{Dependents, Loadable, Package, PackageRow, Spelling, size_label};
-use backend_library::RegistryEcosystem;
-use backend_present::{Fault, Language};
+use backend_library::{
+    PackageReference, RegistryDownloadCount, RegistryEcosystem, RegistrySecurityStanding,
+};
+use backend_present::Fault;
+use backend_present::Language;
 
 /// How many weeks of download history a usage series carries.
+#[cfg(test)]
 pub(crate) const WEEKS: usize = 26;
 
 /// How many trailing weeks the "recent" download figure covers (90 days).
+#[cfg(test)]
 const RECENT_WEEKS: usize = 13;
 
 /// Days in one week, for stepping a weekly series back in time.
+#[cfg(test)]
 const WEEK: i64 = 7;
 
 /// The day the newest sample week ends on: a Monday, so every week aligns.
+#[cfg(test)]
 const ANCHOR: i64 = days_from_civil(2026, 9, 14);
 
 // ------------------------------------------------------------ provenance --
@@ -43,11 +43,15 @@ const ANCHOR: i64 = days_from_civil(2026, 9, 14);
 pub(crate) enum Provenance {
     /// The engine answered, and the section holds exactly what it said.
     Recorded,
+    /// The configured feed does not publish this section.
+    NotRecorded,
     /// The engine published nothing here, so a labelled sample stands in.
+    #[cfg(test)]
     Sample(Stand),
 }
 
 /// Why a sample is standing in for a recorded fact.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Stand {
     /// No surface command publishes this fact yet.
@@ -60,7 +64,8 @@ impl Provenance {
     /// Returns the tag a section head draws, when the section is a sample.
     pub(crate) const fn tag(self) -> Option<&'static str> {
         match self {
-            Self::Recorded => None,
+            Self::Recorded | Self::NotRecorded => None,
+            #[cfg(test)]
             Self::Sample(_) => Some("sample"),
         }
     }
@@ -69,9 +74,12 @@ impl Provenance {
     pub(crate) const fn sentence(self) -> Option<&'static str> {
         match self {
             Self::Recorded => None,
+            Self::NotRecorded => Some("This registry feed does not publish this information."),
+            #[cfg(test)]
             Self::Sample(Stand::Unpublished) => {
                 Some("No surface command publishes this fact yet — these are sample values.")
             }
+            #[cfg(test)]
             Self::Sample(Stand::Silent) => {
                 Some("The local index recorded nothing here — these are sample values.")
             }
@@ -79,8 +87,20 @@ impl Provenance {
     }
 
     /// Returns whether the section is a stand-in rather than a fact.
+    #[cfg(test)]
     pub(crate) const fn is_sample(self) -> bool {
         matches!(self, Self::Sample(_))
+    }
+
+    /// Returns whether the section is a stand-in rather than a fact.
+    #[cfg(not(test))]
+    pub(crate) const fn is_sample(self) -> bool {
+        false
+    }
+
+    /// Returns whether the section is a truthful absence from the feed.
+    pub(crate) const fn is_not_recorded(self) -> bool {
+        matches!(self, Self::NotRecorded)
     }
 }
 
@@ -101,6 +121,7 @@ impl<T> Section<T> {
     }
 
     /// Returns a section holding a sample, because nothing publishes the fact.
+    #[cfg(test)]
     pub(crate) const fn unpublished(value: T) -> Self {
         Self {
             state: Loadable::Ready(value),
@@ -108,7 +129,16 @@ impl<T> Section<T> {
         }
     }
 
+    /// Returns a section whose source has no field for this fact.
+    pub(crate) const fn not_recorded(value: T) -> Self {
+        Self {
+            state: Loadable::Ready(value),
+            provenance: Provenance::NotRecorded,
+        }
+    }
+
     /// Returns a section holding a sample, because the feed answered nothing.
+    #[cfg(test)]
     pub(crate) const fn silent(value: T) -> Self {
         Self {
             state: Loadable::Ready(value),
@@ -294,6 +324,28 @@ pub(crate) enum Standing {
     Published,
     /// The publisher withdrew this release.
     Yanked,
+    /// The publisher recommends replacing this release.
+    Deprecated,
+    /// The release is addressable but omitted from normal listings.
+    Unlisted,
+    /// The ecosystem policy retracts this release.
+    Retracted,
+    /// The release disappeared from the upstream feed.
+    Removed,
+}
+
+impl Standing {
+    /// Returns the short status shown beside a release.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Published => "published",
+            Self::Yanked => "yanked",
+            Self::Deprecated => "deprecated",
+            Self::Unlisted => "unlisted",
+            Self::Retracted => "retracted",
+            Self::Removed => "removed",
+        }
+    }
 }
 
 /// One release of a package.
@@ -304,6 +356,7 @@ pub(crate) struct Release {
     bytes: u64,
     published: Option<Stamp>,
     standing: Standing,
+    security: RegistrySecurityStanding,
 }
 
 impl Release {
@@ -330,6 +383,11 @@ impl Release {
     /// Returns whether this release is still offered.
     pub(crate) const fn standing(&self) -> Standing {
         self.standing
+    }
+
+    /// Returns the advisory evaluation recorded for this release.
+    pub(crate) const fn security(&self) -> RegistrySecurityStanding {
+        self.security
     }
 }
 
@@ -686,6 +744,14 @@ impl Dossier {
         &self.owners
     }
 
+    /// Returns the local index request for a package route, when this dossier
+    /// carries an admitted package coordinate.
+    pub(crate) fn route_request(&self, route: PackageRoute) -> Option<PackageRouteRequest> {
+        PackageReference::parse(self.coordinate.clone())
+            .ok()
+            .map(|package| PackageRouteRequest { package, route })
+    }
+
     /// Returns the README, as blocks.
     pub(crate) const fn readme(&self) -> &Section<Vec<ReadmeBlock>> {
         &self.readme
@@ -706,40 +772,156 @@ impl Dossier {
     }
 }
 
-/// Returns the dossier for one coordinate, given what the engine answered.
-///
-/// The engine-backed sections take the request's own state, so a section whose
-/// read is in flight reserves its geometry while the sampled sections beside it
-/// draw at once. A recorded section that answered *nothing at all* is replaced
-/// by a sample marked [`Stand::Silent`], because a page of empty boxes teaches
-/// a reader nothing about what the section is for — and the tag is what keeps
-/// that substitution honest.
+/// An internal package capability supplied by the local registry/semantic
+/// index. These routes never derive an upstream URL from a package name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PackageRoute {
+    /// Render the package's admitted documentation records.
+    Documentation,
+    /// Render versioned source records.
+    Source,
+    /// Render declarations from the semantic index.
+    Code,
+    /// Search declarations within the package's admitted index.
+    Search,
+}
+
+impl PackageRoute {
+    /// Returns the stable UI key used to unfold this internal route.
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            Self::Documentation => "package-docs",
+            Self::Source => "package-source",
+            Self::Code => "package-code",
+            Self::Search => "package-search",
+        }
+    }
+
+    /// Returns the route's reader-facing title.
+    pub(crate) const fn title(self) -> &'static str {
+        match self {
+            Self::Documentation => "Documentation",
+            Self::Source => "Source",
+            Self::Code => "Code",
+            Self::Search => "Search",
+        }
+    }
+}
+
+/// The typed handoff between the package surface and local index/reader
+/// providers. A provider consumes the admitted package identity and route;
+/// the GUI never manufactures an external docs or source address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PackageRouteRequest {
+    package: PackageReference,
+    route: PackageRoute,
+}
+
+impl PackageRouteRequest {
+    /// Returns the exact package identity a local provider must query.
+    pub(crate) const fn package(&self) -> &PackageReference {
+        &self.package
+    }
+
+    /// Returns the requested internal capability.
+    pub(crate) const fn route(&self) -> PackageRoute {
+        self.route
+    }
+}
+
+/// Returns the dossier for one coordinate, given what the live registry read
+/// answered. Every section is either backed by the service or explicitly says
+/// that the configured feed does not publish that fact.
 pub(crate) fn assemble(coordinate: &str, state: &Loadable<Box<Package>>) -> Dossier {
+    #[cfg(test)]
+    {
+        assemble_fixture(coordinate, state)
+    }
+    #[cfg(not(test))]
+    {
+        assemble_live(coordinate, state)
+    }
+}
+
+fn assemble_live(coordinate: &str, state: &Loadable<Box<Package>>) -> Dossier {
+    let spelling = Spelling::of(coordinate);
+    Dossier {
+        coordinate: coordinate.to_owned(),
+        spelling,
+        precis: Section::not_recorded(Precis::default()),
+        releases: releases_section(state),
+        history: history_section(state),
+        downloads: downloads_section(state),
+        dependencies: Section::not_recorded(Vec::new()),
+        dependents: reverse_section(state),
+        owners: Section::not_recorded(Vec::new()),
+        readme: Section::not_recorded(Vec::new()),
+    }
+}
+
+#[cfg(test)]
+fn assemble_fixture(coordinate: &str, state: &Loadable<Box<Package>>) -> Dossier {
     let mut dossier = sample(coordinate);
     let sampled_releases = dossier.releases.ready().cloned().unwrap_or_default();
     let sampled_reverse = dossier.dependents.ready().cloned().unwrap_or_default();
     let sampled_history = dossier.history.ready().cloned().unwrap_or_default();
-    dossier.releases = releases_section(state, sampled_releases);
-    dossier.dependents = reverse_section(state, sampled_reverse);
-    dossier.history = history_section(state, sampled_history);
+    dossier.releases = releases_fixture_section(state, sampled_releases);
+    dossier.dependents = reverse_fixture_section(state, sampled_reverse);
+    dossier.history = history_fixture_section(state, sampled_history);
     dossier
 }
 
+/// Maps the one cumulative download observation into the shared usage model.
+/// Weekly history is a separate registry capability and remains absent when
+/// the feed only publishes a cumulative count.
+fn downloads_section(state: &Loadable<Box<Package>>) -> Section<Downloads> {
+    match engine(state, Package::record) {
+        Reached::Pending => Section::recorded(Loadable::Loading),
+        Reached::Faulted(fault) => Section::recorded(Loadable::Faulted(fault)),
+        Reached::Answered(rows) => {
+            let Some(row) = rows.first() else {
+                return Section::not_recorded(Downloads::default());
+            };
+            let total = match row.downloads() {
+                RegistryDownloadCount::Exact(value) | RegistryDownloadCount::Approximate(value) => {
+                    *value
+                }
+                RegistryDownloadCount::NotReported(_) => {
+                    return Section::not_recorded(Downloads::default());
+                }
+            };
+            Section::recorded(Loadable::Ready(Downloads {
+                weekly: Vec::new(),
+                total,
+                recent: 0,
+            }))
+        }
+    }
+}
+
 /// Returns the versions section, recorded when the index listed any.
-fn releases_section(
-    state: &Loadable<Box<Package>>,
-    sampled: Vec<Release>,
-) -> Section<Vec<Release>> {
+fn releases_section(state: &Loadable<Box<Package>>) -> Section<Vec<Release>> {
     match engine(state, Package::versions) {
         Reached::Pending => Section::recorded(Loadable::Loading),
         Reached::Faulted(fault) => Section::recorded(Loadable::Faulted(fault)),
         Reached::Answered(rows) if rows.is_empty() => exact(state).map_or_else(
-            || Section::silent(sampled),
+            || Section::not_recorded(Vec::new()),
             |only| Section::recorded(Loadable::Ready(only)),
         ),
         Reached::Answered(rows) => {
             Section::recorded(Loadable::Ready(rows.iter().map(release_of).collect()))
         }
+    }
+}
+
+#[cfg(test)]
+fn releases_fixture_section(
+    state: &Loadable<Box<Package>>,
+    sampled: Vec<Release>,
+) -> Section<Vec<Release>> {
+    match releases_section(state).provenance() {
+        Provenance::NotRecorded if !sampled.is_empty() => Section::silent(sampled),
+        _ => releases_section(state),
     }
 }
 
@@ -756,15 +938,15 @@ fn exact(state: &Loadable<Box<Package>>) -> Option<Vec<Release>> {
 }
 
 /// Returns the dependents section, recorded when the feed answered at all.
-fn reverse_section(state: &Loadable<Box<Package>>, sampled: Reverse) -> Section<Reverse> {
+fn reverse_section(state: &Loadable<Box<Package>>) -> Section<Reverse> {
     match engine(state, Package::dependents) {
         Reached::Pending => Section::recorded(Loadable::Loading),
         Reached::Faulted(fault) => Section::recorded(Loadable::Faulted(fault)),
         Reached::Answered(Dependents::NotRecorded(reason)) => {
-            Section::recorded(Loadable::Ready(Reverse::NotRecorded(reason.clone())))
+            Section::not_recorded(Reverse::NotRecorded(reason.clone()))
         }
         Reached::Answered(Dependents::Recorded(rows)) if rows.is_empty() => {
-            Section::silent(sampled)
+            Section::not_recorded(Reverse::Recorded(Vec::new()))
         }
         Reached::Answered(Dependents::Recorded(rows)) => Section::recorded(Loadable::Ready(
             Reverse::Recorded(rows.iter().map(dependent_of).collect()),
@@ -772,18 +954,36 @@ fn reverse_section(state: &Loadable<Box<Package>>, sampled: Reverse) -> Section<
     }
 }
 
+#[cfg(test)]
+fn reverse_fixture_section(state: &Loadable<Box<Package>>, sampled: Reverse) -> Section<Reverse> {
+    let section = reverse_section(state);
+    match section.state() {
+        Loadable::Ready(Reverse::NotRecorded(_)) => Section::recorded(section.state().clone()),
+        _ if section.provenance().is_not_recorded() => Section::silent(sampled),
+        _ => section,
+    }
+}
+
 /// Returns the history section, recorded when the profile named a release.
-fn history_section(state: &Loadable<Box<Package>>, sampled: History) -> Section<History> {
+fn history_section(state: &Loadable<Box<Package>>) -> Section<History> {
     match engine(state, Package::profile) {
         Reached::Pending => Section::recorded(Loadable::Loading),
         Reached::Faulted(fault) => Section::recorded(Loadable::Faulted(fault)),
         Reached::Answered(profile) => match profile.latest() {
-            None => Section::silent(sampled),
+            None => Section::not_recorded(History::default()),
             Some(latest) => Section::recorded(Loadable::Ready(History {
                 versions: profile.versions(),
                 latest: Some(latest.version().to_owned()),
             })),
         },
+    }
+}
+
+#[cfg(test)]
+fn history_fixture_section(state: &Loadable<Box<Package>>, sampled: History) -> Section<History> {
+    match history_section(state).provenance() {
+        Provenance::NotRecorded if sampled.latest().is_some() => Section::silent(sampled),
+        _ => history_section(state),
     }
 }
 
@@ -821,11 +1021,15 @@ fn release_of(row: &PackageRow) -> Release {
         version: row.version().to_owned(),
         bytes: row.bytes(),
         published: None,
-        standing: if row.release_standing() == backend_library::RegistryReleaseStanding::Yanked {
-            Standing::Yanked
-        } else {
-            Standing::Published
+        standing: match row.release_standing() {
+            backend_library::RegistryReleaseStanding::Available => Standing::Published,
+            backend_library::RegistryReleaseStanding::Yanked => Standing::Yanked,
+            backend_library::RegistryReleaseStanding::Deprecated => Standing::Deprecated,
+            backend_library::RegistryReleaseStanding::Unlisted => Standing::Unlisted,
+            backend_library::RegistryReleaseStanding::Retracted => Standing::Retracted,
+            backend_library::RegistryReleaseStanding::Removed => Standing::Removed,
         },
+        security: row.security(),
     }
 }
 
@@ -842,14 +1046,73 @@ fn dependent_of(row: &PackageRow) -> Dependent {
 
 // ---------------------------------------------------------- browse cards --
 
-/// The sample facts a browse card draws beside the recorded ones.
+/// The facts a browse card draws beside the recorded ones.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Card {
     blurb: String,
     keywords: Vec<String>,
     license: Option<String>,
     released: Option<Stamp>,
-    downloads: Downloads,
+    downloads: DownloadFact,
+    #[cfg(test)]
+    sampled: bool,
+}
+
+/// The closed set of download coverage a registry card can carry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DownloadFact {
+    /// The registry published this cumulative/series value, including zero.
+    Reported(Downloads),
+    /// The registry did not publish download telemetry for this row.
+    NotReported,
+}
+
+impl DownloadFact {
+    /// Returns the lifetime count only when the feed reported one.
+    pub(crate) const fn total(&self) -> Option<u64> {
+        match self {
+            Self::Reported(downloads) => Some(downloads.total()),
+            Self::NotReported => None,
+        }
+    }
+
+    /// Returns the recorded series, empty when the feed has no telemetry.
+    pub(crate) fn counts(&self) -> Vec<u64> {
+        match self {
+            Self::Reported(downloads) => downloads.counts(),
+            Self::NotReported => Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod download_fact_tests {
+    use super::{DownloadFact, Downloads};
+
+    #[test]
+    fn zero_downloads_stay_distinct_from_unreported_telemetry() {
+        assert_eq!(
+            DownloadFact::Reported(Downloads::default()).total(),
+            Some(0)
+        );
+        assert_eq!(DownloadFact::NotReported.total(), None);
+    }
+}
+
+#[cfg(test)]
+mod route_request_tests {
+    use super::{PackageRoute, sample};
+
+    #[test]
+    fn internal_route_handoff_keeps_the_pinned_package_identity() {
+        let dossier = sample("pkg:cargo/serde@1.0.0");
+        let request = dossier
+            .route_request(PackageRoute::Source)
+            .expect("the pinned package is an admitted route identity");
+
+        assert_eq!(request.package().as_str(), "pkg:cargo/serde@1.0.0");
+        assert_eq!(request.route(), PackageRoute::Source);
+    }
 }
 
 impl Card {
@@ -863,7 +1126,7 @@ impl Card {
         self.keywords.get(..3).unwrap_or(&self.keywords)
     }
 
-    /// Returns the licence expression, when the sample publishes one.
+    /// Returns the licence expression, when the feed publishes one.
     pub(crate) fn license(&self) -> Option<&str> {
         self.license.as_deref()
     }
@@ -874,12 +1137,24 @@ impl Card {
     }
 
     /// Returns the download series and totals.
-    pub(crate) const fn downloads(&self) -> &Downloads {
+    pub(crate) const fn downloads(&self) -> &DownloadFact {
         &self.downloads
     }
 
+    /// Returns whether this card comes from a test/preview fixture.
+    #[cfg(test)]
+    pub(crate) const fn is_sampled(&self) -> bool {
+        self.sampled
+    }
+
+    /// Returns whether this card comes from a test/preview fixture.
+    #[cfg(not(test))]
+    pub(crate) const fn is_sampled(&self) -> bool {
+        false
+    }
+
     /// Returns the lifetime downloads a grid sorts by.
-    pub(crate) const fn weight(&self) -> u64 {
+    pub(crate) const fn weight(&self) -> Option<u64> {
         self.downloads.total()
     }
 
@@ -896,6 +1171,7 @@ impl Card {
 /// values the page it opens will state. A card built from its own sequence
 /// would drift from the page, and a reader who noticed would be right to stop
 /// trusting both.
+#[cfg(test)]
 pub(crate) fn card(coordinate: &str) -> Card {
     let dossier = sample(coordinate);
     let precis = dossier.precis().ready();
@@ -910,7 +1186,31 @@ pub(crate) fn card(coordinate: &str) -> Card {
             .and_then(|precis| precis.license())
             .map(str::to_owned),
         released: dossier.pinned().and_then(Release::published),
-        downloads: dossier.downloads().ready().cloned().unwrap_or_default(),
+        downloads: DownloadFact::Reported(dossier.downloads().ready().cloned().unwrap_or_default()),
+        sampled: true,
+    }
+}
+
+/// Projects only the facts a live registry row actually publishes.
+pub(crate) fn live_card(row: &PackageRow) -> Card {
+    let downloads = match row.downloads() {
+        RegistryDownloadCount::Exact(value) | RegistryDownloadCount::Approximate(value) => {
+            DownloadFact::Reported(Downloads {
+                weekly: Vec::new(),
+                total: *value,
+                recent: 0,
+            })
+        }
+        RegistryDownloadCount::NotReported(_) => DownloadFact::NotReported,
+    };
+    Card {
+        blurb: String::new(),
+        keywords: Vec::new(),
+        license: None,
+        released: None,
+        downloads,
+        #[cfg(test)]
+        sampled: false,
     }
 }
 
@@ -929,9 +1229,10 @@ pub(crate) fn tally_label(count: u64) -> String {
     format!("{whole}.{}M", count % MILLION / 100_000)
 }
 
-// -------------------------------------------------------- the stub source --
+// -------------------------------------------------- test-only fixtures --
 
 /// Returns the whole sample dossier one coordinate implies.
+#[cfg(test)]
 pub(crate) fn sample(coordinate: &str) -> Dossier {
     let spelling = Spelling::of(coordinate);
     let ecosystem = spelling.ecosystem().unwrap_or(RegistryEcosystem::Cargo);
@@ -971,15 +1272,20 @@ pub(crate) fn sample(coordinate: &str) -> Dossier {
 /// This is a mixing function, not a random number generator: one name yields
 /// one sequence in every process and every test run, which is what makes a
 /// sample dossier a fixture rather than noise.
+#[cfg(test)]
 struct Draw(u64);
 
 /// The FNV-1a offset basis.
+#[cfg(test)]
 const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 /// The FNV-1a prime.
+#[cfg(test)]
 const PRIME: u64 = 0x0000_0100_0000_01b3;
 /// The golden-ratio constant that advances the sequence.
+#[cfg(test)]
 const GOLDEN: u64 = 0x9e37_79b9_7f4a_7c15;
 
+#[cfg(test)]
 impl Draw {
     /// Seeds the sequence that decides which facts a sample omits.
     ///
@@ -1021,6 +1327,7 @@ impl Draw {
 }
 
 /// The subject vocabulary a sample description draws from.
+#[cfg(test)]
 const TOPICS: [&str; 14] = [
     "serialization",
     "async runtime",
@@ -1039,6 +1346,7 @@ const TOPICS: [&str; 14] = [
 ];
 
 /// The adjectival keywords a sample adds beside its subject.
+#[cfg(test)]
 const TAGS: [&str; 12] = [
     "no-std",
     "zero-copy",
@@ -1055,6 +1363,7 @@ const TAGS: [&str; 12] = [
 ];
 
 /// The licence expressions a sample publishes.
+#[cfg(test)]
 const LICENSES: [&str; 6] = [
     "MIT OR Apache-2.0",
     "MIT",
@@ -1065,6 +1374,7 @@ const LICENSES: [&str; 6] = [
 ];
 
 /// Returns the subject keyword and up to three tags beside it.
+#[cfg(test)]
 fn keywords(draw: &mut Draw) -> Vec<String> {
     let mut all = vec![draw.pick(&TOPICS).unwrap_or("utilities").to_owned()];
     for _ in 0..draw.below(4) {
@@ -1078,6 +1388,7 @@ fn keywords(draw: &mut Draw) -> Vec<String> {
 }
 
 /// Returns the one-line description a card and a header draw.
+#[cfg(test)]
 fn blurb(draw: &mut Draw, topic: Option<&str>) -> String {
     let topic = topic.unwrap_or("general purpose");
     match draw.below(4) {
@@ -1089,6 +1400,7 @@ fn blurb(draw: &mut Draw, topic: Option<&str>) -> String {
 }
 
 /// Returns the licence, or nothing for the packages that publish none.
+#[cfg(test)]
 fn license(draw: &mut Draw, shape: &mut Draw) -> Option<String> {
     if shape.below(9) == 0 {
         return None;
@@ -1097,6 +1409,7 @@ fn license(draw: &mut Draw, shape: &mut Draw) -> Option<String> {
 }
 
 /// Returns the external addresses a sample publishes.
+#[cfg(test)]
 fn links(draw: &mut Draw, ecosystem: RegistryEcosystem, name: &str) -> Vec<Link> {
     let slug = name.trim_start_matches('@').replace('/', "-");
     let mut links = vec![Link {
@@ -1119,6 +1432,7 @@ fn links(draw: &mut Draw, ecosystem: RegistryEcosystem, name: &str) -> Vec<Link>
 }
 
 /// Returns the documentation address one registry publishes packages at.
+#[cfg(test)]
 fn documentation(ecosystem: RegistryEcosystem, name: &str) -> String {
     match ecosystem {
         RegistryEcosystem::Cargo => format!("https://docs.rs/{name}"),
@@ -1138,6 +1452,7 @@ fn documentation(ecosystem: RegistryEcosystem, name: &str) -> String {
 /// higher version below the one the coordinate pinned. A version with no
 /// numeric prefix — a date stamp, a hash — cannot be stepped, so the ladder
 /// starts from drawn numbers instead and the pinned spelling stays on top.
+#[cfg(test)]
 fn releases(
     draw: &mut Draw,
     shape: &mut Draw,
@@ -1171,6 +1486,7 @@ fn releases(
             } else {
                 Standing::Published
             },
+            security: RegistrySecurityStanding::Unassessed,
         });
         numbers = step_down(numbers, draw);
         day = day.saturating_sub(i64::try_from(draw.between(9, 160)).unwrap_or(30));
@@ -1180,6 +1496,7 @@ fn releases(
 }
 
 /// Returns the three version numbers one spelling opens with, when it has them.
+#[cfg(test)]
 fn numbers_of(version: &str) -> Option<(u64, u64, u64)> {
     let mut parts = version
         .trim_start_matches('v')
@@ -1190,6 +1507,7 @@ fn numbers_of(version: &str) -> Option<(u64, u64, u64)> {
 }
 
 /// Returns the version numbers of the release before this one.
+#[cfg(test)]
 fn step_down(numbers: (u64, u64, u64), draw: &mut Draw) -> (u64, u64, u64) {
     let (major, minor, patch) = numbers;
     if patch > 0 {
@@ -1209,6 +1527,7 @@ fn step_down(numbers: (u64, u64, u64), draw: &mut Draw) -> (u64, u64, u64) {
 }
 
 /// Returns the version count and newest version of a sample history.
+#[cfg(test)]
 fn history_of(releases: &[Release]) -> History {
     History {
         versions: u64::try_from(releases.len()).unwrap_or(0),
@@ -1220,6 +1539,7 @@ fn history_of(releases: &[Release]) -> History {
 ///
 /// One in three packages is drawn rising, one flat, one falling, because a
 /// usage chart that only ever slopes up teaches a reader to ignore it.
+#[cfg(test)]
 fn downloads(draw: &mut Draw) -> Downloads {
     let base = draw.between(400, 900_000);
     let trend = draw.below(3);
@@ -1257,6 +1577,7 @@ fn downloads(draw: &mut Draw) -> Downloads {
 }
 
 /// Returns the package names one registry's sample dependencies are drawn from.
+#[cfg(test)]
 const fn vocabulary(ecosystem: RegistryEcosystem) -> &'static [&'static str] {
     match ecosystem {
         RegistryEcosystem::Cargo => &[
@@ -1322,6 +1643,7 @@ const fn vocabulary(ecosystem: RegistryEcosystem) -> &'static [&'static str] {
 }
 
 /// Returns the sample dependency set, which is empty for some packages.
+#[cfg(test)]
 fn dependencies(
     draw: &mut Draw,
     shape: &mut Draw,
@@ -1360,6 +1682,7 @@ fn dependencies(
 }
 
 /// Returns a version requirement spelled the way one registry spells them.
+#[cfg(test)]
 fn requirement(ecosystem: RegistryEcosystem, numbers: (u64, u64, u64)) -> String {
     let (major, minor, patch) = numbers;
     match ecosystem {
@@ -1378,6 +1701,7 @@ fn requirement(ecosystem: RegistryEcosystem, numbers: (u64, u64, u64)) -> String
 ///
 /// One registry in eight publishes no reverse index at all, and some packages
 /// simply have no dependents; both are states the page must be able to draw.
+#[cfg(test)]
 fn reverse(draw: &mut Draw, shape: &mut Draw, ecosystem: RegistryEcosystem) -> Reverse {
     if shape.below(8) == 0 {
         return Reverse::NotRecorded(
@@ -1413,11 +1737,13 @@ fn reverse(draw: &mut Draw, shape: &mut Draw, ecosystem: RegistryEcosystem) -> R
 }
 
 /// The synthetic publisher handles a sample owner roster draws from.
+#[cfg(test)]
 const HANDLES: [&str; 8] = [
     "ferris", "octo", "quill", "vellum", "atlas", "harbor", "lumen", "cinder",
 ];
 
 /// Returns the sample owner roster: a publisher, and sometimes maintainers.
+#[cfg(test)]
 fn owners(draw: &mut Draw, name: &str) -> Vec<Owner> {
     let slug = name.trim_start_matches('@').replace('/', "-");
     let mut out = vec![Owner {
@@ -1441,6 +1767,7 @@ fn owners(draw: &mut Draw, name: &str) -> Vec<Owner> {
 ///
 /// This mirrors the hue mapping the views use for an ecosystem tag; the store
 /// cannot reach the view layer, and the mapping is one closed match either way.
+#[cfg(test)]
 const fn language_of(ecosystem: RegistryEcosystem) -> Language {
     match ecosystem {
         RegistryEcosystem::Cargo => Language::Rust,
@@ -1454,6 +1781,7 @@ const fn language_of(ecosystem: RegistryEcosystem) -> Language {
 }
 
 /// Returns the sample README, which one package in seven does not have.
+#[cfg(test)]
 fn readme(
     shape: &mut Draw,
     ecosystem: RegistryEcosystem,
@@ -1496,6 +1824,7 @@ fn readme(
 }
 
 /// Returns the closing blocks of a sample README: features, notes, licence.
+#[cfg(test)]
 fn readme_tail(draw: &mut Draw, ecosystem: RegistryEcosystem, precis: &Precis) -> Vec<ReadmeBlock> {
     let mut blocks = vec![
         ReadmeBlock::Heading {
@@ -1533,6 +1862,7 @@ fn readme_tail(draw: &mut Draw, ecosystem: RegistryEcosystem, precis: &Precis) -
 }
 
 /// Returns the one line that installs a package from one registry.
+#[cfg(test)]
 fn install_line(ecosystem: RegistryEcosystem, name: &str) -> String {
     match ecosystem {
         RegistryEcosystem::Cargo => format!("cargo add {name}"),
@@ -1546,6 +1876,7 @@ fn install_line(ecosystem: RegistryEcosystem, name: &str) -> String {
 }
 
 /// Returns a short usage snippet in one registry's own language.
+#[cfg(test)]
 fn usage_snippet(ecosystem: RegistryEcosystem, name: &str) -> String {
     let symbol = name
         .rsplit(['/', ':', '.'])
@@ -1579,6 +1910,7 @@ fn usage_snippet(ecosystem: RegistryEcosystem, name: &str) -> String {
 }
 
 /// Returns a manifest excerpt in one registry's own configuration format.
+#[cfg(test)]
 const fn manifest_snippet(ecosystem: RegistryEcosystem) -> &'static str {
     match ecosystem {
         RegistryEcosystem::Cargo => "[features]\ndefault = [\"std\"]\nstd = []",

@@ -459,6 +459,10 @@ fn release_lines(dossier: &Dossier) -> Vec<String> {
                         match release.standing() {
                             ReleaseStanding::Published => "published",
                             ReleaseStanding::Yanked => "yanked",
+                            ReleaseStanding::Deprecated => "deprecated",
+                            ReleaseStanding::Unlisted => "unlisted",
+                            ReleaseStanding::Retracted => "retracted",
+                            ReleaseStanding::Removed => "removed",
                         }
                     )
                 })
@@ -515,9 +519,7 @@ fn a_browse_card_states_exactly_what_the_page_it_opens_states() {
     );
     assert_eq!(
         card.downloads().total(),
-        page.downloads()
-            .ready()
-            .map_or(0, dossier::Downloads::total)
+        page.downloads().ready().map(dossier::Downloads::total),
     );
     assert_eq!(
         card.released().map(Stamp::iso),
