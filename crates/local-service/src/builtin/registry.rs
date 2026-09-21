@@ -1,14 +1,18 @@
 //! Product composition for the durable registry acquisition effect.
 //!
-//! This module deliberately contains no registry state machine of its own.
-//! [`RegistryOwner`] remains the only owner of feed cursors, archive
-//! verification, immutable objects, and recovery; this is the small adapter
-//! that lets a product `Add` request select that existing effect.
+//! This module contains product composition only. [`AcquisitionService`]
+//! owns the generic typed state machine, singleflight, negative facts,
+//! breaker, leases, and immutable source receipt; the registry owner remains
+//! the protocol adapter for feed journal phases and 64 KiB archive streaming.
 
 use crate::process::RegistryConfig;
+use backend_engine::acquisition::{
+    AcquisitionOutcome as TypedAcquisitionOutcome, AcquisitionRequest, AcquisitionService,
+    CorruptReason, RawArchiveObjectId, RejectReason,
+};
 use backend_engine::registry::{
-    AcquisitionError, AcquisitionOutcome, EcosystemAdapter, HttpRegistryTransport,
-    PackageCoordinate, RegistryOwner, admit_registry_coordinate,
+    AcquisitionError, EcosystemAdapter, HttpRegistryTransport, PackageCoordinate,
+    admit_registry_coordinate,
 };
 use flate2::read::{DeflateDecoder, GzDecoder};
 use std::collections::BTreeSet;
@@ -16,16 +20,19 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
-
-const MAX_TARGET_POLL_PAGES: usize = 256;
 
 /// Durable registry state attached to one local owner loop.
 pub(super) struct RegistryGateway {
-    owner: RegistryOwner,
+    service: AcquisitionService,
     config: RegistryConfig,
     workspace_root: PathBuf,
+    last_receipt: Option<Arc<backend_engine::acquisition::AcquisitionReceipt>>,
+    last_snapshot: Option<Arc<backend_engine::acquisition::SourceSnapshot>>,
 }
 
 /// Typed terminal state returned while satisfying a remote package add.
@@ -88,8 +95,9 @@ impl fmt::Display for RegistryAddError {
 impl RegistryGateway {
     /// Projects the complete recovered local catalog without network I/O.
     pub(super) fn catalog(&self) -> Result<Vec<backend_engine::RegistryPackageRecord>, String> {
-        self.owner
+        self.service
             .published_packages()
+            .into_iter()
             .map(|published| {
                 let admitted = admit_registry_coordinate(&published.coordinate)
                     .map_err(|_| backend_engine::ProductAdmissionError::PackageReference)?;
@@ -178,12 +186,21 @@ impl RegistryGateway {
             return Ok(None);
         };
         let workspace_root = root.as_ref().to_path_buf();
-        let (owner, _) =
-            RegistryOwner::open(&workspace_root, endpoint, config.policy, config.limits)?;
+        let (owner, _) = backend_engine::registry::RegistryOwner::open(
+            &workspace_root,
+            endpoint,
+            config.policy,
+            config.limits,
+        )?;
+        let service =
+            AcquisitionService::from_owner(owner, workspace_root.join("registry-acquisition"))
+                .map_err(AcquisitionError::Io)?;
         Ok(Some(Self {
-            owner,
+            service,
             config: config.clone(),
             workspace_root,
+            last_receipt: None,
+            last_snapshot: None,
         }))
     }
 
@@ -195,43 +212,95 @@ impl RegistryGateway {
         if self.config.endpoint.is_none() {
             return Err(RegistryAddError::NotConfigured);
         }
-        if self.owner.published(coordinate).is_some() {
-            return self.ensure_artifact(coordinate);
+        if self.service.contains(coordinate) {
+            return self.ensure(coordinate);
         }
         let mut transport = self.transport(coordinate)?;
-        for _ in 0..MAX_TARGET_POLL_PAGES {
-            match self
-                .owner
-                .poll(&mut transport)
-                .map_err(RegistryAddError::Acquisition)?
-            {
-                AcquisitionOutcome::Offline { .. } => return Err(RegistryAddError::Offline),
-                AcquisitionOutcome::Unavailable { .. } => {
-                    return Err(RegistryAddError::Unavailable);
-                }
-                AcquisitionOutcome::RetryAfter { delay, .. } => {
-                    return Err(RegistryAddError::RetryAfter(delay));
-                }
-                AcquisitionOutcome::UpToDate { .. } => {
-                    return if self.owner.published(coordinate).is_some() {
-                        self.ensure_artifact(coordinate)
-                    } else {
-                        Err(RegistryAddError::NotFound)
-                    };
-                }
-                AcquisitionOutcome::Published(receipt) => {
-                    if receipt
-                        .packages
-                        .iter()
-                        .any(|package| package.coordinate == *coordinate)
-                        || self.owner.published(coordinate).is_some()
-                    {
-                        return self.ensure_artifact(coordinate);
-                    }
-                }
+        let request = AcquisitionRequest::new(
+            self.service.source_id(),
+            coordinate.to_string(),
+            RawArchiveObjectId::from_bytes(&[]),
+            1,
+            0,
+        )
+        .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?;
+        self.finish_acquisition(coordinate, self.service.acquire(&request, &mut transport))
+    }
+
+    fn finish_acquisition(
+        &mut self,
+        coordinate: &PackageCoordinate,
+        outcome: TypedAcquisitionOutcome<
+            Arc<backend_engine::acquisition::RegistryAcquisitionResult>,
+        >,
+    ) -> Result<Vec<u8>, RegistryAddError> {
+        match outcome {
+            TypedAcquisitionOutcome::Hit(result) => {
+                // The local ingester consumes the immutable target root and
+                // receipt alongside the bytes, so a successful Add cannot
+                // discard its source snapshot evidence.
+                self.last_receipt = Some(Arc::clone(&result.receipt));
+                self.last_snapshot = Some(Arc::clone(&result.snapshot));
+                Ok(result.artifact.bytes().to_vec())
             }
+            TypedAcquisitionOutcome::NegativeFact(fact) => match fact.kind {
+                backend_engine::acquisition::NegativeFactKind::Yanked => {
+                    Err(RegistryAddError::ReleasePolicy(
+                        backend_engine::registry::ReleaseStanding::Yanked,
+                    ))
+                }
+                backend_engine::acquisition::NegativeFactKind::AdvisoryBlocked => {
+                    Err(RegistryAddError::SecurityPolicy {
+                        advisories: 1,
+                        maximum_severity: 4,
+                    })
+                }
+                backend_engine::acquisition::NegativeFactKind::Unsupported => {
+                    Err(RegistryAddError::UnsupportedArchive)
+                }
+                backend_engine::acquisition::NegativeFactKind::NotFound => {
+                    Err(RegistryAddError::NotFound)
+                }
+            },
+            TypedAcquisitionOutcome::RetryAt(retry) => Err(RegistryAddError::RetryAfter(
+                Duration::from_millis(retry.at_millis.saturating_sub(current_millis())),
+            )),
+            TypedAcquisitionOutcome::CircuitOpen(open) => Err(RegistryAddError::RetryAfter(
+                Duration::from_millis(open.until_millis.saturating_sub(current_millis())),
+            )),
+            TypedAcquisitionOutcome::Unavailable(_) => Err(RegistryAddError::Unavailable),
+            TypedAcquisitionOutcome::Rejected(reason) => {
+                let error = match reason {
+                    RejectReason::Bounds => AcquisitionError::Bounds,
+                    RejectReason::Policy => AcquisitionError::Transport(
+                        backend_engine::registry::TransportFailure::Rejected(403),
+                    ),
+                    RejectReason::Protocol => AcquisitionError::Transport(
+                        backend_engine::registry::TransportFailure::Protocol,
+                    ),
+                };
+                Err(RegistryAddError::Acquisition(error))
+            }
+            TypedAcquisitionOutcome::Corrupt(reason) => {
+                Err(RegistryAddError::Acquisition(match reason {
+                    CorruptReason::Integrity => AcquisitionError::Transport(
+                        backend_engine::registry::TransportFailure::Integrity,
+                    ),
+                    CorruptReason::Journal => AcquisitionError::CorruptJournal,
+                }))
+            }
+            TypedAcquisitionOutcome::Cancelled => Err(RegistryAddError::Unavailable),
         }
-        Err(RegistryAddError::Acquisition(AcquisitionError::Bounds))
+    }
+
+    /// Returns the last immutable receipt consumed by a local Add.
+    pub(super) fn last_receipt(&self) -> Option<&backend_engine::acquisition::AcquisitionReceipt> {
+        self.last_receipt.as_deref()
+    }
+
+    /// Returns the target source snapshot consumed by a local Add.
+    pub(super) fn last_snapshot(&self) -> Option<&backend_engine::acquisition::SourceSnapshot> {
+        self.last_snapshot.as_deref()
     }
 
     pub(super) fn stage_archive(
@@ -242,10 +311,12 @@ impl RegistryGateway {
         stage_archive(coordinate, archive, &self.workspace_root)
     }
 
-    fn ensure_artifact(&self, coordinate: &PackageCoordinate) -> Result<Vec<u8>, RegistryAddError> {
+    fn ensure(&mut self, coordinate: &PackageCoordinate) -> Result<Vec<u8>, RegistryAddError> {
         let published = self
-            .owner
-            .published(coordinate)
+            .service
+            .published_packages()
+            .into_iter()
+            .find(|package| package.coordinate == *coordinate)
             .ok_or(RegistryAddError::NotFound)?;
         if matches!(
             published.facts.standing(),
@@ -265,11 +336,15 @@ impl RegistryGateway {
                 maximum_severity,
             });
         }
-        self.owner
-            .read_artifact(coordinate)
-            .map_err(RegistryAddError::Acquisition)?
-            .map(|object| object.bytes().to_vec())
-            .ok_or(RegistryAddError::NotFound)
+        let request = AcquisitionRequest::new(
+            self.service.source_id(),
+            coordinate.to_string(),
+            RawArchiveObjectId::from_bytes(&[]),
+            1,
+            0,
+        )
+        .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?;
+        self.finish_acquisition(coordinate, self.service.ensure(&request))
     }
 
     fn transport(
@@ -303,6 +378,14 @@ impl RegistryGateway {
             .map_err(RegistryAddError::Acquisition)
         }
     }
+}
+
+fn current_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 fn native_adapter(

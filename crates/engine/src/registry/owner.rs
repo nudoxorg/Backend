@@ -7,15 +7,15 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
 
 use crate::{
     capability::CapabilityArtifactId,
-    effects::{effect_key, EffectKey},
+    effects::{EffectKey, effect_key},
     fault::{Boundary, Faults},
     journal::{HashChainJournal, JournalError},
 };
@@ -378,6 +378,18 @@ impl RegistryOwner {
     #[must_use]
     pub const fn cursor(&self) -> FeedCursor<RemoteRegistry, CanonicalFeedV1> {
         self.cursor
+    }
+
+    /// Credential-free source identity used by the acquisition layer.
+    #[must_use]
+    pub const fn source_id(&self) -> super::RegistryId {
+        self.endpoint.id()
+    }
+
+    /// Most recently committed protocol receipt, if one exists.
+    #[must_use]
+    pub fn last_receipt(&self) -> Option<&AcquisitionReceipt> {
+        self.last_receipt.as_ref()
     }
 
     /// Returns the immutable artifact already published for a coordinate.

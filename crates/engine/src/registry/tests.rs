@@ -3,8 +3,13 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     net::TcpListener,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc, Barrier,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
+    time::Duration,
 };
 
 use super::*;
@@ -12,10 +17,249 @@ use crate::{
     capability::CapabilityArtifactId,
     fault::{Boundary, Faults},
 };
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use sha2::{Digest, Sha256, Sha512};
 
 static TEMPORARY: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn acquisition_service_coalesces_concurrent_registry_effects() {
+    struct CountingTransport {
+        package: RemotePackage,
+        archive: Vec<u8>,
+        pages: Arc<AtomicU64>,
+        archives: Arc<AtomicU64>,
+    }
+    impl RegistryTransport for CountingTransport {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            self.pages.fetch_add(1, Ordering::Relaxed);
+            thread::sleep(Duration::from_millis(20));
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [7; 32],
+                packages: vec![self.package.clone()],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _package: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            self.archives.fetch_add(1, Ordering::Relaxed);
+            thread::sleep(Duration::from_millis(20));
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                self.archive.clone(),
+            )))
+        }
+    }
+
+    let endpoint = RegistryEndpoint::new(
+        RegistryEcosystem::Cargo,
+        "http://127.0.0.1:9/acquisition-service",
+    )
+    .expect("admit endpoint");
+    let archive = b"service archive".to_vec();
+    let digest = *CapabilityArtifactId::from_value(&archive).as_bytes();
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/service@1.0.0").expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(digest),
+        provenance: ProvenanceDigest::from_authenticated_feed([9; 32]),
+        facts: ReleaseFacts::default(),
+        archive_url: Arc::from("http://127.0.0.1:9/acquisition-service/archive"),
+    };
+    let pages = Arc::new(AtomicU64::new(0));
+    let archives = Arc::new(AtomicU64::new(0));
+    let root = temporary("service-coalesce");
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("open owner");
+    let service = Arc::new(
+        crate::acquisition::AcquisitionService::from_owner(
+            owner,
+            root.join("service-coordination"),
+        )
+        .expect("open service"),
+    );
+    let request = crate::acquisition::AcquisitionRequest::new(
+        service.source_id(),
+        package.coordinate.to_string(),
+        crate::acquisition::RawArchiveObjectId::from_bytes(&[]),
+        1,
+        0,
+    )
+    .expect("request");
+    let barrier = Arc::new(Barrier::new(32));
+    let (outcomes, receiver) = mpsc::channel();
+    let mut threads = Vec::new();
+    for _ in 0..32 {
+        let service = Arc::clone(&service);
+        let package = package.clone();
+        let archive = archive.clone();
+        let pages = Arc::clone(&pages);
+        let archives = Arc::clone(&archives);
+        let barrier = Arc::clone(&barrier);
+        let request = request.clone();
+        let outcomes = outcomes.clone();
+        threads.push(thread::spawn(move || {
+            barrier.wait();
+            let mut transport = CountingTransport {
+                package,
+                archive,
+                pages,
+                archives,
+            };
+            outcomes
+                .send(service.acquire(&request, &mut transport))
+                .expect("acquisition result receiver");
+        }));
+    }
+    drop(outcomes);
+    let mut receipt: Option<Arc<crate::acquisition::AcquisitionReceipt>> = None;
+    for _ in 0..32 {
+        let outcome = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("all acquisition callers complete within the bounded singleflight timeout");
+        let crate::acquisition::AcquisitionOutcome::Hit(result) = outcome else {
+            panic!("all callers share the published receipt: {outcome:?}");
+        };
+        if let Some(expected) = &receipt {
+            assert_eq!(expected.id, result.receipt.id);
+            assert_eq!(expected.delta, result.receipt.delta);
+            assert_eq!(expected.target, result.receipt.target);
+        } else {
+            receipt = Some(result.receipt.clone());
+        }
+    }
+    for thread in threads {
+        thread.join().expect("acquisition caller");
+    }
+    assert_eq!(pages.load(Ordering::Relaxed), 1);
+    assert_eq!(archives.load(Ordering::Relaxed), 1);
+    assert_eq!(service.telemetry().leaders, 1);
+    assert_eq!(service.telemetry().followers, 31);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn acquisition_service_keeps_negative_facts_distinct_from_unavailable_and_circuit_open() {
+    struct EmptyTransport {
+        pages: Arc<AtomicU64>,
+    }
+    impl RegistryTransport for EmptyTransport {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            self.pages.fetch_add(1, Ordering::Relaxed);
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: request.cursor.token(),
+                packages: Vec::new(),
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _package: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            Err(TransportFailure::Protocol)
+        }
+    }
+
+    struct UnavailableTransport;
+    impl RegistryTransport for UnavailableTransport {
+        fn fetch_page(
+            &mut self,
+            _request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            Ok(TransportResult::Unavailable)
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _package: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            Ok(TransportResult::Unavailable)
+        }
+    }
+
+    let endpoint = RegistryEndpoint::new(
+        RegistryEcosystem::Cargo,
+        "http://127.0.0.1:9/acquisition-outcomes",
+    )
+    .expect("admit endpoint");
+    let coordinate = PackageCoordinate::parse("pkg:cargo/missing@1.0.0").expect("coordinate");
+    let root = temporary("service-outcomes");
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
+        .expect("open owner");
+    let service = crate::acquisition::AcquisitionService::from_owner(
+        owner,
+        root.join("service-coordination"),
+    )
+    .expect("open service");
+    let request = crate::acquisition::AcquisitionRequest::new(
+        service.source_id(),
+        coordinate.to_string(),
+        crate::acquisition::RawArchiveObjectId::from_bytes(&[]),
+        1,
+        0,
+    )
+    .expect("request");
+    let pages = Arc::new(AtomicU64::new(0));
+    let mut empty = EmptyTransport {
+        pages: Arc::clone(&pages),
+    };
+    assert!(matches!(
+        service.acquire(&request, &mut empty),
+        crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
+            kind: crate::acquisition::NegativeFactKind::NotFound,
+            ..
+        })
+    ));
+    let mut cached = EmptyTransport { pages };
+    assert!(matches!(
+        service.acquire(&request, &mut cached),
+        crate::acquisition::AcquisitionOutcome::NegativeFact(_)
+    ));
+    assert_eq!(cached.pages.load(Ordering::Relaxed), 1);
+
+    let circuit_root = temporary("service-circuit");
+    let endpoint = RegistryEndpoint::new(
+        RegistryEcosystem::Cargo,
+        "http://127.0.0.1:9/acquisition-circuit",
+    )
+    .expect("admit circuit endpoint");
+    let (owner, _) =
+        RegistryOwner::open(&circuit_root, endpoint, AcquisitionPolicy::Online, limits())
+            .expect("open circuit owner");
+    let circuit = crate::acquisition::AcquisitionService::from_owner(
+        owner,
+        circuit_root.join("service-coordination"),
+    )
+    .expect("open circuit service");
+    let request = crate::acquisition::AcquisitionRequest::new(
+        circuit.source_id(),
+        coordinate.to_string(),
+        crate::acquisition::RawArchiveObjectId::from_bytes(&[]),
+        1,
+        0,
+    )
+    .expect("circuit request");
+    for _ in 0..3 {
+        assert!(matches!(
+            circuit.acquire(&request, &mut UnavailableTransport),
+            crate::acquisition::AcquisitionOutcome::Unavailable(_)
+        ));
+    }
+    assert!(matches!(
+        circuit.acquire(&request, &mut UnavailableTransport),
+        crate::acquisition::AcquisitionOutcome::CircuitOpen(_)
+    ));
+    fs::remove_dir_all(root).expect("cleanup negative");
+    fs::remove_dir_all(circuit_root).expect("cleanup circuit");
+}
 
 fn temporary(label: &str) -> PathBuf {
     let value = TEMPORARY.fetch_add(1, Ordering::Relaxed);
@@ -472,16 +716,20 @@ fn endpoint_policy_rejects_plaintext_remote_hosts_and_redirects() {
     // HTTPS mirrors and forge-backed package origins are valid configured
     // sources; only their explicitly advertised follow-up authorities are
     // trusted by the transport.
-    assert!(RegistryEndpoint::new(
-        RegistryEcosystem::Cargo,
-        "https://packages.example.org/mirror"
-    )
-    .is_ok());
-    assert!(RegistryEndpoint::new(
-        RegistryEcosystem::Npm,
-        "https://github.com/example/registry"
-    )
-    .is_ok());
+    assert!(
+        RegistryEndpoint::new(
+            RegistryEcosystem::Cargo,
+            "https://packages.example.org/mirror"
+        )
+        .is_ok()
+    );
+    assert!(
+        RegistryEndpoint::new(
+            RegistryEcosystem::Npm,
+            "https://github.com/example/registry"
+        )
+        .is_ok()
+    );
     assert!(matches!(
         RegistryEndpoint::new(RegistryEcosystem::Cargo, "http://example.test"),
         Err(AcquisitionError::InvalidConfiguration)
@@ -1582,9 +1830,11 @@ fn legacy_unscoped_journal_path_is_never_aliased() {
     .expect("owner");
     assert_eq!(recovery.cursor.sequence(), 0);
     assert!(recovery.pending.is_none());
-    assert!(storage_root(&root, &endpoint)
-        .join("registry.journal")
-        .is_file());
+    assert!(
+        storage_root(&root, &endpoint)
+            .join("registry.journal")
+            .is_file()
+    );
     assert_eq!(owner.cursor().sequence(), 0);
     fs::remove_dir_all(root).expect("cleanup");
 }

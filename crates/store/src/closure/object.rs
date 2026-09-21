@@ -199,6 +199,12 @@ impl TypedObject {
         &self.bytes
     }
 
+    /// Returns the immutable encoded bytes without copying the object.
+    #[must_use]
+    pub fn bytes_shared(&self) -> Arc<[u8]> {
+        Arc::clone(&self.bytes)
+    }
+
     pub(crate) fn from_wire_parts(
         schema: SchemaIdentity,
         key: Hash,

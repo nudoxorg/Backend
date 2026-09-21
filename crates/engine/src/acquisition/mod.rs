@@ -6,6 +6,11 @@
 //! and the immutable delta applied to a source snapshot.
 #![allow(clippy::module_name_repetitions)]
 
+use crate::registry::{
+    AcquisitionError as RegistryAcquisitionError, AcquisitionOutcome as RegistryOutcome,
+    PackageCoordinate, RegistryOwner, RegistryTransport, TransportFailure,
+    admit_registry_coordinate,
+};
 use backend_execution::{
     Cancellation, OutputAdmission, OutputValidationError, ResultCoverage, UntrustedOutputClaim,
     WorkInterner, WorkKey, acquisition_work_key,
@@ -1809,6 +1814,466 @@ pub struct PublishedDelta {
     pub receipt: Arc<AcquisitionReceipt>,
 }
 
+/// Result consumed by product services after a registry effect completes.
+///
+/// The archive bytes are an immutable, reference-counted handoff.  The
+/// snapshot, delta, and receipt are all derived from the same owner cursor and
+/// are therefore deterministic for every coalesced caller.
+#[derive(Clone, Debug)]
+pub struct RegistryAcquisitionResult {
+    /// Verified immutable object admitted by the registry owner.
+    pub artifact: Arc<backend_store::TypedObject>,
+    /// Source snapshot selected by the receipt's target root. Registry
+    /// adapters use a catalog manifest here (coordinate paths to archive
+    /// objects); archive extraction remains a separate local-service step.
+    pub snapshot: Arc<SourceSnapshot>,
+    /// Root-bound versioned change from the pre-effect source.
+    pub delta: Arc<AcquisitionDelta>,
+    /// Immutable receipt pairing the delta and publication root.
+    pub receipt: Arc<AcquisitionReceipt>,
+}
+
+/// Production registry coordinator.
+///
+/// `RegistryOwner` remains responsible for decoding protocol pages, durable
+/// journal phases, and 64 KiB archive streaming.  This service owns the
+/// generic acquisition state machine around that adapter: process-local
+/// singleflight, negative facts, retry/breaker decisions, leases, and the
+/// canonical source snapshot/delta receipt consumed by local services.
+pub struct AcquisitionService {
+    owner: Arc<Mutex<RegistryOwner>>,
+    coordinator: AcquisitionCoordinator,
+    negative: NegativeCache,
+    breaker: CircuitBreaker,
+    leases: LeaseStore,
+    policy_epoch: u64,
+}
+
+struct ExistingRegistryTransport;
+
+impl RegistryTransport for ExistingRegistryTransport {
+    fn fetch_page(
+        &mut self,
+        _request: crate::registry::FeedRequest,
+    ) -> Result<crate::registry::TransportResult<crate::registry::FeedPage>, TransportFailure> {
+        Err(TransportFailure::Configuration)
+    }
+
+    fn fetch_archive(
+        &mut self,
+        _package: &crate::registry::RemotePackage,
+    ) -> Result<crate::registry::TransportResult<crate::registry::ArchiveArtifact>, TransportFailure>
+    {
+        Err(TransportFailure::Configuration)
+    }
+}
+
+impl fmt::Debug for AcquisitionService {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AcquisitionService")
+            .field("policy_epoch", &self.policy_epoch)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AcquisitionService {
+    /// Attaches generic acquisition ownership to one already-opened registry
+    /// protocol owner.  The lease and breaker files are durable; the
+    /// `WorkInterner` itself is deliberately process-local.
+    pub fn from_owner(owner: RegistryOwner, root: impl Into<PathBuf>) -> io::Result<Self> {
+        let root = root.into();
+        let leases = LeaseStore::open(root.join("coordination"))?;
+        let breaker =
+            CircuitBreaker::open_persisted(root.join("circuit.state"), 3, Duration::from_secs(5))?;
+        Ok(Self {
+            owner: Arc::new(Mutex::new(owner)),
+            coordinator: AcquisitionCoordinator::new(64, 256),
+            negative: NegativeCache::new(256),
+            breaker,
+            leases,
+            policy_epoch: 0,
+        })
+    }
+
+    /// Stable source identity for request construction.
+    #[must_use]
+    pub fn source_id(&self) -> [u8; ID_BYTES] {
+        self.owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .source_id()
+            .as_bytes()
+    }
+
+    /// Returns whether a coordinate is already in the durable owner catalog.
+    #[must_use]
+    pub fn contains(&self, coordinate: &PackageCoordinate) -> bool {
+        self.owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .published(coordinate)
+            .is_some()
+    }
+
+    /// Returns a bounded clone of the durable catalog for read-only product
+    /// projections.
+    #[must_use]
+    pub fn published_packages(&self) -> Vec<crate::registry::PublishedPackage> {
+        self.owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .published_packages()
+            .cloned()
+            .collect()
+    }
+
+    /// Reads one owner-admitted archive without changing acquisition state.
+    pub fn read_artifact(
+        &self,
+        coordinate: &PackageCoordinate,
+    ) -> Result<Option<Arc<backend_store::TypedObject>>, RegistryAcquisitionError> {
+        self.owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_artifact(coordinate)
+    }
+
+    /// Exposes bounded process-local coordination telemetry.
+    #[must_use]
+    pub fn telemetry(&self) -> AcquisitionTelemetry {
+        self.coordinator.telemetry().snapshot()
+    }
+
+    /// Coordinates one registry acquisition through the typed state machine.
+    ///
+    /// The caller supplies a transport adapter; it is never retained by the
+    /// service.  The returned outcome is closed over every terminal class,
+    /// including negative facts, breaker admission, corruption, and caller
+    /// cancellation.
+    pub fn acquire<T: RegistryTransport>(
+        &self,
+        request: &AcquisitionRequest,
+        transport: &mut T,
+    ) -> AcquisitionOutcome<Arc<RegistryAcquisitionResult>> {
+        let key = request.work_key();
+        let now = now_millis();
+        if let Some(fact) = self.negative.get(*key.as_bytes(), now, self.policy_epoch) {
+            return AcquisitionOutcome::NegativeFact(fact);
+        }
+        let owner = Arc::clone(&self.owner);
+        let leases = self.leases.clone();
+        let breaker = self.breaker.clone();
+        let negative = self.negative.clone();
+        let policy_epoch = self.policy_epoch;
+        self.coordinator.coordinate_registry(request, || {
+            let _circuit = match breaker.allow(now_millis()) {
+                Ok(permit) => permit,
+                Err(open) => return AcquisitionOutcome::CircuitOpen(open),
+            };
+            let Some(_lease) = leases.acquire(key, Duration::from_secs(30)).ok().flatten() else {
+                return AcquisitionOutcome::Unavailable(Unavailable {
+                    source: request.source,
+                });
+            };
+            let mut owner_guard = owner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let base = match registry_catalog_snapshot(&owner_guard, policy_epoch) {
+                Ok(base) => base,
+                Err(outcome) => return promote_bytes_outcome(outcome),
+            };
+            let requested = request.coordinate.as_ref();
+            let mut up_to_date = false;
+            for _ in 0..256 {
+                if owner_guard
+                    .published_packages()
+                    .any(|package| package.coordinate.as_str() == requested)
+                {
+                    up_to_date = true;
+                    break;
+                }
+                match owner_guard.poll(transport) {
+                    Ok(RegistryOutcome::Offline { .. }) => {
+                        return AcquisitionOutcome::Rejected(RejectReason::Policy);
+                    }
+                    Ok(RegistryOutcome::Unavailable { .. }) => {
+                        breaker.failure(now_millis());
+                        return AcquisitionOutcome::Unavailable(Unavailable {
+                            source: request.source,
+                        });
+                    }
+                    Ok(RegistryOutcome::RetryAfter { delay, .. }) => {
+                        breaker.failure(now_millis());
+                        let retry = RetryPolicy::default().delay(0, Some(delay));
+                        return AcquisitionOutcome::RetryAt(RetryAt {
+                            at_millis: now_millis()
+                                .saturating_add(retry.as_millis().min(u128::from(u64::MAX)) as u64),
+                            attempt: 0,
+                        });
+                    }
+                    Ok(RegistryOutcome::UpToDate { .. }) => {
+                        up_to_date = true;
+                        break;
+                    }
+                    Ok(RegistryOutcome::Published(_)) => {}
+                    Err(error) => {
+                        return promote_bytes_outcome(registry_error_outcome(
+                            error,
+                            request.source,
+                            &breaker,
+                        ));
+                    }
+                }
+            }
+            if !up_to_date {
+                return AcquisitionOutcome::Rejected(RejectReason::Bounds);
+            }
+            let Some(package) = owner_guard
+                .published_packages()
+                .find(|package| package.coordinate.as_str() == requested)
+                .cloned()
+            else {
+                let cursor = owner_guard.cursor().token();
+                let fact = NegativeFact {
+                    kind: NegativeFactKind::NotFound,
+                    authority: request.source,
+                    source_proof: cursor,
+                    cursor,
+                    observed_at_millis: now_millis(),
+                    expires_at_millis: now_millis().saturating_add(60_000),
+                    policy_epoch,
+                };
+                negative.record(*key.as_bytes(), fact);
+                return AcquisitionOutcome::NegativeFact(fact);
+            };
+            breaker.success();
+            let target = match registry_catalog_snapshot(&owner_guard, policy_epoch) {
+                Ok(target) => target,
+                Err(outcome) => return promote_bytes_outcome(outcome),
+            };
+            let result = match registry_result(
+                &owner_guard,
+                &base,
+                target,
+                package,
+                request,
+                policy_epoch,
+            ) {
+                Ok(result) => Arc::new(result),
+                Err(outcome) => return promote_bytes_outcome(outcome),
+            };
+            AcquisitionOutcome::Hit(result)
+        })
+    }
+
+    /// Coordinates a no-network hit for an object already admitted by the
+    /// durable owner. This still emits the canonical source receipt/delta so
+    /// local services consume the same evidence for a no-op reuse.
+    pub fn ensure(
+        &self,
+        request: &AcquisitionRequest,
+    ) -> AcquisitionOutcome<Arc<RegistryAcquisitionResult>> {
+        self.acquire(request, &mut ExistingRegistryTransport)
+    }
+}
+
+fn registry_catalog_snapshot(
+    owner: &RegistryOwner,
+    policy_epoch: u64,
+) -> Result<Arc<SourceSnapshot>, AcquisitionOutcome<Arc<[u8]>>> {
+    let source = owner.source_id().as_bytes();
+    let mut entries = Vec::new();
+    let mut claims = Vec::new();
+    for package in owner.published_packages() {
+        let object = owner
+            .read_artifact(&package.coordinate)
+            .map_err(|_| AcquisitionOutcome::Corrupt(CorruptReason::Journal))?
+            .ok_or(AcquisitionOutcome::Corrupt(CorruptReason::Journal))?;
+        let object = RawArchiveObjectId::from_bytes(object.bytes());
+        let coordinate = Arc::from(package.coordinate.as_str());
+        entries.push(ManifestEntry {
+            path: coordinate,
+            object,
+            mode: 0,
+        });
+        let admitted = admit_registry_coordinate(&package.coordinate)
+            .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))?;
+        let claim = ReleaseClaim::new(
+            source,
+            package.coordinate.as_str(),
+            admitted.version().as_str(),
+            object,
+        )
+        .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))?;
+        claims.push(claim.id);
+    }
+    let manifest = Arc::new(
+        TreeManifest::new(entries)
+            .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))?,
+    );
+    SourceSnapshot::new(
+        source,
+        owner.cursor().token(),
+        policy_epoch,
+        manifest,
+        claims,
+    )
+    .map(Arc::new)
+    .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))
+}
+
+fn registry_result(
+    owner: &RegistryOwner,
+    base: &SourceSnapshot,
+    target: Arc<SourceSnapshot>,
+    package: crate::registry::PublishedPackage,
+    request: &AcquisitionRequest,
+    policy_epoch: u64,
+) -> Result<RegistryAcquisitionResult, AcquisitionOutcome<Arc<[u8]>>> {
+    let artifact = owner
+        .read_artifact(&package.coordinate)
+        .map_err(|_| AcquisitionOutcome::Corrupt(CorruptReason::Journal))?
+        .ok_or(AcquisitionOutcome::Corrupt(CorruptReason::Journal))?;
+    let object = RawArchiveObjectId::from_bytes(artifact.bytes());
+    let admitted = admit_registry_coordinate(&package.coordinate)
+        .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))?;
+    let effective = AcquisitionRequest::new(
+        request.source,
+        package.coordinate.as_str(),
+        object,
+        request.schema,
+        policy_epoch,
+    )
+    .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))?;
+    let claim = ReleaseClaim::new(
+        request.source,
+        package.coordinate.as_str(),
+        admitted.version().as_str(),
+        object,
+    )
+    .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))?;
+    let metadata = Resolve::new(effective)
+        .metadata(MetadataRecord {
+            claim,
+            length: package.bytes,
+            source_proof: owner.cursor().token(),
+        })
+        .map_err(promote_void_outcome)?;
+    let verified = metadata
+        .object(object)
+        .and_then(|object_phase| object_phase.verified(object))
+        .map_err(promote_void_outcome)?;
+    let policy_allowed = matches!(
+        package.facts.standing(),
+        crate::registry::ReleaseStanding::Available
+    ) && !matches!(
+        package.facts.security(),
+        crate::registry::SecurityStanding::Affected { .. }
+    );
+    let published = verified
+        .policy(policy_allowed)
+        .map_err(promote_void_outcome)?;
+    let changes = snapshot_changes(base, &target);
+    let published = match published.publish(base, target.clone(), changes) {
+        AcquisitionOutcome::Hit(published) => published,
+        AcquisitionOutcome::Rejected(reason) => return Err(AcquisitionOutcome::Rejected(reason)),
+        _ => return Err(AcquisitionOutcome::Corrupt(CorruptReason::Journal)),
+    };
+    Ok(RegistryAcquisitionResult {
+        artifact,
+        snapshot: target,
+        delta: published.delta,
+        receipt: published.receipt,
+    })
+}
+
+fn promote_void_outcome<T>(outcome: AcquisitionOutcome<()>) -> AcquisitionOutcome<T> {
+    match outcome {
+        AcquisitionOutcome::Hit(()) => unreachable!("void acquisition cannot hit"),
+        AcquisitionOutcome::NegativeFact(fact) => AcquisitionOutcome::NegativeFact(fact),
+        AcquisitionOutcome::RetryAt(retry) => AcquisitionOutcome::RetryAt(retry),
+        AcquisitionOutcome::CircuitOpen(open) => AcquisitionOutcome::CircuitOpen(open),
+        AcquisitionOutcome::Unavailable(unavailable) => {
+            AcquisitionOutcome::Unavailable(unavailable)
+        }
+        AcquisitionOutcome::Rejected(reason) => AcquisitionOutcome::Rejected(reason),
+        AcquisitionOutcome::Corrupt(reason) => AcquisitionOutcome::Corrupt(reason),
+        AcquisitionOutcome::Cancelled => AcquisitionOutcome::Cancelled,
+    }
+}
+
+fn promote_bytes_outcome<T>(outcome: AcquisitionOutcome<Arc<[u8]>>) -> AcquisitionOutcome<T> {
+    match outcome {
+        AcquisitionOutcome::Hit(_) => AcquisitionOutcome::Corrupt(CorruptReason::Journal),
+        AcquisitionOutcome::NegativeFact(fact) => AcquisitionOutcome::NegativeFact(fact),
+        AcquisitionOutcome::RetryAt(retry) => AcquisitionOutcome::RetryAt(retry),
+        AcquisitionOutcome::CircuitOpen(open) => AcquisitionOutcome::CircuitOpen(open),
+        AcquisitionOutcome::Unavailable(unavailable) => {
+            AcquisitionOutcome::Unavailable(unavailable)
+        }
+        AcquisitionOutcome::Rejected(reason) => AcquisitionOutcome::Rejected(reason),
+        AcquisitionOutcome::Corrupt(reason) => AcquisitionOutcome::Corrupt(reason),
+        AcquisitionOutcome::Cancelled => AcquisitionOutcome::Cancelled,
+    }
+}
+
+fn snapshot_changes(base: &SourceSnapshot, target: &SourceSnapshot) -> Vec<DeltaChange> {
+    let mut all =
+        BTreeMap::<Arc<str>, (Option<RawArchiveObjectId>, Option<RawArchiveObjectId>)>::new();
+    for entry in base.manifest().entries() {
+        all.entry(Arc::clone(&entry.path)).or_default().0 = Some(entry.object);
+    }
+    for entry in target.manifest().entries() {
+        all.entry(Arc::clone(&entry.path)).or_default().1 = Some(entry.object);
+    }
+    all.into_iter()
+        .filter_map(|(path, (before, after))| {
+            (before != after).then_some(DeltaChange {
+                path,
+                before,
+                after,
+            })
+        })
+        .collect()
+}
+
+fn registry_error_outcome(
+    error: RegistryAcquisitionError,
+    source: [u8; ID_BYTES],
+    breaker: &CircuitBreaker,
+) -> AcquisitionOutcome<Arc<[u8]>> {
+    match error {
+        RegistryAcquisitionError::Transport(failure) => match failure {
+            TransportFailure::Integrity => AcquisitionOutcome::Corrupt(CorruptReason::Integrity),
+            TransportFailure::Overrun { .. } | TransportFailure::Bounds => {
+                AcquisitionOutcome::Rejected(RejectReason::Bounds)
+            }
+            TransportFailure::Configuration
+            | TransportFailure::Protocol
+            | TransportFailure::Rejected(_)
+            | TransportFailure::DownloadUnavailable => {
+                AcquisitionOutcome::Rejected(RejectReason::Protocol)
+            }
+        },
+        RegistryAcquisitionError::Io(_)
+        | RegistryAcquisitionError::Journal(_)
+        | RegistryAcquisitionError::CorruptJournal => {
+            AcquisitionOutcome::Corrupt(CorruptReason::Journal)
+        }
+        RegistryAcquisitionError::Injected(_) => {
+            breaker.failure(now_millis());
+            AcquisitionOutcome::Unavailable(Unavailable { source })
+        }
+        RegistryAcquisitionError::InvalidConfiguration
+        | RegistryAcquisitionError::InvalidCoordinate
+        | RegistryAcquisitionError::Bounds
+        | RegistryAcquisitionError::Overrun { .. } => {
+            AcquisitionOutcome::Rejected(RejectReason::Bounds)
+        }
+    }
+}
+
 impl Policy {
     /// Builds and publishes an immutable target delta.
     pub fn publish(
@@ -1849,8 +2314,14 @@ impl Policy {
 }
 
 /// One bounded shared effect slot used by the acquisition coordinator.
+#[derive(Clone)]
+struct SharedSlotValue {
+    outcome: AcquisitionOutcome<Arc<[u8]>>,
+    registry: Option<Arc<RegistryAcquisitionResult>>,
+}
+
 struct SharedSlot {
-    result: Mutex<Option<AcquisitionOutcome<Arc<[u8]>>>>,
+    result: Mutex<Option<SharedSlotValue>>,
     wake: Condvar,
 }
 
@@ -1917,12 +2388,131 @@ impl AcquisitionCoordinator {
     where
         F: FnOnce() -> AcquisitionOutcome<Arc<[u8]>>,
     {
+        self.coordinate_inner(
+            request,
+            cancellation,
+            effect,
+            |outcome| SharedSlotValue {
+                outcome: outcome.clone(),
+                registry: None,
+            },
+            |shared| shared.outcome.clone(),
+        )
+    }
+
+    /// Coalesces a registry effect while retaining its immutable receipt and
+    /// source snapshot in the same slot as the WorkInterner output. Followers
+    /// therefore cannot observe a byte result from a different receipt map.
+    pub fn coordinate_registry<F>(
+        &self,
+        request: &AcquisitionRequest,
+        effect: F,
+    ) -> AcquisitionOutcome<Arc<RegistryAcquisitionResult>>
+    where
+        F: FnOnce() -> AcquisitionOutcome<Arc<RegistryAcquisitionResult>>,
+    {
+        let (cancellation, _) = Cancellation::new();
+        self.coordinate_registry_with_cancellation(request, &cancellation, effect)
+    }
+
+    fn coordinate_registry_with_cancellation<F>(
+        &self,
+        request: &AcquisitionRequest,
+        cancellation: &Cancellation,
+        effect: F,
+    ) -> AcquisitionOutcome<Arc<RegistryAcquisitionResult>>
+    where
+        F: FnOnce() -> AcquisitionOutcome<Arc<RegistryAcquisitionResult>>,
+    {
+        self.coordinate_inner(
+            request,
+            cancellation,
+            effect,
+            |outcome| match outcome {
+                AcquisitionOutcome::Hit(result) => SharedSlotValue {
+                    outcome: AcquisitionOutcome::Hit(result.artifact.bytes_shared()),
+                    registry: Some(Arc::clone(result)),
+                },
+                AcquisitionOutcome::NegativeFact(fact) => SharedSlotValue {
+                    outcome: AcquisitionOutcome::NegativeFact(*fact),
+                    registry: None,
+                },
+                AcquisitionOutcome::RetryAt(retry) => SharedSlotValue {
+                    outcome: AcquisitionOutcome::RetryAt(*retry),
+                    registry: None,
+                },
+                AcquisitionOutcome::CircuitOpen(open) => SharedSlotValue {
+                    outcome: AcquisitionOutcome::CircuitOpen(*open),
+                    registry: None,
+                },
+                AcquisitionOutcome::Unavailable(unavailable) => SharedSlotValue {
+                    outcome: AcquisitionOutcome::Unavailable(*unavailable),
+                    registry: None,
+                },
+                AcquisitionOutcome::Rejected(reason) => SharedSlotValue {
+                    outcome: AcquisitionOutcome::Rejected(*reason),
+                    registry: None,
+                },
+                AcquisitionOutcome::Corrupt(reason) => SharedSlotValue {
+                    outcome: AcquisitionOutcome::Corrupt(*reason),
+                    registry: None,
+                },
+                AcquisitionOutcome::Cancelled => SharedSlotValue {
+                    outcome: AcquisitionOutcome::Cancelled,
+                    registry: None,
+                },
+            },
+            |shared| match (&shared.registry, &shared.outcome) {
+                (Some(result), AcquisitionOutcome::Hit(_)) => {
+                    AcquisitionOutcome::Hit(Arc::clone(result))
+                }
+                (_, AcquisitionOutcome::NegativeFact(fact)) => {
+                    AcquisitionOutcome::NegativeFact(*fact)
+                }
+                (_, AcquisitionOutcome::RetryAt(retry)) => AcquisitionOutcome::RetryAt(*retry),
+                (_, AcquisitionOutcome::CircuitOpen(open)) => {
+                    AcquisitionOutcome::CircuitOpen(*open)
+                }
+                (_, AcquisitionOutcome::Unavailable(unavailable)) => {
+                    AcquisitionOutcome::Unavailable(*unavailable)
+                }
+                (_, AcquisitionOutcome::Rejected(reason)) => AcquisitionOutcome::Rejected(*reason),
+                (_, AcquisitionOutcome::Corrupt(reason)) => AcquisitionOutcome::Corrupt(*reason),
+                (_, AcquisitionOutcome::Cancelled) => AcquisitionOutcome::Cancelled,
+                (None, AcquisitionOutcome::Hit(_)) => {
+                    AcquisitionOutcome::Corrupt(CorruptReason::Journal)
+                }
+            },
+        )
+    }
+
+    fn coordinate_inner<T, F, ToShared, FromShared>(
+        &self,
+        request: &AcquisitionRequest,
+        cancellation: &Cancellation,
+        effect: F,
+        to_shared: ToShared,
+        from_shared: FromShared,
+    ) -> AcquisitionOutcome<T>
+    where
+        T: Clone,
+        F: FnOnce() -> AcquisitionOutcome<T>,
+        ToShared: Fn(&AcquisitionOutcome<T>) -> SharedSlotValue,
+        FromShared: Fn(&SharedSlotValue) -> AcquisitionOutcome<T>,
+    {
         let key = request.work_key();
         let slot = {
             let mut slots = self
                 .slots
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            slots.retain(|_, slot| {
+                slot.result
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_none()
+                    || Arc::strong_count(slot) > 1
+            });
             if slots.len() >= self.max_slots && !slots.contains_key(&key) {
                 return AcquisitionOutcome::Unavailable(Unavailable {
                     source: request.source,
@@ -1955,7 +2545,7 @@ impl AcquisitionCoordinator {
                     return AcquisitionOutcome::Cancelled;
                 }
                 if let Some(result) = result.as_ref() {
-                    return result.clone();
+                    return from_shared(result);
                 }
                 let (next, _) = slot
                     .wake
@@ -1971,15 +2561,16 @@ impl AcquisitionCoordinator {
         } else {
             effect()
         };
+        let shared = to_shared(&outcome);
         {
             let mut result = slot
                 .result
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *result = Some(outcome.clone());
+            *result = Some(shared.clone());
             slot.wake.notify_all();
         }
-        if let AcquisitionOutcome::Hit(bytes) = &outcome {
+        if let AcquisitionOutcome::Hit(bytes) = &shared.outcome {
             let output = backend_execution::OutputVersion::from_value(bytes.as_ref());
             let claim = UntrustedOutputClaim {
                 output: output.to_bytes(),
