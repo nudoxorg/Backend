@@ -15,6 +15,16 @@
   gui,
   lunaTools,
 }:
+let
+  # Materialize the closure during evaluation. A sandboxed check cannot
+  # reliably open a second connection to the Nix daemon, and a failed
+  # `nix-store --query` pipeline previously degraded into an empty successful
+  # result. `closureInfo` gives the check an immutable, dependency-tracked
+  # manifest instead.
+  lunaToolsClosure = pkgs.closureInfo {
+    rootPaths = [ lunaTools ];
+  };
+in
 {
   nushell-command = commands.backend;
   agent-skills = commands.agentSkills;
@@ -26,9 +36,9 @@
   luna-tools-closure = helpers.nuCheck {
     inherit pkgs;
     name = "nudox-luna-tools-closure";
-    packages = [ lunaTools pkgs.nix ];
+    packages = [ lunaTools ];
     build = ''
-      let closure = (^nix-store --query --requisites ${lunaTools} | lines)
+      let closure = (open ${lunaToolsClosure}/store-paths | lines)
       let forbidden = ["backend-control" "nudox-gui-runtime" "nudox-gui-tools" "bmake"]
       let violations = ($closure | where {|path|
         $forbidden | any {|needle| $path | str contains $needle }
