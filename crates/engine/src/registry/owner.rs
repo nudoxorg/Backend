@@ -78,6 +78,8 @@ pub struct PublishedPackage {
     pub upstream_integrity: [u8; 32],
     /// Mutable release facts, independently content-versioned.
     pub facts: super::ReleaseFacts,
+    /// Versioned native registry metadata captured at the same source frontier.
+    pub native_metadata: backend_library::RegistryNativeMetadata,
     /// Versioned advisory facts and the policy decision admitted before staging.
     pub advisory: AdvisoryPackageDto,
     /// Dependency facts captured at the same immutable source frontier.
@@ -854,6 +856,7 @@ impl RegistryOwner {
                         provenance: package.provenance,
                         upstream_integrity,
                         facts: package.facts,
+                        native_metadata: package.native_metadata.clone(),
                         advisory,
                         dependency_facts: package.dependency_facts.clone(),
                     });
@@ -1085,6 +1088,7 @@ impl ArchiveStageContext {
             provenance: package.provenance,
             upstream_integrity: package.integrity_version(),
             facts: package.facts,
+            native_metadata: package.native_metadata.clone(),
             advisory,
             dependency_facts: package.dependency_facts.clone(),
         })
@@ -1240,6 +1244,13 @@ fn catalog_facts_frontier(catalog: &BTreeMap<PackageCoordinate, PublishedPackage
         hasher.update(&package.artifact.as_bytes());
         hasher.update(&package.bytes.to_be_bytes());
         hasher.update(&package.facts.version());
+        let native_metadata = package.native_metadata.encode_canonical();
+        if let Ok(identity) = package.native_metadata.identity() {
+            hasher.update(&identity);
+        } else {
+            hasher.update(&(native_metadata.len() as u64).to_be_bytes());
+            hasher.update(&native_metadata);
+        }
         // Advisory DTOs are already the canonical wire projection. Keeping
         // their serialized bytes in the frontier means withdrawals, coverage,
         // and policy changes invalidate only metadata roots.

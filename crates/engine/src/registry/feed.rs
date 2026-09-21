@@ -73,10 +73,15 @@ fn admit_package(
     let advisory = row
         .get("advisory")
         .filter(|value| !value.is_null())
-        .map(|value| {
-            serde_json::from_value(value.clone()).map_err(|_| TransportFailure::Protocol)
-        })
+        .map(|value| serde_json::from_value(value.clone()).map_err(|_| TransportFailure::Protocol))
         .transpose()?;
+    let native_metadata = backend_library::RegistryNativeMetadata::unavailable(
+        ecosystem,
+        "canonical feed does not publish native registry metadata",
+    );
+    let native_metadata_version = native_metadata
+        .identity()
+        .map_err(|_| TransportFailure::Protocol)?;
     Ok(RemotePackage {
         coordinate: coordinate_from_registry_parts(ecosystem, name.as_str(), version.as_str())
             .map_err(|_| TransportFailure::Protocol)?,
@@ -85,7 +90,8 @@ fn admit_package(
             row,
             "provenance",
         )?)?),
-        facts: super::ReleaseFacts::default(),
+        facts: super::ReleaseFacts::default().with_native_metadata(native_metadata_version),
+        native_metadata,
         advisory,
         dependency_facts: backend_library::DependencyFacts::Unavailable(
             backend_library::ProductText::new("canonical feed omits dependency metadata")

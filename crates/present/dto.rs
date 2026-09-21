@@ -8,6 +8,7 @@
 //! coverage, typed faults — and it changes only when the presentation model
 //! changes.
 
+use backend_library::RegistryNativeMetadata;
 use serde::{Deserialize, Serialize};
 
 use crate::coverage::{CoverageLine, LaneState};
@@ -731,6 +732,9 @@ pub struct ProductRecordDto {
     pub operand: Option<String>,
     /// The tags shown after the title.
     pub tags: Vec<String>,
+    /// Typed native registry facts when this row came from a package release.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_metadata: Option<RegistryNativeMetadata>,
 }
 
 impl ProductDto {
@@ -746,6 +750,7 @@ impl ProductDto {
                     title: record.title().to_owned(),
                     operand: record.operand().map(ToOwned::to_owned),
                     tags: record.tags().to_vec(),
+                    native_metadata: record.native_metadata().cloned(),
                 })
                 .collect(),
             note: view.note().map(ToOwned::to_owned),

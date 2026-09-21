@@ -2641,6 +2641,7 @@ impl AcquisitionService {
                                     provenance: package.provenance,
                                     upstream_integrity: package.integrity_version(),
                                     facts: package.facts,
+                                    native_metadata: package.native_metadata.clone(),
                                     advisory,
                                     dependency_facts: package.dependency_facts.clone(),
                                 });

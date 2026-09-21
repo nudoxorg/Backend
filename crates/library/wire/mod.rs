@@ -62,4 +62,4 @@ pub(crate) use reply_coverage::{
 };
 
 /// Current transport DTO version.
-pub const DTO_VERSION: u16 = 6;
+pub const DTO_VERSION: u16 = 7;

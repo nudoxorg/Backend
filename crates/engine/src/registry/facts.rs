@@ -101,6 +101,7 @@ pub struct ReleaseFacts {
     standing: ReleaseStanding,
     downloads: DownloadCount,
     security: SecurityStanding,
+    native_metadata_version: [u8; 32],
     version: [u8; 32],
 }
 
@@ -122,41 +123,28 @@ impl ReleaseFacts {
         downloads: DownloadCount,
         security: SecurityStanding,
     ) -> Self {
-        let mut canonical = [0_u8; 16];
-        canonical[0] = standing as u8;
-        match downloads {
-            DownloadCount::Exact(value) => {
-                canonical[1] = 0;
-                canonical[2..10].copy_from_slice(&value.to_be_bytes());
-            }
-            DownloadCount::Approximate(value) => {
-                canonical[1] = 1;
-                canonical[2..10].copy_from_slice(&value.to_be_bytes());
-            }
-            DownloadCount::NotReported(reason) => {
-                canonical[1] = 2;
-                canonical[2] = reason as u8;
-            }
-        }
-        match security {
-            SecurityStanding::Unassessed => canonical[10] = 0,
-            SecurityStanding::NoKnownAdvisory => canonical[10] = 1,
-            SecurityStanding::Affected {
-                advisories,
-                maximum_severity,
-            } => {
-                canonical[10] = 2;
-                canonical[11..15].copy_from_slice(&advisories.to_be_bytes());
-                canonical[15] = maximum_severity.min(4);
-            }
-        }
+        Self::new_with_native_metadata(standing, downloads, security, [0; 32])
+    }
+
+    /// Constructs facts bound to one native metadata identity.
+    #[must_use]
+    pub fn new_with_native_metadata(
+        standing: ReleaseStanding,
+        downloads: DownloadCount,
+        security: SecurityStanding,
+        native_metadata_version: [u8; 32],
+    ) -> Self {
+        let mut canonical = [0_u8; 48];
+        canonical[..16].copy_from_slice(&canonical_facts(standing, downloads, security));
+        canonical[16..].copy_from_slice(&native_metadata_version);
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"nudox.registry.release-facts.v1\0");
+        hasher.update(b"nudox.registry.release-facts.v2\0");
         hasher.update(&canonical);
         Self {
             standing,
             downloads,
             security,
+            native_metadata_version,
             version: *hasher.finalize().as_bytes(),
         }
     }
@@ -185,17 +173,74 @@ impl ReleaseFacts {
         self.version
     }
 
+    /// Identity of the native metadata included in this fact frontier.
+    #[must_use]
+    pub const fn native_metadata_version(self) -> [u8; 32] {
+        self.native_metadata_version
+    }
+
     pub(crate) fn from_wire(
         standing: ReleaseStanding,
         downloads: DownloadCount,
         security: SecurityStanding,
+        native_metadata_version: [u8; 32],
     ) -> Self {
-        Self::new(standing, downloads, security)
+        Self::new_with_native_metadata(standing, downloads, security, native_metadata_version)
     }
 
     pub(crate) fn with_security(self, security: SecurityStanding) -> Self {
-        Self::new(self.standing, self.downloads, security)
+        Self::new_with_native_metadata(
+            self.standing,
+            self.downloads,
+            security,
+            self.native_metadata_version,
+        )
     }
+
+    pub(crate) fn with_native_metadata(self, native_metadata_version: [u8; 32]) -> Self {
+        Self::new_with_native_metadata(
+            self.standing,
+            self.downloads,
+            self.security,
+            native_metadata_version,
+        )
+    }
+}
+
+fn canonical_facts(
+    standing: ReleaseStanding,
+    downloads: DownloadCount,
+    security: SecurityStanding,
+) -> [u8; 16] {
+    let mut canonical = [0_u8; 16];
+    canonical[0] = standing as u8;
+    match downloads {
+        DownloadCount::Exact(value) => {
+            canonical[1] = 0;
+            canonical[2..10].copy_from_slice(&value.to_be_bytes());
+        }
+        DownloadCount::Approximate(value) => {
+            canonical[1] = 1;
+            canonical[2..10].copy_from_slice(&value.to_be_bytes());
+        }
+        DownloadCount::NotReported(reason) => {
+            canonical[1] = 2;
+            canonical[2] = reason as u8;
+        }
+    }
+    match security {
+        SecurityStanding::Unassessed => canonical[10] = 0,
+        SecurityStanding::NoKnownAdvisory => canonical[10] = 1,
+        SecurityStanding::Affected {
+            advisories,
+            maximum_severity,
+        } => {
+            canonical[10] = 2;
+            canonical[11..15].copy_from_slice(&advisories.to_be_bytes());
+            canonical[15] = maximum_severity.min(4);
+        }
+    }
+    canonical
 }
 
 #[cfg(test)]

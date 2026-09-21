@@ -26,6 +26,7 @@ mod delta;
 mod error;
 mod graph_query;
 mod package_graph;
+mod registry_native;
 /// Transport-independent application service and reply vocabulary.
 pub mod interface;
 mod progress;
@@ -100,6 +101,18 @@ pub use package_graph::{
     discover_source_entries, discover_source_files, source_selection_policy, DependencyScope,
     PackageDependencyRecord, PackageDependencySourceFacts, PackageDependencyTarget,
     MAX_PACKAGE_GRAPH_ROWS,
+};
+pub use registry_native::{
+    MAX_REGISTRY_NATIVE_METADATA_BYTES, MAX_REGISTRY_NATIVE_ROWS, MAX_REGISTRY_NATIVE_TEXT_BYTES,
+    REGISTRY_NATIVE_METADATA_VERSION, RegistryCargoMetadata, RegistryConanMetadata,
+    RegistryConanSourceAvailability, RegistryGoMetadata, RegistryGoRetract, RegistryGoSourceFacts,
+    RegistryMavenChecksum, RegistryMavenMetadata, RegistryNativeArtifact,
+    RegistryNativeArtifactKind, RegistryNativeAvailability, RegistryNativeChecksum,
+    RegistryNativeChecksumAlgorithm, RegistryNativeDetails, RegistryNativeDistTag,
+    RegistryNativeEvidenceClaim, RegistryNativeFeature, RegistryNativeMetadata,
+    RegistryNativeMetadataCodecError,
+    RegistryNativeObservation, RegistryNativeProvenance, RegistryNativeVulnerability,
+    RegistryNpmMetadata, RegistryNugetMetadata, RegistryPypiMetadata,
 };
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,

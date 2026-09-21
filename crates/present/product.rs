@@ -16,7 +16,8 @@ use crate::fault::Fault;
 use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DiffRecord,
     DependencyFacts, ForgeFact, ForgePackageRecord, PackageDependencyRecord, PackageReference,
-    ProjectRecord, RegistryMetadata,
+    ProjectRecord, RegistryMetadata, RegistryNativeAvailability, RegistryNativeDetails,
+    RegistryNativeMetadata,
     RegistryPackageRecord, ReleaseRecord,
     SemanticVersionRecord, SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener,
     TreeSubject, encode_id,
@@ -30,6 +31,7 @@ pub struct ProductRecord {
     title: String,
     operand: Option<String>,
     tags: Box<[String]>,
+    native_metadata: Option<RegistryNativeMetadata>,
 }
 
 impl ProductRecord {
@@ -40,7 +42,15 @@ impl ProductRecord {
             title: title.into(),
             operand,
             tags: tags.into_boxed_slice(),
+            native_metadata: None,
         }
+    }
+
+    /// Attaches typed native registry facts to one registry row.
+    #[must_use]
+    pub fn with_native_metadata(mut self, metadata: RegistryNativeMetadata) -> Self {
+        self.native_metadata = Some(metadata);
+        self
     }
 
     /// Returns the readable title.
@@ -59,6 +69,12 @@ impl ProductRecord {
     #[must_use]
     pub fn tags(&self) -> &[String] {
         &self.tags
+    }
+
+    /// Returns the typed native registry facts carried by this row.
+    #[must_use]
+    pub fn native_metadata(&self) -> Option<&RegistryNativeMetadata> {
+        self.native_metadata.as_ref()
     }
 }
 
@@ -354,8 +370,32 @@ fn registry_row(record: &RegistryPackageRecord) -> ProductRecord {
         vec![
             format!("{:?}", record.ecosystem).to_lowercase(),
             format!("{} byte(s)", record.bytes),
+            native_metadata_tag(record),
         ],
     )
+    .with_native_metadata(record.native_metadata.clone())
+}
+
+fn native_metadata_tag(record: &RegistryPackageRecord) -> String {
+    match (
+        &record.native_metadata.availability,
+        &record.native_metadata.details,
+    ) {
+        (RegistryNativeAvailability::Recorded, details) => format!(
+            "native: {}",
+            match details {
+                RegistryNativeDetails::Cargo(_) => "cargo",
+                RegistryNativeDetails::Npm(_) => "npm",
+                RegistryNativeDetails::Pypi(_) => "pypi",
+                RegistryNativeDetails::Maven(_) => "maven",
+                RegistryNativeDetails::Nuget(_) => "nuget",
+                RegistryNativeDetails::Golang(_) => "go",
+                RegistryNativeDetails::Cpp(_) => "conan",
+                RegistryNativeDetails::Unavailable { .. } => "unavailable",
+            }
+        ),
+        (RegistryNativeAvailability::NotRecorded(_), _) => "native: not-recorded".to_owned(),
+    }
 }
 
 fn forge_row(record: &ForgePackageRecord) -> ProductRecord {

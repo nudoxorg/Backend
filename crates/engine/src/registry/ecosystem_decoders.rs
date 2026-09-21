@@ -8,7 +8,7 @@
 use backend_library::{
     DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
     PackageDependencyRecord, PackageDependencyTarget, PackageReference, ProductText,
-    admit_dependency_rows,
+    RegistryNativeObservation, RegistryNativeVulnerability, admit_dependency_rows,
 };
 use quick_xml::{events::Event, reader::Reader};
 use serde_json::Value;
@@ -275,6 +275,7 @@ impl EcosystemAdapter {
                 yanked,
                 yanked_reason: None,
             }]);
+            release.record_common_native_metadata(self.endpoint.ecosystem(), line.as_bytes())?;
             let _ = line_index;
             releases.push(release);
         }
@@ -355,6 +356,7 @@ impl EcosystemAdapter {
                     yanked: false,
                     yanked_reason: None,
                 }]);
+                release.record_common_native_metadata(self.endpoint.ecosystem(), &encoded)?;
                 Ok(release)
             })
             .collect()
@@ -506,6 +508,7 @@ impl EcosystemAdapter {
                         })
                         .collect::<Result<Vec<_>, TransportFailure>>()?,
                 );
+                release.record_common_native_metadata(self.endpoint.ecosystem(), &provenance)?;
                 Ok(release)
             })
             .collect()
@@ -785,11 +788,16 @@ impl EcosystemAdapter {
                 .filter(|value| !value.is_empty())
                 .ok_or(TransportFailure::Protocol)?;
             let name = format!("{group}:{artifact}");
-            let requirement = dependency
+            let Some(requirement) = dependency
                 .child("version")
                 .map(XmlNode::text_value)
                 .filter(|value| !value.is_empty())
-                .unwrap_or("*");
+            else {
+                return Ok(DependencyFacts::Unavailable(
+                    ProductText::new("Maven POM dependency omits its version requirement")
+                        .map_err(|_| TransportFailure::Protocol)?,
+                ));
+            };
             let scope = match dependency
                 .child("scope")
                 .map(XmlNode::text_value)
@@ -995,6 +1003,8 @@ impl EcosystemAdapter {
                     checksum,
                     provenance: serde_json::to_vec(row).map_err(|_| TransportFailure::Protocol)?,
                     dependency_groups: entry.get("dependencyGroups").cloned(),
+                    vulnerabilities: nuget_vulnerabilities(entry)?,
+                    deprecation: nuget_deprecation(entry)?,
                     facts,
                 })
             })
@@ -1022,6 +1032,8 @@ impl EcosystemAdapter {
             .into_iter()
             .map(|release| {
                 let dependency_groups = release.dependency_groups.clone();
+                let vulnerabilities = release.vulnerabilities;
+                let deprecation = release.deprecation;
                 let checksum = release
                     .checksum
                     .ok_or(TransportFailure::DownloadUnavailable)?;
@@ -1037,6 +1049,27 @@ impl EcosystemAdapter {
                     &release.coordinate,
                     dependency_groups.as_ref(),
                     &provenance,
+                )?;
+                let archive_url = release.archive_url.clone();
+                let filename = archive_url
+                    .rsplit('/')
+                    .next()
+                    .filter(|value| !value.is_empty())
+                    .ok_or(TransportFailure::Protocol)?;
+                release.set_artifacts(vec![NativeArtifact {
+                    filename: Arc::from(filename),
+                    url: Arc::from(archive_url.as_str()),
+                    checksum: release.checksum.clone(),
+                    kind: NativeArtifactKind::NugetPackage,
+                    requires_python: None,
+                    size: None,
+                    yanked: matches!(release.facts.standing(), ReleaseStanding::Yanked),
+                    yanked_reason: None,
+                }]);
+                release.record_nuget_native_metadata(
+                    vulnerabilities,
+                    RegistryNativeObservation::Recorded(release.dependency_facts.clone()),
+                    deprecation,
                 )?;
                 Ok(release)
             })
@@ -1208,6 +1241,7 @@ impl EcosystemAdapter {
                 integrity: ArchiveIntegrity::Native(release.checksum.clone()),
                 provenance: release.provenance,
                 facts: release.facts,
+                native_metadata: release.native_metadata.clone(),
                 advisory: None,
                 dependency_facts: release.dependency_facts.clone(),
                 archive_url: std::sync::Arc::from(release.archive_url.as_str()),
@@ -1634,7 +1668,7 @@ fn nuget_dependencies(
             let requirement = dependency
                 .get("range")
                 .and_then(Value::as_str)
-                .unwrap_or("*");
+                .ok_or(TransportFailure::Protocol)?;
             rows.push(dependency_record(
                 source,
                 backend_semantic::vocabulary::RegistryEcosystem::Nuget,
@@ -1684,6 +1718,8 @@ pub(crate) struct NugetReleaseMetadata {
     pub(crate) checksum: Option<RegistryChecksum>,
     pub(crate) provenance: Vec<u8>,
     pub(crate) dependency_groups: Option<Value>,
+    pub(crate) vulnerabilities: RegistryNativeObservation<Box<[RegistryNativeVulnerability]>>,
+    pub(crate) deprecation: Option<String>,
     pub(crate) facts: ReleaseFacts,
 }
 
@@ -1944,7 +1980,16 @@ fn python_kind_rank(kind: NativeArtifactKind) -> u8 {
         NativeArtifactKind::PythonSdist => 0,
         NativeArtifactKind::PythonWheel => 1,
         NativeArtifactKind::PythonSignature => 2,
-        NativeArtifactKind::Other => 3,
+        NativeArtifactKind::MavenJar
+        | NativeArtifactKind::MavenSources
+        | NativeArtifactKind::MavenPom
+        | NativeArtifactKind::MavenSignature
+        | NativeArtifactKind::MavenChecksum
+        | NativeArtifactKind::NugetPackage
+        | NativeArtifactKind::GoSource
+        | NativeArtifactKind::ConanSource
+        | NativeArtifactKind::ConanRecipe
+        | NativeArtifactKind::Other => 3,
         NativeArtifactKind::CargoCrate | NativeArtifactKind::NpmTarball => 4,
     }
 }
@@ -2128,6 +2173,73 @@ fn nuget_security(entry: &Value) -> Result<SecurityStanding, TransportFailure> {
         advisories: u32::try_from(vulnerabilities.len()).map_err(|_| TransportFailure::Bounds)?,
         maximum_severity: maximum,
     })
+}
+
+fn nuget_vulnerabilities(
+    entry: &Value,
+) -> Result<RegistryNativeObservation<Box<[RegistryNativeVulnerability]>>, TransportFailure> {
+    let Some(value) = entry.get("vulnerabilities") else {
+        return Ok(RegistryNativeObservation::NotRecorded(
+            "NuGet registration entry omits vulnerability metadata".to_owned(),
+        ));
+    };
+    if value.is_null() {
+        return Ok(RegistryNativeObservation::Unavailable(
+            "NuGet registration returned no vulnerability observation".to_owned(),
+        ));
+    }
+    let rows = value.as_array().ok_or(TransportFailure::Protocol)?;
+    let mut vulnerabilities = Vec::with_capacity(rows.len());
+    for row in rows {
+        let object = row.as_object().ok_or(TransportFailure::Protocol)?;
+        let severity = match object.get("severity") {
+            Some(Value::String(value)) => value
+                .parse::<u8>()
+                .map_err(|_| TransportFailure::Protocol)?,
+            Some(Value::Number(value)) => value
+                .as_u64()
+                .and_then(|value| u8::try_from(value).ok())
+                .ok_or(TransportFailure::Protocol)?,
+            _ => return Err(TransportFailure::Protocol),
+        };
+        if severity > 4 {
+            return Err(TransportFailure::Protocol);
+        }
+        let advisory_url = match object.get("advisoryUrl") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) if !value.is_empty() => Some(value.clone()),
+            Some(Value::String(_)) => return Err(TransportFailure::Protocol),
+            Some(_) => return Err(TransportFailure::Protocol),
+        };
+        vulnerabilities.push(RegistryNativeVulnerability {
+            advisory_url,
+            severity,
+        });
+    }
+    vulnerabilities.sort_by(|left, right| {
+        left.advisory_url
+            .cmp(&right.advisory_url)
+            .then_with(|| left.severity.cmp(&right.severity))
+    });
+    Ok(RegistryNativeObservation::Recorded(
+        vulnerabilities.into_boxed_slice(),
+    ))
+}
+
+fn nuget_deprecation(entry: &Value) -> Result<Option<String>, TransportFailure> {
+    let Some(value) = entry.get("deprecation") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let object = value.as_object().ok_or(TransportFailure::Protocol)?;
+    match object.get("message") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value.clone())),
+        Some(Value::String(_)) => Err(TransportFailure::Protocol),
+        Some(_) => Err(TransportFailure::Protocol),
+    }
 }
 
 fn optional_text(node: Option<&XmlNode>) -> Option<String> {

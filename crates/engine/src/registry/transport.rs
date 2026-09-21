@@ -54,6 +54,8 @@ pub struct RemotePackage {
     pub provenance: ProvenanceDigest,
     /// Mutable policy and observations detached from immutable archive identity.
     pub facts: ReleaseFacts,
+    /// Versioned native metadata retained with the same source frontier.
+    pub native_metadata: backend_library::RegistryNativeMetadata,
     /// Advisory observation for this exact selected version. `None` is typed absence and is
     /// fail-closed when an advisory gate is configured by the product composition.
     pub advisory: Option<AdvisoryObservation>,
@@ -1329,16 +1331,24 @@ impl HttpRegistryTransport {
                 &version.version,
                 version.timestamped_sources.as_deref(),
             );
-            let (archive_url, checksum, mut provenance) = match self
+            let (archive_url, checksum, mut provenance, signature, artifact_kind) = match self
                 .maven_artifact_evidence(&source_url)
             {
                 Ok((checksum, body, signature)) => {
                     let mut provenance = metadata.clone();
                     provenance.extend_from_slice(&body);
-                    if let Some(signature) = signature {
-                        provenance.extend_from_slice(&signature);
+                    if let backend_library::RegistryNativeObservation::Recorded(signature) =
+                        &signature
+                    {
+                        provenance.extend_from_slice(signature);
                     }
-                    (source_url, checksum, provenance)
+                    (
+                        source_url,
+                        checksum,
+                        provenance,
+                        signature,
+                        super::NativeArtifactKind::MavenSources,
+                    )
                 }
                 Err(TransportFailure::DownloadUnavailable) => {
                     let main_url = adapter.maven_archive_url_with_timestamped(
@@ -1348,41 +1358,129 @@ impl HttpRegistryTransport {
                     let (checksum, body, signature) = self.maven_artifact_evidence(&main_url)?;
                     let mut provenance = metadata.clone();
                     provenance.extend_from_slice(&body);
-                    if let Some(signature) = signature {
-                        provenance.extend_from_slice(&signature);
+                    if let backend_library::RegistryNativeObservation::Recorded(signature) =
+                        &signature
+                    {
+                        provenance.extend_from_slice(signature);
                     }
-                    (main_url, checksum, provenance)
+                    (
+                        main_url,
+                        checksum,
+                        provenance,
+                        signature,
+                        super::NativeArtifactKind::MavenJar,
+                    )
                 }
                 Err(error) => return Err(error),
             };
             let pom_url =
                 adapter.maven_pom_url_for(&version.version, version.timestamped_pom.as_deref());
-            let dependency_facts = match self.get(&pom_url, self.limits.max_feed_bytes) {
+            let (dependency_facts, pom_observation) = match self
+                .get(&pom_url, self.limits.max_feed_bytes)
+            {
                 Ok(TransportResult::Available(pom)) => {
                     provenance.extend_from_slice(&pom);
                     let coordinate = adapter.coordinate_for_version(&version.version)?;
-                    adapter.maven_dependencies(&pom, &coordinate, &provenance)?
+                    let dependencies =
+                        adapter.maven_dependencies(&pom, &coordinate, &provenance)?;
+                    let claim = backend_library::RegistryNativeEvidenceClaim {
+                        url: pom_url.clone(),
+                        digest: *blake3::hash(&pom).as_bytes(),
+                        bytes: u64::try_from(pom.len()).map_err(|_| TransportFailure::Bounds)?,
+                    };
+                    (
+                        dependencies,
+                        backend_library::RegistryNativeObservation::Recorded(claim),
+                    )
                 }
-                Err(TransportFailure::Rejected(404)) => DependencyFacts::Unknown(
-                    backend_library::ProductText::new("Maven POM is not published")
-                        .map_err(|_| TransportFailure::Protocol)?,
+                Err(TransportFailure::Rejected(404)) => (
+                    DependencyFacts::Unknown(
+                        backend_library::ProductText::new("Maven POM is not published")
+                            .map_err(|_| TransportFailure::Protocol)?,
+                    ),
+                    backend_library::RegistryNativeObservation::NotRecorded(
+                        "Maven POM is not published".to_owned(),
+                    ),
                 ),
-                Ok(TransportResult::Unavailable | TransportResult::RetryAfter(_)) => {
+                Ok(TransportResult::Unavailable | TransportResult::RetryAfter(_)) => (
                     DependencyFacts::Unavailable(
                         backend_library::ProductText::new("Maven POM could not be fetched")
                             .map_err(|_| TransportFailure::Protocol)?,
-                    )
-                }
+                    ),
+                    backend_library::RegistryNativeObservation::Unavailable(
+                        "Maven POM could not be fetched".to_owned(),
+                    ),
+                ),
                 Ok(TransportResult::NotModified) => return Err(TransportFailure::Protocol),
                 Err(error) => return Err(error),
             };
-            releases.push(adapter.maven_release_with_dependencies(
+            let mut release = adapter.maven_release_with_dependencies(
                 &version.version,
                 archive_url,
                 checksum,
                 &provenance,
                 dependency_facts,
-            )?);
+            )?;
+            let archive_url = release.archive_url.clone();
+            let filename = archive_url
+                .rsplit('/')
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or(TransportFailure::Protocol)?;
+            release.set_artifacts(vec![super::NativeArtifact {
+                filename: std::sync::Arc::from(filename),
+                url: std::sync::Arc::from(archive_url.as_str()),
+                checksum: release.checksum.clone(),
+                kind: artifact_kind,
+                requires_python: None,
+                size: None,
+                yanked: false,
+                yanked_reason: None,
+            }]);
+            let signature = match signature {
+                backend_library::RegistryNativeObservation::Recorded(bytes) => {
+                    backend_library::RegistryNativeObservation::Recorded(
+                        backend_library::RegistryNativeEvidenceClaim {
+                            url: format!("{archive_url}.asc"),
+                            digest: *blake3::hash(&bytes).as_bytes(),
+                            bytes: u64::try_from(bytes.len())
+                                .map_err(|_| TransportFailure::Bounds)?,
+                        },
+                    )
+                }
+                backend_library::RegistryNativeObservation::NotRecorded(reason) => {
+                    backend_library::RegistryNativeObservation::NotRecorded(reason)
+                }
+                backend_library::RegistryNativeObservation::Unavailable(reason) => {
+                    backend_library::RegistryNativeObservation::Unavailable(reason)
+                }
+            };
+            let checksum_suffix = match release.checksum.algorithm() {
+                ChecksumAlgorithm::Sha1 => ".sha1",
+                ChecksumAlgorithm::Sha256 => ".sha256",
+                ChecksumAlgorithm::Sha512 => ".sha512",
+                ChecksumAlgorithm::GoModule => return Err(TransportFailure::Protocol),
+            };
+            let dependency_observation = match &pom_observation {
+                backend_library::RegistryNativeObservation::Recorded(_) => {
+                    backend_library::RegistryNativeObservation::Recorded(
+                        release.dependency_facts.clone(),
+                    )
+                }
+                backend_library::RegistryNativeObservation::NotRecorded(reason) => {
+                    backend_library::RegistryNativeObservation::NotRecorded(reason.clone())
+                }
+                backend_library::RegistryNativeObservation::Unavailable(reason) => {
+                    backend_library::RegistryNativeObservation::Unavailable(reason.clone())
+                }
+            };
+            release.record_maven_native_metadata(
+                format!("{archive_url}{checksum_suffix}"),
+                signature,
+                pom_observation,
+                dependency_observation,
+            )?;
+            releases.push(release);
         }
         adapter.admit_window(releases, request, start, prefix, versions.len())
     }
@@ -1398,7 +1496,14 @@ impl HttpRegistryTransport {
     fn maven_artifact_evidence(
         &self,
         archive_url: &str,
-    ) -> Result<(RegistryChecksum, Vec<u8>, Option<Vec<u8>>), TransportFailure> {
+    ) -> Result<
+        (
+            RegistryChecksum,
+            Vec<u8>,
+            backend_library::RegistryNativeObservation<Vec<u8>>,
+        ),
+        TransportFailure,
+    > {
         for (suffix, parser) in [
             (".sha256", ChecksumAlgorithm::Sha256),
             (".sha512", ChecksumAlgorithm::Sha512),
@@ -1431,9 +1536,19 @@ impl HttpRegistryTransport {
             // and retain the bounded bytes when available, while keeping a
             // missing/temporarily unavailable signature a typed absence.
             let signature = match self.get(&format!("{archive_url}.asc"), 128 * 1024) {
-                Ok(TransportResult::Available(signature)) => Some(signature),
-                Ok(TransportResult::Unavailable | TransportResult::RetryAfter(_))
-                | Err(TransportFailure::Rejected(404)) => None,
+                Ok(TransportResult::Available(signature)) => {
+                    backend_library::RegistryNativeObservation::Recorded(signature)
+                }
+                Ok(TransportResult::Unavailable | TransportResult::RetryAfter(_)) => {
+                    backend_library::RegistryNativeObservation::Unavailable(
+                        "Maven signature sidecar could not be fetched".to_owned(),
+                    )
+                }
+                Err(TransportFailure::Rejected(404)) => {
+                    backend_library::RegistryNativeObservation::NotRecorded(
+                        "Maven signature sidecar is not published".to_owned(),
+                    )
+                }
                 Ok(TransportResult::NotModified) => return Err(TransportFailure::Protocol),
                 Err(error) => return Err(error),
             };
@@ -1485,6 +1600,79 @@ impl HttpRegistryTransport {
             let mut release = adapter.go_release(version, checksum, &provenance, standing)?;
             release.dependency_facts =
                 adapter.go_dependencies(&release.coordinate, &module, &provenance)?;
+            let archive_url = release.archive_url.clone();
+            let filename = archive_url
+                .rsplit('/')
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or(TransportFailure::Protocol)?;
+            release.set_artifacts(vec![super::NativeArtifact {
+                filename: std::sync::Arc::from(filename),
+                url: std::sync::Arc::from(archive_url.as_str()),
+                checksum: release.checksum.clone(),
+                kind: super::NativeArtifactKind::GoSource,
+                requires_python: None,
+                size: None,
+                yanked: false,
+                yanked_reason: None,
+            }]);
+            let source = backend_library::RegistryGoSourceFacts {
+                module: module.module.clone(),
+                version: version.clone(),
+                info: backend_library::RegistryNativeEvidenceClaim {
+                    url: adapter.go_info_url(version),
+                    digest: *blake3::hash(&info.provenance).as_bytes(),
+                    bytes: u64::try_from(info.provenance.len())
+                        .map_err(|_| TransportFailure::Bounds)?,
+                },
+                module_file: backend_library::RegistryNativeEvidenceClaim {
+                    url: adapter.go_mod_url(version),
+                    digest: *blake3::hash(&module.provenance).as_bytes(),
+                    bytes: u64::try_from(module.provenance.len())
+                        .map_err(|_| TransportFailure::Bounds)?,
+                },
+                checksum: backend_library::RegistryNativeEvidenceClaim {
+                    url: adapter.go_sum_lookup_url(version),
+                    digest: *blake3::hash(&sum).as_bytes(),
+                    bytes: u64::try_from(sum.len()).map_err(|_| TransportFailure::Bounds)?,
+                },
+            };
+            release.set_native_metadata(backend_library::RegistryNativeMetadata {
+                version: backend_library::REGISTRY_NATIVE_METADATA_VERSION,
+                availability: backend_library::RegistryNativeAvailability::Recorded,
+                provenance: backend_library::RegistryNativeProvenance::SourceDigest(
+                    release.provenance.as_bytes(),
+                ),
+                details: backend_library::RegistryNativeDetails::Golang(
+                    backend_library::RegistryGoMetadata {
+                        artifacts: release
+                            .artifacts
+                            .iter()
+                            .map(|artifact| backend_library::RegistryNativeArtifact {
+                                filename: artifact.filename().to_owned(),
+                                url: artifact.url().to_owned(),
+                                checksum: super::ecosystem::native_checksum(artifact.checksum()),
+                                kind: backend_library::RegistryNativeArtifactKind::GoSource,
+                                requires_python: None,
+                                size: artifact.size(),
+                                yanked: None,
+                                yanked_reason: artifact.yanked_reason().map(ToOwned::to_owned),
+                            })
+                            .collect::<Vec<_>>()
+                            .into_boxed_slice(),
+                        retracts: module
+                            .retracts
+                            .iter()
+                            .map(|range| backend_library::RegistryGoRetract {
+                                lower: range.lower.clone(),
+                                upper: range.upper.clone(),
+                            })
+                            .collect::<Vec<_>>()
+                            .into_boxed_slice(),
+                        source: backend_library::RegistryNativeObservation::Recorded(source),
+                    },
+                ),
+            })?;
             releases.push(release);
         }
         adapter.admit_window(releases, request, start, prefix, versions.len())
@@ -1499,6 +1687,7 @@ impl HttpRegistryTransport {
         let revision = adapter.conan_revision(&revisions)?;
         let files = self.required(&adapter.conan_files_url(&revision))?;
         let manifest = adapter.conan_file_manifest(&files)?;
+        let source_availability = manifest.source_availability();
         let archive_name = manifest.preferred_archive_name()?;
         let archive_url = adapter.conan_archive_url(&revision, &archive_name);
         let source_entry = manifest.entry("conan_sources.tgz");
@@ -1619,16 +1808,87 @@ impl HttpRegistryTransport {
         provenance.extend_from_slice(&revisions);
         provenance.extend_from_slice(&files);
         provenance.extend_from_slice(archive.as_bytes());
-        if let Some(source_url) = source_url {
+        if let Some(source_url) = source_url.as_ref() {
             provenance.extend_from_slice(source_url.as_bytes());
         }
-        let release = adapter.release_from_checksum(
+        let mut release = adapter.release_from_checksum(
             adapter.conan_recipe_version(),
             archive,
             checksum,
             &provenance,
             ReleaseFacts::default(),
         )?;
+        let archive_url = release.archive_url.clone();
+        let artifact_kind = match source_availability {
+            super::ecosystem::ConanSourceAvailability::Archive => {
+                super::NativeArtifactKind::ConanSource
+            }
+            super::ecosystem::ConanSourceAvailability::RecipeOnly => {
+                super::NativeArtifactKind::ConanRecipe
+            }
+            super::ecosystem::ConanSourceAvailability::Unavailable => {
+                super::NativeArtifactKind::Other
+            }
+        };
+        release.set_artifacts(vec![super::NativeArtifact {
+            filename: std::sync::Arc::from(archive_name),
+            url: std::sync::Arc::from(archive_url.as_str()),
+            checksum: release.checksum.clone(),
+            kind: artifact_kind,
+            requires_python: None,
+            size: None,
+            yanked: false,
+            yanked_reason: None,
+        }]);
+        let source = match source_availability {
+            super::ecosystem::ConanSourceAvailability::Archive => {
+                backend_library::RegistryConanSourceAvailability::Archive
+            }
+            super::ecosystem::ConanSourceAvailability::RecipeOnly => {
+                backend_library::RegistryConanSourceAvailability::RecipeOnly
+            }
+            super::ecosystem::ConanSourceAvailability::Unavailable => {
+                backend_library::RegistryConanSourceAvailability::Unavailable
+            }
+        };
+        release.set_native_metadata(backend_library::RegistryNativeMetadata {
+            version: backend_library::REGISTRY_NATIVE_METADATA_VERSION,
+            availability: backend_library::RegistryNativeAvailability::Recorded,
+            provenance: backend_library::RegistryNativeProvenance::SourceDigest(
+                release.provenance.as_bytes(),
+            ),
+            details: backend_library::RegistryNativeDetails::Cpp(
+                backend_library::RegistryConanMetadata {
+                    artifacts: release
+                        .artifacts
+                        .iter()
+                        .map(|artifact| backend_library::RegistryNativeArtifact {
+                            filename: artifact.filename().to_owned(),
+                            url: artifact.url().to_owned(),
+                            checksum: super::ecosystem::native_checksum(artifact.checksum()),
+                            kind: match source {
+                                backend_library::RegistryConanSourceAvailability::Archive => {
+                                    backend_library::RegistryNativeArtifactKind::ConanSource
+                                }
+                                backend_library::RegistryConanSourceAvailability::RecipeOnly => {
+                                    backend_library::RegistryNativeArtifactKind::ConanRecipe
+                                }
+                                backend_library::RegistryConanSourceAvailability::Unavailable => {
+                                    backend_library::RegistryNativeArtifactKind::Other
+                                }
+                            },
+                            requires_python: None,
+                            size: artifact.size(),
+                            yanked: None,
+                            yanked_reason: artifact.yanked_reason().map(ToOwned::to_owned),
+                        })
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                    source,
+                    source_url,
+                },
+            ),
+        })?;
         let (start, prefix) = adapter.page_start(&provenance, request, 1)?;
         adapter.admit_window(vec![release], request, start, prefix, 1)
     }

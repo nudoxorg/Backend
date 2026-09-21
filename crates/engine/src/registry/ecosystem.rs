@@ -186,6 +186,24 @@ pub enum NativeArtifactKind {
     PythonWheel,
     /// A detached Python distribution signature.
     PythonSignature,
+    /// Maven bytecode JAR.
+    MavenJar,
+    /// Maven source JAR.
+    MavenSources,
+    /// Maven POM descriptor.
+    MavenPom,
+    /// Maven detached signature.
+    MavenSignature,
+    /// Maven sidecar checksum.
+    MavenChecksum,
+    /// NuGet package archive.
+    NugetPackage,
+    /// Go module source archive.
+    GoSource,
+    /// Conan source archive.
+    ConanSource,
+    /// Conan recipe export.
+    ConanRecipe,
     /// A registry file that is retained but is not a source distribution.
     Other,
 }
@@ -193,14 +211,14 @@ pub enum NativeArtifactKind {
 /// One complete, authenticated file claim from a native registry response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeArtifact {
-    filename: Arc<str>,
-    url: Arc<str>,
-    checksum: RegistryChecksum,
-    kind: NativeArtifactKind,
-    requires_python: Option<Arc<str>>,
-    size: Option<u64>,
-    yanked: bool,
-    yanked_reason: Option<Arc<str>>,
+    pub(crate) filename: Arc<str>,
+    pub(crate) url: Arc<str>,
+    pub(crate) checksum: RegistryChecksum,
+    pub(crate) kind: NativeArtifactKind,
+    pub(crate) requires_python: Option<Arc<str>>,
+    pub(crate) size: Option<u64>,
+    pub(crate) yanked: bool,
+    pub(crate) yanked_reason: Option<Arc<str>>,
 }
 
 impl NativeArtifact {
@@ -423,6 +441,8 @@ pub struct NativeRelease {
     pub standing_reason: Option<Arc<str>>,
     /// Python `Requires-Python` of the selected artifact.
     pub requires_python: Option<Arc<str>>,
+    /// Versioned native metadata carried through publication.
+    pub native_metadata: backend_library::RegistryNativeMetadata,
 }
 
 impl NativeRelease {
@@ -456,7 +476,13 @@ impl NativeRelease {
         self.requires_python.as_deref()
     }
 
-    fn set_artifacts(&mut self, artifacts: Vec<NativeArtifact>) {
+    /// Returns the bounded native metadata DTO.
+    #[must_use]
+    pub fn metadata(&self) -> &backend_library::RegistryNativeMetadata {
+        &self.native_metadata
+    }
+
+    pub(crate) fn set_artifacts(&mut self, artifacts: Vec<NativeArtifact>) {
         self.artifacts = artifacts.into_boxed_slice();
     }
 
@@ -474,6 +500,260 @@ impl NativeRelease {
 
     fn set_requires_python(&mut self, requires_python: Option<Arc<str>>) {
         self.requires_python = requires_python;
+    }
+
+    pub(crate) fn set_native_metadata(
+        &mut self,
+        metadata: backend_library::RegistryNativeMetadata,
+    ) -> Result<(), TransportFailure> {
+        let identity = metadata
+            .identity()
+            .map_err(|_| TransportFailure::Protocol)?;
+        self.facts = self.facts.with_native_metadata(identity);
+        self.native_metadata = metadata;
+        Ok(())
+    }
+
+    /// Projects the common Cargo/npm/PyPI release fields into the shared DTO.
+    pub(crate) fn record_common_native_metadata(
+        &mut self,
+        ecosystem: RegistryEcosystem,
+        source: &[u8],
+    ) -> Result<(), TransportFailure> {
+        let artifacts = self
+            .artifacts
+            .iter()
+            .map(native_artifact)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let details = match ecosystem {
+            RegistryEcosystem::Cargo => backend_library::RegistryNativeDetails::Cargo(
+                backend_library::RegistryCargoMetadata {
+                    artifacts,
+                    features: self
+                        .features
+                        .iter()
+                        .map(|feature| backend_library::RegistryNativeFeature {
+                            name: feature.name().to_owned(),
+                            members: feature
+                                .members()
+                                .iter()
+                                .map(|member| member.to_string())
+                                .collect::<Vec<_>>()
+                                .into_boxed_slice(),
+                        })
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                },
+            ),
+            RegistryEcosystem::Npm => {
+                backend_library::RegistryNativeDetails::Npm(backend_library::RegistryNpmMetadata {
+                    artifacts,
+                    dist_tags: self
+                        .dist_tags
+                        .iter()
+                        .map(|tag| backend_library::RegistryNativeDistTag {
+                            name: tag.name().to_owned(),
+                            version: tag.version().to_owned(),
+                        })
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                    deprecation: self.standing_reason().map(ToOwned::to_owned),
+                })
+            }
+            RegistryEcosystem::Pypi => backend_library::RegistryNativeDetails::Pypi(
+                backend_library::RegistryPypiMetadata {
+                    artifacts,
+                    requires_python: self.requires_python().map(ToOwned::to_owned),
+                    standing_reason: self.standing_reason().map(ToOwned::to_owned),
+                },
+            ),
+            ecosystem => backend_library::RegistryNativeDetails::Unavailable {
+                ecosystem,
+                reason: "native adapter did not record ecosystem details".to_owned(),
+            },
+        };
+        self.set_native_metadata(backend_library::RegistryNativeMetadata {
+            version: backend_library::REGISTRY_NATIVE_METADATA_VERSION,
+            availability: backend_library::RegistryNativeAvailability::Recorded,
+            provenance: backend_library::RegistryNativeProvenance::SourceDigest(
+                *blake3::hash(source).as_bytes(),
+            ),
+            details,
+        })
+    }
+
+    /// Records NuGet's typed vulnerability/dependency observations.
+    pub(crate) fn record_nuget_native_metadata(
+        &mut self,
+        vulnerabilities: backend_library::RegistryNativeObservation<
+            Box<[backend_library::RegistryNativeVulnerability]>,
+        >,
+        dependencies: backend_library::RegistryNativeObservation<
+            backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>>,
+        >,
+        deprecation: Option<String>,
+    ) -> Result<(), TransportFailure> {
+        self.set_native_metadata(backend_library::RegistryNativeMetadata {
+            version: backend_library::REGISTRY_NATIVE_METADATA_VERSION,
+            availability: backend_library::RegistryNativeAvailability::Recorded,
+            provenance: backend_library::RegistryNativeProvenance::SourceDigest(
+                self.provenance.as_bytes(),
+            ),
+            details: backend_library::RegistryNativeDetails::Nuget(
+                backend_library::RegistryNugetMetadata {
+                    artifacts: self
+                        .artifacts
+                        .iter()
+                        .map(native_artifact_without_yanked)
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                    vulnerabilities,
+                    dependencies,
+                    deprecation,
+                },
+            ),
+        })
+    }
+
+    /// Records Maven sidecar and POM observations alongside the selected archive.
+    pub(crate) fn record_maven_native_metadata(
+        &mut self,
+        checksum_url: String,
+        signature: backend_library::RegistryNativeObservation<
+            backend_library::RegistryNativeEvidenceClaim,
+        >,
+        pom: backend_library::RegistryNativeObservation<
+            backend_library::RegistryNativeEvidenceClaim,
+        >,
+        dependencies: backend_library::RegistryNativeObservation<
+            backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>>,
+        >,
+    ) -> Result<(), TransportFailure> {
+        self.set_native_metadata(backend_library::RegistryNativeMetadata {
+            version: backend_library::REGISTRY_NATIVE_METADATA_VERSION,
+            availability: backend_library::RegistryNativeAvailability::Recorded,
+            provenance: backend_library::RegistryNativeProvenance::SourceDigest(
+                self.provenance.as_bytes(),
+            ),
+            details: backend_library::RegistryNativeDetails::Maven(
+                backend_library::RegistryMavenMetadata {
+                    artifacts: self
+                        .artifacts
+                        .iter()
+                        .map(native_artifact_without_yanked)
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                    checksum: backend_library::RegistryNativeObservation::Recorded(
+                        backend_library::RegistryMavenChecksum {
+                            url: checksum_url,
+                            checksum: native_checksum(&self.checksum),
+                        },
+                    ),
+                    signature,
+                    pom,
+                    dependencies,
+                },
+            ),
+        })
+    }
+}
+
+pub(crate) fn native_checksum(
+    checksum: &RegistryChecksum,
+) -> backend_library::RegistryNativeChecksum {
+    let algorithm = match checksum.algorithm() {
+        ChecksumAlgorithm::Sha1 => backend_library::RegistryNativeChecksumAlgorithm::Sha1,
+        ChecksumAlgorithm::Sha256 => backend_library::RegistryNativeChecksumAlgorithm::Sha256,
+        ChecksumAlgorithm::Sha512 => backend_library::RegistryNativeChecksumAlgorithm::Sha512,
+        ChecksumAlgorithm::GoModule => backend_library::RegistryNativeChecksumAlgorithm::GoModule,
+    };
+    backend_library::RegistryNativeChecksum {
+        algorithm,
+        digest: checksum.bytes().to_vec().into_boxed_slice(),
+    }
+}
+
+fn native_artifact(artifact: &NativeArtifact) -> backend_library::RegistryNativeArtifact {
+    // npm packuments do not publish a release/file yank bit. Preserve the
+    // absence instead of projecting the adapter's internal standing default.
+    let yanked = match artifact.kind() {
+        NativeArtifactKind::NpmTarball => None,
+        NativeArtifactKind::CargoCrate
+        | NativeArtifactKind::PythonSdist
+        | NativeArtifactKind::PythonWheel
+        | NativeArtifactKind::PythonSignature
+        | NativeArtifactKind::MavenJar
+        | NativeArtifactKind::MavenSources
+        | NativeArtifactKind::MavenPom
+        | NativeArtifactKind::MavenSignature
+        | NativeArtifactKind::MavenChecksum
+        | NativeArtifactKind::NugetPackage
+        | NativeArtifactKind::GoSource
+        | NativeArtifactKind::ConanSource
+        | NativeArtifactKind::ConanRecipe
+        | NativeArtifactKind::Other => Some(artifact.yanked()),
+    };
+    native_artifact_with_yanked(artifact, yanked)
+}
+
+fn native_artifact_without_yanked(
+    artifact: &NativeArtifact,
+) -> backend_library::RegistryNativeArtifact {
+    native_artifact_with_yanked(artifact, None)
+}
+
+fn native_artifact_with_yanked(
+    artifact: &NativeArtifact,
+    yanked: Option<bool>,
+) -> backend_library::RegistryNativeArtifact {
+    backend_library::RegistryNativeArtifact {
+        filename: artifact.filename().to_owned(),
+        url: artifact.url().to_owned(),
+        checksum: native_checksum(artifact.checksum()),
+        kind: match artifact.kind() {
+            NativeArtifactKind::CargoCrate => {
+                backend_library::RegistryNativeArtifactKind::CargoCrate
+            }
+            NativeArtifactKind::NpmTarball => {
+                backend_library::RegistryNativeArtifactKind::NpmTarball
+            }
+            NativeArtifactKind::PythonSdist => {
+                backend_library::RegistryNativeArtifactKind::PythonSdist
+            }
+            NativeArtifactKind::PythonWheel => {
+                backend_library::RegistryNativeArtifactKind::PythonWheel
+            }
+            NativeArtifactKind::PythonSignature => {
+                backend_library::RegistryNativeArtifactKind::PythonSignature
+            }
+            NativeArtifactKind::MavenJar => backend_library::RegistryNativeArtifactKind::MavenJar,
+            NativeArtifactKind::MavenSources => {
+                backend_library::RegistryNativeArtifactKind::MavenSources
+            }
+            NativeArtifactKind::MavenPom => backend_library::RegistryNativeArtifactKind::MavenPom,
+            NativeArtifactKind::MavenSignature => {
+                backend_library::RegistryNativeArtifactKind::MavenSignature
+            }
+            NativeArtifactKind::MavenChecksum => {
+                backend_library::RegistryNativeArtifactKind::MavenChecksum
+            }
+            NativeArtifactKind::NugetPackage => {
+                backend_library::RegistryNativeArtifactKind::NugetPackage
+            }
+            NativeArtifactKind::GoSource => backend_library::RegistryNativeArtifactKind::GoSource,
+            NativeArtifactKind::ConanSource => {
+                backend_library::RegistryNativeArtifactKind::ConanSource
+            }
+            NativeArtifactKind::ConanRecipe => {
+                backend_library::RegistryNativeArtifactKind::ConanRecipe
+            }
+            NativeArtifactKind::Other => backend_library::RegistryNativeArtifactKind::Other,
+        },
+        requires_python: artifact.requires_python().map(ToOwned::to_owned),
+        size: artifact.size(),
+        yanked,
+        yanked_reason: artifact.yanked_reason().map(ToOwned::to_owned),
     }
 }
 
@@ -666,6 +946,7 @@ impl EcosystemAdapter {
                 integrity: ArchiveIntegrity::Native(release.checksum.clone()),
                 provenance: release.provenance,
                 facts: release.facts,
+                native_metadata: release.native_metadata.clone(),
                 advisory: None,
                 dependency_facts: release.dependency_facts.clone(),
                 archive_url: Arc::from(release.archive_url.as_str()),
@@ -740,6 +1021,13 @@ impl EcosystemAdapter {
                 .map_err(|_| TransportFailure::Protocol)?
             }
         };
+        let native_metadata = backend_library::RegistryNativeMetadata::unavailable(
+            self.endpoint.ecosystem(),
+            "native adapter did not record ecosystem details",
+        );
+        let native_metadata_version = native_metadata
+            .identity()
+            .map_err(|_| TransportFailure::Protocol)?;
         Ok(NativeRelease {
             coordinate: coordinate_from_registry_parts(
                 self.endpoint.ecosystem(),
@@ -752,7 +1040,7 @@ impl EcosystemAdapter {
             provenance: ProvenanceDigest::from_authenticated_feed(
                 *blake3::hash(provenance).as_bytes(),
             ),
-            facts,
+            facts: facts.with_native_metadata(native_metadata_version),
             dependency_facts: backend_library::DependencyFacts::Unavailable(
                 backend_library::ProductText::new("native feed omits dependency metadata")
                     .map_err(|_| TransportFailure::Protocol)?,
@@ -762,6 +1050,7 @@ impl EcosystemAdapter {
             dist_tags: Arc::from([]),
             standing_reason: None,
             requires_python: None,
+            native_metadata,
         })
     }
 
@@ -852,6 +1141,7 @@ impl EcosystemAdapter {
                 integrity: ArchiveIntegrity::Native(release.checksum.clone()),
                 provenance: release.provenance,
                 facts: release.facts,
+                native_metadata: release.native_metadata.clone(),
                 advisory: None,
                 dependency_facts: release.dependency_facts.clone(),
                 archive_url: Arc::from(release.archive_url.as_str()),
@@ -896,6 +1186,7 @@ impl EcosystemAdapter {
 
 #[path = "ecosystem_decoders.rs"]
 mod decoders;
+pub(crate) use decoders::ConanSourceAvailability;
 
 fn component(value: &str) -> String {
     let mut output = String::new();

@@ -10,6 +10,7 @@ use super::{
 use crate::acquisition::RawArchiveObjectId;
 use crate::journal::{JournalCodec, JournalDomain, JournalError};
 use backend_advisory::AdvisoryPackageDto;
+use backend_library::{RegistryNativeMetadata, MAX_REGISTRY_NATIVE_METADATA_BYTES};
 
 pub(crate) enum RegistryLog {}
 impl JournalDomain for RegistryLog {
@@ -132,13 +133,12 @@ fn put_package(out: &mut Vec<u8>, value: &PublishedPackage) {
     put_u64(out, value.bytes);
     out.extend_from_slice(&value.provenance.as_bytes());
     out.extend_from_slice(&value.upstream_integrity);
+    let native_metadata = value.native_metadata.encode_canonical();
+    put_u32(out, native_metadata.len());
+    out.extend_from_slice(&native_metadata);
     put_facts(out, value.facts);
-    let advisory = serde_json::to_vec(&value.advisory).unwrap_or_default();
-    put_u32(out, advisory.len());
-    out.extend_from_slice(&advisory);
-    let dependencies = serde_json::to_vec(&value.dependency_facts).unwrap_or_default();
-    put_u32(out, dependencies.len());
-    out.extend_from_slice(&dependencies);
+    put_json(out, &value.advisory);
+    put_json(out, &value.dependency_facts);
 }
 fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, AcquisitionError> {
     let ecosystem = RegistryEcosystem::try_from(take_byte(bytes, at)?)
@@ -150,7 +150,18 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
     let byte_count = read_u64(bytes, at)?;
     let provenance = take_array(bytes, at)?;
     let upstream_integrity = take_array(bytes, at)?;
-    let facts = read_facts(bytes, at)?;
+    let native_metadata_len =
+        usize::try_from(read_u32(bytes, at)?).map_err(|_| AcquisitionError::Bounds)?;
+    if native_metadata_len > MAX_REGISTRY_NATIVE_METADATA_BYTES {
+        return Err(AcquisitionError::Bounds);
+    }
+    let native_metadata =
+        RegistryNativeMetadata::decode_canonical(take(bytes, at, native_metadata_len)?)
+            .map_err(|_| AcquisitionError::CorruptJournal)?;
+    let native_metadata_version = native_metadata
+        .identity()
+        .map_err(|_| AcquisitionError::CorruptJournal)?;
+    let facts = read_facts(bytes, at, native_metadata_version)?;
     let advisory_len =
         usize::try_from(read_u32(bytes, at)?).map_err(|_| AcquisitionError::Bounds)?;
     if advisory_len > 4 * 1024 * 1024 {
@@ -175,6 +186,7 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
         bytes: byte_count,
         provenance: ProvenanceDigest::from_journal(provenance),
         upstream_integrity,
+        native_metadata,
         facts,
         advisory,
         dependency_facts,
@@ -209,9 +221,14 @@ fn put_facts(out: &mut Vec<u8>, facts: ReleaseFacts) {
             out.push(maximum_severity.min(4));
         }
     }
+    out.extend_from_slice(&facts.native_metadata_version());
 }
 
-fn read_facts(bytes: &[u8], at: &mut usize) -> Result<ReleaseFacts, AcquisitionError> {
+fn read_facts(
+    bytes: &[u8],
+    at: &mut usize,
+    native_metadata_version: [u8; 32],
+) -> Result<ReleaseFacts, AcquisitionError> {
     let standing = ReleaseStanding::try_from(take_byte(bytes, at)?)
         .map_err(|()| AcquisitionError::CorruptJournal)?;
     let downloads = match take_byte(bytes, at)? {
@@ -239,11 +256,35 @@ fn read_facts(bytes: &[u8], at: &mut usize) -> Result<ReleaseFacts, AcquisitionE
         }
         _ => return Err(AcquisitionError::CorruptJournal),
     };
-    Ok(ReleaseFacts::from_wire(standing, downloads, security))
+    let stored_native_metadata_version = take_array(bytes, at)?;
+    if stored_native_metadata_version != native_metadata_version {
+        return Err(AcquisitionError::CorruptJournal);
+    }
+    Ok(ReleaseFacts::from_wire(
+        standing,
+        downloads,
+        security,
+        native_metadata_version,
+    ))
 }
 fn put_text(out: &mut Vec<u8>, value: &str) {
     put_u32(out, value.len());
     out.extend_from_slice(value.as_bytes());
+}
+
+fn put_json<T: serde::Serialize>(out: &mut Vec<u8>, value: &T) {
+    match serde_json::to_vec(value) {
+        Ok(bytes) => {
+            put_u32(out, bytes.len());
+            out.extend_from_slice(&bytes);
+        }
+        Err(_) => {
+            // JournalCodec is intentionally infallible. A serialization
+            // failure is encoded as an impossible bounded length so the
+            // reader rejects the record instead of silently dropping facts.
+            out.extend_from_slice(&u32::MAX.to_be_bytes());
+        }
+    }
 }
 fn read_text(bytes: &[u8], at: &mut usize) -> Result<String, AcquisitionError> {
     let length = usize::try_from(read_u32(bytes, at)?).map_err(|_| AcquisitionError::Bounds)?;

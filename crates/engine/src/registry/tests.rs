@@ -15,6 +15,25 @@ use std::{
 use super::ecosystem::{NativeArtifactKind, resolve_archive_url};
 use super::identity::RegistryCredentialPolicy;
 use super::*;
+
+fn test_native_metadata() -> backend_library::RegistryNativeMetadata {
+    backend_library::RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "test fixture")
+}
+
+fn test_facts() -> ReleaseFacts {
+    let metadata = test_native_metadata();
+    ReleaseFacts::default().with_native_metadata(metadata.identity().expect("test metadata"))
+}
+
+fn test_facts_for(standing: ReleaseStanding) -> ReleaseFacts {
+    let metadata = test_native_metadata();
+    ReleaseFacts::new(
+        standing,
+        DownloadCount::NotReported(DownloadCountGap::Unsupported),
+        SecurityStanding::Unassessed,
+    )
+    .with_native_metadata(metadata.identity().expect("test metadata"))
+}
 use crate::{
     acquisition::{TransferResetReason, TransferValidator},
     capability::CapabilityArtifactId,
@@ -78,7 +97,8 @@ fn acquisition_service_coalesces_concurrent_registry_effects() {
         coordinate: PackageCoordinate::parse("pkg:cargo/service@1.0.0").expect("coordinate"),
         integrity: transport::ArchiveIntegrity::Canonical(digest),
         provenance: ProvenanceDigest::from_authenticated_feed([9; 32]),
-        facts: ReleaseFacts::default(),
+        facts: test_facts(),
+        native_metadata: test_native_metadata(),
         advisory: None,
         dependency_facts: unavailable_dependency_facts(),
         archive_url: Arc::from("http://127.0.0.1:9/acquisition-service/archive"),
@@ -204,7 +224,8 @@ fn acquisition_service_reuses_a_cached_release_after_not_modified() {
             *CapabilityArtifactId::from_value(&archive).as_bytes(),
         ),
         provenance: ProvenanceDigest::from_authenticated_feed([13; 32]),
-        facts: ReleaseFacts::default(),
+        facts: test_facts(),
+        native_metadata: test_native_metadata(),
         advisory: None,
         dependency_facts: unavailable_dependency_facts(),
         archive_url: Arc::from("http://127.0.0.1:9/etag-revalidation/archive"),
@@ -729,7 +750,8 @@ fn archive_stream_hashing_never_requests_a_buffer_over_64kib() {
         coordinate: PackageCoordinate::parse("pkg:cargo/large@1.0.0").expect("coordinate"),
         integrity: transport::ArchiveIntegrity::Canonical(digest),
         provenance: ProvenanceDigest::from_authenticated_feed([7; 32]),
-        facts: ReleaseFacts::default(),
+        facts: test_facts(),
+        native_metadata: test_native_metadata(),
         advisory: None,
         dependency_facts: unavailable_dependency_facts(),
         archive_url: std::sync::Arc::from("https://registry.example.test/large.crate"),
@@ -1619,7 +1641,8 @@ fn advisory_gate_denies_unknown_version_before_archive_staging() {
                         *CapabilityArtifactId::from_value(archive).as_bytes(),
                     ),
                     provenance: ProvenanceDigest::from_authenticated_feed([23; 32]),
-                    facts: ReleaseFacts::default(),
+                    facts: test_facts(),
+                    native_metadata: test_native_metadata(),
                     advisory: Some(backend_advisory::AdvisoryObservation {
                         advisories: Box::new([]),
                         coverage: backend_advisory::AdvisoryCoverage::Unknown,
@@ -1694,11 +1717,8 @@ fn policy_delta_reuses_the_exact_archive_without_a_second_download() {
                         *CapabilityArtifactId::from_value(&self.archive).as_bytes(),
                     ),
                     provenance: ProvenanceDigest::from_authenticated_feed([self.page; 32]),
-                    facts: ReleaseFacts::new(
-                        standing,
-                        DownloadCount::NotReported(DownloadCountGap::Unsupported),
-                        SecurityStanding::Unassessed,
-                    ),
+                    facts: test_facts_for(standing),
+                    native_metadata: test_native_metadata(),
                     advisory: None,
                     dependency_facts: unavailable_dependency_facts(),
                     archive_url: std::sync::Arc::from("https://registry.example.test/demo.crate"),
@@ -1781,11 +1801,8 @@ fn service_revalidates_cached_facts_and_reuses_archive_bytes() {
                         *CapabilityArtifactId::from_value(&self.archive).as_bytes(),
                     ),
                     provenance: ProvenanceDigest::from_authenticated_feed([self.page; 32]),
-                    facts: ReleaseFacts::new(
-                        standing,
-                        DownloadCount::NotReported(DownloadCountGap::Unsupported),
-                        SecurityStanding::Unassessed,
-                    ),
+                    facts: test_facts_for(standing),
+                    native_metadata: test_native_metadata(),
                     advisory: None,
                     dependency_facts: unavailable_dependency_facts(),
                     archive_url: Arc::from("https://registry.example.test/demo.crate"),
@@ -1975,7 +1992,8 @@ fn acquisition_service_reuses_cached_archive_when_restarted_offline() {
             *CapabilityArtifactId::from_value(&archive).as_bytes(),
         ),
         provenance: ProvenanceDigest::from_authenticated_feed([18; 32]),
-        facts: ReleaseFacts::default(),
+        facts: test_facts(),
+        native_metadata: test_native_metadata(),
         advisory: None,
         dependency_facts: unavailable_dependency_facts(),
         archive_url: Arc::from("http://127.0.0.1:9/acquisition-offline-reuse/archive"),
@@ -2056,7 +2074,8 @@ fn cached_advisory_warning_is_rechecked_after_fail_closed_restart() {
                         *CapabilityArtifactId::from_value(archive).as_bytes(),
                     ),
                     provenance: ProvenanceDigest::from_authenticated_feed([44; 32]),
-                    facts: ReleaseFacts::default(),
+                    facts: test_facts(),
+                    native_metadata: test_native_metadata(),
                     advisory: Some(backend_advisory::AdvisoryObservation {
                         advisories: Box::new([]),
                         coverage: backend_advisory::AdvisoryCoverage::Unknown,
@@ -2702,6 +2721,22 @@ fn maven_transport_fetches_checksum_signature_and_pom_dependencies() {
         &package.dependency_facts,
         backend_library::DependencyFacts::Known(rows) if rows.len() == 2
     ));
+    assert!(matches!(
+        &package.native_metadata.details,
+        backend_library::RegistryNativeDetails::Maven(metadata)
+            if matches!(&metadata.checksum, backend_library::RegistryNativeObservation::Recorded(_))
+                && matches!(&metadata.signature, backend_library::RegistryNativeObservation::Recorded(_))
+                && matches!(&metadata.pom, backend_library::RegistryNativeObservation::Recorded(_))
+                && matches!(&metadata.dependencies, backend_library::RegistryNativeObservation::Recorded(_))
+                && metadata.artifacts[0].yanked.is_none()
+    ));
+    assert_eq!(
+        package.facts.native_metadata_version(),
+        package
+            .native_metadata
+            .identity()
+            .expect("Maven metadata identity")
+    );
     server.join().expect("maven server");
 }
 
@@ -2738,7 +2773,18 @@ fn nuget_registration_retains_standing_security_downloads_and_dependencies() {
         &releases[0].dependency_facts,
         backend_library::DependencyFacts::Known(rows) if rows.len() == 1
     ));
+    assert!(matches!(
+        &releases[0].native_metadata.details,
+        backend_library::RegistryNativeDetails::Nuget(metadata)
+            if matches!(&metadata.vulnerabilities, backend_library::RegistryNativeObservation::Recorded(rows) if rows.len() == 1)
+                && matches!(&metadata.dependencies, backend_library::RegistryNativeObservation::Recorded(backend_library::DependencyFacts::Known(rows)) if rows.len() == 1)
+                && metadata.artifacts[0].yanked.is_none()
+    ));
     assert_eq!(releases[1].facts.standing(), ReleaseStanding::Deprecated);
+    assert!(matches!(
+        &releases[1].native_metadata.details,
+        backend_library::RegistryNativeDetails::Nuget(metadata) if metadata.deprecation.as_deref() == Some("use 2.x")
+    ));
 }
 
 #[test]
@@ -3119,6 +3165,17 @@ fn native_metadata_admits_more_than_two_hundred_versions() {
         .decode(rows.as_bytes())
         .expect("decode 250 versions");
     assert_eq!(releases.len(), 250);
+    assert!(matches!(
+        &releases[0].metadata().details,
+        backend_library::RegistryNativeDetails::Cargo(_)
+    ));
+    assert_eq!(
+        releases[0].facts.native_metadata_version(),
+        releases[0]
+            .metadata()
+            .identity()
+            .expect("metadata identity")
+    );
     let page = adapter
         .admit_page(
             rows.as_bytes(),
@@ -3129,6 +3186,10 @@ fn native_metadata_admits_more_than_two_hundred_versions() {
         )
         .expect("admit 250 versions");
     assert_eq!(page.packages.len(), 250);
+    assert_eq!(
+        page.packages[0].native_metadata,
+        releases[0].native_metadata
+    );
 }
 
 #[test]
@@ -3814,6 +3875,13 @@ fn npm_packument_retains_scoped_tags_deprecation_and_relative_integrity() {
     assert_eq!(deprecated.facts.standing(), ReleaseStanding::Deprecated);
     assert_eq!(deprecated.standing_reason(), Some("use 1.3.0"));
     assert_eq!(deprecated.artifacts().len(), 1);
+    assert!(matches!(
+        &deprecated.native_metadata.details,
+        backend_library::RegistryNativeDetails::Npm(metadata)
+            if metadata.dist_tags.len() == 2
+                && metadata.deprecation.as_deref() == Some("use 1.3.0")
+                && metadata.artifacts[0].yanked.is_none()
+    ));
     assert_eq!(
         deprecated.artifacts()[0].url(),
         "https://registry.example.test/-/parser-1.2.3.tgz"
@@ -3866,6 +3934,13 @@ fn pypi_simple_retains_every_file_kind_requires_python_and_yank_reason() {
     assert_eq!(release.requires_python(), Some(">=3.8"));
     assert_eq!(release.facts.standing(), ReleaseStanding::Available);
     assert_eq!(release.artifacts()[0].yanked_reason(), Some("superseded"));
+    assert!(matches!(
+        &release.native_metadata.details,
+        backend_library::RegistryNativeDetails::Pypi(metadata)
+            if metadata.artifacts.len() == 3
+                && metadata.requires_python.as_deref() == Some(">=3.8")
+                && metadata.artifacts[0].yanked_reason.as_deref() == Some("superseded")
+    ));
     assert!(
         release.artifacts()[1]
             .url()
