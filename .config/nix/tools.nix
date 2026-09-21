@@ -43,7 +43,7 @@ let
   # sccache also shares compiler results with overflow lanes.
   parallelCargo = pkgs.writeShellApplication {
     name = "cargo";
-    runtimeInputs = [ pkgs.coreutils pkgs.git pkgs.sccache ];
+    runtimeInputs = [ pkgs.coreutils pkgs.git pkgs.sccache pkgs.gawk pkgs.procps ];
     text = builtins.replaceStrings
       [ "@cargo@" "@git@" "@sccache@" ]
       [ "${toolchains.stable}/bin/cargo" "${pkgs.git}/bin/git" "${pkgs.sccache}/bin/sccache" ]

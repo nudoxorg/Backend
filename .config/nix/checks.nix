@@ -30,6 +30,16 @@ in
   agent-skills = commands.agentSkills;
   formatting = formatting.check;
 
+  # Exercises the Cargo lease protocol with fake Cargo/git/sccache processes;
+  # it is deliberately independent from the workspace build graph.
+  cargo-cache-protocol = pkgs.runCommand "nudox-cargo-cache-protocol" {
+    nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.gawk pkgs.python3 ];
+  } ''
+    ${pkgs.bash}/bin/bash ${../../tests/cargo-shared-cache.sh}
+    mkdir -p $out/share
+    "validated" > $out/share/cargo-cache-protocol
+  '';
+
   # Guard the public `luna-tools` shell's actual Nix requisites. Checking
   # PATH alone would allow a wrapper to hide an accidental backend/GUI
   # dependency. The complete role bundle is checked separately below.
