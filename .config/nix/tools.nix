@@ -79,6 +79,31 @@ let
     doCheck = false;
   };
   dylintLink = mkDylintTool "dylint-link";
+  # Cargo's locked GPUI and Trustfall git sources are shared by the control
+  # binary and the optional GUI runtime closure. Keeping this map in one let
+  # binding prevents one package from silently accepting a different source.
+  gpuiOutputHashes = {
+    "gpui-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_ce_util-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_collections-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_derive_refineable-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_elements-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_linux-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_macos-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_macros-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_media-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_platform-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_refineable-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_scheduler-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_shared_string-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_sum_tree-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_web-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_wgpu-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "gpui_windows-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+    "trustfall-0.8.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
+    "trustfall_core-0.8.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
+    "trustfall_derive-0.3.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
+  };
   backendControl =
     if workspaceAvailable then
       stableRustPlatform.buildRustPackage {
@@ -115,28 +140,7 @@ let
           # set. The two git checkouts are the desktop runtime (`gpui-ce`) and
           # the query engine (`trustfall`); these are the exact NAR hashes of
           # those pinned revisions, one entry per package cargo names.
-          outputHashes = {
-            "gpui-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_ce_util-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_collections-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_derive_refineable-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_elements-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_linux-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_macos-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_macros-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_media-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_platform-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_refineable-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_scheduler-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_shared_string-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_sum_tree-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_web-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_wgpu-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "gpui_windows-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
-            "trustfall-0.8.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
-            "trustfall_core-0.8.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
-            "trustfall_derive-0.3.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
-          };
+          outputHashes = gpuiOutputHashes;
         };
         cargoInstallFlags = [
           "--package"
@@ -145,6 +149,231 @@ let
           "backend-control"
         ];
         doCheck = false;
+      }
+    else
+      null;
+  # Optional real protocol binaries for a GUI lane. They are intentionally a
+  # separate closure from `gui-tools`, so obtaining pinned display/fonts/media
+  # tools never builds the workspace. When present, these are the exact
+  # locald/CLI/MCP binaries used by live parity journeys.
+  guiRuntime =
+    if workspaceAvailable then
+      stableRustPlatform.buildRustPackage {
+        pname = "nudox-gui-runtime";
+        version = "0.1.0";
+        src = workspaceSource;
+        cargoBuildFlags = [
+          "--package"
+          "backend-locald"
+          "--package"
+          "backend-cli"
+          "--package"
+          "backend-mcp"
+        ];
+        cargoLock = {
+          lockFile = workspaceRoot + "/Cargo.lock";
+          outputHashes = gpuiOutputHashes;
+        };
+        doCheck = false;
+        installPhase = ''
+          mkdir -p "$out/bin"
+          for binary in backend-locald backend-cli backend-mcp; do
+            if [ ! -x "target/release/$binary" ]; then
+              echo "gui runtime did not build expected $binary" >&2
+              exit 1
+            fi
+            cp "target/release/$binary" "$out/bin/$binary"
+          done
+          mkdir -p "$out/share/nudox"
+          cargo metadata --locked --offline --format-version 1 > "$out/share/nudox/cargo-metadata.json"
+          cargo tree --locked --offline --duplicates --prefix none > "$out/share/nudox/cargo-tree-duplicates.txt"
+          cat > "$out/share/nudox/resolved-sources.txt" <<'EOF'
+${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList (name: hash: "resolved-source/${name}=${hash}") gpuiOutputHashes)}
+EOF
+          metadata_sha=$(sha256sum "$out/share/nudox/cargo-metadata.json" | cut -d' ' -f1)
+          tree_sha=$(sha256sum "$out/share/nudox/cargo-tree-duplicates.txt" | cut -d' ' -f1)
+          resolved_sha=$(sha256sum "$out/share/nudox/resolved-sources.txt" | cut -d' ' -f1)
+          graph_sha=$(cat "$out/share/nudox/cargo-metadata.json" "$out/share/nudox/cargo-tree-duplicates.txt" | sha256sum | cut -d' ' -f1)
+          cat > "$out/share/nudox/gpui-provenance.txt" <<EOF
+runtime-cargo-metadata-sha256=$metadata_sha
+runtime-cargo-tree-duplicates-sha256=$tree_sha
+dependency-graph-runtime-sha256=$graph_sha
+resolved-source-manifest-sha256=$resolved_sha
+EOF
+          cat > "$out/bin/nudox-gui-service" <<'EOF'
+#!/bin/sh
+set -eu
+action=''${1:-status}
+if [ "$#" -gt 0 ]; then shift; fi
+endpoint=''${NUDOX_GUI_LOCALD_ENDPOINT:-}
+workspace=''${NUDOX_GUI_WORKSPACE:-}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --endpoint) endpoint=''${2:?missing endpoint value}; shift 2 ;;
+    --workspace) workspace=''${2:?missing workspace value}; shift 2 ;;
+    *) echo "usage: nudox-gui-service <start|stop|status> --endpoint PATH [--workspace PATH]" >&2; exit 64 ;;
+  esac
+done
+if [ -z "$endpoint" ]; then echo "NUDOX_GUI_LOCALD_ENDPOINT or --endpoint is required" >&2; exit 64; fi
+case "$endpoint" in unix:*) endpoint=''${endpoint#unix:} ;; esac
+if [ -z "$workspace" ]; then workspace=$(pwd)/.local/gui-live; fi
+pidfile="$endpoint.pid"
+ownerfile="$endpoint.owner"
+logfile="$endpoint.log"
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+locald_executable="$bin_dir/backend-locald"
+process_start() {
+  pid="$1"
+  if [ -r "/proc/$pid/stat" ]; then
+    awk '{print $22}' "/proc/$pid/stat"
+  else
+    ps -p "$pid" -o lstart= | sed 's/^ *//'
+  fi
+}
+process_executable() {
+  pid="$1"
+  if [ -r "/proc/$pid/exe" ]; then
+    readlink "/proc/$pid/exe"
+  else
+    ps -p "$pid" -o command= | awk '{print $1}'
+  fi
+}
+acquire_lock() {
+  lockdir="$pidfile.lock"
+  if ! mkdir "$lockdir" 2>/dev/null; then
+    echo "locald lifecycle is already owned: $endpoint" >&2
+    exit 75
+  fi
+  trap 'rmdir "$lockdir"' EXIT HUP INT TERM
+}
+owner_value() {
+  key="$1"
+  sed -n "s/^$key=//p" "$ownerfile"
+}
+validate_owner() {
+  if [ ! -f "$ownerfile" ]; then echo "locald owner record is missing: $ownerfile" >&2; return 75; fi
+  owner_pid=$(owner_value pid)
+  owner_nonce=$(owner_value nonce)
+  owner_executable=$(owner_value executable)
+  owner_endpoint=$(owner_value endpoint)
+  owner_workspace=$(owner_value workspace)
+  owner_start=$(owner_value process_start)
+  if [ -z "$owner_pid" ] || [ -z "$owner_nonce" ] || [ -z "$owner_start" ]; then echo "locald owner record is incomplete" >&2; return 75; fi
+  if [ "$owner_executable" != "$locald_executable" ] || [ "$owner_endpoint" != "$endpoint" ] || [ "$owner_workspace" != "$workspace" ]; then
+    echo "locald owner record does not match executable, endpoint, or workspace" >&2
+    return 75
+  fi
+  if ! kill -0 "$owner_pid" 2>/dev/null; then echo "locald owner pid is not running: $owner_pid" >&2; return 1; fi
+  actual_executable=$(process_executable "$owner_pid")
+  actual_start=$(process_start "$owner_pid")
+  if [ "$actual_executable" != "$locald_executable" ] || [ "$actual_start" != "$owner_start" ]; then
+    echo "refusing reused locald pid: $owner_pid" >&2
+    return 75
+  fi
+}
+case "$action" in
+  start)
+    mkdir -p "$(dirname -- "$endpoint")" "$workspace"
+    acquire_lock
+    if [ -f "$ownerfile" ]; then
+      if validate_owner; then echo "locald already running: $(owner_value pid)" >&2; exit 0; fi
+      echo "refusing to replace a stale or reused locald owner record: $ownerfile" >&2
+      exit 75
+    fi
+    "$locald_executable" --endpoint "$endpoint" --workspace "$workspace" --profile builtin --idle-timeout-ms 0 >"$logfile" 2>&1 &
+    pid=$!
+    for attempt in $(seq 1 20); do kill -0 "$pid" 2>/dev/null && break; sleep 0.05; done
+    if ! kill -0 "$pid" 2>/dev/null; then echo "backend-locald exited before ownership could be recorded" >&2; exit 1; fi
+    nonce="$(date +%s)-$$-$pid"
+    start_identity=$(process_start "$pid")
+    pid_tmp="$pidfile.$$"
+    owner_tmp="$ownerfile.$$"
+    echo "$pid" > "$pid_tmp"
+    mv -f "$pid_tmp" "$pidfile"
+    {
+      echo "pid=$pid"
+      echo "nonce=$nonce"
+      echo "executable=$locald_executable"
+      echo "endpoint=$endpoint"
+      echo "workspace=$workspace"
+      echo "process_start=$start_identity"
+    } > "$owner_tmp"
+    mv -f "$owner_tmp" "$ownerfile"
+    ;;
+  stop)
+    if [ ! -f "$ownerfile" ]; then exit 0; fi
+    acquire_lock
+    validate_owner
+    pid=$(owner_value pid)
+    kill "$pid"
+    for attempt in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
+    if kill -0 "$pid" 2>/dev/null; then echo "backend-locald did not stop cleanly; retaining owner record" >&2; exit 75; fi
+    rm -f "$pidfile"
+    rm -f "$ownerfile"
+    ;;
+  status)
+    if [ ! -f "$ownerfile" ]; then echo "locald stopped" >&2; exit 1; fi
+    acquire_lock
+    validate_owner
+    "$bin_dir/nudox-gui-probe" --endpoint "$endpoint" --workspace "$workspace"
+    ;;
+  *) echo "unknown service action: $action" >&2; exit 64 ;;
+esac
+EOF
+          cat > "$out/bin/nudox-gui-probe" <<'EOF'
+#!/bin/sh
+set -eu
+endpoint=''${NUDOX_GUI_LOCALD_ENDPOINT:-}
+workspace=''${NUDOX_GUI_WORKSPACE:-}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --endpoint) endpoint=''${2:?missing endpoint value}; shift 2 ;;
+    --workspace) workspace=''${2:?missing workspace value}; shift 2 ;;
+    *) echo "usage: nudox-gui-probe --endpoint PATH [--workspace PATH]" >&2; exit 64 ;;
+  esac
+done
+if [ -z "$endpoint" ]; then echo "NUDOX_GUI_LOCALD_ENDPOINT or --endpoint is required" >&2; exit 64; fi
+case "$endpoint" in unix:*) endpoint=''${endpoint#unix:} ;; esac
+if [ -z "$workspace" ]; then workspace=$(pwd)/.local/gui-live; fi
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$bin_dir/backend-cli" --endpoint "$endpoint" --workspace "$workspace" --format json health
+EOF
+          cat > "$out/bin/nudox-gui-service-test" <<'EOF'
+#!/bin/sh
+set -eu
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+root=$(mktemp -d "''${TMPDIR:-/tmp}/nudox-gui-service-test.XXXXXX")
+endpoint="$root/locald.sock"
+workspace="$root/workspace"
+cleanup() { "$bin_dir/nudox-gui-service" stop --endpoint "$endpoint" --workspace "$workspace" >/dev/null 2>&1 || true; rm -rf "$root"; }
+trap cleanup EXIT HUP INT TERM
+"$bin_dir/nudox-gui-service" start --endpoint "$endpoint" --workspace "$workspace"
+"$bin_dir/nudox-gui-service" status --endpoint "$endpoint" --workspace "$workspace" >/dev/null
+mkdir "$endpoint.pid.lock"
+if "$bin_dir/nudox-gui-service" start --endpoint "$endpoint" --workspace "$workspace" >/dev/null 2>&1; then
+  echo "service lock contention was not rejected" >&2
+  exit 1
+fi
+rmdir "$endpoint.pid.lock"
+mv "$endpoint.owner" "$endpoint.owner.real"
+cat > "$endpoint.owner" <<OWNER
+pid=$$
+nonce=stale-test
+executable=$bin_dir/backend-locald
+endpoint=$endpoint
+workspace=$workspace
+process_start=stale-test
+OWNER
+if "$bin_dir/nudox-gui-service" status --endpoint "$endpoint" --workspace "$workspace" >/dev/null 2>&1; then
+  echo "reused PID owner was not rejected" >&2
+  exit 1
+fi
+mv "$endpoint.owner.real" "$endpoint.owner"
+"$bin_dir/nudox-gui-service" stop --endpoint "$endpoint" --workspace "$workspace"
+echo "service ownership, contention, stale-owner, and reused-PID checks passed"
+EOF
+          chmod 0555 "$out/bin/nudox-gui-service" "$out/bin/nudox-gui-probe" "$out/bin/nudox-gui-service-test"
+        '';
       }
     else
       null;
@@ -276,6 +505,8 @@ in
   inherit
     authorityHelpers
     backendControl
+    gpuiOutputHashes
+    guiRuntime
     cargoDylint
     compilers
     dylintLink

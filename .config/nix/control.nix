@@ -49,6 +49,322 @@ in
     };
   };
 
+  # The GUI contract is data, rather than a collection of ad-hoc test flags.
+  # The harness consumes this record to make viewport, font, timing, artifact,
+  # service, and acceptance-loop choices reproducible across worktrees.
+  gui = {
+    schema = 1;
+    shell = {
+      command = "nix shell";
+      package = "gui-harness";
+      toolsPackage = "gui-tools";
+      forbidden = [ "nix develop" ];
+    };
+    viewport = {
+      required = [
+        { width = 640; height = 480; }
+        { width = 800; height = 600; }
+        { width = 900; height = 600; }
+        { width = 1024; height = 768; }
+        { width = 1280; height = 800; }
+        { width = 1440; height = 900; }
+        { width = 1600; height = 1000; }
+        { width = 1920; height = 1080; }
+        { width = 2560; height = 1440; }
+      ];
+      scales = [ 1 2 ];
+      defaultWidth = 1440;
+      defaultHeight = 900;
+      defaultScale = 1;
+      colorDepth = 24;
+      colorProfile = "srgb";
+    };
+    fonts = {
+      families = [
+        "DejaVu Sans"
+        "DejaVu Sans Mono"
+        "Liberation Sans"
+        "Noto Color Emoji"
+      ];
+      fallback = "DejaVu Sans";
+      locale = "C.UTF-8";
+      language = "en-US";
+      fileManifestEnvironment = "BACKEND_GUI_FONT_MANIFEST";
+      requireBundledOnly = true;
+    };
+    gpu = {
+      framework = "gpui-ce";
+      componentFramework = "gpui-ce-component";
+      sourcePolicy = "single-pinned-type-universe";
+      sourceDigestEnvironment = "NUDOX_GUI_GPUI_SOURCE_DIGEST";
+      componentSourceDigestEnvironment = "NUDOX_GUI_GPUI_COMPONENT_SOURCE_DIGEST";
+      dependencyGraphEnvironment = "NUDOX_GUI_DEPENDENCY_GRAPH_SHA256";
+      gpuBackendEnvironment = "NUDOX_GUI_GPU_BACKEND";
+      defaultGpuBackend = "software-pinned";
+      forceEnvironment = {
+        WGPU_BACKEND = "gl";
+        LIBGL_ALWAYS_SOFTWARE = "1";
+        MESA_LOADER_DRIVER_OVERRIDE = "llvmpipe";
+      };
+      gpuDeviceEnvironment = "NUDOX_GUI_GPU_DEVICE";
+      expectedGpuDevice = "llvmpipe";
+      toolchainEnvironment = "NUDOX_GUI_TOOLCHAIN";
+      encoderEnvironment = "NUDOX_GUI_ENCODER_VERSION";
+      requireRevisionPinned = true;
+      requireHashVerified = true;
+    };
+    display = {
+      default = "x11";
+      backends = [ "x11" "wayland" "quartz" ];
+      x11 = {
+        display = ":99";
+        screen = "0";
+        depth = 24;
+        dpi = 96;
+      };
+      wayland = {
+        display = "nudox-gui-0";
+        socket = "wayland-0";
+        compositor = "weston";
+      };
+      quartz = {
+        display = "native";
+        compositor = "native";
+      };
+      isolation = {
+        disableHostDisplay = true;
+        disableHostFontConfig = true;
+        disableHostLocale = true;
+      };
+    };
+    animation = {
+      clock = "virtual";
+      fps = 60;
+      settleMs = 250;
+      firstMovingMs = 16;
+      midpointMs = 125;
+      nearSettledMs = 234;
+      maxFrames = 3600;
+      reducedMotion = [ "static-start" "static-settled" ];
+      requiredPhases = [
+        "start"
+        "first-moving"
+        "midpoint"
+        "retarget"
+        "reversal"
+        "near-settled"
+        "settled"
+        "reduced-motion"
+      ];
+    };
+    artifacts = {
+      root = ".local/gui-artifacts";
+      references = ".local/gui-references";
+      retentionHours = 168;
+      maxBytes = 10737418240;
+      imageFormat = "png";
+      videoFormat = "webm";
+      manifest = "manifest.json";
+      comparison = {
+        pixelDiff = true;
+        perceptual = true;
+        changedBounds = true;
+        diffImage = true;
+      };
+      frameTrace = {
+        required = true;
+        detect = [ "allocation" "object" "timer" ];
+        driverArgument = "--frame-trace";
+      };
+      redaction = {
+        keys = [
+          "authorization"
+          "access_token"
+          "refresh_token"
+          "cookie"
+          "private_package_metadata"
+          "NUDOX_GUI_DRIVER_SECRET"
+        ];
+        replacement = "<redacted>";
+        rawTranscripts = false;
+      };
+    };
+    sharding = {
+      hash = "sha256";
+      defaultCount = 1;
+      maxCount = 128;
+      stableAcrossRuns = true;
+      includeTags = [ "route" "state" "input" "animation" "service" ];
+    };
+    locks = {
+      root = ".local/gui-locks";
+      staleAfterHours = 12;
+      resources = [
+        "display-x11"
+        "display-wayland"
+        "clipboard"
+        "live-server-index"
+        "font-cache"
+      ];
+      ownerFields = [
+        "schema"
+        "run"
+        "lane"
+        "shard"
+        "pid"
+        "startedAt"
+        "revision"
+      ];
+    };
+    cleanup = {
+      artifactRoot = ".local/gui-artifacts";
+      lockRoot = ".local/gui-locks";
+      laneRoot = ".local/gui-lanes";
+      dryRunByDefault = true;
+      requireRepository = true;
+      refuseOutsideLocal = true;
+      refuseActiveLocks = true;
+      refuseUnexpired = true;
+      gc = {
+        dryRunByDefault = true;
+        requireExactStoreRoots = true;
+        requireExplicitConfirmation = true;
+        preserve = [ "gui-harness" "gui-tools" ];
+      };
+    };
+    services = {
+      serverIndex = {
+        required = true;
+        endpointEnvironment = "NUDOX_GUI_LOCALD_ENDPOINT";
+        serviceCommandEnvironment = "NUDOX_GUI_SERVICE_COMMAND";
+        readinessCommandEnvironment = "NUDOX_GUI_READINESS_COMMAND";
+        protocol = "nudox-locald-framed-v1";
+        authorities = [ "gui" "cli" "mcp" ];
+        requireLive = true;
+      };
+      driver = {
+        commandEnvironment = "NUDOX_GUI_DRIVER";
+        protocol = "nudox-gui-driver-v1";
+        requireExecutable = true;
+        requireRealWindow = true;
+        allowSynthetic = false;
+      };
+      hiddenHoldouts = {
+        required = true;
+        manifestEnvironment = "NUDOX_GUI_HOLDOUT_MANIFEST";
+        verifierEnvironment = "NUDOX_GUI_HOLDOUT_VERIFIER";
+        retainedRegressionRoot = ".local/gui-holdout-regressions";
+        independentSignoff = true;
+      };
+      provenance = {
+        command = "provenance";
+        requiredFields = [
+          "gpuiSourceDigest"
+          "gpuiComponentSourceDigest"
+          "dependencyGraphSha256"
+          "toolchain"
+          "detectedGpuBackend"
+          "gpuDevice"
+        ];
+      };
+    };
+    journeys = {
+      manifest = ".config/gui/journeys.json";
+      requiredTags = [
+        "route"
+        "loading"
+        "empty"
+        "partial"
+        "offline"
+        "error"
+        "overlay"
+        "focus"
+        "keyboard"
+        "animation"
+        "live-index"
+        "cli"
+        "mcp"
+      ];
+      requiredModes = [ "cold" "warm" "offline-warm" "interrupted" "corrupt" "stale-endpoint" "concurrent" ];
+      requiredFlows = [
+        "package-indexing"
+        "code-search"
+        "semantic-pipeline"
+        "settings"
+        "keyboard-focus"
+        "transitions"
+        "mcp-cli-parity"
+      ];
+    };
+    acceptance = {
+      loops = [
+        {
+          name = "property";
+          generator = "structured-events-dimensions-deltas";
+          oracle = "state-invariants-and-no-panic";
+          minCases = 256;
+          shrink = true;
+        }
+        {
+          name = "randomized";
+          generator = "weighted-valid-state-space";
+          oracle = "route-focus-geometry-and-resource-bounds";
+          minCases = 512;
+          shrink = true;
+        }
+        {
+          name = "differential";
+          generator = "independent-gui-cli-mcp-queries";
+          oracle = "canonical-view-root-equivalence";
+          minCases = 128;
+          independent = true;
+        }
+        {
+          name = "metamorphic";
+          generator = "event-batching-restart-theme-motion";
+          oracle = "equivalent-final-state-and-domain-result";
+          minCases = 128;
+          relations = [
+            "noop-delta-preserves-render"
+            "batching-preserves-final-state"
+            "restart-preserves-admitted-root"
+            "theme-motion-preserve-domain-result"
+          ];
+        }
+      ];
+      failureInjection = [
+        "cancelled-request"
+        "truncated-frame"
+        "truncated-file"
+        "malformed-protocol"
+        "stale-root"
+        "unavailable-endpoint"
+        "oversized-result"
+        "concurrent-client"
+        "crash-at-durable-boundary"
+      ];
+      persistenceModes = [
+        "pristine"
+        "warm"
+        "offline-warm"
+        "interrupted-commit"
+        "corrupt-truncated"
+        "stale-endpoint"
+        "concurrent-second-process"
+      ];
+      evidence = [
+        "scenario-input-hash"
+        "image-byte-hash"
+        "pixel-diff"
+        "perceptual-metric"
+        "changed-bounds"
+        "driver-transcript"
+        "resource-lock-manifest"
+        "live-service-health"
+      ];
+    };
+  };
+
   commit.koji = {
     autocomplete = true;
     breaking_changes = true;
@@ -61,6 +377,9 @@ in
         patterns = [
           "^/\\.config/(flake\\.(nix|lock)|rustfmt\\.toml|clippy\\.toml|direnv/)"
           "^/\\.config/nix/(artifacts|ast-grep-suite|ast-grep|checks|commands|control|default|format|lib|role-tools|shells|toolchains|tools)\\.nix$"
+          "^/\\.config/nix/gui\\.nix$"
+          "^/\\.config/gui/"
+          "^/docs/operations/gui-testing\\.md$"
           "^/\\.config/nu/(core|scope|create|quality)/"
           "^/\\.config/nu/(main|tests)\\.nu$"
         ];

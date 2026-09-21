@@ -12,11 +12,53 @@
   control,
   helpers,
   toolchains,
+  gui,
 }:
 {
   nushell-command = commands.backend;
   agent-skills = commands.agentSkills;
   formatting = formatting.check;
+
+  gui-contract = helpers.nuCheck {
+    inherit pkgs;
+    name = "nudox-gui-contract";
+    packages = [ commands.backend gui.toolsBundle pkgs.jq ];
+    environment = {
+      BACKEND_CONFIG_MODE = "immutable";
+      BACKEND_CONFIG_SNAPSHOT = toString ../.;
+      BACKEND_GUI_CONFIG = "${gui.configFile}/share/nudox/gui-control-plane.json";
+      BACKEND_GUI_FONTCONFIG = gui.fontConfig;
+    };
+    build = ''
+      backend gui validate
+      jq --exit-status \
+        '(.schema == 1) and (.viewport.required | length == 9) and (.viewport.scales == [1,2]) and (.animation.requiredPhases | length == 8) and (.acceptance.loops | map(.name) == ["property","randomized","differential","metamorphic"]) and (.gpu.framework == "gpui-ce") and (.gpu.componentFramework == "gpui-ce-component") and (.services.serverIndex.protocol == "nudox-locald-framed-v1") and (.services.hiddenHoldouts.required == true)' \
+        "$BACKEND_GUI_CONFIG"
+      mkdir ($env.out | path join "share")
+      "validated" | save ($env.out | path join "share" "gui-contract")
+    '';
+  };
+
+  gui-service-contract = helpers.nuCheck {
+    inherit pkgs;
+    name = "nudox-gui-service-contract";
+    packages = pkgs.lib.optional (tools.guiRuntime != null) tools.guiRuntime;
+    environment = {
+      BACKEND_CONFIG_MODE = "immutable";
+      BACKEND_GUI_CONFIG = "${gui.configFile}/share/nudox/gui-control-plane.json";
+    };
+    build = if tools.guiRuntime == null then
+      ''
+        echo "GUI service contract requires the workspace runtime closure" >&2
+        exit 78
+      ''
+    else
+      ''
+        nudox-gui-service-test
+        mkdir ($env.out | path join "share")
+        "validated" | save ($env.out | path join "share" "gui-service-contract")
+      '';
+  };
 
   ast-grep-rules = helpers.nuCheck {
     inherit pkgs;

@@ -38,6 +38,7 @@ let
   ++ readPolicyTree ../nu/scope
   ++ readPolicyTree ../nu/cutover
   ++ readPolicyTree ../contracts
+  ++ readPolicyTree ../gui
   ++ readPolicyTree ../fixtures;
   policyRootDigest = builtins.hashString "sha256" (
     builtins.concatStringsSep "\n" (
@@ -120,6 +121,10 @@ let
       };
       toolchains = import ./toolchains.nix { inherit inputs pkgs system; };
       tools = import ./tools.nix { inherit pkgs toolchains workspaceRoot; };
+      gui = import ./gui.nix {
+        inherit pkgs control workspaceRoot;
+        resolvedSourceHashes = tools.gpuiOutputHashes;
+      };
       corpus = import ./corpus.nix { inherit pkgs workspaceRoot; };
       commands = import ./commands.nix {
         inherit
@@ -128,6 +133,7 @@ let
           formatting
           controlFile
           control
+          gui
           pkgs
           toolchains
           tools
@@ -143,6 +149,7 @@ let
           control
           controlFile
           corpus
+          gui
           ;
       };
       checks = import ./checks.nix {
@@ -154,6 +161,7 @@ let
           controlFile
           helpers
           formatting
+          gui
           pkgs
           toolchains
           tools
@@ -173,6 +181,7 @@ let
         formatting
         controlFile
         corpus
+        gui
         ;
     };
 in
@@ -180,6 +189,13 @@ in
   packages = helpers.eachSystem (
     system:
     let
+      lightweightPkgs = import inputs.nixpkgs {
+        inherit system;
+      };
+      lightweightGui = import ./gui.nix {
+        pkgs = lightweightPkgs;
+        inherit control workspaceRoot;
+      };
       value = perSystem system;
     in
     {
@@ -195,9 +211,16 @@ in
       ast-grep-suite = value.astGrepSuite;
       formatter = value.formatting.wrapper;
       telemetry = value.commands.telemetry;
+      gui-control = lightweightGui.configFile;
+      gui-fonts = lightweightGui.fontConfig;
+      gui-tools = lightweightGui.toolsBundle;
+      gui-harness = value.commands.backend;
     }
     // value.pkgs.lib.optionalAttrs (value.tools.backendControl != null) {
       backend-control = value.tools.backendControl;
+    }
+    // value.pkgs.lib.optionalAttrs (value.tools.guiRuntime != null) {
+      gui-runtime = value.tools.guiRuntime;
     }
     // value.pkgs.lib.optionalAttrs (value.corpus != null) {
       fleet-corpus-rust = value.corpus.rust;

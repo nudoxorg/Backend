@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "protocol": "nudox-gui-driver-v1",
+  "description": "Reviewable live-window GUI journeys. The driver must resolve every package and query through the live server/index contract.",
+  "journeys": [
+    {
+      "id": "package-indexing",
+      "route": "packages",
+      "tags": ["route", "live-index", "keyboard", "animation"],
+      "modes": ["cold", "warm", "offline-warm", "interrupted", "corrupt", "stale-endpoint", "concurrent"],
+      "actions": ["launch", "wait-for-index", "open-package", "capture-states", "reload", "verify-focus"]
+    },
+    {
+      "id": "code-search",
+      "route": "search/code",
+      "tags": ["route", "live-index", "keyboard", "focus", "animation"],
+      "modes": ["cold", "warm", "offline-warm", "unavailable-endpoint"],
+      "actions": ["launch", "focus-search", "type-query", "submit", "paginate", "clear", "capture-states"]
+    },
+    {
+      "id": "semantic-pipeline",
+      "route": "search/semantic",
+      "tags": ["route", "live-index", "animation", "error"],
+      "modes": ["cold", "warm", "offline-warm", "unavailable-endpoint", "oversized-result", "cancelled-request"],
+      "actions": ["launch", "submit-query", "cancel", "retry", "inspect-provenance", "capture-states"]
+    },
+    {
+      "id": "package-detail",
+      "route": "package/detail",
+      "tags": ["route", "loading", "partial", "keyboard", "animation"],
+      "modes": ["cold", "warm", "offline-warm", "corrupt"],
+      "actions": ["launch", "open-package", "switch-tabs", "open-source", "open-docs", "capture-states"]
+    },
+    {
+      "id": "rich-ir-graph",
+      "route": "package/graph",
+      "tags": ["route", "live-index", "focus", "animation"],
+      "modes": ["cold", "warm", "offline-warm", "concurrent"],
+      "actions": ["launch", "open-graph", "select-node", "jump-to-source", "zoom", "pan", "capture-animation"]
+    },
+    {
+      "id": "dependencies-and-dependents",
+      "route": "package/dependencies",
+      "tags": ["route", "partial", "keyboard", "live-index"],
+      "modes": ["cold", "warm", "offline-warm", "stale-endpoint"],
+      "actions": ["launch", "switch-dependencies", "switch-dependents", "paginate", "capture-states"]
+    },
+    {
+      "id": "releases-security",
+      "route": "package/releases",
+      "tags": ["route", "empty", "warning", "keyboard", "live-index"],
+      "modes": ["cold", "warm", "offline-warm", "unavailable-endpoint"],
+      "actions": ["launch", "open-releases", "open-security", "toggle-yanked", "capture-states"]
+    },
+    {
+      "id": "settings",
+      "route": "settings",
+      "tags": ["route", "overlay", "focus", "keyboard", "animation"],
+      "modes": ["pristine", "warm", "corrupt", "concurrent"],
+      "actions": ["launch", "open-settings", "tab-through", "change-theme", "toggle-reduced-motion", "restart", "verify-persistence"]
+    },
+    {
+      "id": "keyboard-focus",
+      "route": "focus/audit",
+      "tags": ["focus", "keyboard", "overlay", "animation"],
+      "modes": ["cold", "warm", "offline-warm"],
+      "actions": ["launch", "tab-cycle", "shift-tab-cycle", "arrow-navigation", "escape-unwind", "default-action", "capture-states"]
+    },
+    {
+      "id": "transitions",
+      "route": "transition/audit",
+      "tags": ["route", "animation", "focus", "keyboard"],
+      "modes": ["cold", "warm", "offline-warm"],
+      "actions": ["launch", "navigate-forward", "retarget", "reverse", "resize", "interrupt", "capture-animation"]
+    },
+    {
+      "id": "mcp-cli-parity",
+      "route": "parity",
+      "tags": ["route", "mcp", "cli", "live-index", "error"],
+      "modes": ["cold", "warm", "offline-warm", "unavailable-endpoint", "oversized-result"],
+      "actions": ["launch", "run-gui-query", "run-cli-query", "run-mcp-query", "compare-results", "capture-states"]
+    },
+    {
+      "id": "offline-and-failure-states",
+      "route": "diagnostics",
+      "tags": ["route", "offline", "error", "partial", "keyboard"],
+      "modes": ["offline-warm", "unavailable-endpoint", "malformed-protocol", "truncated-frame", "stale-root"],
+      "actions": ["launch", "disconnect", "inspect-diagnostic", "retry", "recover", "capture-states"]
+    },
+    {
+      "id": "animation-reduced-motion",
+      "route": "motion/audit",
+      "tags": ["route", "animation", "focus", "keyboard"],
+      "modes": ["cold", "warm"],
+      "actions": ["launch", "capture-start", "capture-first-moving", "capture-midpoint", "capture-retarget", "capture-reversal", "capture-near-settled", "capture-settled", "capture-reduced-motion"]
+    }
+  ]
+}

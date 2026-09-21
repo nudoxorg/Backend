@@ -9,6 +9,7 @@
   control,
   controlFile,
   corpus,
+  gui,
 }:
 let
   compilers = tools.compilers;
@@ -17,6 +18,14 @@ let
   };
   optionalOracleEnv = pkgs.lib.optionalAttrs (tools.goOracle != null) {
     NUDOX_GO_ORACLE_BIN = "${tools.goOracle}/bin/oracle";
+  };
+  optionalGuiRuntimeEnv = pkgs.lib.optionalAttrs (tools.guiRuntime != null) {
+    NUDOX_GUI_LOCALD_BIN = "${tools.guiRuntime}/bin/backend-locald";
+    NUDOX_GUI_CLI_BIN = "${tools.guiRuntime}/bin/backend-cli";
+    NUDOX_GUI_MCP_BIN = "${tools.guiRuntime}/bin/backend-mcp";
+    NUDOX_GUI_SERVICE_COMMAND = "${tools.guiRuntime}/bin/nudox-gui-service";
+    NUDOX_GUI_READINESS_COMMAND = "${tools.guiRuntime}/bin/nudox-gui-probe";
+    NUDOX_GUI_GPUI_RUNTIME_PROVENANCE = "${tools.guiRuntime}/share/nudox/gpui-provenance.txt";
   };
   # Real package sources for the seven-language corpus. Every value names a
   # pinned store path built by `.config/nix/corpus.nix`; absent when this
@@ -63,6 +72,7 @@ let
   }
   // optionalEnv
   // optionalOracleEnv
+  // optionalGuiRuntimeEnv
   // optionalCorpusEnv;
   common = corpusEnv // {
     BACKEND_STABLE_CARGO = toolchains.stableCargo;
@@ -70,6 +80,23 @@ let
     BACKEND_CONFIG_SNAPSHOT = toString ../.;
     BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
     BACKEND_POLICY_ROOT_DIGEST = control.policyRootDigest;
+    BACKEND_GUI_CONFIG = "${gui.configFile}/share/nudox/gui-control-plane.json";
+    BACKEND_GUI_FONTCONFIG = gui.fontConfig;
+    BACKEND_GUI_FONT_MANIFEST = "${gui.fontManifest}/share/nudox/fonts.sha256";
+    NUDOX_GUI_GPUI_SOURCE_DIGEST = gui.gpuiSourceDigest;
+    NUDOX_GUI_GPUI_COMPONENT_SOURCE_DIGEST = if gui.gpuiComponentSourceDigest == null then "" else gui.gpuiComponentSourceDigest;
+    NUDOX_GUI_GPUI_SOURCE_MANIFEST = gui.gpuiSourceManifest;
+    NUDOX_GUI_DEPENDENCY_GRAPH_SHA256 = gui.dependencyGraphDigest;
+    NUDOX_GUI_GPU_BACKEND = control.gui.gpu.defaultGpuBackend;
+    NUDOX_GUI_GPU_DEVICE = control.gui.gpu.expectedGpuDevice;
+    NUDOX_GUI_GPU_PROBE = "${gui.gpuProbe}/bin/nudox-gui-gpu-probe";
+    WGPU_BACKEND = control.gui.gpu.forceEnvironment.WGPU_BACKEND;
+    LIBGL_ALWAYS_SOFTWARE = control.gui.gpu.forceEnvironment.LIBGL_ALWAYS_SOFTWARE;
+    MESA_LOADER_DRIVER_OVERRIDE = control.gui.gpu.forceEnvironment.MESA_LOADER_DRIVER_OVERRIDE;
+    NUDOX_GUI_TOOLCHAIN = toString toolchains.stable;
+    NUDOX_GUI_ENCODER_VERSION = pkgs.ffmpeg.version;
+    NUDOX_GUI_TOOL_CLOSURE = "${gui.toolsBundle}";
+    NUDOX_GUI_HARNESS = "nix shell .#gui-harness .#gui-tools";
     LIBRARY_PATH = pkgs.lib.makeLibraryPath [
       pkgs.libiconv
       pkgs.zlib
@@ -83,39 +110,39 @@ let
   development = pkgs.mkShell (
     common
     // {
-      packages = tools.development ++ [ commands.backend ];
+      packages = tools.development ++ [ commands.backend gui.toolsBundle ];
     }
   );
   verification = pkgs.mkShell (
     common
     // {
-      packages = tools.verification ++ [ commands.backendVerifier ];
+      packages = tools.verification ++ [ commands.backendVerifier gui.toolsBundle ];
       BACKEND_NIGHTLY_CARGO = toolchains.nightlyCargo;
     }
   );
   compiler = pkgs.mkShell (
     common
     // {
-      packages = tools.compiler ++ [ commands.backend ];
+      packages = tools.compiler ++ [ commands.backend gui.toolsBundle ];
     }
   );
   services = pkgs.mkShell (
     common
     // {
-      packages = tools.services ++ [ commands.backend ];
+      packages = tools.services ++ [ commands.backend gui.toolsBundle ];
     }
   );
   observability = pkgs.mkShell (
     common
     // {
-      packages = tools.observability ++ [ commands.backendVerifier ];
+      packages = tools.observability ++ [ commands.backendVerifier gui.toolsBundle ];
       BACKEND_NIGHTLY_CARGO = toolchains.nightlyCargo;
     }
   );
   complete = pkgs.mkShell (
     common
     // {
-      packages = tools.complete ++ [ commands.backendVerifier ];
+      packages = tools.complete ++ [ commands.backendVerifier gui.toolsBundle ];
       BACKEND_NIGHTLY_CARGO = toolchains.nightlyCargo;
     }
   );
