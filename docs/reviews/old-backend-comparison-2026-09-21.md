@@ -26,8 +26,8 @@ Commands run from the comparison worktree:
 df -h /Users/mileswirht/Downloads
 du -sh /Users/mileswirht/Downloads/backend_1
 cargo metadata --offline --no-deps --format-version 1
-find /Users/mileswirht/Downloads/backend_1 -type f \\
-  \\( -path '*/target/*' -o -path '*/buck-out/*' -o -path '*/buck2-out/*' \\) \\
+find /Users/mileswirht/Downloads/backend_1 -type f \
+  \( -path '*/target/*' -o -path '*/buck-out/*' -o -path '*/buck2-out/*' \) \
   -perm -111 -print
 ```
 
@@ -78,6 +78,41 @@ The old checkout has no product executable or Cargo target to reuse. Its
 directory contains runtime evidence, not a runnable binary: a 780 KiB
 `catalog/catalog.dolt`, several 76–144 KiB scratch SQLite directories, 60 MiB
 of screenshots, and a 1.4 GiB `serve.log`.
+
+## Temporary replay attempt
+
+After the read-only inspection, a temporary shared-object clone was created at
+`/Users/mileswirht/Downloads/nudox-qa-lanes/backend1-replay-v5` from the old
+tracked commit. Only that clone received path repairs for the stale locations
+listed above; `backend_1` itself still has the same 32,845-file dirty status.
+The repaired clone is 566 MiB and `cargo metadata --offline --no-deps` now
+passes, enumerating nine packages and the expected `ingest` and `nudox-serve`
+binaries.
+
+The first lean product check was:
+
+```text
+nix shell 'git+file:///Users/mileswirht/Downloads/backend#luna-tools' \
+  --command cargo check --offline --locked -p index \
+  --no-default-features --features test-engine --lib
+```
+
+It stopped before compilation because the old lockfile pins `grit-lib` to Git
+revision `dfb079967b9cbc99e533c21e65f674bb3f5e8b07`, which is not present as a
+Cargo checkout in the offline cache. A locked online `cargo fetch --locked`
+was then attempted in the temporary clone. It began updating the crates.io
+index and Grit repository but remained blocked on Cargo's global package-cache
+path while other workspace agents were compiling. It was terminated before
+compilation to avoid serializing those builds; no old benchmark result was
+recorded from that partial attempt. At that point free space remained above
+30 GiB.
+
+This is a stronger result than a generic "old code unavailable": the old graph
+is metadata-valid after isolated path repair, but its actual product dependency
+closure is not locally reproducible without fetching the pinned Grit source and
+then building a large DoltLite/transport graph. The eventual A/B runner should
+reuse this temporary replay shape after the shared package cache is idle, or
+use a prebuilt old binary, while preserving the same corpus and process metrics.
 
 ## Current measured baseline
 
