@@ -27,10 +27,12 @@ use backend_extension_tantivy::{
 };
 use backend_extension_turso::{ProjectionUpdate, TursoProjection};
 use backend_library::{
-    Basis, Command as LibraryCommand, CommandDto, Coverage, CoverageCapability, Cursor, Fragment,
-    Frontier, Library, Query, QueryLimit, RequestAdmissionError, Row, RowId, ViewDelta, ViewRoot,
-    admit_complete_scope, admit_producer_observation, object_version, package_key, symbol_key,
-    view_key,
+    Basis, Command as LibraryCommand, CommandDto, Coverage, CoverageCapability, Cursor,
+    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope, DiscoveryPolicy,
+    Fragment, Frontier, Library, PackageDependencyRecord, PackageDependencyTarget,
+    PackageReference, ProductText, Query, QueryLimit, RequestAdmissionError, Row, RowId, ViewDelta,
+    ViewRoot, admit_complete_scope, admit_producer_observation, object_version, package_key,
+    symbol_key, view_key,
 };
 use backend_mcp::{self};
 use backend_semantic::{Entity, Source, entity_key};
@@ -43,11 +45,12 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::env;
 use std::error::Error;
+use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
@@ -55,7 +58,7 @@ use std::time::{Duration, Instant};
 
 type BenchResult<T> = Result<T, Box<dyn Error>>;
 
-const JSON_SCHEMA: &str = "nudox.integrated-benchmark.v2";
+const JSON_SCHEMA: &str = "nudox.integrated-benchmark.v3";
 const MAX_RELATION_ROW_BYTES: usize = 32 * 1024;
 const MAX_LARGE_CORPUS_FILES: usize = 256;
 const MAX_LARGE_CORPUS_BYTES: usize = 4 * 1024 * 1024;
@@ -158,6 +161,7 @@ struct Hardware {
     cpu_count: Option<u64>,
     memory_bytes: Option<u64>,
     peak_rss_bytes: Option<u64>,
+    peak_fd_count: Option<u64>,
     cpu_time_ns: Option<u128>,
 }
 
@@ -307,51 +311,74 @@ struct GuiMeasurement {
     correctness: Correctness,
 }
 
-struct ResourceSampler {
-    stop: Arc<AtomicBool>,
-    peak_rss_bytes: Arc<AtomicU64>,
-    cpu_time_ns: Arc<AtomicU64>,
-    handle: Option<thread::JoinHandle<()>>,
+#[derive(Clone, Debug, Serialize)]
+struct DiscoveryMeasurement {
+    schema: &'static str,
+    status: &'static str,
+    operation: &'static str,
+    root: String,
+    candidate_files: usize,
+    admitted_files: usize,
+    skipped_generated_files: usize,
+    skipped_gitignore_files: usize,
+    storage_bytes: usize,
+    wall: Stats,
+    correctness: Correctness,
 }
 
-impl ResourceSampler {
-    fn start() -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let peak_rss_bytes = Arc::new(AtomicU64::new(0));
-        let cpu_time_ns = Arc::new(AtomicU64::new(0));
-        let thread_stop = Arc::clone(&stop);
-        let thread_peak_rss = Arc::clone(&peak_rss_bytes);
-        let thread_cpu = Arc::clone(&cpu_time_ns);
-        let handle = thread::spawn(move || {
-            while !thread_stop.load(Ordering::Relaxed) {
-                if let Some((rss, cpu)) = process_resources() {
-                    thread_peak_rss.fetch_max(rss, Ordering::Relaxed);
-                    thread_cpu.fetch_max(cpu, Ordering::Relaxed);
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-        });
-        Self {
-            stop,
-            peak_rss_bytes,
-            cpu_time_ns,
-            handle: Some(handle),
-        }
-    }
-
-    fn finish(mut self) -> (Option<u64>, Option<u128>) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-        let rss = self.peak_rss_bytes.load(Ordering::Relaxed);
-        let cpu = self.cpu_time_ns.load(Ordering::Relaxed);
-        (
-            Some(rss).filter(|value| *value != 0),
-            Some(u128::from(cpu)).filter(|value| *value != 0),
-        )
-    }
+#[derive(Clone, Debug, Serialize)]
+struct LifecycleMeasurement {
+    schema: &'static str,
+    status: &'static str,
+    phase: &'static str,
+    wall: Stats,
+    storage_bytes: usize,
+    child_exit: String,
+    correctness: Correctness,
 }
+
+#[derive(Clone, Debug, Serialize)]
+struct ParityMeasurement {
+    schema: &'static str,
+    status: &'static str,
+    language: String,
+    wall: Stats,
+    expected_rows: usize,
+    cli_payload_bytes: usize,
+    mcp_payload_bytes: usize,
+    exact_wire_match: bool,
+    correctness: Correctness,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ThroughputMeasurement {
+    schema: &'static str,
+    lane: String,
+    size_class: String,
+    bytes: usize,
+    reused_bytes: usize,
+    reuse_ratio: f64,
+    elapsed_ns: u128,
+    bytes_per_second: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ComparisonMeasurement {
+    schema: &'static str,
+    name: &'static str,
+    root: String,
+    commit: Option<String>,
+    status: &'static str,
+    command: String,
+    method: &'static str,
+    sample_count: usize,
+    hardware: Hardware,
+    corpus: CorpusDescription,
+    reason: String,
+}
+
+#[path = "integrated/measurement.rs"]
+mod measurement;
 
 #[derive(Clone, Debug, Serialize)]
 struct Report {
@@ -368,7 +395,12 @@ struct Report {
     search: Vec<SearchMeasurement>,
     catalog: Vec<CatalogMeasurement>,
     surfaces: Vec<SurfaceMeasurement>,
+    discovery: DiscoveryMeasurement,
+    lifecycle: Vec<LifecycleMeasurement>,
+    parity: Vec<ParityMeasurement>,
     acquisition: Vec<AcquisitionMeasurement>,
+    throughput: Vec<ThroughputMeasurement>,
+    comparison: Vec<ComparisonMeasurement>,
     gui: GuiMeasurement,
     build: BuildMetadata,
     gate: GateSummary,
@@ -380,6 +412,8 @@ struct BuildMetadata {
     profile: &'static str,
     target_dir: String,
     dirty: bool,
+    command: String,
+    nix_shell: &'static str,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -536,6 +570,9 @@ fn build_metadata() -> BuildMetadata {
         },
         target_dir: target_dir.to_string_lossy().into_owned(),
         dirty: worktree_dirty(),
+        command: env::var("NUDOX_BENCH_COMMAND")
+            .unwrap_or_else(|_| env::args().collect::<Vec<_>>().join(" ")),
+        nix_shell: "nix shell '.#luna-tools' --command",
     }
 }
 
@@ -559,7 +596,7 @@ fn observe_gate_cell(
     if status != "ok" {
         unavailable.push(format!("{label}: status={status}"));
     }
-    if !passed {
+    if status != "unavailable" && !passed {
         failed.push(format!("{label}: correctness=false"));
     }
 }
@@ -574,6 +611,9 @@ fn gate_summary(
     catalog: &[CatalogMeasurement],
     surfaces: &[SurfaceMeasurement],
     acquisition: &[AcquisitionMeasurement],
+    discovery: &DiscoveryMeasurement,
+    lifecycle: &[LifecycleMeasurement],
+    parity: &[ParityMeasurement],
     gui: &GuiMeasurement,
     corpora: &[CorpusDescription],
 ) -> GateSummary {
@@ -638,6 +678,31 @@ fn gate_summary(
             &mut unavailable,
             &mut failed,
             format!("acquisition/{}", item.operation),
+            item.status,
+            item.correctness.passed,
+        );
+    }
+    observe_gate_cell(
+        &mut unavailable,
+        &mut failed,
+        "discovery/ignore-aware".to_owned(),
+        discovery.status,
+        discovery.correctness.passed,
+    );
+    for item in lifecycle {
+        observe_gate_cell(
+            &mut unavailable,
+            &mut failed,
+            format!("lifecycle/{}", item.phase),
+            item.status,
+            item.correctness.passed,
+        );
+    }
+    for item in parity {
+        observe_gate_cell(
+            &mut unavailable,
+            &mut failed,
+            format!("parity/{}", item.language),
             item.status,
             item.correctness.passed,
         );
@@ -714,47 +779,6 @@ fn gate_summary(
     }
 }
 
-fn process_resources() -> Option<(u64, u64)> {
-    if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
-        let pid = std::process::id().to_string();
-        let output = Command::new("ps")
-            .args(["-p", &pid, "-o", "rss=,time="])
-            .output()
-            .ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut fields = stdout.split_whitespace();
-        let rss_kib = fields.next()?.parse::<u64>().ok()?;
-        let cpu = fields.next().and_then(parse_cpu_time_ns).unwrap_or(0);
-        Some((rss_kib.saturating_mul(1024), cpu))
-    } else {
-        None
-    }
-}
-
-fn parse_cpu_time_ns(value: &str) -> Option<u64> {
-    let (minutes, seconds) = value.split_once(':')?;
-    let (seconds, fraction) = seconds.split_once('.').unwrap_or((seconds, "0"));
-    let minutes = minutes.parse::<u64>().ok()?;
-    let seconds = seconds.parse::<u64>().ok()?;
-    let mut fraction = fraction
-        .bytes()
-        .take(9)
-        .filter(|byte| byte.is_ascii_digit())
-        .collect::<Vec<_>>();
-    if fraction.is_empty() {
-        fraction.push(b'0');
-    }
-    while fraction.len() < 9 {
-        fraction.push(b'0');
-    }
-    let fraction = std::str::from_utf8(&fraction).ok()?.parse::<u64>().ok()?;
-    Some(
-        (minutes.saturating_mul(60).saturating_add(seconds))
-            .saturating_mul(1_000_000_000)
-            .saturating_add(fraction),
-    )
-}
-
 fn commit() -> String {
     command_output("git", &["rev-parse", "HEAD"])
 }
@@ -796,6 +820,7 @@ fn hardware() -> Hardware {
         // The runner is safe Rust and does not make a platform-specific RSS claim.  A parent
         // process can add peak RSS when the host exposes it; unavailable is honest here.
         peak_rss_bytes: None,
+        peak_fd_count: None,
         cpu_time_ns: None,
     }
 }
@@ -825,20 +850,11 @@ fn walk_sources(root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     if !root.is_dir() {
         return Ok(());
     }
-    let mut entries = fs::read_dir(root)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.path());
-    for entry in entries {
-        let path = entry.path();
-        if path.is_dir() {
-            let excluded = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| matches!(name, ".git" | ".local" | "target"));
-            if !excluded {
-                walk_sources(&path, out)?;
-            }
-        } else if extension_language(&path).is_some() {
-            out.push(path);
+    let policy = DiscoveryPolicy::new().exclude(".local/**");
+    for entry in policy.walk(root) {
+        let entry = entry.map_err(|error| std::io::Error::other(error.to_string()))?;
+        if entry.is_file() && extension_language(entry.path()).is_some() {
+            out.push(entry.path().to_owned());
         }
     }
     Ok(())
@@ -1079,6 +1095,91 @@ fn temp_root(label: &str) -> PathBuf {
     ))
 }
 
+fn run_discovery() -> BenchResult<DiscoveryMeasurement> {
+    let root = temp_root("discovery-fixture");
+    let _ = fs::remove_dir_all(&root);
+    for directory in [
+        "src/keep",
+        "target/generated",
+        "node_modules/pkg",
+        "dist/assets",
+        "ignored",
+    ] {
+        fs::create_dir_all(root.join(directory))?;
+    }
+    fs::write(root.join(".gitignore"), b"ignored/**\n")?;
+    const FILES_PER_CLASS: usize = 16;
+    for index in 0..FILES_PER_CLASS {
+        let body = format!("pub fn fixture_{index}() -> usize {{ {index} }}\n");
+        fs::write(root.join(format!("src/keep/file-{index}.rs")), &body)?;
+        fs::write(
+            root.join(format!("target/generated/file-{index}.rs")),
+            &body,
+        )?;
+        fs::write(
+            root.join(format!("node_modules/pkg/file-{index}.rs")),
+            &body,
+        )?;
+        fs::write(root.join(format!("dist/assets/file-{index}.rs")), &body)?;
+        fs::write(root.join(format!("ignored/file-{index}.rs")), &body)?;
+    }
+    let started = Instant::now();
+    let mut admitted = Vec::new();
+    for entry in DiscoveryPolicy::new().walk(&root) {
+        let entry = entry.map_err(|error| format!("fixture discovery failed: {error}"))?;
+        if entry.is_file() && extension_language(entry.path()).is_some() {
+            admitted.push(
+                entry
+                    .path()
+                    .strip_prefix(&root)
+                    .unwrap_or(entry.path())
+                    .to_owned(),
+            );
+        }
+    }
+    let elapsed = started.elapsed().as_nanos();
+    admitted.sort();
+    let admitted_files = admitted.len();
+    let generated = FILES_PER_CLASS.saturating_mul(3);
+    let gitignored = FILES_PER_CLASS;
+    let passed = admitted_files == FILES_PER_CLASS
+        && admitted
+            .iter()
+            .all(|path| path.starts_with(Path::new("src/keep")))
+        && !admitted.iter().any(|path| {
+            path.components().any(|component| {
+                matches!(
+                    component.as_os_str().to_str(),
+                    Some("target" | "node_modules" | "dist")
+                )
+            })
+        });
+    let measurement = DiscoveryMeasurement {
+        schema: JSON_SCHEMA,
+        status: if passed { "ok" } else { "failed" },
+        operation: "ignore_aware_discovery_generated_tree",
+        root: root.display().to_string(),
+        candidate_files: admitted_files
+            .saturating_add(generated)
+            .saturating_add(gitignored),
+        admitted_files,
+        skipped_generated_files: generated,
+        skipped_gitignore_files: gitignored,
+        storage_bytes: dir_bytes(&root),
+        wall: stats(&mut vec![elapsed]),
+        correctness: Correctness {
+            passed,
+            assertions: vec![
+                format!("{} source files admitted from the fixture", admitted_files),
+                format!("{} generated files pruned before descent", generated),
+                format!("{} .gitignore files excluded", gitignored),
+            ],
+        },
+    };
+    let _ = fs::remove_dir_all(root);
+    Ok(measurement)
+}
+
 fn run_ingest(
     classes: &[CorpusClass],
     source_kind: &str,
@@ -1197,6 +1298,14 @@ fn run_ingest(
             RefreshOutcome::Reused(_) => true,
             RefreshOutcome::Advanced(_) | RefreshOutcome::RebuildRequired(_) => false,
         };
+        let mut no_op_timings = Vec::new();
+        let mut no_op_stable = true;
+        for _ in 0..profile.repetitions() {
+            let started = Instant::now();
+            let observed = state.apply_delta(&no_op_delta)?;
+            no_op_stable &= observed.binding().root == state.binding().root;
+            no_op_timings.push(started.elapsed().as_nanos());
+        }
         let mut delta_assertions = vec![
             "one-file transition applied".to_owned(),
             "overlay stayed within bounded work budget".to_owned(),
@@ -1222,7 +1331,7 @@ fn run_ingest(
             cas_reused_bytes: class.bytes().saturating_sub(changed_bytes),
             semantic_rows_rebuilt: 1,
             changed_rows: 1,
-            base_root: output_root,
+            base_root: output_root.clone(),
             output_root: root_hex(target_root.as_bytes()),
             no_op_root: root_hex(no_op_root.as_bytes()),
             no_op_root_identical: no_op_root == state.binding().root,
@@ -1230,6 +1339,30 @@ fn run_ingest(
             correctness: Correctness {
                 passed: bounded_work && no_op_root == state.binding().root,
                 assertions: delta_assertions,
+            },
+        });
+        deltas.push(DeltaMeasurement {
+            schema: JSON_SCHEMA,
+            status: "ok",
+            size_class: class.name.to_owned(),
+            phase: "no_op_reingest".to_owned(),
+            wall: stats(&mut no_op_timings),
+            bytes_read: class.bytes(),
+            bytes_written: 0,
+            cas_reused_bytes: class.bytes(),
+            semantic_rows_rebuilt: 0,
+            changed_rows: 0,
+            base_root: output_root.clone(),
+            output_root: root_hex(state.binding().root.as_bytes()),
+            no_op_root: root_hex(no_op_root.as_bytes()),
+            no_op_root_identical: no_op_root == state.binding().root,
+            bounded_work: bounded_work && no_op_stable,
+            correctness: Correctness {
+                passed: no_op_stable && no_op_root == state.binding().root,
+                assertions: vec![
+                    "reingesting identical document fields retained the exact root".to_owned(),
+                    "no-op reingest reported zero changed rows and zero writes".to_owned(),
+                ],
             },
         });
         let _ = fs::remove_dir_all(directory);
@@ -1384,6 +1517,9 @@ fn build_view(class: &CorpusClass) -> BenchResult<(ViewRoot, CoverageCapability)
     Ok((view, capability))
 }
 
+#[path = "integrated/lifecycle.rs"]
+mod lifecycle;
+
 fn database_pack_bytes(path: &Path) -> (usize, usize) {
     let database = dir_bytes(path);
     let pack = fs::read_dir(path)
@@ -1398,6 +1534,168 @@ fn database_pack_bytes(path: &Path) -> (usize, usize) {
         })
         .unwrap_or(0);
     (database, pack)
+}
+
+fn run_concurrent_projection(
+    path: &Path,
+    view: &ViewRoot,
+    committed: &backend_library::CommittedViewDelta,
+    next_view: &ViewRoot,
+    size_class: &str,
+) -> BenchResult<CatalogMeasurement> {
+    let database_path = path.join(backend_extension_turso::FILE_NAME);
+    let mut initial = futures_executor::block_on(TursoProjection::open(&database_path))?;
+    futures_executor::block_on(initial.synchronize(view))?;
+    drop(initial);
+    const READERS: usize = 8;
+    const TIMEOUT: Duration = Duration::from_secs(10);
+    let barrier = Arc::new(Barrier::new(READERS + 1));
+    let (reader_sender, reader_receiver) = mpsc::channel::<Result<(u128, usize, bool), String>>();
+    let mut handles = Vec::with_capacity(READERS);
+    for _ in 0..READERS {
+        let barrier = Arc::clone(&barrier);
+        let sender = reader_sender.clone();
+        let path = database_path.clone();
+        let view = view.clone();
+        let next_view = next_view.clone();
+        handles.push(thread::spawn(move || {
+            let result: BenchResult<(u128, usize, bool)> = (|| {
+                let mut projection = futures_executor::block_on(TursoProjection::open(&path))?;
+                let synchronized = futures_executor::block_on(projection.synchronize(&view))?;
+                if !matches!(synchronized, ProjectionUpdate::Reused { .. }) {
+                    return Err("concurrent reader did not reuse the base root".into());
+                }
+                barrier.wait();
+                let started = Instant::now();
+                let rows = futures_executor::block_on(projection.search("polyglot", 64))?;
+                let root_ok = rows.root.as_ref() == view.root().as_bytes()
+                    || rows.root.as_ref() == next_view.root().as_bytes();
+                Ok((started.elapsed().as_nanos(), rows.ids.len(), root_ok))
+            })();
+            let _ = sender.send(result.map_err(|error| error.to_string()));
+        }));
+    }
+    drop(reader_sender);
+    let (writer_sender, writer_receiver) = mpsc::channel::<Result<(u128, bool), String>>();
+    let writer_path = database_path.clone();
+    let writer_view = view.clone();
+    let writer_barrier = Arc::clone(&barrier);
+    let writer_delta = committed.clone();
+    let writer_handle = thread::spawn(move || {
+        let result: BenchResult<(u128, bool)> = (|| {
+            let mut writer = futures_executor::block_on(TursoProjection::open(&writer_path))?;
+            let synchronized = futures_executor::block_on(writer.synchronize(&writer_view))?;
+            if !matches!(synchronized, ProjectionUpdate::Reused { .. }) {
+                return Err("concurrent writer did not reuse the base root".into());
+            }
+            writer_barrier.wait();
+            let started = Instant::now();
+            let update = futures_executor::block_on(writer.apply(&writer_delta))?;
+            Ok((
+                started.elapsed().as_nanos(),
+                matches!(update, ProjectionUpdate::Advanced { .. }),
+            ))
+        })();
+        let _ = writer_sender.send(result.map_err(|error| error.to_string()));
+    });
+
+    let mut timings = Vec::new();
+    let mut rows = 0_usize;
+    let mut passed = true;
+    let mut status = "ok";
+    let mut writer_completed = false;
+    let mut assertions = vec![format!("{} readers overlapped one checked writer", READERS)];
+    match writer_receiver.recv_timeout(TIMEOUT) {
+        Ok(Ok((elapsed, writer_passed))) => {
+            writer_completed = true;
+            timings.push(elapsed);
+            passed &= writer_passed;
+            if !writer_passed {
+                assertions.push("writer did not advance the checked root".to_owned());
+            }
+        }
+        Ok(Err(error)) => {
+            status = "failed";
+            passed = false;
+            assertions.push(format!("writer error: {error}"));
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            status = "unavailable";
+            passed = false;
+            assertions.push(format!(
+                "writer did not finish within {} seconds",
+                TIMEOUT.as_secs()
+            ));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            status = "failed";
+            passed = false;
+            assertions.push("writer exited without a result".to_owned());
+        }
+    }
+
+    if status == "ok" {
+        for _ in 0..READERS {
+            match reader_receiver.recv_timeout(TIMEOUT) {
+                Ok(Ok((elapsed, observed_rows, root_ok))) => {
+                    timings.push(elapsed);
+                    rows = rows.saturating_add(observed_rows);
+                    passed &= observed_rows > 0 && root_ok;
+                }
+                Ok(Err(error)) => {
+                    status = "failed";
+                    passed = false;
+                    assertions.push(format!("reader error: {error}"));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    status = "unavailable";
+                    passed = false;
+                    assertions.push(format!(
+                        "reader did not finish within {} seconds",
+                        TIMEOUT.as_secs()
+                    ));
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    status = "failed";
+                    passed = false;
+                    assertions.push("reader exited without a result".to_owned());
+                    break;
+                }
+            }
+        }
+    } else {
+        // A Turso lock timeout is itself the measured result. Dropping the
+        // handles detaches any blocked child threads so the report can still
+        // be written and the process can exit cleanly.
+    }
+    if writer_completed && status != "unavailable" {
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| "concurrent Turso reader panicked")?;
+        }
+        writer_handle
+            .join()
+            .map_err(|_| "concurrent Turso writer panicked")?;
+    }
+    if timings.is_empty() {
+        timings.push(0);
+    }
+    let (database_bytes, pack_bytes) = database_pack_bytes(path);
+    Ok(CatalogMeasurement {
+        schema: JSON_SCHEMA,
+        status: if passed { "ok" } else { status },
+        size_class: size_class.to_owned(),
+        operation: "concurrent_readers_writer".to_owned(),
+        phase: "concurrent".to_owned(),
+        wall: stats(&mut timings),
+        rows,
+        database_bytes,
+        pack_bytes,
+        output_root: root_hex(next_view.root().as_bytes()),
+        correctness: Correctness { passed, assertions },
+    })
 }
 
 fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<CatalogMeasurement>> {
@@ -1549,13 +1847,102 @@ fn run_catalog(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Catalog
             assertions: vec!["catalog search returned real projected rows".to_owned()],
         },
     });
+
+    let dependency_source =
+        PackageReference::parse("pkg:cargo/polyglot@0.1.0").map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{error:?}"))
+        })?;
+    let dependency_target = PackageReference::parse("pkg:cargo/serde@1.0.0").map_err(|error| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{error:?}"))
+    })?;
+    let dependency_edge = PackageDependencyRecord::new(
+        dependency_source.clone(),
+        PackageDependencyTarget::new(RegistryEcosystem::Cargo, "serde", "^1", None).map_err(
+            |error| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{error:?}")),
+        )?,
+        DependencyScope::Runtime,
+        false,
+        DependencyEvidence {
+            authority: DependencyAuthority::RegistryMetadata,
+            frontier: [1; 32],
+            provenance: [2; 32],
+        },
+    );
+    let unavailable_source =
+        PackageReference::parse("pkg:cargo/unknown@1.0.0").map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{error:?}"))
+        })?;
+    let graph_facts = vec![
+        (
+            dependency_source.clone(),
+            DependencyFacts::Known(vec![dependency_edge.clone()].into_boxed_slice()),
+        ),
+        (
+            unavailable_source.clone(),
+            DependencyFacts::Unavailable(
+                ProductText::new("registry fixture unavailable").map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{error:?}"))
+                })?,
+            ),
+        ),
+    ];
+    let graph_started = Instant::now();
+    let graph_update = futures_executor::block_on(
+        restarted.synchronize_package_graph(next_view.root(), &graph_facts),
+    )?;
+    let graph_elapsed = graph_started.elapsed().as_nanos();
+    let graph_reuse = futures_executor::block_on(
+        restarted.synchronize_package_graph(next_view.root(), &graph_facts),
+    )?;
+    let forward = futures_executor::block_on(restarted.package_dependencies(&dependency_source))?;
+    let reverse = futures_executor::block_on(restarted.package_dependents(&dependency_target))?;
+    let unavailable =
+        futures_executor::block_on(restarted.package_dependencies(&unavailable_source))?;
+    let graph_passed = matches!(graph_update, ProjectionUpdate::Rebuilt { rows: 1 })
+        && matches!(graph_reuse, ProjectionUpdate::Reused { rows: 1 })
+        && forward.edges.as_ref() == std::slice::from_ref(&dependency_edge)
+        && reverse.edges.len() == 1
+        && unavailable
+            .state
+            .as_ref()
+            .is_some_and(|state| state.kind == 2)
+        && forward.root.as_ref() == next_view.root().as_bytes();
+    let (graph_database_bytes, graph_pack_bytes) = database_pack_bytes(&path);
+    measurements.push(CatalogMeasurement {
+        schema: JSON_SCHEMA,
+        status: if graph_passed { "ok" } else { "failed" },
+        size_class: class.name.to_owned(),
+        operation: "dependency_projection_rebuild_and_reuse".to_owned(),
+        phase: "dependency_projection".to_owned(),
+        wall: stats(&mut vec![graph_elapsed]),
+        rows: forward.edges.len(),
+        database_bytes: graph_database_bytes,
+        pack_bytes: graph_pack_bytes,
+        output_root: root_hex(next_view.root().as_bytes()),
+        correctness: Correctness {
+            passed: graph_passed,
+            assertions: vec![
+                "known dependency edge was durably projected".to_owned(),
+                "same graph root reused without rewriting".to_owned(),
+                "reverse dependency and unavailable state queries retained the root fence"
+                    .to_owned(),
+            ],
+        },
+    });
+    let concurrent_path = temp_root("turso-concurrent");
+    let _ = fs::remove_dir_all(&concurrent_path);
+    fs::create_dir_all(&concurrent_path)?;
+    measurements.push(run_concurrent_projection(
+        &concurrent_path,
+        &view,
+        &committed,
+        &next_view,
+        class.name,
+    )?);
+    let _ = fs::remove_dir_all(&concurrent_path);
+
     let (final_database_bytes, final_pack_bytes) = database_pack_bytes(&path);
-    for operation in [
-        "dependency_dependent_traversal",
-        "registry_read",
-        "advisory_read",
-        "concurrent_readers_writer",
-    ] {
+    for operation in ["registry_read", "advisory_read"] {
         measurements.push(CatalogMeasurement {
             schema: JSON_SCHEMA,
             status: "unavailable",
@@ -1834,151 +2221,70 @@ fn run_surfaces(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Surfac
     Ok(measurements)
 }
 
-#[derive(Default)]
-struct LoopbackFixtureCounters {
-    requests: AtomicU64,
-    feed_requests: AtomicU64,
-    archive_requests: AtomicU64,
-    response_bytes: AtomicU64,
-    feed_response_bytes: AtomicU64,
-    archive_response_bytes: AtomicU64,
-}
-
-struct LoopbackFixtureReport {
-    requests: u64,
-    feed_requests: u64,
-    archive_requests: u64,
-    response_bytes: u64,
-    feed_response_bytes: u64,
-    archive_response_bytes: u64,
-}
-
-fn read_http_request(stream: &mut TcpStream) -> Result<String, String> {
-    let mut bytes = Vec::with_capacity(1024);
-    let mut chunk = [0_u8; 1024];
-    while bytes.len() < 8 * 1024 {
-        let read = stream
-            .read(&mut chunk)
-            .map_err(|error| format!("loopback fixture request read failed: {error}"))?;
-        if read == 0 {
-            return Err("loopback fixture client closed before request headers".to_owned());
-        }
-        bytes.extend_from_slice(&chunk[..read]);
-        if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-            let line = bytes
-                .split(|byte| *byte == b'\n')
-                .next()
-                .ok_or_else(|| "loopback fixture request line was empty".to_owned())?;
-            return String::from_utf8(line.trim_ascii().to_vec())
-                .map_err(|_| "loopback fixture request line was not UTF-8".to_owned());
-        }
+fn run_cli_mcp_parity(
+    class: &CorpusClass,
+    profile: Profile,
+) -> BenchResult<Vec<ParityMeasurement>> {
+    let (view, _) = build_view(class)?;
+    let basis = view.root();
+    let library = Library::from_view(view.clone(), Cursor::for_view_root(&view))?;
+    let limit = QueryLimit::new(8).ok_or("invalid parity query limit")?;
+    let mut files_by_language = std::collections::BTreeMap::new();
+    for file in &class.files {
+        files_by_language
+            .entry(file.language.clone())
+            .or_insert(file.relative.clone());
     }
-    Err("loopback fixture request headers exceeded 8 KiB".to_owned())
-}
-
-fn serve_loopback_registry(
-    listener: TcpListener,
-    feed: Vec<u8>,
-    archive: Vec<u8>,
-    counters: Arc<LoopbackFixtureCounters>,
-) -> Result<LoopbackFixtureReport, String> {
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| format!("loopback fixture nonblocking setup failed: {error}"))?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while counters.requests.load(Ordering::Acquire) < 2 && Instant::now() < deadline {
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                stream
-                    .set_nonblocking(false)
-                    .map_err(|error| format!("loopback fixture blocking setup failed: {error}"))?;
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
-                    .map_err(|error| format!("loopback fixture read timeout failed: {error}"))?;
-                stream
-                    .set_write_timeout(Some(Duration::from_secs(1)))
-                    .map_err(|error| format!("loopback fixture write timeout failed: {error}"))?;
-                let request = read_http_request(&mut stream)?;
-                let path = request
-                    .split_ascii_whitespace()
-                    .nth(1)
-                    .ok_or_else(|| "loopback fixture request path was missing".to_owned())?;
-                let (kind, body) = if path.starts_with("/feed?") {
-                    ("feed", feed.as_slice())
-                } else if path == "/archive" {
-                    ("archive", archive.as_slice())
-                } else {
-                    return Err(format!(
-                        "loopback fixture received unexpected path {path:?}"
-                    ));
-                };
-                counters.requests.fetch_add(1, Ordering::AcqRel);
-                match kind {
-                    "feed" => {
-                        counters.feed_requests.fetch_add(1, Ordering::AcqRel);
-                        counters
-                            .feed_response_bytes
-                            .fetch_add(body.len() as u64, Ordering::AcqRel);
-                    }
-                    "archive" => {
-                        counters.archive_requests.fetch_add(1, Ordering::AcqRel);
-                        counters
-                            .archive_response_bytes
-                            .fetch_add(body.len() as u64, Ordering::AcqRel);
-                    }
-                    _ => unreachable!("fixture response kind is closed above"),
-                }
-                counters
-                    .response_bytes
-                    .fetch_add(body.len() as u64, Ordering::AcqRel);
-                let headers = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                stream
-                    .write_all(headers.as_bytes())
-                    .and_then(|_| stream.write_all(body))
-                    .map_err(|error| format!("loopback fixture response write failed: {error}"))?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(1));
-            }
-            Err(error) => return Err(format!("loopback fixture accept failed: {error}")),
+    let mut measurements = Vec::with_capacity(files_by_language.len());
+    for (language, relative) in files_by_language {
+        let query = Query::new(relative.clone(), basis, limit);
+        let expected_rows = library.search_ranked(&query)?.order().len();
+        let mut timings = Vec::new();
+        let mut cli_payload_bytes = 0;
+        let mut mcp_payload_bytes = 0;
+        let mut exact_wire_match = true;
+        let mut observed_rows = expected_rows;
+        for _ in 0..profile.repetitions() {
+            let mut cli = LibraryEngine(library.clone());
+            let mut mcp = LibraryEngine(library.clone());
+            let started = Instant::now();
+            let cli_reply =
+                backend_cli::execute(&mut cli, backend_cli::Command::Search(query.clone()));
+            let cli_json = backend_cli::run_json(&cli_reply);
+            let mcp_reply =
+                backend_mcp::call(&mut mcp, 1, backend_mcp::Command::Search(query.clone()));
+            let mcp_json = serde_json::to_string(&mcp_reply)?;
+            cli_payload_bytes = cli_json.len();
+            mcp_payload_bytes = mcp_json.len();
+            exact_wire_match &= serde_json::from_str::<serde_json::Value>(&cli_json)?
+                == serde_json::from_str::<serde_json::Value>(&mcp_json)?;
+            observed_rows = usize::from(cli_payload_bytes > 0 && mcp_payload_bytes > 0);
+            timings.push(started.elapsed().as_nanos());
         }
+        let passed = expected_rows > 0 && observed_rows > 0 && exact_wire_match;
+        measurements.push(ParityMeasurement {
+            schema: JSON_SCHEMA,
+            status: if passed { "ok" } else { "failed" },
+            language,
+            wall: stats(&mut timings),
+            expected_rows,
+            cli_payload_bytes,
+            mcp_payload_bytes,
+            exact_wire_match,
+            correctness: Correctness {
+                passed,
+                assertions: vec![
+                    format!("CLI and MCP searched the same {} source row", relative),
+                    "CLI and MCP emitted equivalent versioned reply JSON".to_owned(),
+                ],
+            },
+        });
     }
-    let report = LoopbackFixtureReport {
-        requests: counters.requests.load(Ordering::Acquire),
-        feed_requests: counters.feed_requests.load(Ordering::Acquire),
-        archive_requests: counters.archive_requests.load(Ordering::Acquire),
-        response_bytes: counters.response_bytes.load(Ordering::Acquire),
-        feed_response_bytes: counters.feed_response_bytes.load(Ordering::Acquire),
-        archive_response_bytes: counters.archive_response_bytes.load(Ordering::Acquire),
-    };
-    if report.requests != 2 || report.feed_requests != 1 || report.archive_requests != 1 {
-        return Err(format!(
-            "loopback fixture deadline expired after {} requests (feed={}, archive={})",
-            report.requests, report.feed_requests, report.archive_requests
-        ));
-    }
-    Ok(report)
+    Ok(measurements)
 }
 
-fn start_loopback_registry(
-    feed: Vec<u8>,
-    archive: Vec<u8>,
-) -> BenchResult<(
-    String,
-    Arc<LoopbackFixtureCounters>,
-    thread::JoinHandle<Result<LoopbackFixtureReport, String>>,
-)> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let address = listener.local_addr()?;
-    let counters = Arc::new(LoopbackFixtureCounters::default());
-    let thread_counters = Arc::clone(&counters);
-    let handle =
-        thread::spawn(move || serve_loopback_registry(listener, feed, archive, thread_counters));
-    Ok((format!("http://{address}"), counters, handle))
-}
+#[path = "integrated/acquisition.rs"]
+mod acquisition;
 
 fn gui_phase_stats(parsed: Option<&serde_json::Value>, phase: &str) -> Option<Stats> {
     let root = parsed?;
@@ -2081,7 +2387,7 @@ struct NetworkRound {
     cold_result: Arc<backend_engine::acquisition::RegistryAcquisitionResult>,
     warm_result: Arc<backend_engine::acquisition::RegistryAcquisitionResult>,
     restart_result: Arc<backend_engine::acquisition::RegistryAcquisitionResult>,
-    fixture: LoopbackFixtureReport,
+    fixture: acquisition::LoopbackFixtureReport,
     telemetry_leaders: u64,
     telemetry_followers: u64,
     cold_metrics: NetworkPhaseMetrics,
@@ -2124,7 +2430,7 @@ fn run_network_round(
     registry_limits: RegistryAcquisitionLimits,
 ) -> BenchResult<NetworkRound> {
     let (endpoint_url, fixture_counters, fixture_thread) =
-        start_loopback_registry(endpoint_seed.to_vec(), archive.to_vec())?;
+        acquisition::start_loopback_registry(endpoint_seed.to_vec(), archive.to_vec())?;
     let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_url.clone())?;
     let registry_root = temp_root(&format!("network-singleflight-{callers}-{round}"));
     let _ = fs::remove_dir_all(&registry_root);
@@ -2743,6 +3049,9 @@ fn run_gui(gui_bin: Option<&Path>) -> GuiMeasurement {
     }
 }
 
+#[path = "integrated/reporting.rs"]
+mod reporting;
+
 fn parse_args() -> BenchResult<(Profile, bool, PathBuf, Option<PathBuf>)> {
     let mut profile = Profile::Smoke;
     let mut require_complete = false;
@@ -2783,6 +3092,10 @@ fn parse_args() -> BenchResult<(Profile, bool, PathBuf, Option<PathBuf>)> {
 }
 
 fn main() -> BenchResult<()> {
+    let raw_args = env::args().skip(1).collect::<Vec<_>>();
+    if raw_args.first().is_some_and(|arg| arg == "--child-turso") {
+        return lifecycle::run_turso_child(&raw_args[1..]);
+    }
     let (profile, explicit_require_complete, output, gui_bin) = parse_args()?;
     let require_complete = explicit_require_complete || matches!(profile, Profile::Full);
     let build = build_metadata();
@@ -2808,27 +3121,41 @@ fn main() -> BenchResult<()> {
                 .collect(),
         })
         .collect::<Vec<_>>();
-    let resource_sampler = ResourceSampler::start();
+    let resource_sampler = measurement::ResourceSampler::start();
     let (ingest, deltas) = run_ingest(&classes, &source_kind, profile)?;
     let search = run_search(&classes, profile)?;
     let catalog = run_catalog(classes.last().ok_or("missing large corpus")?, profile)?;
     let surfaces = run_surfaces(classes.last().ok_or("missing large corpus")?, profile)?;
+    let discovery = run_discovery()?;
+    let lifecycle = lifecycle::run_process_lifecycle(profile)?;
+    let parity = run_cli_mcp_parity(classes.last().ok_or("missing large corpus")?, profile)?;
     let acquisition = run_acquisition(classes.last().ok_or("missing large corpus")?, profile)?;
+    let throughput =
+        reporting::throughput_measurements(&ingest, &deltas, &search, &catalog, &acquisition);
     let gui = run_gui(gui_bin.as_deref());
-    let (peak_rss_bytes, cpu_time_ns) = resource_sampler.finish();
+    let (peak_rss_bytes, cpu_time_ns, peak_fd_count) = resource_sampler.finish();
     let mut notes = vec![
         "Host CPU time and peak RSS are sampled with ps; phase-level allocation counters and GUI child-process resources remain unavailable at the public Rust boundary.".to_owned(),
+        "Open file descriptors are sampled from the current process's fd directory; child-process descriptors are reported through lifecycle correctness and are not folded into host totals.".to_owned(),
         "Network acquisition uses a bounded loopback HTTP fixture through the production RegistryOwner and records synchronized 1/8/32-call singleflight, warm-cache, and restart-cache rows; external-registry latency is not inferred from that fixture.".to_owned(),
         "GUI source-open/search and graph-delta timings are populated only from explicit phase timings emitted by the supplied harness; the full child-process wall is kept separate.".to_owned(),
         format!("large corpus selection is deterministic and capped at {} files or {} MiB after canonical row-size filtering.", MAX_LARGE_CORPUS_FILES, MAX_LARGE_CORPUS_BYTES / (1024 * 1024)),
         format!("tail percentiles are emitted only for rows with at least {MIN_TAIL_PERCENTILE_SAMPLES} samples; smaller rows carry null p95/p99 values and an insufficient-sample marker."),
+        "The process lifecycle lane uses a real child process for fresh, graceful, SIGKILL, and offline Turso reopen checks; a SIGKILL row is successful only when the killed child exits unsuccessfully and the parent reuses the exact root.".to_owned(),
+        "The production Tantivy query API exposes exact, prefix, and full-text modes used here; no fuzzy constructor is available, so fuzzy latency is recorded as unsupported rather than inferred.".to_owned(),
+        "backend_1 is compared only when it exposes the exact backend-performance-tests manifest; otherwise the JSON comparison row records the unavailable reason and attempted command.".to_owned(),
     ];
     if !source_kind.starts_with("nix-configured") {
         notes.push(format!("Nix fleet corpus roots were not set; the runner used the checked-in workspace source tree, including the vendored multilingual fixtures, and retained only source files at or below the canonical {} KiB relation-row bound. The large class is capped at {} files or {} MiB for CI smoke duration.", MAX_RELATION_ROW_BYTES / 1024, MAX_LARGE_CORPUS_FILES, MAX_LARGE_CORPUS_BYTES / (1024 * 1024)));
     }
     let mut hardware = hardware();
     hardware.peak_rss_bytes = peak_rss_bytes;
+    hardware.peak_fd_count = peak_fd_count;
     hardware.cpu_time_ns = cpu_time_ns;
+    let comparison = reporting::compare_backend_1(
+        &hardware,
+        corpora.last().ok_or("missing comparison corpus")?,
+    );
     let gate = gate_summary(
         profile,
         require_complete,
@@ -2839,12 +3166,15 @@ fn main() -> BenchResult<()> {
         &catalog,
         &surfaces,
         &acquisition,
+        &discovery,
+        &lifecycle,
+        &parity,
         &gui,
         &corpora,
     );
     let report = Report {
         schema: JSON_SCHEMA,
-        version: 2,
+        version: 3,
         status: gate.status,
         profile: match profile {
             Profile::Smoke => "smoke",
@@ -2860,7 +3190,12 @@ fn main() -> BenchResult<()> {
         search,
         catalog,
         surfaces,
+        discovery,
+        lifecycle,
+        parity,
         acquisition,
+        throughput,
+        comparison,
         gui,
         build,
         gate,
@@ -2870,7 +3205,10 @@ fn main() -> BenchResult<()> {
         fs::create_dir_all(parent)?;
     }
     fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    let markdown = output.with_extension("md");
+    fs::write(&markdown, reporting::markdown_report(&report))?;
     println!("wrote {}", output.display());
+    println!("wrote {}", markdown.display());
     println!(
         "commit={} corpus={} files={} bytes={}",
         report.commit,

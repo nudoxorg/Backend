@@ -2,14 +2,18 @@
 
 `src/bin/integrated.rs` drives the production Tantivy, Turso, CAS, library,
 CLI, MCP, and optional desktop GUI contracts over real source files. It emits
-`nudox.integrated-benchmark.v2` JSON; timings are descriptive measurements and
-correctness assertions are recorded beside every result.
+`nudox.integrated-benchmark.v3` JSON and a concise Markdown report beside it;
+timings are descriptive measurements and correctness assertions are recorded
+beside every result. The v3 lanes add ignore-aware discovery, fresh/graceful/
+SIGKILL/offline Turso lifecycle checks, CLI/MCP parity for every admitted
+language, bounded RSS/file-descriptor sampling, throughput/reuse rows, and an
+explicit backend_1 comparison row.
 
 Run the checked-in smoke profile with the pinned Rust shell. This runner uses nix shell, never nix develop, so the exact environment remains reviewable:
 
 ```console
-PINNED=/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16
-CARGO_TARGET_DIR=.local/integrated-target nix shell "$PINNED" --command cargo run --locked --offline \
+CARGO_TARGET_DIR=.local/integrated-target \
+nix shell '.#luna-tools' --command cargo run --locked --offline \
   -p backend-performance-tests --bin integrated -- \
   --profile smoke --output tests/performance/results/integrated-smoke.json
 ```
@@ -20,8 +24,8 @@ reports success when the harness writes a verified seven-frame package
 manifest:
 
 ```console
-PINNED=/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16
-CARGO_TARGET_DIR=.local/integrated-target nix shell "$PINNED" --command cargo run --locked --offline \
+CARGO_TARGET_DIR=.local/integrated-target \
+nix shell '.#luna-tools' --command cargo run --locked --offline \
   -p backend-performance-tests --bin integrated -- \
   --profile smoke --output tests/performance/results/integrated-smoke.json \
   --gui-bin /absolute/path/to/backend-desktop-gui-harness
@@ -37,12 +41,14 @@ carry an insufficient-tail-samples marker. Build metadata records profile,
 target directory, and dirty state. Ingest and search phases are named for
 their actual boundaries, including durable_publish_and_reopen,
 warm_in_memory_build, and first_in_memory_search.
+The production Tantivy API currently exposes exact, prefix, and full-text
+queries; fuzzy construction is unavailable and is recorded as unsupported.
 
 For a promotion run, use the release profile explicitly:
 
 ```console
-PINNED=/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16
-CARGO_TARGET_DIR=.local/integrated-target nix shell "$PINNED" --command cargo run --locked --offline --release \
+CARGO_TARGET_DIR=.local/integrated-target \
+nix shell '.#luna-tools' --command cargo run --locked --offline --release \
   -p backend-performance-tests --bin integrated -- \
   --profile full --require-complete --output tests/performance/results/integrated-full.json
 ```
@@ -73,3 +79,10 @@ requires captured_frames, verified_frames, and verified PNG artifacts all equal
 seven. null allocation fields mean the public Rust boundary does not expose an
 allocation counter; GUI child-process resources remain outside host totals. The
 fallback source tree is marked incomplete for promotion.
+
+The runner records the full command in `build.command`, the Nix invocation in
+`build.nix_shell`, host CPU/RSS/FD data in `hardware`, and storage bytes on
+each Turso row. It writes `integrated-smoke.md` when the JSON output path is
+`integrated-smoke.json`; keep both files together when comparing runs. The
+backend_1 row is `unavailable` unless that checkout has the same performance
+manifest and command, so no cross-branch numbers are inferred.
