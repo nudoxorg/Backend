@@ -2,13 +2,14 @@
 
 `src/bin/integrated.rs` drives the production Tantivy, Turso, CAS, library,
 CLI, MCP, and optional desktop GUI contracts over real source files. It emits
-`nudox.integrated-benchmark.v1` JSON; timings are descriptive measurements and
+`nudox.integrated-benchmark.v2` JSON; timings are descriptive measurements and
 correctness assertions are recorded beside every result.
 
-Run the checked-in smoke profile with the pinned shell:
+Run the checked-in smoke profile with the pinned Rust shell. This runner uses nix shell, never nix develop, so the exact environment remains reviewable:
 
 ```console
-nix shell /nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16 --command cargo run --locked --offline \
+PINNED=/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16
+CARGO_TARGET_DIR=.local/integrated-target nix shell "$PINNED" --command cargo run --locked --offline \
   -p backend-performance-tests --bin integrated -- \
   --profile smoke --output tests/performance/results/integrated-smoke.json
 ```
@@ -19,21 +20,32 @@ reports success when the harness writes a verified seven-frame package
 manifest:
 
 ```console
-nix shell /nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16 --command cargo run --locked --offline \
+PINNED=/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16
+CARGO_TARGET_DIR=.local/integrated-target nix shell "$PINNED" --command cargo run --locked --offline \
   -p backend-performance-tests --bin integrated -- \
   --profile smoke --output tests/performance/results/integrated-smoke.json \
   --gui-bin /absolute/path/to/backend-desktop-gui-harness
 ```
 
-Use `--profile full` for 15 measured repetitions instead of the three-sample
-CI smoke profile. Compilation and dependency setup happen before the runner's
-measured phases. Each JSON `wall` object reports nanoseconds at p50/p95/p99;
-`cold_durable`, `cold`, and `cold_restart` are cold phases, while
-`warm_in_memory`, `warm`, and `warm_overlay` are warm phases. Ingest and delta
-records carry source bytes, durable output bytes, CAS reuse, rebuilt rows, and
-immutable roots. Search records cover exact, prefix, and full-text queries at
-1/8/32 concurrent readers and retain cursor/root assertions. Turso records
-database and pack sizes, reopen/no-op reuse, and one-package publication.
+Use `--profile full --require-complete` for 15 measured repetitions. Full
+implies the promotion gate and requires a release build, seven-lane configured
+corpus, authenticated Unix locald CLI/MCP transport, and
+verified GUI artifacts. Smoke may report status=partial and exit successfully;
+require-complete writes its artifact before returning nonzero for missing or
+failed cells. Tail p95/p99 values are null until 20 samples are available and
+carry an insufficient-tail-samples marker. Build metadata records profile,
+target directory, and dirty state. Ingest and search phases are named for
+their actual boundaries, including durable_publish_and_reopen,
+warm_in_memory_build, and first_in_memory_search.
+
+For a promotion run, use the release profile explicitly:
+
+```console
+PINNED=/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16
+CARGO_TARGET_DIR=.local/integrated-target nix shell "$PINNED" --command cargo run --locked --offline --release \
+  -p backend-performance-tests --bin integrated -- \
+  --profile full --require-complete --output tests/performance/results/integrated-full.json
+```
 
 When Nix corpus variables (`NUDOX_*_CORPUS_DIR`) are set, the runner uses those
 real multilingual trees. Otherwise it uses this workspace's checked-in source
@@ -42,16 +54,15 @@ large class at 256 files or 4 MiB for a deterministic smoke duration. The
 artifact names that source kind explicitly; the fallback is a real source-tree
 corpus, not a mock.
 
-The network singleflight row runs the production `RegistryOwner`,
-`HttpRegistryTransport`, and `AcquisitionService` against a bounded loopback
-HTTP fixture. It starts 32 synchronized callers with separate transports and
-fails the runner unless one metadata response, one archive response, one
-leader, 31 followers, one shared receipt/delta/root, exact response bytes, and
-the immutable archive handoff are all observed. This measures the coordinator
-and bounded HTTP path; it does not pretend to be an external-registry latency
-measurement. Registry/advisory traversal and GUI subjourneys remain typed
-`unavailable` records when their production surfaces are not configured.
-`null` allocation fields mean the current public Rust boundary does not expose
-an allocation counter. The runner samples its own macOS/Linux process RSS and
-CPU time with `ps`; GUI child-process resources are not folded into those host
-totals.
+Acquisition runs synchronized 1/8/32-caller rounds through the production
+RegistryOwner and loopback HTTP transport, then records warm-cache and offline
+restart rows with receipt, delta, target-root, and archive identities. Each
+round requires one metadata response, one archive response, one leader, the
+remaining synchronized callers as followers, exact response-byte accounting,
+and an immutable artifact whose bytes exactly match the fixture archive. GUI
+phase fields are populated only from explicit harness phase timings; the full
+child-process wall is kept separate. GUI promotion requires captured_frames,
+verified_frames, and verified PNG artifacts all equal seven. null allocation
+fields mean the public Rust boundary does not expose an allocation counter;
+GUI child-process resources remain outside host totals. The fallback source
+tree is marked incomplete for promotion.

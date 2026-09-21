@@ -11,14 +11,14 @@
 use backend_client::LocalEngine;
 use backend_compile::{DeclarationKind, SourceExcerpt, SourceLocation};
 use backend_engine::{
+    AuthorityClaim, AuthorityEpoch, ChunkChain, ChunkParts, Frame, ImmutableObjectSchema,
+    MerkleRoot, ObjectKey, ObjectVersion, TransportLimits, WireIdentity,
     acquisition::{AcquisitionOutcome, AcquisitionRequest, AcquisitionService, RawArchiveObjectId},
     capability::CapabilityArtifactId,
     registry::{
-        AcquisitionLimits as RegistryAcquisitionLimits, AcquisitionPolicy,
-        HttpRegistryTransport, RegistryEndpoint, RegistryEcosystem, RegistryOwner,
+        AcquisitionLimits as RegistryAcquisitionLimits, AcquisitionPolicy, HttpRegistryTransport,
+        RegistryEcosystem, RegistryEndpoint, RegistryOwner,
     },
-    AuthorityClaim, AuthorityEpoch, ChunkChain, ChunkParts, Frame, ImmutableObjectSchema,
-    MerkleRoot, ObjectKey, ObjectVersion, TransportLimits, WireIdentity,
 };
 use backend_extension_tantivy::{
     Authority, Binding, CaseSensitivity, DocumentChange, DocumentState, FieldSelection,
@@ -27,12 +27,13 @@ use backend_extension_tantivy::{
 };
 use backend_extension_turso::{ProjectionUpdate, TursoProjection};
 use backend_library::{
+    Basis, Command as LibraryCommand, CommandDto, Coverage, CoverageCapability, Cursor, Fragment,
+    Frontier, Library, Query, QueryLimit, RequestAdmissionError, Row, RowId, ViewDelta, ViewRoot,
     admit_complete_scope, admit_producer_observation, object_version, package_key, symbol_key,
-    view_key, Basis, Coverage, CoverageCapability, Cursor, Fragment, Frontier, Library, Query,
-    QueryLimit, Row, RowId, ViewDelta, ViewRoot,
+    view_key,
 };
 use backend_mcp::{self};
-use backend_semantic::{entity_key, Entity, Source};
+use backend_semantic::{Entity, Source, entity_key};
 use backend_version::{
     AuthorityScopeClaim, CoverageWitness, ProducerObservationClaims, ProducerObservationVerifier,
     RelationState, ScopeRoot, UntrustedProducerObservation, WorkspaceManifest,
@@ -48,16 +49,17 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Barrier};
+use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 type BenchResult<T> = Result<T, Box<dyn Error>>;
 
-const JSON_SCHEMA: &str = "nudox.integrated-benchmark.v1";
+const JSON_SCHEMA: &str = "nudox.integrated-benchmark.v2";
 const MAX_RELATION_ROW_BYTES: usize = 32 * 1024;
 const MAX_LARGE_CORPUS_FILES: usize = 256;
 const MAX_LARGE_CORPUS_BYTES: usize = 4 * 1024 * 1024;
+const MIN_TAIL_PERCENTILE_SAMPLES: usize = 20;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Profile {
@@ -113,11 +115,12 @@ impl CorpusClass {
 #[derive(Clone, Debug, Serialize)]
 struct Stats {
     samples: usize,
-    p50_ns: u128,
-    p95_ns: u128,
-    p99_ns: u128,
+    p50_ns: Option<u128>,
+    p95_ns: Option<u128>,
+    p99_ns: Option<u128>,
     min_ns: u128,
     max_ns: u128,
+    percentile_status: &'static str,
 }
 
 fn stats(values: &mut [u128]) -> Stats {
@@ -129,13 +132,21 @@ fn stats(values: &mut [u128]) -> Stats {
         let index = (values.len().saturating_sub(1) * numerator) / denominator;
         values[index]
     };
+    let enough_for_tails = values.len() >= MIN_TAIL_PERCENTILE_SAMPLES;
     Stats {
         samples: values.len(),
-        p50_ns: percentile(50, 100),
-        p95_ns: percentile(95, 100),
-        p99_ns: percentile(99, 100),
+        p50_ns: (!values.is_empty()).then(|| percentile(50, 100)),
+        p95_ns: enough_for_tails.then(|| percentile(95, 100)),
+        p99_ns: enough_for_tails.then(|| percentile(99, 100)),
         min_ns: values.first().copied().unwrap_or(0),
         max_ns: values.last().copied().unwrap_or(0),
+        percentile_status: if values.is_empty() {
+            "no_samples"
+        } else if enough_for_tails {
+            "descriptive_tail_percentiles"
+        } else {
+            "insufficient_tail_samples"
+        },
     }
 }
 
@@ -211,7 +222,7 @@ struct SearchMeasurement {
     mode: String,
     cache: String,
     readers: usize,
-    cold: Option<Stats>,
+    first_in_memory_search: Option<Stats>,
     warm: Stats,
     result_count: usize,
     bytes_read: usize,
@@ -242,6 +253,7 @@ struct SurfaceMeasurement {
     status: &'static str,
     operation: String,
     phase: &'static str,
+    transport: &'static str,
     wall: Stats,
     payload_bytes: usize,
     allocation_bytes: Option<usize>,
@@ -262,6 +274,10 @@ struct AcquisitionMeasurement {
     downloaded_bytes: usize,
     reused_bytes: usize,
     memory_high_water_bytes: Option<usize>,
+    receipt_id: Option<String>,
+    delta_id: Option<String>,
+    target_root: Option<String>,
+    artifact_id: Option<String>,
     correctness: Correctness,
 }
 
@@ -274,11 +290,13 @@ struct GuiMeasurement {
     model_to_first_semantic_frame: Option<Stats>,
     source_open_search: Option<Stats>,
     graph_incremental_delta: Option<Stats>,
+    full_harness_wall: Option<Stats>,
     requested_viewport: String,
     requested_state: String,
     captured_captures: Option<usize>,
     captured_frames: Option<usize>,
     verified_frames: Option<usize>,
+    verified_artifacts: Option<usize>,
     deterministic_seven_frame_capture: bool,
     correctness: Correctness,
 }
@@ -346,7 +364,28 @@ struct Report {
     surfaces: Vec<SurfaceMeasurement>,
     acquisition: Vec<AcquisitionMeasurement>,
     gui: GuiMeasurement,
+    build: BuildMetadata,
+    gate: GateSummary,
     notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct BuildMetadata {
+    profile: &'static str,
+    target_dir: String,
+    dirty: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GateSummary {
+    require_complete: bool,
+    complete: bool,
+    corpus_complete: bool,
+    promotion_ready: bool,
+    status: &'static str,
+    unavailable: Vec<String>,
+    failed: Vec<String>,
+    reasons: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -470,6 +509,203 @@ fn command_output(program: &str, args: &[&str]) -> String {
         .ok()
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .unwrap_or_else(|| "unavailable".to_owned())
+}
+
+fn build_metadata() -> BuildMetadata {
+    let target_dir = env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target"));
+    let target_dir = if target_dir.is_absolute() {
+        target_dir
+    } else {
+        env::current_dir()
+            .map(|directory| directory.join(&target_dir))
+            .unwrap_or(target_dir)
+    };
+    BuildMetadata {
+        profile: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        target_dir: target_dir.to_string_lossy().into_owned(),
+        dirty: worktree_dirty(),
+    }
+}
+
+fn worktree_dirty() -> bool {
+    let output = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output();
+    match output {
+        Ok(output) => !output.status.success() || !output.stdout.is_empty(),
+        Err(_) => true,
+    }
+}
+
+fn observe_gate_cell(
+    unavailable: &mut Vec<String>,
+    failed: &mut Vec<String>,
+    label: String,
+    status: &str,
+    passed: bool,
+) {
+    if status != "ok" {
+        unavailable.push(format!("{label}: status={status}"));
+    }
+    if !passed {
+        failed.push(format!("{label}: correctness=false"));
+    }
+}
+
+fn gate_summary(
+    profile: Profile,
+    require_complete: bool,
+    build: &BuildMetadata,
+    ingest: &[IngestMeasurement],
+    deltas: &[DeltaMeasurement],
+    search: &[SearchMeasurement],
+    catalog: &[CatalogMeasurement],
+    surfaces: &[SurfaceMeasurement],
+    acquisition: &[AcquisitionMeasurement],
+    gui: &GuiMeasurement,
+    corpora: &[CorpusDescription],
+) -> GateSummary {
+    let mut unavailable = Vec::new();
+    let mut failed = Vec::new();
+    for item in ingest {
+        observe_gate_cell(
+            &mut unavailable,
+            &mut failed,
+            format!("ingest/{}/{}", item.size_class, item.phase),
+            item.status,
+            item.correctness.passed,
+        );
+    }
+    for item in deltas {
+        observe_gate_cell(
+            &mut unavailable,
+            &mut failed,
+            format!("delta/{}/{}", item.size_class, item.phase),
+            item.status,
+            item.correctness.passed,
+        );
+    }
+    for item in search {
+        observe_gate_cell(
+            &mut unavailable,
+            &mut failed,
+            format!(
+                "search/{}/{}/readers-{}",
+                item.size_class, item.mode, item.readers
+            ),
+            item.status,
+            item.correctness.passed,
+        );
+    }
+    for item in catalog {
+        observe_gate_cell(
+            &mut unavailable,
+            &mut failed,
+            format!("catalog/{}/{}", item.operation, item.phase),
+            item.status,
+            item.correctness.passed,
+        );
+    }
+    for item in surfaces {
+        observe_gate_cell(
+            &mut unavailable,
+            &mut failed,
+            format!("surface/{}", item.operation),
+            item.status,
+            item.correctness.passed,
+        );
+        if require_complete && item.transport != "authenticated_unix" {
+            unavailable.push(format!(
+                "surface/{}: requires authenticated Unix locald transport, observed {}",
+                item.operation, item.transport
+            ));
+        }
+    }
+    for item in acquisition {
+        observe_gate_cell(
+            &mut unavailable,
+            &mut failed,
+            format!("acquisition/{}", item.operation),
+            item.status,
+            item.correctness.passed,
+        );
+    }
+    observe_gate_cell(
+        &mut unavailable,
+        &mut failed,
+        "gui/package".to_owned(),
+        gui.status,
+        gui.correctness.passed,
+    );
+
+    let corpus_complete = corpora.iter().any(|corpus| {
+        corpus.name == "large"
+            && corpus.source_kind.starts_with("nix-configured")
+            && [
+                "clang",
+                "csharp",
+                "go",
+                "java",
+                "python",
+                "rust",
+                "typescript",
+            ]
+            .iter()
+            .all(|language| corpus.languages.iter().any(|observed| observed == language))
+    });
+    if require_complete && !corpus_complete {
+        unavailable
+            .push("corpus/large: seven-lane configured fleet corpus was not driven".to_owned());
+    }
+
+    let complete = unavailable.is_empty() && failed.is_empty() && corpus_complete;
+    let release_required = require_complete || matches!(profile, Profile::Full);
+    let mut reasons = Vec::new();
+    if release_required && build.profile != "release" {
+        reasons.push(format!(
+            "promotion requires a release build, observed {}",
+            build.profile
+        ));
+    }
+    if !unavailable.is_empty() {
+        reasons.push(format!(
+            "{} benchmark cells are unavailable or non-ok",
+            unavailable.len()
+        ));
+    }
+    if !corpus_complete {
+        reasons.push("seven-lane configured fleet corpus was not driven".to_owned());
+    }
+    if !failed.is_empty() {
+        reasons.push(format!(
+            "{} benchmark correctness cells failed",
+            failed.len()
+        ));
+    }
+    let promotion_ready = complete && (!release_required || build.profile == "release");
+    let status = if promotion_ready {
+        "ok"
+    } else if require_complete || matches!(profile, Profile::Full) {
+        "failed"
+    } else {
+        "partial"
+    };
+    GateSummary {
+        require_complete,
+        complete,
+        corpus_complete,
+        promotion_ready,
+        status,
+        unavailable,
+        failed,
+        reasons,
+    }
 }
 
 fn process_resources() -> Option<(u64, u64)> {
@@ -871,7 +1107,7 @@ fn run_ingest(
             source_kind: source_kind.to_owned(),
             source_files: class.files.len(),
             source_bytes: class.bytes(),
-            phase: "cold_durable".to_owned(),
+            phase: "durable_publish_and_reopen".to_owned(),
             wall: stats(&mut vec![durable_ns]),
             cpu_time_ns: None,
             peak_rss_bytes: None,
@@ -895,7 +1131,7 @@ fn run_ingest(
             source_kind: source_kind.to_owned(),
             source_files: class.files.len(),
             source_bytes: class.bytes(),
-            phase: "warm_in_memory".to_owned(),
+            phase: "warm_in_memory_build".to_owned(),
             wall: stats(&mut warm_timings),
             cpu_time_ns: None,
             peak_rss_bytes: None,
@@ -1075,7 +1311,7 @@ fn run_search(classes: &[CorpusClass], profile: Profile) -> BenchResult<Vec<Sear
                     mode: mode.to_owned(),
                     cache: "warm".to_owned(),
                     readers,
-                    cold: (readers == 1).then_some(stats(&mut vec![cold])),
+                    first_in_memory_search: (readers == 1).then_some(stats(&mut vec![cold])),
                     warm: stats(&mut concurrent_timings),
                     result_count: expected_ids.len(),
                     bytes_read: class.bytes(),
@@ -1338,7 +1574,85 @@ impl LocalEngine for LibraryEngine {
     }
 }
 
+#[cfg(unix)]
+fn run_authenticated_surfaces(
+    endpoint: &Path,
+    profile: Profile,
+) -> BenchResult<Vec<SurfaceMeasurement>> {
+    let mut measurements = Vec::new();
+    let mut cli_transport = backend_client::UnixCommandTransport::connect(endpoint)
+        .map_err(|error| format!("authenticated CLI transport failed: {error}"))?;
+    let mut cli_timings = Vec::new();
+    let mut cli_bytes = 0;
+    for _ in 0..profile.repetitions() {
+        let started = Instant::now();
+        let reply =
+            backend_cli::execute_with_transport(&mut cli_transport, LibraryCommand::Packages)
+                .map_err(|error| format!("authenticated CLI request failed: {error}"))?;
+        cli_bytes = backend_cli::run_json(&reply).len();
+        cli_timings.push(started.elapsed().as_nanos());
+    }
+    measurements.push(SurfaceMeasurement {
+        schema: JSON_SCHEMA,
+        status: "ok",
+        operation: "cli_packages_authenticated_unix".to_owned(),
+        phase: "authenticated_unix_cli",
+        transport: "authenticated_unix",
+        wall: stats(&mut cli_timings),
+        payload_bytes: cli_bytes,
+        allocation_bytes: None,
+        continuation: false,
+        hard_budget_rejected: false,
+        correctness: Correctness {
+            passed: cli_bytes > 0,
+            assertions: vec![
+                "CLI request crossed an authenticated Unix locald transport".to_owned(),
+            ],
+        },
+    });
+
+    let mut mcp_transport = backend_client::UnixCommandTransport::connect(endpoint)
+        .map_err(|error| format!("authenticated MCP transport failed: {error}"))?;
+    let mut mcp_timings = Vec::new();
+    let mut mcp_bytes = 0;
+    for ordinal in 0..profile.repetitions() {
+        let request = CommandDto::new(ordinal as u64 + 1, LibraryCommand::Packages);
+        let started = Instant::now();
+        let frame = backend_mcp::encode_request(&request)?;
+        let output = backend_mcp::dispatch_frame_with_transport(&mut mcp_transport, &frame)
+            .map_err(|error| format!("authenticated MCP request failed: {error}"))?;
+        mcp_bytes = output.len();
+        mcp_timings.push(started.elapsed().as_nanos());
+    }
+    measurements.push(SurfaceMeasurement {
+        schema: JSON_SCHEMA,
+        status: "ok",
+        operation: "mcp_packages_authenticated_unix".to_owned(),
+        phase: "authenticated_unix_mcp",
+        transport: "authenticated_unix",
+        wall: stats(&mut mcp_timings),
+        payload_bytes: mcp_bytes,
+        allocation_bytes: None,
+        continuation: false,
+        hard_budget_rejected: false,
+        correctness: Correctness {
+            passed: mcp_bytes > 0,
+            assertions: vec![
+                "MCP request crossed an authenticated Unix locald transport".to_owned(),
+            ],
+        },
+    });
+    Ok(measurements)
+}
+
 fn run_surfaces(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<SurfaceMeasurement>> {
+    #[cfg(unix)]
+    if let Some(endpoint) = env::var_os("BACKEND_LOCALD_ENDPOINT") {
+        let endpoint = Path::new(&endpoint);
+        if endpoint.exists() {
+            return run_authenticated_surfaces(endpoint, profile);
+        }
+    }
     let (view, _) = build_view(class)?;
     let basis = view.root();
     let library = Library::from_view(view.clone(), Cursor::for_view_root(&view))?;
@@ -1360,7 +1674,8 @@ fn run_surfaces(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Surfac
         schema: JSON_SCHEMA,
         status: "ok",
         operation: "cli_list".to_owned(),
-        phase: "warm_in_process",
+        phase: "in_process_cli",
+        transport: "in_process",
         wall: stats(&mut list_times),
         payload_bytes,
         allocation_bytes: None,
@@ -1406,7 +1721,8 @@ fn run_surfaces(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Surfac
             schema: JSON_SCHEMA,
             status: "ok",
             operation: "cli_search_continuation".to_owned(),
-            phase: "warm_in_process",
+            phase: "in_process_library",
+            transport: "in_process",
             wall: stats(&mut continuation_times),
             payload_bytes,
             allocation_bytes: None,
@@ -1425,7 +1741,8 @@ fn run_surfaces(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Surfac
         schema: JSON_SCHEMA,
         status: "ok",
         operation: "cli_search".to_owned(),
-        phase: "warm_in_process",
+        phase: "in_process_cli",
+        transport: "in_process",
         wall: stats(&mut search_times),
         payload_bytes,
         allocation_bytes: None,
@@ -1453,7 +1770,8 @@ fn run_surfaces(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Surfac
         schema: JSON_SCHEMA,
         status: "ok",
         operation: "mcp_search".to_owned(),
-        phase: "warm_in_process",
+        phase: "in_process_mcp",
+        transport: "in_process",
         wall: stats(&mut mcp_times),
         payload_bytes: mcp_bytes,
         allocation_bytes: None,
@@ -1465,25 +1783,35 @@ fn run_surfaces(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Surfac
         },
     });
 
-    let hard_budget_rejected = QueryLimit::new(0).is_none();
-    let oversized_query = Query::new(
-        "x".repeat(backend_library::MAX_COMMAND_TEXT + 1),
-        basis,
-        limit,
+    let oversized_request = CommandDto::new(
+        7,
+        LibraryCommand::Resolve {
+            text: "x".repeat(backend_library::MAX_COMMAND_TEXT + 1),
+        },
     );
-    let rejected = oversized_query.text().len() > backend_library::MAX_COMMAND_TEXT;
+    let mut rejection_timings = Vec::new();
+    let mut hard_budget_rejected = true;
+    for _ in 0..profile.repetitions() {
+        let started = Instant::now();
+        let invalid_limit = QueryLimit::new(0);
+        let admission = backend_library::admit_request(&oversized_request);
+        rejection_timings.push(started.elapsed().as_nanos());
+        hard_budget_rejected &=
+            invalid_limit.is_none() && admission == Err(RequestAdmissionError::TextTooLarge);
+    }
     measurements.push(SurfaceMeasurement {
         schema: JSON_SCHEMA,
         status: "ok",
-        operation: "hard_budget_rejection".to_owned(),
+        operation: "hard_budget_admission_rejection".to_owned(),
         phase: "boundary_rejection",
-        wall: stats(&mut vec![0]),
-        payload_bytes: 0,
+        transport: "in_process",
+        wall: stats(&mut rejection_timings),
+        payload_bytes: backend_library::MAX_COMMAND_TEXT + 1,
         allocation_bytes: None,
         continuation: false,
-        hard_budget_rejected: hard_budget_rejected && rejected,
+        hard_budget_rejected,
         correctness: Correctness {
-            passed: hard_budget_rejected && rejected,
+            passed: hard_budget_rejected,
             assertions: vec![
                 "zero query limit and oversized text remained rejected at the boundary".to_owned(),
             ],
@@ -1491,8 +1819,6 @@ fn run_surfaces(class: &CorpusClass, profile: Profile) -> BenchResult<Vec<Surfac
     });
     Ok(measurements)
 }
-
-const NETWORK_SINGLEFLIGHT_CALLERS: usize = 32;
 
 #[derive(Default)]
 struct LoopbackFixtureCounters {
@@ -1568,7 +1894,9 @@ fn serve_loopback_registry(
                 } else if path == "/archive" {
                     ("archive", archive.as_slice())
                 } else {
-                    return Err(format!("loopback fixture received unexpected path {path:?}"));
+                    return Err(format!(
+                        "loopback fixture received unexpected path {path:?}"
+                    ));
                 };
                 counters.requests.fetch_add(1, Ordering::AcqRel);
                 match kind {
@@ -1633,15 +1961,287 @@ fn start_loopback_registry(
     let address = listener.local_addr()?;
     let counters = Arc::new(LoopbackFixtureCounters::default());
     let thread_counters = Arc::clone(&counters);
-    let handle = thread::spawn(move || {
-        serve_loopback_registry(listener, feed, archive, thread_counters)
-    });
+    let handle =
+        thread::spawn(move || serve_loopback_registry(listener, feed, archive, thread_counters));
     Ok((format!("http://{address}"), counters, handle))
+}
+
+fn gui_phase_stats(parsed: Option<&serde_json::Value>, phase: &str) -> Option<Stats> {
+    let root = parsed?;
+    let from_value = |value: &serde_json::Value| -> Option<Stats> {
+        let mut samples = match value {
+            serde_json::Value::Number(value) => {
+                value.as_u64().map(u128::from).into_iter().collect()
+            }
+            serde_json::Value::Array(values) => values
+                .iter()
+                .filter_map(serde_json::Value::as_u64)
+                .map(u128::from)
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        (!samples.is_empty()).then(|| stats(&mut samples))
+    };
+    for container_name in ["phase_timings_ns", "phase_durations_ns", "timings_ns"] {
+        if let Some(value) = root
+            .get(container_name)
+            .and_then(|container| container.get(phase))
+            .and_then(from_value)
+        {
+            return Some(value);
+        }
+    }
+    root.get("phases")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|phases| {
+            phases.iter().find_map(|entry| {
+                let name = entry
+                    .get("name")
+                    .or_else(|| entry.get("phase"))
+                    .and_then(serde_json::Value::as_str)?;
+                if name != phase {
+                    return None;
+                }
+                entry
+                    .get("duration_ns")
+                    .or_else(|| entry.get("elapsed_ns"))
+                    .and_then(from_value)
+            })
+        })
+}
+
+fn verify_gui_package_artifacts(output: &Path) -> (Option<usize>, usize, Vec<String>) {
+    let manifest_path = output
+        .join("1440x1000@1x")
+        .join("manifests")
+        .join("package.json");
+    let Ok(text) = fs::read_to_string(&manifest_path) else {
+        return (None, 0, vec!["package manifest was not written".to_owned()]);
+    };
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return (
+            None,
+            0,
+            vec!["package manifest was not valid JSON".to_owned()],
+        );
+    };
+    let Some(frames) = manifest.get("frames").and_then(serde_json::Value::as_array) else {
+        return (None, 0, vec!["package manifest omitted frames".to_owned()]);
+    };
+    let Some(base) = manifest_path.parent().and_then(Path::parent) else {
+        return (
+            Some(frames.len()),
+            0,
+            vec!["package manifest base path was invalid".to_owned()],
+        );
+    };
+    let mut verified = 0;
+    let mut failures = Vec::new();
+    for (index, frame) in frames.iter().enumerate() {
+        let Some(relative) = frame.get("path").and_then(serde_json::Value::as_str) else {
+            failures.push(format!("frame {index} omitted its artifact path"));
+            continue;
+        };
+        let path = base.join(relative);
+        let Ok(bytes) = fs::read(&path) else {
+            failures.push(format!(
+                "frame {index} artifact is missing: {}",
+                path.display()
+            ));
+            continue;
+        };
+        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            verified += 1;
+        } else {
+            failures.push(format!("frame {index} artifact failed PNG verification"));
+        }
+    }
+    (Some(frames.len()), verified, failures)
+}
+
+struct NetworkRound {
+    callers: usize,
+    cold_ns: u128,
+    warm_ns: u128,
+    restart_ns: u128,
+    cold_result: Arc<backend_engine::acquisition::RegistryAcquisitionResult>,
+    warm_result: Arc<backend_engine::acquisition::RegistryAcquisitionResult>,
+    restart_result: Arc<backend_engine::acquisition::RegistryAcquisitionResult>,
+    fixture: LoopbackFixtureReport,
+    telemetry_leaders: u64,
+    telemetry_followers: u64,
+}
+
+fn run_network_round(
+    callers: usize,
+    round: usize,
+    endpoint_seed: &[u8],
+    archive: &[u8],
+    registry_limits: RegistryAcquisitionLimits,
+) -> BenchResult<NetworkRound> {
+    let (endpoint_url, fixture_counters, fixture_thread) =
+        start_loopback_registry(endpoint_seed.to_vec(), archive.to_vec())?;
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_url.clone())?;
+    let registry_root = temp_root(&format!("network-singleflight-{callers}-{round}"));
+    let _ = fs::remove_dir_all(&registry_root);
+    let (owner, _) = RegistryOwner::open(
+        &registry_root,
+        endpoint.clone(),
+        AcquisitionPolicy::Online,
+        registry_limits,
+    )?;
+    let service = Arc::new(AcquisitionService::from_owner(
+        owner,
+        registry_root.join("service-coordination"),
+    )?);
+    let request = AcquisitionRequest::new(
+        service.source_id(),
+        "pkg:cargo/integrated-fixture@1.0.0",
+        RawArchiveObjectId::from_bytes(archive),
+        1,
+        0,
+    )?;
+    let barrier = Arc::new(Barrier::new(callers));
+    let (outcomes, receiver) = mpsc::channel();
+    let started = Instant::now();
+    let mut threads = Vec::with_capacity(callers);
+    for _ in 0..callers {
+        let service = Arc::clone(&service);
+        let barrier = Arc::clone(&barrier);
+        let request = request.clone();
+        let endpoint = endpoint.clone();
+        let outcomes = outcomes.clone();
+        threads.push(thread::spawn(move || {
+            barrier.wait();
+            let mut transport = HttpRegistryTransport::new(endpoint, None, registry_limits)
+                .expect("loopback transport is valid");
+            outcomes
+                .send(service.acquire(&request, &mut transport))
+                .ok();
+        }));
+    }
+    drop(outcomes);
+    let mut cold_result = None;
+    let mut same_result = true;
+    for _ in 0..callers {
+        match receiver.recv_timeout(Duration::from_secs(4)) {
+            Ok(AcquisitionOutcome::Hit(result)) => {
+                if let Some(expected) = &cold_result {
+                    same_result &= Arc::ptr_eq(expected, &result)
+                        && Arc::ptr_eq(&expected.receipt, &result.receipt)
+                        && Arc::ptr_eq(&expected.delta, &result.delta)
+                        && expected.receipt.target == result.receipt.target;
+                } else {
+                    cold_result = Some(result);
+                }
+            }
+            Ok(_) => return Err("singleflight caller returned a non-hit outcome".into()),
+            Err(error) => return Err(format!("singleflight caller timed out: {error}").into()),
+        }
+    }
+    for thread in threads {
+        thread
+            .join()
+            .map_err(|_| "singleflight caller thread panicked".to_owned())?;
+    }
+    let cold_ns = started.elapsed().as_nanos();
+    let fixture = fixture_thread
+        .join()
+        .map_err(|_| "loopback fixture thread panicked".to_owned())??;
+    let cold_result = cold_result.ok_or("singleflight emitted no result")?;
+    let telemetry = service.telemetry();
+    let expected_network_bytes = endpoint_seed.len().saturating_add(archive.len());
+    let fixture_ok = fixture.requests == 2
+        && fixture.feed_requests == 1
+        && fixture.archive_requests == 1
+        && fixture.response_bytes as usize == expected_network_bytes
+        && fixture_counters.requests.load(Ordering::Acquire) == 2;
+    let byte_ok = fixture.feed_response_bytes as usize == endpoint_seed.len()
+        && fixture.archive_response_bytes as usize == archive.len();
+    let published_artifact_bytes = cold_result.artifact.bytes() == archive;
+    if !same_result
+        || !fixture_ok
+        || !byte_ok
+        || !published_artifact_bytes
+        || telemetry.leaders != 1
+        || telemetry.followers != (callers - 1) as u64
+    {
+        return Err(format!(
+            "singleflight round {callers} failed identity/counter admission: leaders={}, followers={}, requests={}",
+            telemetry.leaders, telemetry.followers, fixture.requests
+        )
+        .into());
+    }
+
+    let warm_started = Instant::now();
+    let mut warm_transport = HttpRegistryTransport::new(endpoint.clone(), None, registry_limits)?;
+    let warm_result = match service.acquire(&request, &mut warm_transport) {
+        AcquisitionOutcome::Hit(result) => result,
+        _ => return Err("warm registry cache resolution was not a hit".into()),
+    };
+    let warm_ns = warm_started.elapsed().as_nanos();
+    // A warm lookup intentionally emits a new no-op delta/receipt from the
+    // already-published target. Reuse is proved by retaining the same target
+    // snapshot and immutable archive identity, while the receipt remains an
+    // auditable fact about this lookup boundary.
+    let warm_identity_ok = warm_result.receipt.target == cold_result.receipt.target
+        && warm_result.artifact.version().as_ref() == cold_result.artifact.version().as_ref();
+    if !warm_identity_ok {
+        return Err("warm registry cache changed an immutable identity".into());
+    }
+
+    drop(service);
+    let (restarted_owner, _) = RegistryOwner::open(
+        &registry_root,
+        endpoint,
+        AcquisitionPolicy::Offline,
+        registry_limits,
+    )?;
+    let restarted = AcquisitionService::from_owner(
+        restarted_owner,
+        registry_root.join("service-coordination"),
+    )?;
+    let restart_request = AcquisitionRequest::new(
+        restarted.source_id(),
+        "pkg:cargo/integrated-fixture@1.0.0",
+        RawArchiveObjectId::from_bytes(archive),
+        1,
+        0,
+    )?;
+    let restart_started = Instant::now();
+    let mut offline_transport = HttpRegistryTransport::new(
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_url)?,
+        None,
+        registry_limits,
+    )?;
+    let restart_result = match restarted.acquire(&restart_request, &mut offline_transport) {
+        AcquisitionOutcome::Hit(result) => result,
+        other => return Err(format!("offline registry restart was not a hit: {other:?}").into()),
+    };
+    let restart_ns = restart_started.elapsed().as_nanos();
+    let restart_identity_ok = restart_result.receipt.target == cold_result.receipt.target
+        && restart_result.artifact.version().as_ref() == cold_result.artifact.version().as_ref();
+    if !restart_identity_ok {
+        return Err("restart registry cache changed an immutable identity".into());
+    }
+    let _ = fs::remove_dir_all(registry_root);
+    Ok(NetworkRound {
+        callers,
+        cold_ns,
+        warm_ns,
+        restart_ns,
+        cold_result,
+        warm_result,
+        restart_result,
+        fixture,
+        telemetry_leaders: telemetry.leaders,
+        telemetry_followers: telemetry.followers,
+    })
 }
 
 fn run_acquisition(
     class: &CorpusClass,
-    _profile: Profile,
+    profile: Profile,
 ) -> BenchResult<Vec<AcquisitionMeasurement>> {
     let limits = TransportLimits::default();
     let source = class
@@ -1701,6 +2301,10 @@ fn run_acquisition(
         downloaded_bytes: bytes.len(),
         reused_bytes: 0,
         memory_high_water_bytes: None,
+        receipt_id: None,
+        delta_id: None,
+        target_root: None,
+        artifact_id: None,
         correctness: Correctness {
             passed: admitted == version && first.as_ref() == bytes.as_slice() && objects == 1,
             assertions: vec![
@@ -1729,6 +2333,10 @@ fn run_acquisition(
         downloaded_bytes: 0,
         reused_bytes: bytes.len() * 32,
         memory_high_water_bytes: None,
+        receipt_id: None,
+        delta_id: None,
+        target_root: None,
+        artifact_id: None,
         correctness: Correctness {
             passed: warm_correct,
             assertions: vec!["32 warm reads reused the exact persisted CAS object".to_owned()],
@@ -1753,6 +2361,10 @@ fn run_acquisition(
         downloaded_bytes: 0,
         reused_bytes: bytes.len(),
         memory_high_water_bytes: None,
+        receipt_id: None,
+        delta_id: None,
+        target_root: None,
+        artifact_id: None,
         correctness: Correctness {
             passed: offline.as_ref() == bytes.as_slice() && retained_bytes >= bytes.len() as u64,
             assertions: vec!["reopened CAS served an offline persisted object".to_owned()],
@@ -1771,10 +2383,6 @@ fn run_acquisition(
         hex(artifact.as_bytes()),
         hex(&[9; 32]),
     );
-    let (endpoint_url, fixture_counters, fixture_thread) =
-        start_loopback_registry(endpoint_seed.as_bytes().to_vec(), archive.clone())?;
-    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_url)?;
-    let transport_endpoint = endpoint.clone();
     let mut registry_limits = RegistryAcquisitionLimits::default();
     registry_limits.max_items = 1;
     registry_limits.max_feed_bytes = 64 * 1024;
@@ -1783,160 +2391,109 @@ fn run_acquisition(
     registry_limits.max_catalog_items = 8;
     registry_limits.connect_timeout = Duration::from_millis(500);
     registry_limits.read_timeout = Duration::from_secs(1);
-    let registry_root = temp_root("network-singleflight");
-    let _ = fs::remove_dir_all(&registry_root);
-    let (owner, _) = RegistryOwner::open(
-        &registry_root,
-        endpoint,
-        AcquisitionPolicy::Online,
-        registry_limits,
-    )?;
-    let service = Arc::new(AcquisitionService::from_owner(
-        owner,
-        registry_root.join("service-coordination"),
-    )?);
-    let request = AcquisitionRequest::new(
-        service.source_id(),
-        "pkg:cargo/integrated-fixture@1.0.0",
-        RawArchiveObjectId::from_bytes(&archive),
-        1,
-        0,
-    )?;
-    let barrier = Arc::new(Barrier::new(NETWORK_SINGLEFLIGHT_CALLERS));
-    let (outcomes, receiver) = mpsc::channel();
-    let started = Instant::now();
-    let mut callers = Vec::with_capacity(NETWORK_SINGLEFLIGHT_CALLERS);
-    for _ in 0..NETWORK_SINGLEFLIGHT_CALLERS {
-        let service = Arc::clone(&service);
-        let barrier = Arc::clone(&barrier);
-        let request = request.clone();
-        let transport_endpoint = transport_endpoint.clone();
-        let outcomes = outcomes.clone();
-        callers.push(thread::spawn(move || {
-            barrier.wait();
-            let mut transport = HttpRegistryTransport::new(
-                transport_endpoint,
-                None,
+    let rounds = match profile {
+        Profile::Smoke => 3,
+        Profile::Full => 15,
+    };
+    for callers in [1_usize, 8, 32] {
+        let mut cold = Vec::with_capacity(rounds);
+        let mut warm = Vec::with_capacity(rounds);
+        let mut restart = Vec::with_capacity(rounds);
+        let mut latest = None;
+        let mut assertions = Vec::new();
+        for round in 0..rounds {
+            let result = run_network_round(
+                callers,
+                round,
+                endpoint_seed.as_bytes(),
+                &archive,
                 registry_limits,
-            )
-            .expect("loopback transport is valid");
-            outcomes.send(service.acquire(&request, &mut transport)).ok();
-        }));
-    }
-    drop(outcomes);
-    let mut first: Option<Arc<backend_engine::acquisition::RegistryAcquisitionResult>> = None;
-    let mut same_result = true;
-    let mut received = 0usize;
-    let mut correctness_assertions = Vec::new();
-    let mut failure = None;
-    for _ in 0..NETWORK_SINGLEFLIGHT_CALLERS {
-        match receiver.recv_timeout(Duration::from_secs(4)) {
-            Ok(AcquisitionOutcome::Hit(result)) => {
-                received += 1;
-                if let Some(expected) = &first {
-                    same_result &= Arc::ptr_eq(expected, &result)
-                        && Arc::ptr_eq(&expected.receipt, &result.receipt)
-                        && Arc::ptr_eq(&expected.delta, &result.delta)
-                        && expected.receipt.target == result.receipt.target;
-                } else {
-                    first = Some(result);
-                }
-            }
-            Ok(_) => {
-                received += 1;
-                failure = Some("one or more callers returned a non-hit acquisition outcome".to_owned());
-            }
-            Err(error) => {
-                failure = Some(format!("acquisition caller completion was not bounded: {error}"));
-                break;
-            }
+            )?;
+            cold.push(result.cold_ns);
+            warm.push(result.warm_ns);
+            restart.push(result.restart_ns);
+            assertions.push(format!(
+                "round {}: {} callers, {} leader, {} followers, one feed/archive and {} response bytes",
+                round + 1,
+                result.callers,
+                result.telemetry_leaders,
+                result.telemetry_followers,
+                result.fixture.response_bytes,
+            ));
+            latest = Some(result);
         }
+        let latest = latest.ok_or("network acquisition produced no rounds")?;
+        let identity = |result: &Arc<backend_engine::acquisition::RegistryAcquisitionResult>| {
+            (
+                root_hex(result.receipt.id.as_bytes()),
+                root_hex(result.delta.id().as_bytes()),
+                root_hex(result.receipt.target.as_bytes()),
+                root_hex(result.artifact.version().as_ref()),
+            )
+        };
+        let (receipt_id, delta_id, target_root, artifact_id) = identity(&latest.cold_result);
+        let push_network =
+            |measurements: &mut Vec<AcquisitionMeasurement>,
+             operation: String,
+             phase: String,
+             timings: Vec<u128>,
+             downloaded_bytes: usize,
+             reused_bytes: usize,
+             result: &Arc<backend_engine::acquisition::RegistryAcquisitionResult>| {
+                measurements.push(AcquisitionMeasurement {
+                    schema: JSON_SCHEMA,
+                    status: "ok",
+                    operation,
+                    phase,
+                    wall: stats(&mut timings.clone()),
+                    calls: callers,
+                    buffer_ceiling_bytes: registry_limits.max_archive_bytes,
+                    downloaded_bytes,
+                    reused_bytes,
+                    memory_high_water_bytes: None,
+                    receipt_id: Some(root_hex(result.receipt.id.as_bytes())),
+                    delta_id: Some(root_hex(result.delta.id().as_bytes())),
+                    target_root: Some(root_hex(result.receipt.target.as_bytes())),
+                    artifact_id: Some(root_hex(result.artifact.version().as_ref())),
+                    correctness: Correctness {
+                        passed: true,
+                        assertions: assertions.clone(),
+                    },
+                });
+            };
+        let rounds_bytes = rounds.saturating_mul(archive.len());
+        push_network(
+            &mut measurements,
+            format!("network_singleflight_{callers}_calls"),
+            "cold_loopback_network".to_owned(),
+            cold,
+            rounds_bytes,
+            rounds_bytes.saturating_mul(callers.saturating_sub(1)),
+            &latest.cold_result,
+        );
+        push_network(
+            &mut measurements,
+            format!("network_warm_cache_{callers}_calls"),
+            "warm_cache".to_owned(),
+            warm,
+            0,
+            rounds_bytes,
+            &latest.warm_result,
+        );
+        push_network(
+            &mut measurements,
+            format!("network_restart_offline_{callers}_calls"),
+            "warm_restart_offline".to_owned(),
+            restart,
+            0,
+            rounds_bytes,
+            &latest.restart_result,
+        );
+        debug_assert_eq!(
+            (receipt_id, delta_id, target_root, artifact_id),
+            identity(&latest.cold_result)
+        );
     }
-    for caller in callers {
-        caller
-            .join()
-            .map_err(|_| "acquisition caller thread panicked".to_owned())?;
-    }
-    let elapsed = started.elapsed().as_nanos();
-    let fixture = fixture_thread
-        .join()
-        .map_err(|_| "loopback fixture thread panicked".to_owned())??;
-    let telemetry = service.telemetry();
-    let expected_network_bytes = endpoint_seed.len().saturating_add(archive.len());
-    let counters_match = fixture.requests == 2
-        && fixture.feed_requests == 1
-        && fixture.archive_requests == 1
-        && fixture.response_bytes as usize == expected_network_bytes
-        && fixture_counters.requests.load(Ordering::Acquire) == 2;
-    let downloaded_bytes = fixture.archive_response_bytes as usize;
-    let reused_bytes = downloaded_bytes.saturating_mul(NETWORK_SINGLEFLIGHT_CALLERS - 1);
-    let published_artifact_bytes = first
-        .as_ref()
-        .map(|result| result.artifact.bytes() == archive.as_slice())
-        .unwrap_or(false);
-    let byte_accounting = fixture.feed_response_bytes as usize == endpoint_seed.len()
-        && downloaded_bytes == archive.len()
-        && reused_bytes == archive.len() * (NETWORK_SINGLEFLIGHT_CALLERS - 1)
-        && published_artifact_bytes;
-    let passed = failure.is_none()
-        && received == NETWORK_SINGLEFLIGHT_CALLERS
-        && first.is_some()
-        && same_result
-        && telemetry.leaders == 1
-        && telemetry.followers == (NETWORK_SINGLEFLIGHT_CALLERS - 1) as u64
-        && counters_match
-        && byte_accounting;
-    correctness_assertions.push(format!(
-        "{} synchronized callers completed with one shared immutable registry result",
-        received
-    ));
-    correctness_assertions.push(format!(
-        "registry coordinator reported {} leader and {} followers",
-        telemetry.leaders, telemetry.followers
-    ));
-    correctness_assertions.push(format!(
-        "loopback served one metadata page and one archive ({} response bytes)",
-        fixture.response_bytes
-    ));
-    correctness_assertions.push(format!(
-        "archive byte accounting: {} downloaded once and {} logical follower bytes reused",
-        downloaded_bytes,
-        reused_bytes
-    ));
-    correctness_assertions.push(format!(
-        "published immutable artifact retained the exact {}-byte archive",
-        archive.len()
-    ));
-    if let Some(failure) = failure {
-        correctness_assertions.push(failure);
-    }
-    if !passed {
-        let _ = fs::remove_dir_all(&registry_root);
-        return Err(format!(
-            "network singleflight correctness failed: {}",
-            correctness_assertions.join("; ")
-        )
-        .into());
-    }
-    measurements.push(AcquisitionMeasurement {
-        schema: JSON_SCHEMA,
-        status: "ok",
-        operation: "network_singleflight_32_calls".to_owned(),
-        phase: "cold_loopback_network".to_owned(),
-        wall: stats(&mut vec![elapsed]),
-        calls: NETWORK_SINGLEFLIGHT_CALLERS,
-        buffer_ceiling_bytes: registry_limits.max_archive_bytes,
-        downloaded_bytes,
-        reused_bytes,
-        memory_high_water_bytes: None,
-        correctness: Correctness {
-            passed,
-            assertions: correctness_assertions,
-        },
-    });
-    drop(first);
-    drop(service);
-    let _ = fs::remove_dir_all(registry_root);
     let _ = fs::remove_dir_all(path);
     Ok(measurements)
 }
@@ -1951,11 +2508,13 @@ fn run_gui(gui_bin: Option<&Path>) -> GuiMeasurement {
             model_to_first_semantic_frame: None,
             source_open_search: None,
             graph_incremental_delta: None,
+            full_harness_wall: None,
             requested_viewport: "1440x1000@1".to_owned(),
             requested_state: "package".to_owned(),
             captured_captures: None,
             captured_frames: None,
             verified_frames: None,
+            verified_artifacts: None,
             deterministic_seven_frame_capture: false,
             correctness: Correctness {
                 passed: false,
@@ -1991,6 +2550,8 @@ fn run_gui(gui_bin: Option<&Path>) -> GuiMeasurement {
         .and_then(|value| value.get("verified_frames"))
         .and_then(serde_json::Value::as_u64)
         .map(|value| value as usize);
+    let (package_frame_count, verified_artifacts, artifact_failures) =
+        verify_gui_package_artifacts(&output);
     let report_pass = parsed
         .as_ref()
         .and_then(|value| value.get("pass"))
@@ -2008,30 +2569,21 @@ fn run_gui(gui_bin: Option<&Path>) -> GuiMeasurement {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let manifest_path = output
-        .join("1440x1000@1x")
-        .join("manifests")
-        .join("package.json");
-    let package_frame_count = fs::read_to_string(manifest_path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|value| {
-            value
-                .get("frames")
-                .and_then(serde_json::Value::as_array)
-                .map(Vec::len)
-        });
-    let deterministic_seven_frame_capture = package_frame_count == Some(7);
+    let deterministic_seven_frame_capture = package_frame_count == Some(7)
+        && captured_frames == Some(7)
+        && verified_frames == Some(7)
+        && verified_artifacts == 7
+        && captured_frames == verified_frames;
     let passed = status.is_ok_and(|value| value.success())
         && report_pass
         && failures.is_empty()
-        && captured_captures.is_some_and(|value| value > 0)
+        && captured_captures == Some(1)
         && deterministic_seven_frame_capture;
     let mut assertions = if passed {
         vec![
             "live GUI harness completed".to_owned(),
             "package capture used exact 1440x1000@1 viewport".to_owned(),
-            "package animation manifest contains seven deterministic frames".to_owned(),
+            "captured and independently verified seven deterministic PNG frames".to_owned(),
         ]
     } else {
         vec![
@@ -2043,6 +2595,11 @@ fn run_gui(gui_bin: Option<&Path>) -> GuiMeasurement {
             .into_iter()
             .map(|failure| format!("live GUI harness failure: {failure}")),
     );
+    assertions.extend(
+        artifact_failures
+            .into_iter()
+            .map(|failure| format!("GUI artifact verification failure: {failure}")),
+    );
     if parsed.is_some() && !report_pass {
         assertions.push("live GUI run-report pass=false".to_owned());
     }
@@ -2051,22 +2608,28 @@ fn run_gui(gui_bin: Option<&Path>) -> GuiMeasurement {
         schema: JSON_SCHEMA,
         status: if passed { "ok" } else { "unavailable" },
         cold: true,
-        warm_navigation: passed.then_some(stats(&mut vec![elapsed])),
-        model_to_first_semantic_frame: passed.then_some(stats(&mut vec![elapsed])),
-        source_open_search: None,
-        graph_incremental_delta: None,
+        warm_navigation: gui_phase_stats(parsed.as_ref(), "warm_navigation"),
+        model_to_first_semantic_frame: gui_phase_stats(
+            parsed.as_ref(),
+            "model_to_first_semantic_frame",
+        ),
+        source_open_search: gui_phase_stats(parsed.as_ref(), "source_open_search"),
+        graph_incremental_delta: gui_phase_stats(parsed.as_ref(), "graph_incremental_delta"),
+        full_harness_wall: passed.then_some(stats(&mut vec![elapsed])),
         requested_viewport: "1440x1000@1".to_owned(),
         requested_state: "package".to_owned(),
         captured_captures,
         captured_frames,
         verified_frames,
+        verified_artifacts: Some(verified_artifacts),
         deterministic_seven_frame_capture,
         correctness: Correctness { passed, assertions },
     }
 }
 
-fn parse_args() -> BenchResult<(Profile, PathBuf, Option<PathBuf>)> {
+fn parse_args() -> BenchResult<(Profile, bool, PathBuf, Option<PathBuf>)> {
     let mut profile = Profile::Smoke;
+    let mut require_complete = false;
     let mut output = PathBuf::from("tests/performance/results/integrated-smoke.json");
     let mut gui_bin = None;
     let args = env::args().skip(1).collect::<Vec<_>>();
@@ -2087,9 +2650,12 @@ fn parse_args() -> BenchResult<(Profile, PathBuf, Option<PathBuf>)> {
                     args.get(index).ok_or("--gui-bin needs a value")?,
                 ));
             }
+            "--require-complete" => {
+                require_complete = true;
+            }
             "-h" | "--help" => {
                 println!(
-                    "usage: integrated [--profile smoke|full] [--output PATH] [--gui-bin PATH]"
+                    "usage: integrated [--profile smoke|full] [--require-complete] [--output PATH] [--gui-bin PATH]"
                 );
                 std::process::exit(0);
             }
@@ -2097,11 +2663,13 @@ fn parse_args() -> BenchResult<(Profile, PathBuf, Option<PathBuf>)> {
         }
         index += 1;
     }
-    Ok((profile, output, gui_bin))
+    Ok((profile, require_complete, output, gui_bin))
 }
 
 fn main() -> BenchResult<()> {
-    let (profile, output, gui_bin) = parse_args()?;
+    let (profile, explicit_require_complete, output, gui_bin) = parse_args()?;
+    let require_complete = explicit_require_complete || matches!(profile, Profile::Full);
+    let build = build_metadata();
     let (files, source_kind, source_root) = discover_files()?;
     if files.is_empty() {
         return Err("no real source files found in configured or vendored corpus".into());
@@ -2134,9 +2702,10 @@ fn main() -> BenchResult<()> {
     let (peak_rss_bytes, cpu_time_ns) = resource_sampler.finish();
     let mut notes = vec![
         "Host CPU time and peak RSS are sampled with ps; phase-level allocation counters and GUI child-process resources remain unavailable at the public Rust boundary.".to_owned(),
-        "Network acquisition uses a bounded loopback HTTP fixture through the production registry transport and records exact one-page/one-archive singleflight behavior; external-registry latency is intentionally not inferred from this fixture.".to_owned(),
-        "GUI source-open/search and graph-delta subjourneys require a supplied live harness binary and are reported unavailable when absent.".to_owned(),
+        "Network acquisition uses a bounded loopback HTTP fixture through the production RegistryOwner and records synchronized 1/8/32-call singleflight, warm-cache, and restart-cache rows; external-registry latency is not inferred from that fixture.".to_owned(),
+        "GUI source-open/search and graph-delta timings are populated only from explicit phase timings emitted by the supplied harness; the full child-process wall is kept separate.".to_owned(),
         format!("large corpus selection is deterministic and capped at {} files or {} MiB after canonical row-size filtering.", MAX_LARGE_CORPUS_FILES, MAX_LARGE_CORPUS_BYTES / (1024 * 1024)),
+        format!("tail percentiles are emitted only for rows with at least {MIN_TAIL_PERCENTILE_SAMPLES} samples; smaller rows carry null p95/p99 values and an insufficient-sample marker."),
     ];
     if !source_kind.starts_with("nix-configured") {
         notes.push(format!("Nix fleet corpus roots were not set; the runner used the checked-in workspace source tree, including the vendored multilingual fixtures, and retained only source files at or below the canonical {} KiB relation-row bound. The large class is capped at {} files or {} MiB for CI smoke duration.", MAX_RELATION_ROW_BYTES / 1024, MAX_LARGE_CORPUS_FILES, MAX_LARGE_CORPUS_BYTES / (1024 * 1024)));
@@ -2144,10 +2713,23 @@ fn main() -> BenchResult<()> {
     let mut hardware = hardware();
     hardware.peak_rss_bytes = peak_rss_bytes;
     hardware.cpu_time_ns = cpu_time_ns;
+    let gate = gate_summary(
+        profile,
+        require_complete,
+        &build,
+        &ingest,
+        &deltas,
+        &search,
+        &catalog,
+        &surfaces,
+        &acquisition,
+        &gui,
+        &corpora,
+    );
     let report = Report {
         schema: JSON_SCHEMA,
-        version: 1,
-        status: "ok",
+        version: 2,
+        status: gate.status,
         profile: match profile {
             Profile::Smoke => "smoke",
             Profile::Full => "full",
@@ -2164,6 +2746,8 @@ fn main() -> BenchResult<()> {
         surfaces,
         acquisition,
         gui,
+        build,
+        gate,
         notes,
     };
     if let Some(parent) = output.parent() {
@@ -2178,9 +2762,17 @@ fn main() -> BenchResult<()> {
         report.corpora.last().map_or(0, |corpus| corpus.files),
         report.corpora.last().map_or(0, |corpus| corpus.bytes)
     );
+    println!(
+        "gate status={} complete={} promotion_ready={} unavailable={} failed={}",
+        report.status,
+        report.gate.complete,
+        report.gate.promotion_ready,
+        report.gate.unavailable.len(),
+        report.gate.failed.len()
+    );
     for item in &report.ingest {
         println!(
-            "ingest size={} files={} bytes={} p50_ns={} p95_ns={} root={}",
+            "ingest size={} files={} bytes={} p50_ns={:?} p95_ns={:?} root={}",
             item.size_class,
             item.source_files,
             item.source_bytes,
@@ -2191,15 +2783,22 @@ fn main() -> BenchResult<()> {
     }
     for item in report.search.iter().filter(|item| item.readers == 1) {
         println!(
-            "search size={} mode={} p50_ns={} p95_ns={} results={}",
+            "search size={} mode={} p50_ns={:?} p95_ns={:?} results={}",
             item.size_class, item.mode, item.warm.p50_ns, item.warm.p95_ns, item.result_count
         );
     }
     for item in &report.catalog {
         println!(
-            "catalog op={} p50_ns={} rows={} db_bytes={}",
+            "catalog op={} p50_ns={:?} rows={} db_bytes={}",
             item.operation, item.wall.p50_ns, item.rows, item.database_bytes
         );
+    }
+    if require_complete && !report.gate.promotion_ready {
+        return Err(format!(
+            "benchmark promotion gate failed: {}",
+            report.gate.reasons.join("; ")
+        )
+        .into());
     }
     Ok(())
 }
