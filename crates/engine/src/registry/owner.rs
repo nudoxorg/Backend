@@ -1044,7 +1044,11 @@ fn publish_immutable(
         return Ok(());
     }
     match fs::hard_link(&temporary, &target) {
-        Ok(()) => {}
+        Ok(()) => {
+            fs::remove_file(&temporary)?;
+            File::open(directory)?.sync_all()?;
+            Ok(())
+        }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let same = files_equal(&temporary, &target, bytes);
             let _ = fs::remove_file(&temporary);
@@ -1052,15 +1056,13 @@ fn publish_immutable(
             if !same {
                 return Err(AcquisitionError::CorruptJournal);
             }
+            Ok(())
         }
         Err(error) => {
             let _ = fs::remove_file(&temporary);
             return Err(error.into());
         }
     }
-    fs::remove_file(&temporary)?;
-    File::open(directory)?.sync_all()?;
-    Ok(())
 }
 
 fn copy_exact<R: Read, W: Write>(
