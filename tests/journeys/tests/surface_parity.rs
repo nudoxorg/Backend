@@ -277,6 +277,7 @@ struct Surfaces {
     endpoint: PathBuf,
     workspace: PathBuf,
     project: PathBuf,
+    authority_secret: PathBuf,
 }
 
 impl Surfaces {
@@ -329,7 +330,11 @@ impl Surfaces {
             .arg("--workspace")
             .arg(&self.workspace)
             .arg("--project")
-            .arg(&self.project);
+            .arg(&self.project)
+            .env(
+                "BACKEND_LOCALD_AUTHORITY_SECRET_FILE",
+                &self.authority_secret,
+            );
         let output = bounded(command, "mcp session", Some(input));
         assert!(
             output.status.success(),
@@ -361,7 +366,7 @@ fn structured(result: &Value) -> Value {
     result["result"]["structuredContent"].clone()
 }
 
-/// Finds the first declaration coordinate the search page published.
+/// Finds the first declaration coordinate the live search page published.
 fn first_coordinate(structured: &Value) -> String {
     structured["records"]
         .as_array()
@@ -401,13 +406,15 @@ fn every_surface_renders_identity_equal_content_for_the_same_revision() {
         endpoint: endpoint.clone(),
         workspace: workspace.clone(),
         project: project.clone(),
+        authority_secret: secret.clone(),
     };
 
-    // One search on each surface first: every later case addresses the exact
-    // coordinate that search published, so the two surfaces are proven to
-    // agree about an address before they are asked to agree about a page.
-    let search_json: Value = serde_json::from_str(&surfaces.cli_text("json", &["search", "ferris"]))
-        .expect("CLI search JSON");
+    // Search the live index first and pass its exact published coordinate into
+    // the page lookup. Semantic rows use compiler-owned identities, so this
+    // proves the owner resolves a copied search identity on both surfaces.
+    let search_json: Value =
+        serde_json::from_str(&surfaces.cli_text("json", &["search", "ferris"]))
+            .expect("CLI search JSON");
     let coordinate = first_coordinate(&search_json);
     let missing = format!("{}::src/lib.rs:999::nothing", project.display());
 
@@ -423,7 +430,11 @@ fn every_surface_renders_identity_equal_content_for_the_same_revision() {
         (13, "backend.packages", json!({})),
         (14, "backend.status", json!({})),
         (15, "backend.document", json!({ "coordinate": missing })),
-        (16, "backend.search", json!({ "query": "ferris", "limit": 900 })),
+        (
+            16,
+            "backend.search",
+            json!({ "query": "ferris", "limit": 900 }),
+        ),
     ];
     let mut batch = calls
         .iter()
@@ -494,7 +505,7 @@ fn every_surface_renders_identity_equal_content_for_the_same_revision() {
     let page = structured(&replies[&11]);
     let page_text = text_block(&replies[&11]);
     let trail = page["identity"]["trail"].as_str().expect("page trail");
-    assert!(trail.starts_with("polyglot › src/lib.rs:"), "trail: {trail}");
+    assert!(trail.starts_with("polyglot › "), "trail: {trail}");
     assert!(trail.ends_with("› ferris"), "trail: {trail}");
     assert_eq!(
         page["identity"]["coordinate"].as_str(),
@@ -502,7 +513,10 @@ fn every_surface_renders_identity_equal_content_for_the_same_revision() {
     );
     assert_eq!(page["kind"], "function");
     assert_eq!(page["language"], "rust");
-    assert_eq!(page_text.lines().next(), Some(format!("# {trail}").as_str()));
+    assert_eq!(
+        page_text.lines().next(),
+        Some(format!("# {trail}").as_str())
+    );
     assert!(
         page_text.contains(&format!("`{coordinate}`")),
         "the exact coordinate is never wrapped or clipped:\n{page_text}"
@@ -533,7 +547,10 @@ fn every_surface_renders_identity_equal_content_for_the_same_revision() {
         "a parsed coordinate must re-spell to the exact bytes the engine accepts"
     );
     assert_eq!(parsed.name(), "ferris");
-    assert_eq!(parsed.shape(), backend_present::IdentityShape::Declaration);
+    assert!(matches!(
+        parsed.shape(),
+        backend_present::IdentityShape::Declaration | backend_present::IdentityShape::Semantic
+    ));
     let respelled = surfaces.cli_text("markdown", &["show", parsed.coordinate().as_str()]);
     assert_eq!(
         respelled, page_text,
@@ -580,7 +597,10 @@ fn every_surface_renders_identity_equal_content_for_the_same_revision() {
     assert_eq!(refused["result"]["isError"], true, "{refused}");
     let refused_text = text_block(refused);
     assert!(refused_text.starts_with("✗ not-found"), "{refused_text}");
-    assert!(refused_text.contains(&missing), "the operand is never elided");
+    assert!(
+        refused_text.contains(&missing),
+        "the operand is never elided"
+    );
     assert_eq!(structured(refused)["slug"], "not-found");
     let cli_refusal = surfaces.cli(&["--format", "markdown", "show", &missing]);
     assert_eq!(
@@ -599,12 +619,17 @@ fn every_surface_renders_identity_equal_content_for_the_same_revision() {
     assert_eq!(malformed["result"]["isError"], true, "{malformed}");
     assert_eq!(structured(malformed)["slug"], "usage");
     assert_eq!(structured(malformed)["operand"], "limit");
-    let cli_malformed = surfaces.cli(&["--format", "markdown", "search", "ferris", "--limit", "900"]);
+    let cli_malformed =
+        surfaces.cli(&["--format", "markdown", "search", "ferris", "--limit", "900"]);
     assert_eq!(
         String::from_utf8_lossy(&cli_malformed.stderr).trim_end(),
         text_block(malformed)
     );
-    assert_eq!(cli_malformed.status.code(), Some(64), "the caller was wrong");
+    assert_eq!(
+        cli_malformed.status.code(),
+        Some(64),
+        "the caller was wrong"
+    );
 
     assert_the_query_card_runs(&surfaces, &replies[&20]);
 
@@ -652,7 +677,8 @@ fn assert_the_query_card_runs(surfaces: &Surfaces, card: &Value) {
             "the card documents a query the engine refuses:\n{query}\n{reply}"
         );
         assert_eq!(
-            reply["result"]["isError"], false,
+            reply["result"]["isError"],
+            false,
             "the card documents a query that fails:\n{query}\n{}",
             text_block(reply)
         );
@@ -767,7 +793,10 @@ fn collect_names(node: &Value, found: &mut Vec<String>) {
 fn a_wrong_basis_names_both_revisions_on_every_surface() {
     let fault = Fault::from_command_failure(
         &CommandFailure::WrongBasis {
-            expected: ViewRevision::from(view_state_root(&[("owner".to_owned(), "new".to_owned())])),
+            expected: ViewRevision::from(view_state_root(&[(
+                "owner".to_owned(),
+                "new".to_owned(),
+            )])),
             observed: ViewRevision::from(view_state_root(&[])),
         },
         Operand::Whole,
@@ -782,7 +811,10 @@ fn a_wrong_basis_names_both_revisions_on_every_surface() {
 
     let agent = markdown::fault(&fault);
     assert_eq!(
-        backend_cli::render::fault(&fault, &backend_cli::Options::plain(backend_cli::Format::Markdown)),
+        backend_cli::render::fault(
+            &fault,
+            &backend_cli::Options::plain(backend_cli::Format::Markdown)
+        ),
         agent,
         "the CLI's Markdown fault is the agent-facing renderer, not a copy of it"
     );
@@ -792,7 +824,10 @@ fn a_wrong_basis_names_both_revisions_on_every_surface() {
         "the cause is a sentence a reader can act on: {agent}"
     );
 
-    let human = backend_cli::render::fault(&fault, &backend_cli::Options::plain(backend_cli::Format::Human));
+    let human = backend_cli::render::fault(
+        &fault,
+        &backend_cli::Options::plain(backend_cli::Format::Human),
+    );
     assert!(human.starts_with("✗ wrong-basis "), "{human}");
     assert!(
         human.contains(&operand),

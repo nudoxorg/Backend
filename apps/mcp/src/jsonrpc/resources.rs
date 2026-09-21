@@ -14,7 +14,11 @@
 
 use super::codec::{empty_cursor, object, percent_decode, percent_encode, string};
 use super::{RpcError, answer_for};
-use backend_present::{Answer, Engine, Request, markdown};
+use backend_present::{
+    Answer, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Engine, Request, encode_serializable, markdown,
+    oversized_fault,
+};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 const WORKSPACE_URI: &str = "backend://workspace/current";
@@ -149,7 +153,7 @@ pub(super) fn list_resources(engine: &mut dyn Engine, params: &Value) -> Result<
         }),
     ];
     let Answer::Shelf(shelf) = answer_for(engine, &Request::Shelf)? else {
-        return Ok(json!({ "resources": resources }));
+        return encode_result("resources", ResourceBody { resources });
     };
     resources.extend(shelf.entries().iter().map(|entry| {
         let coordinate = entry.identity().coordinate().as_str();
@@ -161,13 +165,15 @@ pub(super) fn list_resources(engine: &mut dyn Engine, params: &Value) -> Result<
             "mimeType": MARKDOWN
         })
     }));
-    Ok(json!({ "resources": resources }))
+    encode_result("resources", ResourceBody { resources })
 }
 
 /// Lists the two addressable resource families.
 pub(super) fn list_resource_templates(params: &Value) -> Result<Value, RpcError> {
     empty_cursor(params)?;
-    Ok(json!({ "resourceTemplates": [
+    encode_result(
+        "resource-templates",
+        json!({ "resourceTemplates": [
         {
             "uriTemplate": "backend://document/{coordinate}",
             "name": "declaration-document",
@@ -182,7 +188,8 @@ pub(super) fn list_resource_templates(params: &Value) -> Result<Value, RpcError>
             "description": "One package outline selected by project path.",
             "mimeType": MARKDOWN
         }
-    ] }))
+    ] }),
+    )
 }
 
 /// Reads one resource as the same Markdown its tool returns.
@@ -194,9 +201,34 @@ pub(super) fn read_resource(engine: &mut dyn Engine, params: &Value) -> Result<V
     } else {
         markdown::answer(&answer_for(engine, &request_for(uri)?)?)
     };
-    Ok(json!({
-        "contents": [{ "uri": uri, "mimeType": MARKDOWN, "text": text }]
-    }))
+    encode_result(
+        "resource",
+        json!({
+            "contents": [{ "uri": uri, "mimeType": MARKDOWN, "text": text }]
+        }),
+    )
+}
+
+/// Applies the same bounded typed envelope as tool projections to MCP
+/// resources. Resource text is context, so an oversized resource is refused
+/// with a typed transport fault instead of being silently truncated.
+fn encode_result<T: Serialize>(answer: &'static str, body: T) -> Result<Value, RpcError> {
+    let payload = encode_serializable(
+        answer,
+        Detail::Summary,
+        None,
+        body,
+        DEFAULT_RESPONSE_BUDGET_BYTES,
+    )
+    .map_err(|error| RpcError::from_fault(&oversized_fault(error)))?;
+    serde_json::from_slice(&payload.bytes).map_err(|error| {
+        RpcError::tool(format!("typed resource projection decode failed: {error}"))
+    })
+}
+
+#[derive(Serialize)]
+struct ResourceBody {
+    resources: Vec<Value>,
 }
 
 fn request_for(uri: &str) -> Result<Request, RpcError> {

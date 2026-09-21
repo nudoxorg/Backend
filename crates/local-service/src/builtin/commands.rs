@@ -7,20 +7,22 @@ use super::{
     WireCertificate, WireClaim, WorkspaceModel, activate_semantic_publication, ingest, projection,
     publish_builtin_view,
 };
+use backend_engine::application::{
+    DocumentationSession, LocalCompilerClient, OwnedPackageSource, OwnedPackageSourceSet,
+    PackageSemanticError, PackageSemanticRuntimeError,
+};
 use backend_engine::builtin::{
     ProductSemanticPublicationKey, ProductSemanticPublicationRecord, SemanticPublicationClaim,
     SemanticPublicationCoverage, SemanticPublicationSelection, SemanticUnavailableReason,
 };
-use backend_engine::application::{
-    DocumentationSession, LocalCompilerClient, OwnedPackageSource, OwnedPackageSourceSet,
-    PackageSemanticError, PackageSemanticRuntimeError,
+use backend_library::interface::{
+    CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
 };
 use backend_semantic::ir::{
     LinkTarget, SemanticReader as _, SemanticSnapshot, SemanticStableLinks, StableLinkKey,
 };
 use backend_semantic::vocabulary::{Language, LanguageProfile};
 use futures_util::StreamExt as _;
-use backend_library::interface::{CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl};
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::path::Path;
@@ -136,8 +138,8 @@ fn execute_semantic_graph(
             }
             let activated = activate_semantic_publication(compiler, key, *claim)?;
             for bytes in activated.images() {
-                let image =
-                    backend_semantic::ir::SemanticImageView::reopen(bytes.as_ref()).map_err(|error| {
+                let image = backend_semantic::ir::SemanticImageView::reopen(bytes.as_ref())
+                    .map_err(|error| {
                         BuiltinModelError(format!("reopen semantic graph image: {error}"))
                     })?;
                 if let Some(relations) = semantic_graph_relations(
@@ -146,8 +148,7 @@ fn execute_semantic_graph(
                     source_symbol,
                     source_id,
                     include_incoming,
-                )?
-                {
+                )? {
                     return library
                         .graph_from_semantic_relations(semantic_query, &relations)
                         .map(Some)
@@ -330,12 +331,7 @@ fn execute_references(
             publication_found = true;
             let activated = activate_semantic_publication(compiler, key, *claim)?;
             for bytes in activated.images() {
-                append_reference_facts(
-                    package,
-                    bytes.as_ref(),
-                    target_symbol,
-                    &mut facts,
-                )?;
+                append_reference_facts(package, bytes.as_ref(), target_symbol, &mut facts)?;
             }
         }
         let Some(next) = page.next().cloned() else {
@@ -389,8 +385,10 @@ fn append_reference_facts(
         .canonical_entities()
         .find_map(|entity| match entity {
             Ok(entity)
-                if super::view_build::semantic_symbol(package, entity.entity.version.identity())
-                    == target_symbol =>
+                if super::view_build::semantic_symbol(
+                    package,
+                    entity.entity.version.identity(),
+                ) == target_symbol =>
             {
                 Some(Ok(entity.entity.id))
             }
@@ -411,7 +409,8 @@ fn append_reference_facts(
         .version
         .identity();
     let cancellation = backend_semantic::graph_vector::Cancellation::new();
-    let graph = backend_extension_trustfall::server::SemanticTrustfallGraph::new(&image, &cancellation);
+    let graph =
+        backend_extension_trustfall::server::SemanticTrustfallGraph::new(&image, &cancellation);
     futures_executor::block_on(async {
         let mut incoming = graph
             .incoming_occurrence_neighbors(target_entity)
@@ -459,7 +458,6 @@ fn append_reference_facts(
     .map_err(|error| BuiltinModelError(error.to_string()))
 }
 
-
 #[derive(Clone, Copy)]
 struct SemanticDeclaration<'view> {
     label: &'view str,
@@ -468,7 +466,10 @@ struct SemanticDeclaration<'view> {
 }
 
 struct SemanticPackageSnapshot<'view> {
-    declarations: Vec<(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'view>)>,
+    declarations: Vec<(
+        backend_semantic::ir::DeclarationIdentity,
+        SemanticDeclaration<'view>,
+    )>,
     links: Vec<SemanticLinkSummary>,
 }
 
@@ -547,7 +548,10 @@ fn append_semantic_image<'view>(
     view: &'view backend_engine::ViewRoot,
     package: backend_engine::PackageKey,
     bytes: &[u8],
-    declarations: &mut Vec<(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'view>)>,
+    declarations: &mut Vec<(
+        backend_semantic::ir::DeclarationIdentity,
+        SemanticDeclaration<'view>,
+    )>,
     links: &mut Vec<SemanticLinkSummary>,
 ) -> Result<(), BuiltinModelError> {
     let image = backend_semantic::ir::SemanticImageView::reopen(bytes)
@@ -608,7 +612,10 @@ fn append_semantic_image<'view>(
 
 fn finish_semantic_snapshot(
     found_publication: bool,
-    mut declarations: Vec<(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'_>)>,
+    mut declarations: Vec<(
+        backend_semantic::ir::DeclarationIdentity,
+        SemanticDeclaration<'_>,
+    )>,
     mut links: Vec<SemanticLinkSummary>,
 ) -> Result<Option<SemanticPackageSnapshot<'_>>, BuiltinModelError> {
     declarations.sort_unstable_by_key(|(identity, _)| *identity);
@@ -660,8 +667,12 @@ const fn semantic_confidence(
     confidence: backend_semantic::ir::Confidence,
 ) -> backend_engine::SemanticConfidence {
     match confidence {
-        backend_semantic::ir::Confidence::Syntactic => backend_engine::SemanticConfidence::Syntactic,
-        backend_semantic::ir::Confidence::Heuristic => backend_engine::SemanticConfidence::Heuristic,
+        backend_semantic::ir::Confidence::Syntactic => {
+            backend_engine::SemanticConfidence::Syntactic
+        }
+        backend_semantic::ir::Confidence::Heuristic => {
+            backend_engine::SemanticConfidence::Heuristic
+        }
         backend_semantic::ir::Confidence::Indexed => backend_engine::SemanticConfidence::Indexed,
         backend_semantic::ir::Confidence::Imported => backend_engine::SemanticConfidence::Imported,
         backend_semantic::ir::Confidence::Compiler => backend_engine::SemanticConfidence::Compiler,
@@ -677,11 +688,15 @@ const fn semantic_declaration_identity(
     }
 }
 
-const fn semantic_link_kind(kind: backend_semantic::ir::LinkKind) -> backend_engine::SemanticLinkKind {
+const fn semantic_link_kind(
+    kind: backend_semantic::ir::LinkKind,
+) -> backend_engine::SemanticLinkKind {
     match kind {
         backend_semantic::ir::LinkKind::Calls => backend_engine::SemanticLinkKind::Calls,
         backend_semantic::ir::LinkKind::MethodCall => backend_engine::SemanticLinkKind::MethodCall,
-        backend_semantic::ir::LinkKind::TypeReference => backend_engine::SemanticLinkKind::TypeReference,
+        backend_semantic::ir::LinkKind::TypeReference => {
+            backend_engine::SemanticLinkKind::TypeReference
+        }
         backend_semantic::ir::LinkKind::Reads => backend_engine::SemanticLinkKind::Reads,
         backend_semantic::ir::LinkKind::Writes => backend_engine::SemanticLinkKind::Writes,
         backend_semantic::ir::LinkKind::Imports => backend_engine::SemanticLinkKind::Imports,
@@ -712,7 +727,9 @@ fn semantic_link_target(
             backend_engine::SemanticLinkTarget::Foreign {
                 declaration: *target.foreign.as_bytes(),
                 variant: match target.variant {
-                    backend_semantic::ir::VariantAvailability::Known(variant) => Some(*variant.as_bytes()),
+                    backend_semantic::ir::VariantAvailability::Known(variant) => {
+                        Some(*variant.as_bytes())
+                    }
                     backend_semantic::ir::VariantAvailability::Unavailable => None,
                 },
             }
@@ -779,7 +796,10 @@ fn diff_semantic_snapshots(
 }
 
 fn family_end(
-    declarations: &[(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'_>)],
+    declarations: &[(
+        backend_semantic::ir::DeclarationIdentity,
+        SemanticDeclaration<'_>,
+    )],
     start: usize,
     family: backend_semantic::ir::DeclarationFamilyId,
 ) -> usize {
@@ -787,8 +807,14 @@ fn family_end(
 }
 
 fn diff_semantic_family(
-    before: &[(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'_>)],
-    after: &[(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'_>)],
+    before: &[(
+        backend_semantic::ir::DeclarationIdentity,
+        SemanticDeclaration<'_>,
+    )],
+    after: &[(
+        backend_semantic::ir::DeclarationIdentity,
+        SemanticDeclaration<'_>,
+    )],
     rows: &mut Vec<backend_engine::DiffRecord>,
 ) -> Result<(), BuiltinModelError> {
     if let ([(before_id, before)], [(after_id, after)]) = (before, after) {
@@ -875,8 +901,14 @@ fn diff_semantic_family(
 }
 
 fn unmatched_counts(
-    before: &[(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'_>)],
-    after: &[(backend_semantic::ir::DeclarationIdentity, SemanticDeclaration<'_>)],
+    before: &[(
+        backend_semantic::ir::DeclarationIdentity,
+        SemanticDeclaration<'_>,
+    )],
+    after: &[(
+        backend_semantic::ir::DeclarationIdentity,
+        SemanticDeclaration<'_>,
+    )],
 ) -> (usize, usize) {
     let mut left = 0;
     let mut right = 0;
@@ -1971,6 +2003,58 @@ impl CommandAdapter {
         )
     }
 
+    /// Resolves a document by the canonical coordinate carried in the
+    /// caller's admitted key claim. Semantic rows use a compiler-owned symbol
+    /// identity rather than `symbol_key(label)`, while the public document
+    /// command intentionally accepts the coordinate an agent copied from a
+    /// search page. The claim supplies that preimage, so resolve the row by
+    /// exact label after checking the request root instead of returning a
+    /// false not-found for a published semantic declaration.
+    fn canonical_claim_document(
+        daemon: &ProductDaemon,
+        query: &backend_library::DocumentQuery,
+        certificate: Option<&WireCertificate>,
+    ) -> Option<backend_library::Document> {
+        let label = certificate.and_then(|certificate| {
+            certificate.claims.iter().find_map(|claim| match claim {
+                WireClaim::Key {
+                    schema: backend_engine::WireSchema::Symbol,
+                    id,
+                    value,
+                } if id
+                    == &backend_engine::encode_id(backend_engine::symbol_key(value).as_bytes())
+                    && query.symbol().matches(backend_engine::symbol_key(value)) =>
+                {
+                    Some(value.as_str())
+                }
+                _ => None,
+            })
+        })?;
+        let library = daemon.engine().daemon().library();
+        let root = library.revision_root();
+        if !query.basis().matches(root) {
+            return None;
+        }
+        let row =
+            library.view().rows().iter().find(|row| {
+                row.label == label && matches!(row.id, backend_engine::RowId::Symbol(_))
+            })?;
+        let backend_engine::RowId::Symbol(_) = row.id else {
+            return None;
+        };
+        let symbol = backend_library::symbol_key(label);
+        let source_basis = backend_library::Basis {
+            root,
+            ..library.view().basis()
+        };
+        let mut document = backend_library::Document::new(symbol, root, row.document.clone())
+            .with_source_basis(source_basis)
+            .with_location(row.source.clone())
+            .with_excerpt(row.excerpt.clone());
+        document.signature.clone_from(&row.signature);
+        Some(document)
+    }
+
     fn remove(
         &mut self,
         daemon: &mut ProductDaemon,
@@ -2123,7 +2207,9 @@ impl CommandAdapter {
                     daemon.engine().daemon().library().view().root(),
                     &dependency_facts,
                 ))
-                .map_err(|error| BuiltinModelError(format!("align package graph projection: {error}")))?;
+                .map_err(|error| {
+                    BuiltinModelError(format!("align package graph projection: {error}"))
+                })?;
                 self.product_state
                     .execute(
                         surface,
@@ -2214,12 +2300,22 @@ impl CommandAdapter {
         command: &Command,
         certificate: Option<WireCertificate>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
-        let reply = daemon
-            .engine()
-            .daemon()
-            .library()
-            .execute(command.clone())
-            .unwrap_or_else(|error| CommandReply::Error(error.to_string()));
+        let reply = match command {
+            Command::Document(query) | Command::Source(query) => {
+                Self::canonical_claim_document(daemon, query, certificate.as_ref())
+                    .map_or_else(
+                        || daemon.engine().daemon().library().execute(command.clone()),
+                        |document| Ok(CommandReply::Document(document)),
+                    )
+                    .unwrap_or_else(|error| CommandReply::Error(error.to_string()))
+            }
+            _ => daemon
+                .engine()
+                .daemon()
+                .library()
+                .execute(command.clone())
+                .unwrap_or_else(|error| CommandReply::Error(error.to_string())),
+        };
         let reply = semantic_readiness(reply, daemon, &self.remote_semantic, &self.compiler)?;
         Self::certify(daemon, command, reply, certificate)
     }
@@ -2665,7 +2761,10 @@ mod references_tests {
         let ir = builder.finish().map_err(|error| error.to_string())?;
         let path_atom = (0..64)
             .map(backend_semantic::ir::AtomId::new)
-            .find(|id| ir.atom(*id).is_some_and(|bytes| bytes == CALL_PATH.as_bytes()))
+            .find(|id| {
+                ir.atom(*id)
+                    .is_some_and(|bytes| bytes == CALL_PATH.as_bytes())
+            })
             .ok_or("the fixture source path is absent from its own atom table")?;
         // Attach the captured call site now that the path atom is known by
         // re-adding one identified image-level occurrence lane entry.
@@ -2697,8 +2796,7 @@ mod references_tests {
                 .map_err(|error| error.to_string())?;
             builder.finish().map_err(|error| error.to_string())?
         };
-        let mut bytes =
-            vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
         encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
         Ok(bytes)
     }
@@ -2755,7 +2853,8 @@ mod references_tests {
         let bytes = fixture_image()?;
         let package = backend_engine::package_key("fixture");
         // A declaration the fixture never compiled.
-        let absent = super::super::view_build::semantic_symbol(package, fixture_version(9).identity());
+        let absent =
+            super::super::view_build::semantic_symbol(package, fixture_version(9).identity());
         let mut facts = Vec::new();
         append_reference_facts(package, &bytes, absent, &mut facts)
             .map_err(|error| error.to_string())?;

@@ -97,11 +97,20 @@ fn document_certificate(
     owner_root: &ViewRoot,
     base: Option<WireCertificate>,
 ) -> Result<WireCertificate, BuiltinModelError> {
-    let mut rows = vec![required_row(
-        owner_root,
-        RowId::Symbol(document.symbol),
-        "document symbol",
-    )?];
+    // A semantic declaration is addressed publicly by its copied coordinate,
+    // while its row identity is compiler-owned. The command adapter may
+    // therefore return a document whose requested symbol is absent as a row
+    // ID even though the owner found the exact labelled row. Preserve the
+    // ordinary row proof when present and rely on the admitted key claim for
+    // the semantic alias.
+    let mut rows = Vec::new();
+    if owner_root.row(RowId::Symbol(document.symbol)).is_some() {
+        rows.push(required_row(
+            owner_root,
+            RowId::Symbol(document.symbol),
+            "document symbol",
+        )?);
+    }
     for fragment in &document.fragments {
         let backend_engine::Fragment::Link { target, .. } = fragment else {
             continue;

@@ -28,7 +28,10 @@ use backend_present::{
     answer_paged, encode_answer, encode_serializable, fault_value, grammar_for_tool, lower,
     markdown, oversized_fault, record_list,
 };
-use serde::{Serialize, Serializer, ser::{SerializeMap, SerializeSeq}};
+use serde::{
+    Serialize, Serializer,
+    ser::{SerializeMap, SerializeSeq},
+};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
@@ -376,7 +379,7 @@ impl<P: Product> Server<P> {
             }
             let mut surface_arguments = arguments.clone();
             surface_arguments.remove("detail");
-            return self.surface_tool(&surface_arguments);
+            return self.surface_tool(&surface_arguments, detail);
         }
         let Some(grammar) = grammar_for_tool(name) else {
             return Err(RpcError::new(-32602, "Unknown tool"));
@@ -440,7 +443,11 @@ impl<P: Product> Server<P> {
         self.rendered(&answer, detail, context)
     }
 
-    fn surface_tool(&mut self, arguments: &Map<String, Value>) -> Result<Value, RpcError> {
+    fn surface_tool(
+        &mut self,
+        arguments: &Map<String, Value>,
+        detail: Detail,
+    ) -> Result<Value, RpcError> {
         no_extra(arguments, &["command"])?;
         let encoded = arguments
             .get("command")
@@ -456,9 +463,22 @@ impl<P: Product> Server<P> {
             .surface(command)
             .map_err(|error| RpcError::tool(error.to_string()))?;
         let view = backend_present::product_view(&reply);
+        let payload = match encode_serializable(
+            "surface",
+            detail,
+            None,
+            SurfaceBody { surface: &reply },
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => return Ok(refused(&oversized_fault(error))),
+        };
+        let structured: Value = serde_json::from_slice(&payload.bytes).map_err(|error| {
+            RpcError::tool(format!("typed surface projection decode failed: {error}"))
+        })?;
         Ok(json!({
-            "content": [{ "type": "text", "text": markdown::product(&view) }],
-            "structuredContent": { "surface": reply },
+            "content": [{ "type": "text", "text": bounded_text(&markdown::product(&view)) }],
+            "structuredContent": structured,
             "isError": false
         }))
     }
@@ -614,8 +634,9 @@ impl<P: Product> Server<P> {
             Ok(payload) => payload,
             Err(error) => return Ok(refused(&oversized_fault(error))),
         };
-        let value: Value = serde_json::from_slice(&payload.bytes)
-            .map_err(|error| RpcError::tool(format!("typed graph projection decode failed: {error}")))?;
+        let value: Value = serde_json::from_slice(&payload.bytes).map_err(|error| {
+            RpcError::tool(format!("typed graph projection decode failed: {error}"))
+        })?;
         Ok(json!({
             "content": [{ "type": "text", "text": bounded_text(&graph_page_text(page)) }],
             "structuredContent": value,
@@ -814,7 +835,11 @@ impl RpcError {
     /// Lowers one shared fault into the JSON-RPC error a resource read reports.
     fn from_fault(fault: &Fault) -> Self {
         Self {
-            code: if fault.slug().is_usage() { -32602 } else { -32603 },
+            code: if fault.slug().is_usage() {
+                -32602
+            } else {
+                -32603
+            },
             message: "Backend request failed",
             kind: fault.slug().as_str(),
             detail: Some(markdown::fault(fault)),
@@ -942,7 +967,10 @@ fn response_detail(arguments: &Map<String, Value>) -> Result<Detail, RpcError> {
 }
 
 fn bounded_text(text: &str) -> String {
-    const MAX_TEXT_BYTES: usize = 128 * 1024;
+    // Keep the human-readable duplicate small enough that it cannot consume
+    // the context budget beside the typed projection. The projection is the
+    // complete machine-readable answer; Markdown remains a bounded preview.
+    const MAX_TEXT_BYTES: usize = 16 * 1024;
     if text.len() <= MAX_TEXT_BYTES {
         return text.to_owned();
     }
@@ -954,6 +982,11 @@ fn bounded_text(text: &str) -> String {
         "{}\n\n… output truncated; request a narrower page or detail=summary",
         &text[..end]
     )
+}
+
+#[derive(Serialize)]
+struct SurfaceBody<'a> {
+    surface: &'a SurfaceReply,
 }
 
 #[cfg(test)]

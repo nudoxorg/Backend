@@ -15,6 +15,7 @@ pub(super) struct ConnectionContext {
     pub(super) sender: SyncSender<Inbound>,
     pub(super) stop: Arc<AtomicBool>,
     pub(super) active: Arc<AtomicUsize>,
+    pub(super) inflight: Arc<AtomicUsize>,
     pub(super) streams:
         Arc<Mutex<std::collections::BTreeMap<usize, std::os::unix::net::UnixStream>>>,
     pub(super) connection_id: usize,
@@ -32,6 +33,7 @@ pub(super) fn connection_worker(
         sender,
         stop,
         active,
+        inflight,
         streams,
         connection_id,
         limits,
@@ -55,6 +57,7 @@ pub(super) fn connection_worker(
         else {
             break;
         };
+        inflight.fetch_add(1, Ordering::AcqRel);
         let Some(response) = serve_one_frame(
             &mut stream,
             payload,
@@ -65,9 +68,12 @@ pub(super) fn connection_worker(
             },
             limits,
         ) else {
+            inflight.fetch_sub(1, Ordering::AcqRel);
             break;
         };
-        if write_frame(&mut stream, &response, limits).is_err() {
+        let write_result = write_frame(&mut stream, &response, limits);
+        inflight.fetch_sub(1, Ordering::AcqRel);
+        if write_result.is_err() {
             break;
         }
         frames = frames.saturating_add(1);
@@ -190,7 +196,9 @@ fn await_frame_start(
     // remainder of a started frame is charged the per-frame window, never the
     // idle one.
     stream.set_read_timeout(Some(frame_timeout)).ok()?;
-    started.then_some(first).and_then(|bytes| bytes.first().copied())
+    started
+        .then_some(first)
+        .and_then(|bytes| bytes.first().copied())
 }
 
 pub(super) fn configure_stream(

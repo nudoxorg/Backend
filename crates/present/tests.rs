@@ -6,19 +6,16 @@
 
 use super::*;
 use backend_library::{
-    Coverage, DeclarationKind, Document, Fragment, GraphRelation, Lane, OutlineExtent,
-    OutlineNode, Reason, RowId, SemanticLinkKind, SourceAvailability, SourceExcerpt,
-    SourceExcerptExtent, SourceLocation, package_key, symbol_key, view_state_root,
+    Coverage, DeclarationKind, Document, Fragment, GraphRelation, Lane, OutlineExtent, OutlineNode,
+    Reason, RowId, SemanticLinkKind, SourceAvailability, SourceExcerpt, SourceExcerptExtent,
+    SourceLocation, package_key, symbol_key, view_state_root,
 };
 
 const PROJECT: &str = "/abs/polyglot";
 const DECLARATION: &str = "/abs/polyglot::src/lib.rs:2::ferris";
 
 fn basis() -> backend_library::Basis {
-    backend_library::Basis::new(
-        view_state_root(&[]),
-        backend_library::object_version(&[]),
-    )
+    backend_library::Basis::new(view_state_root(&[]), backend_library::object_version(&[]))
 }
 
 #[test]
@@ -202,7 +199,10 @@ fn key_tags_are_eight_hex_and_never_parsed_back() {
 #[test]
 fn an_unavailable_lane_never_reads_like_an_empty_success() {
     let complete = CoverageLine::new(&[Coverage::Complete], Some(12));
-    assert_eq!(complete.render(), "~lanes exact✓12 names✓12 graph✓12 semantic✓12");
+    assert_eq!(
+        complete.render(),
+        "~lanes exact✓12 names✓12 graph✓12 semantic✓12"
+    );
     assert_eq!(complete.readiness(), "ready");
 
     let thin = CoverageLine::new(
@@ -345,8 +345,12 @@ fn every_lane_reason_produces_a_sentence_and_an_affordance() {
 
 #[test]
 fn rust_signatures_classify_bindings_types_and_lifetimes() {
-    let signature = Signature::tokenize("pub fn ferris<'a>(lane: &'a str) -> Beacon", Language::Rust);
-    assert_eq!(signature.text(), "pub fn ferris<'a>(lane: &'a str) -> Beacon");
+    let signature =
+        Signature::tokenize("pub fn ferris<'a>(lane: &'a str) -> Beacon", Language::Rust);
+    assert_eq!(
+        signature.text(),
+        "pub fn ferris<'a>(lane: &'a str) -> Beacon"
+    );
     let kinds: Vec<(&str, TokenKind)> = signature
         .tokens()
         .iter()
@@ -427,16 +431,15 @@ fn each_frontends_parameter_spelling_is_classified() {
 
 #[test]
 fn a_resolved_type_is_marked_by_name_and_never_claims_more() {
-    let signature = Signature::tokenize("fn ferris() -> Beacon", Language::Rust).resolve_types(
-        |text| {
+    let signature =
+        Signature::tokenize("fn ferris() -> Beacon", Language::Rust).resolve_types(|text| {
             (text == "Beacon").then(|| {
                 (
                     Coordinate::new("/abs/polyglot::src/lib.rs:9::Beacon"),
                     IdentityKey::Symbol(symbol_key("/abs/polyglot::src/lib.rs:9::Beacon")),
                 )
             })
-        },
-    );
+        });
     let beacon = signature
         .tokens()
         .iter()
@@ -461,7 +464,10 @@ fn prose_folds_fragment_runs_into_paragraphs() {
         Fragment::Break,
     ]);
     assert_eq!(prose.len(), 2);
-    assert_eq!(prose.first(), Some(&Prose::Text("Lights the beacon.".to_owned())));
+    assert_eq!(
+        prose.first(),
+        Some(&Prose::Text("Lights the beacon.".to_owned()))
+    );
     assert_eq!(prose.get(1), Some(&Prose::Code("ferris()".to_owned())));
 }
 
@@ -476,8 +482,11 @@ fn declaration_row() -> backend_library::Row {
     .with_kind(DeclarationKind::Function)
     .with_source(SourceLocation::new("src/lib.rs", 2).expect("one-based location"))
     .with_excerpt(
-        SourceExcerpt::captured("pub fn ferris() -> Beacon {\n    Beacon\n}", SourceExcerptExtent::Complete)
-            .expect("bounded excerpt"),
+        SourceExcerpt::captured(
+            "pub fn ferris() -> Beacon {\n    Beacon\n}",
+            SourceExcerptExtent::Complete,
+        )
+        .expect("bounded excerpt"),
     )
 }
 
@@ -489,12 +498,9 @@ fn compiler_graph_relation_kinds_survive_owner_page_assembly() {
     let depends = symbol_key("/abs/polyglot::src/lib.rs:11::depends");
     let calls_row = backend_library::Row::new(RowId::Symbol(calls), basis(), "calls")
         .with_kind(DeclarationKind::Function);
-    let implements_row = backend_library::Row::new(
-        RowId::Symbol(implements),
-        basis(),
-        "implements",
-    )
-    .with_kind(DeclarationKind::Trait);
+    let implements_row =
+        backend_library::Row::new(RowId::Symbol(implements), basis(), "implements")
+            .with_kind(DeclarationKind::Trait);
     let depends_row = backend_library::Row::new(RowId::Symbol(depends), basis(), "depends")
         .with_kind(DeclarationKind::Module);
     let document = Document::new(
@@ -558,12 +564,18 @@ fn a_record_renders_identity_first_and_never_clips_the_coordinate() {
     );
     let rendered = text::records(&list, None, Theme::plain().with_width(Width::new(40)));
     let lines: Vec<&str> = rendered.lines().collect();
-    assert_eq!(lines.first().copied(), Some("~lanes exact✓1 names✓1 graph✓1 semantic✓1"));
+    assert_eq!(
+        lines.first().copied(),
+        Some("~lanes exact✓1 names✓1 graph✓1 semantic✓1")
+    );
     assert_eq!(
         lines.get(1).copied(),
         Some("● polyglot › src/lib.rs:2 › ferris  ƒ function · rs")
     );
-    assert_eq!(lines.get(2).copied(), Some("  /abs/polyglot::src/lib.rs:2::ferris"));
+    assert_eq!(
+        lines.get(2).copied(),
+        Some("  /abs/polyglot::src/lib.rs:2::ferris")
+    );
     assert!(rendered.contains("pub fn ferris() -> Beacon"));
 }
 
@@ -576,15 +588,15 @@ fn the_markdown_page_leads_with_the_identity_then_the_evidence() {
         LineNumber::new(2).expect("one-based"),
     );
     let source = Source::Captured {
-        lines: Source::number_lines(
-            "pub fn ferris() -> Beacon {\n    Beacon\n}",
-            site.line(),
-        ),
+        lines: Source::number_lines("pub fn ferris() -> Beacon {\n    Beacon\n}", site.line()),
         site,
         truncation: Truncation::Complete,
     };
     let page = Page::new(identity, Some(DeclarationKind::Function), source)
-        .with_signature(Signature::tokenize("pub fn ferris() -> Beacon", Language::Rust))
+        .with_signature(Signature::tokenize(
+            "pub fn ferris() -> Beacon",
+            Language::Rust,
+        ))
         .with_prose(Prose::from_fragments(&[Fragment::Text(
             "Lights the beacon.".to_owned(),
         )]));
@@ -594,12 +606,9 @@ fn the_markdown_page_leads_with_the_identity_then_the_evidence() {
         lines.first().copied(),
         Some("# polyglot › src/lib.rs:2 › ferris")
     );
-    assert!(
-        lines
-            .get(1)
-            .is_some_and(|line| line.starts_with("function · rust · key ")
-                && line.ends_with("src/lib.rs:2"))
-    );
+    assert!(lines.get(1).is_some_and(
+        |line| line.starts_with("function · rust · key ") && line.ends_with("src/lib.rs:2")
+    ));
     assert_eq!(
         lines.get(2).copied(),
         Some("`/abs/polyglot::src/lib.rs:2::ferris`")
@@ -727,7 +736,8 @@ fn the_answer_tag_never_overwrites_a_fact_the_payload_already_carries() {
     for answer in &answers {
         let value = answer_value(answer);
         assert_eq!(
-            value["answer"], answer.kind(),
+            value["answer"],
+            answer.kind(),
             "every answer states which one it is"
         );
         let fields = value.as_object().expect("an answer projects to an object");
@@ -757,7 +767,10 @@ fn the_json_projection_keeps_the_exact_coordinate() {
     let dto = RecordDto::new(&record);
     let encoded = serde_json::to_value(&dto).expect("record DTO encodes");
     assert_eq!(encoded["identity"]["coordinate"], DECLARATION);
-    assert_eq!(encoded["identity"]["trail"], "polyglot › src/lib.rs:2 › ferris");
+    assert_eq!(
+        encoded["identity"]["trail"],
+        "polyglot › src/lib.rs:2 › ferris"
+    );
     assert_eq!(encoded["identity"]["name"], "ferris");
     assert_eq!(encoded["kind"], "function");
     assert_eq!(encoded["language"], "rust");
@@ -796,8 +809,8 @@ fn every_registry_row_is_reachable_by_both_a_cli_spelling_and_a_tool_name() {
     // that lost one of them fails here rather than becoming unreachable on one
     // surface and nobody noticing.
     for spec in backend_library::COMMANDS {
-        let grammar = grammar_for(spec.name)
-            .unwrap_or_else(|| panic!("`{}` has no CLI spelling", spec.name));
+        let grammar =
+            grammar_for(spec.name).unwrap_or_else(|| panic!("`{}` has no CLI spelling", spec.name));
         let by_tool = grammar_for_tool(grammar.tool())
             .unwrap_or_else(|| panic!("`{}` has no MCP tool name", spec.name));
         assert_eq!(
@@ -816,7 +829,10 @@ fn every_registry_row_is_reachable_by_both_a_cli_spelling_and_a_tool_name() {
             spec.name
         );
     }
-    let grouped: usize = domains().iter().map(|domain| grammars_in(*domain).len()).sum();
+    let grouped: usize = domains()
+        .iter()
+        .map(|domain| grammars_in(*domain).len())
+        .sum();
     assert_eq!(
         grouped,
         GRAMMARS.len(),
@@ -908,11 +924,9 @@ fn the_status_summary_replaces_the_capability_dump() {
 #[test]
 fn a_references_reply_renders_sites_with_their_provenance() {
     let reply = backend_library::SurfaceReply::References {
-        target: backend_library::ProductText::new("pkg::semantic::callee")
-            .expect("target text"),
+        target: backend_library::ProductText::new("pkg::semantic::callee").expect("target text"),
         references: Box::new([backend_library::ReferenceRecord {
-            site: backend_library::ProductText::new("pkg::semantic::caller")
-                .expect("site text"),
+            site: backend_library::ProductText::new("pkg::semantic::caller").expect("site text"),
             target: backend_library::SemanticLinkTarget::Local {
                 declaration: backend_library::SemanticDeclarationIdentity {
                     family: [1; 16],
@@ -946,14 +960,14 @@ fn a_references_reply_renders_sites_with_their_provenance() {
 
 #[test]
 fn advisory_reply_renders_typed_coverage_and_decision() {
-    let reply = backend_library::SurfaceReply::Advisory(
-        backend_library::AdvisoryPackageDto::unknown(),
-    );
+    let reply =
+        backend_library::SurfaceReply::Advisory(backend_library::AdvisoryPackageDto::unknown());
     let view = product_view(&reply);
     assert_eq!(view.heading(), "advisory");
     let summary = view.records().first().expect("decision summary");
     assert!(summary.tags().iter().any(|tag| tag.contains("Unknown")));
-    assert!(summary.tags().iter().any(|tag| tag.contains("deny")));
+    assert!(summary.tags().iter().any(|tag| tag.contains("warn")));
+    assert!(!summary.tags().iter().any(|tag| tag.contains("deny")));
 }
 
 #[test]

@@ -19,8 +19,8 @@ use super::RpcError;
 use super::codec::empty_cursor;
 use backend_library::CommandDomain;
 use backend_present::{
-    ArgumentKind, ArgumentSpec, CommandGrammar, DEFAULT_LIMIT, GRAMMARS, domain_name, domains,
-    grammars_in,
+    ArgumentKind, ArgumentSpec, CommandGrammar, DEFAULT_LIMIT, DEFAULT_RESPONSE_BUDGET_BYTES,
+    Detail, GRAMMARS, domain_name, domains, encode_serializable, grammars_in, oversized_fault,
 };
 use serde_json::{Map, Value, json};
 
@@ -33,6 +33,24 @@ pub(super) const QUERY_TOOL: &str = "backend.query";
 /// Lists every registry row as one tool, grouped by domain.
 pub(super) fn list_tools(params: &Value) -> Result<Value, RpcError> {
     empty_cursor(params)?;
+    bounded_tools()
+}
+
+fn bounded_tools() -> Result<Value, RpcError> {
+    let body = tools_value();
+    let payload = encode_serializable(
+        "tools",
+        Detail::Summary,
+        None,
+        body,
+        DEFAULT_RESPONSE_BUDGET_BYTES,
+    )
+    .map_err(|error| RpcError::from_fault(&oversized_fault(error)))?;
+    serde_json::from_slice(&payload.bytes)
+        .map_err(|error| RpcError::tool(format!("typed tools projection decode failed: {error}")))
+}
+
+fn tools_value() -> Value {
     let mut tools = Vec::with_capacity(GRAMMARS.len().saturating_add(2));
     for domain in domains() {
         for grammar in grammars_in(domain) {
@@ -41,17 +59,14 @@ pub(super) fn list_tools(params: &Value) -> Result<Value, RpcError> {
     }
     tools.push(query_tool());
     tools.push(surface_tool());
-    Ok(json!({ "tools": tools }))
+    json!({ "tools": tools })
 }
 
 /// Returns the canonical `tools/list` projection for the offline budget
 /// fixture generator. This is kept at the protocol edge so the generator
 /// cannot accidentally grow a second hand-written tool schema.
 pub(crate) fn token_budget_tools() -> Value {
-    match list_tools(&Value::Object(Map::new())) {
-        Ok(value) => value,
-        Err(_) => Value::Object(Map::new()),
-    }
+    tools_value()
 }
 
 /// Projects one registry row into one MCP tool definition.
@@ -100,7 +115,9 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
             );
         }
     }
-    let title = grammar.spec().map_or_else(|| grammar.name(), |spec| spec.title);
+    let title = grammar
+        .spec()
+        .map_or_else(|| grammar.name(), |spec| spec.title);
     let write = grammar.is_write();
     json!({
         "name": grammar.tool(),
@@ -166,9 +183,9 @@ fn query_tool() -> Value {
         "name": QUERY_TOOL,
         "title": "Query the code graph",
         "description": "Run a typed Trustfall query over the current immutable revision. \
-Use when a question is a join rather than a lookup — every declaration that calls one function, \
-every child of a module — and read `backend://schema/query` first for the starting edges, the \
-fields, and worked queries you can run unchanged.",
+    Use when a question is a join rather than a lookup — every declaration that calls one function, \
+    every child of a module — and read `backend://schema/query` first for the starting edges, the \
+    fields, and worked queries you can run unchanged.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -206,9 +223,9 @@ fn surface_tool() -> Value {
         "name": SURFACE_TOOL,
         "title": "Product surface",
         "description": "Execute any daemon-owned typed product operation as a tagged \
-SurfaceCommand object. Every operation here also has its own named tool, which validates operands \
-and renders a readable answer; reach for this only when a client must pass a command through \
-verbatim.",
+    SurfaceCommand object. Every operation here also has its own named tool, which validates operands \
+    and renders a readable answer; reach for this only when a client must pass a command through \
+    verbatim.",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -243,10 +243,10 @@ mod tests {
 
     impl Connection {
         fn record(&self, call: &str) -> Result<(), ClientError> {
-            self.log
-                .lock()
-                .expect("fixture log")
-                .push(format!("{}:{call}", if self.alive { "live" } else { "dead" }));
+            self.log.lock().expect("fixture log").push(format!(
+                "{}:{call}",
+                if self.alive { "live" } else { "dead" }
+            ));
             if self.alive {
                 Ok(())
             } else {
@@ -262,7 +262,13 @@ mod tests {
         let root = ViewRoot::new_incomplete(
             view_key(b"reconnect-fixture"),
             basis,
-            Frontier::new(basis.branch, basis.log, basis.schema, view_state_root(&[]), 0),
+            Frontier::new(
+                basis.branch,
+                basis.log,
+                basis.schema,
+                view_state_root(&[]),
+                0,
+            ),
             Vec::new(),
             vec![Coverage::Unavailable {
                 lane: Lane::Semantic,
@@ -444,7 +450,10 @@ mod tests {
                 "dead:subscriptions".to_owned(),
                 "live:subscriptions".to_owned(),
             ],
-            vec!["dead:outline-page".to_owned(), "live:outline-page".to_owned()],
+            vec![
+                "dead:outline-page".to_owned(),
+                "live:outline-page".to_owned(),
+            ],
         ] {
             let (mut handle, log) = idle_out();
             let call = expected.first().expect("expected call").clone();
@@ -529,7 +538,11 @@ mod tests {
     #[test]
     fn the_call_after_a_refused_mutation_succeeds() {
         let (mut handle, log) = idle_out();
-        drop(handle.probe(Probe::Index("/abs/project")).expect_err("refused"));
+        drop(
+            handle
+                .probe(Probe::Index("/abs/project"))
+                .expect_err("refused"),
+        );
 
         let reply = handle
             .probe(Probe::Index("/abs/project"))

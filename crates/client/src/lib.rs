@@ -6,13 +6,13 @@
 #![forbid(unsafe_code)]
 
 use backend_library::{
-    Command, CommandDto, CommandFailure, CommandReply, CoverageCapability, Cursor, DiffRecord,
-    DocumentQuery, GraphNeighborhoodQuery, GraphQueryPage, GraphQueryRequest, GraphValue,
-    HealthReport, NameQuery, OutlineQuery, PackageReference, PageContinuation, PageRequest,
-    PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto, RequestAdmissionError,
-    SemanticGenerationId, SemanticLanguageProfile, SemanticVersionRecord, SurfaceCommand,
-    SurfaceReply, SymbolAddress, SymbolKey, ViewProjectionError, ViewRoot, ViewStateRoot,
-    WireCertificate, WireClaim, WireSchema, encode_id, package_key, symbol_key,
+    Command, CommandDto, CommandFailure, CommandMutation, CommandReply, CoverageCapability, Cursor,
+    DiffRecord, DocumentQuery, GraphNeighborhoodQuery, GraphQueryPage, GraphQueryRequest,
+    GraphValue, HealthReport, NameQuery, OutlineQuery, PackageReference, PageContinuation,
+    PageRequest, PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto,
+    RequestAdmissionError, SemanticGenerationId, SemanticLanguageProfile, SemanticVersionRecord,
+    SurfaceCommand, SurfaceReply, SymbolAddress, SymbolKey, ViewProjectionError, ViewRoot,
+    ViewStateRoot, WireCertificate, WireClaim, WireSchema, encode_id, package_key, symbol_key,
 };
 use backend_replication::{
     LocalControlError, LocalControlLimits, ReplicationError, read_frame, write_frame,
@@ -206,6 +206,7 @@ impl UnixCommandTransport {
         expected: &ReplyDto,
     ) -> Result<ReplyDto, ClientError> {
         let accepted = request.clone();
+        configure_request(&self.stream, request)?;
         let body = encode_request(request)?;
         write_body(&mut self.stream, &body)?;
         let body = read_body(&mut self.stream)?;
@@ -225,6 +226,7 @@ impl UnixCommandTransport {
 #[cfg(unix)]
 impl CommandTransport for UnixCommandTransport {
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        configure_request(&self.stream, &request)?;
         let body = encode_request(&request)?;
         write_body(&mut self.stream, &body)?;
         let body = read_body(&mut self.stream)?;
@@ -240,6 +242,7 @@ impl CertifiedCommandTransport for UnixCommandTransport {
         request: CommandDto,
         capability: Option<CoverageCapability>,
     ) -> Result<ReplyDto, ClientError> {
+        configure_request(&self.stream, &request)?;
         let body = encode_request(&request)?;
         write_body(&mut self.stream, &body)?;
         let body = read_body(&mut self.stream)?;
@@ -1051,12 +1054,41 @@ fn selected_symbol_certificate(certificate: WireCertificate, symbol: SymbolKey) 
 
 #[cfg(unix)]
 fn configure(stream: &std::os::unix::net::UnixStream) -> Result<(), ClientError> {
-    let timeout = Some(Duration::from_secs(30));
+    configure_timeout(stream, CLIENT_REQUEST_TIMEOUT)
+}
+
+#[cfg(unix)]
+fn configure_request(
+    stream: &std::os::unix::net::UnixStream,
+    request: &CommandDto,
+) -> Result<(), ClientError> {
+    let timeout = match backend_library::command_spec(request.command.id()).mutation {
+        CommandMutation::Write => CLIENT_MUTATION_TIMEOUT,
+        CommandMutation::Read => CLIENT_REQUEST_TIMEOUT,
+    };
+    configure_timeout(stream, timeout)
+}
+
+#[cfg(unix)]
+fn configure_timeout(
+    stream: &std::os::unix::net::UnixStream,
+    timeout: Duration,
+) -> Result<(), ClientError> {
     stream
-        .set_read_timeout(timeout)
-        .and_then(|()| stream.set_write_timeout(timeout))
+        .set_read_timeout(Some(timeout))
+        .and_then(|()| stream.set_write_timeout(Some(timeout)))
         .map_err(|error| ClientError::Io(error.to_string()))
 }
+
+/// Bounded deadline for one read-only command, including health and discovery.
+///
+/// Every request re-arms this value, so a long mutation cannot make a later
+/// health or query call wait on the mutation lease.
+const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Owner lease for durable writes that may synchronously compile or acquire a
+/// package before publishing their receipt.
+const CLIENT_MUTATION_TIMEOUT: Duration = Duration::from_mins(15);
 
 fn limits() -> LocalControlLimits {
     LocalControlLimits {
@@ -1074,9 +1106,7 @@ fn map_frame(error: LocalControlError) -> ClientError {
         LocalControlError::Io(kind) => {
             ClientError::Io(format!("local control I/O failed: {kind:?}"))
         }
-        LocalControlError::Closed => {
-            ClientError::Disconnected(std::io::ErrorKind::NotConnected)
-        }
+        LocalControlError::Closed => ClientError::Disconnected(std::io::ErrorKind::NotConnected),
         // The framing layer reports `Truncated` only for an unexpected
         // end of file, which is a peer that stopped mid-frame rather than a
         // frame this client failed to understand.
@@ -1266,6 +1296,46 @@ mod tests {
                 .expect("certificate claims")
                 .iter()
                 .any(|claim| claim["kind"] == "cursor")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn each_request_rearms_a_bounded_deadline_for_its_own_lease() {
+        let (client, _peer) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let transport = UnixCommandTransport::from_stream(client);
+        let health = CommandDto::new(1, Command::Health);
+        configure_request(&transport.stream, &health).expect("health timeout");
+        assert_eq!(
+            transport
+                .stream
+                .read_timeout()
+                .expect("health read timeout"),
+            Some(CLIENT_REQUEST_TIMEOUT)
+        );
+
+        let add = CommandDto::new(
+            2,
+            Command::Add {
+                package: package_key("/tmp/project"),
+            },
+        );
+        configure_request(&transport.stream, &add).expect("mutation timeout");
+        assert_eq!(
+            transport
+                .stream
+                .read_timeout()
+                .expect("mutation read timeout"),
+            Some(CLIENT_MUTATION_TIMEOUT)
+        );
+
+        configure_request(&transport.stream, &health).expect("health rearm");
+        assert_eq!(
+            transport
+                .stream
+                .read_timeout()
+                .expect("rearmed read timeout"),
+            Some(CLIENT_REQUEST_TIMEOUT)
         );
     }
 }

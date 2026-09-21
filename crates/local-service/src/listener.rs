@@ -269,6 +269,10 @@ pub struct UnixListenerService<O> {
     path: PathBuf,
     stop: Arc<AtomicBool>,
     active: Arc<AtomicUsize>,
+    /// Number of workers that currently own an admitted request and still
+    /// owe its response to the client.  Shutdown must let these responses
+    /// cross the socket before closing listener-owned stream clones.
+    inflight: Arc<AtomicUsize>,
     config: ListenerConfig,
     workers: Vec<JoinHandle<()>>,
     inbound: Receiver<Inbound>,
@@ -347,6 +351,7 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
             path,
             stop,
             active: Arc::new(AtomicUsize::new(0)),
+            inflight: Arc::new(AtomicUsize::new(0)),
             config,
             workers: Vec::new(),
             inbound,
@@ -508,6 +513,7 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
         let sender = self.inbound_sender.clone();
         let stop = Arc::clone(&self.stop);
         let active = Arc::clone(&self.active);
+        let inflight = Arc::clone(&self.inflight);
         let streams = Arc::clone(&self.streams);
         let limits = self.config.limits;
         let timeout = self.config.io_timeout;
@@ -528,6 +534,7 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
                     sender,
                     stop,
                     active,
+                    inflight,
                     streams,
                     connection_id,
                     limits,
@@ -576,6 +583,16 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
 
     fn finish_workers(&mut self) {
         self.shutdown();
+        // A wire shutdown request sets the stop flag while its worker is still
+        // waiting to write the acknowledgement.  Drain admitted requests
+        // until those workers have handed their replies to the socket; only
+        // then is it safe to close listener-owned clones.  The deadline keeps
+        // an externally requested shutdown bounded when an owner is wedged.
+        let deadline = Instant::now() + self.config.owner_reply_timeout;
+        while self.inflight.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
+            let _ = self.drain_owner_once();
+            thread::sleep(self.config.poll_interval);
+        }
         // A worker may be parked in its bounded read deadline while holding a
         // long-lived subscription connection. Closing the listener-owned
         // clones wakes those readers immediately so shutdown can join every

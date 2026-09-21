@@ -11,9 +11,9 @@
 use super::*;
 use backend_library::{
     Basis, COMMANDS, CommandReply, Coverage, DeclarationKind, Document, Fragment, Freshness,
-    Frontier, Intent, Lane, Outline, OutlineExtent, OutlineNode, ProjectionPage, Reason, Row, RowId,
-    SourceAvailability, SourceExcerpt, SourceExcerptExtent, SourceLocation, ViewRoot, ViewSnapshot,
-    object_version, package_key, symbol_key, view_key, view_state_root,
+    Frontier, Intent, Lane, Outline, OutlineExtent, OutlineNode, ProjectionPage, Reason, Row,
+    RowId, SourceAvailability, SourceExcerpt, SourceExcerptExtent, SourceLocation, ViewRoot,
+    ViewSnapshot, object_version, package_key, symbol_key, view_key, view_state_root,
 };
 use backend_present::{domain_name, grammar_for};
 
@@ -42,7 +42,13 @@ fn root(rows: Vec<Row>) -> ViewRoot {
     ViewRoot::new_incomplete(
         view_key(b"mcp-fixture"),
         basis,
-        Frontier::new(basis.branch, basis.log, basis.schema, view_state_root(&[]), 0),
+        Frontier::new(
+            basis.branch,
+            basis.log,
+            basis.schema,
+            view_state_root(&[]),
+            0,
+        ),
         rows,
         vec![Coverage::Unavailable {
             lane: Lane::Semantic,
@@ -141,7 +147,9 @@ impl Engine for Fake {
                 module_row(),
                 declaration_row(),
             ])),
-            Probe::Index(_) => CommandReply::Added(Intent::request_package(package_key(PROJECT)).id()),
+            Probe::Index(_) => {
+                CommandReply::Added(Intent::request_package(package_key(PROJECT)).id())
+            }
             Probe::Remove(_) => {
                 CommandReply::Removed(Intent::remove_package(package_key(PROJECT)).id())
             }
@@ -280,7 +288,11 @@ fn ready(product: Fake) -> Server<Fake> {
 fn request(server: &mut Server<Fake>, method: &str, params: &Value) -> Value {
     let message = json!({ "jsonrpc": "2.0", "id": 9, "method": method, "params": params });
     server
-        .handle(serde_json::to_vec(&message).expect("encode request").as_slice())
+        .handle(
+            serde_json::to_vec(&message)
+                .expect("encode request")
+                .as_slice(),
+        )
         .expect("a request receives a response")
 }
 
@@ -393,7 +405,10 @@ fn the_tool_table_is_grouped_by_domain_in_registry_order() {
             seen.push(domain);
         }
     }
-    assert_eq!(seen, vec!["library", "registry", "home", "session", "system"]);
+    assert_eq!(
+        seen,
+        vec!["library", "registry", "home", "session", "system"]
+    );
 }
 
 #[test]
@@ -401,10 +416,10 @@ fn the_surface_escape_hatch_still_advertises_every_typed_operation() {
     let mut server = ready(Fake::default());
     let listed = request(&mut server, "tools/list", &json!({}));
     let surface = tool_named(&listed["result"]["tools"], SURFACE_TOOL);
-    let advertised = surface["inputSchema"]["properties"]["command"]["properties"]["operation"]
-        ["enum"]
-        .as_array()
-        .expect("the operation enum");
+    let advertised =
+        surface["inputSchema"]["properties"]["command"]["properties"]["operation"]["enum"]
+            .as_array()
+            .expect("the operation enum");
     let expected = COMMANDS
         .iter()
         .filter(|spec| spec.is_surface())
@@ -559,12 +574,14 @@ fn an_unknown_coordinate_is_refused_with_the_operand_and_a_next_tool_call() {
         text.starts_with("✗ not-found `/abs/polyglot::src/lib.rs:999::nothing`"),
         "{text}"
     );
-    assert!(text.contains("no record is published at that identity"), "{text}");
+    assert!(
+        text.contains("no record is published at that identity"),
+        "{text}"
+    );
     assert_eq!(result["structuredContent"]["answer"], "fault");
     assert_eq!(result["structuredContent"]["slug"], "not-found");
     assert_eq!(
-        result["structuredContent"]["operand"],
-        MISSING,
+        result["structuredContent"]["operand"], MISSING,
         "the operand is never elided"
     );
     // The next step is the exact call an agent can paste back, not advice.
@@ -620,12 +637,18 @@ fn a_malformed_operand_names_the_argument_and_the_closed_set() {
 #[test]
 fn an_affordance_is_the_exact_next_tool_call_an_agent_can_paste() {
     let mut server = ready(Fake::default());
-    let result = call(&mut server, "backend.related", &json!({ "coordinate": MISSING }));
+    let result = call(
+        &mut server,
+        "backend.related",
+        &json!({ "coordinate": MISSING }),
+    );
     assert_eq!(result["isError"], true);
     let fault = &result["structuredContent"];
     if let Some(call) = fault.get("call").filter(|value| !value.is_null()) {
         assert!(
-            call["name"].as_str().is_some_and(|name| name.starts_with("backend.")),
+            call["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("backend.")),
             "an affordance names a real tool: {call}"
         );
         assert!(text_of(&result).contains("→ `{"), "{}", text_of(&result));
@@ -680,7 +703,10 @@ fn the_surface_escape_hatch_returns_the_typed_reply_and_a_readable_block() {
         &json!({ "command": { "operation": "subscriptions" } }),
     );
     assert_eq!(result["isError"], false);
-    assert_eq!(result["structuredContent"]["surface"]["result"], "subscriptions");
+    assert_eq!(
+        result["structuredContent"]["surface"]["result"],
+        "subscriptions"
+    );
     assert!(text_of(&result).starts_with("# subscriptions"), "{result}");
 }
 
@@ -777,7 +803,10 @@ fn the_query_card_carries_worked_queries_over_the_declared_schema() {
     let queries = resources::worked_queries(&text);
     assert!(queries.len() >= 4, "the card must work through examples");
     for query in &queries {
-        assert!(query.contains("@output"), "a worked query outputs something: {query}");
+        assert!(
+            query.contains("@output"),
+            "a worked query outputs something: {query}"
+        );
         assert!(
             ["Declaration", "Project", "Item", "ExternalTarget"]
                 .iter()
@@ -834,7 +863,10 @@ fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
     let instructions = initialized["result"]["instructions"]
         .as_str()
         .unwrap_or_default();
-    assert!(instructions.contains("backend://workspace/current"), "{instructions}");
+    assert!(
+        instructions.contains("backend://workspace/current"),
+        "{instructions}"
+    );
     assert!(instructions.contains("backend.document"), "{instructions}");
 }
 
@@ -883,9 +915,11 @@ fn continuation_authority_binds_context_and_owner_payload() {
     let tampered = token.replace("pc1-owner-issued", "pc1-owner-tampered");
     assert!(server.verify_cursor_token(&tampered, b"query-a").is_none());
     let other_workspace = Server::with_authority(Fake::default(), "/other".to_owned(), [8; 32]);
-    assert!(other_workspace
-        .verify_cursor_token(&token, b"query-a")
-        .is_none());
+    assert!(
+        other_workspace
+            .verify_cursor_token(&token, b"query-a")
+            .is_none()
+    );
     // Restarting with the persisted authority accepts the token; rotation
     // invalidates every old token immediately, including one with identical
     // workspace and query context.
@@ -896,14 +930,15 @@ fn continuation_authority_binds_context_and_owner_payload() {
     );
     let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
     assert!(rotated.verify_cursor_token(&token, b"query-a").is_none());
-    let expired = server.sign_cursor_token_at(
-        unix_seconds().saturating_sub(1),
-        "pc1-old",
-        b"query-a",
-    );
+    let expired =
+        server.sign_cursor_token_at(unix_seconds().saturating_sub(1), "pc1-old", b"query-a");
     assert!(server.verify_cursor_token(&expired, b"query-a").is_none());
     let expires_now = server.sign_cursor_token_at(unix_seconds(), "pc1-now", b"query-a");
-    assert!(server.verify_cursor_token(&expires_now, b"query-a").is_none());
+    assert!(
+        server
+            .verify_cursor_token(&expires_now, b"query-a")
+            .is_none()
+    );
 }
 
 #[test]
