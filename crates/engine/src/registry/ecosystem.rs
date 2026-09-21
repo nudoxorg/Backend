@@ -4,8 +4,12 @@
 //! They normalize seven source grammars into one release descriptor consumed
 //! by the shared acquisition owner.
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
+use std::collections::BTreeMap;
+use std::io::{Cursor, Read, Seek};
+use zip::ZipArchive;
 
 use super::identity::coordinate_from_registry_parts;
 use super::transport::ArchiveIntegrity;
@@ -19,10 +23,14 @@ use std::sync::Arc;
 /// Registry checksum algorithm declared by native metadata.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChecksumAlgorithm {
+    /// SHA-1 digest. Maven Central publishes this legacy digest for artifacts.
+    Sha1,
     /// SHA-256 raw archive digest.
     Sha256,
     /// SHA-512 raw archive digest.
     Sha512,
+    /// Go module zip hash (`h1:`), as defined by `golang.org/x/mod/dirhash`.
+    GoModule,
 }
 
 /// Parsed native checksum claim with a closed algorithm.
@@ -33,14 +41,21 @@ pub struct RegistryChecksum {
 }
 
 impl RegistryChecksum {
-    fn sha256_hex(value: &str) -> Result<Self, TransportFailure> {
+    pub(crate) fn sha1_hex(value: &str) -> Result<Self, TransportFailure> {
+        Ok(Self {
+            algorithm: ChecksumAlgorithm::Sha1,
+            bytes: decode_hex(value, 20)?.into(),
+        })
+    }
+
+    pub(crate) fn sha256_hex(value: &str) -> Result<Self, TransportFailure> {
         Ok(Self {
             algorithm: ChecksumAlgorithm::Sha256,
             bytes: decode_hex(value, 32)?.into(),
         })
     }
 
-    fn sha512_base64(value: &str) -> Result<Self, TransportFailure> {
+    pub(crate) fn sha512_base64(value: &str) -> Result<Self, TransportFailure> {
         let bytes = STANDARD
             .decode(value)
             .map_err(|_| TransportFailure::Protocol)?;
@@ -53,12 +68,48 @@ impl RegistryChecksum {
         })
     }
 
+    pub(crate) fn sha512_hex(value: &str) -> Result<Self, TransportFailure> {
+        Ok(Self {
+            algorithm: ChecksumAlgorithm::Sha512,
+            bytes: decode_hex(value, 64)?.into(),
+        })
+    }
+
+    pub(crate) fn go_module_base64(value: &str) -> Result<Self, TransportFailure> {
+        let bytes = STANDARD
+            .decode(
+                value
+                    .strip_prefix("h1:")
+                    .ok_or(TransportFailure::Protocol)?,
+            )
+            .map_err(|_| TransportFailure::Protocol)?;
+        if bytes.len() != 32 {
+            return Err(TransportFailure::Protocol);
+        }
+        Ok(Self {
+            algorithm: ChecksumAlgorithm::GoModule,
+            bytes: bytes.into_boxed_slice(),
+        })
+    }
+
     /// Verifies exact archive bytes against the registry-native content claim.
     #[must_use]
     pub fn verifies(&self, archive: &[u8]) -> bool {
         match self.algorithm {
+            ChecksumAlgorithm::Sha1 => Sha1::digest(archive).as_slice() == self.bytes.as_ref(),
             ChecksumAlgorithm::Sha256 => Sha256::digest(archive).as_slice() == self.bytes.as_ref(),
             ChecksumAlgorithm::Sha512 => Sha512::digest(archive).as_slice() == self.bytes.as_ref(),
+            ChecksumAlgorithm::GoModule => {
+                go_module_zip_hash(archive).is_some_and(|digest| digest == self.bytes.as_ref())
+            }
+        }
+    }
+
+    pub(crate) fn verifies_reader<R: Read + Seek>(&self, reader: &mut R) -> bool {
+        match self.algorithm {
+            ChecksumAlgorithm::GoModule => go_module_zip_hash_reader(reader)
+                .is_some_and(|digest| digest.as_ref() == self.bytes.as_ref()),
+            _ => false,
         }
     }
 
@@ -67,6 +118,112 @@ impl RegistryChecksum {
     pub const fn algorithm(&self) -> ChecksumAlgorithm {
         self.algorithm
     }
+
+    pub(crate) fn cache_key(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"nudox.registry.archive-cache.v1\0");
+        hasher.update(&[self.algorithm as u8]);
+        hasher.update(self.bytes.as_ref());
+        *hasher.finalize().as_bytes()
+    }
+}
+
+/// Builds the Go module zip hash used by the public checksum database.
+///
+/// Go does not publish a raw archive digest. `h1:` is the SHA-256 of sorted
+/// `sha256(file) filename\n` records, including the module-version directory
+/// prefix present in proxy zips. The `zip` crate handles central directories,
+/// data descriptors, ZIP64, CRC validation, and deflate decoding. We still
+/// apply an explicit size/path budget here because registry archives are
+/// untrusted input.
+fn go_module_zip_hash(archive: &[u8]) -> Option<[u8; 32]> {
+    go_module_zip_hash_reader(&mut Cursor::new(archive))
+}
+
+fn go_module_zip_hash_reader<R: Read + Seek>(reader: &mut R) -> Option<[u8; 32]> {
+    const MAX_TOTAL_UNCOMPRESSED: u64 = 256 * 1024 * 1024;
+    const MAX_FILE_UNCOMPRESSED: u64 = 64 * 1024 * 1024;
+
+    let mut zip = ZipArchive::new(reader).ok()?;
+    let mut files = BTreeMap::<String, [u8; 32]>::new();
+    let mut total_uncompressed = 0_u64;
+    for index in 0..zip.len() {
+        let mut entry = zip.by_index(index).ok()?;
+        if entry.is_dir() || entry.enclosed_name().is_none() {
+            return None;
+        }
+        let name = std::str::from_utf8(entry.name_raw()).ok()?.to_owned();
+        if !is_safe_go_zip_name(&name) || files.contains_key(&name) {
+            return None;
+        }
+        let size = entry.size();
+        if size > MAX_FILE_UNCOMPRESSED {
+            return None;
+        }
+        total_uncompressed = total_uncompressed.checked_add(size)?;
+        if total_uncompressed > MAX_TOTAL_UNCOMPRESSED {
+            return None;
+        }
+        if name.len() > 4096 {
+            return None;
+        }
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut read_total = 0_u64;
+        loop {
+            let read = entry.read(&mut buffer).ok()?;
+            if read == 0 {
+                break;
+            }
+            read_total = read_total.checked_add(u64::try_from(read).ok()?)?;
+            if read_total > size {
+                return None;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        if read_total != size {
+            return None;
+        }
+        // `ZipFile` validates CRC while reading. Keep the digest keyed by the
+        // exact UTF-8 path emitted by the proxy, as required by dirhash.
+        files.insert(name, hasher.finalize().into());
+    }
+    if files.is_empty() {
+        return None;
+    }
+    let mut records = Vec::new();
+    for (name, digest) in files {
+        let record_size = 65_usize.checked_add(name.len())?;
+        let next = records.len().checked_add(record_size)?;
+        if u64::try_from(next).ok()? > MAX_TOTAL_UNCOMPRESSED {
+            return None;
+        }
+        records.extend(hex_bytes(&digest));
+        records.push(b' ');
+        records.extend_from_slice(name.as_bytes());
+        records.push(b'\n');
+    }
+    Some(*Sha256::digest(records).as_ref())
+}
+
+fn is_safe_go_zip_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+        && name
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+fn hex_bytes(bytes: &[u8; 32]) -> Vec<u8> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = Vec::with_capacity(64);
+    for byte in bytes {
+        output.push(HEX[usize::from(byte >> 4)]);
+        output.push(HEX[usize::from(byte & 0x0f)]);
+    }
+    output
 }
 
 /// One release normalized from native registry metadata.
@@ -109,7 +266,7 @@ impl EcosystemAdapter {
         namespace: Option<PackageName>,
     ) -> Result<Self, AcquisitionError> {
         let namespace_is_valid = match endpoint.ecosystem() {
-            RegistryEcosystem::Maven | RegistryEcosystem::Cpp => namespace.is_some(),
+            RegistryEcosystem::Cpp | RegistryEcosystem::Maven => namespace.is_some(),
             RegistryEcosystem::Npm | RegistryEcosystem::Golang => true,
             RegistryEcosystem::Cargo | RegistryEcosystem::Pypi | RegistryEcosystem::Nuget => {
                 namespace.is_none()
@@ -146,7 +303,7 @@ impl EcosystemAdapter {
                 },
             ),
             RegistryEcosystem::Pypi => format!(
-                "{}/pypi/{}/json",
+                "{}/simple/{}/",
                 self.endpoint.url(),
                 normalized_pypi_name(self.package.as_str())
             ),
@@ -157,13 +314,7 @@ impl EcosystemAdapter {
                     self.endpoint.url()
                 )
             }
-            RegistryEcosystem::Nuget => {
-                format!(
-                    "{}/{}/index.json",
-                    self.endpoint.url(),
-                    package.to_ascii_lowercase()
-                )
-            }
+            RegistryEcosystem::Nuget => nuget_service_index_url(self.endpoint.url()),
             RegistryEcosystem::Golang => self.namespace.as_ref().map_or_else(
                 || {
                     format!(
@@ -181,10 +332,14 @@ impl EcosystemAdapter {
                 },
             ),
             RegistryEcosystem::Cpp => {
-                let namespace = self.namespace_path('/');
+                let version = self
+                    .namespace_name()
+                    .expect("validated Conan version namespace");
                 format!(
-                    "{}/v2/conans/{package}/{namespace}/revisions",
-                    self.endpoint.url()
+                    "{}/v2/conans/{}/{}/_/_/revisions",
+                    self.endpoint.url(),
+                    package,
+                    component(version)
                 )
             }
         }
@@ -200,10 +355,10 @@ impl EcosystemAdapter {
             RegistryEcosystem::Cargo => self.decode_cargo(bytes)?,
             RegistryEcosystem::Npm => self.decode_npm(bytes)?,
             RegistryEcosystem::Pypi => self.decode_python(bytes)?,
-            RegistryEcosystem::Maven => self.decode_maven(bytes)?,
+            RegistryEcosystem::Maven => return Err(TransportFailure::DownloadUnavailable),
             RegistryEcosystem::Nuget => self.decode_nuget(bytes)?,
-            RegistryEcosystem::Golang => self.decode_go(bytes)?,
-            RegistryEcosystem::Cpp => self.decode_cpp(bytes)?,
+            RegistryEcosystem::Golang => return Err(TransportFailure::DownloadUnavailable),
+            RegistryEcosystem::Cpp => return Err(TransportFailure::Protocol),
         };
         releases.sort_by(|left, right| left.coordinate.cmp(&right.coordinate));
         if releases
@@ -348,6 +503,81 @@ impl EcosystemAdapter {
     fn go_proxy_package(&self) -> String {
         go_proxy_escape(&self.slash_qualified_package())
     }
+
+    pub(crate) fn ecosystem(&self) -> RegistryEcosystem {
+        self.endpoint.ecosystem()
+    }
+
+    pub(crate) fn endpoint_url(&self) -> &str {
+        self.endpoint.url()
+    }
+
+    pub(crate) fn package_name(&self) -> &str {
+        self.package.as_str()
+    }
+
+    pub(crate) fn namespace_name(&self) -> Option<&str> {
+        self.namespace.as_ref().map(PackageName::as_str)
+    }
+
+    pub(crate) fn release_from_checksum(
+        &self,
+        version: &str,
+        archive_url: String,
+        checksum: RegistryChecksum,
+        provenance: &[u8],
+        facts: ReleaseFacts,
+    ) -> Result<NativeRelease, TransportFailure> {
+        self.release_with_facts(version, archive_url, checksum, provenance, facts)
+    }
+
+    pub(crate) fn admit_releases(
+        &self,
+        releases: Vec<NativeRelease>,
+        source: &[u8],
+        request: FeedRequest,
+    ) -> Result<FeedPage, TransportFailure> {
+        let snapshot = blake3::hash(source);
+        let mut prefix = [0_u8; 24];
+        prefix.copy_from_slice(&snapshot.as_bytes()[..24]);
+        let current = request.cursor.token();
+        let start = if current == [0; 32] || current[..24] != prefix {
+            0
+        } else {
+            usize::try_from(u64::from_be_bytes(
+                current[24..]
+                    .try_into()
+                    .map_err(|_| TransportFailure::Protocol)?,
+            ))
+            .map_err(|_| TransportFailure::Bounds)?
+        };
+        if start > releases.len() {
+            return Err(TransportFailure::Protocol);
+        }
+        let end = start.saturating_add(request.max_items).min(releases.len());
+        let packages = releases[start..end]
+            .iter()
+            .map(|release| RemotePackage {
+                coordinate: release.coordinate.clone(),
+                integrity: ArchiveIntegrity::Native(release.checksum.clone()),
+                provenance: release.provenance,
+                facts: release.facts,
+                archive_url: Arc::from(release.archive_url.as_str()),
+            })
+            .collect();
+        let mut next_token = [0_u8; 32];
+        next_token[..24].copy_from_slice(&prefix);
+        next_token[24..].copy_from_slice(
+            &u64::try_from(end)
+                .map_err(|_| TransportFailure::Bounds)?
+                .to_be_bytes(),
+        );
+        Ok(FeedPage {
+            base: request.cursor,
+            next_token,
+            packages,
+        })
+    }
 }
 
 #[path = "ecosystem_decoders.rs"]
@@ -417,6 +647,16 @@ fn cargo_sparse_path(name: &str) -> String {
     }
 }
 
+fn nuget_service_index_url(endpoint: &str) -> String {
+    if endpoint.ends_with("/index.json") {
+        endpoint.to_owned()
+    } else if endpoint.ends_with("/v3") {
+        format!("{endpoint}/index.json")
+    } else {
+        format!("{endpoint}/v3/index.json")
+    }
+}
+
 fn decode_hex(value: &str, bytes: usize) -> Result<Vec<u8>, TransportFailure> {
     if value.len() != bytes * 2 {
         return Err(TransportFailure::Protocol);
@@ -465,6 +705,11 @@ fn allowed_archive_authority(ecosystem: RegistryEcosystem, base: &str, archive: 
         && archive_authority
             .host()
             .eq_ignore_ascii_case("files.pythonhosted.org");
+    // NuGet advertises its registration and flat-container authorities in the
+    // service index. The transport admits those authorities from that signed
+    // configuration before downloading the archive; the adapter only checks
+    // that the URL is an HTTPS resource without embedded credentials.
+    let nuget_resource = ecosystem == RegistryEcosystem::Nuget;
 
     archive.query().is_none()
         && !archive.to_string().contains('#')
@@ -475,5 +720,5 @@ fn allowed_archive_authority(ecosystem: RegistryEcosystem, base: &str, archive: 
                     .host()
                     .parse::<std::net::IpAddr>()
                     .is_ok_and(|address| address.is_loopback())))
-        && (same_authority || official_cargo_split || official_pypi_split)
+        && (same_authority || official_cargo_split || official_pypi_split || nuget_resource)
 }

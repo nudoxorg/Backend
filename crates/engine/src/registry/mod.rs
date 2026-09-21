@@ -46,6 +46,6 @@ pub use owner::{
     RegistryOwner, RegistryReadiness, RegistryRecovery, storage_root,
 };
 pub use transport::{
-    FeedPage, FeedRequest, HttpRegistryTransport, RegistryTransport, RemotePackage,
+    ArchiveArtifact, FeedPage, FeedRequest, HttpRegistryTransport, RegistryTransport, RemotePackage,
     TransportFailure, TransportResult,
 };

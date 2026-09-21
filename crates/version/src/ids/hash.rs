@@ -74,12 +74,13 @@ pub(crate) fn commit_id_from_digest(bytes: [u8; ID_BYTES]) -> CommitId {
 use core::marker::PhantomData;
 
 use super::{
-    CLASS_DELTA, CLASS_OBJECT_VERSION, CLASS_STATE_ROOT, HASH_DOMAIN, ID_BYTES,
     context::IdContext,
-    identity::{CommitId, DeltaId, StateRoot, WorkspaceRoot},
-    schema::Relation,
+    identity::{CommitId, DeltaId, ObjectVersion, StateRoot, WorkspaceRoot},
+    schema::{Relation, Schema},
     wire::{IdAdmissionError, UntrustedId},
+    CLASS_DELTA, CLASS_OBJECT_VERSION, CLASS_STATE_ROOT, HASH_DOMAIN, ID_BYTES,
 };
+use crate::workspace::SchemaIdentity;
 
 /// Failure while checking a runtime schema identity against canonical bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,6 +97,13 @@ pub enum RuntimeIdentityError {
         expected: usize,
         /// Bytes supplied so far, including the rejected excess chunk.
         actual: usize,
+    },
+    /// The hasher was finalized for a schema different from the typed result.
+    SchemaMismatch {
+        /// Schema declared when the hasher was created.
+        actual: SchemaIdentity,
+        /// Schema requested by the typed result.
+        expected: SchemaIdentity,
     },
 }
 
@@ -114,6 +122,7 @@ impl std::error::Error for RuntimeIdentityError {}
 /// the digest is emitted after exactly the declared number of bytes arrives.
 pub struct ObjectVersionHasher {
     hasher: blake3::Hasher,
+    schema: SchemaIdentity,
     expected: usize,
     written: usize,
     failed: bool,
@@ -138,6 +147,7 @@ impl ObjectVersionHasher {
         hasher.update(&length.to_be_bytes());
         Ok(Self {
             hasher,
+            schema,
             expected: payload_len,
             written: 0,
             failed: false,
@@ -186,6 +196,22 @@ impl ObjectVersionHasher {
             });
         }
         Ok(*self.hasher.finalize().as_bytes())
+    }
+
+    /// Finishes a streamed digest as an opaque typed object version.
+    ///
+    /// The schema is checked against the type parameter before the opaque
+    /// identity is constructed, so callers cannot turn an arbitrary digest
+    /// into a typed identity or accidentally use the wrong schema framing.
+    pub fn finish_version<T: Schema>(self) -> Result<ObjectVersion<T>, RuntimeIdentityError> {
+        let expected = SchemaIdentity::new(T::DOMAIN, T::TYPE, T::VERSION);
+        if self.schema != expected {
+            return Err(RuntimeIdentityError::SchemaMismatch {
+                actual: self.schema,
+                expected,
+            });
+        }
+        Ok(ObjectVersion::from_digest(self.finish()?))
     }
 }
 

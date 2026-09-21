@@ -143,6 +143,11 @@ fn endpoint_is_admitted(endpoint: &str) -> bool {
         return false;
     }
     match scheme {
+        // HTTPS is the trust boundary for configured mirrors, self-hosted
+        // registries, and forge-backed package origins.  The concrete source
+        // policy is applied to follow-up resources below; keeping endpoint
+        // admission open to HTTPS is what lets an operator configure a real
+        // mirror without recompiling the client.
         "https" => true,
         "http" => loopback_host(authority.host()),
         _ => false,

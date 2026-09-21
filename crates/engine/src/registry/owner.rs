@@ -7,15 +7,15 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc,
         atomic::{AtomicU64, Ordering},
+        Arc,
     },
     time::Duration,
 };
 
 use crate::{
     capability::CapabilityArtifactId,
-    effects::{EffectKey, effect_key},
+    effects::{effect_key, EffectKey},
     fault::{Boundary, Faults},
     journal::{HashChainJournal, JournalError},
 };
@@ -591,11 +591,11 @@ impl RegistryOwner {
                     continue;
                 }
             }
-            let bytes = match transport
+            let artifact = match transport
                 .fetch_archive(package)
                 .map_err(AcquisitionError::Transport)?
             {
-                TransportResult::Available(bytes) => bytes,
+                TransportResult::Available(artifact) => artifact,
                 TransportResult::Unavailable => return Ok(PageAcquisition::Unavailable),
                 TransportResult::RetryAfter(delay) => {
                     return Ok(PageAcquisition::RetryAfter(delay));
@@ -604,10 +604,12 @@ impl RegistryOwner {
                     return Err(AcquisitionError::Transport(TransportFailure::Protocol));
                 }
             };
+            let archive_bytes =
+                usize::try_from(artifact.length()).map_err(|_| AcquisitionError::Bounds)?;
             total = total
-                .checked_add(bytes.len())
+                .checked_add(archive_bytes)
                 .ok_or(AcquisitionError::Bounds)?;
-            let publication = self.verify_and_store(package, &bytes, total)?;
+            let publication = self.verify_and_store(package, artifact, total)?;
             publications.push(publication);
         }
         Ok(PageAcquisition::Ready(publications))
@@ -616,12 +618,13 @@ impl RegistryOwner {
     fn verify_and_store(
         &self,
         package: &super::RemotePackage,
-        bytes: &[u8],
+        artifact: super::ArchiveArtifact,
         page_bytes: usize,
     ) -> Result<PublishedPackage, AcquisitionError> {
-        if bytes.len() > self.limits.max_archive_bytes {
+        let bytes = usize::try_from(artifact.length()).map_err(|_| AcquisitionError::Bounds)?;
+        if bytes > self.limits.max_archive_bytes {
             return Err(AcquisitionError::Overrun {
-                measured: u64::try_from(bytes.len()).map_err(|_| AcquisitionError::Bounds)?,
+                measured: u64::try_from(bytes).map_err(|_| AcquisitionError::Bounds)?,
                 limit: u64::try_from(self.limits.max_archive_bytes)
                     .map_err(|_| AcquisitionError::Bounds)?,
             });
@@ -633,19 +636,32 @@ impl RegistryOwner {
                     .map_err(|_| AcquisitionError::Bounds)?,
             });
         }
-        let artifact = package
-            .verify_archive(bytes)
+        let mut reader = artifact
+            .into_reader(self.limits.max_archive_bytes)
             .map_err(AcquisitionError::Transport)?;
-        let registry = super::admit_registry_coordinate(&package.coordinate)?;
-        self.faults
-            .trip(Boundary::ObjectWrite)
-            .map_err(AcquisitionError::Injected)?;
-        write_immutable(&self.objects, artifact, bytes)?;
+        let (temporary, artifact) = stage_verified_archive(&self.objects, package, &mut reader)?;
+        let registry = match super::admit_registry_coordinate(&package.coordinate) {
+            Ok(registry) => registry,
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.faults.trip(Boundary::ObjectWrite) {
+            let _ = fs::remove_file(&temporary);
+            return Err(AcquisitionError::Injected(error));
+        }
+        publish_immutable(
+            &self.objects,
+            artifact,
+            temporary,
+            u64::try_from(bytes).map_err(|_| AcquisitionError::Bounds)?,
+        )?;
         Ok(PublishedPackage {
             coordinate: package.coordinate.clone(),
             registry,
             artifact: PublishedArtifactClaim::verified(artifact),
-            bytes: u64::try_from(bytes.len()).map_err(|_| AcquisitionError::Bounds)?,
+            bytes: u64::try_from(bytes).map_err(|_| AcquisitionError::Bounds)?,
             provenance: package.provenance,
             upstream_integrity: package.integrity_version(),
             facts: package.facts,
@@ -661,54 +677,84 @@ enum PageAcquisition {
 
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-fn write_immutable(
+fn stage_verified_archive(
+    directory: &Path,
+    package: &super::RemotePackage,
+    reader: &mut super::transport::ArchiveReader,
+) -> Result<(PathBuf, CapabilityArtifactId), AcquisitionError> {
+    let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = directory.join(format!(".archive.{}.{}.tmp", std::process::id(), sequence));
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)?;
+    let length = reader.length();
+    let artifact = match package.stream_to(reader, &mut file, length) {
+        Ok(artifact) => artifact,
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            return Err(AcquisitionError::Transport(error));
+        }
+    };
+    if let Err(error) = file.sync_all() {
+        drop(file);
+        let _ = fs::remove_file(&temporary);
+        return Err(error.into());
+    }
+    drop(file);
+    Ok((temporary, artifact))
+}
+
+fn write_immutable<R: Read>(
     directory: &Path,
     id: CapabilityArtifactId,
-    bytes: &[u8],
+    mut reader: R,
+    bytes: u64,
 ) -> Result<(), AcquisitionError> {
     let name = super::transport::hex(id.as_bytes());
-    let target = directory.join(&name);
-    if target.exists() {
-        let mut existing = Vec::new();
-        File::open(&target)?
-            .take(
-                u64::try_from(bytes.len())
-                    .map_err(|_| AcquisitionError::Bounds)?
-                    .saturating_add(1),
-            )
-            .read_to_end(&mut existing)?;
-        if existing == bytes {
-            return Ok(());
-        }
-        return Err(AcquisitionError::CorruptJournal);
-    }
-    // A deterministic temporary name lets one process delete or overwrite a
-    // concurrent writer. Keep receiving objects private until their bytes are
-    // durable, then use a no-clobber hard-link as the publication primitive.
     let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary = directory.join(format!(".{name}.{}.{}.tmp", std::process::id(), sequence));
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
         .open(&temporary)?;
-    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+    if let Err(error) = copy_exact(&mut reader, &mut file, bytes) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = file.sync_all() {
+        drop(file);
         let _ = fs::remove_file(&temporary);
         return Err(error.into());
     }
     drop(file);
+    publish_immutable(directory, id, temporary, bytes)
+}
+
+fn publish_immutable(
+    directory: &Path,
+    id: CapabilityArtifactId,
+    temporary: PathBuf,
+    bytes: u64,
+) -> Result<(), AcquisitionError> {
+    let name = super::transport::hex(id.as_bytes());
+    let target = directory.join(&name);
+    if target.exists() {
+        let same = files_equal(&temporary, &target, bytes);
+        let _ = fs::remove_file(&temporary);
+        let same = same?;
+        if !same {
+            return Err(AcquisitionError::CorruptJournal);
+        }
+        return Ok(());
+    }
     match fs::hard_link(&temporary, &target) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let mut existing = Vec::new();
-            File::open(&target)?
-                .take(
-                    u64::try_from(bytes.len())
-                        .map_err(|_| AcquisitionError::Bounds)?
-                        .saturating_add(1),
-                )
-                .read_to_end(&mut existing)?;
-            if existing != bytes {
-                let _ = fs::remove_file(&temporary);
+            let same = files_equal(&temporary, &target, bytes);
+            let _ = fs::remove_file(&temporary);
+            let same = same?;
+            if !same {
                 return Err(AcquisitionError::CorruptJournal);
             }
         }
@@ -720,6 +766,58 @@ fn write_immutable(
     fs::remove_file(&temporary)?;
     File::open(directory)?.sync_all()?;
     Ok(())
+}
+
+fn copy_exact<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    expected: u64,
+) -> Result<(), AcquisitionError> {
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut total = 0_u64;
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(u64::try_from(read).map_err(|_| AcquisitionError::Bounds)?)
+            .ok_or(AcquisitionError::Bounds)?;
+        if total > expected {
+            return Err(AcquisitionError::Overrun {
+                measured: total,
+                limit: expected,
+            });
+        }
+        writer.write_all(&buffer[..read])?;
+    }
+    if total != expected {
+        return Err(AcquisitionError::CorruptJournal);
+    }
+    Ok(())
+}
+
+fn files_equal(left: &Path, right: &Path, expected: u64) -> Result<bool, AcquisitionError> {
+    if fs::metadata(left)?.len() != expected || fs::metadata(right)?.len() != expected {
+        return Ok(false);
+    }
+    let mut left = File::open(left)?;
+    let mut right = File::open(right)?;
+    let mut left_buffer = [0_u8; 64 * 1024];
+    let mut right_buffer = [0_u8; 64 * 1024];
+    loop {
+        let left_read = left.read(&mut left_buffer)?;
+        let right_read = right.read(&mut right_buffer)?;
+        if left_read != right_read {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+        if left_buffer[..left_read] != right_buffer[..right_read] {
+            return Ok(false);
+        }
+    }
 }
 fn verify_receipt_objects(
     directory: &Path,
@@ -758,7 +856,7 @@ mod immutable_object_tests {
             let directory = directory.clone();
             let bytes = Arc::clone(&bytes);
             writers.push(std::thread::spawn(move || {
-                write_immutable(&directory, id, &bytes)
+                write_immutable(&directory, id, bytes.as_ref(), bytes.len() as u64)
             }));
         }
         for writer in writers {

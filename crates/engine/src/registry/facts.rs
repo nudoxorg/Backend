@@ -192,6 +192,10 @@ impl ReleaseFacts {
     ) -> Self {
         Self::new(standing, downloads, security)
     }
+
+    pub(crate) fn with_security(self, security: SecurityStanding) -> Self {
+        Self::new(self.standing, self.downloads, security)
+    }
 }
 
 #[cfg(test)]

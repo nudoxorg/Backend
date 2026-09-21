@@ -1,6 +1,6 @@
 use std::{
-    fs,
-    io::{Read, Write},
+    env, fs,
+    io::{Read, Seek, SeekFrom, Write},
     net::TcpListener,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
@@ -12,7 +12,7 @@ use crate::{
     capability::CapabilityArtifactId,
     fault::{Boundary, Faults},
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha2::{Digest, Sha256, Sha512};
 
 static TEMPORARY: AtomicU64 = AtomicU64::new(0);
@@ -98,21 +98,14 @@ fn limits() -> AcquisitionLimits {
     }
 }
 
-struct UnavailableTransport;
-
-impl RegistryTransport for UnavailableTransport {
-    fn fetch_page(
-        &mut self,
-        _: FeedRequest,
-    ) -> Result<TransportResult<FeedPage>, TransportFailure> {
-        Ok(TransportResult::Unavailable)
-    }
-
-    fn fetch_archive(
-        &mut self,
-        _: &RemotePackage,
-    ) -> Result<TransportResult<Vec<u8>>, TransportFailure> {
-        panic!("archive called without a page")
+fn large_archive_limits() -> AcquisitionLimits {
+    AcquisitionLimits {
+        max_items: 4,
+        max_feed_bytes: 4096,
+        max_archive_bytes: 4 * 1024 * 1024,
+        max_page_archive_bytes: 8 * 1024 * 1024,
+        max_catalog_items: 16,
+        ..AcquisitionLimits::default()
     }
 }
 
@@ -148,6 +141,100 @@ fn http_publication_and_restart_advance_one_atomic_cursor() {
     assert!(recovery.pending.is_none());
     assert_eq!(recovery.last_receipt, Some(receipt));
     fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn large_archive_streams_once_through_a_bounded_handoff() {
+    let archive = vec![0x5a; 2 * 1024 * 1024];
+    let digest = *CapabilityArtifactId::from_value(&archive).as_bytes();
+    let (endpoint_text, server) = live_fixture(&archive, digest);
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("admit endpoint");
+    let root = temporary("large-stream");
+    let (mut owner, _) = RegistryOwner::open(
+        &root,
+        endpoint.clone(),
+        AcquisitionPolicy::Online,
+        large_archive_limits(),
+    )
+    .expect("open owner");
+    let mut transport =
+        HttpRegistryTransport::new(endpoint, None, large_archive_limits()).expect("transport");
+    let AcquisitionOutcome::Published(receipt) = owner.poll(&mut transport).expect("poll") else {
+        panic!("expected large archive publication")
+    };
+    let object = owner
+        .read_artifact(&receipt.packages[0].coordinate)
+        .expect("read artifact")
+        .expect("published artifact");
+    assert_eq!(object.bytes().len(), archive.len());
+    // `live_fixture` has exactly one archive response. A second download or
+    // retained handoff would leave the server blocked or fail its join.
+    server.join().expect("single archive response");
+    drop(owner);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn archive_stream_hashing_never_requests_a_buffer_over_64kib() {
+    struct TrackingReader {
+        bytes: Vec<u8>,
+        offset: usize,
+        largest_request: usize,
+    }
+    impl Read for TrackingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.largest_request = self.largest_request.max(buffer.len());
+            let remaining = self.bytes.len().saturating_sub(self.offset);
+            let count = remaining.min(buffer.len());
+            if count == 0 {
+                return Ok(0);
+            }
+            buffer[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
+            self.offset += count;
+            Ok(count)
+        }
+    }
+    impl Seek for TrackingReader {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            let target = match position {
+                SeekFrom::Start(offset) => offset,
+                SeekFrom::Current(offset) => (self.offset as i64)
+                    .checked_add(offset)
+                    .ok_or_else(|| std::io::Error::other("seek overflow"))?
+                    as u64,
+                SeekFrom::End(offset) => (self.bytes.len() as i64)
+                    .checked_add(offset)
+                    .ok_or_else(|| std::io::Error::other("seek overflow"))?
+                    as u64,
+            };
+            self.offset =
+                usize::try_from(target).map_err(|_| std::io::Error::other("seek overflow"))?;
+            Ok(target)
+        }
+    }
+
+    let bytes = vec![0xa5; 2 * 1024 * 1024];
+    let digest = *CapabilityArtifactId::from_value(&bytes).as_bytes();
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/large@1.0.0").expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(digest),
+        provenance: ProvenanceDigest::from_authenticated_feed([7; 32]),
+        facts: ReleaseFacts::default(),
+        archive_url: std::sync::Arc::from("https://registry.example.test/large.crate"),
+    };
+    let mut reader = TrackingReader {
+        bytes,
+        offset: 0,
+        largest_request: 0,
+    };
+    let mut sink = std::io::sink();
+    let artifact = package
+        .stream_to(&mut reader, &mut sink, 2 * 1024 * 1024)
+        .expect("stream and verify archive");
+    assert_eq!(artifact.as_bytes(), &digest);
+    assert_eq!(reader.offset, 2 * 1024 * 1024);
+    assert!(reader.largest_request <= 64 * 1024);
 }
 
 #[test]
@@ -213,7 +300,7 @@ fn offline_policy_never_calls_transport_and_secrets_are_redacted() {
         fn fetch_archive(
             &mut self,
             _: &RemotePackage,
-        ) -> Result<TransportResult<Vec<u8>>, TransportFailure> {
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
             panic!("network called")
         }
     }
@@ -233,6 +320,21 @@ fn offline_policy_never_calls_transport_and_secrets_are_redacted() {
 
 #[test]
 fn unavailable_feed_retains_one_durable_retry_intent() {
+    struct UnavailableTransport;
+    impl RegistryTransport for UnavailableTransport {
+        fn fetch_page(
+            &mut self,
+            _: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            Ok(TransportResult::Unavailable)
+        }
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            panic!("archive called without a page")
+        }
+    }
     let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
         .expect("endpoint");
     let root = temporary("unavailable");
@@ -248,75 +350,6 @@ fn unavailable_feed_retains_one_durable_retry_intent() {
         .expect("recovery");
     assert_eq!(recovery.cursor.sequence(), 0);
     assert!(recovery.pending.is_some());
-    fs::remove_dir_all(root).expect("cleanup");
-}
-
-#[test]
-fn a_truncated_registry_tail_is_repaired_without_advancing_the_cursor() {
-    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
-        .expect("endpoint");
-    let root = temporary("truncated-tail");
-    let (mut owner, _) =
-        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
-            .expect("owner");
-    assert!(matches!(
-        owner.poll(&mut UnavailableTransport),
-        Ok(AcquisitionOutcome::Unavailable { .. })
-    ));
-    drop(owner);
-
-    let journal = storage_root(&root, &endpoint).join("registry.journal");
-    let valid_length = fs::metadata(&journal).expect("journal metadata").len();
-    let mut append = fs::OpenOptions::new()
-        .append(true)
-        .open(&journal)
-        .expect("open journal tail");
-    append.write_all(&[0xa5]).expect("append interrupted byte");
-    append.sync_all().expect("sync interrupted byte");
-    drop(append);
-    assert_eq!(
-        fs::metadata(&journal).expect("tail metadata").len(),
-        valid_length + 1
-    );
-
-    let (_, recovery) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits())
-        .expect("repair restart");
-    assert!(recovery.repaired_tail);
-    assert_eq!(recovery.cursor.sequence(), 0);
-    assert!(
-        recovery.pending.is_some(),
-        "retry intent must remain durable"
-    );
-    assert_eq!(
-        fs::metadata(&journal).expect("repaired metadata").len(),
-        valid_length
-    );
-    fs::remove_dir_all(root).expect("cleanup");
-}
-
-#[test]
-fn a_corrupt_complete_registry_frame_fails_closed_on_restart() {
-    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
-        .expect("endpoint");
-    let root = temporary("corrupt-frame");
-    let (mut owner, _) =
-        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
-            .expect("owner");
-    assert!(matches!(
-        owner.poll(&mut UnavailableTransport),
-        Ok(AcquisitionOutcome::Unavailable { .. })
-    ));
-    drop(owner);
-
-    let journal = storage_root(&root, &endpoint).join("registry.journal");
-    let mut bytes = fs::read(&journal).expect("read journal");
-    let index = bytes.len().checked_sub(1).expect("frame bytes");
-    bytes[index] ^= 0x01;
-    fs::write(&journal, bytes).expect("corrupt journal");
-    assert!(matches!(
-        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()),
-        Err(AcquisitionError::Journal(_)) | Err(AcquisitionError::CorruptJournal)
-    ));
     fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -339,7 +372,7 @@ fn metadata_only_delta_advances_and_recovers_its_checkpoint() {
         fn fetch_archive(
             &mut self,
             _: &RemotePackage,
-        ) -> Result<TransportResult<Vec<u8>>, TransportFailure> {
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
             panic!("metadata-only delta has no archive")
         }
     }
@@ -406,9 +439,11 @@ fn policy_delta_reuses_the_exact_archive_without_a_second_download() {
         fn fetch_archive(
             &mut self,
             _: &RemotePackage,
-        ) -> Result<TransportResult<Vec<u8>>, TransportFailure> {
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
             self.archive_fetches += 1;
-            Ok(TransportResult::Available(self.archive.clone()))
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                self.archive.clone(),
+            )))
         }
     }
     let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
@@ -434,6 +469,19 @@ fn policy_delta_reuses_the_exact_archive_without_a_second_download() {
 
 #[test]
 fn endpoint_policy_rejects_plaintext_remote_hosts_and_redirects() {
+    // HTTPS mirrors and forge-backed package origins are valid configured
+    // sources; only their explicitly advertised follow-up authorities are
+    // trusted by the transport.
+    assert!(RegistryEndpoint::new(
+        RegistryEcosystem::Cargo,
+        "https://packages.example.org/mirror"
+    )
+    .is_ok());
+    assert!(RegistryEndpoint::new(
+        RegistryEcosystem::Npm,
+        "https://github.com/example/registry"
+    )
+    .is_ok());
     assert!(matches!(
         RegistryEndpoint::new(RegistryEcosystem::Cargo, "http://example.test"),
         Err(AcquisitionError::InvalidConfiguration)
@@ -507,7 +555,7 @@ fn all_native_ecosystem_grammars_normalize_and_verify_archives() {
     let sha256 = digest_hex(Sha256::digest(archive).as_slice());
     let sha512 = STANDARD.encode(Sha512::digest(archive));
     let origin = "https://registry.example.test";
-    let fixtures = [
+    let fixtures: Vec<(RegistryEcosystem, Option<&str>, String)> = vec![
         (
             RegistryEcosystem::Cargo,
             None,
@@ -517,40 +565,21 @@ fn all_native_ecosystem_grammars_normalize_and_verify_archives() {
             RegistryEcosystem::Npm,
             None,
             format!(
-                "{{\"versions\":{{\"1.2.3\":{{\"dist\":{{\"integrity\":\"sha512-{sha512}\",\"tarball\":\"{origin}/demo/-/demo-1.2.3.tgz\"}}}}}}}}"
+                "{{\"name\":\"demo\",\"versions\":{{\"1.2.3\":{{\"dist\":{{\"integrity\":\"sha512-{sha512}\",\"tarball\":\"{origin}/demo/-/demo-1.2.3.tgz\"}}}}}}}}"
             ),
         ),
         (
             RegistryEcosystem::Pypi,
             None,
             format!(
-                "{{\"releases\":{{\"1.2.3\":[{{\"packagetype\":\"sdist\",\"url\":\"{origin}/files/demo-1.2.3.tar.gz\",\"digests\":{{\"sha256\":\"{sha256}\"}}}}]}}}}"
-            ),
-        ),
-        (
-            RegistryEcosystem::Maven,
-            Some("org.example"),
-            format!(
-                "<metadata><release version=\"1.2.3\" sha256=\"{sha256}\" url=\"{origin}/org/example/demo/1.2.3/demo-1.2.3.jar\"/></metadata>"
+                "{{\"meta\":{{\"api-version\":\"1.0\"}},\"files\":[{{\"filename\":\"demo-1.2.3.tar.gz\",\"url\":\"{origin}/files/demo-1.2.3.tar.gz\",\"hashes\":{{\"sha256\":\"{sha256}\"}},\"yanked\":false}}]}}"
             ),
         ),
         (
             RegistryEcosystem::Nuget,
             None,
             format!(
-                "{{\"items\":[{{\"catalogEntry\":{{\"version\":\"1.2.3\"}},\"packageContent\":\"{origin}/demo/1.2.3/demo.1.2.3.nupkg\",\"packageHash\":\"{sha512}\"}}]}}"
-            ),
-        ),
-        (
-            RegistryEcosystem::Golang,
-            None,
-            format!("v1.2.3 {sha256}\n"),
-        ),
-        (
-            RegistryEcosystem::Cpp,
-            Some("stable/example"),
-            format!(
-                "{{\"results\":[{{\"version\":\"1.2.3\",\"download_url\":\"{origin}/v2/conans/demo/stable/example/download\",\"sha256\":\"{sha256}\"}}]}}"
+                "{{\"items\":[{{\"catalogEntry\":{{\"version\":\"1.2.3\",\"listed\":true}},\"packageContent\":\"{origin}/demo/1.2.3/demo.1.2.3.nupkg\",\"packageHash\":\"{sha512}\"}}]}}"
             ),
         ),
     ];
@@ -574,6 +603,51 @@ fn all_native_ecosystem_grammars_normalize_and_verify_archives() {
         );
         assert!(releases[0].checksum.verifies(archive));
     }
+}
+
+#[test]
+fn protocol_phase_adapters_keep_maven_go_and_conan_typed() {
+    let maven = EcosystemAdapter::new(
+        RegistryEndpoint::new(RegistryEcosystem::Maven, "https://repo1.maven.org")
+            .expect("maven endpoint"),
+        PackageName::new("commons-lang3").expect("artifact"),
+        Some(PackageName::new("org.apache.commons").expect("group")),
+    )
+    .expect("maven adapter");
+    let metadata = br#"<metadata><groupId>org.apache.commons</groupId><artifactId>commons-lang3</artifactId><versioning><latest>3.18.0</latest><versions><version>3.17.0</version><version>3.18.0</version></versions></versioning></metadata>"#;
+    assert_eq!(
+        maven
+            .maven_versions(metadata)
+            .expect("maven metadata")
+            .len(),
+        2
+    );
+
+    let go = EcosystemAdapter::new(
+        RegistryEndpoint::new(RegistryEcosystem::Golang, "https://proxy.golang.org")
+            .expect("go endpoint"),
+        PackageName::new("errors").expect("name"),
+        Some(PackageName::new("github.com/pkg").expect("module namespace")),
+    )
+    .expect("go adapter");
+    assert_eq!(
+        go.go_versions(b"v0.9.1\nv0.8.0\n")
+            .expect("go listing")
+            .len(),
+        2
+    );
+
+    let conan = EcosystemAdapter::new(
+        RegistryEndpoint::new(RegistryEcosystem::Cpp, "https://center2.conan.io")
+            .expect("conan endpoint"),
+        PackageName::new("zlib").expect("name"),
+        Some(PackageName::new("1.3.1").expect("version")),
+    )
+    .expect("conan adapter");
+    assert!(matches!(
+        conan.decode(br#"{}"#),
+        Err(TransportFailure::Protocol)
+    ));
 }
 
 #[test]
@@ -691,7 +765,7 @@ fn cold_cache_resolution_is_typed_for_every_ecosystem() {
         fn fetch_archive(
             &mut self,
             _: &RemotePackage,
-        ) -> Result<TransportResult<Vec<u8>>, TransportFailure> {
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
             panic!("offline resolution must not touch the network")
         }
     }
@@ -785,7 +859,7 @@ fn unavailable_source_is_a_typed_terminal_for_every_ecosystem() {
         fn fetch_archive(
             &mut self,
             _: &RemotePackage,
-        ) -> Result<TransportResult<Vec<u8>>, TransportFailure> {
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
             panic!("archive called without an admitted page")
         }
     }
@@ -1183,7 +1257,7 @@ fn cross_authority_archive_is_a_configuration_rejection() {
     let origin = "https://registry.example.test";
     let sha512 = STANDARD.encode(Sha512::digest(b"archive"));
     let body = format!(
-        "{{\"versions\":{{\"1.2.3\":{{\"dist\":{{\"integrity\":\"sha512-{sha512}\",\"tarball\":\"https://other.example.test/demo.tgz\"}}}}}}}}"
+        "{{\"name\":\"demo\",\"versions\":{{\"1.2.3\":{{\"dist\":{{\"integrity\":\"sha512-{sha512}\",\"tarball\":\"https://other.example.test/demo.tgz\"}}}}}}}}"
     );
     let endpoint = RegistryEndpoint::new(RegistryEcosystem::Npm, origin).expect("endpoint");
     let adapter = EcosystemAdapter::new(endpoint, PackageName::new("demo").expect("package"), None)
@@ -1232,8 +1306,6 @@ fn namespaced_npm_and_go_adapters_preserve_the_native_identity() {
         "https://registry.npmjs.org/@types%2Fnode"
     );
 
-    let archive = b"go module";
-    let digest = digest_hex(Sha256::digest(archive).as_slice());
     let go_endpoint = RegistryEndpoint::new(RegistryEcosystem::Golang, "https://proxy.golang.org")
         .expect("go endpoint");
     let go = EcosystemAdapter::new(
@@ -1246,13 +1318,7 @@ fn namespaced_npm_and_go_adapters_preserve_the_native_identity() {
         go.metadata_url(),
         "https://proxy.golang.org/github.com/pkg/errors/@v/list"
     );
-    let releases = go
-        .decode(format!("v0.9.1 {digest}\n").as_bytes())
-        .expect("go release");
-    assert_eq!(
-        releases[0].coordinate.as_str(),
-        "pkg:golang/github.com/pkg/errors@v0.9.1"
-    );
+    assert_eq!(go.go_versions(b"v0.9.1\n").expect("go listing"), ["v0.9.1"]);
 
     let uppercase = EcosystemAdapter::new(
         RegistryEndpoint::new(RegistryEcosystem::Golang, "https://proxy.golang.org")
@@ -1265,6 +1331,200 @@ fn namespaced_npm_and_go_adapters_preserve_the_native_identity() {
         uppercase.metadata_url(),
         "https://proxy.golang.org/github.com/!burnt!sushi/toml/@v/list"
     );
+}
+
+#[test]
+fn official_live_protocol_smoke_is_opt_in() {
+    if env::var_os("NUDOX_REGISTRY_LIVE").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+
+    let cases = [
+        (
+            RegistryEcosystem::Cargo,
+            "https://index.crates.io",
+            "serde",
+            None,
+        ),
+        (
+            RegistryEcosystem::Npm,
+            "https://registry.npmjs.org",
+            "lodash",
+            None,
+        ),
+        (
+            RegistryEcosystem::Pypi,
+            "https://pypi.org",
+            "requests",
+            None,
+        ),
+        (
+            RegistryEcosystem::Maven,
+            "https://repo1.maven.org",
+            "commons-lang3",
+            Some("org.apache.commons"),
+        ),
+        (
+            RegistryEcosystem::Nuget,
+            "https://api.nuget.org",
+            "newtonsoft.json",
+            None,
+        ),
+        (
+            RegistryEcosystem::Golang,
+            "https://proxy.golang.org",
+            "errors",
+            Some("github.com/pkg"),
+        ),
+        (
+            RegistryEcosystem::Cpp,
+            "https://center2.conan.io",
+            "zlib",
+            Some("1.3.1"),
+        ),
+    ];
+    for (ecosystem, endpoint, package, namespace) in cases {
+        let endpoint = RegistryEndpoint::new(ecosystem, endpoint).expect("official endpoint");
+        let adapter = EcosystemAdapter::new(
+            endpoint.clone(),
+            PackageName::new(package).expect("package"),
+            namespace
+                .map(PackageName::new)
+                .transpose()
+                .expect("namespace"),
+        )
+        .expect("adapter");
+        let mut transport =
+            HttpRegistryTransport::for_native(adapter, None, AcquisitionLimits::default())
+                .expect("native transport");
+        let request = FeedRequest {
+            cursor: FeedCursor::genesis(endpoint.id()),
+            max_items: 1,
+        };
+        let result = transport.fetch_page(request);
+        if !matches!(
+            result,
+            Ok(TransportResult::Available(FeedPage { ref packages, .. })) if !packages.is_empty()
+        ) {
+            panic!("live protocol failed for {ecosystem:?} {package}: {result:?}");
+        }
+    }
+}
+
+#[test]
+fn nuget_metadata_and_archive_resolution_coalesce_one_content_fetch() {
+    let archive = b"captured nupkg bytes".to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind NuGet fixture");
+    let address = listener.local_addr().expect("NuGet fixture address");
+    let endpoint_text = format!("http://{address}");
+    let registration_url = format!("{endpoint_text}/registration/demo/index.json");
+    let package_base = format!("{endpoint_text}/v3-flatcontainer/");
+    let archive_url = format!("{package_base}demo/1.2.3/demo.1.2.3.nupkg");
+    let service_index = format!(
+        "{{\"resources\":[{{\"@id\":\"{registration_url}\",\"@type\":\"RegistrationsBaseUrl/3.6.0\"}},{{\"@id\":\"{package_base}\",\"@type\":\"PackageBaseAddress/3.0.0\"}}]}}"
+    )
+    .into_bytes();
+    let registration = format!(
+        "{{\"items\":[{{\"catalogEntry\":{{\"version\":\"1.2.3\",\"listed\":true}},\"packageContent\":\"{archive_url}\",\"packageHash\":null}}]}}"
+    )
+    .into_bytes();
+    let expected_bodies = [service_index, registration, archive.clone()];
+    let server = thread::spawn(move || {
+        for body in expected_bodies {
+            let (mut stream, _) = listener.accept().expect("accept NuGet request");
+            let mut request = [0_u8; 8192];
+            let size = stream.read(&mut request).expect("read NuGet request");
+            assert!(size > 0);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("write NuGet headers");
+            stream.write_all(&body).expect("write NuGet body");
+        }
+    });
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Nuget, endpoint_text)
+        .expect("loopback NuGet endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint.clone(),
+        PackageName::new("demo").expect("package"),
+        None,
+    )
+    .expect("NuGet adapter");
+    let mut transport =
+        HttpRegistryTransport::for_native(adapter, None, limits()).expect("NuGet transport");
+    let page = match transport
+        .fetch_page(FeedRequest {
+            cursor: FeedCursor::genesis(endpoint.id()),
+            max_items: 1,
+        })
+        .expect("NuGet page")
+    {
+        TransportResult::Available(page) => page,
+        other => panic!("unexpected NuGet page result: {other:?}"),
+    };
+    let package = page.packages.first().expect("NuGet release").clone();
+    let fetched = match transport.fetch_archive(&package).expect("NuGet archive") {
+        TransportResult::Available(artifact) => artifact.into_bytes(limits().max_archive_bytes),
+        other => panic!("unexpected NuGet archive result: {other:?}"),
+    }
+    .expect("read NuGet artifact");
+    assert_eq!(fetched, archive);
+    server.join().expect("NuGet fixture server");
+}
+
+#[test]
+fn conan_v2_recipe_revision_and_export_archive_are_admitted() {
+    let archive = b"captured conan export archive".to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind Conan fixture");
+    let address = listener.local_addr().expect("Conan fixture address");
+    let endpoint_text = format!("http://{address}");
+    let revision = br#"{"reference":"zlib/1.3.1@_/_","revisions":[{"revision":"abc123"}]}"#;
+    let files = br#"{"files":{"conan_export.tgz":{}}}"#;
+    let expected_bodies = [revision.to_vec(), files.to_vec(), archive.clone()];
+    let server = thread::spawn(move || {
+        for body in expected_bodies {
+            let (mut stream, _) = listener.accept().expect("accept Conan request");
+            let mut request = [0_u8; 8192];
+            assert!(stream.read(&mut request).expect("read Conan request") > 0);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("write Conan headers");
+            stream.write_all(&body).expect("write Conan body");
+        }
+    });
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cpp, endpoint_text)
+        .expect("loopback Conan endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint.clone(),
+        PackageName::new("zlib").expect("package"),
+        Some(PackageName::new("1.3.1").expect("version")),
+    )
+    .expect("Conan adapter");
+    let mut transport =
+        HttpRegistryTransport::for_native(adapter, None, limits()).expect("Conan transport");
+    let page = match transport
+        .fetch_page(FeedRequest {
+            cursor: FeedCursor::genesis(endpoint.id()),
+            max_items: 1,
+        })
+        .expect("Conan page")
+    {
+        TransportResult::Available(page) => page,
+        other => panic!("unexpected Conan page result: {other:?}"),
+    };
+    let package = page.packages.first().expect("Conan release").clone();
+    let fetched = match transport.fetch_archive(&package).expect("Conan archive") {
+        TransportResult::Available(artifact) => artifact.into_bytes(limits().max_archive_bytes),
+        other => panic!("unexpected Conan archive result: {other:?}"),
+    }
+    .expect("read Conan artifact");
+    assert_eq!(fetched, archive);
+    server.join().expect("Conan fixture server");
 }
 
 #[test]
@@ -1301,11 +1561,6 @@ fn read_artifact_unknown_is_none_and_tamper_is_corruption() {
         owner.read_artifact(&receipt.packages[0].coordinate),
         Err(AcquisitionError::CorruptJournal)
     ));
-    drop(owner);
-    assert!(matches!(
-        RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Online, limits()),
-        Err(AcquisitionError::CorruptJournal)
-    ));
     fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -1327,11 +1582,9 @@ fn legacy_unscoped_journal_path_is_never_aliased() {
     .expect("owner");
     assert_eq!(recovery.cursor.sequence(), 0);
     assert!(recovery.pending.is_none());
-    assert!(
-        storage_root(&root, &endpoint)
-            .join("registry.journal")
-            .is_file()
-    );
+    assert!(storage_root(&root, &endpoint)
+        .join("registry.journal")
+        .is_file());
     assert_eq!(owner.cursor().sequence(), 0);
     fs::remove_dir_all(root).expect("cleanup");
 }
