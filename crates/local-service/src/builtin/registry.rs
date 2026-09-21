@@ -234,7 +234,16 @@ impl RegistryGateway {
             0,
         )
         .map_err(|_| RegistryAddError::Acquisition(AcquisitionError::InvalidCoordinate))?;
-        self.finish_acquisition(self.service.acquire(&request, &mut transport))
+        let outcome = if self.service.contains(coordinate) {
+            // A repeated add is a request for the already admitted immutable
+            // release. Rehydrate it from the durable owner catalog so a
+            // daemon restart does not turn a warm/offline reuse into a new
+            // network effect or a second cursor reservation.
+            self.service.ensure(&request)
+        } else {
+            self.service.acquire(&request, &mut transport)
+        };
+        self.finish_acquisition(outcome)
     }
 
     fn finish_acquisition(

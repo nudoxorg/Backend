@@ -16,13 +16,14 @@ use backend_version::Schema;
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256, Sha512};
 
+use super::identity::{RegistryCredentialPolicy, same_authority};
 use super::{
     AcquisitionError, AcquisitionLimits, AuthenticationToken, CanonicalFeedV1, ChecksumAlgorithm,
     EcosystemAdapter, FeedCursor, FeedSchema, PackageCoordinate, ProvenanceDigest,
     RegistryChecksum, RegistryEcosystem, RegistryEndpoint, ReleaseFacts, RemoteRegistry,
 };
-use backend_advisory::AdvisoryObservation;
 use crate::capability::CapabilityArtifactId;
+use backend_advisory::AdvisoryObservation;
 
 /// Request for the page following one durable cursor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -577,7 +578,7 @@ pub trait RegistryTransport<S: FeedSchema = CanonicalFeedV1> {
 pub struct HttpRegistryTransport {
     endpoint: RegistryEndpoint,
     ecosystem: RegistryEcosystem,
-    authentication: Option<AuthenticationToken>,
+    credentials: RegistryCredentialPolicy,
     limits: AcquisitionLimits,
     agent: ureq::Agent,
     mode: HttpFeedMode,
@@ -602,7 +603,7 @@ impl fmt::Debug for HttpRegistryTransport {
         f.debug_struct("HttpRegistryTransport")
             .field("endpoint", &self.endpoint)
             .field("ecosystem", &self.ecosystem)
-            .field("authentication", &self.authentication)
+            .field("credentials", &self.credentials)
             .field("limits", &self.limits)
             .finish_non_exhaustive()
     }
@@ -631,10 +632,11 @@ impl HttpRegistryTransport {
             .max_redirects(0)
             .http_status_as_error(false)
             .build();
+        let credentials = RegistryCredentialPolicy::new(&endpoint, authentication);
         Ok(Self {
             ecosystem: endpoint.ecosystem(),
             endpoint,
-            authentication,
+            credentials,
             limits,
             agent: config.new_agent(),
             mode: HttpFeedMode::Canonical,
@@ -679,12 +681,9 @@ impl HttpRegistryTransport {
                 Some(value) => request.header("accept", value),
                 None => request,
             };
-            let request = match &self.authentication {
-                Some(token) if same_authority(self.endpoint.url(), url) => {
-                    request.header("authorization", token.expose())
-                }
+            let request = match self.credentials.authorization_for(url) {
+                Some(value) => request.header("authorization", value),
                 None => request,
-                Some(_) => request,
             };
             let result = request.call();
             match result {
@@ -741,11 +740,9 @@ impl HttpRegistryTransport {
         }
         for attempt in 1..=self.limits.attempts.get() {
             let request = self.agent.get(url).header("accept-encoding", "identity");
-            let request = match &self.authentication {
-                Some(token) if same_authority(self.endpoint.url(), url) => {
-                    request.header("authorization", token.expose())
-                }
-                None | Some(_) => request,
+            let request = match self.credentials.authorization_for(url) {
+                Some(value) => request.header("authorization", value),
+                None => request,
             };
             match request.call() {
                 Ok(mut response) => {
@@ -1413,16 +1410,6 @@ fn go_checksum(bytes: &[u8], version: &str) -> Result<RegistryChecksum, Transpor
         })
         .map(RegistryChecksum::go_module_base64)
         .ok_or(TransportFailure::DownloadUnavailable)?
-}
-
-fn same_authority(left: &str, right: &str) -> bool {
-    let (Ok(left), Ok(right)) = (
-        left.parse::<ureq::http::Uri>(),
-        right.parse::<ureq::http::Uri>(),
-    ) else {
-        return false;
-    };
-    left.scheme_str() == right.scheme_str() && left.authority() == right.authority()
 }
 
 fn official_followup_host(base: &str, ecosystem: RegistryEcosystem, host: &str) -> bool {

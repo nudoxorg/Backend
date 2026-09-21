@@ -2324,11 +2324,7 @@ impl AcquisitionService {
                         Ok(base) => base,
                         Err(outcome) => return promote_bytes_outcome(outcome),
                     };
-                if owner_guard.is_offline() {
-                    return AcquisitionOutcome::Offline(Offline {
-                        source: request.source,
-                    });
-                }
+                let offline = owner_guard.is_offline();
                 let observed_at = observed_facts_at(
                     &fact_observations
                         .lock()
@@ -2341,7 +2337,8 @@ impl AcquisitionService {
                     .find(|package| package.coordinate.as_str() == requested)
                     .cloned();
                 let up_to_date = present.is_some()
-                    && (request.facts.max_age_millis == u64::MAX
+                    && (offline
+                        || request.facts.max_age_millis == u64::MAX
                         || !request.facts.due(observed_at, now_millis()));
                 if up_to_date {
                     let package = present.expect("up-to-date acquisition has a package");
@@ -2406,6 +2403,11 @@ impl AcquisitionService {
                         Err(outcome) => return promote_bytes_outcome(outcome),
                     };
                     return AcquisitionOutcome::Hit(result);
+                }
+                if offline {
+                    return AcquisitionOutcome::Offline(Offline {
+                        source: request.source,
+                    });
                 }
                 let intent = match owner_guard.begin_intent() {
                     Ok(intent) => intent,

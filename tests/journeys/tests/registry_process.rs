@@ -387,7 +387,7 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
     assert_eq!(cli_identity.endpoint(), mcp_identity.endpoint());
     assert_eq!(cli_identity.data(), canonical_workspace);
     assert_eq!(cli_identity.endpoint(), endpoint);
-    let authority = authority_secret(&root);
+    let authority = authority_secret(&workspace);
     let archive = tar_archive("package/src/lib.rs", b"pub fn from_registry() {}\n");
     let (registry, server) = loopback_registry(archive);
     let args = locald_args(&endpoint, &workspace, &authority, &registry);
@@ -414,6 +414,13 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
         .expect("registry endpoint");
     let journal =
         storage_root(&workspace.join("registry"), &registry_endpoint).join("registry.journal");
+    let journal_bytes = std::fs::read(&journal).expect("read registry journal after first add");
+    assert!(
+        !journal_bytes
+            .windows(b"journey-token".len())
+            .any(|window| window == b"journey-token"),
+        "registry authorization leaked into durable journal"
+    );
     let journal_len = std::fs::metadata(&journal)
         .expect("registry journal after first add")
         .len();

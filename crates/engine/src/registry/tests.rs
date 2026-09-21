@@ -4,7 +4,7 @@ use std::{
     net::TcpListener,
     path::PathBuf,
     sync::{
-        Arc, Barrier,
+        Arc, Barrier, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 
+use super::identity::RegistryCredentialPolicy;
 use super::*;
 use crate::{
     capability::CapabilityArtifactId,
@@ -336,6 +337,112 @@ fn one_response(
         stream.write_all(&body).expect("write body");
     });
     (format!("http://{address}"), handle)
+}
+
+#[test]
+fn registry_credentials_are_scoped_to_the_configured_authority() {
+    let endpoint = RegistryEndpoint::new(
+        RegistryEcosystem::Cargo,
+        "https://registry.example.test/index",
+    )
+    .expect("endpoint");
+    let token = AuthenticationToken::new("Bearer test-secret").expect("token");
+    let mut policy = RegistryCredentialPolicy::new(&endpoint, Some(token));
+    assert_eq!(
+        policy.authorization_for("https://registry.example.test/archive"),
+        Some("Bearer test-secret")
+    );
+    assert_eq!(
+        policy.authorization_for("HTTPS://REGISTRY.EXAMPLE.TEST/archive"),
+        Some("Bearer test-secret")
+    );
+    assert_eq!(
+        policy.authorization_for("https://archive.example.test/archive"),
+        None
+    );
+    assert!(policy.permit_authority("https://archive.example.test"));
+    assert_eq!(
+        policy.authorization_for("https://archive.example.test/archive"),
+        Some("Bearer test-secret")
+    );
+
+    let debug = format!("{policy:?}");
+    assert!(!debug.contains("test-secret"));
+    let endpoint_debug = format!("{endpoint:?}");
+    assert!(!endpoint_debug.contains("test-secret"));
+}
+
+#[test]
+fn authenticated_metadata_request_uses_configured_authorization() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind auth fixture");
+    let address = listener.local_addr().expect("auth fixture address");
+    let endpoint_text = format!("http://{address}");
+    let request = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&request);
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept auth request");
+        let mut bytes = [0_u8; 8192];
+        let length = stream.read(&mut bytes).expect("read auth request");
+        captured
+            .lock()
+            .expect("capture auth request")
+            .extend_from_slice(&bytes[..length]);
+        let body = b"{\"schema\":1,\"next\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"items\":[]}";
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .expect("write auth response headers");
+        stream.write_all(body).expect("write auth response body");
+    });
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("loopback endpoint");
+    let cursor = FeedCursor::genesis(endpoint.id());
+    let mut transport = HttpRegistryTransport::new(
+        endpoint,
+        Some(AuthenticationToken::new("Bearer test-secret").expect("token")),
+        limits(),
+    )
+    .expect("transport");
+    assert!(matches!(
+        transport.fetch_page(FeedRequest {
+            cursor,
+            max_items: 1,
+        }),
+        Ok(TransportResult::Available(FeedPage { packages, .. })) if packages.is_empty()
+    ));
+    server.join().expect("auth fixture server");
+    let request = String::from_utf8(request.lock().expect("read captured auth request").clone())
+        .expect("auth request UTF-8");
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test-secret")
+    );
+}
+
+#[test]
+fn missing_or_wrong_registry_credentials_stay_typed_rejections() {
+    for authentication in [
+        None,
+        Some(AuthenticationToken::new("Bearer wrong-secret").expect("token")),
+    ] {
+        let (endpoint_text, server) = one_response(401, "", Vec::new());
+        let endpoint =
+            RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("endpoint");
+        let cursor = FeedCursor::genesis(endpoint.id());
+        let mut transport =
+            HttpRegistryTransport::new(endpoint, authentication, limits()).expect("transport");
+        assert!(matches!(
+            transport.fetch_page(FeedRequest {
+                cursor,
+                max_items: 1,
+            }),
+            Err(TransportFailure::Rejected(401))
+        ));
+        server.join().expect("credential rejection fixture");
+    }
 }
 
 fn limits() -> AcquisitionLimits {
@@ -970,6 +1077,125 @@ fn acquisition_service_preserves_offline_and_rejects_wrong_owner_requests() {
             crate::acquisition::RejectReason::Protocol
         )
     ));
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn acquisition_service_reuses_cached_archive_when_restarted_offline() {
+    struct FixtureTransport {
+        package: RemotePackage,
+        archive: Vec<u8>,
+    }
+    impl RegistryTransport for FixtureTransport {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [18; 32],
+                packages: vec![self.package.clone()],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _package: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                self.archive.clone(),
+            )))
+        }
+    }
+
+    struct NoNetwork;
+    impl RegistryTransport for NoNetwork {
+        fn fetch_page(
+            &mut self,
+            _request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            panic!("offline cache reuse must not fetch metadata")
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _package: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            panic!("offline cache reuse must not fetch archives")
+        }
+    }
+
+    let endpoint = RegistryEndpoint::new(
+        RegistryEcosystem::Cargo,
+        "http://127.0.0.1:9/acquisition-offline-reuse",
+    )
+    .expect("endpoint");
+    let archive = b"offline cached archive".to_vec();
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/offline-reuse@1.0.0").expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(
+            *CapabilityArtifactId::from_value(&archive).as_bytes(),
+        ),
+        provenance: ProvenanceDigest::from_authenticated_feed([18; 32]),
+        facts: ReleaseFacts::default(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from("http://127.0.0.1:9/acquisition-offline-reuse/archive"),
+    };
+    let root = temporary("service-offline-reuse");
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("open online owner");
+    let service = crate::acquisition::AcquisitionService::from_owner(
+        owner,
+        root.join("service-coordination"),
+    )
+    .expect("open online service");
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        package.coordinate.to_string(),
+        1,
+        0,
+    )
+    .expect("request");
+    let first = service.acquire(
+        &request,
+        &mut FixtureTransport {
+            package,
+            archive: archive.clone(),
+        },
+    );
+    let crate::acquisition::AcquisitionOutcome::Hit(first) = first else {
+        panic!("initial acquisition must publish: {first:?}");
+    };
+    assert_eq!(first.artifact.bytes(), archive);
+    drop(service);
+
+    let (owner, _) = RegistryOwner::open(&root, endpoint, AcquisitionPolicy::Offline, limits())
+        .expect("open offline owner");
+    let service = crate::acquisition::AcquisitionService::from_owner(
+        owner,
+        root.join("service-coordination"),
+    )
+    .expect("open offline service");
+    let request = crate::acquisition::AcquisitionRequest::for_coordinate(
+        service.source_id(),
+        "pkg:cargo/offline-reuse@1.0.0",
+        1,
+        0,
+    )
+    .expect("offline request");
+    let reused = service.acquire(&request, &mut NoNetwork);
+    let crate::acquisition::AcquisitionOutcome::Hit(reused) = reused else {
+        panic!("offline acquisition must reuse the durable archive: {reused:?}");
+    };
+    assert_eq!(reused.artifact.bytes(), archive);
+    // The restarted owner has a different online/offline policy epoch, so
+    // the immutable snapshot id changes. The durable feed cursor and source
+    // identity must still be exactly the same, proving this was a warm reuse
+    // rather than a new feed reservation.
+    assert_eq!(reused.snapshot.source(), first.snapshot.source());
+    assert_eq!(reused.snapshot.cursor(), first.snapshot.cursor());
     fs::remove_dir_all(root).expect("cleanup");
 }
 

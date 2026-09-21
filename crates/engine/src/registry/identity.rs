@@ -1,7 +1,8 @@
 //! Strong identities and resource policy for registry acquisition.
 
 use std::{
-    fmt, marker::PhantomData, net::IpAddr, num::NonZeroU8, str::FromStr, sync::Arc, time::Duration,
+    collections::BTreeSet, fmt, marker::PhantomData, net::IpAddr, num::NonZeroU8, str::FromStr,
+    sync::Arc, time::Duration,
 };
 
 pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
@@ -199,6 +200,84 @@ impl fmt::Debug for AuthenticationToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("AuthenticationToken([REDACTED])")
     }
+}
+
+/// Credential scope for one configured registry source.
+///
+/// Authentication is intentionally kept outside [`RegistryEndpoint`]: the
+/// endpoint is a durable, credential-free identity, while this policy is a
+/// process-local transport capability.  The default policy grants the token
+/// only to the configured source authority.  A caller that has an explicit,
+/// operator-approved split-authority policy may add an exact authority to the
+/// private allowlist; source metadata cannot add one implicitly.
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct RegistryCredentialPolicy {
+    source: Arc<str>,
+    token: Option<AuthenticationToken>,
+    credential_authorities: BTreeSet<Arc<str>>,
+}
+
+impl RegistryCredentialPolicy {
+    pub(crate) fn new(endpoint: &RegistryEndpoint, token: Option<AuthenticationToken>) -> Self {
+        Self {
+            source: Arc::from(endpoint.url()),
+            token,
+            credential_authorities: BTreeSet::new(),
+        }
+    }
+
+    /// Returns the configured authorization value for an admitted URL.
+    ///
+    /// The value is absent for every unapproved authority, including native
+    /// ecosystem archive mirrors.  This keeps metadata credentials scoped to
+    /// the registry that configured them and makes the same decision for feed,
+    /// checksum, and archive requests.
+    pub(crate) fn authorization_for(&self, url: &str) -> Option<&str> {
+        let authority = authority_key(url)?;
+        if !self.credential_authorities.contains(&authority) && !same_authority(&self.source, url) {
+            return None;
+        }
+        self.token.as_ref().map(AuthenticationToken::expose)
+    }
+
+    /// Adds one exact authority to the credential scope.
+    ///
+    /// This is deliberately crate-private.  Registry metadata and archive
+    /// URL parsers must not be able to widen credential scope from untrusted
+    /// response bytes; only a composed, explicit authority policy can call it.
+    pub(crate) fn permit_authority(&mut self, url: &str) -> bool {
+        let Some(authority) = authority_key(url) else {
+            return false;
+        };
+        self.credential_authorities.insert(authority)
+    }
+}
+
+impl fmt::Debug for RegistryCredentialPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RegistryCredentialPolicy")
+            .field("source", &"[REDACTED]")
+            .field("token", &self.token)
+            .field("credential_authorities", &self.credential_authorities.len())
+            .finish()
+    }
+}
+
+pub(crate) fn same_authority(left: &str, right: &str) -> bool {
+    authority_key(left) == authority_key(right)
+}
+
+pub(crate) fn authority_key(url: &str) -> Option<Arc<str>> {
+    let uri = ureq::http::Uri::from_str(url).ok()?;
+    let (Some(scheme), Some(authority)) = (uri.scheme_str(), uri.authority()) else {
+        return None;
+    };
+    Some(Arc::from(format!(
+        "{}://{}",
+        scheme.to_ascii_lowercase(),
+        authority.as_str().to_ascii_lowercase()
+    )))
 }
 
 /// Marker implemented by a canonical remote feed grammar.
