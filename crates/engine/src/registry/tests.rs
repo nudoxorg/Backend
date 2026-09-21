@@ -1030,8 +1030,9 @@ fn cached_advisory_warning_is_rechecked_after_fail_closed_restart() {
         0,
     )
     .expect("request");
+    let cached_outcome = service.ensure(&request);
     assert!(matches!(
-        service.ensure(&request),
+        cached_outcome,
         crate::acquisition::AcquisitionOutcome::NegativeFact(crate::acquisition::NegativeFact {
             kind: crate::acquisition::NegativeFactKind::AdvisoryBlocked,
             ..

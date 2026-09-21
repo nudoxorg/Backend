@@ -20,9 +20,10 @@ use crate::{
     journal::{HashChainJournal, JournalError},
 };
 use backend_advisory::{
-    AcquisitionDecision, AcquisitionGate, AdvisoryObservation, AdvisoryPackageDto,
-    AdvisoryCoverage, FreshnessState,
+    AcquisitionDecision, AcquisitionGate, AdvisoryCoverage, AdvisoryObservation,
+    AdvisoryPackageDto, FreshnessState,
 };
+use blake3::Hasher;
 
 use super::wire::{RegistryLog, RegistryRecord};
 use super::{
@@ -420,10 +421,7 @@ impl RegistryOwner {
     }
 
     /// Returns the bounded network request for a previously admitted intent.
-    pub(crate) const fn request_for_intent(
-        &self,
-        intent: AcquisitionIntent,
-    ) -> FeedRequest {
+    pub(crate) const fn request_for_intent(&self, intent: AcquisitionIntent) -> FeedRequest {
         FeedRequest {
             cursor: intent.cursor,
             max_items: intent.max_items,
@@ -514,6 +512,61 @@ impl RegistryOwner {
     #[must_use]
     pub const fn source_id(&self) -> super::RegistryId {
         self.endpoint.id()
+    }
+
+    /// Returns whether this owner is configured for local-only operation.
+    #[must_use]
+    pub const fn is_offline(&self) -> bool {
+        matches!(self.policy, AcquisitionPolicy::Offline)
+    }
+
+    /// Stable nonzero policy/advisory frontier digest for one source.
+    #[must_use]
+    pub fn policy_epoch(&self) -> u64 {
+        let mut hasher = Hasher::new();
+        hasher.update(b"nudox.registry.policy-frontier.v1\0");
+        hasher.update(&[u8::from(matches!(self.policy, AcquisitionPolicy::Online))]);
+        hasher.update(&[match self.advisory_gate.map(|gate| gate.offline) {
+            None => 0,
+            Some(backend_advisory::OfflinePolicy::AllowCached) => 1,
+            Some(backend_advisory::OfflinePolicy::Warn) => 2,
+            Some(backend_advisory::OfflinePolicy::FailClosed) => 3,
+        }]);
+        hasher.update(&self.facts_frontier);
+        let digest = hasher.finalize();
+        u64::from_be_bytes(
+            digest.as_bytes()[..8]
+                .try_into()
+                .expect("fixed digest prefix"),
+        )
+        .max(1)
+    }
+
+    /// Re-evaluates persisted advisory facts against the current gate before
+    /// allowing a local cache hit. A changed gate therefore invalidates old
+    /// warnings without touching immutable archive bytes.
+    #[must_use]
+    pub fn cached_policy_allows(&self, package: &PublishedPackage) -> bool {
+        if matches!(&package.advisory.decision, AcquisitionDecision::Deny(_)) {
+            return false;
+        }
+        let Some(gate) = self.advisory_gate else {
+            return true;
+        };
+        if package.advisory.yanked || package.advisory.unlisted {
+            return false;
+        }
+        match gate.offline {
+            backend_advisory::OfflinePolicy::FailClosed => {
+                package.advisory.coverage == AdvisoryCoverage::Complete
+                    && matches!(
+                        package.advisory.freshness,
+                        FreshnessState::Fresh | FreshnessState::NotModified
+                    )
+            }
+            backend_advisory::OfflinePolicy::AllowCached
+            | backend_advisory::OfflinePolicy::Warn => true,
+        }
     }
 
     /// Most recently committed protocol receipt, if one exists.
@@ -790,21 +843,22 @@ impl RegistryOwner {
                 .advisory
                 .as_ref()
                 .map(|observation| {
-                    AdvisoryPackageDto::from_observation(
-                        observation,
-                        AcquisitionDecision::Allow,
-                    )
+                    AdvisoryPackageDto::from_observation(observation, AcquisitionDecision::Allow)
                 })
                 .unwrap_or_else(AdvisoryPackageDto::unknown);
         };
-        let observation = package.advisory.as_ref().cloned().unwrap_or(AdvisoryObservation {
-            advisories: Box::new([]),
-            coverage: AdvisoryCoverage::Unknown,
-            freshness: FreshnessState::Unknown,
-            offline: true,
-            yanked: false,
-            unlisted: false,
-        });
+        let observation = package
+            .advisory
+            .as_ref()
+            .cloned()
+            .unwrap_or(AdvisoryObservation {
+                advisories: Box::new([]),
+                coverage: AdvisoryCoverage::Unknown,
+                freshness: FreshnessState::Unknown,
+                offline: true,
+                yanked: false,
+                unlisted: false,
+            });
         let decision = gate.decide(&observation);
         AdvisoryPackageDto::from_observation(&observation, decision)
     }
@@ -1128,9 +1182,7 @@ fn apply_receipt_to_catalog(
     }
 }
 
-fn catalog_facts_frontier(
-    catalog: &BTreeMap<PackageCoordinate, PublishedPackage>,
-) -> [u8; 32] {
+fn catalog_facts_frontier(catalog: &BTreeMap<PackageCoordinate, PublishedPackage>) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.registry.facts-frontier.v1\0");
     for package in catalog.values() {

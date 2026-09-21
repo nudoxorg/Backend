@@ -8,10 +8,8 @@
 
 use crate::registry::{
     AcquisitionError, AcquisitionError as RegistryAcquisitionError,
-    AcquisitionOutcome as RegistryOutcome,
-    CanonicalFeedV1, FeedSchema, PackageCoordinate, RegistryOwner, RegistryTransport,
-    TransportFailure,
-    admit_registry_coordinate,
+    AcquisitionOutcome as RegistryOutcome, CanonicalFeedV1, FeedSchema, PackageCoordinate,
+    RegistryOwner, RegistryTransport, TransportFailure, admit_registry_coordinate,
 };
 use backend_execution::{
     Cancellation, OutputAdmission, OutputValidationError, ResultCoverage, UntrustedOutputClaim,
@@ -422,7 +420,14 @@ impl SourceSnapshot {
         manifest: Arc<TreeManifest>,
         claims: Vec<ReleaseClaimId>,
     ) -> Result<Self, IdentityError> {
-        Self::new_with_frontier(source, cursor, policy_epoch, [0; ID_BYTES], manifest, claims)
+        Self::new_with_frontier(
+            source,
+            cursor,
+            policy_epoch,
+            [0; ID_BYTES],
+            manifest,
+            claims,
+        )
     }
 
     /// Creates a snapshot bound to the immutable release and mutable-facts
@@ -558,9 +563,12 @@ fn merge_manifest_entries(
     changes: &[DeltaChange],
 ) -> Result<Vec<ManifestEntry>, DeltaError> {
     let mut entries = Vec::with_capacity(
-        base_entries
-            .len()
-            .saturating_add(changes.iter().filter(|change| change.before.is_none()).count()),
+        base_entries.len().saturating_add(
+            changes
+                .iter()
+                .filter(|change| change.before.is_none())
+                .count(),
+        ),
     );
     let mut base_index = 0;
     let mut change_index = 0;
@@ -676,9 +684,8 @@ impl AcquisitionDelta {
         // This prevents a forged delta from using the target-id fast path to
         // bypass before/mode validation later in `apply`.
         let entries = merge_manifest_entries(base.manifest.entries(), &delta.changes)?;
-        let manifest = Arc::new(
-            TreeManifest::from_sorted(entries).map_err(DeltaError::InvalidChanges)?,
-        );
+        let manifest =
+            Arc::new(TreeManifest::from_sorted(entries).map_err(DeltaError::InvalidChanges)?);
         let computed = SourceSnapshot::new_with_frontier(
             delta.target_snapshot.source,
             delta.target_snapshot.cursor,
@@ -746,9 +753,8 @@ impl AcquisitionDelta {
             });
         }
         let entries = merge_manifest_entries(base.manifest.entries(), &self.changes)?;
-        let manifest = Arc::new(
-            TreeManifest::from_sorted(entries).map_err(DeltaError::InvalidChanges)?,
-        );
+        let manifest =
+            Arc::new(TreeManifest::from_sorted(entries).map_err(DeltaError::InvalidChanges)?);
         let computed = SourceSnapshot::new_with_frontier(
             self.target_snapshot.source,
             self.target_snapshot.cursor,
@@ -1803,8 +1809,7 @@ impl FactFreshness {
         let Some(observed) = observed_at_millis else {
             return true;
         };
-        self.max_age_millis == 0
-            || now_millis.saturating_sub(observed) >= self.max_age_millis
+        self.max_age_millis == 0 || now_millis.saturating_sub(observed) >= self.max_age_millis
     }
 }
 
@@ -2265,14 +2270,16 @@ impl AcquisitionService {
                 let mut owner_guard = owner
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let base = match registry_catalog_snapshot(
-                    &owner_guard,
-                    policy_epoch,
-                    &snapshot_cache,
-                ) {
-                    Ok(base) => base,
-                    Err(outcome) => return promote_bytes_outcome(outcome),
-                };
+                let base =
+                    match registry_catalog_snapshot(&owner_guard, policy_epoch, &snapshot_cache) {
+                        Ok(base) => base,
+                        Err(outcome) => return promote_bytes_outcome(outcome),
+                    };
+                if owner_guard.is_offline() {
+                    return AcquisitionOutcome::Offline(Offline {
+                        source: request.source,
+                    });
+                }
                 let observed_at = fact_observations
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2395,6 +2402,7 @@ impl AcquisitionService {
                             }
                         }
                         let cursor = owner_guard.cursor().token();
+                        let current_epoch = owner_guard.policy_epoch();
                         let fact = NegativeFact {
                             kind: NegativeFactKind::NotFound,
                             authority: request.source,
@@ -2402,7 +2410,7 @@ impl AcquisitionService {
                             cursor,
                             observed_at_millis: now_millis(),
                             expires_at_millis: now_millis().saturating_add(60_000),
-                            policy_epoch,
+                            policy_epoch: current_epoch,
                         };
                         negative.record(*key.as_bytes(), fact);
                         return AcquisitionOutcome::NegativeFact(fact);
@@ -2425,6 +2433,7 @@ impl AcquisitionService {
                     match owner_guard.settle_reserved(intent) {
                         Ok(()) => {
                             let cursor = owner_guard.cursor().token();
+                            let current_epoch = owner_guard.policy_epoch();
                             let fact = NegativeFact {
                                 kind: NegativeFactKind::NotFound,
                                 authority: request.source,
@@ -2432,7 +2441,7 @@ impl AcquisitionService {
                                 cursor,
                                 observed_at_millis: now_millis(),
                                 expires_at_millis: now_millis().saturating_add(60_000),
-                                policy_epoch,
+                                policy_epoch: current_epoch,
                             };
                             negative.record(*key.as_bytes(), fact);
                             return AcquisitionOutcome::NegativeFact(fact);
@@ -2455,7 +2464,10 @@ impl AcquisitionService {
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     for package in &page.packages {
                         let advisory = owner_guard.advisory_for(package);
-                        if matches!(advisory.decision, backend_advisory::AcquisitionDecision::Deny(_)) {
+                        if matches!(
+                            advisory.decision,
+                            backend_advisory::AcquisitionDecision::Deny(_)
+                        ) {
                             return AcquisitionOutcome::Rejected(RejectReason::Policy);
                         }
                         if let Some(existing) = owner_guard.published(&package.coordinate) {
@@ -2515,21 +2527,17 @@ impl AcquisitionService {
                         Err(_) => return AcquisitionOutcome::Rejected(RejectReason::Bounds),
                     };
                     page_bytes = page_bytes.saturating_add(artifact_bytes);
-                    let publication = match stage.verify_and_store(
-                        &package,
-                        artifact,
-                        page_bytes,
-                        advisory,
-                    ) {
-                        Ok(publication) => publication,
-                        Err(error) => {
-                            return promote_bytes_outcome(registry_error_outcome(
-                                error,
-                                request.source,
-                                &breaker,
-                            ));
-                        }
-                    };
+                    let publication =
+                        match stage.verify_and_store(&package, artifact, page_bytes, advisory) {
+                            Ok(publication) => publication,
+                            Err(error) => {
+                                return promote_bytes_outcome(registry_error_outcome(
+                                    error,
+                                    request.source,
+                                    &breaker,
+                                ));
+                            }
+                        };
                     publications.push(publication);
                 }
                 publications.sort_by(|left, right| left.coordinate.cmp(&right.coordinate));
@@ -2553,6 +2561,7 @@ impl AcquisitionService {
                     .cloned()
                 else {
                     let cursor = owner_guard.cursor().token();
+                    let current_epoch = owner_guard.policy_epoch();
                     let fact = NegativeFact {
                         kind: NegativeFactKind::NotFound,
                         authority: request.source,
@@ -2560,27 +2569,60 @@ impl AcquisitionService {
                         cursor,
                         observed_at_millis: now_millis(),
                         expires_at_millis: now_millis().saturating_add(60_000),
-                        policy_epoch,
+                        policy_epoch: current_epoch,
                     };
                     negative.record(*key.as_bytes(), fact);
                     return AcquisitionOutcome::NegativeFact(fact);
                 };
                 breaker.success();
-                let target = match registry_catalog_snapshot(
-                    &owner_guard,
-                    policy_epoch,
-                    &snapshot_cache,
+                let current_epoch = owner_guard.policy_epoch();
+                fact_observations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(Arc::from(requested), now_millis());
+                if matches!(
+                    package.facts.standing(),
+                    crate::registry::ReleaseStanding::Yanked
                 ) {
-                    Ok(target) => target,
-                    Err(outcome) => return promote_bytes_outcome(outcome),
-                };
+                    let cursor = owner_guard.cursor().token();
+                    let fact = NegativeFact {
+                        kind: NegativeFactKind::Yanked,
+                        authority: request.source,
+                        source_proof: cursor,
+                        cursor,
+                        observed_at_millis: now_millis(),
+                        expires_at_millis: now_millis().saturating_add(60_000),
+                        policy_epoch: current_epoch,
+                    };
+                    negative.record(*key.as_bytes(), fact);
+                    return AcquisitionOutcome::NegativeFact(fact);
+                }
+                if !owner_guard.cached_policy_allows(&package) {
+                    let cursor = owner_guard.cursor().token();
+                    let fact = NegativeFact {
+                        kind: NegativeFactKind::AdvisoryBlocked,
+                        authority: request.source,
+                        source_proof: cursor,
+                        cursor,
+                        observed_at_millis: now_millis(),
+                        expires_at_millis: now_millis().saturating_add(60_000),
+                        policy_epoch: current_epoch,
+                    };
+                    negative.record(*key.as_bytes(), fact);
+                    return AcquisitionOutcome::NegativeFact(fact);
+                }
+                let target =
+                    match registry_catalog_snapshot(&owner_guard, current_epoch, &snapshot_cache) {
+                        Ok(target) => target,
+                        Err(outcome) => return promote_bytes_outcome(outcome),
+                    };
                 let result = match registry_result(
                     &owner_guard,
                     &base,
                     target,
                     package,
-                    request,
-                    policy_epoch,
+                    &request,
+                    current_epoch,
                 ) {
                     Ok(result) => Arc::new(result),
                     Err(outcome) => return promote_bytes_outcome(outcome),
@@ -2598,7 +2640,10 @@ impl AcquisitionService {
         &self,
         request: &AcquisitionRequest,
     ) -> AcquisitionOutcome<Arc<RegistryAcquisitionResult>> {
-        self.acquire(request, &mut ExistingRegistryTransport)
+        let request = request
+            .clone()
+            .with_fact_freshness(FactFreshness::max_age_millis(u64::MAX));
+        self.acquire(&request, &mut ExistingRegistryTransport)
     }
 }
 
@@ -2629,10 +2674,8 @@ fn registry_catalog_snapshot(
         // extent. Rehydrate the object identity from those durable facts; a
         // warm snapshot must never reopen or hash every archive in the
         // catalog.
-        let object = RawArchiveObjectId::from_verified_claim(
-            package.bytes,
-            package.artifact.as_bytes(),
-        );
+        let object =
+            RawArchiveObjectId::from_verified_claim(package.bytes, package.artifact.as_bytes());
         let coordinate = Arc::from(package.coordinate.as_str());
         entries.push(ManifestEntry {
             path: coordinate,
@@ -2641,11 +2684,12 @@ fn registry_catalog_snapshot(
         });
         let admitted = admit_registry_coordinate(&package.coordinate)
             .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))?;
-        let claim = ReleaseClaim::new(
+        let claim = ReleaseClaim::new_with_facts(
             source,
             package.coordinate.as_str(),
             admitted.version().as_str(),
             object,
+            package.facts.version(),
         )
         .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))?;
         claims.push(claim.id);
@@ -2693,10 +2737,14 @@ fn registry_result(
         .read_artifact(&package.coordinate)
         .map_err(|_| AcquisitionOutcome::Corrupt(CorruptReason::Journal))?
         .ok_or(AcquisitionOutcome::Corrupt(CorruptReason::Journal))?;
-    let object = RawArchiveObjectId::from_verified_claim(
-        package.bytes,
-        package.artifact.as_bytes(),
-    );
+    let object =
+        RawArchiveObjectId::from_verified_claim(package.bytes, package.artifact.as_bytes());
+    if request
+        .artifact
+        .is_some_and(|expected| expected != RawArchiveObjectId::from_bytes(artifact.bytes()))
+    {
+        return Err(AcquisitionOutcome::Corrupt(CorruptReason::Integrity));
+    }
     let admitted = admit_registry_coordinate(&package.coordinate)
         .map_err(|_| AcquisitionOutcome::Rejected(RejectReason::Protocol))?;
     let effective = AcquisitionRequest::new(
@@ -2758,6 +2806,7 @@ fn promote_void_outcome<T>(outcome: AcquisitionOutcome<()>) -> AcquisitionOutcom
         AcquisitionOutcome::Unavailable(unavailable) => {
             AcquisitionOutcome::Unavailable(unavailable)
         }
+        AcquisitionOutcome::Offline(offline) => AcquisitionOutcome::Offline(offline),
         AcquisitionOutcome::Rejected(reason) => AcquisitionOutcome::Rejected(reason),
         AcquisitionOutcome::Corrupt(reason) => AcquisitionOutcome::Corrupt(reason),
         AcquisitionOutcome::Cancelled => AcquisitionOutcome::Cancelled,
@@ -2773,6 +2822,7 @@ fn promote_bytes_outcome<T>(outcome: AcquisitionOutcome<Arc<[u8]>>) -> Acquisiti
         AcquisitionOutcome::Unavailable(unavailable) => {
             AcquisitionOutcome::Unavailable(unavailable)
         }
+        AcquisitionOutcome::Offline(offline) => AcquisitionOutcome::Offline(offline),
         AcquisitionOutcome::Rejected(reason) => AcquisitionOutcome::Rejected(reason),
         AcquisitionOutcome::Corrupt(reason) => AcquisitionOutcome::Corrupt(reason),
         AcquisitionOutcome::Cancelled => AcquisitionOutcome::Cancelled,
@@ -2904,11 +2954,13 @@ impl Policy {
             delta.base().as_bytes(),
             delta.target().as_bytes(),
             delta.id().as_bytes(),
+            &target.policy_epoch().to_be_bytes(),
         ]);
         let receipt_id = AcquisitionReceiptId::derive(&[
             &self.verified.request.source,
             delta.id().as_bytes(),
             publication.as_bytes(),
+            &target.policy_epoch().to_be_bytes(),
         ]);
         let receipt = Arc::new(AcquisitionReceipt {
             id: receipt_id,
@@ -2916,6 +2968,7 @@ impl Policy {
             base: delta.base(),
             target: delta.target(),
             publication,
+            policy_epoch: target.policy_epoch(),
         });
         AcquisitionOutcome::Hit(PublishedDelta { delta, receipt })
     }
@@ -3063,6 +3116,10 @@ impl AcquisitionCoordinator {
                     outcome: AcquisitionOutcome::Unavailable(*unavailable),
                     registry: None,
                 },
+                AcquisitionOutcome::Offline(offline) => SharedSlotValue {
+                    outcome: AcquisitionOutcome::Offline(*offline),
+                    registry: None,
+                },
                 AcquisitionOutcome::Rejected(reason) => SharedSlotValue {
                     outcome: AcquisitionOutcome::Rejected(*reason),
                     registry: None,
@@ -3090,6 +3147,7 @@ impl AcquisitionCoordinator {
                 (_, AcquisitionOutcome::Unavailable(unavailable)) => {
                     AcquisitionOutcome::Unavailable(*unavailable)
                 }
+                (_, AcquisitionOutcome::Offline(offline)) => AcquisitionOutcome::Offline(*offline),
                 (_, AcquisitionOutcome::Rejected(reason)) => AcquisitionOutcome::Rejected(*reason),
                 (_, AcquisitionOutcome::Corrupt(reason)) => AcquisitionOutcome::Corrupt(*reason),
                 (_, AcquisitionOutcome::Cancelled) => AcquisitionOutcome::Cancelled,
@@ -3339,8 +3397,7 @@ mod tests {
         }
         let base_manifest = Arc::new(TreeManifest::from_sorted(base_entries).expect("base"));
         let base = Arc::new(
-            SourceSnapshot::new([1; 32], [2; 32], 7, base_manifest, Vec::new())
-                .expect("snapshot"),
+            SourceSnapshot::new([1; 32], [2; 32], 7, base_manifest, Vec::new()).expect("snapshot"),
         );
         let mut target_entries = base.manifest().entries().to_vec();
         target_entries[2_048].object = RawArchiveObjectId::from_bytes(b"changed");
