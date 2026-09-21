@@ -384,16 +384,18 @@ fn page_claim_after(
         .as_ref()
         .map(|row| match row.kind.as_str() {
             "package" => certificate
-                .key_value::<crate::canonical::PackageSchema>(super::WireSchema::Package, &row.id)
-                .or_else(|_| {
-                    certificate.producer_key_value(super::WireSchema::Package, &row.id, capability)
-                })
+                .row_identity_or_key_or_producer::<crate::canonical::PackageSchema>(
+                    super::WireSchema::Package,
+                    &row.id,
+                    capability,
+                )
                 .map(crate::RowId::Package),
             "symbol" => certificate
-                .key_value::<crate::canonical::SymbolSchema>(super::WireSchema::Symbol, &row.id)
-                .or_else(|_| {
-                    certificate.producer_key_value(super::WireSchema::Symbol, &row.id, capability)
-                })
+                .row_identity_or_key_or_producer::<crate::canonical::SymbolSchema>(
+                    super::WireSchema::Symbol,
+                    &row.id,
+                    capability,
+                )
                 .map(crate::RowId::Symbol),
             "object" => row_id_from_wire(row, certificate),
             _ => Err("unknown stable row identity kind".to_owned()),

@@ -677,21 +677,21 @@ fn add_row_certificate_claims_for_rows(
     for row in rows {
         match row.id {
             RowId::Package(package) => {
-                add_package_claim(certificate, package, &row.label);
+                add_package_row_claim(certificate, package, row);
             }
             RowId::Symbol(symbol) => {
-                add_symbol_claim(certificate, symbol, &row.label);
+                add_symbol_row_claim(certificate, symbol, row);
             }
             RowId::Object(_) => {}
         }
         if let Some(package) = row.package
-            && let Some(label) = root.row_label(RowId::Package(package))
+            && let Some(package_row) = root.row_ref(RowId::Package(package))
         {
-            add_package_claim(certificate, package, &label);
+            add_package_row_claim(certificate, package, package_row);
         }
         if let Some(parent) = row.parent {
-            if let Some(label) = root.row_label(RowId::Symbol(parent)) {
-                add_symbol_claim(certificate, parent, &label);
+            if let Some(parent_row) = root.row_ref(RowId::Symbol(parent)) {
+                add_symbol_row_claim(certificate, parent, parent_row);
             } else {
                 add_row_id_commitment(certificate, RowId::Symbol(parent));
             }
@@ -701,14 +701,64 @@ fn add_row_certificate_claims_for_rows(
                 continue;
             };
             if root.row(RowId::Symbol(*target)).is_some() {
-                if let Some(label) = root.row_label(RowId::Symbol(*target)) {
-                    add_symbol_claim(certificate, *target, &label);
+                if let Some(target_row) = root.row_ref(RowId::Symbol(*target)) {
+                    add_symbol_row_claim(certificate, *target, target_row);
                 } else {
                     add_row_id_commitment(certificate, RowId::Symbol(*target));
                 }
             }
         }
     }
+}
+
+fn add_package_row_claim(
+    certificate: &mut WireCertificate,
+    package: backend_engine::PackageKey,
+    row: &backend_engine::Row,
+) {
+    if let Some(preimage) = row.identity_preimage() {
+        add_row_identity_claim(
+            certificate,
+            backend_engine::WireSchema::Package,
+            package.as_bytes(),
+            preimage,
+        );
+    } else {
+        add_package_claim(certificate, package, &row.label);
+    }
+}
+
+fn add_symbol_row_claim(
+    certificate: &mut WireCertificate,
+    symbol: backend_engine::SymbolKey,
+    row: &backend_engine::Row,
+) {
+    if let Some(preimage) = row.identity_preimage() {
+        add_row_identity_claim(
+            certificate,
+            backend_engine::WireSchema::Symbol,
+            symbol.as_bytes(),
+            preimage,
+        );
+    } else {
+        add_symbol_claim(certificate, symbol, &row.label);
+    }
+}
+
+fn add_row_identity_claim(
+    certificate: &mut WireCertificate,
+    schema: backend_engine::WireSchema,
+    id: &[u8; 32],
+    preimage: &backend_engine::RowIdentityPreimage,
+) {
+    add_certificate_claim(
+        certificate,
+        WireClaim::RowIdentity {
+            schema,
+            id: backend_engine::encode_id(id),
+            preimage: preimage.as_str().to_owned(),
+        },
+    );
 }
 
 fn add_package_claim(

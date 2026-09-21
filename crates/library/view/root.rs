@@ -2,12 +2,12 @@
 
 use super::{
     Basis, CommittedViewDelta, Coverage, CoverageCapability, Lane, PreparedViewDelta, Reason, Row,
-    RowId, ViewDelta, ViewError, ViewPageCursor, ViewPageError, ViewRootDescriptor,
-    ViewSnapshotPage,
+    RowId, RowIdentityPreimage, ViewDelta, ViewError, ViewPageCursor, ViewPageError,
+    ViewRootDescriptor, ViewSnapshotPage,
 };
 use crate::canonical::{
     Frontier, ViewEntry, ViewEntryKey, ViewMetadata, ViewRecipeId, ViewStateRoot, ViewVersion,
-    view_version_preimage,
+    package_key, symbol_key, view_version_preimage,
 };
 use backend_version::{
     Coverage as BackendCoverage, CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope,
@@ -277,11 +277,23 @@ impl ViewRoot {
     /// Looks up only the canonical display label for one row.
     ///
     /// Producers use this narrow lookup while certifying a bounded page's
-    /// package/parent references.  It keeps those claims independently
-    /// checkable without materializing the complete compatibility row slice.
+    /// ordinary package/parent references. Rows with an explicit identity
+    /// witness use [`Self::row_identity_preimage`] instead. Both lookups keep
+    /// claims independently checkable without materializing the complete
+    /// compatibility row slice.
     #[must_use]
     pub fn row_label(&self, id: RowId) -> Option<String> {
         self.row_ref(id).map(|row| row.label.clone())
+    }
+
+    /// Returns the explicit canonical identity preimage for one row, when
+    /// the producer attached one.  This is intentionally separate from
+    /// [`Self::row_label`]: labels are presentation text and cannot certify
+    /// occurrence-disambiguated identities.
+    #[must_use]
+    pub fn row_identity_preimage(&self, id: RowId) -> Option<RowIdentityPreimage> {
+        self.row_ref(id)
+            .and_then(|row| row.identity_preimage().cloned())
     }
 
     /// Returns the canonical relation-node bytes whose commitment is
@@ -377,7 +389,9 @@ impl ViewRoot {
     /// Returns [`ViewError::InvalidCoverage`] when the capability does not
     /// cover the source object or when complete coverage is otherwise
     /// unadmitted. Returns [`ViewError::WrongBasis`] for a mismatched frontier
-    /// or row basis and [`ViewError::Duplicate`] for repeated row identities.
+    /// or row basis, [`ViewError::InvalidIdentity`] for a witness whose digest
+    /// does not equal its typed row key, and [`ViewError::Duplicate`] for
+    /// repeated row identities.
     pub fn new_checked<C: Into<CoverageCapability>>(
         recipe: ViewRecipeId,
         basis: Basis,
@@ -405,7 +419,9 @@ impl ViewRoot {
     ///
     /// Returns [`ViewError::InvalidCoverage`] for complete or invalid partial
     /// coverage, [`ViewError::WrongBasis`] for a mismatched frontier or row,
-    /// and [`ViewError::Duplicate`] for repeated row identities.
+    /// [`ViewError::InvalidIdentity`] for a witness whose digest does not
+    /// equal its typed row key, and [`ViewError::Duplicate`] for repeated row
+    /// identities.
     pub fn new_incomplete(
         recipe: ViewRecipeId,
         basis: Basis,
@@ -442,6 +458,9 @@ impl ViewRoot {
         }
         if !coverage.iter().copied().all(Coverage::is_valid) {
             return Err(ViewError::InvalidCoverage);
+        }
+        if rows.iter().any(|row| !row_identity_matches(row)) {
+            return Err(ViewError::InvalidIdentity);
         }
         if rows.windows(2).any(|pair| pair[0].id == pair[1].id) {
             return Err(ViewError::Duplicate);
@@ -686,6 +705,10 @@ fn row_encoded_size(row: &Row) -> usize {
     let mut size = 512usize
         .saturating_add(row.label.len())
         .saturating_add(row.signature.as_deref().map_or(0, str::len));
+    size = size.saturating_add(
+        row.identity_preimage()
+            .map_or(0, |preimage| preimage.as_str().len()),
+    );
     for fragment in &row.document {
         size = size.saturating_add(match fragment {
             super::Fragment::Text(value) | super::Fragment::Code(value) => {
@@ -696,6 +719,18 @@ fn row_encoded_size(row: &Row) -> usize {
         });
     }
     size
+}
+
+/// Checks the optional row identity witness against the typed stable key.
+/// Ordinary rows keep the compact no-sidecar representation; rows carrying a
+/// witness must prove the exact digest before entering a relation root.
+pub(super) fn row_identity_matches(row: &Row) -> bool {
+    match (row.id, row.identity_preimage()) {
+        (RowId::Package(package), Some(preimage)) => package_key(preimage.as_str()) == package,
+        (RowId::Symbol(symbol), Some(preimage)) => symbol_key(preimage.as_str()) == symbol,
+        (RowId::Object(_), Some(_)) => false,
+        (_, None) => true,
+    }
 }
 
 #[cfg(test)]

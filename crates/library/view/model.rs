@@ -4,10 +4,100 @@ use crate::canonical::{
     BranchKey, LogKey, PackageKey, SemanticObject, SymbolKey, ViewStateRoot, encode_id,
 };
 use crate::surface::SemanticLinkKind;
-use backend_compile::{DeclarationKind, SourceExcerpt, SourceLocation};
+use backend_compile::{DeclarationKind, SourceDeclaration, SourceExcerpt, SourceLocation};
 use backend_version::{AuthorizedCompleteCoverage, CoverageWitness, ScopeRoot};
 use core::fmt;
 use std::sync::Arc;
+
+/// Maximum UTF-8 bytes retained for one canonical row identity preimage.
+///
+/// Source coordinates and declaration signatures are admitted at 4 KiB each
+/// at the compiler boundary.  This bound covers the maximum package label,
+/// path, declaration name, and signature plus the bounded line/kind/occurrence
+/// framing used by the structural producer, while keeping one witness a
+/// fixed-cost allocation at the wire boundary.
+pub const MAX_ROW_IDENTITY_PREIMAGE_BYTES: usize =
+    2 * SourceLocation::MAX_PATH_BYTES + 2 * SourceDeclaration::MAX_TEXT_BYTES + 64;
+
+/// A canonical preimage for a row identity whose display projection cannot
+/// reproduce the row key.
+///
+/// Most rows use their coordinate as both their identity preimage and their
+/// label, so they need no sidecar.  Some language tag queries legitimately
+/// emit two declarations at the same coordinate under different kinds.  The
+/// second row is then keyed by an occurrence-disambiguated preimage.  Keeping
+/// that preimage with the immutable row lets every producer certificate prove
+/// the exact digest after a journal or transport round trip without treating
+/// the display label as an identity authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RowIdentityPreimage(Box<str>);
+
+/// Failure while admitting a canonical row identity preimage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RowIdentityPreimageError {
+    /// The preimage was empty.
+    Empty,
+    /// The preimage exceeded the fixed producer bound.
+    TooLarge {
+        /// Number of UTF-8 bytes supplied by the producer.
+        actual: usize,
+        /// Maximum number of UTF-8 bytes admitted for one preimage.
+        maximum: usize,
+    },
+}
+
+impl fmt::Display for RowIdentityPreimageError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("row identity preimage is empty"),
+            Self::TooLarge { actual, maximum } => write!(
+                formatter,
+                "row identity preimage has {actual} bytes, maximum is {maximum}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RowIdentityPreimageError {}
+
+impl RowIdentityPreimage {
+    /// Validates a borrowed canonical UTF-8 row identity preimage without
+    /// allocating.  The NUL separator is intentionally allowed: structural
+    /// duplicate declarations use it as part of their canonical framing.
+    pub(crate) fn validate(value: &str) -> Result<(), RowIdentityPreimageError> {
+        if value.is_empty() {
+            return Err(RowIdentityPreimageError::Empty);
+        }
+        if value.len() > MAX_ROW_IDENTITY_PREIMAGE_BYTES {
+            return Err(RowIdentityPreimageError::TooLarge {
+                actual: value.len(),
+                maximum: MAX_ROW_IDENTITY_PREIMAGE_BYTES,
+            });
+        }
+        Ok(())
+    }
+
+    /// Admits and owns a canonical UTF-8 row identity preimage.
+    pub fn try_new(value: &str) -> Result<Self, RowIdentityPreimageError> {
+        Self::validate(value)?;
+        Ok(Self(value.to_owned().into_boxed_str()))
+    }
+
+    /// Returns the exact canonical preimage text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for RowIdentityPreimage {
+    type Error = RowIdentityPreimageError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::validate(&value)?;
+        Ok(Self(value.into_boxed_str()))
+    }
+}
 
 /// Maximum evidence retained on one local coverage capability and exposed in
 /// a producer certificate.
@@ -569,6 +659,13 @@ impl SourceAvailability {
 pub struct Row {
     /// Stable identity independent of display spelling or rank.
     pub id: RowId,
+    /// Optional canonical preimage for this row's stable identity.
+    ///
+    /// The field is absent for ordinary rows whose producer can certify the
+    /// identity from the row coordinate or an externally admitted
+    /// commitment.  It is present whenever the key contains producer-only
+    /// disambiguation, such as a repeated declaration occurrence.
+    pub(crate) identity_preimage: Option<RowIdentityPreimage>,
     /// Exact source basis used for this row.
     pub basis: Basis,
     /// Lifecycle state.
@@ -602,6 +699,7 @@ impl Row {
         let label = label.into();
         Self {
             id,
+            identity_preimage: None,
             basis,
             state: RowState::Ready,
             label: label.clone(),
@@ -627,6 +725,29 @@ impl Row {
         let mut row = Self::new(id, basis, label);
         row.package = Some(package);
         row
+    }
+
+    /// Attaches an already admitted producer identity preimage.
+    #[must_use]
+    pub fn with_identity_preimage(mut self, preimage: RowIdentityPreimage) -> Self {
+        self.identity_preimage = Some(preimage);
+        self
+    }
+
+    /// Admits and attaches a producer identity preimage.
+    pub fn try_with_identity_preimage(
+        self,
+        preimage: &str,
+    ) -> Result<Self, RowIdentityPreimageError> {
+        Ok(self.with_identity_preimage(RowIdentityPreimage::try_new(preimage)?))
+    }
+
+    /// Returns the producer's exact canonical identity preimage, when this
+    /// row has one.  Callers must still admit it against `self.id` before
+    /// promoting it to a typed identity.
+    #[must_use]
+    pub fn identity_preimage(&self) -> Option<&RowIdentityPreimage> {
+        self.identity_preimage.as_ref()
     }
 
     /// Adds a parent declaration to this row's outline relation.

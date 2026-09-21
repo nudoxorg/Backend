@@ -90,6 +90,21 @@ pub enum WireClaim {
         /// Fixed-width digest claim.
         id: String,
     },
+    /// Canonical preimage for one visible row identity.
+    ///
+    /// Row identities are a separate claim class because a row's display
+    /// label is allowed to be a projection.  In particular, occurrence
+    /// disambiguation for overlapping language tags produces a symbol digest
+    /// that cannot be recomputed from that label.  The receiver still hashes
+    /// this preimage under the declared key schema before admitting it.
+    RowIdentity {
+        /// Schema of the row key.
+        schema: WireSchema,
+        /// Fixed-width row identity digest.
+        id: String,
+        /// Exact canonical row identity preimage.
+        preimage: String,
+    },
     /// Canonical bytes for an object version.
     Version {
         /// Schema of the value.
@@ -249,6 +264,93 @@ impl WireCertificate {
     ) -> Result<ObjectKey<T>, String> {
         let value = self.unique_key_bytes(schema, id)?;
         admit_key_value::<T>(id, value).map_err(|error| error.to_string())
+    }
+
+    /// Admits one explicit row identity preimage, if the producer supplied
+    /// one for this row.  Missing claims remain distinguishable from malformed
+    /// claims so ordinary rows can retain the existing commitment path.
+    pub(crate) fn row_identity_preimage<'a>(
+        &'a self,
+        schema: WireSchema,
+        id: &str,
+    ) -> Result<Option<&'a str>, String> {
+        let mut result = None;
+        let mut ordinary_claim = false;
+        for claim in &self.claims {
+            match claim {
+                WireClaim::RowIdentity {
+                    schema: actual,
+                    id: actual_id,
+                    preimage,
+                } if *actual == schema && actual_id == id => {
+                    if result.is_some() {
+                        return Err("duplicate row identity certificate claim".to_owned());
+                    }
+                    result = Some(preimage.as_str());
+                }
+                WireClaim::Key {
+                    schema: actual,
+                    id: actual_id,
+                    ..
+                } if *actual == schema && actual_id == id => {
+                    ordinary_claim = true;
+                }
+                _ => {}
+            }
+        }
+        let Some(preimage) = result else {
+            return Ok(None);
+        };
+        if ordinary_claim {
+            return Err("row identity certificate mixes explicit and ordinary claims".to_owned());
+        }
+        crate::RowIdentityPreimage::validate(preimage).map_err(|error| error.to_string())?;
+        match schema {
+            WireSchema::Package => {
+                admit_key_value::<crate::canonical::PackageSchema>(id, &preimage)
+                    .map_err(|error| error.to_string())?;
+            }
+            WireSchema::Symbol => {
+                admit_key_value::<crate::canonical::SymbolSchema>(id, &preimage)
+                    .map_err(|error| error.to_string())?;
+            }
+            _ => return Err("row identity certificate uses an unsupported schema".to_owned()),
+        }
+        Ok(Some(preimage))
+    }
+
+    /// Admits an explicit row identity when present and otherwise uses the
+    /// ordinary canonical key claim.  A malformed explicit claim is returned
+    /// immediately; it must never be hidden by a fallback commitment.
+    pub(crate) fn row_identity_or_key_value<T: Schema<Value = str>>(
+        &self,
+        schema: WireSchema,
+        id: &str,
+    ) -> Result<ObjectKey<T>, String> {
+        match self.row_identity_preimage(schema, id)? {
+            Some(preimage) => {
+                admit_key_value::<T>(id, &preimage).map_err(|error| error.to_string())
+            }
+            None => self.key_value::<T>(schema, id),
+        }
+    }
+
+    /// Variant used by capability-backed row decoding.  Only a missing
+    /// explicit preimage may proceed to the producer commitment fallback.
+    pub(crate) fn row_identity_or_key_or_producer<T: Schema<Value = str>>(
+        &self,
+        schema: WireSchema,
+        id: &str,
+        capability: &CoverageCapability,
+    ) -> Result<ObjectKey<T>, String> {
+        match self.row_identity_preimage(schema, id)? {
+            Some(preimage) => {
+                admit_key_value::<T>(id, &preimage).map_err(|error| error.to_string())
+            }
+            None => self
+                .key_value::<T>(schema, id)
+                .or_else(|_| self.producer_key_value(schema, id, capability)),
+        }
     }
 
     pub(crate) fn producer_key_value<T: Schema>(

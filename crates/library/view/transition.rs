@@ -491,6 +491,8 @@ pub enum ViewError {
     IncoherentBase,
     /// A replacement would introduce two rows with one stable identity.
     Duplicate,
+    /// A row's explicit identity witness does not hash to its stable key.
+    InvalidIdentity,
     /// Coverage or row growth exceeded the bounded view contract.
     Unbounded,
     /// The generated relation transition could not be prepared.
@@ -612,6 +614,9 @@ pub(super) fn validate_delta(
             if row.basis != base.basis {
                 return Err(ViewError::WrongBasis);
             }
+            if !super::root::row_identity_matches(row) {
+                return Err(ViewError::InvalidIdentity);
+            }
             base.coverage.clone()
         }
         ViewDelta::Remove { .. } => base.coverage.clone(),
@@ -627,6 +632,11 @@ pub(super) fn validate_delta(
                 .any(|change| matches!(change, RowChange::Upsert(row) if row.basis != base.basis))
             {
                 return Err(ViewError::WrongBasis);
+            }
+            if changes.iter().any(|change| {
+                matches!(change, RowChange::Upsert(row) if !super::root::row_identity_matches(row))
+            }) {
+                return Err(ViewError::InvalidIdentity);
             }
             base.coverage.clone()
         }

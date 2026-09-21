@@ -144,16 +144,13 @@ pub(crate) fn fragment_from_wire_with_capability(
         FragmentWire::Link(value) => Fragment::Link {
             label: value.label,
             target: match capability {
-                Some(capability) => certificate
-                    .key_value::<SymbolSchema>(WireSchema::Symbol, &value.target)
-                    .or_else(|_| {
-                        certificate.producer_key_value(
-                            WireSchema::Symbol,
-                            &value.target,
-                            capability,
-                        )
-                    })?,
-                None => certificate.key_value::<SymbolSchema>(WireSchema::Symbol, &value.target)?,
+                Some(capability) => certificate.row_identity_or_key_or_producer::<SymbolSchema>(
+                    WireSchema::Symbol,
+                    &value.target,
+                    capability,
+                )?,
+                None => certificate
+                    .row_identity_or_key_value::<SymbolSchema>(WireSchema::Symbol, &value.target)?,
             },
         },
         FragmentWire::Break(_) => Fragment::Break,
@@ -239,12 +236,13 @@ pub(crate) fn document_from_wire_with_admission<A: CoverageAdmission>(
         })
         .collect::<Result<Vec<_>, String>>()?;
     let symbol = match capability.as_ref() {
-        Some(capability) => certificate
-            .key_value::<SymbolSchema>(WireSchema::Symbol, &value.symbol)
-            .or_else(|_| {
-                certificate.producer_key_value(WireSchema::Symbol, &value.symbol, capability)
-            })?,
-        None => certificate.key_value::<SymbolSchema>(WireSchema::Symbol, &value.symbol)?,
+        Some(capability) => certificate.row_identity_or_key_or_producer::<SymbolSchema>(
+            WireSchema::Symbol,
+            &value.symbol,
+            capability,
+        )?,
+        None => certificate
+            .row_identity_or_key_value::<SymbolSchema>(WireSchema::Symbol, &value.symbol)?,
     };
     Ok(Document {
         symbol,
@@ -294,12 +292,13 @@ pub(crate) fn outline_from_wire_with_admission<A: CoverageAdmission>(
         .collect::<Result<Vec<_>, _>>()?
         .into_boxed_slice();
     let package = match capability.as_ref() {
-        Some(capability) => certificate
-            .key_value::<PackageSchema>(WireSchema::Package, &value.package)
-            .or_else(|_| {
-                certificate.producer_key_value(WireSchema::Package, &value.package, capability)
-            })?,
-        None => certificate.key_value::<PackageSchema>(WireSchema::Package, &value.package)?,
+        Some(capability) => certificate.row_identity_or_key_or_producer::<PackageSchema>(
+            WireSchema::Package,
+            &value.package,
+            capability,
+        )?,
+        None => certificate
+            .row_identity_or_key_value::<PackageSchema>(WireSchema::Package, &value.package)?,
     };
     Ok(Outline {
         package,
@@ -361,12 +360,13 @@ fn outline_node_from_wire_with_capability(
     capability: Option<&CoverageCapability>,
 ) -> Result<OutlineNode, String> {
     let symbol = match capability {
-        Some(capability) => certificate
-            .key_value::<SymbolSchema>(WireSchema::Symbol, &value.symbol)
-            .or_else(|_| {
-                certificate.producer_key_value(WireSchema::Symbol, &value.symbol, capability)
-            })?,
-        None => certificate.key_value::<SymbolSchema>(WireSchema::Symbol, &value.symbol)?,
+        Some(capability) => certificate.row_identity_or_key_or_producer::<SymbolSchema>(
+            WireSchema::Symbol,
+            &value.symbol,
+            capability,
+        )?,
+        None => certificate
+            .row_identity_or_key_value::<SymbolSchema>(WireSchema::Symbol, &value.symbol)?,
     };
     Ok(OutlineNode {
         symbol,

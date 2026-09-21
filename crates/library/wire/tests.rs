@@ -10,7 +10,8 @@ use crate::{
     OutlineQuery, Query, QueryLimit, ReplyDto, RequestAdmissionError, Row, RowId, ScopeRoot,
     SemanticObject, SnapshotPageDto, SourceAvailability, SourceExcerpt, SourceExcerptExtent,
     SourceLocation, SubscriptionDto, ViewDelta, ViewDto, ViewPageCursor, ViewRoot, ViewSnapshot,
-    ViewStateRoot, WireCertificate, WireClaim, WireSchema, admit_reply,
+    ViewStateRoot, ViewError, WireCertificate, WireClaim, WireSchema, RowIdentityPreimage,
+    MAX_ROW_IDENTITY_PREIMAGE_BYTES, admit_reply,
     admit_reply_with_capability, admit_request, encode_id,
 };
 
@@ -278,6 +279,114 @@ fn compact_view_event_is_delta_sized_and_replays_against_the_retained_root() {
     assert_eq!(decoded_cursor, cursor);
     assert_eq!(decoded.target_root(), target.root());
     assert_eq!(decoded.target_view(), &target);
+}
+
+#[test]
+fn occurrence_disambiguated_row_identity_is_admitted_from_its_explicit_preimage() {
+    let source_root = view_state_root(&[]);
+    let basis = Basis::new(source_root, object_version(b"source"));
+    let preimage = "pkg::src/lib.rs:1::run\0method\0fn run()\01";
+    let symbol = symbol_key(preimage);
+    let row = Row::new(RowId::Symbol(symbol), basis, "pkg::src/lib.rs:1::run")
+        .with_identity_preimage(
+            crate::RowIdentityPreimage::try_new(preimage).expect("bounded preimage"),
+        );
+    let root = ViewRoot::new_checked(
+        view_key(b"view"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, source_root, 0),
+        vec![row],
+        vec![crate::Coverage::Complete],
+        capability(basis.object),
+    )
+    .expect("checked occurrence root");
+    let admitted_certificate = certificate(&root).with_claim(WireClaim::RowIdentity {
+        schema: WireSchema::Symbol,
+        id: encode_id(symbol.as_bytes()),
+        preimage: preimage.to_owned(),
+    });
+    let view = ViewDto::new(
+        9,
+        ViewSnapshot {
+            root: root.clone(),
+            freshness: Freshness::Current,
+            next: None,
+            graph_relations: None,
+        },
+    )
+    .with_certificate(admitted_certificate);
+    let encoded = serde_json::to_vec(&view).expect("encode occurrence view");
+    ViewDto::decode_with_certificate(&encoded, Some(capability(basis.object)))
+        .expect("explicit row identity should survive transport");
+
+    let forged = certificate(&root).with_claim(WireClaim::RowIdentity {
+        schema: WireSchema::Symbol,
+        id: encode_id(symbol.as_bytes()),
+        preimage: "pkg::src/lib.rs:1::run\\0function\\0fn run()\\01".to_owned(),
+    });
+    let forged_view = ViewDto::new(
+        9,
+        ViewSnapshot {
+            root: root.clone(),
+            freshness: Freshness::Current,
+            next: None,
+            graph_relations: None,
+        },
+    )
+    .with_certificate(forged);
+    let forged_encoded = serde_json::to_vec(&forged_view).expect("encode forged view");
+    assert!(ViewDto::decode_with_certificate(&forged_encoded, Some(capability(basis.object)))
+        .is_err());
+
+    let mixed = certificate(&root)
+        .with_claim(WireClaim::RowIdentity {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol.as_bytes()),
+            preimage: preimage.to_owned(),
+        })
+        .with_claim(WireClaim::Key {
+            schema: WireSchema::Symbol,
+            id: encode_id(symbol.as_bytes()),
+            value: preimage.to_owned(),
+        });
+    let mixed_view = ViewDto::new(
+        9,
+        ViewSnapshot {
+            root,
+            freshness: Freshness::Current,
+            next: None,
+            graph_relations: None,
+        },
+    )
+    .with_certificate(mixed);
+    let mixed_encoded = serde_json::to_vec(&mixed_view).expect("encode mixed view");
+    assert!(ViewDto::decode_with_certificate(&mixed_encoded, Some(capability(basis.object)))
+        .is_err());
+}
+
+#[test]
+fn row_identity_witness_is_bounded_before_ownership_and_root_rechecks_the_digest() {
+    let source_root = view_state_root(&[]);
+    let basis = Basis::new(source_root, object_version(b"source"));
+    let right = "pkg::src/lib.rs:1::run\0method\0fn run()\01";
+    let wrong = symbol_key("pkg::src/lib.rs:1::run\0function\0fn run()\01");
+    let witness = RowIdentityPreimage::try_new(right).expect("bounded witness");
+    let row = Row::new(RowId::Symbol(wrong), basis, "pkg::src/lib.rs:1::run")
+        .with_identity_preimage(witness);
+    let error = ViewRoot::new_checked(
+        view_key(b"view"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, source_root, 0),
+        vec![row],
+        vec![crate::Coverage::Complete],
+        capability(basis.object),
+    )
+    .expect_err("a wrong witness digest must remain a typed identity failure");
+    assert_eq!(error, ViewError::InvalidIdentity);
+    assert!(RowIdentityPreimage::try_new(
+        &"x".repeat(MAX_ROW_IDENTITY_PREIMAGE_BYTES + 1)
+    )
+    .is_err());
 }
 
 #[test]

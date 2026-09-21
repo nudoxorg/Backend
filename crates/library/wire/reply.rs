@@ -29,7 +29,8 @@ use crate::canonical::{
 };
 use crate::{
     Basis, CommandReply, CoverageCapability, DeclarationKind, GraphRelation, HealthReport,
-    PageTerminal, RevisionReceipt, Row, RowId, RowState, SemanticLinkKind, ViewRoot, ViewSnapshot,
+    PageTerminal, RevisionReceipt, Row, RowId, RowIdentityPreimage, RowState, SemanticLinkKind,
+    ViewRoot, ViewSnapshot,
 };
 use backend_version::ProducerObservationVerifier;
 use serde::{Deserialize, Serialize};
@@ -772,6 +773,7 @@ fn row_from_wire_with_capability(
             |capability| row_id_from_wire_with_capability(&value.id, certificate, capability),
         )
         .map_err(|error| format!("identity: {error}"))?;
+    let identity_preimage = row_identity_preimage_from_wire(&value.id, certificate)?;
     let basis = match capability {
         Some(capability) => basis_from_wire_with_capability(&value.basis, certificate, capability),
         None => basis_from_wire(&value.basis, certificate),
@@ -781,10 +783,12 @@ fn row_from_wire_with_capability(
         .package
         .as_deref()
         .map(|id| match capability {
-            Some(capability) => certificate
-                .key_value::<PackageSchema>(WireSchema::Package, id)
-                .or_else(|_| certificate.producer_key_value(WireSchema::Package, id, capability)),
-            None => certificate.key_value::<PackageSchema>(WireSchema::Package, id),
+            Some(capability) => certificate.row_identity_or_key_or_producer::<PackageSchema>(
+                WireSchema::Package,
+                id,
+                capability,
+            ),
+            None => certificate.row_identity_or_key_value::<PackageSchema>(WireSchema::Package, id),
         })
         .transpose()
         .map_err(|error| format!("package: {error}"))?;
@@ -792,15 +796,18 @@ fn row_from_wire_with_capability(
         .parent
         .as_deref()
         .map(|id| match capability {
-            Some(capability) => certificate
-                .key_value::<SymbolSchema>(WireSchema::Symbol, id)
-                .or_else(|_| certificate.producer_key_value(WireSchema::Symbol, id, capability)),
-            None => certificate.key_value::<SymbolSchema>(WireSchema::Symbol, id),
+            Some(capability) => certificate.row_identity_or_key_or_producer::<SymbolSchema>(
+                WireSchema::Symbol,
+                id,
+                capability,
+            ),
+            None => certificate.row_identity_or_key_value::<SymbolSchema>(WireSchema::Symbol, id),
         })
         .transpose()
         .map_err(|error| format!("parent: {error}"))?;
     Ok(Row {
         id,
+        identity_preimage,
         basis,
         state: row_state_from_wire(&value.state),
         label: value.label,
@@ -868,14 +875,17 @@ fn row_from_wire_against_admission(
             |capability| row_id_from_wire_with_capability(&value.id, certificate, capability),
         )
         .map_err(|error| format!("snapshot row identity: {error}"))?;
+    let identity_preimage = row_identity_preimage_from_wire(&value.id, certificate)?;
     let package = value
         .package
         .as_deref()
         .map(|id| match capability {
-            Some(capability) => certificate
-                .key_value::<PackageSchema>(WireSchema::Package, id)
-                .or_else(|_| certificate.producer_key_value(WireSchema::Package, id, capability)),
-            None => certificate.key_value::<PackageSchema>(WireSchema::Package, id),
+            Some(capability) => certificate.row_identity_or_key_or_producer::<PackageSchema>(
+                WireSchema::Package,
+                id,
+                capability,
+            ),
+            None => certificate.row_identity_or_key_value::<PackageSchema>(WireSchema::Package, id),
         })
         .transpose()
         .map_err(|error| format!("snapshot row package: {error}"))?;
@@ -883,15 +893,18 @@ fn row_from_wire_against_admission(
         .parent
         .as_deref()
         .map(|id| match capability {
-            Some(capability) => certificate
-                .key_value::<SymbolSchema>(WireSchema::Symbol, id)
-                .or_else(|_| certificate.producer_key_value(WireSchema::Symbol, id, capability)),
-            None => certificate.key_value::<SymbolSchema>(WireSchema::Symbol, id),
+            Some(capability) => certificate.row_identity_or_key_or_producer::<SymbolSchema>(
+                WireSchema::Symbol,
+                id,
+                capability,
+            ),
+            None => certificate.row_identity_or_key_value::<SymbolSchema>(WireSchema::Symbol, id),
         })
         .transpose()
         .map_err(|error| format!("snapshot row parent: {error}"))?;
     Ok(Row {
         id,
+        identity_preimage,
         basis: expected,
         state: row_state_from_wire(&value.state),
         label: value.label,
@@ -913,12 +926,18 @@ fn row_id_from_wire_with_capability(
 ) -> Result<RowId, String> {
     match value.kind.as_str() {
         "package" => certificate
-            .key_value::<PackageSchema>(WireSchema::Package, &value.id)
-            .or_else(|_| certificate.producer_key_value(WireSchema::Package, &value.id, capability))
+            .row_identity_or_key_or_producer::<PackageSchema>(
+                WireSchema::Package,
+                &value.id,
+                capability,
+            )
             .map(RowId::Package),
         "symbol" => certificate
-            .key_value::<SymbolSchema>(WireSchema::Symbol, &value.id)
-            .or_else(|_| certificate.producer_key_value(WireSchema::Symbol, &value.id, capability))
+            .row_identity_or_key_or_producer::<SymbolSchema>(
+                WireSchema::Symbol,
+                &value.id,
+                capability,
+            )
             .map(RowId::Symbol),
         "object" => certificate
             .version_value::<ObjectSchema>(WireSchema::Object, &value.id)
@@ -950,16 +969,36 @@ pub(crate) fn row_id_from_wire(
 ) -> Result<RowId, String> {
     match value.kind.as_str() {
         "package" => Ok(RowId::Package(
-            certificate.key_value::<PackageSchema>(WireSchema::Package, &value.id)?,
+            certificate
+                .row_identity_or_key_value::<PackageSchema>(WireSchema::Package, &value.id)?,
         )),
         "symbol" => Ok(RowId::Symbol(
-            certificate.key_value::<SymbolSchema>(WireSchema::Symbol, &value.id)?,
+            certificate.row_identity_or_key_value::<SymbolSchema>(WireSchema::Symbol, &value.id)?,
         )),
         "object" => Ok(RowId::Object(
             certificate.version_value::<ObjectSchema>(WireSchema::Object, &value.id)?,
         )),
         _ => Err("unknown stable row identity kind".to_owned()),
     }
+}
+
+fn row_identity_preimage_from_wire(
+    value: &RowIdWire,
+    certificate: &WireCertificate,
+) -> Result<Option<RowIdentityPreimage>, String> {
+    let schema = match value.kind.as_str() {
+        "package" => WireSchema::Package,
+        "symbol" => WireSchema::Symbol,
+        "object" => return Ok(None),
+        _ => return Err("unknown stable row identity kind".to_owned()),
+    };
+    certificate
+        .row_identity_preimage(schema, &value.id)
+        .and_then(|preimage| {
+            preimage
+                .map(|value| RowIdentityPreimage::try_new(value).map_err(|error| error.to_string()))
+                .transpose()
+        })
 }
 
 pub(crate) fn row_state_to_wire(state: RowState) -> RowStateWire {

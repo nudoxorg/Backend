@@ -34,24 +34,51 @@ const MAX_SEMANTIC_QUERY_ROWS: usize = 65_536;
 const STALE_NOTE: &str =
     "stale semantic image: compiled from an earlier source snapshot; re-index to refresh";
 
+type DeclarationOccurrenceKey = (String, String, String);
+
+fn duplicate_declaration_coordinates(
+    containment: &FileContainment<'_>,
+    declarations: &[backend_compile::SourceDeclaration],
+) -> BTreeSet<String> {
+    let mut counts = BTreeMap::<String, u32>::new();
+    for declaration in declarations {
+        let coordinate = containment.coordinate(declaration);
+        let count = counts.entry(coordinate).or_default();
+        *count = count.saturating_add(1);
+    }
+    counts
+        .into_iter()
+        .filter_map(|(coordinate, count)| (count > 1).then_some(coordinate))
+        .collect()
+}
+
 fn declaration_symbol(
     coordinate: &str,
     kind: DeclarationKind,
     signature: &str,
-    occurrences: &mut BTreeMap<RowId, u32>,
-) -> RowId {
+    duplicate_coordinate: bool,
+    occurrences: &mut BTreeMap<DeclarationOccurrenceKey, u32>,
+) -> (RowId, Option<String>) {
     let canonical = RowId::Symbol(backend_engine::symbol_key(coordinate));
-    let occurrence = occurrences.entry(canonical).or_default();
-    let symbol = if *occurrence == 0 {
-        canonical
-    } else {
-        RowId::Symbol(backend_engine::symbol_key(&format!(
-            "{coordinate}\0{}\0{signature}\0{occurrence}",
-            kind.name()
-        )))
+    if !duplicate_coordinate {
+        return (canonical, None);
+    }
+    let occurrence = occurrences
+        .entry((
+            coordinate.to_owned(),
+            kind.name().to_owned(),
+            signature.to_owned(),
+        ))
+        .or_default();
+    let preimage = {
+        let preimage = format!("{coordinate}\0{}\0{signature}\0{occurrence}", kind.name());
+        *occurrence = occurrence.saturating_add(1);
+        preimage
     };
-    *occurrence = occurrence.saturating_add(1);
-    symbol
+    (
+        RowId::Symbol(backend_engine::symbol_key(&preimage)),
+        Some(preimage),
+    )
 }
 
 /// Returns the canonical coordinate of one non-file declaration row.
@@ -420,7 +447,6 @@ struct SourceRowProjection<'a> {
     projects: &'a BTreeMap<[u8; 32], super::IndexedProject>,
     rows: Vec<Row>,
     selected_files: BTreeSet<([u8; 32], [u8; 32])>,
-    symbol_occurrences: BTreeMap<RowId, u32>,
     ledger: ProjectionLedger,
     targets: &'a SemanticTargets,
 }
@@ -453,7 +479,6 @@ impl<'a> SourceRowProjection<'a> {
             projects,
             rows,
             selected_files,
-            symbol_occurrences: BTreeMap::new(),
             ledger: ProjectionLedger::default(),
             targets,
         })
@@ -527,8 +552,18 @@ impl<'a> SourceRowProjection<'a> {
         );
         let containment = FileContainment::new(&project.label, path, project_key, declarations);
         let package = project.package;
+        let duplicate_coordinates = duplicate_declaration_coordinates(&containment, declarations);
+        let mut occurrences = BTreeMap::new();
         for declaration in declarations.iter() {
-            let row = self.declaration_row(declaration, &containment, types, package, language);
+            let row = self.declaration_row(
+                declaration,
+                &containment,
+                types,
+                package,
+                language,
+                &duplicate_coordinates,
+                &mut occurrences,
+            )?;
             self.rows.push(row);
         }
         Ok(())
@@ -542,14 +577,17 @@ impl<'a> SourceRowProjection<'a> {
         types: &ProjectTypeIndex,
         package: backend_engine::PackageKey,
         language: backend_engine::SourceLanguage,
-    ) -> Row {
+        duplicate_coordinates: &BTreeSet<String>,
+        occurrences: &mut BTreeMap<DeclarationOccurrenceKey, u32>,
+    ) -> Result<Row, BuiltinModelError> {
         let path = containment.path;
         let coordinate = containment.coordinate(declaration);
-        let symbol = declaration_symbol(
+        let (symbol, identity_preimage) = declaration_symbol(
             &coordinate,
             declaration.kind(),
             declaration.signature(),
-            &mut self.symbol_occurrences,
+            duplicate_coordinates.contains(&coordinate),
+            occurrences,
         );
         let prose = if is_file_module(declaration, path) {
             format!("{} source · {path}", language.name())
@@ -568,10 +606,18 @@ impl<'a> SourceRowProjection<'a> {
             .with_kind(declaration.kind())
             .with_source(declaration.location().clone())
             .with_excerpt(declaration.source_excerpt().clone());
-        match containment.parent_coordinate(declaration, types) {
+        let row = match identity_preimage {
+            Some(preimage) => row.with_identity_preimage(
+                backend_engine::RowIdentityPreimage::try_from(preimage).map_err(|error| {
+                    BuiltinModelError(format!("structural row identity preimage: {error}"))
+                })?,
+            ),
+            None => row,
+        };
+        Ok(match containment.parent_coordinate(declaration, types) {
             Some(parent) => row.with_parent(backend_engine::symbol_key(&parent)),
             None => row,
-        }
+        })
     }
 
     fn finish(mut self, semantic_rows: Vec<Row>) -> Result<Vec<Row>, BuiltinModelError> {
@@ -981,6 +1027,8 @@ fn append_image_rows(
             project.package,
             coordinate,
         )
+        .try_with_identity_preimage(&semantic_identity(project.package, identity))
+        .map_err(|error| BuiltinModelError(format!("semantic row identity preimage: {error}")))?
         .with_kind(declaration_kind(entity.entity.kind))
         .with_document(document);
         if let Some(signature) = content.signature {
@@ -1024,8 +1072,18 @@ fn append_image_rows(
                                 .to_owned(),
                         )
                     })?;
-            sink.rows
-                .push(Row::new(RowId::Symbol(symbol), sink.initial.basis(), label));
+            let preimage = backend_engine::encode_id(
+                identity
+                    .in_scope(project.package.to_bytes(), image_identity)
+                    .as_bytes(),
+            );
+            sink.rows.push(
+                Row::new(RowId::Symbol(symbol), sink.initial.basis(), label)
+                    .try_with_identity_preimage(&preimage)
+                    .map_err(|error| {
+                        BuiltinModelError(format!("external row identity preimage: {error}"))
+                    })?,
+            );
         }
     }
     Ok(())
@@ -1474,7 +1532,6 @@ fn append_structural_query_facts(
     complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
 ) -> Result<(), BuiltinModelError> {
-    let mut occurrences = BTreeMap::new();
     let types = ProjectTypeIndex::of(sources);
     for (_, record) in &sources.files {
         let file = record
@@ -1501,15 +1558,19 @@ fn append_structural_query_facts(
             file.project,
             file.declarations,
         );
+        let duplicate_coordinates =
+            duplicate_declaration_coordinates(&containment, file.declarations);
+        let mut occurrences = BTreeMap::new();
         for declaration in file.declarations.iter() {
             let coordinate = containment.coordinate(declaration);
-            let id = declaration_symbol(
+            let (id, _) = declaration_symbol(
                 &coordinate,
                 declaration.kind(),
                 declaration.signature(),
+                duplicate_coordinates.contains(&coordinate),
                 &mut occurrences,
-            )
-            .stable_key();
+            );
+            let id = id.stable_key();
             let documentation = if is_file_module(declaration, file.path) {
                 format!("{} source · {}", file.language.name(), file.path)
             } else if declaration.documentation().is_empty() {
@@ -1831,6 +1892,55 @@ pub fn execute() {}
                     .join("\n  ");
                 format!("no row named {name}\nprojected:\n  {rendered}")
             })
+    }
+
+    #[test]
+    fn repeated_tag_coordinates_keep_distinct_checked_identity_preimages() {
+        let coordinate = "fixture::src/lib.rs:1::run";
+        let mut occurrences = BTreeMap::new();
+        let (first, first_preimage) = super::declaration_symbol(
+            coordinate,
+            backend_engine::DeclarationKind::Method,
+            "fn run()",
+            true,
+            &mut occurrences,
+        );
+        let (second, second_preimage) = super::declaration_symbol(
+            coordinate,
+            backend_engine::DeclarationKind::Function,
+            "fn run()",
+            true,
+            &mut occurrences,
+        );
+        let first_preimage = first_preimage.expect("overlapping tag gets a preimage");
+        assert_eq!(first, RowId::Symbol(symbol_key(&first_preimage)));
+        let second_preimage = second_preimage.expect("overlapping tag gets a preimage");
+        assert_eq!(second, RowId::Symbol(symbol_key(&second_preimage)));
+        assert_ne!(first, second);
+
+        let mut reverse = BTreeMap::new();
+        let (_, reverse_function) = super::declaration_symbol(
+            coordinate,
+            backend_engine::DeclarationKind::Function,
+            "fn run()",
+            true,
+            &mut reverse,
+        );
+        let (_, reverse_method) = super::declaration_symbol(
+            coordinate,
+            backend_engine::DeclarationKind::Method,
+            "fn run()",
+            true,
+            &mut reverse,
+        );
+        assert_eq!(
+            second_preimage,
+            reverse_function.expect("function identity is order independent")
+        );
+        assert_eq!(
+            first_preimage,
+            reverse_method.expect("method identity is order independent")
+        );
     }
 
     /// Renders one row's parent as the coordinate it points at, or `-`.

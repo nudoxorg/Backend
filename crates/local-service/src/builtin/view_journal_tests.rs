@@ -60,6 +60,51 @@ fn roundtrip_retains_nonempty_view_and_exact_owner_binding() {
 }
 
 #[test]
+fn roundtrip_re_admits_occurrence_disambiguated_row_identity() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("backend-locald-view-occurrence-{stamp}.journal"));
+    let head = super::super::genesis().expect("checked builtin genesis");
+    let capability = super::super::test_builtin_view_capability().expect("coverage");
+    let (base, _) = super::super::initial_view().expect("checked initial view");
+    let preimage = "fixture::src/lib.rs:1::run\0method\0fn run()\01";
+    let row = backend_engine::Row::new(
+        backend_engine::RowId::Symbol(backend_engine::symbol_key(preimage)),
+        base.basis(),
+        "fixture::src/lib.rs:1::run",
+    )
+    .with_identity_preimage(
+        backend_engine::RowIdentityPreimage::try_new(preimage).expect("bounded preimage"),
+    );
+    let prepared = base
+        .prepare(
+            backend_engine::ViewDelta::Upsert { row },
+            capability.clone(),
+        )
+        .expect("prepare occurrence row");
+    let (view, _) = base.commit(prepared).expect("commit occurrence row");
+    let cursor = Cursor::for_view_root(&view);
+    let mut journal = ViewJournal::open(&path).expect("open view journal");
+    journal
+        .persist(head.root(), &view, cursor, None)
+        .expect("persist occurrence row");
+    let recovered = journal
+        .load_for_workspace(head.root(), &capability)
+        .expect("load occurrence row")
+        .expect("occurrence snapshot");
+    assert_eq!(recovered.view.root(), view.root());
+    assert_eq!(
+        recovered.view.rows()[0]
+            .identity_preimage()
+            .map(|value| value.as_str()),
+        Some(preimage)
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn workspace_head_change_starts_with_a_snapshot_before_any_view_event() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

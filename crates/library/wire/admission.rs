@@ -376,6 +376,10 @@ fn add_row_bound(bound: &mut usize, row: &Row) {
     let mut bytes = 512usize
         .saturating_add(row.label.len())
         .saturating_add(row.signature.as_deref().map_or(0, str::len));
+    bytes = bytes.saturating_add(
+        row.identity_preimage()
+            .map_or(0, |preimage| preimage.as_str().len()),
+    );
     if let Some(kind) = row.kind {
         bytes = bytes.saturating_add(kind.name().len().saturating_add(16));
     }
@@ -445,7 +449,10 @@ fn add_outline_bound(bound: &mut usize, outline: &Outline) {
 
 fn add_claim_bound(bound: &mut usize, claim: &WireClaim) {
     let bytes = match claim {
-        WireClaim::Key { value, .. } => 256usize.saturating_add(value.len()),
+        WireClaim::Key { value, .. }
+        | WireClaim::RowIdentity {
+            preimage: value, ..
+        } => 256usize.saturating_add(value.len()),
         WireClaim::KeyBytes { value, .. } | WireClaim::Version { value, .. } => {
             256usize.saturating_add(value.len())
         }

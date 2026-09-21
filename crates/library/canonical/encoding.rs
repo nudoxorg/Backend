@@ -159,6 +159,14 @@ pub(super) fn encode_row(value: &Row, out: &mut Vec<u8>) {
         crate::SourceExcerpt::NotHydrated => out.push(3),
         crate::SourceExcerpt::Unconfigured => out.push(4),
     }
+    // Ordinary rows retain the historical canonical bytes exactly.  A
+    // producer-only identity witness is an append-only suffix, so old rows
+    // stay compact while duplicate-coordinate rows commit their exact
+    // preimage in the relation value.
+    if let Some(preimage) = value.identity_preimage() {
+        out.push(1);
+        append_bytes(out, preimage.as_str().as_bytes());
+    }
 }
 
 fn append_fragments(out: &mut Vec<u8>, fragments: &[Fragment]) {
