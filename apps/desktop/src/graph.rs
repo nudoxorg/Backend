@@ -14,10 +14,10 @@
 
 use backend_library::{DeclarationKind, Row, RowId, RowState, SymbolKey, ViewRoot};
 use backend_present::{Identity, IdentityKey, Page, RelationDirection, RelationLabel};
+use std::collections::VecDeque;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
-use std::collections::VecDeque;
 use thiserror::Error;
 
 /// Maximum nodes admitted into one reader graph.
@@ -470,21 +470,13 @@ impl GraphProjection {
         let updated_nodes = next
             .nodes
             .iter()
-            .filter(|(id, node)| {
-                self.nodes
-                    .get(id)
-                    .is_some_and(|previous| previous != *node)
-            })
+            .filter(|(id, node)| self.nodes.get(id).is_some_and(|previous| previous != *node))
             .map(|(_, node)| node.clone())
             .collect();
         let updated_edges = next
             .edges
             .iter()
-            .filter(|(id, edge)| {
-                self.edges
-                    .get(id)
-                    .is_some_and(|previous| previous != *edge)
-            })
+            .filter(|(id, edge)| self.edges.get(id).is_some_and(|previous| previous != *edge))
             .map(|(_, edge)| edge.clone())
             .collect();
         GraphDelta {
@@ -617,7 +609,9 @@ impl GraphDelta {
         }
         for id in &self.removed_nodes {
             graph.nodes.remove(id);
-            graph.edges.retain(|edge, _| edge.from != *id && edge.to != *id);
+            graph
+                .edges
+                .retain(|edge, _| edge.from != *id && edge.to != *id);
         }
         for node in &self.updated_nodes {
             graph.nodes.insert(node.id, node.clone());
@@ -709,11 +703,7 @@ impl LayoutCache {
     /// Applies a graph delta while retaining unaffected coordinates. Only
     /// added, updated, or edge-adjacent nodes are placed again; this keeps a
     /// live feed from making a reader graph jump on every revision.
-    pub(crate) fn sync_with_delta(
-        &mut self,
-        graph: &GraphProjection,
-        delta: Option<&GraphDelta>,
-    ) {
+    pub(crate) fn sync_with_delta(&mut self, graph: &GraphProjection, delta: Option<&GraphDelta>) {
         if self.revision == Some(graph.revision)
             && self.positions.keys().all(|id| graph.nodes.contains_key(id))
         {
@@ -1118,13 +1108,7 @@ impl ExplorerState {
         let Some(graph) = &self.graph else { return };
         self.selected = self
             .selected
-            .and_then(|selected| {
-                graph
-                    .nodes
-                    .range(..selected)
-                    .next_back()
-                    .map(|(id, _)| *id)
-            })
+            .and_then(|selected| graph.nodes.range(..selected).next_back().map(|(id, _)| *id))
             .or_else(|| graph.nodes.keys().next_back().copied());
     }
 
@@ -1223,9 +1207,8 @@ fn distance_to_segment(point: Position, from: Position, to: Position) -> f32 {
     if length_squared <= f32::EPSILON {
         return (point.x - from.x).hypot(point.y - from.y);
     }
-    let projection = ((point.x - from.x).mul_add(dx, (point.y - from.y) * dy)
-        / length_squared)
-        .clamp(0.0, 1.0);
+    let projection =
+        ((point.x - from.x).mul_add(dx, (point.y - from.y) * dy) / length_squared).clamp(0.0, 1.0);
     let closest = Position {
         x: from.x + projection * dx,
         y: from.y + projection * dy,
@@ -1241,8 +1224,8 @@ mod tests {
         view_state_root,
     };
     use backend_present::{
-        IdentityKey, LineNumber, Member, MemberGroup, PackagePath, Relation, RelationGroup,
-        Source, SourceLine, SourceSite, Truncation,
+        IdentityKey, LineNumber, Member, MemberGroup, PackagePath, Relation, RelationGroup, Source,
+        SourceLine, SourceSite, Truncation,
     };
 
     fn key(seed: u64) -> SymbolKey {
@@ -1331,9 +1314,7 @@ mod tests {
             Vec::new(),
         )
         .expect("admitted graph root");
-        let identity = |label: &str, key| {
-            Identity::parse_with_key(label, IdentityKey::Symbol(key))
-        };
+        let identity = |label: &str, key| Identity::parse_with_key(label, IdentityKey::Symbol(key));
         let source = Source::Captured {
             site: SourceSite::new(PackagePath::new("src/lib.rs"), LineNumber::new(1).unwrap()),
             lines: vec![SourceLine::new(LineNumber::new(1).unwrap(), "centre")].into_boxed_slice(),
@@ -1476,9 +1457,13 @@ mod tests {
         let edge = *graph.edges.keys().next().expect("edge");
         let from = state.layout.position(edge.from).expect("from position");
         let to = state.layout.position(edge.to).expect("to position");
+        // The center-to-center segment passes through the endpoint node
+        // rectangles. Probe the exposed stroke just beyond the source box;
+        // node priority above guarantees the endpoint still wins when the
+        // pointer is over that box.
         let midpoint = Position {
             x: (from.x + to.x) * 0.5,
-            y: (from.y + to.y) * 0.5,
+            y: from.y + NODE_HEIGHT + 18.0,
         };
         assert_eq!(
             state.hit_test(midpoint, viewport, 8.0),
@@ -1541,7 +1526,11 @@ mod tests {
             .label = "changed payload".to_owned();
         let delta = first.diff(&payload_change);
         assert_eq!(
-            delta.updated_nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+            delta
+                .updated_nodes
+                .iter()
+                .map(|node| node.id)
+                .collect::<Vec<_>>(),
             vec![updated_id]
         );
         assert!(delta.added_nodes.is_empty());
@@ -1549,10 +1538,18 @@ mod tests {
 
         let edge_id = *first.edges.keys().next().expect("stable edge");
         let mut edge_payload_change = first.clone();
-        edge_payload_change.edges.get_mut(&edge_id).expect("edge").label = "changed";
+        edge_payload_change
+            .edges
+            .get_mut(&edge_id)
+            .expect("edge")
+            .label = "changed";
         let delta = first.diff(&edge_payload_change);
         assert_eq!(
-            delta.updated_edges.iter().map(|edge| edge.id).collect::<Vec<_>>(),
+            delta
+                .updated_edges
+                .iter()
+                .map(|edge| edge.id)
+                .collect::<Vec<_>>(),
             vec![edge_id]
         );
     }
@@ -1675,7 +1672,11 @@ mod tests {
 
         let delta = initial.diff(&next);
         assert_eq!(
-            delta.updated_nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+            delta
+                .updated_nodes
+                .iter()
+                .map(|node| node.id)
+                .collect::<Vec<_>>(),
             vec![NodeId::Symbol(key(1))]
         );
         incremental.sync(next.clone());
@@ -1683,11 +1684,13 @@ mod tests {
         let mut full = LayoutCache::default();
         full.sync(&next);
         assert!(incremental.layout.work <= MAX_LAYOUT_WORK);
-        assert!(incremental
-            .layout
-            .positions
-            .values()
-            .all(|position| position.x.is_finite() && position.y.is_finite()));
+        assert!(
+            incremental
+                .layout
+                .positions
+                .values()
+                .all(|position| position.x.is_finite() && position.y.is_finite())
+        );
         assert_eq!(incremental.layout.position(quiet), quiet_position);
         assert!(full.positions.keys().all(|id| next.nodes.contains_key(id)));
 
