@@ -878,10 +878,33 @@ pub enum RegistryReleaseStanding {
 pub enum RegistryDownloadCount {
     /// Exact cumulative release count.
     Exact(u64),
-    /// Sampled or estimated count.
+    /// Estimated count.
     Approximate(u64),
-    /// Registry exposes no usable count, with a stable reason token.
-    NotReported(ProductText),
+    /// Registry exposes no usable count and the source's typed coverage is
+    /// carried without encoding meaning in human text.
+    Unavailable(RegistryFactAvailability),
+}
+
+/// Typed coverage for a registry fact that is absent from a reply.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RegistryFactAvailability {
+    /// The source does not publish the fact.
+    NotRecorded,
+    /// The source explicitly does not support the fact.
+    Unsupported,
+    /// The source should provide the fact, but it could not be obtained.
+    Unavailable,
+    /// The source answered with an older frontier.
+    Stale,
+    /// The source did not establish coverage.
+    Unknown,
+}
+
+impl Default for RegistryFactAvailability {
+    fn default() -> Self {
+        Self::Unknown
+    }
 }
 
 /// Availability of registry facts not present in every configured feed.
@@ -1380,5 +1403,32 @@ mod tests {
             dto.decision,
             backend_advisory::AcquisitionDecision::Deny(_)
         ));
+    }
+
+    #[test]
+    fn registry_download_coverage_round_trips_as_a_typed_state() {
+        let record = RegistryPackageRecord {
+            coordinate: PackageReference::parse("pkg:cargo/demo@1.0.0").expect("package"),
+            ecosystem: RegistryEcosystem::Cargo,
+            name: ProductText::new("demo").expect("name"),
+            version: ProductText::new("1.0.0").expect("version"),
+            bytes: 12,
+            standing: RegistryReleaseStanding::Available,
+            downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+            facts_version: [0; 32],
+            advisory: AdvisoryPackageDto::unknown(),
+        };
+        let reply = SurfaceReply::Explored(vec![record].into_boxed_slice());
+        let encoded = serde_json::to_vec(&reply).expect("registry reply encoding");
+        let decoded: SurfaceReply =
+            serde_json::from_slice(&encoded).expect("registry reply decoding");
+        assert_eq!(decoded, reply);
+        let SurfaceReply::Explored(records) = decoded else {
+            panic!("registry reply shape");
+        };
+        assert_eq!(
+            records[0].downloads,
+            RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported)
+        );
     }
 }

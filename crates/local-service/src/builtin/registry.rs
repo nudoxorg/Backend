@@ -146,23 +146,18 @@ impl RegistryGateway {
                             backend_engine::RegistryDownloadCount::Approximate(value)
                         }
                         backend_engine::registry::DownloadCount::NotReported(reason) => {
-                            backend_engine::RegistryDownloadCount::NotReported(
-                                backend_engine::ProductText::new(match reason {
-                                    backend_engine::registry::DownloadCountGap::Unsupported => {
-                                        "unsupported"
-                                    }
-                                    backend_engine::registry::DownloadCountGap::Privileged => {
-                                        "privileged"
-                                    }
-                                    backend_engine::registry::DownloadCountGap::Withheld => {
-                                        "withheld"
-                                    }
-                                    backend_engine::registry::DownloadCountGap::Unavailable => {
-                                        "unavailable"
-                                    }
-                                })
-                                .map_err(|error| error.to_string())?,
-                            )
+                            backend_engine::RegistryDownloadCount::Unavailable(match reason {
+                                backend_engine::registry::DownloadCountGap::Unsupported => {
+                                    backend_engine::RegistryFactAvailability::Unsupported
+                                }
+                                backend_engine::registry::DownloadCountGap::Privileged
+                                | backend_engine::registry::DownloadCountGap::Unavailable => {
+                                    backend_engine::RegistryFactAvailability::Unavailable
+                                }
+                                backend_engine::registry::DownloadCountGap::Withheld => {
+                                    backend_engine::RegistryFactAvailability::NotRecorded
+                                }
+                            })
                         }
                     },
                     facts_version: published.facts.version(),
