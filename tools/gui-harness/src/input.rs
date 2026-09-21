@@ -88,6 +88,20 @@ pub enum InputStep {
         /// Composed text.
         value: String,
     },
+    /// Update the marked portion of the focused editor through the native IME
+    /// composition path. Kept separate from commit/cancel so a journey can
+    /// prove each phase independently.
+    ImeCompose {
+        /// Text currently being composed.
+        value: String,
+    },
+    /// Commit text through the native IME commit path.
+    ImeCommit {
+        /// Text to commit.
+        value: String,
+    },
+    /// Cancel the active marked composition without inserting text.
+    ImeCancel,
     /// Change the active modifier set for subsequent pointer/keyboard checks.
     Modifiers {
         /// Shift modifier.
@@ -216,95 +230,12 @@ pub struct ActionTree {
 }
 
 impl ActionTree {
-    /// Nudox's shell actions and their intended focus ownership.
+    /// Builds a tree from the product action descriptors emitted by the live
+    /// adapter. The harness owns no parallel, stale keymap.
     #[must_use]
-    pub fn nudox() -> Self {
-        let rows = [
-            (
-                "focus-omnibar",
-                "Focus omnibar",
-                Some("cmd-l"),
-                ActionTarget::Omnibar,
-            ),
-            (
-                "open-palette",
-                "Open command palette",
-                Some("cmd-p"),
-                ActionTarget::Palette,
-            ),
-            (
-                "open-settings",
-                "Open settings",
-                Some("cmd-,"),
-                ActionTarget::Settings,
-            ),
-            (
-                "toggle-library",
-                "Toggle library",
-                Some("cmd-shift-l"),
-                ActionTarget::Library,
-            ),
-            (
-                "go-home",
-                "Go home",
-                Some("cmd-shift-h"),
-                ActionTarget::Workspace,
-            ),
-            ("go-back", "Go back", Some("cmd-left"), ActionTarget::Reader),
-            (
-                "go-forward",
-                "Go forward",
-                Some("cmd-right"),
-                ActionTarget::Reader,
-            ),
-            (
-                "open-source",
-                "Open source",
-                Some("cmd-u"),
-                ActionTarget::Reader,
-            ),
-            (
-                "next-tab",
-                "Next tab",
-                Some("cmd-alt-right"),
-                ActionTarget::Reader,
-            ),
-            (
-                "previous-tab",
-                "Previous tab",
-                Some("cmd-alt-left"),
-                ActionTarget::Reader,
-            ),
-            (
-                "dismiss",
-                "Dismiss overlay",
-                Some("escape"),
-                ActionTarget::Workspace,
-            ),
-            (
-                "move-down",
-                "Move down",
-                Some("down"),
-                ActionTarget::Workspace,
-            ),
-            ("move-up", "Move up", Some("up"), ActionTarget::Workspace),
-            (
-                "accept",
-                "Accept selection",
-                Some("enter"),
-                ActionTarget::Workspace,
-            ),
-        ];
+    pub fn from_actions(actions: impl IntoIterator<Item = ActionDescriptor>) -> Self {
         Self {
-            actions: rows
-                .into_iter()
-                .map(|(id, label, shortcut, target)| ActionDescriptor {
-                    id: id.to_owned(),
-                    label: label.to_owned(),
-                    shortcut: shortcut.map(str::to_owned),
-                    target,
-                })
-                .collect(),
+            actions: actions.into_iter().collect(),
         }
     }
 
@@ -458,8 +389,21 @@ mod tests {
     }
 
     #[test]
-    fn semantic_action_tree_has_escape_and_focus_owners() {
-        let tree = ActionTree::nudox();
+    fn semantic_action_tree_preserves_product_descriptors() {
+        let tree = ActionTree::from_actions([
+            ActionDescriptor {
+                id: "dismiss".to_owned(),
+                label: "Dismiss".to_owned(),
+                shortcut: Some("escape".to_owned()),
+                target: ActionTarget::Workspace,
+            },
+            ActionDescriptor {
+                id: "focus-omnibar".to_owned(),
+                label: "Focus omnibar".to_owned(),
+                shortcut: Some("cmd-k".to_owned()),
+                target: ActionTarget::Omnibar,
+            },
+        ]);
         assert_eq!(
             tree.find("dismiss").map(|action| action.target),
             Some(ActionTarget::Workspace)

@@ -91,7 +91,9 @@ impl Entry {
 
     /// Returns the package-relative source path, when the row names one.
     pub(crate) fn path(&self) -> Option<&str> {
-        self.identity.path().map(backend_present::PackagePath::as_str)
+        self.identity
+            .path()
+            .map(backend_present::PackagePath::as_str)
     }
 }
 
@@ -141,7 +143,9 @@ impl ProjectIndex {
 
     /// Returns one declaration by key.
     pub(crate) fn entry(&self, symbol: SymbolKey) -> Option<&Entry> {
-        self.by_symbol.get(&symbol).and_then(|at| self.entries.get(*at))
+        self.by_symbol
+            .get(&symbol)
+            .and_then(|at| self.entries.get(*at))
     }
 
     /// Returns the declarations no other declaration in this project contains.
@@ -167,7 +171,10 @@ impl ProjectIndex {
         let Some(entry) = self.entry(symbol) else {
             return Vec::new();
         };
-        match entry.parent().filter(|parent| self.by_symbol.contains_key(parent)) {
+        match entry
+            .parent()
+            .filter(|parent| self.by_symbol.contains_key(parent))
+        {
             Some(parent) => self
                 .children_of(parent)
                 .filter(|other| other.symbol() != symbol)
@@ -227,7 +234,10 @@ impl ProjectIndex {
     fn finish(&mut self) {
         let mut files: HashMap<String, Vec<usize>> = HashMap::new();
         for (at, entry) in self.entries.iter().enumerate() {
-            match entry.parent().filter(|parent| self.by_symbol.contains_key(parent)) {
+            match entry
+                .parent()
+                .filter(|parent| self.by_symbol.contains_key(parent))
+            {
                 Some(parent) => self.children.entry(parent).or_default().push(at),
                 None => self.top.push(at),
             }
@@ -291,6 +301,17 @@ impl IndexStore {
         self.projects.iter().map(|project| project.entries.len()).sum()
     }
 
+    /// Returns the first admitted declaration in stable project/row order.
+    ///
+    /// The visual harness uses this only as a live-data anchor. It never
+    /// invents a coordinate when the admitted projection is empty.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn first_entry(&self) -> Option<&Entry> {
+        self.projects
+            .iter()
+            .find_map(|project| project.top_level().next())
+    }
+
     /// Returns the project one declaration belongs to.
     pub(crate) fn project_of(&self, symbol: SymbolKey) -> Option<&ProjectIndex> {
         self.locate
@@ -332,7 +353,11 @@ impl IndexStore {
         let preferred = near.and_then(|root| self.project(root));
         preferred
             .and_then(|project| project.by_name(name))
-            .or_else(|| self.projects.iter().find_map(|project| project.by_name(name)))
+            .or_else(|| {
+                self.projects
+                    .iter()
+                    .find_map(|project| project.by_name(name))
+            })
             .map(|entry| {
                 (
                     Coordinate::new(entry.coordinate()),

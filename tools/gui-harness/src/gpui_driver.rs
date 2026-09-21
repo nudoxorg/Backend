@@ -5,10 +5,10 @@ use crate::{
     Viewport,
 };
 use gpui::{
-    AnyWindowHandle, App, AssetSource, Capslock, ClipboardItem, Entity, HeadlessAppContext,
-    InputEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent,
-    NavigationDirection, PlatformTextSystem, Render, ScrollDelta, ScrollWheelEvent, TouchPhase,
-    Window, px, size,
+    px, size, AnyWindowHandle, App, AssetSource, Capslock, ClipboardItem, Entity,
+    HeadlessAppContext, InputEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
+    MouseUpEvent, NavigationDirection, PlatformTextSystem, Render, ScrollDelta, ScrollWheelEvent,
+    TouchPhase, Window,
 };
 use std::sync::Arc;
 
@@ -98,13 +98,47 @@ pub fn capture_gpui_state_with_adapters<V, F, H, I>(
     frames: &[AnimationFrame],
     options: GpuiCaptureOptions,
     mut frame_hook: H,
-    mut input_hook: I,
+    input_hook: I,
     build_root: F,
 ) -> Result<CaptureSet, CaptureError>
 where
     V: Render + 'static,
     F: FnOnce(&mut Window, &mut App) -> Entity<V>,
     H: FnMut(&AnimationFrame, &mut Window, &mut App),
+    I: FnMut(&InputStep, &mut Window, &mut App),
+{
+    capture_gpui_state_with_adapters_result(
+        viewport,
+        state,
+        actions,
+        frames,
+        options,
+        move |frame, window, cx| {
+            frame_hook(frame, window, cx);
+            Ok(())
+        },
+        input_hook,
+        move |window, cx| build_root(window, cx),
+    )
+}
+
+/// Result-returning adapter boundary for product roots that must apply a
+/// scenario before the first frame and can fail when live data cannot satisfy
+/// the requested state.
+pub fn capture_gpui_state_with_adapters_result<V, F, H, I>(
+    viewport: Viewport,
+    state: GuiState,
+    actions: &[InputStep],
+    frames: &[AnimationFrame],
+    options: GpuiCaptureOptions,
+    mut frame_hook: H,
+    mut input_hook: I,
+    build_root: F,
+) -> Result<CaptureSet, CaptureError>
+where
+    V: Render + 'static,
+    F: FnOnce(&mut Window, &mut App) -> Entity<V>,
+    H: FnMut(&AnimationFrame, &mut Window, &mut App) -> Result<(), CaptureError>,
     I: FnMut(&InputStep, &mut Window, &mut App),
 {
     let platform = gpui_platform::current_platform(true);
@@ -131,6 +165,14 @@ where
         )
         .map_err(|error| CaptureError::Gpui(error.to_string()))?;
     let window: AnyWindowHandle = window.into();
+    // Render once before dispatching t=0 input. Production key contexts are
+    // installed by the root's first render; without this priming pass a
+    // journey's initial shortcut can arrive before GPUI knows which actions
+    // the workspace owns.
+    context
+        .update_window(window, |_, _, _| {})
+        .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+    context.run_until_parked();
 
     // Wait steps advance the virtual schedule; other steps are dispatched at
     // their scheduled offset, between animation frames.  This keeps an input
@@ -172,6 +214,10 @@ where
                 &mut driver_state,
                 &mut input_hook,
             )?;
+            // GPUI dispatch can enqueue action/context work behind the
+            // platform event. Drain that work before the frame hook observes
+            // semantics, otherwise a key at t=0 is captured one frame late.
+            context.run_until_parked();
             input_index = Some(*index);
             cursor = *at;
             next_action += 1;
@@ -183,7 +229,7 @@ where
         }
         context
             .update_window(window, |_, window, cx| frame_hook(frame, window, cx))
-            .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+            .map_err(|error| CaptureError::Gpui(error.to_string()))??;
         let image = draw_and_capture(&mut context, window)?;
         records.push(CaptureRecord {
             label: frame.label.clone(),
@@ -329,9 +375,10 @@ fn apply_step(
                 })
                 .map_err(|error| CaptureError::Gpui(error.to_string()))?;
         }
-        InputStep::ImeText { value } => {
-            dispatch_text(context, window, value)?;
-        }
+        InputStep::ImeText { .. }
+        | InputStep::ImeCompose { .. }
+        | InputStep::ImeCommit { .. }
+        | InputStep::ImeCancel => {}
         InputStep::Modifiers {
             shift,
             control,
@@ -373,12 +420,11 @@ fn apply_step(
                 })
                 .map_err(|error| CaptureError::Gpui(error.to_string()))?;
         }
-        InputStep::Theme { .. } | InputStep::Locale { .. } => {
-            context
-                .update_window(window, |_, window, cx| input_hook(step, window, cx))
-                .map_err(|error| CaptureError::Gpui(error.to_string()))?;
-        }
+        InputStep::Theme { .. } | InputStep::Locale { .. } => {}
     }
+    context
+        .update_window(window, |_, window, cx| input_hook(step, window, cx))
+        .map_err(|error| CaptureError::Gpui(error.to_string()))?;
     context.run_until_parked();
     Ok(())
 }

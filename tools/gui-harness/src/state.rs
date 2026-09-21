@@ -83,6 +83,8 @@ impl PageState {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OverlayState {
+    /// The search/omnibar field is focused and open.
+    Omnibar,
     /// The command palette/omnibar is open.
     Palette,
     /// The settings sheet is open on its appearance page.
@@ -125,7 +127,8 @@ pub enum OverlayState {
 
 impl OverlayState {
     /// All overlays in the order used by the desktop state sweep.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
+        Self::Omnibar,
         Self::Palette,
         Self::SettingsAppearance,
         Self::SettingsEditor,
@@ -150,6 +153,7 @@ impl OverlayState {
     /// Stable command-line spelling.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Omnibar => "omnibar",
             Self::Palette => "palette",
             Self::SettingsAppearance => "settings-appearance",
             Self::SettingsEditor => "settings-editor",

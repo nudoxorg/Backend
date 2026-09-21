@@ -23,12 +23,12 @@ use thiserror::Error;
 
 pub use artifact::{
     ArtifactError, ArtifactWriter, CaptureManifest, FrameArtifact, FrameSequenceMetadata,
-    RunManifest, frame_artifact, hash_bytes, scenario_hash,
+    RunManifest, VerificationReport, frame_artifact, hash_bytes, scenario_hash, verify_run,
 };
 pub use diff::{DiffBounds, DiffError, DiffMetrics, DiffPolicy, compare, diff_image, write_diff};
 pub use gpui_driver::{
     GpuiCaptureOptions, capture_gpui_state, capture_gpui_state_with_adapters,
-    capture_gpui_state_with_hooks,
+    capture_gpui_state_with_adapters_result, capture_gpui_state_with_hooks,
 };
 pub use input::{ActionDescriptor, ActionTarget, ActionTree};
 pub use input::{InputError, InputStep, TransitionScript, modifiers, position};
@@ -51,15 +51,92 @@ pub const REQUIRED_VIEWPORTS: &[(u32, u32)] = &[
     (2560, 1440),
 ];
 
-/// SHA-256 of the font bytes shipped with this harness.
+/// SHA-256 of the ordered design-system font manifest (name + bytes).
 pub const BUNDLED_FONT_SHA256: &str =
-    "e201349e7328b087e8bb9816b29fb86de0c7c415a699e98e7b5f9f3c599ff47b";
+    "4a04e066c412c59da1a3c523d2b32edd3fa249806789c9e3c9721e79aa5df8cf";
+
+/// Exact family set used by the desktop design lane.
+pub const BUNDLED_FONT_FAMILIES: &str = "Instrument Sans|Archivo|Newsreader|Geist Mono";
+
+/// Per-file byte hashes checked before a capture starts.
+pub const BUNDLED_FONT_HASHES: [(&str, &str); 4] = [
+    (
+        "Archivo[wdth,wght].ttf",
+        "0e094a7d3c7c4c25cf1310c4b30014f1dae9332220b1c2c88f4fa996f0b05053",
+    ),
+    (
+        "InstrumentSans[wdth,wght].ttf",
+        "b24f1812584816958afcf22e22d08e44318c5e51651e25d2438efdde389b33b1",
+    ),
+    (
+        "Newsreader[opsz,wght].ttf",
+        "8a08d13f8a6c0d51be379a60af84f945f65369a67e509ee3c3bdcc421254d7c1",
+    ),
+    (
+        "GeistMono[wght].ttf",
+        "87c2aff9723544a9adaea19d92e42a33705c9723624801b6e0224c2206a6af0d",
+    ),
+];
 
 /// Stable logical source name for the bundled font asset.
-pub const BUNDLED_FONT_SOURCE: &str = "bundled://SFNSMono.ttf";
+pub const BUNDLED_FONT_SOURCE: &str = "bundled://nudox-design-system/fonts";
 
-fn bundled_font_bytes() -> &'static [u8] {
-    include_bytes!("../assets/SFNSMono.ttf")
+fn bundled_fonts() -> [(&'static str, &'static [u8]); 4] {
+    [
+        (
+            BUNDLED_FONT_HASHES[0].0,
+            include_bytes!("../assets/fonts/Archivo[wdth,wght].ttf"),
+        ),
+        (
+            BUNDLED_FONT_HASHES[1].0,
+            include_bytes!("../assets/fonts/InstrumentSans[wdth,wght].ttf"),
+        ),
+        (
+            BUNDLED_FONT_HASHES[2].0,
+            include_bytes!("../assets/fonts/Newsreader[opsz,wght].ttf"),
+        ),
+        (
+            BUNDLED_FONT_HASHES[3].0,
+            include_bytes!("../assets/fonts/GeistMono[wght].ttf"),
+        ),
+    ]
+}
+
+fn bundled_font_manifest_hash() -> String {
+    let mut bytes = Vec::new();
+    for (name, font) in bundled_fonts() {
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(font);
+    }
+    hash_bytes(&bytes)
+}
+
+/// Returns the exact bundled font bytes for product registration.
+#[must_use]
+pub fn bundled_font_bytes() -> Vec<&'static [u8]> {
+    bundled_fonts()
+        .into_iter()
+        .map(|(_, bytes)| bytes)
+        .collect()
+}
+
+/// Verifies every design font byte hash and the aggregate manifest hash.
+pub fn verify_bundled_fonts() -> Result<(), CaptureError> {
+    for ((name, expected), (actual_name, bytes)) in BUNDLED_FONT_HASHES.iter().zip(bundled_fonts())
+    {
+        if name != &actual_name || hash_bytes(bytes) != *expected {
+            return Err(CaptureError::InvalidConfig(format!(
+                "bundled design font {name} failed byte-hash verification"
+            )));
+        }
+    }
+    if bundled_font_manifest_hash() != BUNDLED_FONT_SHA256 {
+        return Err(CaptureError::InvalidConfig(
+            "bundled design font manifest hash changed".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// A fixed logical viewport and device scale.
@@ -152,7 +229,7 @@ impl CaptureConfig {
         Self {
             theme: ThemeState::Ink,
             viewport,
-            font_family: "SF Mono".to_owned(),
+            font_family: BUNDLED_FONT_FAMILIES.to_owned(),
             font_sha256: BUNDLED_FONT_SHA256.to_owned(),
             font_source: BUNDLED_FONT_SOURCE.to_owned(),
             locale: "en-US".to_owned(),
@@ -183,14 +260,12 @@ impl CaptureConfig {
                     .to_owned(),
             ));
         }
-        if self.font_sha256 != BUNDLED_FONT_SHA256
-            || self.font_source != BUNDLED_FONT_SOURCE
-            || hash_bytes(bundled_font_bytes()) != BUNDLED_FONT_SHA256
-        {
+        if self.font_sha256 != BUNDLED_FONT_SHA256 || self.font_source != BUNDLED_FONT_SOURCE {
             return Err(CaptureError::InvalidConfig(
-                "captures must use the bundled SFNSMono.ttf bytes and hash".to_owned(),
+                "captures must use the exact bundled Nudox design font manifest".to_owned(),
             ));
         }
+        verify_bundled_fonts()?;
         Ok(())
     }
 
@@ -341,6 +416,10 @@ impl CaptureSession {
                     .write_frame(&capture.state.id, &record.label, &record.image)?;
             frames.push(frame_artifact(record, path, hash));
         }
+        let filmstrip_path = self
+            .writer
+            .write_filmstrip(&capture.state.id, &capture.frames)
+            .map(Some)?;
         let scenario = (&capture.state, &self.config, script_id);
         let sequence_sha256 = scenario_hash(&frames)?;
         let sequence = FrameSequenceMetadata {
@@ -349,6 +428,7 @@ impl CaptureSession {
             duration_ms: frames.last().map_or(0, |frame| frame.time_ms),
             frame_interval_ms: self.config.frame_interval_ms,
             keyframes: frames.iter().map(|frame| frame.label.clone()).collect(),
+            filmstrip_path,
         };
         let manifest = CaptureManifest {
             schema: 1,

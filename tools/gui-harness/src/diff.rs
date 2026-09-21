@@ -65,6 +65,10 @@ pub struct DiffMetrics {
     pub changed_bounds: Option<DiffBounds>,
     /// Whether the result satisfies the supplied policy.
     pub within_policy: bool,
+    /// Hamming distance between 8x8 perceptual luminance hashes.
+    pub perceptual_hash_distance: u32,
+    /// Mean luminance error after the same 8x8 reduction.
+    pub perceptual_mean_error: f64,
 }
 
 impl DiffMetrics {
@@ -154,6 +158,7 @@ pub fn compare(
     } else {
         sum as f64 / (pixel_count as f64 * 4.0)
     };
+    let (perceptual_hash_distance, perceptual_mean_error) = perceptual_metrics(baseline, actual);
     let within_policy = changed_fraction <= policy.max_changed_fraction
         && mean_channel_error <= policy.max_mean_error
         && max_channel_error <= policy.max_channel_error;
@@ -169,7 +174,53 @@ pub fn compare(
         max_channel_error,
         changed_bounds: bounds,
         within_policy,
+        perceptual_hash_distance,
+        perceptual_mean_error,
     })
+}
+
+fn perceptual_metrics(left: &RgbaImage, right: &RgbaImage) -> (u32, f64) {
+    let mut left_luma = [0.0_f64; 64];
+    let mut right_luma = [0.0_f64; 64];
+    for y in 0_u32..8 {
+        for x in 0_u32..8 {
+            let lx = (u64::from(x) * u64::from(left.width()) / 8)
+                .min(u64::from(left.width().saturating_sub(1))) as u32;
+            let ly = (u64::from(y) * u64::from(left.height()) / 8)
+                .min(u64::from(left.height().saturating_sub(1))) as u32;
+            let rx = (u64::from(x) * u64::from(right.width()) / 8)
+                .min(u64::from(right.width().saturating_sub(1))) as u32;
+            let ry = (u64::from(y) * u64::from(right.height()) / 8)
+                .min(u64::from(right.height().saturating_sub(1))) as u32;
+            left_luma[(y * 8 + x) as usize] = luma(left.get_pixel(lx, ly));
+            right_luma[(y * 8 + x) as usize] = luma(right.get_pixel(rx, ry));
+        }
+    }
+    let left_mean = left_luma.iter().sum::<f64>() / 64.0;
+    let right_mean = right_luma.iter().sum::<f64>() / 64.0;
+    let left_hash = left_luma
+        .iter()
+        .enumerate()
+        .fold(0_u64, |hash, (index, value)| {
+            hash | u64::from(*value >= left_mean) << index
+        });
+    let right_hash = right_luma
+        .iter()
+        .enumerate()
+        .fold(0_u64, |hash, (index, value)| {
+            hash | u64::from(*value >= right_mean) << index
+        });
+    let mean_error = left_luma
+        .iter()
+        .zip(right_luma)
+        .map(|(left, right)| (left - right).abs())
+        .sum::<f64>()
+        / 64.0;
+    ((left_hash ^ right_hash).count_ones(), mean_error)
+}
+
+fn luma(pixel: &Rgba<u8>) -> f64 {
+    0.2126 * f64::from(pixel[0]) + 0.7152 * f64::from(pixel[1]) + 0.0722 * f64::from(pixel[2])
 }
 
 /// Produces a visual diff: unchanged pixels are dimmed, changed pixels are
@@ -242,5 +293,7 @@ mod tests {
             })
         );
         assert_eq!(result.max_channel_error, 12);
+        assert!(result.perceptual_mean_error > 0.0);
+        assert!(result.perceptual_hash_distance <= 64);
     }
 }

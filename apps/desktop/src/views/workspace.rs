@@ -35,17 +35,69 @@ use crate::theme::palette::Paint;
 use crate::transport::unix::UnixSubscriptionTransport;
 use crate::ui::components::ActionFrames;
 use crate::ui::surface;
+#[cfg(feature = "visual-harness")]
+use backend_gui_harness::{
+    ActionDescriptor, FocusState, GuiState, InputStep, OverlayState, PageState,
+};
 use backend_library::{SymbolKey, ViewRoot};
 use backend_present::{Identity, IdentityKey, Source};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Render, Styled, Subscription, Window, div, px,
+    AppContext as _, ClipboardItem, Context, Entity, EntityInputHandler, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, ParentElement, Render, Styled, Subscription, Window, div, px,
 };
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::tree::TreeState;
+#[cfg(feature = "visual-harness")]
+use serde::Serialize;
 use std::path::PathBuf;
 use std::rc::Rc;
+
+/// Product-owned semantic facts emitted by the visual harness.
+///
+/// This is intentionally derived from the same stores that render the window;
+/// a screenshot cannot pass a scenario assertion merely by carrying a matching
+/// state id in its manifest.
+#[cfg(feature = "visual-harness")]
+#[derive(Clone, Debug, Serialize)]
+pub struct WorkspaceSemanticProbe {
+    /// Coarse content page currently active.
+    pub page: String,
+    /// Topmost transient surface currently active.
+    pub overlay: String,
+    /// Shell focus owner.
+    pub focus: String,
+    /// Active settings page, if settings is open.
+    pub settings_page: Option<String>,
+    /// Number of tabs in the document tree.
+    pub tab_count: usize,
+    /// Whether the active tab is waiting for a live page.
+    pub pending: bool,
+    /// Short admitted projection revision.
+    pub data_revision: String,
+    /// Locale selected by the in-process harness adapter.
+    pub locale: String,
+    /// Text direction selected by the deterministic environment.
+    pub text_direction: String,
+    /// Active design-system appearance.
+    pub theme: String,
+    /// Motion preference read from the shell store.
+    pub reduced_motion: bool,
+    /// Stable focus identity used by keyboard and focus-trap assertions.
+    pub focus_id: String,
+    /// Route identity observed from the product content tree.
+    pub route: String,
+    /// Action tree installed by the rendered desktop adapter.
+    pub actions: Vec<ActionDescriptor>,
+    /// Animation phase that produced this semantic observation.
+    pub animation_phase: String,
+    /// Virtual animation time at this observation.
+    pub virtual_time_ms: u64,
+    /// Input event that most recently preceded this frame.
+    pub input_index: Option<usize>,
+    /// Exact production input event, when a frame followed one.
+    pub input: Option<InputStep>,
+}
 
 /// The window's root entity.
 pub(crate) struct Workspace {
@@ -488,6 +540,368 @@ impl Workspace {
             }
         }
         restore
+    }
+
+    /// Applies one visual harness scenario to the real stores.
+    ///
+    /// Every successful branch calls the same navigation methods as a user
+    /// action. Conditions that the admitted live projection cannot satisfy are
+    /// rejected so the harness never turns a missing capability into fixture
+    /// pixels.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn apply_harness_state(
+        &mut self,
+        state: &GuiState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        match state.page {
+            Some(PageState::Browse) | None => self.open_home(cx),
+            Some(PageState::Project) => {
+                let coordinate = self
+                    .engine
+                    .read(cx)
+                    .shelf()
+                    .entries()
+                    .iter()
+                    .find_map(|entry| {
+                        entry
+                            .identity()
+                            .project()
+                            .map(|project| project.root().to_owned())
+                    })
+                    .ok_or_else(|| {
+                        "live admitted projection has no project page anchor".to_owned()
+                    })?;
+                self.open_project(coordinate, cx);
+            }
+            Some(PageState::Package) => {
+                let coordinate = self
+                    .engine
+                    .read(cx)
+                    .shelf()
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.identity().coordinate().as_str().to_owned())
+                    .find(|coordinate| coordinate.starts_with("pkg:"))
+                    .ok_or_else(|| {
+                        "live admitted projection has no package page anchor".to_owned()
+                    })?;
+                self.open_package(coordinate, Target::Here, cx);
+            }
+            Some(PageState::Declaration) | Some(PageState::Source) => {
+                let symbol = self
+                    .index
+                    .read(cx)
+                    .first_entry()
+                    .map(|entry| entry.symbol())
+                    .ok_or_else(|| {
+                        "live admitted projection has no declaration page anchor".to_owned()
+                    })?;
+                self.open_symbol(symbol, Target::Here, cx);
+            }
+            Some(unsupported) => {
+                return Err(format!(
+                    "live Workspace has no registered route for page {}",
+                    unsupported.as_str()
+                ));
+            }
+        }
+
+        match state.overlay {
+            None => {}
+            Some(OverlayState::Omnibar) => self.focus_field(window, cx),
+            Some(OverlayState::Palette) => {
+                self.open_palette(&super::actions::OpenPalette, window, cx)
+            }
+            Some(OverlayState::SettingsAppearance) => {
+                self.show_harness_settings(crate::store::shell::SettingsPage::Appearance, cx)
+            }
+            Some(OverlayState::SettingsEditor) => {
+                self.show_harness_settings(crate::store::shell::SettingsPage::Editor, cx)
+            }
+            Some(OverlayState::SettingsAgents) => {
+                self.show_harness_settings(crate::store::shell::SettingsPage::Agents, cx)
+            }
+            Some(OverlayState::SettingsDiagnostics) => {
+                self.show_harness_settings(crate::store::shell::SettingsPage::Diagnostics, cx)
+            }
+            Some(OverlayState::SettingsLegend) => {
+                self.show_harness_settings(crate::store::shell::SettingsPage::Legend, cx)
+            }
+            Some(OverlayState::SettingsIndex | OverlayState::SettingsRegistry) => {
+                return Err("live Workspace has no registered indexing/registry settings route".to_owned());
+            }
+            Some(OverlayState::Fault | OverlayState::Notice) => {
+                return Err("failure and notice overlays require an admitted live condition".to_owned());
+            }
+            Some(unsupported) => {
+                return Err(format!(
+                    "live adapter cannot realize overlay {} without an admitted live condition",
+                    unsupported.as_str()
+                ));
+            }
+        }
+
+        if state.overlay.is_none() && state.page == Some(PageState::Source) {
+            self.toggle_source(cx);
+        }
+
+        match state.focus {
+            FocusState::Omnibar => self.focus_field(window, cx),
+            FocusState::Library => self
+                .shell
+                .update(cx, |shell, cx| shell.focus_on(Focus::Library, cx)),
+            FocusState::Reader => {
+                self.shell
+                    .update(cx, |shell, cx| shell.focus_on(Focus::Reader, cx));
+                window.focus(&self.focus, cx);
+            }
+        }
+        if state.reduced_motion {
+            self.shell
+                .update(cx, |shell, cx| shell.set_reduced_motion(true, cx));
+        }
+        cx.notify();
+        Ok(())
+    }
+
+    #[cfg(feature = "visual-harness")]
+    fn show_harness_settings(
+        &mut self,
+        page: crate::store::shell::SettingsPage,
+        cx: &mut Context<Self>,
+    ) {
+        self.shell
+            .update(cx, |shell, cx| shell.show_settings_page(page, cx));
+    }
+
+    /// Applies an appearance through the same preference owner used by the
+    /// visible settings sheet.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn harness_set_appearance(
+        &mut self,
+        appearance: crate::theme::palette::Appearance,
+        cx: &mut Context<Self>,
+    ) {
+        self.shell
+            .update(cx, |shell, cx| shell.set_appearance(appearance, cx));
+    }
+
+    /// Reads the actual semantic/accessibility-facing state used by scenario assertions.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn harness_semantic_probe(&self, cx: &Context<Self>) -> WorkspaceSemanticProbe {
+        let document = self.document.read(cx);
+        let active_pending = document.tab().is_some_and(|tab| tab.pending().is_some());
+        let (page, pending) = match document.tab().map(|tab| tab.content()) {
+            Some(crate::store::document::Content::Home) => ("browse", false),
+            Some(crate::store::document::Content::Project { .. }) => ("project", false),
+            Some(crate::store::document::Content::Package { .. }) => ("package", false),
+            Some(crate::store::document::Content::Page(_)) => ("declaration", false),
+            Some(crate::store::document::Content::Faulted(_)) => ("fault", false),
+            Some(crate::store::document::Content::Blank) if active_pending => ("declaration", true),
+            Some(crate::store::document::Content::Blank) | None => ("blank", false),
+        };
+        let shell = self.shell.read(cx);
+        let overlay = if shell.settings_open() {
+            "settings"
+        } else if self.source_open {
+            "source"
+        } else if self.search.read(cx).is_open() {
+            if self.field.read(cx).as_str().starts_with('>') {
+                "palette"
+            } else {
+                "omnibar"
+            }
+        } else if self.adding {
+            "add"
+        } else if shell.notice().is_some() {
+            "notice"
+        } else {
+            "none"
+        };
+        let focus = format!("{:?}", shell.focus()).to_ascii_lowercase();
+        let focus_id = match focus.as_str() {
+            "omnibar" => "input.omnibar",
+            "library" => "panel.library",
+            _ => "reader.workspace",
+        };
+        let frame = cx.try_global::<crate::harness::HarnessFrame>();
+        let input = cx.try_global::<crate::harness::HarnessInput>();
+        let actions = cx
+            .try_global::<crate::harness::HarnessActions>()
+            .map_or_else(Vec::new, |actions| actions.0.clone());
+        WorkspaceSemanticProbe {
+            page: page.to_owned(),
+            overlay: overlay.to_owned(),
+            focus,
+            focus_id: focus_id.to_owned(),
+            route: format!("{page}:{overlay}"),
+            actions,
+            animation_phase: frame
+                .map_or_else(|| "unknown".to_owned(), |frame| frame.label.clone()),
+            virtual_time_ms: frame.map_or(0, |frame| frame.time_ms),
+            input_index: input.map(|input| input.index),
+            input: input.map(|input| input.step.clone()),
+            settings_page: shell
+                .settings_open()
+                .then(|| shell.settings_page().label().to_owned()),
+            tab_count: document.tree().len(),
+            pending: active_pending || pending,
+            data_revision: self.engine.read(cx).revision().to_owned(),
+            locale: cx
+                .try_global::<crate::harness::HarnessLocale>()
+                .map_or_else(|| "undetermined".to_owned(), |locale| locale.0.clone()),
+            text_direction: cx
+                .try_global::<crate::harness::HarnessDirection>()
+                .map_or_else(|| "ltr".to_owned(), |direction| direction.0.clone()),
+            theme: crate::theme::theme(cx).appearance().name().to_owned(),
+            reduced_motion: shell.reduced_motion(),
+        }
+    }
+
+    /// Verifies that the real stores reached the requested semantic endpoint.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn assert_harness_state(
+        &self,
+        requested: &GuiState,
+        cx: &Context<Self>,
+    ) -> Result<WorkspaceSemanticProbe, String> {
+        let probe = self.harness_semantic_probe(cx);
+        let expected_page = match requested.page {
+            None | Some(PageState::Browse) => "browse",
+            Some(PageState::Project) => "project",
+            Some(PageState::Package) => "package",
+            Some(PageState::Declaration) | Some(PageState::Source) => "declaration",
+            Some(unsupported) => {
+                return Err(format!(
+                    "page {} has no registered semantic probe",
+                    unsupported.as_str()
+                ));
+            }
+        };
+        if probe.page != expected_page {
+            return Err(format!(
+                "requested page {expected_page}, live Workspace reached {}",
+                probe.page
+            ));
+        }
+        let expected_overlay = match requested.overlay {
+            None => {
+                if matches!(requested.page, Some(PageState::Source)) {
+                    "source"
+                } else {
+                    "none"
+                }
+            }
+            Some(OverlayState::Omnibar) => "omnibar",
+            Some(OverlayState::Palette) => "palette",
+            Some(OverlayState::SettingsAppearance)
+            | Some(OverlayState::SettingsEditor)
+            | Some(OverlayState::SettingsAgents)
+            | Some(OverlayState::SettingsDiagnostics)
+            | Some(OverlayState::SettingsLegend) => "settings",
+            Some(OverlayState::Fault | OverlayState::Notice) => {
+                return Err("failure and notice overlays require an admitted live condition".to_owned());
+            }
+            Some(OverlayState::SettingsIndex | OverlayState::SettingsRegistry) => {
+                return Err("indexing/registry settings routes are not registered".to_owned());
+            }
+            Some(unsupported) => {
+                return Err(format!(
+                    "overlay {} has no admitted live semantic condition",
+                    unsupported.as_str()
+                ));
+            }
+        };
+        if probe.overlay != expected_overlay {
+            return Err(format!(
+                "requested overlay {expected_overlay}, live Workspace reached {}",
+                probe.overlay
+            ));
+        }
+        let expected_focus = match requested.focus {
+            FocusState::Omnibar => "omnibar",
+            FocusState::Library => "library",
+            FocusState::Reader => "reader",
+        };
+        if probe.focus != expected_focus {
+            return Err(format!(
+                "requested focus {expected_focus}, live Workspace reached {}",
+                probe.focus
+            ));
+        }
+        if probe.reduced_motion != requested.reduced_motion {
+            return Err(format!(
+                "requested reduced_motion={}, live Workspace reports {}",
+                requested.reduced_motion, probe.reduced_motion
+            ));
+        }
+        if probe.theme != requested.theme.as_str() {
+            return Err(format!(
+                "requested theme={}, live Workspace reports {}",
+                requested.theme.as_str(),
+                probe.theme
+            ));
+        }
+        Ok(probe)
+    }
+
+    /// Drives the same marked-text callback used by the native IME path.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn harness_ime_text(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.field.update(cx, |field, cx| {
+            field.replace_and_mark_text_in_range(
+                None,
+                text,
+                Some(0..text.encode_utf16().count()),
+                window,
+                cx,
+            );
+        });
+    }
+
+    /// Commits marked text using the same GPUI input handler as a platform
+    /// IME commit event.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn harness_ime_commit(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.field.update(cx, |field, cx| {
+            field.replace_text_in_range(None, text, window, cx);
+            field.unmark_text(window, cx);
+        });
+    }
+
+    /// Cancels marked text using the same GPUI input handler as a platform IME
+    /// cancellation event.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn harness_ime_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.field
+            .update(cx, |field, cx| field.unmark_text(window, cx));
+    }
+
+    /// Cancels the live subscription task before the harness tears down the
+    /// headless window. This keeps embedded local-service connection workers
+    /// from outliving the production workspace during matrix capture.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn harness_stop_live_feed(&mut self, cx: &mut Context<Self>) {
+        self.engine
+            .update(cx, |engine, _cx| engine.harness_stop_live_feed());
+    }
+
+    /// Restores the visible workspace focus owner before keyboard journeys.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn harness_focus_window(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus, cx);
     }
 }
 

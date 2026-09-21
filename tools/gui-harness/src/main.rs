@@ -2,7 +2,7 @@
 
 use backend_gui_harness::{
     CaptureConfig, DiffPolicy, GuiState, TransitionScript, Viewport, animation_frames, compare,
-    diff_image, validate_run,
+    diff_image, validate_run, verify_run,
 };
 use std::{env, process::ExitCode};
 
@@ -42,6 +42,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         "compare" => compare_command(&args[1..]),
+        "verify" => verify_command(&args[1..]),
         "capture" => Err("capture requires an in-process desktop adapter; use the library's capture_gpui_state API from the desktop harness test target".to_owned()),
         other => Err(format!("unknown command {other:?}; use --help")),
     }
@@ -102,6 +103,16 @@ fn compare_command(args: &[String]) -> Result<(), String> {
     }
 }
 
+fn verify_command(args: &[String]) -> Result<(), String> {
+    let root = args.first().ok_or("verify requires RUN_ROOT")?;
+    let report = verify_run(std::path::Path::new(root)).map_err(|error| error.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?
+    );
+    Ok(())
+}
+
 fn parse_viewport(value: &str) -> Result<Viewport, String> {
     let (size, scale) = value
         .split_once('@')
@@ -124,6 +135,6 @@ fn parse_viewport(value: &str) -> Result<Viewport, String> {
 
 fn print_help() {
     println!(
-        "backend-gui-harness\n\nCommands:\n  list-states [--json]\n  list-viewports\n  plan-animation WIDTHxHEIGHT@SCALE [--reduced-motion]\n  validate\n  compare BASELINE.png ACTUAL.png DIFF.png\n\nThe capture_gpui_state library API is used by the desktop adapter to render real GPUI scenes."
+        "backend-gui-harness\n\nCommands:\n  list-states [--json]\n  list-viewports\n  plan-animation WIDTHxHEIGHT@SCALE [--reduced-motion]\n  validate\n  compare BASELINE.png ACTUAL.png DIFF.png\n  verify RUN_ROOT\n\nThe capture_gpui_state library API is used by the desktop adapter to render real GPUI scenes."
     );
 }

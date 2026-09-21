@@ -1,7 +1,8 @@
 //! Durable screenshot artifacts and manifests.
 
 use crate::{CaptureConfig, CaptureRecord, DiffMetrics, GuiState};
-use image::RgbaImage;
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+use image::{ExtendedColorType, GenericImage, ImageEncoder, Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -64,6 +65,8 @@ pub struct FrameSequenceMetadata {
     pub frame_interval_ms: u64,
     /// Labels retained as semantic keyframes for animation review.
     pub keyframes: Vec<String>,
+    /// Contact-sheet filmstrip for fast human review of the animation.
+    pub filmstrip_path: Option<String>,
 }
 
 /// Run-level index over every state and transition capture.
@@ -83,6 +86,17 @@ pub struct RunManifest {
     pub failed_comparisons: usize,
 }
 
+/// Result of an independent artifact verification pass.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct VerificationReport {
+    /// Manifests checked.
+    pub manifests: usize,
+    /// PNG frames checked.
+    pub frames: usize,
+    /// Stable relative paths that failed verification.
+    pub failures: Vec<String>,
+}
+
 /// Filesystem and encoding failures from artifact writing.
 #[derive(Debug, Error)]
 pub enum ArtifactError {
@@ -98,6 +112,75 @@ pub enum ArtifactError {
     /// A path attempted to escape the run root.
     #[error("unsafe screenshot artifact path {0:?}")]
     UnsafePath(String),
+    /// A durable artifact failed an independent verification check.
+    #[error("screenshot artifact verification failed: {0}")]
+    Verification(String),
+}
+
+/// Verifies every manifest and PNG below a run root without trusting the
+/// capture process. This is intentionally independent of GPUI and can be
+/// used as a holdout gate in CI or after copying artifacts between machines.
+pub fn verify_run(root: &Path) -> Result<VerificationReport, ArtifactError> {
+    let mut manifests = Vec::new();
+    collect_manifests(root, &mut manifests)?;
+    let mut report = VerificationReport::default();
+    for manifest_path in manifests {
+        let bytes = std::fs::read(&manifest_path)?;
+        let manifest: CaptureManifest = serde_json::from_slice(&bytes)?;
+        report.manifests += 1;
+        // Frame paths in a manifest are relative to the capture/session root,
+        // while manifests live in its `manifests/` directory.
+        let base = manifest_path
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| ArtifactError::Verification(manifest_path.display().to_string()))?;
+        for frame in manifest.frames {
+            let path = base.join(&frame.path);
+            let encoded = std::fs::read(&path)?;
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(path.as_path())
+                .display()
+                .to_string();
+            let image = image::load_from_memory(&encoded)?.into_rgba8();
+            report.frames += 1;
+            if hash_bytes(&encoded) != frame.sha256
+                || image.dimensions() != (frame.width, frame.height)
+                || image.pixels().all(|pixel| pixel[3] == 0)
+            {
+                report.failures.push(relative);
+            }
+        }
+    }
+    if report.failures.is_empty() {
+        Ok(report)
+    } else {
+        Err(ArtifactError::Verification(format!(
+            "{} frame(s) failed",
+            report.failures.len()
+        )))
+    }
+}
+
+fn collect_manifests(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), ArtifactError> {
+    for entry in std::fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_manifests(&path, output)?;
+        } else if path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "manifests")
+        {
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                output.push(path);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Writes immutable PNGs and JSON manifests under a run directory.
@@ -135,13 +218,54 @@ impl ArtifactWriter {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut bytes = Vec::new();
-        {
-            let mut cursor = std::io::Cursor::new(&mut bytes);
-            image.write_to(&mut cursor, image::ImageFormat::Png)?;
-        }
+        let bytes = encode_png(image)?;
         std::fs::write(&path, &bytes)?;
         Ok((relative.to_string_lossy().into_owned(), hash_bytes(&bytes)))
+    }
+
+    /// Writes a deterministic contact-sheet filmstrip for an animation. Each
+    /// frame stays independently inspectable as a PNG; the strip is a review
+    /// aid and never participates in pixel baselines.
+    pub fn write_filmstrip(
+        &self,
+        state_id: &str,
+        frames: &[CaptureRecord],
+    ) -> Result<String, ArtifactError> {
+        if frames.is_empty() {
+            return Err(ArtifactError::UnsafePath("empty filmstrip".to_owned()));
+        }
+        let state = safe_component(state_id)?;
+        let columns = frames.len().min(4) as u32;
+        let rows = (frames.len() as u32).div_ceil(columns);
+        let cell_width = frames
+            .iter()
+            .map(|frame| frame.image.width())
+            .max()
+            .unwrap_or(1);
+        let cell_height = frames
+            .iter()
+            .map(|frame| frame.image.height())
+            .max()
+            .unwrap_or(1);
+        let mut strip = RgbaImage::from_pixel(
+            cell_width.saturating_mul(columns),
+            cell_height.saturating_mul(rows),
+            Rgba([16, 18, 24, 255]),
+        );
+        for (index, frame) in frames.iter().enumerate() {
+            let x = (index as u32 % columns).saturating_mul(cell_width);
+            let y = (index as u32 / columns).saturating_mul(cell_height);
+            strip.copy_from(&frame.image, x, y).map_err(|_| {
+                ArtifactError::UnsafePath(format!("filmstrip frame {index} exceeds bounds"))
+            })?;
+        }
+        let relative = PathBuf::from("animations").join(format!("{state}.filmstrip.png"));
+        let path = self.root.join(&relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, encode_png(&strip)?)?;
+        Ok(relative.to_string_lossy().into_owned())
     }
 
     /// Writes a JSON value under the run root.
@@ -166,6 +290,25 @@ impl ArtifactWriter {
             self.root.join(relative),
         )?)?)
     }
+}
+
+fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, ArtifactError> {
+    let mut bytes = Vec::new();
+    // Matrix runs encode many high-resolution animation frames. A fixed fast
+    // filter keeps output deterministic while avoiding adaptive Paeth search
+    // turning a run into minutes of CPU time.
+    let encoder = PngEncoder::new_with_quality(
+        std::io::Cursor::new(&mut bytes),
+        CompressionType::Fast,
+        FilterType::Sub,
+    );
+    encoder.write_image(
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        ExtendedColorType::Rgba8,
+    )?;
+    Ok(bytes)
 }
 
 /// Creates a stable hash over a serializable scenario description.

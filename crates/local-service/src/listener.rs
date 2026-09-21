@@ -576,6 +576,15 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
 
     fn finish_workers(&mut self) {
         self.shutdown();
+        // A worker may be parked in its bounded read deadline while holding a
+        // long-lived subscription connection. Closing the listener-owned
+        // clones wakes those readers immediately so shutdown can join every
+        // worker deterministically instead of waiting for the idle timeout.
+        if let Ok(streams) = self.streams.lock() {
+            for stream in streams.values() {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        }
         // Dropping the sender wakes readers that are waiting to submit their
         // final frame. The worker-owned clone is then released on exit.
         while let Some(worker) = self.workers.pop() {

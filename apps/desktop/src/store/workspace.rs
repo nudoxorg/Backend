@@ -99,6 +99,15 @@ pub(crate) struct EngineLink {
 }
 
 impl WorkspaceStore {
+    /// Stops the live feed before a deterministic visual run tears down its
+    /// headless window. The feed owns the authenticated Unix transport; it
+    /// must be cancelled before the embedded owner can join its connection
+    /// workers during host shutdown.
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn harness_stop_live_feed(&mut self) {
+        self.live.take();
+    }
+
     /// Installs the first admitted root and starts the live feed.
     pub(crate) fn new(link: EngineLink, cx: &mut Context<Self>) -> Self {
         let EngineLink {

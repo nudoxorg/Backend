@@ -56,7 +56,11 @@ pub use transport::subscription::{
     snapshot_page_from_bytes, snapshot_page_from_value,
 };
 #[cfg(all(unix, feature = "visual-harness"))]
-pub use harness::capture_live_workspace;
+pub use harness::{
+    LiveCapture, WorkspaceSemanticProbe, capture_live_workspace,
+    capture_live_workspace_journey, capture_live_workspace_with_semantics,
+    production_action_inventory,
+};
 #[cfg(unix)]
 pub use transport::diff::diff_endpoint;
 #[cfg(unix)]

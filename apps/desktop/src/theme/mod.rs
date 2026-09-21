@@ -199,6 +199,11 @@ impl Theme {
     pub(crate) fn specimen(&self) -> SharedString {
         self.specimen.clone()
     }
+
+    /// Returns the active appearance for semantic visual probes.
+    pub(crate) const fn appearance(&self) -> Appearance {
+        self.palette.appearance()
+    }
 }
 
 impl Default for Theme {

@@ -167,6 +167,11 @@ impl Palette {
         }
     }
 
+    /// Returns the appearance used to derive this palette.
+    pub(crate) const fn appearance(self) -> Appearance {
+        self.appearance
+    }
+
     /// Returns the colour for one semantic role.
     pub(crate) fn paint(self, role: Paint) -> Hsla {
         let color = match role {
