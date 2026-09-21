@@ -8,8 +8,8 @@
 //! three the caller asked for, and what exit code a fault means.
 
 use backend_present::{
-    Answer, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Fault, FaultSlug, encode_answer, fault_value,
-    markdown, oversized_fault, text,
+    Answer, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Fault, FaultSlug, bounded_text, encode_answer,
+    fault_value, markdown, oversized_fault, text,
 };
 use std::process::ExitCode;
 
@@ -28,7 +28,7 @@ pub const EXIT_USAGE: u8 = 64;
 #[must_use]
 pub fn answer(answer: &Answer, options: &Options) -> String {
     match options.format() {
-        Format::Human => text::answer(answer, options.theme()),
+        Format::Human => bounded_text(&text::answer(answer, options.theme())),
         Format::Markdown => markdown_text(answer),
         Format::Json => json_with_detail(answer, options.detail()),
     }
@@ -37,7 +37,7 @@ pub fn answer(answer: &Answer, options: &Options) -> String {
 /// Renders one answer as the exact Markdown the MCP text block carries.
 #[must_use]
 pub fn markdown_text(answer: &Answer) -> String {
-    markdown::answer(answer)
+    bounded_text(&markdown::answer(answer))
 }
 
 /// Renders one answer as the stable typed JSON projection.
@@ -51,8 +51,8 @@ pub fn json(answer: &Answer) -> String {
 pub fn json_with_detail(answer: &Answer, detail: Detail) -> String {
     match encode_answer(answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES) {
         Ok(payload) => String::from_utf8(payload.bytes.into_vec())
-            .unwrap_or_else(|_| encode(&fault_value(&Fault::usage("response", "invalid UTF-8")))),
-        Err(error) => encode(&fault_value(&oversized_fault(error))),
+            .unwrap_or_else(|_| bounded_fault(&Fault::usage("response", "invalid UTF-8"))),
+        Err(error) => bounded_fault(&oversized_fault(error)),
     }
 }
 
@@ -60,9 +60,9 @@ pub fn json_with_detail(answer: &Answer, detail: Detail) -> String {
 #[must_use]
 pub fn fault(fault: &Fault, options: &Options) -> String {
     match options.format() {
-        Format::Human => text::fault(fault, options.theme()),
-        Format::Markdown => markdown::fault(fault),
-        Format::Json => encode(&fault_value(fault)),
+        Format::Human => bounded_text(&text::fault(fault, options.theme())),
+        Format::Markdown => bounded_text(&markdown::fault(fault)),
+        Format::Json => bounded_fault(fault),
     }
 }
 
@@ -85,4 +85,20 @@ fn encode(value: &serde_json::Value) -> String {
         .unwrap_or_else(|_| "{\"kind\":\"fault\",\"slug\":\"protocol\"}".to_owned());
     out.push('\n');
     out
+}
+
+fn bounded_fault(fault: &Fault) -> String {
+    let value = fault_value(fault);
+    let bytes = serde_json::to_vec_pretty(&value).unwrap_or_default();
+    if bytes.len() + 1 <= DEFAULT_RESPONSE_BUDGET_BYTES {
+        return String::from_utf8(bytes)
+            .map(|bytes| format!("{bytes}\n"))
+            .unwrap_or_else(|_| encode(&fault_value(&Fault::usage("response", "invalid UTF-8"))));
+    }
+    encode(&fault_value(&oversized_fault(
+        backend_present::BudgetExceeded {
+            bytes: bytes.len(),
+            budget: DEFAULT_RESPONSE_BUDGET_BYTES,
+        },
+    )))
 }

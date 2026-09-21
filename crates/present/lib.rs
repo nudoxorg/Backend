@@ -69,13 +69,13 @@ mod signature;
 mod status;
 
 pub use assemble::{
-    outline_tree, page_from_document, page_from_document_with_graph_relations, project_of, record_list, record_list_from_rows,
-    shelf_from_root, shelf_from_snapshot,
+    outline_tree, page_from_document, page_from_document_with_graph_relations, project_of,
+    record_list, record_list_from_rows, shelf_from_root, shelf_from_snapshot,
 };
 pub use budget::{
     BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, ESTIMATED_BYTES_PER_TOKEN,
-    EncodedPayload, MAX_RESPONSE_BUDGET_BYTES, PayloadBudget, encode_answer, encode_serializable,
-    estimate_tokens, oversized_fault,
+    EncodedPayload, MAX_PREVIEW_TEXT_BYTES, MAX_RESPONSE_BUDGET_BYTES, PayloadBudget, bounded_text,
+    encode_answer, encode_serializable, encode_value, estimate_tokens, oversized_fault,
 };
 pub use call::{
     DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, lower, lower_surface_json, row_for,
@@ -87,8 +87,9 @@ pub use coverage::{
 pub use drive::{Answer, Engine, Probe, answer, answer_paged};
 pub use dto::{
     CapabilitiesDto, CoverageDto, FaultDto, IdentityDto, LanguageCountDto, MemberGroupDto,
-    OutlineDto, OutlineNodeDto, PageDto, ProductDto, ProductRecordDto, ReasonDto, RecordDto, RecordListDto, RelationGroupDto,
-    ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto, StatusDto, answer_value, fault_value,
+    OutlineDto, OutlineNodeDto, PageDto, ProductDto, ProductRecordDto, ReasonDto, RecordDto,
+    RecordListDto, RelationGroupDto, ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto,
+    StatusDto, answer_value, fault_value,
 };
 pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
 pub use glyph::{KindGlyph, LanguageGlyph, RelationDirection, RelationLabel, relation_label};

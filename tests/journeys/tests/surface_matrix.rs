@@ -522,6 +522,14 @@ fn production_surface_matrix_is_identity_equal_across_languages_and_restarts() {
 
     let calls = surface_matrix::mcp_calls(&project, &package_coordinate, &expected);
     let replies = mcp(&endpoint, &workspace, &project, &authority, &calls);
+    for (id, response) in &replies {
+        let bytes = serde_json::to_vec(response).expect("MCP response serializes").len();
+        assert!(
+            bytes <= backend_present::DEFAULT_RESPONSE_BUDGET_BYTES,
+            "local daemon MCP response {id} is {bytes} bytes, above the {} byte budget: {response}",
+            backend_present::DEFAULT_RESPONSE_BUDGET_BYTES
+        );
+    }
     for id in std::iter::once(1_u64).chain(calls.iter().map(|(id, _, _)| *id)) {
         assert!(
             replies.contains_key(&id),

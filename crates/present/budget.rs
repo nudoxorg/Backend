@@ -29,6 +29,12 @@ pub const DEFAULT_RESPONSE_BUDGET_BYTES: usize = 48 * 1024;
 /// Hard response budget for the largest complete typed payload admitted.
 pub const MAX_RESPONSE_BUDGET_BYTES: usize = 256 * 1024;
 
+/// Byte ceiling for human-readable duplicate text carried beside a typed
+/// projection. The typed value remains the complete machine-readable answer;
+/// this preview is deliberately kept small so the two together stay within a
+/// context-sized MCP result.
+pub const MAX_PREVIEW_TEXT_BYTES: usize = 16 * 1024;
+
 /// How much detail a caller requests from a presentation answer.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Detail {
@@ -120,6 +126,25 @@ pub fn oversized_fault(error: BudgetExceeded) -> Fault {
 #[must_use]
 pub const fn estimate_tokens(bytes: usize) -> usize {
     bytes.saturating_add(ESTIMATED_BYTES_PER_TOKEN - 1) / ESTIMATED_BYTES_PER_TOKEN
+}
+
+/// Bounds a human-readable preview without splitting a UTF-8 code point.
+///
+/// This is shared by CLI Markdown and MCP text blocks. Keeping the truncation
+/// marker stable makes their output byte-identical for the same answer and
+/// gives a caller an actionable way to request a narrower page.
+#[must_use]
+pub fn bounded_text(text: &str) -> String {
+    if text.len() <= MAX_PREVIEW_TEXT_BYTES {
+        return text.to_owned();
+    }
+    const MARKER: &str =
+        "\n\n… output truncated; request a narrower page or detail=summary";
+    let mut end = MAX_PREVIEW_TEXT_BYTES.saturating_sub(MARKER.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &text[..end], MARKER)
 }
 
 /// Serializes one answer from typed DTOs through a hard-cap writer.
@@ -366,6 +391,43 @@ pub fn encode_serializable<'a, T: Serialize>(
     encode_typed(answer, detail, next_cursor, body, budget)
 }
 
+/// Serializes a typed JSON value under the same hard cap as answer envelopes.
+///
+/// Faults, protocol metadata, and other route-level values do not have an
+/// [`Answer`] variant, but they still cross the same context boundary. This
+/// helper lets those callers measure before allocating and refuse atomically.
+pub fn encode_value<T: Serialize>(
+    value: &T,
+    budget: usize,
+) -> Result<EncodedPayload, BudgetExceeded> {
+    let budget = budget.min(MAX_RESPONSE_BUDGET_BYTES);
+    let measured = count_json(value);
+    if measured > budget {
+        return Err(BudgetExceeded {
+            bytes: measured,
+            budget,
+        });
+    }
+    let mut writer = HardCapWriter::new(budget);
+    serde_json::to_writer(&mut writer, value).map_err(|_| BudgetExceeded {
+        bytes: measured,
+        budget,
+    })?;
+    if writer.bytes.len() != measured {
+        return Err(BudgetExceeded {
+            bytes: writer.bytes.len(),
+            budget,
+        });
+    }
+    Ok(EncodedPayload {
+        bytes: writer.bytes.into_boxed_slice(),
+        budget: PayloadBudget {
+            bytes: measured,
+            estimated_tokens: estimate_tokens(measured),
+        },
+    })
+}
+
 #[derive(Serialize)]
 struct BudgetEnvelope<'a, T> {
     #[serde(flatten)]
@@ -540,6 +602,15 @@ mod tests {
         assert_eq!(estimate_tokens(1), 1);
         assert_eq!(estimate_tokens(4), 1);
         assert_eq!(estimate_tokens(5), 2);
+    }
+
+    #[test]
+    fn bounded_preview_has_an_exact_utf8_safe_ceiling() {
+        let preview = bounded_text(&"λאב".repeat(MAX_PREVIEW_TEXT_BYTES));
+        assert!(preview.len() <= MAX_PREVIEW_TEXT_BYTES);
+        assert!(preview.is_char_boundary(preview.len()));
+        assert!(preview.ends_with("request a narrower page or detail=summary"));
+        assert_eq!(bounded_text("short"), "short");
     }
 
     #[test]

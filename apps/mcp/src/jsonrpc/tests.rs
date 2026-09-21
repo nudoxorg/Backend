@@ -31,6 +31,14 @@ const MISSING: &str = "/abs/polyglot::src/lib.rs:999::nothing";
 struct Fake {
     /// When set, every probe reports the endpoint as unreachable.
     offline: bool,
+    /// Optional graph rows used to exercise the complete-page admission cap.
+    graph_rows: Option<Box<[GraphQueryRow]>>,
+    /// Make the graph fixture return one authenticated continuation page.
+    graph_continue: bool,
+    /// Owner-issued continuation retained by the fixture encoder.
+    next_continuation: Option<PageContinuation>,
+    /// Optional product reply used by the high-fanout surface budget case.
+    surface_reply: Option<SurfaceReply>,
 }
 
 fn basis() -> Basis {
@@ -195,6 +203,9 @@ impl Engine for Fake {
     }
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+        if let Some(reply) = self.surface_reply.take() {
+            return Ok(reply);
+        }
         match command {
             SurfaceCommand::Subscriptions => Ok(SurfaceReply::Subscriptions(Box::new([]))),
             SurfaceCommand::References { target } => Ok(SurfaceReply::References {
@@ -236,20 +247,25 @@ impl Engine for Fake {
 impl Product for Fake {
     fn encode_continuation(
         &mut self,
-        _: backend_library::PageContinuation,
+        continuation: backend_library::PageContinuation,
     ) -> Result<String, ClientError> {
-        Err(ClientError::Protocol(
-            "fixture has no portable cursor".to_owned(),
-        ))
+        if self.next_continuation == Some(continuation) {
+            Ok("fixture-page-1".to_owned())
+        } else {
+            Err(ClientError::Protocol("unknown fixture cursor".to_owned()))
+        }
     }
 
     fn decode_continuation(
         &mut self,
-        _: &str,
+        token: &str,
     ) -> Result<backend_library::PageContinuation, ClientError> {
-        Err(ClientError::Protocol(
-            "fixture has no portable cursor".to_owned(),
-        ))
+        if token == "fixture-page-1" {
+            self.next_continuation
+                .ok_or_else(|| ClientError::Protocol("fixture has no cursor".to_owned()))
+        } else {
+            Err(ClientError::Protocol("unknown fixture cursor".to_owned()))
+        }
     }
 
     fn graph_query(
@@ -257,8 +273,32 @@ impl Product for Fake {
         _: String,
         _: std::collections::BTreeMap<String, GraphValue>,
         _: u16,
-        _: Option<backend_library::PageContinuation>,
+        continuation: Option<backend_library::PageContinuation>,
     ) -> Result<GraphQueryPage, ClientError> {
+        if let Some(rows) = &self.graph_rows {
+            return Ok(GraphQueryPage {
+                revision: view_state_root(&[]).into(),
+                source: basis().object,
+                rows: rows.clone(),
+                terminal: PageTerminal::Complete,
+            });
+        }
+        if self.graph_continue {
+            if continuation.is_none() {
+                let continuation = PageContinuation::from_cursor(backend_library::Cursor::at(
+                    view_state_root(&[]),
+                    1,
+                ));
+                self.next_continuation = Some(continuation);
+                return Ok(GraphQueryPage {
+                    revision: view_state_root(&[]).into(),
+                    source: basis().object,
+                    rows: Box::new([]),
+                    terminal: PageTerminal::More(continuation),
+                });
+            }
+            assert_eq!(continuation, self.next_continuation);
+        }
         Ok(GraphQueryPage {
             revision: view_state_root(&[]).into(),
             source: basis().object,
@@ -319,6 +359,16 @@ fn tool_named<'a>(tools: &'a Value, name: &str) -> &'a Value {
         .iter()
         .find(|tool| tool["name"] == name)
         .unwrap_or_else(|| panic!("no tool named `{name}`"))
+}
+
+fn assert_context_bounded(response: &Value) {
+    let bytes = serde_json::to_vec(response).expect("JSON-RPC response serializes");
+    assert!(
+        bytes.len() <= DEFAULT_RESPONSE_BUDGET_BYTES,
+        "response is {} bytes, above the {} byte context budget: {response}",
+        bytes.len(),
+        DEFAULT_RESPONSE_BUDGET_BYTES
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -632,7 +682,10 @@ fn an_unknown_coordinate_is_refused_with_the_operand_and_a_next_tool_call() {
 
 #[test]
 fn an_unreachable_endpoint_is_a_fault_with_the_retry_affordance() {
-    let mut server = ready(Fake { offline: true });
+    let mut server = ready(Fake {
+        offline: true,
+        ..Fake::default()
+    });
     let result = call(&mut server, "backend.search", &json!({ "query": "ferris" }));
     assert_eq!(result["isError"], true);
     let text = text_of(&result);
@@ -1047,4 +1100,176 @@ fn continuation_context_binds_workspace_query_limit_and_detail() {
         continuation_context(PROJECT, "backend.search", &spaced, Detail::Summary),
         continuation_context(PROJECT, "backend.search", &different_limit, Detail::Summary)
     );
+}
+
+#[test]
+fn every_metadata_route_stays_within_the_context_budget() {
+    let mut server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
+    let initialized = server
+        .handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#)
+        .expect("initialize response");
+    assert_context_bounded(&initialized);
+    assert!(
+        server
+            .handle(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+            .is_none()
+    );
+
+    let routes = [
+        ("ping", json!({})),
+        ("tools/list", json!({})),
+        ("resources/list", json!({})),
+        ("resources/templates/list", json!({})),
+        ("prompts/list", json!({})),
+        (
+            "prompts/get",
+            json!({"name":"backend.explore","arguments":{"query":"λ אב"}}),
+        ),
+        (
+            "resources/read",
+            json!({"uri":"backend://workspace/current"}),
+        ),
+        ("resources/read", json!({"uri":"backend://schema/query"})),
+        (
+            "tools/call",
+            json!({"name":"backend.packages","arguments":{}}),
+        ),
+        (
+            "tools/call",
+            json!({"name":"backend.search","arguments":{"query":"λ אב"}}),
+        ),
+        (
+            "tools/call",
+            json!({"name":"backend.document","arguments":{"coordinate":MODULE}}),
+        ),
+        (
+            "tools/call",
+            json!({"name":QUERY_TOOL,"arguments":{"query":"{ Declaration { coordinate @output } }"}}),
+        ),
+    ];
+    for (method, params) in routes {
+        let response = request(&mut server, method, &params);
+        assert_context_bounded(&response);
+    }
+    let huge_prompt = json!({
+        "jsonrpc":"2.0",
+        "id": "id-".to_owned() + &"אב".repeat(DEFAULT_RESPONSE_BUDGET_BYTES),
+        "method":"prompts/get",
+        "params":{"name":"backend.explore","arguments":{"query":"long"}}
+    });
+    let response = server
+        .handle(&serde_json::to_vec(&huge_prompt).expect("large prompt request"))
+        .expect("large prompt response");
+    assert_context_bounded(&response);
+}
+
+#[test]
+fn graph_continuation_round_trip_is_bounded_and_authorized() {
+    let mut server = ready(Fake {
+        graph_continue: true,
+        ..Fake::default()
+    });
+    let first = call(
+        &mut server,
+        QUERY_TOOL,
+        &json!({"query":"{ Declaration { coordinate @output } }","limit":1}),
+    );
+    assert_context_bounded(&first);
+    assert_eq!(first["isError"], false);
+    assert_eq!(first["structuredContent"]["terminal"], "limit_reached");
+    let cursor = first["structuredContent"]["nextCursor"]
+        .as_str()
+        .expect("first graph page carries a cursor")
+        .to_owned();
+
+    let second = call(
+        &mut server,
+        QUERY_TOOL,
+        &json!({
+            "query":"{ Declaration { coordinate @output } }",
+            "limit":1,
+            "cursor":cursor
+        }),
+    );
+    assert_context_bounded(&second);
+    assert_eq!(second["isError"], false);
+    assert_eq!(second["structuredContent"]["terminal"], "complete");
+}
+
+#[test]
+fn high_fanout_graph_and_surface_pages_refuse_atomically() {
+    let rows = (0..256)
+        .map(|index| {
+            let mut fields = std::collections::BTreeMap::new();
+            fields.insert(
+                "coordinate".to_owned(),
+                GraphValue::String(format!("pkg::module_{index}::{}", "λאב".repeat(96))),
+            );
+            fields.insert(
+                "summary".to_owned(),
+                GraphValue::String("high fanout graph record ".repeat(32)),
+            );
+            GraphQueryRow::new(fields).expect("admitted graph row")
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let mut server = ready(Fake {
+        graph_rows: Some(rows),
+        ..Fake::default()
+    });
+    let graph = call(
+        &mut server,
+        QUERY_TOOL,
+        &json!({"query":"{ Declaration { coordinate @output } }"}),
+    );
+    assert_context_bounded(&graph);
+    assert_eq!(graph["isError"], true);
+    assert_eq!(graph["structuredContent"]["cause"], "oversized");
+
+    let references = (0..256)
+        .map(|index| backend_library::ReferenceRecord {
+            site: backend_library::ProductText::new(format!(
+                "pkg::caller_{index}::{}",
+                "x".repeat(160)
+            ))
+            .expect("site text"),
+            target: backend_library::SemanticLinkTarget::Local {
+                declaration: backend_library::SemanticDeclarationIdentity {
+                    family: [1; 16],
+                    variant: [2; 16],
+                },
+            },
+            relation: backend_library::SemanticLinkKind::Calls,
+            evidence: backend_library::SemanticLinkEvidence {
+                confidence: backend_library::SemanticConfidence::Compiler,
+                source: Some(backend_library::SemanticSourceSpan {
+                    file: backend_library::ProductText::new("src/main.rs").expect("path text"),
+                    start: index,
+                    end: index + 1,
+                }),
+            },
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let mut server = ready(Fake {
+        surface_reply: Some(SurfaceReply::References {
+            target: backend_library::ProductText::new("pkg::semantic::callee")
+                .expect("target text"),
+            references,
+        }),
+        ..Fake::default()
+    });
+    let surface = call(
+        &mut server,
+        SURFACE_TOOL,
+        &json!({
+            "command": serde_json::to_value(SurfaceCommand::References {
+                target: backend_library::ProductText::new("pkg::semantic::callee")
+                    .expect("target text")
+            }).expect("encode references command")
+        }),
+    );
+    assert_context_bounded(&surface);
+    assert_eq!(surface["isError"], true);
+    assert_eq!(surface["structuredContent"]["cause"], "oversized");
 }

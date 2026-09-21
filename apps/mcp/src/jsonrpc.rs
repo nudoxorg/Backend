@@ -24,9 +24,9 @@ use backend_library::{
     ReplyDto, SurfaceCommand, SurfaceReply, ViewStateRoot, encode_id,
 };
 use backend_present::{
-    Answer, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Engine, Fault, Invocation, Probe, Request,
-    answer_paged, encode_answer, encode_serializable, fault_value, grammar_for_tool, lower,
-    markdown, oversized_fault, record_list,
+    Answer, BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Engine, Fault, Invocation,
+    Probe, Request, answer_paged, bounded_text, encode_answer, encode_serializable, fault_value,
+    grammar_for_tool, lower, markdown, oversized_fault, record_list,
 };
 use serde::{
     Serialize, Serializer,
@@ -304,6 +304,10 @@ impl<P: Product> Server<P> {
     }
 
     pub(super) fn handle(&mut self, input: &[u8]) -> Option<Value> {
+        self.handle_inner(input).map(bound_rpc_reply)
+    }
+
+    fn handle_inner(&mut self, input: &[u8]) -> Option<Value> {
         let value: Value = match serde_json::from_slice(input) {
             Ok(value) => value,
             Err(error) => {
@@ -361,13 +365,19 @@ impl<P: Product> Server<P> {
                 None,
             ));
         }
-        Some(match self.route(method, &params) {
-            Ok(result) => success(response_id, result),
-            Err(error) => error.into_reply(response_id),
-        })
+        Some(
+            match self.route(method, &params).and_then(bound_route_value) {
+                Ok(result) => success(response_id, result),
+                Err(error) => error.into_reply(response_id),
+            },
+        )
     }
 
     fn route(&mut self, method: &str, params: &Value) -> Result<Value, RpcError> {
+        // Product-bearing tools/resources perform typed admission before they
+        // become `Value`s. The registry and protocol metadata are finite
+        // constructors (with their schema budget checked in the token audit);
+        // this final gate covers their JSON-RPC envelope as well.
         match method {
             "ping" => Ok(json!({})),
             "tools/list" => list_tools(params),
@@ -409,12 +419,14 @@ impl<P: Product> Server<P> {
     /// host can diagnose a stale project setting before querying an empty
     /// index.
     fn instructions(&self) -> String {
-        let mut instructions = String::with_capacity(INSTRUCTIONS.len() + self.project.len() + 160);
+        let project = bounded_text(&self.project);
+        let directory = self.working_directory.as_deref().map(bounded_text);
+        let mut instructions = String::with_capacity(INSTRUCTIONS.len() + project.len() + 160);
         instructions.push_str(INSTRUCTIONS);
         instructions.push_str("\n\nMCP workspace selection:\n- selected project: ");
-        instructions.push_str(&self.project);
-        match self.working_directory.as_deref() {
-            Some(directory) if directory != self.project => {
+        instructions.push_str(&project);
+        match directory.as_deref() {
+            Some(directory) if directory != project => {
                 instructions.push_str("\n- process working directory: ");
                 instructions.push_str(directory);
                 instructions.push_str(
@@ -608,11 +620,11 @@ impl<P: Product> Server<P> {
         let structured: Value = serde_json::from_slice(&payload.bytes).map_err(|error| {
             RpcError::tool(format!("typed surface projection decode failed: {error}"))
         })?;
-        Ok(json!({
-            "content": [{ "type": "text", "text": bounded_text(&markdown::product(&view)) }],
-            "structuredContent": structured,
-            "isError": false
-        }))
+        Ok(tool_result(
+            &bounded_text(&markdown::product(&view)),
+            structured,
+            false,
+        ))
     }
 
     fn get_prompt(&mut self, params: &Value) -> Result<Value, RpcError> {
@@ -625,7 +637,10 @@ impl<P: Product> Server<P> {
             .and_then(Value::as_object)
             .and_then(|arguments| arguments.get("query"))
             .and_then(Value::as_str)
-            .unwrap_or("the relevant implementation");
+            .map_or_else(
+                || "the relevant implementation".to_owned(),
+                bounded_text,
+            );
         let view = Engine::revision(&mut self.product)
             .map_err(|error| RpcError::tool(error.to_string()))?;
         Ok(json!({
@@ -739,11 +754,7 @@ impl<P: Product> Server<P> {
         let structured: Value = serde_json::from_slice(&payload.bytes)
             .map_err(|error| RpcError::tool(format!("typed projection decode failed: {error}")))?;
         let text = bounded_text(&markdown::answer(answer));
-        Ok(json!({
-            "content": [{ "type": "text", "text": text }],
-            "structuredContent": structured,
-            "isError": false
-        }))
+        Ok(tool_result(&text, structured, false))
     }
 
     fn graph_page_result(
@@ -769,11 +780,11 @@ impl<P: Product> Server<P> {
         let value: Value = serde_json::from_slice(&payload.bytes).map_err(|error| {
             RpcError::tool(format!("typed graph projection decode failed: {error}"))
         })?;
-        Ok(json!({
-            "content": [{ "type": "text", "text": bounded_text(&graph_page_text(page)) }],
-            "structuredContent": value,
-            "isError": false
-        }))
+        Ok(tool_result(
+            &bounded_text(&graph_page_text(page)),
+            value,
+            false,
+        ))
     }
 }
 
@@ -866,11 +877,97 @@ fn hex_bytes(bytes: &[u8]) -> String {
 /// Renders one answer: Markdown for a reader, the typed DTO for a program.
 /// Renders one fault in the shared three-line grammar.
 fn refused(fault: &Fault) -> Value {
-    json!({
-        "content": [{ "type": "text", "text": markdown::fault(fault) }],
-        "structuredContent": fault_value(fault),
-        "isError": true
+    tool_result(
+        &bounded_text(&markdown::fault(fault)),
+        fault_value(fault),
+        true,
+    )
+}
+
+/// Context-sized ceiling for a complete JSON-RPC reply. The transport frame
+/// limit is intentionally much larger; this is the product budget that keeps
+/// a typed projection and its readable duplicate bounded together.
+const MCP_RESULT_BUDGET_BYTES: usize = DEFAULT_RESPONSE_BUDGET_BYTES;
+
+fn serialized_bytes(value: &Value) -> usize {
+    serde_json::to_vec(value).map_or(MCP_RESULT_BUDGET_BYTES.saturating_add(1), |bytes| {
+        bytes.len()
     })
+}
+
+fn bound_route_value(value: Value) -> Result<Value, RpcError> {
+    let bytes = serialized_bytes(&value);
+    if bytes <= MCP_RESULT_BUDGET_BYTES {
+        return Ok(value);
+    }
+    Err(RpcError::from_fault(&oversized_fault(BudgetExceeded {
+        bytes,
+        budget: MCP_RESULT_BUDGET_BYTES,
+    })))
+}
+
+fn bound_rpc_reply(value: Value) -> Value {
+    let bytes = serialized_bytes(&value);
+    if bytes <= MCP_RESULT_BUDGET_BYTES {
+        return value;
+    }
+    let id = value.get("id").cloned().unwrap_or(Value::Null);
+    let fault = oversized_fault(BudgetExceeded {
+        bytes,
+        budget: MCP_RESULT_BUDGET_BYTES,
+    });
+    let fallback = error_reply(
+        id.clone(),
+        -32000,
+        "MCP response exceeds the bounded context budget",
+        Some(json!({
+            "kind": fault.slug().as_str(),
+            "detail": bounded_text(&markdown::fault(&fault)),
+            "structuredContent": fault_value(&fault),
+        })),
+    );
+    if serialized_bytes(&fallback) <= MCP_RESULT_BUDGET_BYTES {
+        fallback
+    } else {
+        error_reply(
+            // A request ID is normally a scalar, but preserve the hard cap
+            // even if a caller supplied a very large valid JSON string.
+            Value::Null,
+            -32000,
+            "MCP response exceeds the bounded context budget",
+            None,
+        )
+    }
+}
+
+fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
+    let candidate = json!({
+        "content": [{ "type": "text", "text": text }],
+        "structuredContent": structured,
+        "isError": is_error
+    });
+    let bytes = serialized_bytes(&candidate);
+    if bytes <= MCP_RESULT_BUDGET_BYTES {
+        return candidate;
+    }
+    let fault = oversized_fault(BudgetExceeded {
+        bytes,
+        budget: MCP_RESULT_BUDGET_BYTES,
+    });
+    let fallback = json!({
+        "content": [{ "type": "text", "text": bounded_text(&markdown::fault(&fault)) }],
+        "structuredContent": fault_value(&fault),
+        "isError": true
+    });
+    if serialized_bytes(&fallback) <= MCP_RESULT_BUDGET_BYTES {
+        fallback
+    } else {
+        json!({
+            "content": [{ "type": "text", "text": "✗ transport response exceeded its context budget" }],
+            "structuredContent": { "answer": "fault", "slug": "transport", "cause": "oversized", "detail": "the response exceeded its context budget" },
+            "isError": true
+        })
+    }
 }
 
 fn graph_page_text(page: &GraphQueryPage) -> String {
@@ -922,6 +1019,7 @@ struct RpcError {
     message: &'static str,
     kind: &'static str,
     detail: Option<String>,
+    structured: Option<Value>,
 }
 
 impl RpcError {
@@ -931,6 +1029,7 @@ impl RpcError {
             message,
             kind: "json_rpc",
             detail: None,
+            structured: None,
         }
     }
 
@@ -940,6 +1039,7 @@ impl RpcError {
             message: "Invalid params",
             kind: "invalid_params",
             detail: Some(detail.into()),
+            structured: None,
         }
     }
 
@@ -949,6 +1049,7 @@ impl RpcError {
             message: "Backend request failed",
             kind: "transport",
             detail: Some(detail.into()),
+            structured: None,
         }
     }
 
@@ -961,6 +1062,7 @@ impl RpcError {
                 "the continuation belongs to an older immutable revision; restart the query"
                     .to_owned(),
             ),
+            structured: None,
         }
     }
 
@@ -974,18 +1076,21 @@ impl RpcError {
             },
             message: "Backend request failed",
             kind: fault.slug().as_str(),
-            detail: Some(markdown::fault(fault)),
+            detail: Some(bounded_text(&markdown::fault(fault))),
+            structured: Some(fault_value(fault)),
         }
     }
 
     fn into_reply(self, id: Value) -> Value {
-        error_reply(
-            id,
-            self.code,
-            self.message,
-            self.detail
-                .map(|detail| json!({ "kind": self.kind, "detail": detail })),
-        )
+        let mut data = serde_json::Map::new();
+        data.insert("kind".to_owned(), Value::String(self.kind.to_owned()));
+        if let Some(detail) = self.detail {
+            data.insert("detail".to_owned(), Value::String(bounded_text(&detail)));
+        }
+        if let Some(structured) = self.structured {
+            data.insert("structuredContent".to_owned(), structured);
+        }
+        error_reply(id, self.code, self.message, Some(Value::Object(data)))
     }
 }
 
@@ -1110,24 +1215,6 @@ pub(super) fn default_detail(tool: &str) -> Detail {
         "backend.document" | "backend.source" => Detail::Standard,
         _ => Detail::Summary,
     }
-}
-
-fn bounded_text(text: &str) -> String {
-    // Keep the human-readable duplicate small enough that it cannot consume
-    // the context budget beside the typed projection. The projection is the
-    // complete machine-readable answer; Markdown remains a bounded preview.
-    const MAX_TEXT_BYTES: usize = 16 * 1024;
-    if text.len() <= MAX_TEXT_BYTES {
-        return text.to_owned();
-    }
-    let mut end = MAX_TEXT_BYTES.saturating_sub(32);
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!(
-        "{}\n\n… output truncated; request a narrower page or detail=summary",
-        &text[..end]
-    )
 }
 
 #[derive(Serialize)]
