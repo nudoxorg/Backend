@@ -5,12 +5,13 @@ relation engine. Stable logical keys, immutable object versions, canonical
 relation roots, exact deltas, retained arrangements, replication, and local or
 remote execution all share the contracts in `backend-version`.
 
-The runtime product graph contains 28 packages: twelve shared crates, seven
-language frontends, four query/index adapters, and five app surfaces. The
-agent cutover controller lives under `tools/`, has zero product dependents, and
-is outside the runtime dependency graph. Historical source is kept in
-external reference checkouts and the migration map; no legacy crate or owner
-remains in the product tree.
+The runtime product graph contains 30 packages: fourteen shared crates, seven
+language frontends, four query/index adapters, and five app surfaces. The full
+workspace contains 41 packages after its seven verification suites and four
+tools are included. Agent cutover and verification tools have zero product
+dependents and remain outside the runtime dependency graph. Historical source
+is kept in external reference checkouts and the migration map; no legacy crate
+or owner remains in the product tree.
 
 The native GPUI desktop is the primary local host. It embeds the same local
 service used by the headless `backend-locald` launcher, owns the workspace when
