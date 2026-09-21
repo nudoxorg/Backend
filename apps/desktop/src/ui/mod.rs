@@ -11,6 +11,7 @@ pub(crate) mod bar;
 pub(crate) mod button;
 pub(crate) mod chart;
 pub(crate) mod chip;
+pub(crate) mod components;
 pub(crate) mod fault;
 pub(crate) mod glyph;
 pub(crate) mod icon;

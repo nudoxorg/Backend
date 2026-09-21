@@ -121,7 +121,7 @@ pub(crate) fn badge(theme: &Theme, text: &str) -> Div {
 
 fn shell(theme: &Theme, role: Paint) -> Div {
     let mut wash = theme.paint(role);
-    wash.a = 0.10;
+    wash.alpha = 0.10;
     div()
         .flex()
         .flex_none()

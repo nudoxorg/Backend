@@ -17,14 +17,14 @@
 //! flow if and only if one of the two is a `Link`, and grouping on that rule
 //! recovers the author's paragraphs with no guessing and no text matching.
 
-use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Space, TypeScale, line_height, space, type_size};
+use crate::theme::tokens::{line_height, space, type_size, Space, TypeScale};
+use crate::theme::Theme;
 use backend_library::SymbolKey;
 use backend_present::Prose;
 use gpui::{
-    AnyElement, App, Div, ElementId, HighlightStyle, InteractiveText, IntoElement, ParentElement,
-    SharedString, Styled, StyledText, UnderlineStyle, Window, div, px,
+    div, px, AnyElement, App, Div, ElementId, HighlightStyle, InteractiveText, IntoElement,
+    ParentElement, SharedString, Styled, StyledText, UnderlineStyle, Window,
 };
 use std::ops::Range;
 use std::rc::Rc;
@@ -158,6 +158,7 @@ fn paragraph(
     });
     div()
         .w_full()
+        .font_family(theme.serif_face())
         .text_size(type_size(TypeScale::Body))
         .line_height(line_height(TypeScale::Body))
         .text_color(theme.paint(Paint::Text))

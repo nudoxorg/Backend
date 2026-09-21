@@ -6,7 +6,47 @@
 //! The spacing scale is a 4px grid at the default 16px root, the type scale is
 //! a modular ladder, and both are closed enums so no view can invent a value.
 
-use gpui::{Pixels, Rems, px, rems};
+use gpui::{px, rems, Pixels, Rems};
+
+/// The amount of space a control gives its label and pointer target.
+///
+/// The reader is dense by default, but a touch sized surface is still a
+/// supported rendering target. Keeping density in the token layer means a
+/// component can change its hit target without inventing a second spacing
+/// vocabulary.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Density {
+    /// The compact desktop layout used by the reference designs.
+    #[default]
+    Compact,
+    /// A little more breathing room for low vision and narrow layouts.
+    Comfortable,
+    /// Pointer targets sized for touch and presentation capture.
+    Spacious,
+}
+
+impl Density {
+    /// Returns the multiplier applied to spacing tokens.
+    pub(crate) const fn scale(self) -> f32 {
+        match self {
+            Self::Compact => 1.0,
+            Self::Comfortable => 1.125,
+            Self::Spacious => 1.25,
+        }
+    }
+
+    /// Returns the next density, clamped at the spacious end.
+    pub(crate) const fn stepped(self, up: bool) -> Self {
+        match (self, up) {
+            (Self::Compact, true) => Self::Comfortable,
+            (Self::Comfortable, true) => Self::Spacious,
+            (Self::Spacious, true) => Self::Spacious,
+            (Self::Spacious, false) => Self::Comfortable,
+            (Self::Comfortable, false) => Self::Compact,
+            (Self::Compact, false) => Self::Compact,
+        }
+    }
+}
 
 /// Root font size, in pixels, at an interface size of 100%.
 const ROOT_PIXELS: f32 = 16.0;
@@ -34,16 +74,24 @@ pub(crate) enum Space {
 
 /// Returns the `rem` length of one spacing step.
 pub(crate) fn space(step: Space) -> Rems {
-    rems(match step {
-        Space::Tight => 0.25,
-        Space::Snug => 0.5,
-        Space::Base => 0.75,
-        Space::Room => 1.0,
-        Space::Loose => 1.25,
-        Space::Gutter => 1.5,
-        Space::Margin => 2.0,
-        Space::Bay => 3.0,
-    })
+    space_at(step, Density::Compact)
+}
+
+/// Returns one spacing token at a chosen density.
+pub(crate) fn space_at(step: Space, density: Density) -> Rems {
+    rems(
+        density.scale()
+            * match step {
+                Space::Tight => 0.25,
+                Space::Snug => 0.5,
+                Space::Base => 0.75,
+                Space::Room => 1.0,
+                Space::Loose => 1.25,
+                Space::Gutter => 1.5,
+                Space::Margin => 2.0,
+                Space::Bay => 3.0,
+            },
+    )
 }
 
 /// One rung on the modular type ladder.
@@ -220,4 +268,31 @@ impl Chrome {
     pub(crate) const OMNIBAR: f32 = 520.0;
     /// Width of the omnibar sheet.
     pub(crate) const SHEET: f32 = 720.0;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{space, space_at, Density, InterfaceSize, Space};
+
+    #[test]
+    fn compact_density_preserves_the_reference_spacing_scale() {
+        assert_eq!(space(Space::Base), space_at(Space::Base, Density::Compact));
+    }
+
+    #[test]
+    fn density_only_grows_spacing_and_has_no_wraparound() {
+        let compact = space_at(Space::Room, Density::Compact);
+        let comfortable = space_at(Space::Room, Density::Comfortable);
+        let spacious = space_at(Space::Room, Density::Spacious);
+        assert!(comfortable.0 > compact.0);
+        assert!(spacious.0 > comfortable.0);
+        assert_eq!(Density::Compact.stepped(false), Density::Compact);
+        assert_eq!(Density::Spacious.stepped(true), Density::Spacious);
+    }
+
+    #[test]
+    fn interface_size_clamps_before_it_reaches_geometry() {
+        assert_eq!(InterfaceSize::percent(0).get(), InterfaceSize::MIN);
+        assert_eq!(InterfaceSize::percent(u16::MAX).get(), InterfaceSize::MAX);
+    }
 }

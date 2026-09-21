@@ -520,20 +520,23 @@ fn every_declaration_kind_sits_on_one_luminance_plane_at_its_own_hue() {
 
     for appearance in [Appearance::Ink, Appearance::Vellum] {
         let palette = Palette::new(appearance);
-        let plane = palette.on_plane(kind_glyph(DeclarationKind::Module).hue()).l;
+        let plane = palette
+            .on_plane(kind_glyph(DeclarationKind::Module).hue())
+            .color
+            .lightness;
         for kind in ALL_KINDS {
             let colour = palette.on_plane(kind_glyph(kind).hue());
             assert!(
-                (colour.l - plane).abs() <= f32::EPSILON,
+                (colour.color.lightness - plane).abs() <= f32::EPSILON,
                 "{} left the plane: {} instead of {plane}",
                 kind_glyph(kind).label(),
-                colour.l
+                colour.color.lightness
             );
         }
         let structure = palette.on_plane(kind_glyph(DeclarationKind::Struct).hue());
         let contract = palette.on_plane(kind_glyph(DeclarationKind::Trait).hue());
         assert!(
-            (structure.h - contract.h).abs() > 0.01,
+            (structure.color.hue.into_degrees() - contract.color.hue.into_degrees()).abs() > 0.01,
             "a struct and a trait must not collapse onto one hue"
         );
     }
@@ -545,20 +548,20 @@ fn every_language_sits_on_one_luminance_plane_at_its_own_hue() {
 
     for appearance in [Appearance::Ink, Appearance::Vellum] {
         let palette = Palette::new(appearance);
-        let plane = palette.on_plane(hue(Language::Rust)).l;
+        let plane = palette.on_plane(hue(Language::Rust)).color.lightness;
         for language in Language::ALL {
             let colour = palette.on_plane(hue(language));
             assert!(
-                (colour.l - plane).abs() <= f32::EPSILON,
+                (colour.color.lightness - plane).abs() <= f32::EPSILON,
                 "{} left the plane: {} instead of {plane}",
                 label(language),
-                colour.l
+                colour.color.lightness
             );
         }
         let rust = palette.on_plane(hue(Language::Rust));
         let typescript = palette.on_plane(hue(Language::TypeScript));
         assert!(
-            (rust.h - typescript.h).abs() > 0.01,
+            (rust.color.hue.into_degrees() - typescript.color.hue.into_degrees()).abs() > 0.01,
             "Rust and TypeScript must not collapse onto one hue"
         );
     }
@@ -573,7 +576,7 @@ fn the_two_appearances_light_different_grounds_and_both_keep_gilt_apart() {
         vellum.paint(Paint::Ground),
         "Vellum is the same design re-lit, not the same colours"
     );
-    assert!(ink.paint(Paint::Ground).l < vellum.paint(Paint::Ground).l);
+    assert!(ink.paint(Paint::Ground).color.lightness < vellum.paint(Paint::Ground).color.lightness);
     for palette in [ink, vellum] {
         assert_ne!(
             palette.paint(Paint::Gilt),

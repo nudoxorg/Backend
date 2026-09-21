@@ -90,7 +90,10 @@ fn run(opened: Opened) {
     gpui::Application::with_platform(gpui_platform::current_platform(false))
         .with_assets(Assets)
         .run(move |cx: &mut App| {
-            install(cx, prefs);
+            if let Err(error) = install(cx, prefs) {
+                eprintln!("backend-desktop: install capture-critical UI assets: {error}");
+                return;
+            }
             let options = window_options(cx);
             let opened = cx.open_window(options, move |_window, cx| {
                 cx.new(|cx| {
@@ -117,15 +120,23 @@ fn run(opened: Opened) {
     drop(host);
 }
 
-fn install(cx: &mut App, preferences: Preferences) {
+fn install(cx: &mut App, preferences: Preferences) -> gpui::Result<()> {
+    // GPUI CE components own focus, popup, tooltip, input, and virtual-list
+    // behavior. Initialise that infrastructure once; Nudox projects its own
+    // semantic palette onto the unstyled component roots in `ui`.
+    gpui_component::init(cx);
+    crate::theme::fonts::install(cx)?;
     cx.bind_keys(editing_bindings().as_keybindings(Some(FIELD_CONTEXT)));
     cx.bind_keys(window_bindings());
-    cx.set_global(Theme::new(
+    let theme = Theme::new(
         preferences.appearance(),
         preferences.interface(),
         preferences.reduced_motion(),
-    ));
+    );
+    crate::theme::sync_components(cx, &theme);
+    cx.set_global(theme);
     cx.set_reduce_motion(preferences.reduced_motion());
+    Ok(())
 }
 
 fn window_options(cx: &mut App) -> WindowOptions {

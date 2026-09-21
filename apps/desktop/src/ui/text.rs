@@ -8,14 +8,15 @@
 //! to full strength under the pointer. The hue that says *what kind of thing*
 //! is behind the door lives in the glyph beside it, never in the word itself.
 
-use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{TypeScale, line_height, type_size};
-use gpui::{Div, FontWeight, Hsla, SharedString, Styled, div};
+use crate::theme::tokens::{line_height, type_size, TypeScale};
+use crate::theme::Theme;
+use gpui::{div, Div, FontWeight, Hsla, SharedString, Styled};
 
 /// Returns a text block at one rung of the type ladder.
 pub(crate) fn text_at(theme: &Theme, scale: TypeScale, role: Paint) -> Div {
     div()
+        .font_family(theme.ui_face())
         .text_size(type_size(scale))
         .line_height(line_height(scale))
         .text_color(theme.paint(role))
@@ -23,7 +24,9 @@ pub(crate) fn text_at(theme: &Theme, scale: TypeScale, role: Paint) -> Div {
 
 /// Returns a heading block, set in the strongest ink at a semibold weight.
 pub(crate) fn heading(theme: &Theme, scale: TypeScale) -> Div {
-    text_at(theme, scale, Paint::TextStrong).font_weight(FontWeight::SEMIBOLD)
+    text_at(theme, scale, Paint::TextStrong)
+        .font_family(theme.display_face())
+        .font_weight(FontWeight::SEMIBOLD)
 }
 
 /// Returns a body text block.
@@ -67,7 +70,7 @@ pub(crate) fn navigable(theme: &Theme, scale: TypeScale, hovered: bool) -> Div {
 /// Returns the colour a navigable underline is drawn in.
 pub(crate) fn underline_ink(theme: &Theme, hovered: bool) -> Hsla {
     let mut ink = theme.paint(Paint::GiltDim);
-    ink.a = if hovered { 0.95 } else { 0.42 };
+    ink.alpha = if hovered { 0.95 } else { 0.42 };
     ink
 }
 

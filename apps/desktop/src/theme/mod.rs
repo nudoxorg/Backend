@@ -10,18 +10,24 @@ pub(crate) mod language;
 pub(crate) mod palette;
 pub(crate) mod ramp;
 pub(crate) mod tokens;
+pub(crate) mod fonts;
 
 use gpui::{App, Global, Hsla, Pixels, SharedString};
-use palette::{Appearance, Paint, Palette};
+use palette::{Appearance, Contrast, Paint, Palette};
 use ramp::Hue;
-use tokens::InterfaceSize;
+use tokens::{radius, space_at, Density, InterfaceSize, Space};
 
 /// The lit palette and the reading preferences that scale it.
 #[derive(Clone, Debug)]
 pub(crate) struct Theme {
     palette: Palette,
     interface: InterfaceSize,
+    density: Density,
+    contrast: Contrast,
     reduced_motion: bool,
+    ui_face: SharedString,
+    display_face: SharedString,
+    serif_face: SharedString,
     specimen: SharedString,
 }
 
@@ -29,12 +35,38 @@ impl Global for Theme {}
 
 impl Theme {
     /// Lights one appearance at one interface size.
-    pub(crate) fn new(appearance: Appearance, interface: InterfaceSize, reduced_motion: bool) -> Self {
-        Self {
-            palette: Palette::new(appearance),
+    pub(crate) fn new(
+        appearance: Appearance,
+        interface: InterfaceSize,
+        reduced_motion: bool,
+    ) -> Self {
+        Self::new_with_options(
+            appearance,
             interface,
+            Density::Compact,
+            Contrast::Normal,
             reduced_motion,
-            specimen: SharedString::new_static("SF Mono"),
+        )
+    }
+
+    /// Lights a theme with explicit accessibility and density options.
+    pub(crate) fn new_with_options(
+        appearance: Appearance,
+        interface: InterfaceSize,
+        density: Density,
+        contrast: Contrast,
+        reduced_motion: bool,
+    ) -> Self {
+        Self {
+            palette: Palette::new_with_contrast(appearance, contrast),
+            interface,
+            density,
+            contrast,
+            reduced_motion,
+            ui_face: SharedString::new_static(fonts::UI_FAMILY),
+            display_face: SharedString::new_static(fonts::DISPLAY_FAMILY),
+            serif_face: SharedString::new_static(fonts::SERIF_FAMILY),
+            specimen: SharedString::new_static(fonts::SPECIMEN_FAMILY),
         }
     }
 
@@ -58,9 +90,44 @@ impl Theme {
         self.interface.root_pixels()
     }
 
+    /// Returns the spacing token at this theme's responsive density.
+    pub(crate) fn space(&self, token: Space) -> gpui::Rems {
+        space_at(token, self.density)
+    }
+
+    /// Returns the active density.
+    pub(crate) const fn density(&self) -> Density {
+        self.density
+    }
+
+    /// Returns the active contrast treatment.
+    pub(crate) const fn contrast(&self) -> Contrast {
+        self.contrast
+    }
+
+    /// Returns whether high contrast is enabled.
+    pub(crate) const fn high_contrast(&self) -> bool {
+        self.contrast.is_high()
+    }
+
     /// Returns whether motion is suppressed.
     pub(crate) const fn reduced_motion(&self) -> bool {
         self.reduced_motion
+    }
+
+    /// Returns the system UI face used by controls and navigation.
+    pub(crate) fn ui_face(&self) -> SharedString {
+        self.ui_face.clone()
+    }
+
+    /// Returns the display face used by page titles and headings.
+    pub(crate) fn display_face(&self) -> SharedString {
+        self.display_face.clone()
+    }
+
+    /// Returns the serif face reserved for reading prose.
+    pub(crate) fn serif_face(&self) -> SharedString {
+        self.serif_face.clone()
     }
 
     /// Returns the monospace family used for signatures and source.
@@ -78,4 +145,65 @@ impl Default for Theme {
 /// Returns the lit theme, installing the default one if none is set.
 pub(crate) fn theme(cx: &App) -> Theme {
     cx.try_global::<Theme>().cloned().unwrap_or_default()
+}
+
+/// Projects Nudox semantic roles onto GPUI CE's behavior/component theme.
+///
+/// GPUI CE owns focus rings, popovers, tooltips, inputs, scrollbars, and
+/// virtual lists. It must see the same palette as Nudox-owned elements or a
+/// sheet would change colour when it crosses a component boundary. The
+/// projection intentionally sets only semantic roles; component geometry and
+/// interaction behavior stay with GPUI CE.
+pub(crate) fn sync_components(cx: &mut App, theme: &Theme) {
+    {
+        let component = gpui_component::Theme::global_mut(cx);
+        component.background = theme.paint(Paint::Ground);
+        component.foreground = theme.paint(Paint::Text);
+        component.muted = theme.paint(Paint::Hover);
+        component.muted_foreground = theme.paint(Paint::TextDim);
+        component.border = theme.paint(Paint::Hairline);
+        component.input = theme.paint(Paint::HairlineStrong);
+        component.ring = theme.paint(Paint::Focus);
+        component.primary = theme.paint(Paint::GiltWash);
+        component.primary_hover = theme.paint(Paint::Hover);
+        component.primary_active = theme.paint(Paint::Selected);
+        component.primary_foreground = theme.paint(Paint::Gilt);
+        component.secondary = theme.paint(Paint::Panel);
+        component.secondary_hover = theme.paint(Paint::Hover);
+        component.secondary_active = theme.paint(Paint::Selected);
+        component.secondary_foreground = theme.paint(Paint::Text);
+        component.popover = theme.paint(Paint::Raised);
+        component.popover_foreground = theme.paint(Paint::Text);
+        component.accent = theme.paint(Paint::GiltWash);
+        component.accent_foreground = theme.paint(Paint::Gilt);
+        component.danger = theme.paint(Paint::Fault);
+        component.danger_foreground = theme.paint(Paint::TextStrong);
+        component.warning = theme.paint(Paint::Caution);
+        component.warning_foreground = theme.paint(Paint::TextStrong);
+        component.info = theme.paint(Paint::Info);
+        component.info_foreground = theme.paint(Paint::TextStrong);
+        component.success = theme.paint(Paint::Ok);
+        component.success_foreground = theme.paint(Paint::TextStrong);
+        component.list.active_highlight = true;
+        component.list_hover = theme.paint(Paint::Hover);
+        component.list_active = theme.paint(Paint::Selected);
+        component.list_active_border = theme.paint(Paint::GiltDim);
+        component.sidebar = theme.paint(Paint::Panel);
+        component.sidebar_foreground = theme.paint(Paint::Text);
+        component.sidebar_border = theme.paint(Paint::Hairline);
+        component.title_bar = theme.paint(Paint::Panel);
+        component.title_bar_border = theme.paint(Paint::Hairline);
+        component.status_bar = theme.paint(Paint::Sunken);
+        component.status_bar_border = theme.paint(Paint::Hairline);
+        component.overlay = theme.paint(Paint::Scrim);
+        component.scrollbar = theme.paint(Paint::Sunken);
+        component.scrollbar_thumb = theme.paint(Paint::TextFaint);
+        component.scrollbar_thumb_hover = theme.paint(Paint::TextDim);
+        component.font_family = theme.ui_face();
+        component.mono_font_family = theme.specimen();
+        component.radius = radius(tokens::Radius::Small);
+        component.radius_lg = radius(tokens::Radius::Large);
+        component.focus_ring = true;
+    }
+    gpui_component::Theme::sync_base(cx);
 }

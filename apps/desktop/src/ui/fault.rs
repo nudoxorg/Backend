@@ -47,7 +47,7 @@ pub(crate) fn block(theme: &Theme, fault: &Fault, actions: Vec<AnyElement>) -> D
     let level = severity(fault);
     let role = severity_paint(level);
     let mut wash = theme.paint(role);
-    wash.a = 0.08;
+    wash.alpha = 0.08;
     div()
         .w_full()
         .p(space(Space::Room))
@@ -193,7 +193,7 @@ fn operand_line(theme: &Theme, fault: &Fault) -> Div {
 
 fn edge(theme: &Theme, role: Paint) -> gpui::Hsla {
     let mut ink = theme.paint(role);
-    ink.a = 0.32;
+    ink.alpha = 0.32;
     ink
 }
 

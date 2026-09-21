@@ -663,7 +663,7 @@ fn standing_chip(theme: &Theme, entry: &ShelfEntry) -> Div {
     let standing = project::standing(entry);
     let role = glyph::standing_paint(standing);
     let mut wash = theme.paint(role);
-    wash.a = 0.12;
+    wash.alpha = 0.12;
     div()
         .flex()
         .flex_none()

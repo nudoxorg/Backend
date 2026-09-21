@@ -92,13 +92,29 @@ pub(crate) trait Tipped: Sized {
     fn card(self, card: Card) -> Self;
 }
 
-impl<E: StatefulInteractiveElement> Tipped for E {
+impl<E> Tipped for gpui::Stateful<E>
+where
+    gpui::Stateful<E>: StatefulInteractiveElement,
+{
     fn tip(self, tip: Tip) -> Self {
         self.tooltip_show_delay(DELAY).tooltip(tip.build())
     }
 
     fn card(self, card: Card) -> Self {
         self.tooltip_show_delay(DELAY).tooltip(card.build())
+    }
+}
+
+/// GPUI CE buttons own their tooltip popup and delay. Keep the product's
+/// `Tip` vocabulary at the call site while routing button affordances through
+/// the component implementation instead of the legacy stateful `Div` path.
+impl Tipped for gpui_component::button::Button {
+    fn tip(self, tip: Tip) -> Self {
+        self.tooltip(tip.title)
+    }
+
+    fn card(self, card: Card) -> Self {
+        self.tooltip(card.name)
     }
 }
 

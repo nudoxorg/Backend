@@ -129,7 +129,7 @@ fn segments(theme: &Theme, counts: &[LanguageCount], total: u64, motion: Motion)
 /// Returns the travelling highlight drawn over an indexing bar.
 fn sweep(theme: &Theme, id: &SharedString, motion: Motion, reduced: bool) -> impl IntoElement {
     let mut wash = theme.paint(Paint::TextStrong);
-    wash.a = 0.55;
+    wash.alpha = 0.55;
     let breathing = motion == Motion::Waiting;
     div()
         .absolute()

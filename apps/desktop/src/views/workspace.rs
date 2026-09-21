@@ -569,12 +569,13 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::ui::components::begin_action_frame(window, "workspace");
         let theme = self.theme(cx);
         window.set_rem_size(theme.root_pixels());
         self.fit(window, cx);
         #[cfg(feature = "preview")]
         self.stage_preview(window, cx);
-        surface::ground(&theme)
+        let frame = surface::ground(&theme)
             .id("nudox-window")
             .key_context(WINDOW_CONTEXT)
             .track_focus(&self.focus)
@@ -586,7 +587,9 @@ impl Render for Workspace {
             .child(self.body(&theme, cx))
             .child(self.status_bar(&theme, cx))
             .child(self.overlays(&theme, window, cx))
-            .with_key_handlers(cx)
+            .with_key_handlers(cx);
+        crate::ui::components::publish_action_frame(window);
+        frame
     }
 }
 

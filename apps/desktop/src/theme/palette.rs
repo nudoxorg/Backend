@@ -13,6 +13,29 @@
 use super::ramp::{Chroma, Hue, Ramp, Step};
 use gpui::Hsla;
 
+/// Contrast treatment applied after semantic roles are generated.
+///
+/// High contrast keeps the same hues and hierarchy as the normal design while
+/// widening the luminance and alpha separation that makes text, edges, and
+/// focus targets discoverable. It is deliberately orthogonal to appearance:
+/// both Ink and Vellum can be made high contrast without inventing a third
+/// palette.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Contrast {
+    /// The reference palette with restrained differences between surfaces.
+    #[default]
+    Normal,
+    /// Stronger text, edges, states, and focus affordances.
+    High,
+}
+
+impl Contrast {
+    /// Returns whether this is the accessibility palette.
+    pub(crate) const fn is_high(self) -> bool {
+        matches!(self, Self::High)
+    }
+}
+
 /// Which of the two palettes is lit.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum Appearance {
@@ -106,6 +129,7 @@ pub(crate) enum Paint {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Palette {
     appearance: Appearance,
+    contrast: Contrast,
     ink: Ramp,
     vellum: Ramp,
     gilt: Ramp,
@@ -125,8 +149,14 @@ const GILT_HUE: f32 = 42.0;
 impl Palette {
     /// Generates the palette for one appearance.
     pub(crate) fn new(appearance: Appearance) -> Self {
+        Self::new_with_contrast(appearance, Contrast::Normal)
+    }
+
+    /// Generates the palette for one appearance and contrast treatment.
+    pub(crate) fn new_with_contrast(appearance: Appearance, contrast: Contrast) -> Self {
         Self {
             appearance,
+            contrast,
             ink: Ramp::new(Hue::degrees(INK_HUE), Chroma::new(0.10)),
             vellum: Ramp::new(Hue::degrees(VELLUM_HUE), Chroma::new(0.06)),
             gilt: Ramp::new(Hue::degrees(GILT_HUE), Chroma::new(0.74)),
@@ -139,16 +169,73 @@ impl Palette {
 
     /// Returns the colour for one semantic role.
     pub(crate) fn paint(self, role: Paint) -> Hsla {
-        match role {
+        let color = match role {
             Paint::Ground | Paint::Panel | Paint::Raised | Paint::Sunken | Paint::Scrim => {
                 self.surface(role)
             }
             Paint::Hairline | Paint::HairlineStrong => self.edge(role),
-            Paint::TextStrong | Paint::Text | Paint::TextDim | Paint::TextFaint => self.type_ink(role),
+            Paint::TextStrong | Paint::Text | Paint::TextDim | Paint::TextFaint => {
+                self.type_ink(role)
+            }
             Paint::Gilt | Paint::GiltDim | Paint::GiltWash | Paint::Focus => self.accent(role),
             Paint::Hover | Paint::Selected => self.wash(role),
             Paint::Ok | Paint::Caution | Paint::Fault | Paint::Info => self.signal(role),
+        };
+        self.contrast_adjust(role, color)
+    }
+
+    /// Widens the separation of the roles most likely to be confused.
+    fn contrast_adjust(self, role: Paint, mut color: Hsla) -> Hsla {
+        if !self.contrast.is_high() {
+            return color;
         }
+        let dark = self.appearance.is_dark();
+        match role {
+            Paint::TextStrong => {
+                color.color.lightness = if dark {
+                    color.color.lightness.max(0.92)
+                } else {
+                    color.color.lightness.min(0.10)
+                }
+            }
+            Paint::Text => {
+                color.color.lightness = if dark {
+                    color.color.lightness.max(0.84)
+                } else {
+                    color.color.lightness.min(0.18)
+                }
+            }
+            Paint::TextDim => {
+                color.color.lightness = if dark {
+                    color.color.lightness.max(0.72)
+                } else {
+                    color.color.lightness.min(0.30)
+                }
+            }
+            Paint::TextFaint => {
+                color.color.lightness = if dark {
+                    color.color.lightness.max(0.60)
+                } else {
+                    color.color.lightness.min(0.42)
+                }
+            }
+            Paint::Hairline | Paint::HairlineStrong => color.alpha = 1.0,
+            Paint::Focus => {
+                color.alpha = 1.0;
+                color.color.saturation = color.color.saturation.max(0.82);
+                color.color.lightness = if dark { 0.82 } else { 0.28 };
+            }
+            Paint::Hover => color.alpha = if dark { 0.42 } else { 0.24 },
+            Paint::Selected => color.alpha = if dark { 0.58 } else { 0.32 },
+            Paint::GiltWash => color.alpha = if dark { 0.25 } else { 0.36 },
+            _ => {}
+        }
+        color
+    }
+
+    /// Returns the active contrast treatment.
+    pub(crate) const fn contrast(self) -> Contrast {
+        self.contrast
     }
 
     fn surface(self, role: Paint) -> Hsla {
@@ -218,7 +305,11 @@ impl Palette {
     }
 
     fn signal(self, role: Paint) -> Hsla {
-        let lightness = if self.appearance.is_dark() { 0.620 } else { 0.400 };
+        let lightness = if self.appearance.is_dark() {
+            0.620
+        } else {
+            0.400
+        };
         match role {
             Paint::Ok => self.ok.plane(lightness, Chroma::new(0.52)),
             Paint::Caution => self.caution.plane(lightness, Chroma::new(0.68)),
@@ -244,8 +335,44 @@ impl Palette {
     /// Returns a translucent wash of one hue on the chromatic plane.
     pub(crate) fn plane_wash(self, hue: Hue, alpha: f32) -> Hsla {
         let mut tone = self.on_plane(hue);
-        tone.a = alpha;
+        tone.alpha = alpha;
         tone
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::{Appearance, Contrast, Paint, Palette};
+
+    #[test]
+    fn high_contrast_increases_text_and_edge_separation_in_both_appearances() {
+        for appearance in [Appearance::Ink, Appearance::Vellum] {
+            let normal = Palette::new(appearance);
+            let high = Palette::new_with_contrast(appearance, Contrast::High);
+            let text_delta = (high.paint(Paint::Text).color.lightness
+                - high.paint(Paint::Ground).color.lightness)
+                .abs();
+            let normal_delta = (normal.paint(Paint::Text).color.lightness
+                - normal.paint(Paint::Ground).color.lightness)
+                .abs();
+            assert!(
+                text_delta >= normal_delta,
+                "high contrast must not reduce text/ground separation for {appearance:?}"
+            );
+            assert!(high.paint(Paint::Hairline).alpha >= normal.paint(Paint::Hairline).alpha);
+            assert_eq!(high.contrast(), Contrast::High);
+        }
+    }
+
+    #[test]
+    fn high_contrast_focus_is_opaque_and_distinct_from_body_text() {
+        for appearance in [Appearance::Ink, Appearance::Vellum] {
+            let palette = Palette::new_with_contrast(appearance, Contrast::High);
+            let focus = palette.paint(Paint::Focus);
+            let text = palette.paint(Paint::Text);
+            assert_eq!(focus.alpha, 1.0);
+            assert!((focus.color.hue.into_degrees() - text.color.hue.into_degrees()).abs() > 0.01
+                || (focus.color.lightness - text.color.lightness).abs() > 0.2);
+        }
+    }
 }
