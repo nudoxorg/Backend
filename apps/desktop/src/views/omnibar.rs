@@ -18,6 +18,7 @@
 //! is what the engine did say about it: its kind, its language, its signature
 //! in colour, and — only when it is not simply ready — its publication state.
 
+use super::ViewportClass;
 use super::chrome::{HeaderMenu, Platform};
 use super::keys;
 use super::workspace::Workspace;
@@ -28,7 +29,7 @@ use crate::store::search::{CommandRow, Mode, Reply, ResultRow, SearchStore};
 use crate::store::shell::{Focus, Transient};
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Chrome, Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{Chrome, Space, TypeScale, hairline, space, type_size};
 use crate::ui::icon::Icon;
 use crate::ui::tip::{Tip, Tipped as _};
 use crate::ui::{button, chip, components, fault as fault_ui, glyph, specimen, surface, text};
@@ -55,8 +56,13 @@ impl Workspace {
     ) -> impl IntoElement {
         let platform = Platform::current();
         let controls = Self::window_controls(theme, window, cx);
-        let compact = f32::from(window.viewport_size().width) < 900.0;
-        let compact_right = if platform.draws_controls() { 108.0 } else { 8.0 };
+        let compact =
+            ViewportClass::for_width(f32::from(window.viewport_size().width)).is_compact();
+        let compact_right = if platform.draws_controls() {
+            108.0
+        } else {
+            8.0
+        };
         let compact_reserve = if compact { 270.0 + compact_right } else { 0.0 };
         div()
             .id("titlebar")
@@ -69,7 +75,7 @@ impl Workspace {
             .pl(px(platform.leading_gap()))
             .gap(space(Space::Base))
             .border_b(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .when(platform.owns_drag(), |bar| {
                 bar.window_control_area(WindowControlArea::Drag)
             })
@@ -145,7 +151,8 @@ impl Workspace {
         } else {
             Icon::Sun
         };
-        let compact = f32::from(window.viewport_size().width) < 900.0;
+        let compact =
+            ViewportClass::for_width(f32::from(window.viewport_size().width)).is_compact();
         div()
             .flex_none()
             .flex()
@@ -181,9 +188,9 @@ impl Workspace {
                     button::icon_button(theme, "appearance", mark)
                         .tip(
                             Tip::new(if appearance.is_dark() {
-                                "Switch to Vellum"
+                                "Switch to Glacier"
                             } else {
-                                "Switch to Ink"
+                                "Switch to Abyss"
                             })
                             .detail("The light and dark palettes of this window.")
                             .key(keys::TOGGLE_APPEARANCE),
@@ -299,13 +306,12 @@ impl Workspace {
             .items_center()
             .gap(space(Space::Snug))
             .px(space(Space::Base))
-            .rounded(radius(Radius::Capsule))
-            .bg(theme.paint(Paint::Panel))
+            .bg(theme.paint(Paint::Abyss1))
             .border(hairline())
             .border_color(if focused {
                 theme.paint(Paint::Focus)
             } else {
-                theme.paint(Paint::Hairline)
+                theme.paint(Paint::Rule1)
             })
             .cursor_pointer()
             .on_click(cx.listener(|this, _, window, cx| {
@@ -328,7 +334,7 @@ impl Workspace {
                     .appearance(false)
                     .bordered(false)
                     .text_size(type_size(TypeScale::Interface))
-                    .text_color(theme.paint(Paint::TextStrong)),
+                    .text_color(theme.paint(Paint::Silver0)),
                 ),
             )
             .when(!focused, |bar| {
@@ -344,9 +350,9 @@ impl Workspace {
     /// the text.
     fn omnibar_nib(theme: &Theme, mode: &Mode) -> Div {
         let (mark, role) = match mode {
-            Mode::Palette => (Icon::Command, Paint::Gilt),
-            Mode::Scoped { .. } => (Icon::Folder, Paint::Gilt),
-            Mode::Search => (Icon::Search, Paint::TextFaint),
+            Mode::Palette => (Icon::Command, Paint::Mint),
+            Mode::Scoped { .. } => (Icon::Folder, Paint::Mint),
+            Mode::Search => (Icon::Search, Paint::Silver3),
         };
         div()
             .flex_none()
@@ -445,7 +451,7 @@ impl Workspace {
             .px(space(Space::Room))
             .py(space(Space::Snug))
             .border_b(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .child(text::faint(theme).child(match search.parsed().mode() {
                 Mode::Palette if !search.parsed().arguments().is_empty() => {
                     format!("runs with  {}", search.parsed().arguments())
@@ -573,8 +579,8 @@ impl Workspace {
             .gap(space(Space::Snug))
             .px(space(Space::Room))
             .py(space(Space::Snug))
-            .when(selected, |row| row.bg(theme.paint(Paint::Selected)))
-            .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .when(selected, |row| row.bg(theme.paint(Paint::PeriwinkleSoft)))
+            .hover(|style| style.bg(theme.paint(Paint::Tint)))
             .border(hairline())
             .border_color(gpui::transparent_black())
             .role(gpui::Role::Button)
@@ -661,8 +667,10 @@ impl Workspace {
             .gap(space(Space::Snug))
             .px(space(Space::Room))
             .py(space(Space::Snug))
-            .when(selected, |element| element.bg(theme.paint(Paint::Selected)))
-            .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .when(selected, |element| {
+                element.bg(theme.paint(Paint::PeriwinkleSoft))
+            })
+            .hover(|style| style.bg(theme.paint(Paint::Tint)))
             .border(hairline())
             .border_color(gpui::transparent_black())
             .role(gpui::Role::Button)
@@ -697,7 +705,7 @@ impl Workspace {
                     .text_ellipsis()
                     .font_family(theme.specimen())
                     .text_size(type_size(TypeScale::Micro))
-                    .text_color(theme.paint(Paint::TextFaint))
+                    .text_color(theme.paint(Paint::Silver3))
                     .child(row.grammar().usage()),
             )
             .into_any_element()
@@ -708,7 +716,7 @@ impl Workspace {
             .px(space(Space::Room))
             .py(space(Space::Snug))
             .border_t(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .flex()
             .flex_col()
             .gap(space(Space::Snug));
@@ -781,7 +789,7 @@ fn result_side(theme: &Theme, record: &backend_present::Record) -> Div {
             side.child(
                 text::faint(theme)
                     .flex_none()
-                    .text_color(theme.paint(Paint::Caution))
+                    .text_color(theme.paint(Paint::Waiting))
                     .child(record.state().name().to_owned()),
             )
         })
@@ -798,7 +806,7 @@ fn trail_line(theme: &Theme, row: &ResultRow, term: &str) -> Div {
             div()
                 .flex_none()
                 .text_size(type_size(TypeScale::Interface))
-                .text_color(theme.paint(Paint::Text))
+                .text_color(theme.paint(Paint::Silver1))
                 .font_weight(FontWeight::MEDIUM)
                 .child(text::highlighted(
                     theme,
@@ -826,7 +834,7 @@ fn domain_header(theme: &Theme, domain: CommandDomain) -> AnyElement {
         .into_any_element()
 }
 
-/// Returns the gilt nib that springs open beside the selected command.
+/// Returns the mint nib that springs open beside the selected command.
 ///
 /// The nib is the only moving thing in the palette, and it moves for one
 /// reason: it is the answer to "which row does Return run?". Under reduced
@@ -839,8 +847,7 @@ fn nib(theme: &Theme, at: usize, selected: bool, reduced: bool) -> AnyElement {
         .flex_none()
         .w(px(2.0))
         .h(px(18.0))
-        .rounded_full()
-        .bg(theme.paint(Paint::Gilt))
+        .bg(theme.paint(Paint::Mint))
         .with_animation(
             ElementId::Name(SharedString::from(format!("palette-nib-{at}"))),
             once(Beat::Touch, reduced),
@@ -873,7 +880,7 @@ fn hints(theme: &Theme) -> Div {
                         .w(px(120.0))
                         .font_family(theme.specimen())
                         .text_size(type_size(TypeScale::Small))
-                        .text_color(theme.paint(Paint::Gilt))
+                        .text_color(theme.paint(Paint::Mint))
                         .child(what),
                 )
                 .child(text::dim(theme).child(does))
@@ -908,7 +915,7 @@ fn more_rows(theme: &Theme) -> Div {
         .px(space(Space::Room))
         .py(space(Space::Snug))
         .border_t(hairline())
-        .border_color(theme.paint(Paint::Hairline))
+        .border_color(theme.paint(Paint::Rule1))
         .child(
             text::faint(theme).child(
                 "More declarations match than this page holds. Narrow the text to see them.",

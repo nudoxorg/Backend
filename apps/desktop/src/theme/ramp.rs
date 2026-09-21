@@ -1,12 +1,8 @@
-//! Twelve-step tonal ramps generated from one hue and one chroma.
+//! Hue helpers for the five fixed Facet family colours.
 //!
-//! Every colour in the application is a tone drawn from a ramp, so a palette
-//! is a small table of hue/chroma pairs rather than a list of hex literals.
-//! Two properties follow from generating tones instead of picking them: every
-//! ramp shares one lightness ladder, so text contrast is uniform across hues,
-//! and a family of hues can be pinned to a single ladder step, which is how
-//! declaration kinds stay preattentively distinct in colour yet collapse to
-//! one shade in greyscale.
+//! Semantic UI roles live in the exact palette table. This module remains for
+//! parsing the source hue carried by declaration and language marks before the
+//! palette projects it onto one of the five fixed family colours.
 
 use gpui::{Hsla, hsla};
 
@@ -29,6 +25,11 @@ impl Hue {
     /// Names a hue by its angle in degrees.
     pub(crate) const fn degrees(value: f32) -> Self {
         Self(value)
+    }
+
+    /// Returns the source degree used to select a fixed Facet family colour.
+    pub(crate) const fn degrees_value(self) -> f32 {
+        self.0
     }
 
     /// Returns the angle as the 0..1 turn fraction GPUI expects.

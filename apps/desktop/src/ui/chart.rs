@@ -16,12 +16,12 @@
 //! `u16` pixels: there is no floating-point scaling step to disagree with
 //! itself between two frames, and a column can never round to zero and vanish.
 //! A chart is drawn in one hue placed on the chromatic plane, so it reads at
-//! the same strength on the Ink ground and on Vellum.
+//! the same strength on the Abyss ground and on Glacier.
 
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::theme::ramp::Hue;
-use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{Space, TypeScale, hairline, space, type_size};
 use gpui::{Div, ParentElement, Styled, div, px};
 
 /// Smallest height a column is drawn at, so a quiet week is still visible.
@@ -54,12 +54,7 @@ pub(crate) fn histogram(
         .flex_col()
         .gap(space(Space::Tight))
         .child(columns(theme, hue, counts, height).w_full())
-        .child(
-            div()
-                .w_full()
-                .h(hairline())
-                .bg(theme.paint(Paint::Hairline)),
-        )
+        .child(div().w_full().h(hairline()).bg(theme.paint(Paint::Rule1)))
         .child(axis(theme, ends))
 }
 
@@ -89,7 +84,6 @@ fn columns(theme: &Theme, hue: Hue, counts: &[u64], height: u16) -> Div {
                 .flex_1()
                 .min_w(px(1.0))
                 .h(px(f32::from(column(*count, peak, height))))
-                .rounded(px(1.0))
                 .bg(ink)
         }))
 }
@@ -115,14 +109,12 @@ pub(crate) fn meter(theme: &Theme, hue: Hue, part: u64, whole: u64) -> Div {
         .w_full()
         .h(px(6.0))
         .flex()
-        .rounded(radius(Radius::Hair))
         .overflow_hidden()
         .bg(theme.plane_wash(hue, 0.14))
         .child(
             div()
                 .flex_grow(f32::from(percent))
                 .h_full()
-                .rounded(radius(Radius::Hair))
                 .bg(theme.on_plane(hue)),
         )
         .child(div().flex_grow(f32::from(100_u16.saturating_sub(percent))))
@@ -144,9 +136,8 @@ pub(crate) fn sample_tag(theme: &Theme) -> Div {
         .flex_none()
         .px(px(4.0))
         .py(px(1.0))
-        .rounded(radius(Radius::Hair))
-        .bg(theme.paint(Paint::Hover))
+        .bg(theme.paint(Paint::Tint))
         .text_size(type_size(TypeScale::Micro))
-        .text_color(theme.paint(Paint::TextFaint))
+        .text_color(theme.paint(Paint::Silver3))
         .child("sample")
 }

@@ -17,14 +17,14 @@
 //! flow if and only if one of the two is a `Link`, and grouping on that rule
 //! recovers the author's paragraphs with no guessing and no text matching.
 
-use crate::theme::palette::Paint;
-use crate::theme::tokens::{line_height, space, type_size, Space, TypeScale};
 use crate::theme::Theme;
+use crate::theme::palette::Paint;
+use crate::theme::tokens::{Space, TypeScale, line_height, space, type_size};
 use backend_library::SymbolKey;
 use backend_present::Prose;
 use gpui::{
-    div, px, AnyElement, App, Div, ElementId, HighlightStyle, InteractiveText, IntoElement,
-    ParentElement, SharedString, Styled, StyledText, UnderlineStyle, Window,
+    AnyElement, App, Div, ElementId, HighlightStyle, InteractiveText, IntoElement, ParentElement,
+    SharedString, Styled, StyledText, UnderlineStyle, Window, div, px,
 };
 use std::ops::Range;
 use std::rc::Rc;
@@ -111,7 +111,7 @@ fn one(
             .font_family(theme.specimen())
             .text_size(type_size(TypeScale::Small))
             .line_height(line_height(TypeScale::Body))
-            .text_color(theme.paint(Paint::Text))
+            .text_color(theme.paint(Paint::Silver1))
             .child(code.clone())
             .into_any_element();
     }
@@ -161,7 +161,7 @@ fn paragraph(
         .font_family(theme.serif_face())
         .text_size(type_size(TypeScale::Body))
         .line_height(line_height(TypeScale::Body))
-        .text_color(theme.paint(Paint::Text))
+        .text_color(theme.paint(Paint::Silver1))
         .child(body)
 }
 
@@ -174,7 +174,7 @@ fn pad(text: &mut String) {
 
 fn link_style(theme: &Theme) -> HighlightStyle {
     HighlightStyle {
-        color: Some(theme.paint(Paint::TextStrong)),
+        color: Some(theme.paint(Paint::Silver0)),
         underline: Some(UnderlineStyle {
             thickness: px(1.0),
             color: Some(super::text::underline_ink(theme, false)),

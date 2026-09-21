@@ -16,14 +16,13 @@ use crate::motion::{Beat, entering_opacity, once};
 use crate::store::document::Content;
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, Space, TypeScale, radius, space};
+use crate::theme::tokens::{Space, TypeScale, space};
 use crate::ui::{fault as fault_ui, surface, text};
 use backend_present::Identity;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnimationExt as _, AnyElement, Context, Div, ElementId, InteractiveElement,
-    IntoElement, ParentElement, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    div, px,
+    AnimationExt as _, AnyElement, Context, Div, ElementId, InteractiveElement, IntoElement,
+    ParentElement, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, div, px,
 };
 
 /// Widest a declaration page grows, in pixels.
@@ -126,8 +125,7 @@ fn skeleton(theme: &Theme, width: f32, height: f32) -> Div {
         .w(px(width))
         .max_w(gpui::relative(1.0))
         .h(px(height))
-        .rounded(radius(Radius::Hair))
-        .bg(theme.paint(Paint::Hover))
+        .bg(theme.paint(Paint::Tint))
 }
 
 /// Returns the thin bar that says which identity is arriving.
@@ -139,8 +137,7 @@ fn loading_bar(theme: &Theme, identity: &Identity) -> Div {
         .gap(space(Space::Snug))
         .px(space(Space::Base))
         .py(px(4.0))
-        .rounded(radius(Radius::Hair))
-        .bg(theme.paint(Paint::Hover))
+        .bg(theme.paint(Paint::Tint))
         .child(text::faint(theme).child("reading"))
         .child(
             text::single_line(text::identity_text(theme, TypeScale::Tiny))

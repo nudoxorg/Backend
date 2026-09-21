@@ -116,15 +116,27 @@ impl Workspace {
                 .flex()
                 .items_stretch()
                 .when(controls.minimize, |row| {
-                    row.child(caption(theme, "win-min", Icon::Minimize, WindowControlArea::Min, false)
-                        .on_click(cx.listener(|_, _, window, _| window.minimize_window())))
+                    row.child(
+                        caption(
+                            theme,
+                            "win-min",
+                            Icon::Minimize,
+                            WindowControlArea::Min,
+                            false,
+                        )
+                        .on_click(cx.listener(|_, _, window, _| window.minimize_window())),
+                    )
                 })
                 .when(controls.maximize, |row| {
                     row.child(
                         caption(
                             theme,
                             "win-max",
-                            if maximized { Icon::Restore } else { Icon::Maximize },
+                            if maximized {
+                                Icon::Restore
+                            } else {
+                                Icon::Maximize
+                            },
                             WindowControlArea::Max,
                             false,
                         )
@@ -132,8 +144,14 @@ impl Workspace {
                     )
                 })
                 .child(
-                    caption(theme, "win-close", Icon::Close, WindowControlArea::Close, true)
-                        .on_click(cx.listener(|_, _, _, cx| cx.quit())),
+                    caption(
+                        theme,
+                        "win-close",
+                        Icon::Close,
+                        WindowControlArea::Close,
+                        true,
+                    )
+                    .on_click(cx.listener(|_, _, _, cx| cx.quit())),
                 )
                 .into_any_element(),
         )
@@ -148,9 +166,9 @@ fn caption(
     destructive: bool,
 ) -> gpui::Stateful<gpui::Div> {
     let hover = if destructive {
-        theme.paint(Paint::Fault)
+        theme.paint(Paint::Stopped)
     } else {
-        theme.paint(Paint::Hover)
+        theme.paint(Paint::Tint)
     };
     div()
         .id(ElementId::Name(SharedString::new_static(id)))
@@ -162,5 +180,5 @@ fn caption(
         .cursor_pointer()
         .window_control_area(area)
         .hover(move |style| style.bg(hover))
-        .child(icon::sized(theme, mark, 12.0, Paint::TextDim))
+        .child(icon::sized(theme, mark, 12.0, Paint::Silver2))
 }

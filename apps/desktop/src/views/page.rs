@@ -25,7 +25,7 @@ use crate::store::document::Target;
 use crate::theme::Theme;
 use crate::theme::kind::group_title;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{Space, TypeScale, hairline, space, type_size};
 use crate::ui::icon::{self, Logo};
 use crate::ui::tip::{Tip, Tipped as _};
 use crate::ui::{button, glyph, prose, specimen, text};
@@ -40,7 +40,7 @@ use gpui::{
     Pixels, Role, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, canvas, div,
     point, px,
 };
-use gpui_component::button::{Button, ButtonRounded};
+use gpui_component::button::Button;
 use std::sync::Arc;
 
 /// How many members are drawn before a group offers to show the rest.
@@ -368,11 +368,10 @@ impl Workspace {
             .id("key-tag")
             .px(space(Space::Snug))
             .py(px(1.0))
-            .rounded(radius(Radius::Hair))
-            .bg(theme.paint(Paint::GiltWash))
+            .bg(theme.paint(Paint::MintSoft))
             .font_family(theme.specimen())
             .text_size(type_size(TypeScale::Micro))
-            .text_color(theme.paint(Paint::Gilt))
+            .text_color(theme.paint(Paint::Mint))
             .cursor_pointer()
             .child(tag.to_string())
             .tip(
@@ -441,7 +440,7 @@ impl Workspace {
                 let separator = (at > 0).then(|| {
                     text::faint(theme)
                         .flex_none()
-                        .text_color(theme.paint(Paint::GiltDim))
+                        .text_color(theme.paint(Paint::Leaf))
                         .child("›")
                         .into_any_element()
                 });
@@ -469,15 +468,14 @@ impl Workspace {
             text::identity_text(theme, TypeScale::Small).child(text::elide(&label, 42).to_string());
         if !navigable {
             return div()
-                .child(body.text_color(theme.paint(Paint::TextDim)))
+                .child(body.text_color(theme.paint(Paint::Silver2)))
                 .into_any_element();
         }
         div()
             .id(ElementId::Name(SharedString::from(format!("crumb-{at}"))))
             .cursor_pointer()
-            .rounded(radius(Radius::Hair))
             .px(px(2.0))
-            .hover(|style| style.bg(theme.paint(Paint::GiltWash)))
+            .hover(|style| style.bg(theme.paint(Paint::MintSoft)))
             .child(body)
             .tip(crumb_tip(step))
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -584,10 +582,9 @@ impl Workspace {
             .pl(px(4.0))
             .pr(space(Space::Snug))
             .py(px(2.0))
-            .rounded(radius(Radius::Hair))
-            .bg(theme.paint(Paint::Hover))
+            .bg(theme.paint(Paint::Tint))
             .cursor_pointer()
-            .hover(|style| style.bg(theme.paint(Paint::Selected)))
+            .hover(|style| style.bg(theme.paint(Paint::PeriwinkleSoft)))
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 this.open_symbol(symbol, super::context::click_target(event), cx);
             }))
@@ -695,9 +692,8 @@ impl Workspace {
             .gap(px(1.0))
             .py(space(Space::Tight))
             .px(space(Space::Snug))
-            .rounded(radius(Radius::Small))
             .min_w(px(0.0))
-            .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .hover(|style| style.bg(theme.paint(Paint::Tint)))
             .cursor_pointer()
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 this.open_symbol(symbol, super::context::click_target(event), cx);
@@ -865,10 +861,10 @@ impl Workspace {
             GraphAvailability::Ready | GraphAvailability::Partial { .. } => None,
             GraphAvailability::Loading => Some((
                 "Loading graph rows from the live index…".to_owned(),
-                Paint::Caution,
+                Paint::Waiting,
             )),
-            GraphAvailability::Unavailable(reason) => Some((reason.clone(), Paint::Caution)),
-            GraphAvailability::Error(reason) => Some((reason.clone(), Paint::Fault)),
+            GraphAvailability::Unavailable(reason) => Some((reason.clone(), Paint::Waiting)),
+            GraphAvailability::Error(reason) => Some((reason.clone(), Paint::Stopped)),
         };
         div()
             .w_full()
@@ -884,7 +880,7 @@ impl Workspace {
                     .child(
                         text::label(theme)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.paint(Paint::TextStrong))
+                            .text_color(theme.paint(Paint::Silver0))
                             .child("Graph"),
                     )
                     .child(
@@ -905,8 +901,7 @@ impl Workspace {
                         .w_full()
                         .px(space(Space::Snug))
                         .py(space(Space::Tight))
-                        .rounded(radius(Radius::Small))
-                        .bg(theme.paint(Paint::Sunken))
+                        .bg(theme.paint(Paint::Abyss0))
                         .text_color(theme.paint(paint))
                         .child(message),
                 )
@@ -949,7 +944,7 @@ impl Workspace {
                     .child(
                         text::label(theme)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.paint(Paint::TextStrong))
+                            .text_color(theme.paint(Paint::Silver0))
                             .child("Graph · partial"),
                     )
                     .child(
@@ -1071,7 +1066,7 @@ impl Workspace {
         let Some(graph) = self.graph.graph.as_ref() else {
             return div().id("graph-canvas").into();
         };
-        let edge_color = theme.paint(Paint::Hairline);
+        let edge_color = theme.paint(Paint::Rule1);
         let edge_paths_for_canvas = Arc::clone(&edge_paths);
         let edge_canvas = canvas(
             |_bounds, _window, _cx| {},
@@ -1117,12 +1112,11 @@ impl Workspace {
                         .h(px(graph::NODE_HEIGHT * zoom.max(0.75)))
                         .px(space(Space::Snug))
                         .py(px(7.0))
-                        .rounded(radius(Radius::Small))
                         .border(hairline())
                         .border_color(if active {
-                            theme.paint(Paint::Gilt)
+                            theme.paint(Paint::Mint)
                         } else {
-                            theme.paint(Paint::Hairline)
+                            theme.paint(Paint::Rule1)
                         })
                         .role(Role::Button)
                         .aria_label(format!("Graph node {}, {}", node.label, state_label))
@@ -1130,9 +1124,9 @@ impl Workspace {
                         .tab_index(0)
                         .focus_visible(|style| style.border_color(theme.paint(Paint::Focus)))
                         .bg(if active {
-                            theme.paint(Paint::GiltWash)
+                            theme.paint(Paint::MintSoft)
                         } else {
-                            theme.paint(Paint::Panel)
+                            theme.paint(Paint::Abyss1)
                         })
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -1161,10 +1155,9 @@ impl Workspace {
             .h(px(self.graph.canvas_height()))
             .min_w(px(0.0))
             .overflow_hidden()
-            .rounded(radius(Radius::Small))
             .border(hairline())
-            .border_color(theme.paint(Paint::Hairline))
-            .bg(theme.paint(Paint::Sunken))
+            .border_color(theme.paint(Paint::Rule1))
+            .bg(theme.paint(Paint::Abyss0))
             .on_mouse_down(
                 MouseButton::Middle,
                 cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
@@ -1228,12 +1221,11 @@ impl Workspace {
                 .min_w(px(0.0))
                 .px(space(Space::Snug))
                 .py(px(3.0))
-                .rounded(radius(Radius::Hair))
                 .tab_index(0)
-                .focus_visible(|style| style.bg(theme.paint(Paint::Selected)))
+                .focus_visible(|style| style.bg(theme.paint(Paint::PeriwinkleSoft)))
                 .cursor_pointer()
-                .when(active, |row| row.bg(theme.paint(Paint::Selected)))
-                .hover(|style| style.bg(theme.paint(Paint::Hover)))
+                .when(active, |row| row.bg(theme.paint(Paint::PeriwinkleSoft)))
+                .hover(|style| style.bg(theme.paint(Paint::Tint)))
                 .role(Role::Button)
                 .aria_label(format!("Open graph node {}", node.label))
                 .aria_description(coordinate.clone())
@@ -1313,9 +1305,8 @@ impl Workspace {
             .gap(space(Space::Snug))
             .py(px(3.0))
             .px(space(Space::Snug))
-            .rounded(radius(Radius::Small))
             .cursor_pointer()
-            .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .hover(|style| style.bg(theme.paint(Paint::Tint)))
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 this.open_symbol(symbol, super::context::click_target(event), cx);
             }))
@@ -1395,16 +1386,11 @@ impl Workspace {
                         text::label(theme)
                             .flex_none()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.paint(Paint::TextStrong))
+                            .text_color(theme.paint(Paint::Silver0))
                             .child(head.title.to_owned()),
                     )
                     .child(text::faint(theme).child(head.count.to_string()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .h(hairline())
-                            .bg(theme.paint(Paint::Hairline)),
-                    )
+                    .child(div().flex_1().h(hairline()).bg(theme.paint(Paint::Rule1)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle_fold(&owned, cx);
                     })),
@@ -1554,14 +1540,13 @@ fn relation_title(label: RelationLabel) -> String {
 /// Returns the small specimen-face control that opens the source sheet.
 fn source_button(theme: &Theme) -> Button {
     button::button(theme, "page-source", "src", button::Weight::Quiet)
-        .rounded(ButtonRounded::Size(radius(Radius::Hair)))
         .font_family(theme.specimen())
         .text_size(type_size(TypeScale::Micro))
         .px(space(Space::Snug))
         .py(px(2.0))
         .border(hairline())
-        .border_color(theme.paint(Paint::Hairline))
-        .child(icon::sized(theme, icon::Icon::Code, 11.0, Paint::TextDim))
+        .border_color(theme.paint(Paint::Rule1))
+        .child(icon::sized(theme, icon::Icon::Code, 11.0, Paint::Silver2))
 }
 
 fn preview_cell(theme: &Theme) -> Div {
@@ -1573,7 +1558,7 @@ fn preview_cell(theme: &Theme) -> Div {
         .text_ellipsis()
         .font_family(theme.specimen())
         .text_size(type_size(TypeScale::Small))
-        .text_color(theme.paint(Paint::TextDim))
+        .text_color(theme.paint(Paint::Silver2))
 }
 
 fn chevron(theme: &Theme, folded: bool) -> Div {
@@ -1591,7 +1576,7 @@ fn chevron(theme: &Theme, folded: bool) -> Div {
                 icon::Icon::ChevronDown
             },
             11.0,
-            Paint::TextFaint,
+            Paint::Silver3,
         ))
 }
 

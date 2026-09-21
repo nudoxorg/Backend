@@ -3,15 +3,15 @@
 //! None of them takes a colour; they take a role and read the lit palette.
 //!
 //! Navigable text is the one place a reader needs to distinguish "this is a
-//! word" from "this is a door". It is set in the same vellum as body text, so
+//! word" from "this is a door". It is set in the same silver as body text, so
 //! a page is not a field of blue, and carries a hairline underline that goes
 //! to full strength under the pointer. The hue that says *what kind of thing*
 //! is behind the door lives in the glyph beside it, never in the word itself.
 
-use crate::theme::palette::Paint;
-use crate::theme::tokens::{line_height, type_size, TypeScale};
 use crate::theme::Theme;
-use gpui::{div, Div, FontWeight, Hsla, SharedString, Styled};
+use crate::theme::palette::Paint;
+use crate::theme::tokens::{TypeScale, line_height, type_size};
+use gpui::{Div, FontWeight, Hsla, SharedString, Styled, div};
 
 /// Returns a text block at one rung of the type ladder.
 pub(crate) fn text_at(theme: &Theme, scale: TypeScale, role: Paint) -> Div {
@@ -24,29 +24,37 @@ pub(crate) fn text_at(theme: &Theme, scale: TypeScale, role: Paint) -> Div {
 
 /// Returns a heading block, set in the strongest ink at a semibold weight.
 pub(crate) fn heading(theme: &Theme, scale: TypeScale) -> Div {
-    text_at(theme, scale, Paint::TextStrong)
+    text_at(theme, scale, Paint::Silver0)
+        .font_family(theme.display_face())
+        .font_weight(FontWeight::SEMIBOLD)
+}
+
+/// Returns a display heading in the bundled Archivo face. The hero rung is
+/// reserved for the design-system showcase and first-run identity surface.
+pub(crate) fn display(theme: &Theme, scale: TypeScale) -> Div {
+    text_at(theme, scale, Paint::Silver0)
         .font_family(theme.display_face())
         .font_weight(FontWeight::SEMIBOLD)
 }
 
 /// Returns a body text block.
 pub(crate) fn body(theme: &Theme) -> Div {
-    text_at(theme, TypeScale::Body, Paint::Text)
+    text_at(theme, TypeScale::Body, Paint::Silver1)
 }
 
 /// Returns an interface-sized text block.
 pub(crate) fn label(theme: &Theme) -> Div {
-    text_at(theme, TypeScale::Interface, Paint::Text)
+    text_at(theme, TypeScale::Interface, Paint::Silver1)
 }
 
 /// Returns a secondary text block.
 pub(crate) fn dim(theme: &Theme) -> Div {
-    text_at(theme, TypeScale::Small, Paint::TextDim)
+    text_at(theme, TypeScale::Small, Paint::Silver2)
 }
 
 /// Returns a tertiary text block, for counts and hints.
 pub(crate) fn faint(theme: &Theme) -> Div {
-    text_at(theme, TypeScale::Tiny, Paint::TextFaint)
+    text_at(theme, TypeScale::Tiny, Paint::Silver3)
 }
 
 /// Returns text the reader can follow to another declaration.
@@ -56,11 +64,11 @@ pub(crate) fn faint(theme: &Theme) -> Div {
 /// strength, which is the only state change a link ever has.
 pub(crate) fn navigable(theme: &Theme, scale: TypeScale, hovered: bool) -> Div {
     let ink = theme.paint(if hovered {
-        Paint::TextStrong
+        Paint::Silver0
     } else {
-        Paint::Text
+        Paint::Silver1
     });
-    text_at(theme, scale, Paint::Text)
+    text_at(theme, scale, Paint::Silver1)
         .text_color(ink)
         .text_decoration_1()
         .text_decoration_color(underline_ink(theme, hovered))
@@ -69,18 +77,18 @@ pub(crate) fn navigable(theme: &Theme, scale: TypeScale, hovered: bool) -> Div {
 
 /// Returns the colour a navigable underline is drawn in.
 pub(crate) fn underline_ink(theme: &Theme, hovered: bool) -> Hsla {
-    let mut ink = theme.paint(Paint::GiltDim);
+    let mut ink = theme.paint(Paint::Leaf);
     ink.alpha = if hovered { 0.95 } else { 0.42 };
     ink
 }
 
-/// Returns the one text builder allowed to use the gilt accent.
+/// Returns the one text builder allowed to use the mint identity accent.
 ///
-/// Gilt marks identity the reader can copy — a crumb, a key tag, the palette
+/// Mint marks identity the reader can copy — a crumb, a key tag, the palette
 /// nib — and nothing else. Keeping it to one builder is what keeps the accent
 /// under a few percent of the pixels on a page.
 pub(crate) fn identity_text(theme: &Theme, scale: TypeScale) -> Div {
-    text_at(theme, scale, Paint::Gilt).font_weight(FontWeight::MEDIUM)
+    text_at(theme, scale, Paint::Mint).font_weight(FontWeight::MEDIUM)
 }
 
 /// Returns a single-line block that truncates with a trailing ellipsis.
@@ -106,7 +114,7 @@ pub(crate) fn highlighted(
 ) -> gpui::StyledText {
     let ranges = match_ranges(text, needle);
     let style = gpui::HighlightStyle {
-        color: Some(theme.paint(Paint::TextStrong)),
+        color: Some(theme.paint(Paint::Silver0)),
         font_weight: Some(FontWeight::SEMIBOLD),
         ..gpui::HighlightStyle::default()
     };
@@ -182,7 +190,8 @@ mod tests {
         let text = "שלום العالم ".repeat(2_048);
         let ranges = match_ranges(&text, "العالم");
         assert_eq!(ranges.len(), 2_048);
-        assert!(ranges.iter().all(|range| text.is_char_boundary(range.start)
-            && text.is_char_boundary(range.end)));
+        assert!(ranges
+            .iter()
+            .all(|range| text.is_char_boundary(range.start) && text.is_char_boundary(range.end)));
     }
 }

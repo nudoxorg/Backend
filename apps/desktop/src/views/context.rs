@@ -23,9 +23,7 @@ use crate::store::document::{Subject, Target};
 use crate::store::index::{Entry, ProjectIndex, kind_rank};
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{
-    Chrome, PanelWidth, Radius, Space, TypeScale, hairline, radius, space, type_size,
-};
+use crate::theme::tokens::{Chrome, PanelWidth, Space, TypeScale, hairline, space, type_size};
 use crate::ui::tip::{Card, Tipped as _};
 use crate::ui::{button, glyph, surface, text};
 use backend_library::{DeclarationKind, SymbolKey};
@@ -41,15 +39,9 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 enum Row {
     /// A section head with its count.
-    Section {
-        title: &'static str,
-        count: usize,
-    },
+    Section { title: &'static str, count: usize },
     /// The project the declaration lives in.
-    Project {
-        name: String,
-        coordinate: String,
-    },
+    Project { name: String, coordinate: String },
     /// One declaration: a module, an ancestor, a child, a sibling, or the current one.
     Declaration {
         symbol: SymbolKey,
@@ -103,7 +95,7 @@ impl Workspace {
             .h_full()
             .overflow_hidden()
             .border_l(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .flex()
             .flex_col()
             .child(self.context_list(theme, rows, cx))
@@ -117,7 +109,7 @@ impl Workspace {
             .h_full()
             .overflow_hidden()
             .border_l(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .flex()
             .flex_col()
             .items_center()
@@ -135,15 +127,9 @@ impl Workspace {
 
     /// Scrolls the row for the declaration being read into view.
     fn reveal_current(&mut self, rows: &[Row]) {
-        let current = rows.iter().position(|row| {
-            matches!(
-                row,
-                Row::Declaration {
-                    current: true,
-                    ..
-                }
-            )
-        });
+        let current = rows
+            .iter()
+            .position(|row| matches!(row, Row::Declaration { current: true, .. }));
         let Some(at) = current else {
             return;
         };
@@ -154,7 +140,8 @@ impl Workspace {
         if self.revealed == symbol {
             return;
         }
-        self.outline_scroll.scroll_to_item(at, ScrollStrategy::Center);
+        self.outline_scroll
+            .scroll_to_item(at, ScrollStrategy::Center);
         self.revealed = symbol;
     }
 
@@ -189,7 +176,10 @@ impl Workspace {
     /// Returns whether the open page gives this panel anything to say.
     pub(super) fn context_available(&self, cx: &Context<Self>) -> bool {
         matches!(
-            self.document.read(cx).tab().and_then(super::super::store::document::Tab::subject),
+            self.document
+                .read(cx)
+                .tab()
+                .and_then(super::super::store::document::Tab::subject),
             Some(Subject::Declaration { .. } | Subject::Project { .. } | Subject::Outline { .. })
         )
     }
@@ -258,11 +248,31 @@ fn declaration_rows(project: &ProjectIndex, symbol: SymbolKey) -> Vec<Row> {
         coordinate: project.root().to_owned(),
     });
     for (depth, ancestor) in ancestors.iter().enumerate() {
-        rows.push(declaration_row(project, ancestor, depth.saturating_add(1), false));
+        rows.push(declaration_row(
+            project,
+            ancestor,
+            depth.saturating_add(1),
+            false,
+        ));
     }
-    rows.push(declaration_row(project, entry, ancestors.len().saturating_add(1), true));
-    push_group(project, &mut rows, "CONTAINS", &sorted(project.children_of(symbol).collect()));
-    push_group(project, &mut rows, "AROUND", &sorted(project.around(symbol)));
+    rows.push(declaration_row(
+        project,
+        entry,
+        ancestors.len().saturating_add(1),
+        true,
+    ));
+    push_group(
+        project,
+        &mut rows,
+        "CONTAINS",
+        &sorted(project.children_of(symbol).collect()),
+    );
+    push_group(
+        project,
+        &mut rows,
+        "AROUND",
+        &sorted(project.around(symbol)),
+    );
     rows
 }
 
@@ -282,7 +292,12 @@ fn project_rows(project: &ProjectIndex) -> Vec<Row> {
     rows
 }
 
-fn push_group(project: &ProjectIndex, rows: &mut Vec<Row>, title: &'static str, entries: &[&Entry]) {
+fn push_group(
+    project: &ProjectIndex,
+    rows: &mut Vec<Row>,
+    title: &'static str,
+    entries: &[&Entry],
+) {
     if entries.is_empty() {
         return;
     }
@@ -335,7 +350,9 @@ fn draw_row(theme: &Theme, entity: &gpui::Entity<Workspace>, at: usize, row: &Ro
             let entity = entity.clone();
             base_row(theme, at, 0, false)
                 .on_click(move |_, _window: &mut Window, cx| {
-                    entity.update(cx, |workspace, cx| workspace.open_project(opened.clone(), cx));
+                    entity.update(cx, |workspace, cx| {
+                        workspace.open_project(opened.clone(), cx)
+                    });
                 })
                 .card(Card::new(name.clone(), None).site(coordinate.clone()))
                 .child(glyph::package_tile(theme, false))
@@ -353,13 +370,15 @@ fn draw_row(theme: &Theme, entity: &gpui::Entity<Workspace>, at: usize, row: &Ro
         } => {
             let symbol = *symbol;
             let entity = entity.clone();
-            let card = Card::new(name.clone(), *kind)
-                .signature(signature.clone().unwrap_or_default());
+            let card =
+                Card::new(name.clone(), *kind).signature(signature.clone().unwrap_or_default());
             base_row(theme, at, *depth, *current)
                 .when(!current, |row| {
                     row.on_click(move |event: &gpui::ClickEvent, _window: &mut Window, cx| {
                         let target = crate::store::document::modifier_target(event.modifiers());
-                        entity.update(cx, |workspace, cx| workspace.open_symbol(symbol, target, cx));
+                        entity.update(cx, |workspace, cx| {
+                            workspace.open_symbol(symbol, target, cx)
+                        });
                     })
                     .card(card)
                 })
@@ -385,11 +404,10 @@ fn base_row(theme: &Theme, at: usize, depth: usize, current: bool) -> gpui::Stat
         .flex()
         .items_center()
         .gap(space(Space::Snug))
-        .rounded(radius(Radius::Small))
-        .when(current, |row| row.bg(theme.paint(Paint::Selected)))
+        .when(current, |row| row.bg(theme.paint(Paint::PeriwinkleSoft)))
         .when(!current, |row| {
             row.cursor_pointer()
-                .hover(|style| style.bg(theme.paint(Paint::Hover)))
+                .hover(|style| style.bg(theme.paint(Paint::Tint)))
         })
 }
 
@@ -397,7 +415,7 @@ fn name_text(theme: &Theme, name: &str, current: bool) -> gpui::Div {
     text::single_line(if current {
         text::label(theme)
             .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.paint(Paint::TextStrong))
+            .text_color(theme.paint(Paint::Silver0))
     } else {
         text::dim(theme).text_size(type_size(TypeScale::Interface))
     })
@@ -421,12 +439,7 @@ fn section_head(theme: &Theme, title: &str, count: Option<usize>) -> gpui::Div {
         .when_some(count, |head, count| {
             head.child(text::faint(theme).flex_none().child(count.to_string()))
         })
-        .child(
-            div()
-                .flex_1()
-                .h(hairline())
-                .bg(theme.paint(Paint::Hairline)),
-        )
+        .child(div().flex_1().h(hairline()).bg(theme.paint(Paint::Rule1)))
 }
 
 /// Returns where a click with these modifiers should open a link.

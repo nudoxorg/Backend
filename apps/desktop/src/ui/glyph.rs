@@ -1,5 +1,5 @@
 //! Glyph tiles: declaration kinds, source languages, and readiness marks.
-//! A tile is a small rounded square holding one drawn mark on the chromatic plane.
+//! A tile is a small cut square holding one drawn mark on the family plane.
 //! Its hue is the only colour a dense list carries, and it means exactly one thing.
 //!
 //! Marks rather than letters. Nineteen distinguishable letters at fourteen
@@ -20,7 +20,7 @@ use crate::presentation::project::Standing;
 use crate::theme::kind::{kind_glyph, mark_path, package_glyph, untyped_glyph};
 use crate::theme::language::hue as language_hue;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, TypeScale, radius, type_size};
+use crate::theme::tokens::{TypeScale, type_size};
 use crate::theme::{Theme, ramp::Hue};
 use crate::ui::icon::{self, Logo};
 use backend_library::DeclarationKind;
@@ -87,15 +87,27 @@ pub(crate) fn kind_label(kind: Option<DeclarationKind>) -> &'static str {
 
 fn tile(theme: &Theme, hue: Hue, large: bool) -> Div {
     let side = if large { TILE_LARGE } else { TILE };
+    let mut edge = theme.on_plane(hue);
+    edge.alpha = 0.62;
     div()
         .flex_none()
         .w(px(side))
         .h(px(side))
-        .rounded(radius(if large { Radius::Small } else { Radius::Hair }))
-        .bg(theme.plane_wash(hue, 0.16))
+        .relative()
         .flex()
         .items_center()
         .justify_center()
+        .child(
+            div()
+                .absolute()
+                .inset(px(3.0))
+                .bg(theme.plane_wash(hue, 0.12)),
+        )
+        .child(
+            icon::asset(icon::FACET_PATH, side, edge)
+                .absolute()
+                .inset_0(),
+        )
 }
 
 fn mark(theme: &Theme, path: &'static str, hue: Hue, large: bool) -> gpui::Svg {
@@ -121,10 +133,10 @@ pub(crate) const fn standing_glyph(standing: Standing) -> &'static str {
 /// Returns the paint role one standing is drawn in.
 pub(crate) const fn standing_paint(standing: Standing) -> Paint {
     match standing {
-        Standing::Readable => Paint::Ok,
-        Standing::Indexing => Paint::Caution,
-        Standing::Failed => Paint::Fault,
-        Standing::Requested | Standing::Empty => Paint::Info,
+        Standing::Readable => Paint::Action,
+        Standing::Indexing => Paint::Waiting,
+        Standing::Failed => Paint::Stopped,
+        Standing::Requested | Standing::Empty => Paint::Periwinkle,
     }
 }
 

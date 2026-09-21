@@ -8,7 +8,7 @@
 
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, type_size};
+use crate::theme::tokens::{Space, TypeScale, hairline, type_size};
 use gpui::{
     App, Context, ElementId, Entity, FontWeight, InteractiveElement, IntoElement, SharedString,
     Styled, Window, px,
@@ -84,13 +84,13 @@ pub(crate) fn button_with_state_and_accessible(
     let button = Button::new(id_element)
         .label(label.clone())
         .accessibility_label(accessible_label.clone())
-        .rounded(ButtonRounded::Size(radius(Radius::Small)))
         .compact()
         .tab_index(0)
         .focus_ring(true)
         .text_size(type_size(TypeScale::Small))
         .font_weight(FontWeight::MEDIUM)
         .font_family(theme.ui_face())
+        .rounded(ButtonRounded::None)
         .px(theme.space(Space::Base))
         .py(px(4.0))
         .border(hairline())
@@ -100,7 +100,7 @@ pub(crate) fn button_with_state_and_accessible(
         .focus_visible(|style| {
             style
                 .border_color(theme.paint(Paint::Focus))
-                .bg(theme.paint(Paint::GiltWash))
+                .bg(theme.paint(Paint::MintSoft))
         })
         .disabled(disabled);
     theme.register_action(
@@ -137,21 +137,21 @@ pub(crate) fn icon_button_with_state(
     let label = label.into();
     let button = Button::new(ElementId::Name(id.clone()))
         .accessibility_label(label.clone())
-        .rounded(ButtonRounded::Size(radius(Radius::Small)))
         .compact()
         .tab_index(0)
         .focus_ring(true)
         .font_family(theme.ui_face())
+        .rounded(ButtonRounded::None)
         .w(px(24.0))
         .h(px(24.0))
         .border(hairline())
         .border_color(gpui::transparent_black())
         .bg(gpui::transparent_black())
-        .text_color(theme.paint(Paint::TextDim))
+        .text_color(theme.paint(Paint::Silver2))
         .focus_visible(|style| {
             style
                 .border_color(theme.paint(Paint::Focus))
-                .bg(theme.paint(Paint::GiltWash))
+                .bg(theme.paint(Paint::MintSoft))
         })
         .disabled(disabled);
     theme.register_action(
@@ -203,9 +203,9 @@ fn input_element(theme: &Theme, state: &Entity<InputState>, label: SharedString)
         .focus_ring(true)
         .font_family(theme.ui_face())
         .text_size(type_size(TypeScale::Interface))
-        .text_color(theme.paint(Paint::Text))
-        .bg(theme.paint(Paint::Panel))
-        .border_color(theme.paint(Paint::Hairline))
+        .text_color(theme.paint(Paint::Silver1))
+        .bg(theme.paint(Paint::Abyss1))
+        .border_color(theme.paint(Paint::Rule1))
 }
 
 /// Search is an input with explicit search semantics and the same editing
@@ -241,7 +241,7 @@ pub(crate) fn search_input_with_state(
         theme,
         crate::ui::icon::Icon::Search,
         14.0,
-        Paint::TextDim,
+        Paint::Silver2,
     ))
 }
 
@@ -250,11 +250,10 @@ pub(crate) fn tooltip(theme: &Theme, text: impl Into<SharedString>) -> Tooltip {
     Tooltip::new(text.into())
         .font_family(theme.ui_face())
         .text_size(type_size(TypeScale::Small))
-        .bg(theme.paint(Paint::Raised))
-        .text_color(theme.paint(Paint::Text))
+        .bg(theme.paint(Paint::Abyss2))
+        .text_color(theme.paint(Paint::Silver1))
         .border(hairline())
-        .border_color(theme.paint(Paint::HairlineStrong))
-        .rounded(radius(Radius::Small))
+        .border_color(theme.paint(Paint::Rule3))
         .px(theme.space(Space::Snug))
         .py(theme.space(Space::Tight))
 }
@@ -767,17 +766,17 @@ impl ActionRegistrar<'_> {
 fn paints(theme: &Theme, weight: Weight) -> (gpui::Hsla, gpui::Hsla, gpui::Hsla) {
     match weight {
         Weight::Primary => (
-            theme.paint(Paint::Gilt),
-            theme.paint(Paint::GiltWash),
-            theme.paint(Paint::GiltDim),
+            theme.paint(Paint::Mint),
+            theme.paint(Paint::MintSoft),
+            theme.paint(Paint::Leaf),
         ),
         Weight::Regular => (
-            theme.paint(Paint::Text),
-            theme.paint(Paint::Panel),
-            theme.paint(Paint::Hairline),
+            theme.paint(Paint::Silver1),
+            theme.paint(Paint::Abyss1),
+            theme.paint(Paint::Rule1),
         ),
         Weight::Quiet => (
-            theme.paint(Paint::TextDim),
+            theme.paint(Paint::Silver2),
             gpui::transparent_black(),
             gpui::transparent_black(),
         ),
@@ -786,9 +785,7 @@ fn paints(theme: &Theme, weight: Weight) -> (gpui::Hsla, gpui::Hsla, gpui::Hsla)
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ActionMetadata, ActionRole, ActionTree, SemanticBounds, Weight,
-    };
+    use super::{ActionMetadata, ActionRole, ActionTree, SemanticBounds, Weight};
 
     #[test]
     fn action_tree_rejects_duplicate_or_empty_contracts_and_keeps_disabled_actions() {
@@ -937,23 +934,25 @@ mod tests {
     fn semantic_nodes_retain_every_rendered_component_state() {
         let mut tree = ActionTree::default();
         let mut registration = tree.registrar();
-        assert!(registration.record(
-            ActionMetadata::new("package", "serde", ActionRole::TreeItem)
-                .enabled(true)
-                .visible(true)
-                .focused(true)
-                .selected(true)
-                .expanded(true)
-                .loading(true)
-                .error("index unavailable")
-                .with_value("serde 1.0.0")
-                .with_bounds(SemanticBounds::Logical {
-                    x: 8,
-                    y: 16,
-                    width: 320,
-                    height: 36,
-                }),
-        ));
+        assert!(
+            registration.record(
+                ActionMetadata::new("package", "serde", ActionRole::TreeItem)
+                    .enabled(true)
+                    .visible(true)
+                    .focused(true)
+                    .selected(true)
+                    .expanded(true)
+                    .loading(true)
+                    .error("index unavailable")
+                    .with_value("serde 1.0.0")
+                    .with_bounds(SemanticBounds::Logical {
+                        x: 8,
+                        y: 16,
+                        width: 320,
+                        height: 36,
+                    }),
+            )
+        );
         let node = tree.iter().next().expect("semantic node");
         assert!(node.is_enabled());
         assert!(node.is_visible());
@@ -965,7 +964,10 @@ mod tests {
             node.error_value().map(|value| value.as_ref()),
             Some("index unavailable")
         );
-        assert_eq!(node.value().map(|value| value.as_ref()), Some("serde 1.0.0"));
+        assert_eq!(
+            node.value().map(|value| value.as_ref()),
+            Some("serde 1.0.0")
+        );
         assert_eq!(
             node.bounds(),
             SemanticBounds::Logical {

@@ -20,11 +20,13 @@
 //! reader had just asked to navigate — the "settings vanish when I pick a
 //! page" defect.
 
+use super::ViewportClass;
 use super::chrome::{HeaderMenu, Platform};
 use super::keys;
 use super::workspace::Workspace;
 use crate::host::lease::HostMode;
-use crate::store::document::HoverCard;
+use crate::store::document::{HoverCard, ReaderIntent, Subject};
+use crate::store::dossier::{LinkKind, Provenance};
 use crate::store::prefs::EditorScheme;
 use crate::store::shell::SettingsPage;
 use crate::theme::Theme;
@@ -64,7 +66,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let menu = self.header_menu?;
-        let compact = f32::from(window.viewport_size().width) < 900.0;
+        let compact =
+            ViewportClass::for_width(f32::from(window.viewport_size().width)).is_compact();
         let body: Vec<AnyElement> = match menu {
             HeaderMenu::Platform => self.platform_menu(theme, cx),
             HeaderMenu::Features => self.features_menu(theme, cx),
@@ -181,39 +184,108 @@ impl Workspace {
     }
 
     fn docs_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let target = self
-            .active_identity(cx)
-            .and_then(|identity| identity.project().map(|project| project.name().to_owned()));
+        let coordinate = self.document.read(cx).tab().and_then(|tab| {
+            tab.subject().and_then(|subject| match subject {
+                Subject::Package { coordinate }
+                | Subject::Declaration { coordinate, .. }
+                | Subject::Project { coordinate }
+                | Subject::Outline { coordinate } => Some(coordinate.clone()),
+                Subject::Home => None,
+            })
+        });
+        let Some(coordinate) = coordinate else {
+            return vec![
+                text::body(theme)
+                    .child("No project or package documentation is active.")
+                    .into_any_element(),
+                text::faint(theme)
+                    .child("Open a project, package, or declaration before choosing Docs.")
+                    .into_any_element(),
+            ];
+        };
+
+        let dossier = self.registry.read(cx).dossier_for(&coordinate).cloned();
+        let (route_available, route_reason) = dossier.as_ref().map_or_else(
+            || {
+                let index = self.index.read(cx);
+                if index.project(&coordinate).is_some() || index.symbol_for(&coordinate).is_some() {
+                    (true, "local documentation projection is admitted")
+                } else {
+                    (
+                        false,
+                        "the local declaration index has no admitted docs page",
+                    )
+                }
+            },
+            |dossier| self.package_docs_status(dossier, cx),
+        );
+        let coordinate_for_route = coordinate.clone();
         let mut rows = vec![
             text::faint(theme)
-                .child(target.map_or_else(
-                    || "Documentation for the active project and package routes.".to_owned(),
-                    |name| format!("Documentation for {name}."),
-                ))
+                .child(format!("Documentation for {coordinate}."))
                 .into_any_element(),
         ];
-        for (at, (label, url)) in [
-            ("docs.rs", "https://docs.rs"),
-            ("crates.io", "https://crates.io"),
-            ("pkg.go.dev", "https://pkg.go.dev"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let url = url.to_owned();
+        let mut local_docs = components::button_with_state(
+            theme,
+            "header-docs-local",
+            if route_available {
+                "Open local docs"
+            } else {
+                "Local docs unavailable"
+            },
+            components::Weight::Quiet,
+            !route_available,
+            true,
+        );
+        if route_available {
+            local_docs = local_docs.on_click(cx.listener(move |this, _, window, cx| {
+                let _ = this.open_package_route(
+                    coordinate_for_route.clone(),
+                    ReaderIntent::Docs,
+                    window,
+                    cx,
+                );
+                this.close_header_menu(cx);
+            }));
+        } else {
+            local_docs = local_docs.tooltip(format!("Documentation unavailable: {route_reason}"));
+        }
+        rows.push(local_docs.into_any_element());
+
+        let recorded_links = dossier
+            .as_ref()
+            .filter(|dossier| dossier.precis().provenance() == Provenance::Recorded)
+            .and_then(|dossier| dossier.precis().ready())
+            .map(|precis| {
+                precis
+                    .links()
+                    .iter()
+                    .filter(|link| link.kind() == LinkKind::Documentation)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if recorded_links.is_empty() {
             rows.push(
+                text::faint(theme)
+                    .child("No recorded external documentation URL is available for this route.")
+                    .into_any_element(),
+            );
+        } else {
+            rows.extend(recorded_links.into_iter().enumerate().map(|(at, link)| {
+                let url = link.url().to_owned();
                 button::button(
                     theme,
-                    format!("header-docs-{at}"),
-                    label,
+                    format!("header-docs-recorded-{at}"),
+                    link.kind().label(),
                     button::Weight::Quiet,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.open_url(&url);
                     this.close_header_menu(cx);
                 }))
-                .into_any_element(),
-            );
+                .into_any_element()
+            }));
         }
         rows
     }
@@ -475,15 +547,15 @@ impl Workspace {
         let current = self.shell.read(cx).prefs().appearance();
         setting(theme, "Appearance", "The palette this window is lit with.").child(
             div().flex().gap(space(Space::Tight)).children(
-                [Appearance::Ink, Appearance::Vellum].map(|appearance| {
+                [Appearance::Abyss, Appearance::Glacier].map(|appearance| {
                     let selected = appearance == current;
                     button::button(
                         theme,
                         format!("appearance-{}", appearance.name()),
                         if appearance.is_dark() {
-                            "Ink"
+                            "Abyss"
                         } else {
-                            "Vellum"
+                            "Glacier"
                         },
                         if selected {
                             button::Weight::Primary
@@ -660,7 +732,7 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .gap(space(Space::Snug))
-                        .child(icon::sized(theme, Icon::Spark, 13.0, Paint::Gilt))
+                        .child(icon::sized(theme, Icon::Spark, 13.0, Paint::Mint))
                         .child(text::label(theme).font_weight(FontWeight::MEDIUM).child("Claude Code")),
                 )
                 .child(command_block(theme, "agents-claude", &claude))
@@ -743,7 +815,7 @@ impl Workspace {
             .when(!connect.binary_present, |page| {
                 page.child(
                     text::dim(theme)
-                        .text_color(theme.paint(Paint::Caution))
+                        .text_color(theme.paint(Paint::Waiting))
                         .child(format!(
                             "The MCP binary was not found beside this one at {}. Build backend-mcp and place it there, or edit the path.",
                             connect.binary
@@ -778,7 +850,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(crate::theme::tokens::space(crate::theme::tokens::Space::Snug))
-                    .child(icon::sized(theme, Icon::Spark, 14.0, Paint::Gilt))
+                    .child(icon::sized(theme, Icon::Spark, 14.0, Paint::Mint))
                     .child(text::label(theme).font_weight(FontWeight::SEMIBOLD).child("Connect Claude"))
                     .child(div().flex_1())
                     .child(text::faint(theme).child(health)),
@@ -1066,7 +1138,7 @@ fn command_block(theme: &Theme, id: &'static str, command: &str) -> gpui::Statef
         .overflow_x_scroll()
         .font_family(theme.specimen())
         .text_size(type_size(TypeScale::Small))
-        .text_color(theme.paint(Paint::Text))
+        .text_color(theme.paint(Paint::Silver1))
         .child(command.to_owned())
 }
 
@@ -1167,20 +1239,8 @@ fn reserved(theme: &Theme) -> Div {
         .flex_col()
         .justify_center()
         .gap(space(Space::Snug))
-        .child(
-            div()
-                .w(px(220.0))
-                .h(px(12.0))
-                .rounded_full()
-                .bg(theme.paint(Paint::Hover)),
-        )
-        .child(
-            div()
-                .w(px(300.0))
-                .h(px(10.0))
-                .rounded_full()
-                .bg(theme.paint(Paint::Hover)),
-        )
+        .child(div().w(px(220.0)).h(px(12.0)).bg(theme.paint(Paint::Tint)))
+        .child(div().w(px(300.0)).h(px(10.0)).bg(theme.paint(Paint::Tint)))
 }
 
 fn filled(theme: &Theme, card: &HoverCard) -> Div {
@@ -1205,7 +1265,7 @@ fn filled(theme: &Theme, card: &HoverCard) -> Div {
                 div()
                     .font_family(theme.specimen())
                     .text_size(type_size(TypeScale::Small))
-                    .text_color(theme.paint(Paint::TextDim))
+                    .text_color(theme.paint(Paint::Silver2))
                     .child(card.signature().to_owned()),
             )
         })

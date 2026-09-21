@@ -30,9 +30,7 @@ use crate::store::shell::Transient;
 use crate::store::shell::{Focus, Side};
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{
-    PanelWidth, Radius, Space, TypeScale, hairline, radius, space, type_size,
-};
+use crate::theme::tokens::{PanelWidth, Space, TypeScale, hairline, space, type_size};
 use crate::ui::bar::{self, Motion};
 use crate::ui::icon::{self, Icon, Logo};
 use crate::ui::tip::{Card, Tip, Tipped as _};
@@ -141,7 +139,7 @@ impl Workspace {
             .h_full()
             .overflow_hidden()
             .border_r(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .flex()
             .flex_col()
             .child(Self::library_head(theme, families.len(), cx))
@@ -205,7 +203,7 @@ impl Workspace {
             .h_full()
             .overflow_hidden()
             .border_r(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .flex()
             .flex_col()
             .items_center()
@@ -225,7 +223,7 @@ impl Workspace {
                     div()
                         .w(px(12.0))
                         .h(hairline())
-                        .bg(theme.paint(Paint::Hairline)),
+                        .bg(theme.paint(Paint::Rule1)),
                 )
                 .children(dots)
             })
@@ -241,7 +239,7 @@ impl Workspace {
             .px(space(Space::Base))
             .py(space(Space::Snug))
             .border_b(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .child(
                 text::faint(theme)
                     .font_weight(FontWeight::SEMIBOLD)
@@ -294,9 +292,8 @@ impl Workspace {
             .gap(px(2.0))
             .px(space(Space::Snug))
             .py(px(6.0))
-            .rounded(radius(Radius::Small))
-            .when(active, |row| row.bg(theme.paint(Paint::Selected)))
-            .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .when(active, |row| row.bg(theme.paint(Paint::PeriwinkleSoft)))
+            .hover(|style| style.bg(theme.paint(Paint::Tint)))
             .border(hairline())
             .border_color(gpui::transparent_black())
             .focusable()
@@ -386,11 +383,10 @@ impl Workspace {
                     .gap(px(3.0))
                     .px(px(5.0))
                     .py(px(1.0))
-                    .rounded(radius(Radius::Hair))
-                    .bg(theme.paint(if lit { Paint::GiltWash } else { Paint::Hover }))
+                    .bg(theme.paint(if lit { Paint::MintSoft } else { Paint::Tint }))
                     .font_family(theme.specimen())
                     .text_size(type_size(TypeScale::Micro))
-                    .text_color(theme.paint(if lit { Paint::Gilt } else { Paint::TextDim }))
+                    .text_color(theme.paint(if lit { Paint::Mint } else { Paint::Silver2 }))
                     .border(hairline())
                     .border_color(gpui::transparent_black())
                     .focusable()
@@ -398,7 +394,7 @@ impl Workspace {
                     .role(gpui::Role::Button)
                     .aria_label(project::badge(entry.identity()))
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.paint(Paint::Selected)))
+                    .hover(|style| style.bg(theme.paint(Paint::PeriwinkleSoft)))
                     .when(standing != Standing::Readable, |chip| {
                         chip.child(text::faint(theme).child(glyph::standing_glyph(standing)))
                     })
@@ -572,7 +568,7 @@ impl Workspace {
             .flex_none()
             .max_h(gpui::relative(0.42))
             .border_t(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .flex()
             .flex_col()
             .child(
@@ -635,12 +631,11 @@ fn rail_dot(
         ))))
         .w(px(6.0))
         .h(px(6.0))
-        .rounded_full()
         .cursor_pointer()
         .bg(if row.active {
-            theme.paint(Paint::Gilt)
+            theme.paint(Paint::Mint)
         } else {
-            theme.paint(Paint::TextFaint)
+            theme.paint(Paint::Silver3)
         })
         .border(hairline())
         .border_color(gpui::transparent_black())
@@ -681,7 +676,7 @@ fn tab_glyph(
 ) -> AnyElement {
     match &row.subject {
         Some(Subject::Home) | None => {
-            icon::sized(theme, Icon::Home, 13.0, Paint::TextDim).into_any_element()
+            icon::sized(theme, Icon::Home, 13.0, Paint::Silver2).into_any_element()
         }
         Some(Subject::Project { .. } | Subject::Outline { .. }) => {
             glyph::package_tile(theme, false).into_any_element()
@@ -720,7 +715,7 @@ impl Workspace {
         div()
             .flex_none()
             .border_t(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .child(if self.adding {
                 self.add_form(theme, cx).into_any_element()
             } else {
@@ -737,11 +732,11 @@ impl Workspace {
             .px(space(Space::Base))
             .py(space(Space::Snug))
             .cursor_pointer()
-            .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .hover(|style| style.bg(theme.paint(Paint::Tint)))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.begin_add(window, cx);
             }))
-            .child(icon::sized(theme, Icon::Plus, 13.0, Paint::TextDim))
+            .child(icon::sized(theme, Icon::Plus, 13.0, Paint::Silver2))
             .child(text::label(theme).flex_1().child("Add a project"))
             .child(button::key_hint(theme, &keys::ADD_PROJECT.label()))
     }
@@ -857,7 +852,7 @@ impl Workspace {
             .when_some(self.add_fault.clone(), |form, message| {
                 form.child(
                     text::dim(theme)
-                        .text_color(theme.paint(Paint::Caution))
+                        .text_color(theme.paint(Paint::Waiting))
                         .child(message),
                 )
             })
@@ -879,7 +874,7 @@ impl Workspace {
                 let ink = if lit {
                     theme.on_plane(hue)
                 } else {
-                    theme.paint(Paint::TextDim)
+                    theme.paint(Paint::Silver2)
                 };
                 div()
                     .id(ElementId::Name(SharedString::from(format!(
@@ -891,18 +886,17 @@ impl Workspace {
                     .gap(px(4.0))
                     .px(px(6.0))
                     .py(px(2.0))
-                    .rounded(radius(Radius::Capsule))
                     .border(hairline())
                     .border_color(if lit {
                         theme.on_plane(hue)
                     } else {
-                        theme.paint(Paint::Hairline)
+                        theme.paint(Paint::Rule1)
                     })
                     .when(lit, |chip| chip.bg(theme.plane_wash(hue, 0.14)))
                     .text_size(type_size(TypeScale::Tiny))
                     .text_color(ink)
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.paint(Paint::Hover)))
+                    .hover(|style| style.bg(theme.paint(Paint::Tint)))
                     .when_some(Logo::of(language), |chip, logo| {
                         chip.child(icon::logo(logo, 11.0, ink))
                     })
@@ -960,10 +954,9 @@ impl Workspace {
             .w_full()
             .px(space(Space::Snug))
             .py(px(5.0))
-            .rounded(radius(Radius::Small))
-            .bg(theme.paint(Paint::Ground))
+            .bg(theme.paint(Paint::Abyss0))
             .border(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .child(
                 components::input(
                     theme,
@@ -974,7 +967,7 @@ impl Workspace {
                 .appearance(false)
                 .bordered(false)
                 .text_size(type_size(TypeScale::Small))
-                .text_color(theme.paint(Paint::TextStrong)),
+                .text_color(theme.paint(Paint::Silver0)),
             )
     }
 
@@ -1031,9 +1024,8 @@ impl Workspace {
             .gap(space(Space::Snug))
             .px(space(Space::Snug))
             .py(px(2.0))
-            .rounded(radius(Radius::Hair))
             .cursor_pointer()
-            .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .hover(|style| style.bg(theme.paint(Paint::Tint)))
             .tip(Tip::new("Use this version").value(coordinate))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.fill_coordinate(&filled, cx);
@@ -1249,11 +1241,7 @@ fn rail_mark(theme: &Theme, entry: &ShelfEntry) -> Div {
             crate::theme::language::hue(backend_present::Language::Unknown),
             |count| crate::theme::language::hue(count.language()),
         );
-        return div()
-            .w(px(8.0))
-            .h(px(8.0))
-            .rounded_full()
-            .bg(theme.on_plane(hue));
+        return div().w(px(8.0)).h(px(8.0)).bg(theme.on_plane(hue));
     }
     glyph::standing_mark(theme, standing)
 }

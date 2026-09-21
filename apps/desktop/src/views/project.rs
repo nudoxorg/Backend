@@ -19,7 +19,7 @@ use crate::store::index::{Entry, ProjectIndex, kind_rank};
 use crate::theme::Theme;
 use crate::theme::kind::group_title;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{Space, TypeScale, hairline, space, type_size};
 use crate::ui::bar::{self, Motion};
 use crate::ui::icon::{self, Icon};
 use crate::ui::tip::{Tip, Tipped as _};
@@ -75,7 +75,12 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn project_header(&self, theme: &Theme, entry: &ShelfEntry, cx: &mut Context<Self>) -> impl IntoElement {
+    fn project_header(
+        &self,
+        theme: &Theme,
+        entry: &ShelfEntry,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let coordinate = entry.identity().coordinate().as_str().to_owned();
         let local = project::is_local(entry.identity());
         let standing = project::standing(entry);
@@ -116,37 +121,36 @@ impl Workspace {
         let coordinate = entry.identity().coordinate().as_str().to_owned();
         let copy = coordinate.clone();
         div()
+            .flex()
+            .items_center()
+            .gap(space(Space::Snug))
+            .child(
+                div()
+                    .id("project-coordinate")
+                    .flex_1()
+                    .min_w(px(0.0))
                     .flex()
                     .items_center()
-                    .gap(space(Space::Snug))
+                    .gap(space(Space::Tight))
+                    .cursor_pointer()
+                    .px(px(2.0))
+                    .hover(|style| style.bg(theme.paint(Paint::MintSoft)))
                     .child(
-                        div()
-                            .id("project-coordinate")
+                        text::single_line(text::identity_text(theme, TypeScale::Small))
                             .flex_1()
                             .min_w(px(0.0))
-                            .flex()
-                            .items_center()
-                            .gap(space(Space::Tight))
-                            .cursor_pointer()
-                            .rounded(radius(Radius::Hair))
-                            .px(px(2.0))
-                            .hover(|style| style.bg(theme.paint(Paint::GiltWash)))
-                            .child(
-                                text::single_line(text::identity_text(theme, TypeScale::Small))
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .child(coordinate.clone()),
-                            )
-                            .child(icon::sized(theme, Icon::Copy, 11.0, Paint::GiltDim))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.copy("Coordinate copied", copy.clone(), cx);
-                            })),
+                            .child(coordinate.clone()),
                     )
-                    .child(text::faint(theme).flex_none().child(format!(
-                        "{} declarations · {} languages",
-                        entry.declarations().get(),
-                        entry.languages().len()
-                    )))
+                    .child(icon::sized(theme, Icon::Copy, 11.0, Paint::Leaf))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.copy("Coordinate copied", copy.clone(), cx);
+                    })),
+            )
+            .child(text::faint(theme).flex_none().child(format!(
+                "{} declarations · {} languages",
+                entry.declarations().get(),
+                entry.languages().len()
+            )))
     }
 
     fn project_actions(
@@ -165,25 +169,46 @@ impl Workspace {
             .flex_none()
             .gap(space(Space::Tight))
             .child(
-                button::button(theme, "project-pin", if pinned { "Unpin" } else { "Pin" }, button::Weight::Quiet)
-                    .tip(Tip::new(if pinned { "Unpin from home" } else { "Pin to home" })
-                        .detail("Pinned projects sit at the top of the browse page."))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_pin(&pin, cx);
-                    })),
+                button::button(
+                    theme,
+                    "project-pin",
+                    if pinned { "Unpin" } else { "Pin" },
+                    button::Weight::Quiet,
+                )
+                .tip(
+                    Tip::new(if pinned {
+                        "Unpin from home"
+                    } else {
+                        "Pin to home"
+                    })
+                    .detail("Pinned projects sit at the top of the browse page."),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_pin(&pin, cx);
+                })),
             )
             .child(
-                button::button(theme, "project-reindex", "Re-index", button::Weight::Regular)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.index_project(reindex.clone(), cx);
-                    })),
+                button::button(
+                    theme,
+                    "project-reindex",
+                    "Re-index",
+                    button::Weight::Regular,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.index_project(reindex.clone(), cx);
+                })),
             )
             .when(local, |row| {
                 row.child(
-                    button::button(theme, "project-folder", "Open folder", button::Weight::Quiet)
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.reveal_path(std::path::Path::new(&folder));
-                        })),
+                    button::button(
+                        theme,
+                        "project-folder",
+                        "Open folder",
+                        button::Weight::Quiet,
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.reveal_path(std::path::Path::new(&folder));
+                    })),
                 )
             })
             .child(
@@ -251,7 +276,15 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(px(2.0))
-            .child(Self::kind_head(theme, &key, kind, &title, rows.len(), folded, cx))
+            .child(Self::kind_head(
+                theme,
+                &key,
+                kind,
+                &title,
+                rows.len(),
+                folded,
+                cx,
+            ))
             .when(!folded, |group| {
                 group
                     .children(
@@ -297,9 +330,13 @@ impl Workspace {
             .cursor_pointer()
             .child(icon::sized(
                 theme,
-                if folded { Icon::ChevronRight } else { Icon::ChevronDown },
+                if folded {
+                    Icon::ChevronRight
+                } else {
+                    Icon::ChevronDown
+                },
                 11.0,
-                Paint::TextFaint,
+                Paint::Silver3,
             ))
             .child(glyph::kind_tile(theme, kind, false))
             .child(
@@ -332,9 +369,8 @@ impl Workspace {
             .ml(space(Space::Loose))
             .px(space(Space::Snug))
             .py(px(3.0))
-            .rounded(radius(Radius::Small))
             .cursor_pointer()
-            .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .hover(|style| style.bg(theme.paint(Paint::Tint)))
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 this.open_symbol(symbol, super::context::click_target(event), cx);
             }))
@@ -357,12 +393,16 @@ impl Workspace {
                         .text_ellipsis()
                         .font_family(theme.specimen())
                         .text_size(type_size(TypeScale::Small))
-                        .text_color(theme.paint(Paint::TextDim))
+                        .text_color(theme.paint(Paint::Silver2))
                         .child(preview),
                 )
             })
             .when(row.children > 0, |line| {
-                line.child(text::faint(theme).flex_none().child(format!("{} inside", row.children)))
+                line.child(
+                    text::faint(theme)
+                        .flex_none()
+                        .child(format!("{} inside", row.children)),
+                )
             })
             .into_any_element()
     }
@@ -447,7 +487,9 @@ impl Workspace {
         } else {
             files.len().min(FILE_BUDGET)
         };
-        let project = backend_present::Identity::parse(coordinate).name().to_owned();
+        let project = backend_present::Identity::parse(coordinate)
+            .name()
+            .to_owned();
         let hidden = files.len().saturating_sub(shown);
         div()
             .w_full()
@@ -457,25 +499,31 @@ impl Workspace {
             .child(Self::files_head(theme, open, files.len(), cx))
             .when(open, |section| {
                 section
-                    .children(
-                        files
-                            .into_iter()
-                            .take(shown)
-                            .enumerate()
-                            .map(|(at, (path, count))| Self::file_row(theme, &project, at, &path, count, cx)),
-                    )
+                    .children(files.into_iter().take(shown).enumerate().map(
+                        |(at, (path, count))| Self::file_row(theme, &project, at, &path, count, cx),
+                    ))
                     .when(hidden > 0, |section| {
                         section.child(
-                            button::button(theme, "more-files", &format!("Show {hidden} more"), button::Weight::Quiet)
-                                .ml(space(Space::Loose))
-                                .on_click(cx.listener(|this, _, _, cx| this.unfurl("files-all", cx))),
+                            button::button(
+                                theme,
+                                "more-files",
+                                &format!("Show {hidden} more"),
+                                button::Weight::Quiet,
+                            )
+                            .ml(space(Space::Loose))
+                            .on_click(cx.listener(|this, _, _, cx| this.unfurl("files-all", cx))),
                         )
                     })
             })
             .into_any_element()
     }
 
-    fn files_head(theme: &Theme, open: bool, count: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    fn files_head(
+        theme: &Theme,
+        open: bool,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         div()
             .id("fold-files")
             .w_full()
@@ -485,9 +533,13 @@ impl Workspace {
             .cursor_pointer()
             .child(icon::sized(
                 theme,
-                if open { Icon::ChevronDown } else { Icon::ChevronRight },
+                if open {
+                    Icon::ChevronDown
+                } else {
+                    Icon::ChevronRight
+                },
                 11.0,
-                Paint::TextFaint,
+                Paint::Silver3,
             ))
             .child(
                 text::faint(theme)
@@ -496,7 +548,7 @@ impl Workspace {
                     .child("FILES"),
             )
             .child(text::faint(theme).child(count.to_string()))
-            .child(div().flex_1().h(hairline()).bg(theme.paint(Paint::Hairline)))
+            .child(div().flex_1().h(hairline()).bg(theme.paint(Paint::Rule1)))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_unfurl("files", cx)))
     }
 
@@ -518,14 +570,16 @@ impl Workspace {
             .ml(space(Space::Loose))
             .px(space(Space::Snug))
             .py(px(2.0))
-            .rounded(radius(Radius::Hair))
             .cursor_pointer()
-            .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .hover(|style| style.bg(theme.paint(Paint::Tint)))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.set_field(scoped.clone(), cx);
                 this.focus_field(window, cx);
             }))
-            .child(glyph::language_tag(theme, crate::theme::language::of_path(path)))
+            .child(glyph::language_tag(
+                theme,
+                crate::theme::language::of_path(path),
+            ))
             .child(
                 text::single_line(text::dim(theme))
                     .flex_1()
@@ -537,7 +591,11 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn missing_project(theme: &Theme, coordinate: &str, cx: &mut Context<Self>) -> impl IntoElement {
+    fn missing_project(
+        theme: &Theme,
+        coordinate: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let fault = crate::presentation::fault::project_missing(coordinate);
         let actions = Self::affordances(theme, "missing-project", &fault, coordinate, cx);
         fault_ui::block(theme, &fault, actions)
@@ -651,12 +709,7 @@ fn section_head(theme: &Theme, title: &str) -> Div {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(title.to_ascii_uppercase()),
         )
-        .child(
-            div()
-                .flex_1()
-                .h(hairline())
-                .bg(theme.paint(Paint::Hairline)),
-        )
+        .child(div().flex_1().h(hairline()).bg(theme.paint(Paint::Rule1)))
 }
 
 fn standing_chip(theme: &Theme, entry: &ShelfEntry) -> Div {
@@ -671,7 +724,6 @@ fn standing_chip(theme: &Theme, entry: &ShelfEntry) -> Div {
         .gap(space(Space::Tight))
         .px(space(Space::Snug))
         .py(px(2.0))
-        .rounded(radius(Radius::Hair))
         .bg(wash)
         .text_size(type_size(TypeScale::Micro))
         .text_color(theme.paint(role))

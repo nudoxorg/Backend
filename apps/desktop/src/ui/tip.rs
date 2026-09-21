@@ -134,7 +134,7 @@ impl gpui::Render for TipView {
                     .items_center()
                     .gap(space(Space::Snug))
                     .child(
-                        text::text_at(theme, TypeScale::Small, Paint::TextStrong)
+                        text::text_at(theme, TypeScale::Small, Paint::Silver0)
                             .font_weight(FontWeight::MEDIUM)
                             .child(tip.title.clone()),
                     )
@@ -145,9 +145,9 @@ impl gpui::Render for TipView {
                     ),
             )
             .children(
-                tip.detail
-                    .clone()
-                    .map(|detail| text::text_at(theme, TypeScale::Tiny, Paint::TextDim).child(detail)),
+                tip.detail.clone().map(|detail| {
+                    text::text_at(theme, TypeScale::Tiny, Paint::Silver2).child(detail)
+                }),
             )
             .children(tip.value.clone().map(|value| mono(theme, value)))
     }
@@ -222,20 +222,22 @@ impl gpui::Render for CardView {
                     .gap(space(Space::Snug))
                     .child(glyph::kind_tile(theme, card.kind, false))
                     .child(
-                        text::text_at(theme, TypeScale::Interface, Paint::TextStrong)
+                        text::text_at(theme, TypeScale::Interface, Paint::Silver0)
                             .font_weight(FontWeight::MEDIUM)
                             .child(card.name.clone()),
                     )
                     .child(text::faint(theme).child(glyph::kind_label(card.kind))),
             )
-            .children(card.signature.clone().map(|signature| mono(theme, signature)))
             .children(
-                card.summary
+                card.signature
                     .clone()
-                    .map(|summary| text::text_at(theme, TypeScale::Tiny, Paint::TextDim).child(summary)),
+                    .map(|signature| mono(theme, signature)),
             )
+            .children(card.summary.clone().map(|summary| {
+                text::text_at(theme, TypeScale::Tiny, Paint::Silver2).child(summary)
+            }))
             .children(card.site.clone().map(|site| {
-                text::text_at(theme, TypeScale::Micro, Paint::TextFaint)
+                text::text_at(theme, TypeScale::Micro, Paint::Silver3)
                     .font_family(theme.specimen())
                     .child(site)
             }))
@@ -256,6 +258,6 @@ fn mono(theme: &Theme, value: String) -> Div {
     div()
         .font_family(theme.specimen())
         .text_size(type_size(TypeScale::Micro))
-        .text_color(theme.paint(Paint::TextDim))
+        .text_color(theme.paint(Paint::Silver2))
         .child(value)
 }

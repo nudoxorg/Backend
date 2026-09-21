@@ -30,7 +30,7 @@ use crate::store::registry::{
 use crate::theme::Theme;
 use crate::theme::language::hue as language_hue;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{Space, TypeScale, hairline, space, type_size};
 use crate::ui::icon::{Icon, Logo};
 use crate::ui::{button, chart, components, fault as fault_ui, icon, text};
 use backend_library::RegistryEcosystem;
@@ -41,8 +41,8 @@ use gpui::{
     InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement,
     Styled, Window, div, px,
 };
-use gpui_component::input::InputState;
 use gpui_component::button::{Button, ButtonRounded};
+use gpui_component::input::InputState;
 use gpui_component::{FocusableExt as _, Selectable as _};
 
 /// Every ecosystem the engine's closed registry namespace admits.
@@ -133,7 +133,7 @@ impl Workspace {
             .flex_col()
             .gap(px(2.0))
             .child(text::heading(theme, TypeScale::Title).child("Explore the registry"))
-            .child(text::text_at(theme, TypeScale::Body, Paint::TextDim).child(
+            .child(text::text_at(theme, TypeScale::Body, Paint::Silver2).child(
                 "Every package the local index holds records for. Search by name, narrow \
                      to one ecosystem, then put anything on the shelf to read its source.",
             ))
@@ -148,18 +148,17 @@ impl Workspace {
             .gap(space(Space::Snug))
             .px(space(Space::Room))
             .py(space(Space::Base))
-            .rounded(radius(Radius::Medium))
-            .bg(theme.paint(Paint::Panel))
+            .bg(theme.paint(Paint::Abyss1))
             .border(hairline())
-            .border_color(theme.paint(Paint::HairlineStrong))
-            .child(icon::sized(theme, Icon::Search, 15.0, Paint::TextFaint))
+            .border_color(theme.paint(Paint::Rule3))
+            .child(icon::sized(theme, Icon::Search, 15.0, Paint::Silver3))
             .child(
                 div().flex_1().min_w(px(0.0)).child(
                     components::search_input(theme, field, "browse-search", "Search packages")
                         .appearance(false)
                         .bordered(false)
                         .text_size(type_size(TypeScale::Body))
-                        .text_color(theme.paint(Paint::TextStrong)),
+                        .text_color(theme.paint(Paint::Silver0)),
                 ),
             )
     }
@@ -337,18 +336,14 @@ fn toggle(
     Button::new(ElementId::Name(id))
         .selected(chosen)
         .compact()
+        .rounded(ButtonRounded::None)
         .tab_index(0)
         .focus_ring(true)
-        .rounded(ButtonRounded::Size(radius(Radius::Capsule)))
         .border(hairline())
-        .border_color(theme.paint(if chosen {
-            Paint::GiltDim
-        } else {
-            Paint::Hairline
-        }))
-        .when(chosen, |chip| chip.bg(theme.paint(Paint::GiltWash)))
+        .border_color(theme.paint(if chosen { Paint::Leaf } else { Paint::Rule1 }))
+        .when(chosen, |chip| chip.bg(theme.paint(Paint::MintSoft)))
         .text_size(type_size(TypeScale::Tiny))
-        .text_color(theme.paint(if chosen { Paint::Gilt } else { Paint::TextDim }))
+        .text_color(theme.paint(if chosen { Paint::Mint } else { Paint::Silver2 }))
 }
 
 /// Returns one ecosystem's logo, drawn in that ecosystem's own hue.
@@ -382,10 +377,9 @@ fn card(
         .flex_col()
         .gap(space(Space::Snug))
         .p(space(Space::Base))
-        .rounded(radius(Radius::Medium))
-        .bg(theme.paint(Paint::Panel))
+        .bg(theme.paint(Paint::Abyss1))
         .border(hairline())
-        .border_color(theme.paint(Paint::Hairline))
+        .border_color(theme.paint(Paint::Rule1))
         .child(card_face(theme, entity, at, listing))
         .child(card_foot(theme, entity, at, listing, standing))
         .into_any_element()
@@ -472,10 +466,9 @@ fn keyword_row(theme: &Theme, card: &Card) -> Div {
                 .flex_none()
                 .px(px(5.0))
                 .py(px(1.0))
-                .rounded(radius(Radius::Hair))
-                .bg(theme.paint(Paint::Hover))
+                .bg(theme.paint(Paint::Tint))
                 .text_size(type_size(TypeScale::Micro))
-                .text_color(theme.paint(Paint::TextDim))
+                .text_color(theme.paint(Paint::Silver2))
                 .child(keyword.clone())
         }))
 }
@@ -507,7 +500,7 @@ fn usage_row(theme: &Theme, ecosystem: RegistryEcosystem, card: &Card) -> Div {
                 .items_end()
                 .gap(px(1.0))
                 .child(
-                    text::text_at(theme, TypeScale::Tiny, Paint::Text)
+                    text::text_at(theme, TypeScale::Tiny, Paint::Silver1)
                         .font_weight(FontWeight::MEDIUM)
                         .child(count_label),
                 )
@@ -533,7 +526,7 @@ fn card_foot(
         .gap(space(Space::Snug))
         .pt(space(Space::Tight))
         .border_t(hairline())
-        .border_color(theme.paint(Paint::Hairline))
+        .border_color(theme.paint(Paint::Rule1))
         .child(license)
         .child(div().flex_1())
         .child(add_control(theme, entity, at, row, standing))
@@ -565,9 +558,9 @@ fn add_control(
 ) -> AnyElement {
     if !standing.is_actionable() {
         let role = if standing == Standing::OnShelf {
-            Paint::Ok
+            Paint::Action
         } else {
-            Paint::Caution
+            Paint::Waiting
         };
         return div()
             .flex_none()
@@ -613,9 +606,8 @@ fn reserved_grid(theme: &Theme) -> Div {
                 .flex_col()
                 .gap(space(Space::Snug))
                 .p(space(Space::Base))
-                .rounded(radius(Radius::Medium))
                 .border(hairline())
-                .border_color(theme.paint(Paint::Hairline))
+                .border_color(theme.paint(Paint::Rule1))
                 .child(bone(theme, 0.55, 14.0))
                 .child(bone(theme, 0.95, 10.0))
                 .child(bone(theme, 0.70, 10.0))
@@ -634,8 +626,7 @@ fn bone(theme: &Theme, part: f32, height: f32) -> Div {
     div()
         .w(gpui::relative(part))
         .h(px(height))
-        .rounded(radius(Radius::Hair))
-        .bg(theme.paint(Paint::Hover))
+        .bg(theme.paint(Paint::Tint))
 }
 
 /// Returns the empty state, which says exactly what was looked for.
@@ -656,9 +647,8 @@ fn empty_state(theme: &Theme, query: &Query) -> Div {
         .flex_col()
         .gap(space(Space::Tight))
         .p(space(Space::Room))
-        .rounded(radius(Radius::Medium))
         .border(hairline())
-        .border_color(theme.paint(Paint::Hairline))
+        .border_color(theme.paint(Paint::Rule1))
         .child(text::label(theme).child(sentence))
         .child(text::faint(theme).child(
             "Narrow or widen the ecosystem filter, or add the package by its exact \

@@ -215,8 +215,8 @@ fn capture_live_workspace_mode(
     };
     let viewport = config.viewport;
     let appearance = match state.theme {
-        ThemeState::Ink => crate::theme::palette::Appearance::Ink,
-        ThemeState::Vellum => crate::theme::palette::Appearance::Vellum,
+        ThemeState::Abyss => crate::theme::palette::Appearance::Abyss,
+        ThemeState::Glacier => crate::theme::palette::Appearance::Glacier,
     };
     let reduced_motion = state.reduced_motion;
     let locale = config.locale.clone();
@@ -406,13 +406,17 @@ fn reader_surface(page: Option<PageState>) -> crate::ReaderSurface {
 }
 
 /// Starts the ordinary attached/embedded host for every capture, except for
-/// the explicit onboarding state. That state gets a fresh, empty durable
+/// the explicit onboarding and design-showcase states. Those states get a fresh, empty durable
 /// workspace through the same owner lease and authenticated service path; it
 /// is deliberately not a fabricated root or a preview dossier. Keeping the
-/// special case keyed by the closed state id makes a complete matrix safe to
-/// run beside a developer's existing live workspace.
+/// special cases keyed by closed state ids make a complete matrix safe to run
+/// beside a developer's existing live workspace and keep the artboards
+/// independent from a stale attached database.
 fn capture_host(state: &GuiState) -> Result<DesktopHost, String> {
-    if state.id != "onboarding" && !state.id.starts_with("onboarding-") {
+    if state.id != "onboarding"
+        && !state.id.starts_with("onboarding-")
+        && !state.id.starts_with("showcase-")
+    {
         return DesktopHost::start().map_err(|error| format!("start desktop host: {error}"));
     }
     let nonce = SystemTime::now()
@@ -422,7 +426,12 @@ fn capture_host(state: &GuiState) -> Result<DesktopHost, String> {
     // Unix socket paths have a small platform limit. `/tmp` keeps this
     // deterministic fixture workspace short enough even under a Nix shell.
     let root = PathBuf::from("/tmp").join(format!(
-        "nudox-gui-onboarding-{}-{nonce}",
+        "nudox-gui-{}-{}-{nonce}",
+        if state.id.starts_with("showcase-") {
+            "showcase"
+        } else {
+            "onboarding"
+        },
         std::process::id()
     ));
     let project = root.join("starter");
@@ -440,6 +449,18 @@ fn update_expected_state(state: &mut GuiState, step: &InputStep) {
             "cmd-shift-p" | "ctrl-shift-p" => {
                 state.overlay = Some(backend_gui_harness::OverlayState::Palette)
             }
+            "cmd-alt-p" | "ctrl-alt-p" => {
+                state.overlay = Some(backend_gui_harness::OverlayState::HeaderPlatform)
+            }
+            "cmd-alt-f" | "ctrl-alt-f" => {
+                state.overlay = Some(backend_gui_harness::OverlayState::HeaderFeatures)
+            }
+            "cmd-alt-d" | "ctrl-alt-d" => {
+                state.overlay = Some(backend_gui_harness::OverlayState::HeaderDocs)
+            }
+            "cmd-alt-l" | "ctrl-alt-l" => {
+                state.overlay = Some(backend_gui_harness::OverlayState::HeaderLanguage)
+            }
             "cmd-," | "ctrl-," => {
                 state.overlay = Some(backend_gui_harness::OverlayState::SettingsAppearance)
             }
@@ -456,8 +477,8 @@ fn update_expected_state(state: &mut GuiState, step: &InputStep) {
         },
         InputStep::Theme { value } => {
             state.theme = match value.as_str() {
-                "vellum" => ThemeState::Vellum,
-                _ => ThemeState::Ink,
+                "glacier" | "vellum" => ThemeState::Glacier,
+                _ => ThemeState::Abyss,
             };
         }
         InputStep::FocusNext | InputStep::FocusPrevious => {}

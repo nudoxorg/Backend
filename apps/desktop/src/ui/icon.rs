@@ -83,8 +83,8 @@ impl Icon {
             Self::ChevronDown => "Expand",
             Self::Copy => "Copy",
             Self::Gear => "Settings",
-            Self::Sun => "Switch to Ink",
-            Self::Moon => "Switch to Vellum",
+            Self::Sun => "Switch to Abyss",
+            Self::Moon => "Switch to Glacier",
             Self::Refresh => "Reload",
             Self::External => "Open externally",
             Self::Home => "Home",
@@ -162,6 +162,12 @@ impl Logo {
 /// The asset a package or project mark is drawn from.
 pub(crate) const PACKAGE_PATH: &str = "kinds/package.svg";
 
+/// The diamond outline used by the design-system facet grammar.
+pub(crate) const FACET_PATH: &str = "icons/facet.svg";
+
+/// The low-contrast faceted ground texture used behind the shell.
+pub(crate) const FACETS_PATH: &str = "icons/facets.svg";
+
 /// Returns the asset the mark for one declaration kind is drawn from.
 ///
 /// Kinds are a closed set and so are their marks: a new kind without a mark
@@ -193,6 +199,20 @@ pub(crate) const fn kind_path(kind: Option<DeclarationKind>) -> &'static str {
 /// Returns one icon at an explicit size and paint role.
 pub(crate) fn sized(theme: &Theme, mark: Icon, side: f32, role: Paint) -> Svg {
     inked(mark, side, theme.paint(role))
+}
+
+/// Returns one arbitrary embedded SVG at an explicit size and colour.
+///
+/// Facets are a composable visual primitive rather than an icon enum entry;
+/// keeping this seam here still routes them through the same embedded asset
+/// source and deterministic screenshot path as the rest of the glyph grammar.
+pub(crate) fn asset(path: &'static str, side: f32, ink: Hsla) -> Svg {
+    svg()
+        .path(path)
+        .w(px(side))
+        .h(px(side))
+        .flex_none()
+        .text_color(ink)
 }
 
 /// Returns one icon at an explicit size in an exact ink.
@@ -313,6 +333,8 @@ fn bytes_for(path: &str) -> Option<&'static [u8]> {
         "icons/code.svg" => Some(include_bytes!("../assets/icons/code.svg")),
         "icons/spark.svg" => Some(include_bytes!("../assets/icons/spark.svg")),
         "icons/play.svg" => Some(include_bytes!("../assets/icons/play.svg")),
+        FACET_PATH => Some(include_bytes!("../assets/icons/facet.svg")),
+        FACETS_PATH => Some(include_bytes!("../assets/icons/facets.svg")),
         _ => logo_bytes(path).or_else(|| kind_bytes(path)),
     }
 }

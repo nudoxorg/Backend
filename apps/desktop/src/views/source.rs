@@ -161,7 +161,7 @@ impl Workspace {
             .px(space(Space::Room))
             .py(space(Space::Base))
             .border_b(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .child(glyph::kind_tile(theme, page.kind(), false))
             .child(
                 text::label(theme)

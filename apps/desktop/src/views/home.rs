@@ -20,7 +20,7 @@ use crate::store::marks::Recent;
 use crate::store::registry::Spelling;
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, Space, hairline, radius, space};
+use crate::theme::tokens::{Space, hairline, space};
 use crate::ui::bar;
 use crate::ui::icon::Icon;
 use crate::ui::tip::{Tip, Tipped as _};
@@ -61,7 +61,12 @@ impl Workspace {
     }
 
     /// Returns the pinned tiles, when anything is pinned.
-    fn pinned_region(&mut self, theme: &Theme, held: &Shelf, cx: &mut Context<Self>) -> Option<Div> {
+    fn pinned_region(
+        &mut self,
+        theme: &Theme,
+        held: &Shelf,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
         let pinned = self.shell.read(cx).marks().pinned().to_vec();
         if pinned.is_empty() {
             return None;
@@ -86,7 +91,12 @@ impl Workspace {
         ))
     }
 
-    fn project_tile(theme: &Theme, at: usize, entry: &ShelfEntry, cx: &mut Context<Self>) -> AnyElement {
+    fn project_tile(
+        theme: &Theme,
+        at: usize,
+        entry: &ShelfEntry,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let coordinate = entry.identity().coordinate().as_str().to_owned();
         let standing = project::standing(entry);
         let opened = coordinate.clone();
@@ -95,7 +105,11 @@ impl Workspace {
         tile_shell(theme, format!("pinned-{at}"))
             .group(group.clone())
             .on_click(cx.listener(move |this, _, _, cx| this.open_project(opened.clone(), cx)))
-            .tip(Tip::new("Open project").detail(project::summary(entry)).value(coordinate))
+            .tip(
+                Tip::new("Open project")
+                    .detail(project::summary(entry))
+                    .value(coordinate),
+            )
             .child(
                 div()
                     .flex()
@@ -111,10 +125,15 @@ impl Workspace {
                             .min_w(px(0.0))
                             .child(entry.identity().name().to_owned()),
                     )
-                    .child(unpin_button(theme, at, group, cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.toggle_pin(&unpinned, cx);
-                    }))),
+                    .child(unpin_button(
+                        theme,
+                        at,
+                        group,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.toggle_pin(&unpinned, cx);
+                        }),
+                    )),
             )
             .child(bar::language_bar(
                 theme,
@@ -128,7 +147,12 @@ impl Workspace {
     }
 
     /// Returns a tile for a pinned package that is not on the shelf.
-    fn package_tile(theme: &Theme, at: usize, coordinate: &str, cx: &mut Context<Self>) -> AnyElement {
+    fn package_tile(
+        theme: &Theme,
+        at: usize,
+        coordinate: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let spelling = Spelling::of(coordinate);
         let opened = coordinate.to_owned();
         let unpinned = coordinate.to_owned();
@@ -155,10 +179,15 @@ impl Workspace {
                             .min_w(px(0.0))
                             .child(spelling.name().to_owned()),
                     )
-                    .child(unpin_button(theme, at, group, cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.toggle_pin(&unpinned, cx);
-                    }))),
+                    .child(unpin_button(
+                        theme,
+                        at,
+                        group,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.toggle_pin(&unpinned, cx);
+                        }),
+                    )),
             )
             .child(
                 text::single_line(text::faint(theme))
@@ -191,11 +220,22 @@ impl Workspace {
         Some(head_and_body(
             theme,
             "Recently viewed",
-            div().flex().flex_col().gap(px(1.0)).children(rows).into_any_element(),
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .children(rows)
+                .into_any_element(),
         ))
     }
 
-    fn recent_row(&self, theme: &Theme, at: usize, entry: &Recent, cx: &mut Context<Self>) -> AnyElement {
+    fn recent_row(
+        &self,
+        theme: &Theme,
+        at: usize,
+        entry: &Recent,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let identity = Identity::parse(entry.coordinate());
         let (mark, title, place) = self.recent_facts(theme, entry, &identity, cx);
         let opened = entry.clone();
@@ -206,9 +246,8 @@ impl Workspace {
             .gap(space(Space::Snug))
             .px(space(Space::Snug))
             .py(px(3.0))
-            .rounded(radius(Radius::Small))
             .cursor_pointer()
-            .hover(|style| style.bg(theme.paint(Paint::Hover)))
+            .hover(|style| style.bg(theme.paint(Paint::Tint)))
             .tip(Tip::new(format!("Open {}", entry.noun())).value(entry.coordinate().to_owned()))
             .on_click(cx.listener(move |this, _, _, cx| this.open_recent(&opened, cx)))
             .child(mark)
@@ -239,11 +278,15 @@ impl Workspace {
             Recent::Project { coordinate } => (
                 glyph::package_tile(theme, false).into_any_element(),
                 identity.name().to_owned(),
-                project::badge(identity) + " · " + &crate::presentation::crumb::elide_middle(coordinate, 48),
+                project::badge(identity)
+                    + " · "
+                    + &crate::presentation::crumb::elide_middle(coordinate, 48),
             ),
             Recent::Package { coordinate } => {
                 let spelling = Spelling::of(coordinate);
-                let language = spelling.ecosystem().map_or(Language::Unknown, ecosystem_language);
+                let language = spelling
+                    .ecosystem()
+                    .map_or(Language::Unknown, ecosystem_language);
                 (
                     glyph::language_tag(theme, language).into_any_element(),
                     spelling.name().to_owned(),
@@ -375,7 +418,6 @@ fn unpin_button(
         )
 }
 
-
 /// Returns the language whose hue one ecosystem is drawn in.
 pub(super) const fn ecosystem_language(ecosystem: RegistryEcosystem) -> Language {
     match ecosystem {
@@ -401,7 +443,7 @@ pub(super) fn section_head(theme: &Theme, title: &str) -> Div {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(title.to_ascii_uppercase()),
         )
-        .child(div().flex_1().h(hairline()).bg(theme.paint(Paint::Hairline)))
+        .child(div().flex_1().h(hairline()).bg(theme.paint(Paint::Rule1)))
 }
 
 /// Returns one section: a hairline head above its body.
@@ -415,17 +457,14 @@ pub(super) fn head_and_body(theme: &Theme, title: &str, body: AnyElement) -> Div
         .child(body)
 }
 
-
 /// Returns one reserved bar of an exact size.
 pub(super) fn skeleton(theme: &Theme, width: f32, height: f32) -> Div {
     div()
         .w(px(width))
         .max_w(gpui::relative(1.0))
         .h(px(height))
-        .rounded(radius(Radius::Hair))
-        .bg(theme.paint(Paint::Hover))
+        .bg(theme.paint(Paint::Tint))
 }
-
 
 fn tile_shell(theme: &Theme, id: impl Into<SharedString>) -> gpui::Stateful<Div> {
     div()
@@ -436,10 +475,8 @@ fn tile_shell(theme: &Theme, id: impl Into<SharedString>) -> gpui::Stateful<Div>
         .flex_col()
         .gap(px(4.0))
         .p(space(Space::Snug))
-        .rounded(radius(Radius::Small))
         .border(hairline())
-        .border_color(theme.paint(Paint::Hairline))
+        .border_color(theme.paint(Paint::Rule1))
         .cursor_pointer()
-        .hover(|style| style.bg(theme.paint(Paint::Hover)))
+        .hover(|style| style.bg(theme.paint(Paint::Tint)))
 }
-

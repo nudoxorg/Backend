@@ -16,7 +16,7 @@ use crate::presentation::fault::{
 };
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{Space, TypeScale, hairline, space, type_size};
 use backend_present::{Affordance, Fault};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -27,9 +27,9 @@ use gpui::{
 /// Returns the paint role for one severity.
 pub(crate) const fn severity_paint(level: Severity) -> Paint {
     match level {
-        Severity::Note => Paint::Info,
-        Severity::Caution => Paint::Caution,
-        Severity::Fault => Paint::Fault,
+        Severity::Note => Paint::Periwinkle,
+        Severity::Caution => Paint::Waiting,
+        Severity::Fault => Paint::Stopped,
     }
 }
 
@@ -51,7 +51,6 @@ pub(crate) fn block(theme: &Theme, fault: &Fault, actions: Vec<AnyElement>) -> D
     div()
         .w_full()
         .p(space(Space::Room))
-        .rounded(radius(Radius::Medium))
         .bg(wash)
         .border(hairline())
         .border_color(edge(theme, role))
@@ -63,7 +62,7 @@ pub(crate) fn block(theme: &Theme, fault: &Fault, actions: Vec<AnyElement>) -> D
         .child(
             div()
                 .text_size(type_size(TypeScale::Small))
-                .text_color(theme.paint(Paint::TextDim))
+                .text_color(theme.paint(Paint::Silver2))
                 .child(fault.cause().sentence().to_owned()),
         )
         .when_not_empty(actions)
@@ -92,7 +91,7 @@ pub(crate) fn inline(theme: &Theme, fault: &Fault) -> Div {
                 .overflow_hidden()
                 .text_ellipsis()
                 .text_size(type_size(TypeScale::Tiny))
-                .text_color(theme.paint(Paint::TextDim))
+                .text_color(theme.paint(Paint::Silver2))
                 .child(headline(fault)),
         )
 }
@@ -105,9 +104,9 @@ pub(crate) fn affordance_button(
 ) -> Stateful<Div> {
     let enabled = is_actionable(affordance);
     let ink = if enabled {
-        theme.paint(Paint::Text)
+        theme.paint(Paint::Silver1)
     } else {
-        theme.paint(Paint::TextFaint)
+        theme.paint(Paint::Silver3)
     };
     div()
         .id(ElementId::Name(id.into()))
@@ -116,16 +115,15 @@ pub(crate) fn affordance_button(
         .items_center()
         .px(space(Space::Snug))
         .py(px(3.0))
-        .rounded(radius(Radius::Hair))
         .border(hairline())
-        .border_color(theme.paint(Paint::Hairline))
-        .bg(theme.paint(Paint::Panel))
+        .border_color(theme.paint(Paint::Rule1))
+        .bg(theme.paint(Paint::Abyss1))
         .text_size(type_size(TypeScale::Tiny))
         .text_color(ink)
         .when(enabled, |button| {
             button
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.paint(Paint::Hover)))
+                .hover(|style| style.bg(theme.paint(Paint::Tint)))
         })
         .child(affordance_label(affordance))
 }
@@ -147,7 +145,7 @@ fn head(theme: &Theme, fault: &Fault, level: Severity, role: Paint) -> Div {
                 .flex_1()
                 .text_size(type_size(TypeScale::Interface))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.paint(Paint::TextStrong))
+                .text_color(theme.paint(Paint::Silver0))
                 .child(headline(fault)),
         )
         .child(
@@ -155,7 +153,6 @@ fn head(theme: &Theme, fault: &Fault, level: Severity, role: Paint) -> Div {
                 .flex_none()
                 .px(px(4.0))
                 .py(px(1.0))
-                .rounded(radius(Radius::Hair))
                 .font_family(theme.specimen())
                 .text_size(type_size(TypeScale::Micro))
                 .text_color(theme.paint(role))
@@ -174,7 +171,7 @@ fn operand_line(theme: &Theme, fault: &Fault) -> Div {
             div()
                 .flex_none()
                 .text_size(type_size(TypeScale::Micro))
-                .text_color(theme.paint(Paint::TextFaint))
+                .text_color(theme.paint(Paint::Silver3))
                 .child(operand_role(fault.operand())),
         )
         .child(
@@ -186,7 +183,7 @@ fn operand_line(theme: &Theme, fault: &Fault) -> Div {
                 .text_ellipsis()
                 .font_family(theme.specimen())
                 .text_size(type_size(TypeScale::Tiny))
-                .text_color(theme.paint(Paint::Gilt))
+                .text_color(theme.paint(Paint::Mint))
                 .child(spelling),
         )
 }

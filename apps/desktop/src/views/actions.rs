@@ -91,7 +91,7 @@ actions!(
         Accept,
         /// Complete the selected row into the field without opening it.
         Complete,
-        /// Switch between the Ink and Vellum appearances.
+        /// Switch between the Abyss and Glacier appearances.
         ToggleAppearance,
         /// Suppress or restore motion.
         ToggleMotion,

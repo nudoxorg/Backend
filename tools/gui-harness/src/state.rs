@@ -87,6 +87,22 @@ pub enum OverlayState {
     Omnibar,
     /// The command palette/omnibar is open.
     Palette,
+    /// The host/platform disclosure is open.
+    HeaderPlatform,
+    /// The live feature capability disclosure is open.
+    HeaderFeatures,
+    /// The active package/project documentation disclosure is open.
+    HeaderDocs,
+    /// The active project/package language disclosure is open.
+    HeaderLanguage,
+    /// Canonical “One mark, one language” design-system board.
+    ShowcaseBrand,
+    /// Canonical “Colour with a job” design-system board.
+    ShowcaseColour,
+    /// Canonical “The information language” design-system board.
+    ShowcaseLanguage,
+    /// Canonical Orbit → Package → Page → Source board.
+    ShowcaseDescent,
     /// The settings sheet is open on its appearance page.
     SettingsAppearance,
     /// The settings sheet is open on its editor page.
@@ -127,9 +143,17 @@ pub enum OverlayState {
 
 impl OverlayState {
     /// All overlays in the order used by the desktop state sweep.
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 28] = [
         Self::Omnibar,
         Self::Palette,
+        Self::HeaderPlatform,
+        Self::HeaderFeatures,
+        Self::HeaderDocs,
+        Self::HeaderLanguage,
+        Self::ShowcaseBrand,
+        Self::ShowcaseColour,
+        Self::ShowcaseLanguage,
+        Self::ShowcaseDescent,
         Self::SettingsAppearance,
         Self::SettingsEditor,
         Self::SettingsAgents,
@@ -155,6 +179,14 @@ impl OverlayState {
         match self {
             Self::Omnibar => "omnibar",
             Self::Palette => "palette",
+            Self::HeaderPlatform => "header-platform",
+            Self::HeaderFeatures => "header-feature-flags",
+            Self::HeaderDocs => "header-docs",
+            Self::HeaderLanguage => "header-language",
+            Self::ShowcaseBrand => "showcase-brand",
+            Self::ShowcaseColour => "showcase-colour",
+            Self::ShowcaseLanguage => "showcase-language",
+            Self::ShowcaseDescent => "showcase-descent",
             Self::SettingsAppearance => "settings-appearance",
             Self::SettingsEditor => "settings-editor",
             Self::SettingsAgents => "settings-agents",
@@ -206,28 +238,28 @@ impl FocusState {
     }
 }
 
-/// Palette used by the design system.
+/// Facet appearance used by the design system.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemeState {
-    /// Dark ink appearance.
+    /// Dark abyss appearance.
     #[default]
-    Ink,
-    /// Light vellum appearance.
-    Vellum,
+    Abyss,
+    /// Daylight glacier appearance.
+    Glacier,
 }
 
 impl ThemeState {
     /// All supported themes.
-    pub const ALL: [Self; 2] = [Self::Ink, Self::Vellum];
+    pub const ALL: [Self; 2] = [Self::Abyss, Self::Glacier];
 
     /// Stable command-line spelling.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Ink => "ink",
-            Self::Vellum => "vellum",
+            Self::Abyss => "abyss",
+            Self::Glacier => "glacier",
         }
     }
 }
@@ -287,6 +319,10 @@ impl GuiState {
             for overlay in [
                 OverlayState::Omnibar,
                 OverlayState::Palette,
+                OverlayState::HeaderPlatform,
+                OverlayState::HeaderFeatures,
+                OverlayState::HeaderDocs,
+                OverlayState::HeaderLanguage,
                 OverlayState::SettingsAppearance,
                 OverlayState::SettingsEditor,
                 OverlayState::SettingsAgents,
@@ -300,17 +336,37 @@ impl GuiState {
             }
         }
         states.extend([
-            Self::new("shell--ink", Some(PageState::Browse), None),
+            Self::new("shell--abyss", Some(PageState::Browse), None),
             Self {
-                id: "shell--vellum".to_owned(),
-                theme: ThemeState::Vellum,
-                ..Self::new("shell--vellum", Some(PageState::Browse), None)
+                id: "shell--glacier".to_owned(),
+                theme: ThemeState::Glacier,
+                ..Self::new("shell--glacier", Some(PageState::Browse), None)
             },
             Self {
                 id: "shell--reduced-motion".to_owned(),
                 reduced_motion: true,
                 ..Self::new("shell--reduced-motion", Some(PageState::Browse), None)
             },
+            Self::new(
+                "showcase--brand",
+                Some(PageState::Browse),
+                Some(OverlayState::ShowcaseBrand),
+            ),
+            Self::new(
+                "showcase--colour",
+                Some(PageState::Browse),
+                Some(OverlayState::ShowcaseColour),
+            ),
+            Self::new(
+                "showcase--language",
+                Some(PageState::Browse),
+                Some(OverlayState::ShowcaseLanguage),
+            ),
+            Self::new(
+                "showcase--descent",
+                Some(PageState::Browse),
+                Some(OverlayState::ShowcaseDescent),
+            ),
         ]);
         states
     }
@@ -377,6 +433,14 @@ pub fn validate_catalog(states: &[GuiState]) -> Result<(), StateError> {
                 overlay,
                 OverlayState::Omnibar
                     | OverlayState::Palette
+                    | OverlayState::HeaderPlatform
+                    | OverlayState::HeaderFeatures
+                    | OverlayState::HeaderDocs
+                    | OverlayState::HeaderLanguage
+                    | OverlayState::ShowcaseBrand
+                    | OverlayState::ShowcaseColour
+                    | OverlayState::ShowcaseLanguage
+                    | OverlayState::ShowcaseDescent
                     | OverlayState::SettingsAppearance
                     | OverlayState::SettingsEditor
                     | OverlayState::SettingsAgents
@@ -418,7 +482,7 @@ mod tests {
         let states = GuiState::catalog();
         assert_eq!(
             states.len(),
-            PageState::ALL.len() + (PageState::ALL.len() * 9) + 4
+            PageState::ALL.len() + (PageState::ALL.len() * 13) + 8
         );
         validate_catalog(&states).expect("catalog should be valid");
         assert!(
@@ -432,7 +496,7 @@ mod tests {
                 .any(|state| state.id == "package--settings-index")
         );
         assert!(!states.iter().any(|state| state.id == "package--loading"));
-        assert!(states.iter().any(|state| state.id == "shell--vellum"));
+        assert!(states.iter().any(|state| state.id == "shell--glacier"));
         assert!(states.iter().any(|state| state.id == "onboarding"));
     }
 

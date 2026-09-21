@@ -297,7 +297,7 @@ impl CaptureConfig {
     #[must_use]
     pub fn deterministic(viewport: Viewport) -> Self {
         Self {
-            theme: ThemeState::Ink,
+            theme: ThemeState::Abyss,
             viewport,
             font_family: BUNDLED_FONT_FAMILIES.to_owned(),
             font_sha256: BUNDLED_FONT_SHA256.to_owned(),

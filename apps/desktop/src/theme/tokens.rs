@@ -54,14 +54,70 @@ impl StateFrame {
     /// Returns the complete token frame for one interaction state.
     pub(crate) const fn for_state(state: ControlState) -> Self {
         match state {
-            ControlState::Default => Self::new(state, Paint::Panel, Paint::Text, Paint::Hairline, 100, Motion::Standard),
-            ControlState::Hover => Self::new(state, Paint::Hover, Paint::TextStrong, Paint::Focus, 100, Motion::Standard),
-            ControlState::Pressed => Self::new(state, Paint::Selected, Paint::TextStrong, Paint::GiltDim, 100, Motion::Instant),
-            ControlState::Focus => Self::new(state, Paint::GiltWash, Paint::TextStrong, Paint::Focus, 100, Motion::Standard),
-            ControlState::Disabled => Self::new(state, Paint::Sunken, Paint::TextFaint, Paint::Hairline, 52, Motion::Instant),
-            ControlState::Selected => Self::new(state, Paint::Selected, Paint::Gilt, Paint::GiltDim, 100, Motion::Standard),
-            ControlState::Loading => Self::new(state, Paint::Panel, Paint::TextDim, Paint::Caution, 82, Motion::Emphasis),
-            ControlState::Error => Self::new(state, Paint::Panel, Paint::Fault, Paint::Fault, 100, Motion::Emphasis),
+            ControlState::Default => Self::new(
+                state,
+                Paint::Abyss1,
+                Paint::Silver1,
+                Paint::Rule1,
+                100,
+                Motion::Standard,
+            ),
+            ControlState::Hover => Self::new(
+                state,
+                Paint::Tint,
+                Paint::Silver0,
+                Paint::Focus,
+                100,
+                Motion::Standard,
+            ),
+            ControlState::Pressed => Self::new(
+                state,
+                Paint::PeriwinkleSoft,
+                Paint::Silver0,
+                Paint::Leaf,
+                100,
+                Motion::Instant,
+            ),
+            ControlState::Focus => Self::new(
+                state,
+                Paint::MintSoft,
+                Paint::Silver0,
+                Paint::Focus,
+                100,
+                Motion::Standard,
+            ),
+            ControlState::Disabled => Self::new(
+                state,
+                Paint::Abyss0,
+                Paint::Silver3,
+                Paint::Rule1,
+                52,
+                Motion::Instant,
+            ),
+            ControlState::Selected => Self::new(
+                state,
+                Paint::PeriwinkleSoft,
+                Paint::Mint,
+                Paint::Leaf,
+                100,
+                Motion::Standard,
+            ),
+            ControlState::Loading => Self::new(
+                state,
+                Paint::Abyss1,
+                Paint::Silver2,
+                Paint::Waiting,
+                82,
+                Motion::Emphasis,
+            ),
+            ControlState::Error => Self::new(
+                state,
+                Paint::Abyss1,
+                Paint::Stopped,
+                Paint::Stopped,
+                100,
+                Motion::Emphasis,
+            ),
         }
     }
 
@@ -102,11 +158,17 @@ pub(crate) enum Elevation {
 pub(crate) enum Motion {
     /// No interpolation; used by reduced-motion and pressed transitions.
     Instant,
-    /// The ordinary 160ms interface transition.
+    /// A 90ms glint or comb micro-transition.
+    Micro,
+    /// The ordinary 160ms control transition.
+    Quick,
     #[default]
+    /// The ordinary 240ms surface transition.
     Standard,
-    /// Emphasis motion for loading/error feedback.
+    /// Emphasis motion for state and wave feedback.
     Emphasis,
+    /// The 620ms route descent transition.
+    Scene,
 }
 
 impl Motion {
@@ -114,8 +176,11 @@ impl Motion {
     pub(crate) const fn duration_ms(self) -> u16 {
         match self {
             Self::Instant => 0,
-            Self::Standard => 160,
-            Self::Emphasis => 240,
+            Self::Micro => 90,
+            Self::Quick => 160,
+            Self::Standard => 240,
+            Self::Emphasis => 380,
+            Self::Scene => 620,
         }
     }
 }
@@ -223,6 +288,8 @@ pub(crate) enum TypeScale {
     Section,
     /// 22px — page titles.
     Title,
+    /// 46px — design-system facet and first-run hero titles.
+    Hero,
 }
 
 /// Returns the `rem` size of one type rung.
@@ -232,9 +299,10 @@ pub(crate) fn type_size(scale: TypeScale) -> Rems {
         TypeScale::Tiny => 0.6875,
         TypeScale::Small => 0.75,
         TypeScale::Interface => 0.8125,
-        TypeScale::Body => 0.9375,
-        TypeScale::Section => 1.125,
-        TypeScale::Title => 1.375,
+        TypeScale::Body => 0.875,
+        TypeScale::Section => 1.25,
+        TypeScale::Title => 1.875,
+        TypeScale::Hero => 2.875,
     })
 }
 
@@ -249,7 +317,8 @@ pub(crate) fn line_height(scale: TypeScale) -> Rems {
         TypeScale::Small => 1.125,
         TypeScale::Interface => 1.25,
         TypeScale::Body | TypeScale::Section => 1.5,
-        TypeScale::Title => 1.75,
+        TypeScale::Title => 2.0,
+        TypeScale::Hero => 3.125,
     })
 }
 
@@ -384,9 +453,7 @@ impl Chrome {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ControlState, Density, InterfaceSize, Motion, Space, StateFrame, space, space_at,
-    };
+    use super::{ControlState, Density, InterfaceSize, Motion, Space, StateFrame, space, space_at};
 
     #[test]
     fn compact_density_preserves_the_reference_spacing_scale() {

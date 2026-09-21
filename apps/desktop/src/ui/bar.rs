@@ -81,10 +81,9 @@ pub(crate) fn language_bar(
                 .w_full()
                 .h(px(REST))
                 .group_hover(group, |style| style.h(px(GROWN)))
-                .rounded_full()
                 .overflow_hidden()
                 .relative()
-                .bg(theme.paint(Paint::Hover))
+                .bg(theme.paint(Paint::Tint))
                 .child(
                     div()
                         .absolute()
@@ -109,7 +108,6 @@ fn segments(theme: &Theme, counts: &[LanguageCount], total: u64, motion: Motion)
             div()
                 .h_full()
                 .flex_1()
-                .rounded_full()
                 .bg(theme.plane_wash(hue, if motion == Motion::Still { 0.0 } else { alpha })),
         ];
     }
@@ -118,7 +116,6 @@ fn segments(theme: &Theme, counts: &[LanguageCount], total: u64, motion: Motion)
         .map(|count| {
             div()
                 .h_full()
-                .rounded_full()
                 .bg(theme.on_plane(language_hue(count.language())))
                 .flex_basis(px(0.0))
                 .flex_grow(ratio(count.declarations().get(), total))
@@ -129,7 +126,7 @@ fn segments(theme: &Theme, counts: &[LanguageCount], total: u64, motion: Motion)
 
 /// Returns the travelling highlight drawn over an indexing bar.
 fn sweep(theme: &Theme, id: &SharedString, motion: Motion, reduced: bool) -> AnyElement {
-    let mut wash = theme.paint(Paint::TextStrong);
+    let mut wash = theme.paint(Paint::Silver0);
     wash.alpha = 0.55;
     let breathing = motion == Motion::Waiting;
     let band = div()
@@ -137,7 +134,6 @@ fn sweep(theme: &Theme, id: &SharedString, motion: Motion, reduced: bool) -> Any
         .top_0()
         .bottom_0()
         .w(gpui::relative(0.28))
-        .rounded_full()
         .bg(wash);
     if reduced {
         return band
@@ -206,7 +202,7 @@ impl gpui::Render for MixTip {
                 tip.child(
                     div()
                         .text_size(type_size(TypeScale::Tiny))
-                        .text_color(theme.paint(Paint::TextDim))
+                        .text_color(theme.paint(Paint::Silver2))
                         .child("No declarations published yet."),
                 )
             })
@@ -216,7 +212,7 @@ impl gpui::Render for MixTip {
                     div()
                         .pt(px(2.0))
                         .text_size(type_size(TypeScale::Micro))
-                        .text_color(theme.paint(Paint::TextFaint))
+                        .text_color(theme.paint(Paint::Silver3))
                         .child(format!("{total} declarations")),
                 )
             })
@@ -246,7 +242,7 @@ fn mix_row(theme: &Theme, row: &MixRow) -> Div {
                 .w(px(88.0))
                 .text_size(type_size(TypeScale::Tiny))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.paint(Paint::TextStrong))
+                .text_color(theme.paint(Paint::Silver0))
                 .child(language_label(row.language)),
         )
         .child(
@@ -260,7 +256,7 @@ fn mix_row(theme: &Theme, row: &MixRow) -> Div {
             div()
                 .text_size(type_size(TypeScale::Tiny))
                 .font_family(theme.specimen())
-                .text_color(theme.paint(Paint::TextDim))
+                .text_color(theme.paint(Paint::Silver2))
                 .child(row.count.to_string()),
         )
 }

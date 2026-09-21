@@ -2,7 +2,7 @@
 //! A coverage chip is the smallest honest statement this product can make.
 //! It shows a lane, a standing glyph, and — when it is not complete — why.
 //!
-//! Chips are washes rather than filled pills so that a row of four reads as
+//! Chips are washes rather than filled badges so that a row of four reads as
 //! one instrument panel instead of four competing badges. Every chip carries
 //! a tooltip with the full sentence, because the glyph is a summary and a
 //! summary is only honest when the long form is one hover away.
@@ -10,7 +10,7 @@
 use crate::presentation::chips::{CapabilityChip, LaneChip, Standing};
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{Space, TypeScale, hairline, space, type_size};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyView, App, Div, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement,
@@ -24,10 +24,10 @@ const TOOLTIP_DELAY: Duration = Duration::from_millis(300);
 /// Returns the paint role for one standing.
 pub(crate) const fn standing_paint(standing: Standing) -> Paint {
     match standing {
-        Standing::Complete => Paint::Ok,
-        Standing::Partial => Paint::Caution,
-        Standing::Absent => Paint::Info,
-        Standing::Unobserved => Paint::TextFaint,
+        Standing::Complete => Paint::Action,
+        Standing::Partial => Paint::Waiting,
+        Standing::Absent => Paint::Periwinkle,
+        Standing::Unobserved => Paint::Silver3,
     }
 }
 
@@ -37,9 +37,12 @@ pub(crate) fn coverage_chip(theme: &Theme, chip: &LaneChip) -> impl IntoElement 
     let explanation = chip.explanation().to_owned();
     let title = format!("{} lane", chip.name());
     shell(theme, role)
-        .id(ElementId::Name(SharedString::from(format!("coverage-{}", chip.name()))))
+        .id(ElementId::Name(SharedString::from(format!(
+            "coverage-{}",
+            chip.name()
+        ))))
         .child(glyph(theme, chip.standing().glyph(), role))
-        .child(word(theme, chip.name(), Paint::TextDim))
+        .child(word(theme, chip.name(), Paint::Silver2))
         .when_some(
             Some(chip.detail()).filter(|detail| !detail.is_empty()),
             |chip, detail| chip.child(word(theme, detail, role)),
@@ -53,11 +56,10 @@ pub(crate) fn capability_chip(theme: &Theme, chip: &CapabilityChip) -> impl Into
     let role = standing_paint(chip.standing());
     let explanation = chip.explanation().to_owned();
     let title = format!("{} · {}", chip.name(), chip.role());
-    let ink = chip
-        .language()
-        .map_or_else(|| theme.paint(role), |language| {
-            theme.on_plane(crate::theme::language::hue(language))
-        });
+    let ink = chip.language().map_or_else(
+        || theme.paint(role),
+        |language| theme.on_plane(crate::theme::language::hue(language)),
+    );
     shell(theme, role)
         .id(ElementId::Name(SharedString::from(format!(
             "capability-{}-{}",
@@ -77,15 +79,45 @@ pub(crate) fn capability_chip(theme: &Theme, chip: &CapabilityChip) -> impl Into
 
 /// Returns a plain count chip: a number with a noun.
 pub(crate) fn count_chip(theme: &Theme, count: u64, noun: &str) -> Div {
-    shell(theme, Paint::TextDim)
+    shell(theme, Paint::Silver2)
         .child(
             div()
                 .text_size(type_size(TypeScale::Micro))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.paint(Paint::Text))
+                .text_color(theme.paint(Paint::Silver1))
                 .child(count.to_string()),
         )
-        .child(word(theme, noun, Paint::TextFaint))
+        .child(word(theme, noun, Paint::Silver3))
+}
+
+/// Returns a compact label/value fact used by dense registry headers. The
+/// value remains visible when a feed omits it, but the muted treatment makes
+/// the distinction between an admitted fact and a typed absence obvious.
+pub(crate) fn fact_chip(theme: &Theme, label: &str, value: &str, recorded: bool) -> Div {
+    let role = if recorded {
+        Paint::Silver2
+    } else {
+        Paint::Silver3
+    };
+    let mut wash = theme.paint(if recorded {
+        Paint::Abyss1
+    } else {
+        Paint::Abyss0
+    });
+    wash.alpha = if recorded { 0.72 } else { 0.46 };
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(space(Space::Tight))
+        .px(space(Space::Snug))
+        .py(px(3.0))
+        .bg(wash)
+        .border(hairline())
+        .border_color(theme.paint(if recorded { Paint::Rule1 } else { Paint::Rule3 }))
+        .text_size(type_size(TypeScale::Micro))
+        .child(word(theme, label, Paint::Silver3))
+        .child(word(theme, value, role))
 }
 
 /// Returns the removable chip that shows an active `@project` scope.
@@ -97,12 +129,11 @@ pub(crate) fn scope_chip(theme: &Theme, project: &str) -> Div {
         .gap(space(Space::Tight))
         .px(space(Space::Snug))
         .py(px(2.0))
-        .rounded(radius(Radius::Capsule))
-        .bg(theme.paint(Paint::GiltWash))
+        .bg(theme.paint(Paint::MintSoft))
         .border(hairline())
-        .border_color(theme.paint(Paint::GiltDim))
+        .border_color(theme.paint(Paint::Leaf))
         .text_size(type_size(TypeScale::Micro))
-        .text_color(theme.paint(Paint::Gilt))
+        .text_color(theme.paint(Paint::Mint))
         .child(format!("@{project}"))
 }
 
@@ -112,10 +143,9 @@ pub(crate) fn badge(theme: &Theme, text: &str) -> Div {
         .flex_none()
         .px(px(5.0))
         .py(px(1.0))
-        .rounded(radius(Radius::Hair))
-        .bg(theme.paint(Paint::Hover))
+        .bg(theme.paint(Paint::Tint))
         .text_size(type_size(TypeScale::Micro))
-        .text_color(theme.paint(Paint::TextDim))
+        .text_color(theme.paint(Paint::Silver2))
         .child(text.to_owned())
 }
 
@@ -129,7 +159,6 @@ fn shell(theme: &Theme, role: Paint) -> Div {
         .gap(space(Space::Tight))
         .px(space(Space::Snug))
         .py(px(2.0))
-        .rounded(radius(Radius::Hair))
         .bg(wash)
 }
 

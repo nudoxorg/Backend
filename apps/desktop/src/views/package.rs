@@ -33,7 +33,7 @@ use crate::store::registry::{self, Loadable, Standing};
 use crate::theme::Theme;
 use crate::theme::language::hue as language_hue;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, Space, TypeScale, hairline, radius, space, type_size};
+use crate::theme::tokens::{Space, TypeScale, hairline, space, type_size};
 use crate::ui::icon::Icon;
 use crate::ui::{button, chart, chip, components, fault as fault_ui, icon, surface, text};
 use backend_library::{
@@ -106,8 +106,8 @@ fn package_tab(
         .px(px(4.0))
         .when(selected, |tab| {
             tab.border_b(px(2.0))
-                .border_color(theme.paint(Paint::Gilt))
-                .text_color(theme.paint(Paint::Gilt))
+                .border_color(theme.paint(Paint::Mint))
+                .text_color(theme.paint(Paint::Mint))
         })
         .on_click(cx.listener(move |this, _, _, cx| {
             this.select_package_section(fold_key, cx);
@@ -274,7 +274,7 @@ impl Workspace {
             .min_w(px(0.0))
             .overflow_x_scroll()
             .border_b(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .child(
                 div()
                     .id("package-tabs")
@@ -400,6 +400,18 @@ impl Workspace {
                 RouteAuthority::Unavailable("the local declaration index has no search scope")
             }
         }
+    }
+
+    /// Returns the admitted status used by the global Docs disclosure. The
+    /// header may be rendered over any reader surface, so it must ask the
+    /// same route authority as the package tabs before presenting a handoff.
+    pub(super) fn package_docs_status(
+        &self,
+        dossier: &Dossier,
+        cx: &Context<Workspace>,
+    ) -> (bool, &'static str) {
+        let authority = self.package_route_authority(dossier, PackageRoute::Documentation, cx);
+        (authority.is_available(), authority.reason())
     }
 
     /// Selects one primary package section while keeping its body open.
@@ -564,9 +576,9 @@ impl Workspace {
             .flex_col()
             .gap(space(Space::Tight))
             .children(
-                details
-                    .into_iter()
-                    .map(|detail| text::text_at(theme, TypeScale::Body, Paint::Text).child(detail)),
+                details.into_iter().map(|detail| {
+                    text::text_at(theme, TypeScale::Body, Paint::Silver1).child(detail)
+                }),
             )
             .into_any_element()
     }
@@ -747,13 +759,10 @@ impl Workspace {
         let standing = registry::add_standing(&held, &coordinate);
         let precis = dossier.precis().ready();
         let unfurled = self.is_unfurled(&picker_key(&coordinate));
-        surface::panel(theme)
+        surface::cut(theme, Paint::Mint)
             .w_full()
             .min_w(px(0.0))
             .p(space(Space::Room))
-            .rounded(radius(Radius::Medium))
-            .border(hairline())
-            .border_color(theme.paint(Paint::HairlineStrong))
             .child(
                 div()
                     .w_full()
@@ -777,6 +786,7 @@ impl Workspace {
                         },
                     )
                     .child(Self::meta_row(theme, dossier))
+                    .child(Self::package_fact_row(theme, dossier))
                     .when_some(precis, |header, precis| {
                         header.child(Self::link_row(
                             theme,
@@ -793,6 +803,83 @@ impl Workspace {
                         cx,
                     )),
             )
+    }
+
+    /// Returns a compact registry coverage strip. This keeps the hierarchy
+    /// close to a registry package page while making every missing field a
+    /// visible, typed state rather than a guessed zero or empty list.
+    fn package_fact_row(theme: &Theme, dossier: &Dossier) -> Div {
+        let (versions, versions_recorded) =
+            section_fact(dossier.history(), |history| history.versions().to_string());
+        let (downloads, downloads_recorded) = section_fact(dossier.downloads(), |downloads| {
+            dossier::tally_label(downloads.total())
+        });
+        let (dependencies, dependencies_recorded) =
+            section_fact(dossier.dependencies(), |dependencies| {
+                dependencies.len().to_string()
+            });
+        let (dependents, dependents_recorded) =
+            section_fact(dossier.dependents(), |reverse| match reverse {
+                Reverse::Recorded(dependents) => dependents.len().to_string(),
+                Reverse::NotRecorded(_) => "not recorded".to_owned(),
+            });
+        let (owners, owners_recorded) =
+            section_fact(dossier.owners(), |owners| owners.len().to_string());
+        let security = dossier
+            .pinned()
+            .map(|release| Self::advisory_decision_label(release.advisory()))
+            .unwrap_or_else(|| "not recorded".to_owned());
+        let security_recorded = dossier.pinned().is_some();
+        let ecosystem = dossier
+            .ecosystem()
+            .map(super::library::registry_name)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "not recorded".to_owned());
+        let ecosystem_recorded = dossier.ecosystem().is_some();
+
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(space(Space::Tight))
+            .child(chip::fact_chip(
+                theme,
+                "Versions",
+                &versions,
+                versions_recorded,
+            ))
+            .child(chip::fact_chip(
+                theme,
+                "Downloads",
+                &downloads,
+                downloads_recorded,
+            ))
+            .child(chip::fact_chip(
+                theme,
+                "Dependencies",
+                &dependencies,
+                dependencies_recorded,
+            ))
+            .child(chip::fact_chip(
+                theme,
+                "Dependents",
+                &dependents,
+                dependents_recorded,
+            ))
+            .child(chip::fact_chip(theme, "Owners", &owners, owners_recorded))
+            .child(chip::fact_chip(
+                theme,
+                "Security",
+                &security,
+                security_recorded,
+            ))
+            .child(chip::fact_chip(
+                theme,
+                "Registry",
+                &ecosystem,
+                ecosystem_recorded,
+            ))
+            .child(chip::fact_chip(theme, "Features", "not recorded", false))
+            .child(chip::fact_chip(theme, "Platforms", "not recorded", false))
     }
 
     /// Small, truthful controls beside the package identity. Registry feeds
@@ -823,31 +910,49 @@ impl Workspace {
             .items_center()
             .gap(space(Space::Tight))
             .child(
-                button::button(theme, "package-platform", &platform, button::Weight::Quiet)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.shell
-                            .update(cx, |shell, cx| shell.notify(platform_notice.clone(), cx));
-                    })),
+                components::button_with_state(
+                    theme,
+                    "package-platform",
+                    &platform,
+                    components::Weight::Quiet,
+                    dossier.ecosystem().is_none(),
+                    true,
+                )
+                .tooltip(if dossier.ecosystem().is_some() {
+                    format!("Target metadata is not recorded beyond {ecosystem}")
+                } else {
+                    "Platform metadata is not recorded by this registry feed".to_owned()
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.shell
+                        .update(cx, |shell, cx| shell.notify(platform_notice.clone(), cx));
+                })),
             )
             .child(
-                button::button(
+                components::button_with_state(
                     theme,
                     "package-features",
                     "Feature flags",
-                    button::Weight::Quiet,
+                    components::Weight::Quiet,
+                    true,
+                    true,
                 )
+                .tooltip(feature_notice)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.shell
                         .update(cx, |shell, cx| shell.notify(feature_notice, cx));
                 })),
             )
             .child(
-                button::button(
+                components::button_with_state(
                     theme,
                     "package-language",
                     language_label,
-                    button::Weight::Quiet,
+                    components::Weight::Quiet,
+                    matches!(language, Language::Unknown),
+                    true,
                 )
+                .tooltip("Source language is inferred from recorded ecosystem metadata")
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.shell
                         .update(cx, |shell, cx| shell.notify(language_notice.clone(), cx));
@@ -882,10 +987,9 @@ impl Workspace {
                             .flex_none()
                             .px(px(5.0))
                             .py(px(1.0))
-                            .rounded(radius(Radius::Hair))
-                            .bg(theme.paint(Paint::Fault))
+                            .bg(theme.paint(Paint::Stopped))
                             .text_size(type_size(TypeScale::Micro))
-                            .text_color(theme.paint(Paint::Ground))
+                            .text_color(theme.paint(Paint::Abyss0))
                             .child(standing.label()),
                     )
                 },
@@ -937,7 +1041,7 @@ impl Workspace {
                 Icon::ChevronRight
             },
             11.0,
-            Paint::TextFaint,
+            Paint::Silver3,
         ))
         .on_click(cx.listener(move |this, _, _, cx| {
             this.toggle_unfurl(&key, cx);
@@ -1021,7 +1125,7 @@ impl Workspace {
                     .items_start()
                     .gap(space(Space::Snug))
                     .child(
-                        text::text_at(theme, TypeScale::Body, Paint::Text)
+                        text::text_at(theme, TypeScale::Body, Paint::Silver1)
                             .flex_1()
                             .child(precis.description().to_owned()),
                     )
@@ -1129,7 +1233,7 @@ impl Workspace {
             link.kind().label(),
             button::Weight::Regular,
         )
-        .child(icon::sized(theme, Icon::External, 11.0, Paint::TextFaint))
+        .child(icon::sized(theme, Icon::External, 11.0, Paint::Silver3))
         .on_click(cx.listener(move |this, _, _, cx| {
             if sampled {
                 this.copy("Sample link copied", url.clone(), cx);
@@ -1184,7 +1288,7 @@ impl Workspace {
             .when(standing == Standing::Adding, |row| {
                 row.child(
                     text::dim(theme)
-                        .text_color(theme.paint(Paint::Caution))
+                        .text_color(theme.paint(Paint::Waiting))
                         .child(standing.label()),
                 )
             })
@@ -1210,11 +1314,27 @@ fn metadata_fact(theme: &Theme, label: &str, value: impl Into<String>) -> Div {
         .gap(space(Space::Snug))
         .child(text::faint(theme).flex_none().child(label.to_owned()))
         .child(
-            text::text_at(theme, TypeScale::Small, Paint::Text)
+            text::text_at(theme, TypeScale::Small, Paint::Silver1)
                 .flex_1()
                 .min_w(px(0.0))
                 .child(value.into()),
         )
+}
+
+/// Summarizes a dossier section without collapsing loading, fault, and feed
+/// coverage into the same value. The closure only runs for an admitted ready
+/// value, which keeps callers from accidentally reading an unrecorded field.
+fn section_fact<T, F>(section: &Section<T>, ready: F) -> (String, bool)
+where
+    F: FnOnce(&T) -> String,
+{
+    match section.state() {
+        Loadable::Ready(value) if !section.provenance().is_not_recorded() => (ready(value), true),
+        Loadable::Ready(_) => ("not recorded".to_owned(), false),
+        Loadable::Loading => ("loading".to_owned(), false),
+        Loadable::Faulted(_) => ("unavailable".to_owned(), false),
+        Loadable::Idle => ("not loaded".to_owned(), false),
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1662,7 +1782,7 @@ fn section_head(
             Icon::ChevronDown
         },
         12.0,
-        Paint::TextFaint,
+        Paint::Silver3,
     ));
     if let Some(note) = note {
         head = head.child(text::faint(theme).flex_none().child(note));
@@ -1671,12 +1791,7 @@ fn section_head(
         head = head.child(chart::sample_tag(theme));
     }
     head = head
-        .child(
-            div()
-                .flex_1()
-                .h(hairline())
-                .bg(theme.paint(Paint::Hairline)),
-        )
+        .child(div().flex_1().h(hairline()).bg(theme.paint(Paint::Rule1)))
         .tooltip(if folded {
             format!("Expand {label}")
         } else {
@@ -1851,11 +1966,10 @@ fn owner_row(theme: &Theme, owners: &[Owner]) -> Div {
                 .gap(space(Space::Tight))
                 .px(space(Space::Snug))
                 .py(px(2.0))
-                .rounded(radius(Radius::Capsule))
                 .border(hairline())
-                .border_color(theme.paint(Paint::Hairline))
+                .border_color(theme.paint(Paint::Rule1))
                 .child(
-                    text::text_at(theme, TypeScale::Small, Paint::Text)
+                    text::text_at(theme, TypeScale::Small, Paint::Silver1)
                         .child(owner.handle().to_owned()),
                 )
                 .child(text::faint(theme).child(owner.seat().label()))
@@ -1906,7 +2020,7 @@ const fn rank_scale(rank: Rank) -> TypeScale {
 /// Returns one code well, tagged with the language its fence named.
 fn code_well(theme: &Theme, fence: dossier::Fence, body: &str) -> AnyElement {
     let ink = fence.language().map_or_else(
-        || theme.paint(Paint::TextFaint),
+        || theme.paint(Paint::Silver3),
         |language| theme.on_plane(language_hue(language)),
     );
     surface::sunken(theme)
@@ -1928,7 +2042,7 @@ fn code_well(theme: &Theme, fence: dossier::Fence, body: &str) -> AnyElement {
                 .w_full()
                 .font_family(theme.specimen())
                 .text_size(type_size(TypeScale::Small))
-                .text_color(theme.paint(Paint::Text))
+                .text_color(theme.paint(Paint::Silver1))
                 .child(body.to_owned()),
         )
         .into_any_element()

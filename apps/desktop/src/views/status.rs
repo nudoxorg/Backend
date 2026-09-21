@@ -43,7 +43,7 @@ impl Workspace {
             .gap(space(Space::Base))
             .px(space(Space::Base))
             .border_t(hairline())
-            .border_color(theme.paint(Paint::Hairline))
+            .border_color(theme.paint(Paint::Rule1))
             .children(lines.iter().take(3).map(|line| status_line(theme, line)))
             .child(div().flex_1())
             .when_some(fault, |bar, fault| {
@@ -67,8 +67,10 @@ impl Workspace {
         }
         let merged = self.jobs.read(cx).merge(self.engine.read(cx).shelf());
         for entry in merged.entries() {
-            if matches!(project::standing(entry), Standing::Indexing | Standing::Requested)
-                && !lines.iter().any(|line| matches!(line, Line::Job(_)))
+            if matches!(
+                project::standing(entry),
+                Standing::Indexing | Standing::Requested
+            ) && !lines.iter().any(|line| matches!(line, Line::Job(_)))
             {
                 lines.push(Line::Indexing(Box::new(entry.clone())));
             }
@@ -79,18 +81,18 @@ impl Workspace {
 
 fn status_line(theme: &Theme, line: &Line) -> Div {
     let (glyph, role, words) = match line {
-        Line::Hydrating => ("◐", Paint::Caution, "Reading the shelf…".to_owned()),
+        Line::Hydrating => ("◐", Paint::Waiting, "Reading the shelf…".to_owned()),
         Line::Job(job) => (
             job_glyph(job),
             match job.state() {
-                JobState::Failed(_) => Paint::Fault,
-                JobState::Submitted | JobState::Accepted => Paint::Caution,
+                JobState::Failed(_) => Paint::Stopped,
+                JobState::Submitted | JobState::Accepted => Paint::Waiting,
             },
             job.line(),
         ),
         Line::Indexing(entry) => (
             "◐",
-            Paint::Caution,
+            Paint::Waiting,
             match entry.readiness() {
                 Readiness::Indexing { rows } => format!(
                     "Indexing {} · {} declarations so far",

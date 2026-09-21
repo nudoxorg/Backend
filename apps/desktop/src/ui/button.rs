@@ -9,7 +9,7 @@
 
 use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Radius, TypeScale, radius, type_size};
+use crate::theme::tokens::{TypeScale, type_size};
 use gpui::{Div, ParentElement, SharedString, Styled, div, px};
 
 /// The single button API used by every product view.
@@ -67,7 +67,7 @@ pub(crate) fn icon_button_labeled(
         theme,
         mark,
         13.0,
-        Paint::TextDim,
+        Paint::Silver2,
     ))
 }
 
@@ -91,9 +91,9 @@ pub(crate) fn icon_button_state(
         mark,
         13.0,
         if disabled {
-            Paint::TextFaint
+            Paint::Silver3
         } else {
-            Paint::TextDim
+            Paint::Silver2
         },
     ))
 }
@@ -110,8 +110,8 @@ fn icon_accessibility_label(icon: super::icon::Icon) -> &'static str {
         super::icon::Icon::ChevronDown => "Expand",
         super::icon::Icon::Copy => "Copy",
         super::icon::Icon::Gear => "Settings",
-        super::icon::Icon::Sun => "Vellum appearance",
-        super::icon::Icon::Moon => "Ink appearance",
+        super::icon::Icon::Sun => "Glacier appearance",
+        super::icon::Icon::Moon => "Abyss appearance",
         super::icon::Icon::Refresh => "Refresh",
         super::icon::Icon::External => "Open externally",
         super::icon::Icon::Home => "Home",
@@ -133,10 +133,9 @@ pub(crate) fn key_hint(theme: &Theme, keys: &str) -> Div {
         .flex_none()
         .px(px(4.0))
         .py(px(1.0))
-        .rounded(radius(Radius::Hair))
-        .bg(theme.paint(Paint::Hover))
+        .bg(theme.paint(Paint::Tint))
         .font_family(theme.specimen())
         .text_size(type_size(TypeScale::Micro))
-        .text_color(theme.paint(Paint::TextFaint))
+        .text_color(theme.paint(Paint::Silver3))
         .child(keys.to_owned())
 }

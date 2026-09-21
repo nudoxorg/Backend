@@ -50,7 +50,7 @@ pub(crate) fn signature_block(
         .font_family(theme.specimen())
         .text_size(type_size(TypeScale::Small))
         .line_height(line_height(TypeScale::Body))
-        .text_color(theme.paint(Paint::Text))
+        .text_color(theme.paint(Paint::Silver1))
         .child(interactive(runs, id, open))
 }
 
@@ -95,7 +95,10 @@ fn signature_runs(theme: &Theme, signature: &Signature) -> Runs {
             IdentityKey::Symbol(key) => Some(key),
             IdentityKey::Package(_) | IdentityKey::Absent => None,
         });
-        highlights.push((range.clone(), style_for(theme, token.kind(), symbol.is_some())));
+        highlights.push((
+            range.clone(),
+            style_for(theme, token.kind(), symbol.is_some()),
+        ));
         if let Some(key) = symbol {
             links.push(range);
             targets.push(key);
@@ -131,13 +134,13 @@ pub(crate) fn style_for(theme: &Theme, kind: TokenKind, linked: bool) -> Highlig
 fn ink_for(theme: &Theme, kind: TokenKind) -> gpui::Hsla {
     match kind {
         TokenKind::Keyword => theme.on_plane(kind_glyph(DeclarationKind::Module).hue()),
-        TokenKind::Name => theme.paint(Paint::TextStrong),
+        TokenKind::Name => theme.paint(Paint::Silver0),
         TokenKind::Type => theme.on_plane(kind_glyph(DeclarationKind::Struct).hue()),
         TokenKind::Binding => theme.on_plane(kind_glyph(DeclarationKind::Field).hue()),
         TokenKind::Literal => theme.on_plane(kind_glyph(DeclarationKind::Constant).hue()),
         TokenKind::Lifetime => theme.on_plane(kind_glyph(DeclarationKind::Macro).hue()),
-        TokenKind::Punctuation => theme.paint(Paint::TextFaint),
-        TokenKind::Text => theme.paint(Paint::Text),
+        TokenKind::Punctuation => theme.paint(Paint::Silver3),
+        TokenKind::Text => theme.paint(Paint::Silver1),
     }
 }
 
@@ -155,7 +158,11 @@ pub(crate) fn signature_line(theme: &Theme, signature: &Signature, budget: usize
             text.push('…');
             break;
         }
-        let squeezed: String = token.text().split_whitespace().collect::<Vec<_>>().join(" ");
+        let squeezed: String = token
+            .text()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         let piece = if token.text().starts_with(char::is_whitespace) && !text.is_empty() {
             format!(" {squeezed}")
         } else {

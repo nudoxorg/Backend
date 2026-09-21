@@ -652,7 +652,11 @@ fn journey_catalog() -> Vec<JourneySpec> {
         JourneySpec {
             id: "header-menus",
             from: onboarding_start(),
-            to: GuiState::new("browse", Some(PageState::Browse), None),
+            to: GuiState::new(
+                "browse--header-platform",
+                Some(PageState::Browse),
+                Some(OverlayState::HeaderPlatform),
+            ),
             steps: vec![
                 InputStep::key("cmd-alt-p"),
                 InputStep::Wait { milliseconds: 32 },
@@ -686,7 +690,7 @@ fn journey_catalog() -> Vec<JourneySpec> {
                 },
                 InputStep::Scale { factor: 1 },
                 InputStep::Theme {
-                    value: "vellum".to_owned(),
+                    value: "glacier".to_owned(),
                 },
                 InputStep::Resize {
                     width: 1440,
@@ -694,7 +698,7 @@ fn journey_catalog() -> Vec<JourneySpec> {
                 },
                 InputStep::Scale { factor: 2 },
                 InputStep::Theme {
-                    value: "ink".to_owned(),
+                    value: "abyss".to_owned(),
                 },
             ],
             locale: "en-US",
@@ -833,11 +837,11 @@ fn journey_catalog() -> Vec<JourneySpec> {
             id: "theme-locale-scale",
             from: GuiState::new("journey-start", None, None),
             to: GuiState::new("browse", Some(PageState::Browse), None)
-                .with_theme(backend_gui_harness::ThemeState::Vellum),
+                .with_theme(backend_gui_harness::ThemeState::Glacier),
             steps: vec![
                 InputStep::key("cmd-shift-h"),
                 InputStep::Theme {
-                    value: "vellum".to_owned(),
+                    value: "glacier".to_owned(),
                 },
                 InputStep::Locale {
                     value: "ar-EG".to_owned(),
@@ -852,7 +856,7 @@ fn journey_catalog() -> Vec<JourneySpec> {
             id: "rtl-reduced-motion",
             from: GuiState::new("journey-start", None, None).with_reduced_motion(true),
             to: GuiState::new("browse", Some(PageState::Browse), None)
-                .with_theme(backend_gui_harness::ThemeState::Vellum)
+                .with_theme(backend_gui_harness::ThemeState::Glacier)
                 .with_reduced_motion(true),
             steps: vec![
                 InputStep::key("cmd-shift-h"),
@@ -860,7 +864,7 @@ fn journey_catalog() -> Vec<JourneySpec> {
                     value: "ar-EG".to_owned(),
                 },
                 InputStep::Theme {
-                    value: "vellum".to_owned(),
+                    value: "glacier".to_owned(),
                 },
                 InputStep::Wait { milliseconds: 32 },
             ],
@@ -1007,6 +1011,10 @@ fn journey_matches(
         None => "none",
         Some(OverlayState::Omnibar) => "omnibar",
         Some(OverlayState::Palette) => "palette",
+        Some(OverlayState::HeaderPlatform) => "header-platform",
+        Some(OverlayState::HeaderFeatures) => "header-feature-flags",
+        Some(OverlayState::HeaderDocs) => "header-docs",
+        Some(OverlayState::HeaderLanguage) => "header-language",
         Some(OverlayState::Notice) => "notice",
         Some(OverlayState::Fault) => "none",
         Some(OverlayState::SettingsAppearance)

@@ -101,9 +101,7 @@ impl SourceView {
         resolve: &dyn Fn(&str) -> Option<SymbolKey>,
     ) -> Self {
         let mut doors = 0_usize;
-        let current_line = lines
-            .iter()
-            .position(|line| line.number().get() == current);
+        let current_line = lines.iter().position(|line| line.number().get() == current);
         let lines: Arc<[Line]> = lines
             .iter()
             .map(|line| {
@@ -149,8 +147,8 @@ impl SourceView {
         let mut highlights = Vec::with_capacity(self.lines.len());
         let mut locations = Vec::new();
         let query_style = HighlightStyle {
-            background_color: Some(theme.paint(Paint::GiltWash)),
-            color: Some(theme.paint(Paint::TextStrong)),
+            background_color: Some(theme.paint(Paint::MintSoft)),
+            color: Some(theme.paint(Paint::Silver0)),
             ..HighlightStyle::default()
         };
         for (line, entry) in self.lines.iter().enumerate() {
@@ -222,9 +220,10 @@ pub(crate) fn block_with_search(
                             let highlight_runs = query_highlights
                                 .get(at)
                                 .map_or(line.highlights.as_ref(), Arc::as_ref);
-                            let active_range = active.as_ref().and_then(|(line_at, active_range)| {
-                                (*line_at == at).then_some(active_range)
-                            });
+                            let active_range =
+                                active.as_ref().and_then(|(line_at, active_range)| {
+                                    (*line_at == at).then_some(active_range)
+                                });
                             draw_line(
                                 &theme_for_rows,
                                 line,
@@ -247,7 +246,9 @@ pub(crate) fn block_with_search(
                 text::faint(theme)
                     .pt(space(Space::Snug))
                     .pl(px(GUTTER))
-                    .child("The producer retained only this prefix; the declaration continues past it."),
+                    .child(
+                    "The producer retained only this prefix; the declaration continues past it.",
+                ),
             )
         })
 }
@@ -327,7 +328,7 @@ fn is_comment(text: &str) -> bool {
 
 fn comment_style(theme: &Theme) -> HighlightStyle {
     HighlightStyle {
-        color: Some(theme.paint(Paint::TextFaint)),
+        color: Some(theme.paint(Paint::Silver3)),
         font_style: Some(gpui::FontStyle::Italic),
         ..HighlightStyle::default()
     }
@@ -343,8 +344,8 @@ fn draw_line(
     open: Rc<impl Fn(SymbolKey, &mut Window, &mut App) + 'static>,
 ) -> Div {
     let active_style = HighlightStyle {
-        background_color: Some(theme.paint(Paint::Gilt)),
-        color: Some(theme.paint(Paint::TextStrong)),
+        background_color: Some(theme.paint(Paint::Mint)),
+        color: Some(theme.paint(Paint::Silver0)),
         ..HighlightStyle::default()
     };
     let highlights = highlight_runs
@@ -368,7 +369,7 @@ fn draw_line(
         .items_start()
         .gap(space(Space::Base))
         .px(space(Space::Snug))
-        .when(line.current, |row| row.bg(theme.paint(Paint::GiltWash)))
+        .when(line.current, |row| row.bg(theme.paint(Paint::MintSoft)))
         .child(
             div()
                 .flex_none()
@@ -376,9 +377,9 @@ fn draw_line(
                 .text_align(TextAlign::Right)
                 .text_size(type_size(TypeScale::Micro))
                 .text_color(theme.paint(if line.current {
-                    Paint::Gilt
+                    Paint::Mint
                 } else {
-                    Paint::TextFaint
+                    Paint::Silver3
                 }))
                 .child(line.number_label.clone()),
         )
@@ -388,7 +389,7 @@ fn draw_line(
                 .min_w(px(0.0))
                 .whitespace_nowrap()
                 .overflow_hidden()
-                .text_color(theme.paint(Paint::Text))
+                .text_color(theme.paint(Paint::Silver1))
                 .child(body),
         )
 }
@@ -447,7 +448,11 @@ mod tests {
 
     #[test]
     fn source_anchor_resolves_to_the_retained_zero_based_line() {
-        let lines = [line(40, "before"), line(41, "pub fn ferris() {}"), line(42, "after")];
+        let lines = [
+            line(40, "before"),
+            line(41, "pub fn ferris() {}"),
+            line(42, "after"),
+        ];
         let view = SourceView::build(
             &Theme::default(),
             Language::Rust,

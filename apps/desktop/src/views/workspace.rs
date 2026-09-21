@@ -18,6 +18,7 @@ use super::actions::{
     ToggleContext, ToggleLibrary, ToggleMotion, WINDOW_CONTEXT, tab_index,
 };
 use super::chrome::HeaderMenu;
+use super::design::DesignFacet;
 use crate::host::lease::HostMode;
 use crate::reducer::model::Model;
 use crate::store::catalog::{Ask, CatalogStore};
@@ -235,6 +236,8 @@ pub(crate) struct Workspace {
     pub(super) onboarding: bool,
     /// Header disclosure currently open, if any.
     pub(super) header_menu: Option<HeaderMenu>,
+    /// Canonical design-system board requested by the visual harness.
+    pub(super) design_facet: Option<DesignFacet>,
     /// Whether the reader has explicitly verified the generated MCP setup.
     pub(super) mcp_verified: bool,
     #[cfg(feature = "visual-harness")]
@@ -434,6 +437,7 @@ impl Workspace {
             graph: crate::graph::ExplorerState::new(),
             onboarding,
             header_menu: None,
+            design_facet: None,
             mcp_verified: false,
             #[cfg(feature = "visual-harness")]
             pending_harness_state: None,
@@ -903,11 +907,65 @@ impl Workspace {
             }
         }
 
+        if !matches!(
+            state.overlay,
+            Some(
+                OverlayState::HeaderPlatform
+                    | OverlayState::HeaderFeatures
+                    | OverlayState::HeaderDocs
+                    | OverlayState::HeaderLanguage
+            )
+        ) {
+            self.header_menu = None;
+        }
+        if !matches!(
+            state.overlay,
+            Some(
+                OverlayState::ShowcaseBrand
+                    | OverlayState::ShowcaseColour
+                    | OverlayState::ShowcaseLanguage
+                    | OverlayState::ShowcaseDescent
+            )
+        ) {
+            self.design_facet = None;
+        }
         match state.overlay {
             None => {}
             Some(OverlayState::Omnibar) => self.focus_field(window, cx),
             Some(OverlayState::Palette) => {
                 self.open_palette(&super::actions::OpenPalette, window, cx)
+            }
+            Some(OverlayState::HeaderPlatform) => {
+                self.header_menu = Some(HeaderMenu::Platform);
+                cx.notify();
+            }
+            Some(OverlayState::HeaderFeatures) => {
+                self.header_menu = Some(HeaderMenu::Features);
+                cx.notify();
+            }
+            Some(OverlayState::HeaderDocs) => {
+                self.header_menu = Some(HeaderMenu::Docs);
+                cx.notify();
+            }
+            Some(OverlayState::HeaderLanguage) => {
+                self.header_menu = Some(HeaderMenu::Language);
+                cx.notify();
+            }
+            Some(OverlayState::ShowcaseBrand) => {
+                self.design_facet = Some(DesignFacet::Brand);
+                cx.notify();
+            }
+            Some(OverlayState::ShowcaseColour) => {
+                self.design_facet = Some(DesignFacet::Colour);
+                cx.notify();
+            }
+            Some(OverlayState::ShowcaseLanguage) => {
+                self.design_facet = Some(DesignFacet::Language);
+                cx.notify();
+            }
+            Some(OverlayState::ShowcaseDescent) => {
+                self.design_facet = Some(DesignFacet::Descent);
+                cx.notify();
             }
             Some(OverlayState::SettingsAppearance) => {
                 self.show_harness_settings(crate::store::shell::SettingsPage::Appearance, cx)
@@ -1018,7 +1076,9 @@ impl Workspace {
             Some(crate::store::document::Content::Blank) | None => ("blank", false),
         };
         let shell = self.shell.read(cx);
-        let overlay = if shell.settings_open() {
+        let overlay = if let Some(facet) = self.design_facet {
+            facet.id()
+        } else if shell.settings_open() {
             "settings"
         } else if self.source_open {
             "source"
@@ -1028,6 +1088,8 @@ impl Workspace {
             } else {
                 "omnibar"
             }
+        } else if let Some(menu) = self.header_menu {
+            menu.id()
         } else if self.adding {
             "add"
         } else if shell.notice().is_some() {
@@ -1076,7 +1138,11 @@ impl Workspace {
                 focus_order: action.focus_order(),
             })
             .collect();
-        let route = format!("{}:{overlay}", document.active_surface().as_str());
+        let route = format!(
+            "{}:{}",
+            self.document.read(cx).active_surface().as_str(),
+            overlay
+        );
         WorkspaceSemanticProbe {
             page: page.to_owned(),
             overlay: overlay.to_owned(),
@@ -1178,6 +1244,14 @@ impl Workspace {
             }
             Some(OverlayState::Omnibar) => "omnibar",
             Some(OverlayState::Palette) => "palette",
+            Some(OverlayState::HeaderPlatform) => "header-platform",
+            Some(OverlayState::HeaderFeatures) => "header-feature-flags",
+            Some(OverlayState::HeaderDocs) => "header-docs",
+            Some(OverlayState::HeaderLanguage) => "header-language",
+            Some(OverlayState::ShowcaseBrand) => "showcase-brand",
+            Some(OverlayState::ShowcaseColour) => "showcase-colour",
+            Some(OverlayState::ShowcaseLanguage) => "showcase-language",
+            Some(OverlayState::ShowcaseDescent) => "showcase-descent",
             Some(OverlayState::SettingsAppearance)
             | Some(OverlayState::SettingsEditor)
             | Some(OverlayState::SettingsAgents)
@@ -1201,6 +1275,60 @@ impl Workspace {
                 "requested overlay {expected_overlay}, live Workspace reached {}",
                 probe.overlay
             ));
+        }
+        let expected_header_menu = match requested.overlay {
+            Some(OverlayState::HeaderPlatform) => "header-platform",
+            Some(OverlayState::HeaderFeatures) => "header-feature-flags",
+            Some(OverlayState::HeaderDocs) => "header-docs",
+            Some(OverlayState::HeaderLanguage) => "header-language",
+            _ => "",
+        };
+        if probe.header_menu != expected_header_menu {
+            return Err(format!(
+                "requested header menu {expected_header_menu:?}, live Workspace reached {:?}",
+                probe.header_menu
+            ));
+        }
+        let mut action_ids = std::collections::BTreeSet::new();
+        let mut focus_orders = std::collections::BTreeSet::new();
+        for action in &probe.actions {
+            if !action_ids.insert(action.id.as_str()) {
+                return Err(format!("action tree contains duplicate id {:?}", action.id));
+            }
+            if !focus_orders.insert(action.focus_order) {
+                return Err(format!(
+                    "action tree contains duplicate focus order {}",
+                    action.focus_order
+                ));
+            }
+        }
+        let expected_header_action = match requested.overlay {
+            Some(OverlayState::HeaderPlatform) => Some("header-platform"),
+            Some(OverlayState::HeaderFeatures) => Some("header-feature-flags"),
+            Some(OverlayState::HeaderDocs) => Some("header-docs"),
+            Some(OverlayState::HeaderLanguage) => Some("header-language"),
+            _ => None,
+        };
+        if let Some(id) = expected_header_action
+            && !probe.actions.iter().any(|action| action.id == id)
+        {
+            return Err(format!(
+                "header menu {id} has no rendered CE trigger action"
+            ));
+        }
+        let focused_actions = probe.actions.iter().filter(|action| action.focus).count();
+        if focused_actions > 1 {
+            return Err(format!(
+                "action tree exposes {focused_actions} simultaneously focused controls"
+            ));
+        }
+        if requested.focus == FocusState::Omnibar
+            && !probe
+                .actions
+                .iter()
+                .any(|action| action.focus && matches!(action.role.as_str(), "input" | "search"))
+        {
+            return Err("omnibar focus has no focused CE input action".to_owned());
         }
         let expected_settings_page = match requested.overlay {
             Some(OverlayState::SettingsAppearance) => Some("Appearance"),
@@ -1876,7 +2004,7 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_col()
-            .text_color(theme.paint(Paint::Text))
+            .text_color(theme.paint(Paint::Silver1))
             .child(self.titlebar(&theme, window, cx))
             .child(self.body(&theme, cx))
             .child(self.status_bar(&theme, cx))
@@ -1944,7 +2072,23 @@ impl Workspace {
             .when_some(self.source_sheet(theme, cx), ParentElement::child)
             .when_some(self.hover_card(theme, cx), ParentElement::child)
             .when_some(self.notice_bar(theme, cx), ParentElement::child)
+            .when_some(
+                self.design_facet
+                    .map(|facet| super::design::showcase(theme, facet, self.design_motion_ms(cx))),
+                ParentElement::child,
+            )
             .child(self.omnibar_sheet(theme, window, cx))
+    }
+
+    /// Returns the capture clock used by the design-system showcase. Visible
+    /// windows have no harness global and stay settled at zero; deterministic
+    /// captures receive the same virtual time that drives shell transitions.
+    fn design_motion_ms(&self, cx: &Context<Self>) -> u64 {
+        #[cfg(feature = "visual-harness")]
+        if let Some(frame) = cx.try_global::<crate::harness::HarnessFrame>() {
+            return frame.time_ms;
+        }
+        0
     }
 }
 

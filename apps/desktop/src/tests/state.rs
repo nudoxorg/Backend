@@ -793,7 +793,7 @@ fn shell_capture_driver_keeps_retargeted_motion_sampleable(cx: &mut gpui::TestAp
 
 fn altered_preferences() -> Preferences {
     Preferences::default()
-        .with_appearance(Appearance::Vellum)
+        .with_appearance(Appearance::Glacier)
         .with_interface(InterfaceSize::percent(130))
         .with_widths(300.0, 200.0)
         .with_open(false, false)
@@ -807,11 +807,11 @@ fn encoding_and_decoding_preferences_returns_every_changed_field() {
     let text = prefs.encode();
     assert_eq!(
         text,
-        "schema = 1\nappearance = vellum\ninterface = 130\nlibrary-width = 300\ncontext-width = 200\n\
+        "schema = 1\nappearance = glacier\ninterface = 130\nlibrary-width = 300\ncontext-width = 200\n\
          library-open = false\ncontext-open = false\nreduced-motion = true\neditor = zed\n"
     );
     let decoded = Preferences::decode(&text);
-    assert_eq!(decoded.appearance(), Appearance::Vellum);
+    assert_eq!(decoded.appearance(), Appearance::Glacier);
     assert_eq!(decoded.interface().get(), 130);
     assert_eq!(decoded.editor().name(), "zed");
     assert!(!decoded.library_open());
@@ -822,8 +822,8 @@ fn encoding_and_decoding_preferences_returns_every_changed_field() {
 
 #[test]
 fn an_unknown_preference_key_is_ignored_rather_than_fatal() {
-    let decoded = Preferences::decode("appearance = vellum\nchromatic-aberration = 3\n");
-    assert_eq!(decoded.appearance(), Appearance::Vellum);
+    let decoded = Preferences::decode("appearance = glacier\nchromatic-aberration = 3\n");
+    assert_eq!(decoded.appearance(), Appearance::Glacier);
     assert_eq!(decoded.editor().name(), EditorScheme::default().name());
     assert_eq!(decoded.interface().get(), InterfaceSize::DEFAULT.get());
 }
@@ -831,11 +831,11 @@ fn an_unknown_preference_key_is_ignored_rather_than_fatal() {
 #[test]
 fn a_malformed_value_falls_back_to_that_field_and_keeps_the_rest() {
     let decoded = Preferences::decode(
-        "appearance = vellum\ninterface = banana\nreduced-motion = perhaps\neditor = zed\n",
+        "appearance = glacier\ninterface = banana\nreduced-motion = perhaps\neditor = zed\n",
     );
     assert_eq!(
         decoded.appearance(),
-        Appearance::Vellum,
+        Appearance::Glacier,
         "one bad line must not cost the reader every other setting"
     );
     assert_eq!(decoded.editor().name(), "zed");
@@ -856,19 +856,23 @@ fn panel_widths_decode_clamped_into_their_supported_range() {
 fn every_declaration_kind_sits_on_one_luminance_plane_at_its_own_hue() {
     use crate::theme::kind::{ALL_KINDS, kind_glyph};
 
-    for appearance in [Appearance::Ink, Appearance::Vellum] {
+    for appearance in [Appearance::Abyss, Appearance::Glacier] {
         let palette = Palette::new(appearance);
-        let plane = palette
-            .on_plane(kind_glyph(DeclarationKind::Module).hue())
-            .color
-            .lightness;
+        let family_colours = [
+            Paint::FamilyNs,
+            Paint::FamilyType,
+            Paint::FamilyConcept,
+            Paint::FamilyCall,
+            Paint::FamilyValue,
+        ];
         for kind in ALL_KINDS {
             let colour = palette.on_plane(kind_glyph(kind).hue());
             assert!(
-                (colour.color.lightness - plane).abs() <= f32::EPSILON,
-                "{} left the plane: {} instead of {plane}",
+                family_colours
+                    .iter()
+                    .any(|family| colour == palette.paint(*family)),
+                "{} did not resolve to a fixed Facet family colour",
                 kind_glyph(kind).label(),
-                colour.color.lightness
             );
         }
         let structure = palette.on_plane(kind_glyph(DeclarationKind::Struct).hue());
@@ -884,16 +888,23 @@ fn every_declaration_kind_sits_on_one_luminance_plane_at_its_own_hue() {
 fn every_language_sits_on_one_luminance_plane_at_its_own_hue() {
     use crate::theme::language::{hue, label};
 
-    for appearance in [Appearance::Ink, Appearance::Vellum] {
+    for appearance in [Appearance::Abyss, Appearance::Glacier] {
         let palette = Palette::new(appearance);
-        let plane = palette.on_plane(hue(Language::Rust)).color.lightness;
+        let family_colours = [
+            Paint::FamilyNs,
+            Paint::FamilyType,
+            Paint::FamilyConcept,
+            Paint::FamilyCall,
+            Paint::FamilyValue,
+        ];
         for language in Language::ALL {
             let colour = palette.on_plane(hue(language));
             assert!(
-                (colour.color.lightness - plane).abs() <= f32::EPSILON,
-                "{} left the plane: {} instead of {plane}",
+                family_colours
+                    .iter()
+                    .any(|family| colour == palette.paint(*family)),
+                "{} did not resolve to a fixed Facet family colour",
                 label(language),
-                colour.color.lightness
             );
         }
         let rust = palette.on_plane(hue(Language::Rust));
@@ -906,20 +917,22 @@ fn every_language_sits_on_one_luminance_plane_at_its_own_hue() {
 }
 
 #[test]
-fn the_two_appearances_light_different_grounds_and_both_keep_gilt_apart() {
-    let ink = Palette::new(Appearance::Ink);
-    let vellum = Palette::new(Appearance::Vellum);
+fn the_two_appearances_light_different_grounds_and_keep_action_apart() {
+    let abyss = Palette::new(Appearance::Abyss);
+    let glacier = Palette::new(Appearance::Glacier);
     assert_ne!(
-        ink.paint(Paint::Ground),
-        vellum.paint(Paint::Ground),
-        "Vellum is the same design re-lit, not the same colours"
+        abyss.paint(Paint::Abyss0),
+        glacier.paint(Paint::Abyss0),
+        "Glacier is the same design re-lit, not the same colours"
     );
-    assert!(ink.paint(Paint::Ground).color.lightness < vellum.paint(Paint::Ground).color.lightness);
-    for palette in [ink, vellum] {
+    assert!(
+        abyss.paint(Paint::Abyss0).color.lightness < glacier.paint(Paint::Abyss0).color.lightness
+    );
+    for palette in [abyss, glacier] {
         assert_ne!(
-            palette.paint(Paint::Gilt),
-            palette.paint(Paint::Text),
-            "gilt is reserved for copyable identity and must read as its own tone"
+            palette.paint(Paint::Mint),
+            palette.paint(Paint::Silver1),
+            "mint is reserved for copyable identity and must read as its own tone"
         );
     }
 }

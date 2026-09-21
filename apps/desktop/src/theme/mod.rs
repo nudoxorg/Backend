@@ -1,9 +1,9 @@
-//! The application theme: one generated palette plus the geometry tokens.
+//! The application theme: the exact Facet palette plus the geometry tokens.
 //!
 //! The theme is a GPUI global rather than a field threaded through views, so a
 //! stateless element builder can ask for a colour without being handed one.
 //! No view in this application may write a colour literal; every tone comes
-//! from [`Theme::paint`] or from a hue placed on the chromatic plane.
+//! from [`Theme::paint`] or from one of the five fixed family hues.
 
 pub(crate) mod fonts;
 pub(crate) mod kind;
@@ -18,7 +18,7 @@ use palette::{Appearance, Contrast, Paint, Palette};
 use ramp::Hue;
 use std::rc::Rc;
 use tokens::{
-    ControlState, Density, Elevation, InterfaceSize, Motion, Space, StateFrame, radius, space_at,
+    ControlState, Density, Elevation, InterfaceSize, Motion, Space, StateFrame, space_at,
 };
 
 /// The lit palette and the reading preferences that scale it.
@@ -208,7 +208,7 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::new(Appearance::Ink, InterfaceSize::DEFAULT, false)
+        Self::new(Appearance::Abyss, InterfaceSize::DEFAULT, false)
     }
 }
 
@@ -227,52 +227,55 @@ pub(crate) fn theme(cx: &App) -> Theme {
 pub(crate) fn sync_components(cx: &mut App, theme: &Theme) {
     {
         let component = gpui_component::Theme::global_mut(cx);
-        component.background = theme.paint(Paint::Ground);
-        component.foreground = theme.paint(Paint::Text);
-        component.muted = theme.paint(Paint::Hover);
-        component.muted_foreground = theme.paint(Paint::TextDim);
-        component.border = theme.paint(Paint::Hairline);
-        component.input = theme.paint(Paint::HairlineStrong);
+        component.background = theme.paint(Paint::Abyss0);
+        component.foreground = theme.paint(Paint::Silver1);
+        component.muted = theme.paint(Paint::Tint);
+        component.muted_foreground = theme.paint(Paint::Silver2);
+        component.border = theme.paint(Paint::Rule1);
+        component.input = theme.paint(Paint::Rule3);
         component.ring = theme.paint(Paint::Focus);
-        component.primary = theme.paint(Paint::GiltWash);
-        component.primary_hover = theme.paint(Paint::Hover);
-        component.primary_active = theme.paint(Paint::Selected);
-        component.primary_foreground = theme.paint(Paint::Gilt);
-        component.secondary = theme.paint(Paint::Panel);
-        component.secondary_hover = theme.paint(Paint::Hover);
-        component.secondary_active = theme.paint(Paint::Selected);
-        component.secondary_foreground = theme.paint(Paint::Text);
-        component.popover = theme.paint(Paint::Raised);
-        component.popover_foreground = theme.paint(Paint::Text);
-        component.accent = theme.paint(Paint::GiltWash);
-        component.accent_foreground = theme.paint(Paint::Gilt);
-        component.danger = theme.paint(Paint::Fault);
-        component.danger_foreground = theme.paint(Paint::TextStrong);
-        component.warning = theme.paint(Paint::Caution);
-        component.warning_foreground = theme.paint(Paint::TextStrong);
-        component.info = theme.paint(Paint::Info);
-        component.info_foreground = theme.paint(Paint::TextStrong);
-        component.success = theme.paint(Paint::Ok);
-        component.success_foreground = theme.paint(Paint::TextStrong);
+        component.primary = theme.paint(Paint::Mint);
+        component.primary_hover = theme.paint(Paint::Teal);
+        component.primary_active = theme.paint(Paint::Leaf);
+        component.primary_foreground = theme.paint(Paint::MintInk);
+        component.secondary = theme.paint(Paint::Abyss1);
+        component.secondary_hover = theme.paint(Paint::Tint);
+        component.secondary_active = theme.paint(Paint::PeriwinkleSoft);
+        component.secondary_foreground = theme.paint(Paint::Silver1);
+        component.popover = theme.paint(Paint::Abyss2);
+        component.popover_foreground = theme.paint(Paint::Silver1);
+        component.accent = theme.paint(Paint::PeriwinkleSoft);
+        component.accent_foreground = theme.paint(Paint::Periwinkle);
+        component.danger = theme.paint(Paint::Stopped);
+        component.danger_foreground = theme.paint(Paint::Silver0);
+        component.warning = theme.paint(Paint::Waiting);
+        component.warning_foreground = theme.paint(Paint::Silver0);
+        component.info = theme.paint(Paint::Periwinkle);
+        component.info_foreground = theme.paint(Paint::Silver0);
+        component.success = theme.paint(Paint::Action);
+        component.success_foreground = theme.paint(Paint::Silver0);
         component.list.active_highlight = true;
-        component.list_hover = theme.paint(Paint::Hover);
-        component.list_active = theme.paint(Paint::Selected);
-        component.list_active_border = theme.paint(Paint::GiltDim);
-        component.sidebar = theme.paint(Paint::Panel);
-        component.sidebar_foreground = theme.paint(Paint::Text);
-        component.sidebar_border = theme.paint(Paint::Hairline);
-        component.title_bar = theme.paint(Paint::Panel);
-        component.title_bar_border = theme.paint(Paint::Hairline);
-        component.status_bar = theme.paint(Paint::Sunken);
-        component.status_bar_border = theme.paint(Paint::Hairline);
-        component.overlay = theme.paint(Paint::Scrim);
-        component.scrollbar = theme.paint(Paint::Sunken);
-        component.scrollbar_thumb = theme.paint(Paint::TextFaint);
-        component.scrollbar_thumb_hover = theme.paint(Paint::TextDim);
+        component.list_hover = theme.paint(Paint::Tint);
+        component.list_active = theme.paint(Paint::PeriwinkleSoft);
+        component.list_active_border = theme.paint(Paint::Leaf);
+        component.sidebar = theme.paint(Paint::Abyss1);
+        component.sidebar_foreground = theme.paint(Paint::Silver1);
+        component.sidebar_border = theme.paint(Paint::Rule1);
+        component.title_bar = theme.paint(Paint::Abyss1);
+        component.title_bar_border = theme.paint(Paint::Rule1);
+        component.status_bar = theme.paint(Paint::Abyss0);
+        component.status_bar_border = theme.paint(Paint::Rule1);
+        component.overlay = theme.paint(Paint::Veil);
+        component.scrollbar = theme.paint(Paint::Abyss0);
+        component.scrollbar_thumb = theme.paint(Paint::Silver3);
+        component.scrollbar_thumb_hover = theme.paint(Paint::Silver2);
         component.font_family = theme.ui_face();
         component.mono_font_family = theme.specimen();
-        component.radius = radius(tokens::Radius::Small);
-        component.radius_lg = radius(tokens::Radius::Large);
+        // Facet surfaces use hard cuts. Setting the CE theme radii to zero
+        // keeps inputs, popovers and component-owned buttons in the same
+        // square grammar as application-owned plates.
+        component.radius = Pixels::ZERO;
+        component.radius_lg = Pixels::ZERO;
         component.focus_ring = true;
     }
     gpui_component::Theme::sync_base(cx);
