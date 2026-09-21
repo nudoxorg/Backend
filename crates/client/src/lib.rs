@@ -1077,7 +1077,13 @@ fn configure_timeout(
     stream
         .set_read_timeout(Some(timeout))
         .and_then(|()| stream.set_write_timeout(Some(timeout)))
-        .map_err(|error| ClientError::Io(error.to_string()))
+        .map_err(|error| {
+            if is_disconnect(error.kind()) {
+                ClientError::Disconnected(error.kind())
+            } else {
+                ClientError::Io(error.to_string())
+            }
+        })
 }
 
 /// Bounded deadline for one read-only command, including health and discovery.
@@ -1122,6 +1128,10 @@ fn map_frame(error: LocalControlError) -> ClientError {
 /// `WouldBlock` and `TimedOut` are both here because a socket read timeout
 /// surfaces as either depending on the platform, and the local listener closes
 /// a connection whose read timeout expires without writing anything back.
+/// macOS also reports `InvalidInput` when a socket option is applied to a
+/// Unix stream whose peer has already closed. That is a dead connection at
+/// this boundary; treating it as a plain endpoint I/O fault prevents the MCP
+/// reconnect wrapper from replacing the stale stream.
 const fn is_disconnect(kind: std::io::ErrorKind) -> bool {
     matches!(
         kind,
@@ -1132,6 +1142,7 @@ const fn is_disconnect(kind: std::io::ErrorKind) -> bool {
             | std::io::ErrorKind::UnexpectedEof
             | std::io::ErrorKind::TimedOut
             | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::InvalidInput
     )
 }
 
@@ -1302,7 +1313,21 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn each_request_rearms_a_bounded_deadline_for_its_own_lease() {
-        let (client, _peer) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/backend-client-timeout-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("timeout listener");
+        let connector_path = path.clone();
+        let connector = std::thread::spawn(move || {
+            std::os::unix::net::UnixStream::connect(connector_path).expect("timeout client")
+        });
+        let (_peer, _) = listener.accept().expect("timeout peer");
+        let client = connector.join().expect("join timeout client");
         let transport = UnixCommandTransport::from_stream(client);
         let health = CommandDto::new(1, Command::Health);
         configure_request(&transport.stream, &health).expect("health timeout");
@@ -1337,5 +1362,34 @@ mod tests {
                 .expect("rearmed read timeout"),
             Some(CLIENT_REQUEST_TIMEOUT)
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_closed_unix_peer_is_a_disconnect_before_the_next_request() {
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/backend-client-stale-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("stale listener");
+        let connector_path = path.clone();
+        let connector = std::thread::spawn(move || {
+            std::os::unix::net::UnixStream::connect(connector_path).expect("stale client")
+        });
+        let (peer, _) = listener.accept().expect("stale peer");
+        let client = connector.join().expect("join stale client");
+        drop(peer);
+
+        let request = CommandDto::new(1, Command::Health);
+        assert_eq!(
+            configure_request(&client, &request),
+            Err(ClientError::Disconnected(std::io::ErrorKind::InvalidInput))
+        );
+        let _ = std::fs::remove_file(path);
     }
 }
