@@ -76,6 +76,7 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
             .unwrap_or_else(|_| paths.project().to_path_buf())
             .to_string_lossy()
             .into_owned();
+        let cursor_secret = crate::jsonrpc::read_authority_secret(paths.authority_secret())?;
         let mut session =
             backend_client::Session::connect(&endpoint).map_err(|error| error.to_string())?;
         session.index(&project).map_err(|error| error.to_string())?;
@@ -84,6 +85,7 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
         crate::jsonrpc::serve_stdio(
             session,
             project,
+            cursor_secret,
             &mut BufReader::new(stdin.lock()),
             &mut stdout.lock(),
         )

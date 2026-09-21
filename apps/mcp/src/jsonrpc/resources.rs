@@ -109,8 +109,9 @@ Each declaration and its neighbours in the graph:
 
 ## bounds
 
-`limit` is 1 to 1000 and defaults to 50. A query that reaches its bound says
-`limit_reached`; raise `limit` or narrow the query rather than paging blindly.
+`limit` is 1 to 200 and defaults to 25. A query that reaches its bound says
+`limit_reached` and returns an opaque `nextCursor`; pass that cursor to resume
+the same immutable query rather than restarting at page one.
 "#;
 
 /// Lifts every fenced `graphql` block out of the schema card.

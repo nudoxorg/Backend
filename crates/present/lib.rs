@@ -49,6 +49,7 @@
 #![deny(unsafe_code)]
 
 mod assemble;
+mod budget;
 mod call;
 mod coverage;
 mod drive;
@@ -71,6 +72,11 @@ pub use assemble::{
     outline_tree, page_from_document, project_of, record_list, record_list_from_rows,
     shelf_from_root, shelf_from_snapshot,
 };
+pub use budget::{
+    BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, ESTIMATED_BYTES_PER_TOKEN,
+    EncodedPayload, MAX_RESPONSE_BUDGET_BYTES, PayloadBudget, encode_answer, encode_serializable,
+    estimate_tokens, oversized_fault,
+};
 pub use call::{
     DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, lower, lower_surface_json, row_for,
 };
@@ -78,7 +84,7 @@ pub use coverage::{
     CoverageLine, LaneCoverage, LaneShards, LaneState, RowCount as CoverageRows, lane_name,
     reason_name,
 };
-pub use drive::{Answer, Engine, Probe, answer};
+pub use drive::{Answer, Engine, Probe, answer, answer_paged};
 pub use dto::{
     CapabilitiesDto, CoverageDto, FaultDto, IdentityDto, LanguageCountDto, MemberGroupDto,
     OutlineDto, OutlineNodeDto, PageDto, ProductDto, ProductRecordDto, ReasonDto, RecordDto, RecordListDto, RelationGroupDto,

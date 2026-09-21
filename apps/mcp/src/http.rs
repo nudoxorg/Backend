@@ -109,6 +109,7 @@ type LiveSessions = HashMap<SessionId, Arc<Mutex<Server<SessionProduct>>>>;
 struct Sessions {
     endpoint: PathBuf,
     project: String,
+    cursor_secret: [u8; 32],
     token: BearerToken,
     next_id: AtomicU64,
     live: Mutex<LiveSessions>,
@@ -167,7 +168,11 @@ impl Sessions {
             Ok(product) => product,
             Err(error) => return rpc_error(StatusCode::BAD_GATEWAY, -32603, &error.to_string()),
         };
-        let mut server = Server::new(SessionProduct::new(product), self.project.clone());
+        let mut server = Server::with_authority(
+            SessionProduct::new(product),
+            self.project.clone(),
+            self.cursor_secret,
+        );
         let reply = server.handle(body);
         let initialized = reply
             .as_ref()
@@ -286,17 +291,19 @@ pub(super) fn main_entry(paths: &backend_runtime::WorkspacePaths, bind: Loopback
 fn run(paths: &backend_runtime::WorkspacePaths, bind: LoopbackBind) -> Result<(), String> {
     let endpoint = backend_runtime::ensure_locald(paths).map_err(|error| error.to_string())?;
     let project = canonical_project(paths.project());
+    let cursor_secret = crate::jsonrpc::read_authority_secret(paths.authority_secret())?;
     let token = BearerToken::load()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
-    runtime.block_on(serve(endpoint, project, token, bind))
+    runtime.block_on(serve(endpoint, project, cursor_secret, token, bind))
 }
 
 async fn serve(
     endpoint: PathBuf,
     project: String,
+    cursor_secret: [u8; 32],
     token: BearerToken,
     bind: LoopbackBind,
 ) -> Result<(), String> {
@@ -307,6 +314,7 @@ async fn serve(
     let state = Arc::new(Sessions {
         endpoint,
         project,
+        cursor_secret,
         token: token.clone(),
         next_id: AtomicU64::new(0),
         live: Mutex::new(HashMap::new()),
@@ -314,7 +322,7 @@ async fn serve(
     });
     let app = Router::new()
         .route(MCP_PATH, post(accept).delete(remove))
-        .layer(DefaultBodyLimit::max(crate::MAX_FRAME))
+        .layer(DefaultBodyLimit::max(crate::MAX_MCP_REQUEST_FRAME))
         .with_state(state);
     eprintln!(
         "backend-mcp: ready {}",
@@ -324,7 +332,8 @@ async fn serve(
             "authorization": format!("Bearer {}", token.0),
             "maxSessions": MAX_SESSIONS,
             "maxInFlight": MAX_IN_FLIGHT,
-            "maxRequestBytes": crate::MAX_FRAME,
+            "maxRequestBytes": crate::MAX_MCP_REQUEST_FRAME,
+            "maxResponseBytes": crate::MAX_MCP_RESPONSE_FRAME,
         })
     );
     axum::serve(listener, app)
@@ -340,6 +349,17 @@ fn canonical_project(path: &Path) -> String {
 }
 
 fn rpc_response(reply: Option<Value>, session: Option<&SessionId>) -> Response {
+    if reply.as_ref().is_some_and(|reply| {
+        let mut count = ResponseByteCounter::default();
+        serde_json::to_writer(&mut count, reply).is_err()
+            || count.bytes > crate::MAX_MCP_RESPONSE_FRAME
+    }) {
+        return rpc_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            -32000,
+            "MCP response exceeds the bounded response frame",
+        );
+    }
     let mut response = match reply {
         Some(reply) => (StatusCode::OK, Json(reply)).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
@@ -348,6 +368,22 @@ fn rpc_response(reply: Option<Value>, session: Option<&SessionId>) -> Response {
         response.headers_mut().insert(SESSION_HEADER, value);
     }
     response
+}
+
+#[derive(Default)]
+struct ResponseByteCounter {
+    bytes: usize,
+}
+
+impl std::io::Write for ResponseByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn rpc_error(status: StatusCode, code: i64, message: &str) -> Response {

@@ -7,7 +7,7 @@
 //! produce byte-identical output, which is what makes the captured goldens in
 //! the journeys meaningful.
 
-use backend_present::{Fault, Theme, Width};
+use backend_present::{Detail, Fault, Theme, Width};
 use std::io::IsTerminal as _;
 use std::path::PathBuf;
 
@@ -53,6 +53,7 @@ pub struct Options {
     workspace: Option<PathBuf>,
     endpoint: Option<PathBuf>,
     limit: Option<String>,
+    detail: Detail,
 }
 
 impl Options {
@@ -69,6 +70,7 @@ impl Options {
             workspace: None,
             endpoint: None,
             limit: None,
+            detail: Detail::Summary,
         }
     }
 
@@ -121,6 +123,12 @@ impl Options {
         self.limit.as_deref()
     }
 
+    /// Returns the requested structured response projection.
+    #[must_use]
+    pub const fn detail(&self) -> Detail {
+        self.detail
+    }
+
     /// Returns whether the caller asked for a machine rendering.
     #[must_use]
     pub const fn is_machine(&self) -> bool {
@@ -140,6 +148,7 @@ pub fn split(args: &[String]) -> Result<(Options, Vec<String>), Fault> {
     let mut workspace = None;
     let mut endpoint = None;
     let mut limit = None;
+    let mut detail = None;
     let mut rest = Vec::with_capacity(args.len());
     let mut at = 0_usize;
     while let Some(argument) = args.get(at) {
@@ -153,6 +162,15 @@ pub fn split(args: &[String]) -> Result<(Options, Vec<String>), Fault> {
             "--workspace" => workspace = Some(PathBuf::from(take(args, &mut at, "--workspace")?)),
             "--endpoint" => endpoint = Some(PathBuf::from(take(args, &mut at, "--endpoint")?)),
             "--limit" => limit = Some(take(args, &mut at, "--limit")?),
+            "--detail" => {
+                let value = take(args, &mut at, "--detail")?;
+                detail = Some(Detail::parse(&value).ok_or_else(|| {
+                    Fault::usage(
+                        "--detail",
+                        format!("`{value}` is not a projection; choose summary, standard, or full"),
+                    )
+                })?);
+            }
             other => rest.push(other.to_owned()),
         }
     }
@@ -165,6 +183,7 @@ pub fn split(args: &[String]) -> Result<(Options, Vec<String>), Fault> {
             workspace,
             endpoint,
             limit,
+            detail: detail.unwrap_or_default(),
         },
         rest,
     ))

@@ -6,6 +6,10 @@
 
 /// Maximum frame body accepted by MCP.
 pub const MAX_FRAME: usize = backend_replication::LOCAL_CONTROL_MAX_FRAME;
+/// Maximum newline-delimited or HTTP JSON-RPC request body.
+pub const MAX_MCP_REQUEST_FRAME: usize = backend_library::protocol::mcp::MAX_REQUEST_FRAME_BYTES;
+/// Maximum emitted JSON-RPC response body.
+pub const MAX_MCP_RESPONSE_FRAME: usize = backend_library::protocol::mcp::MAX_RESPONSE_FRAME_BYTES;
 /// Maximum bytes in one free-form command text.
 pub const MAX_TEXT: usize = backend_library::MAX_COMMAND_TEXT;
 /// Maximum path length accepted for a local Unix endpoint.

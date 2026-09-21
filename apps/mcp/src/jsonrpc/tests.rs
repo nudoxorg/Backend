@@ -225,11 +225,30 @@ impl Engine for Fake {
 }
 
 impl Product for Fake {
+    fn encode_continuation(
+        &mut self,
+        _: backend_library::PageContinuation,
+    ) -> Result<String, ClientError> {
+        Err(ClientError::Protocol(
+            "fixture has no portable cursor".to_owned(),
+        ))
+    }
+
+    fn decode_continuation(
+        &mut self,
+        _: &str,
+    ) -> Result<backend_library::PageContinuation, ClientError> {
+        Err(ClientError::Protocol(
+            "fixture has no portable cursor".to_owned(),
+        ))
+    }
+
     fn graph_query(
         &mut self,
         _: String,
         _: std::collections::BTreeMap<String, GraphValue>,
         _: u16,
+        _: Option<backend_library::PageContinuation>,
     ) -> Result<GraphQueryPage, ClientError> {
         Ok(GraphQueryPage {
             revision: view_state_root(&[]).into(),
@@ -245,7 +264,7 @@ impl Product for Fake {
 // ---------------------------------------------------------------------------
 
 fn ready(product: Fake) -> Server<Fake> {
-    let mut server = Server::new(product, PROJECT.to_owned());
+    let mut server = Server::with_authority(product, PROJECT.to_owned(), [9; 32]);
     server
         .handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#)
         .expect("initialize response");
@@ -785,7 +804,7 @@ fn a_missing_resource_is_refused_rather_than_guessed() {
 
 #[test]
 fn initialized_notification_cannot_bypass_initialize() {
-    let mut server = Server::new(Fake::default(), PROJECT.to_owned());
+    let mut server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
     assert!(
         server
             .handle(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
@@ -806,7 +825,7 @@ fn initialized_notification_cannot_bypass_initialize() {
 
 #[test]
 fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
-    let mut server = Server::new(Fake::default(), PROJECT.to_owned());
+    let mut server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
     let initialized = server
         .handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#)
         .expect("initialize response");
@@ -826,4 +845,81 @@ fn newline_codec_is_bounded_and_compact() {
     write_message(&mut output, &json!({"jsonrpc":"2.0","id":1,"result":{}})).expect("write");
     assert_eq!(output.last(), Some(&b'\n'));
     assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
+}
+
+#[test]
+fn newline_codec_rejects_malformed_and_oversized_jsonrpc_frames() {
+    let mut oversized = vec![b'x'; crate::MAX_MCP_REQUEST_FRAME + 1];
+    oversized.push(b'\n');
+    let mut reader = io::BufReader::new(oversized.as_slice());
+    assert!(read_line(&mut reader).is_err());
+
+    let mut output = Vec::new();
+    let oversized_result = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": "x".repeat(crate::MAX_MCP_RESPONSE_FRAME + 1)
+    });
+    assert!(write_message(&mut output, &oversized_result).is_err());
+}
+
+#[test]
+fn continuation_authority_binds_context_and_owner_payload() {
+    let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
+    let token = server.sign_cursor_token("pc1-owner-issued", b"query-a");
+    assert_eq!(
+        server.verify_cursor_token(&token, b"query-a"),
+        Some("pc1-owner-issued")
+    );
+    assert!(server.verify_cursor_token(&token, b"query-b").is_none());
+    let tampered = token.replace("pc1-owner-issued", "pc1-owner-tampered");
+    assert!(server.verify_cursor_token(&tampered, b"query-a").is_none());
+    let other_workspace = Server::with_authority(Fake::default(), "/other".to_owned(), [8; 32]);
+    assert!(other_workspace
+        .verify_cursor_token(&token, b"query-a")
+        .is_none());
+    let restarted = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
+    assert_eq!(
+        restarted.verify_cursor_token(&token, b"query-a"),
+        Some("pc1-owner-issued")
+    );
+    let expired = server.sign_cursor_token_at(
+        unix_seconds().saturating_sub(1),
+        "pc1-old",
+        b"query-a",
+    );
+    assert!(server.verify_cursor_token(&expired, b"query-a").is_none());
+}
+
+#[test]
+fn continuation_context_binds_workspace_query_limit_and_detail() {
+    let mut first = Map::new();
+    first.insert("query".to_owned(), json!("ferris"));
+    first.insert("limit".to_owned(), json!(25));
+    let mut second = first.clone();
+    second.insert("query".to_owned(), json!("beacon"));
+    assert_ne!(
+        continuation_context(PROJECT, "backend.search", &first, Detail::Summary),
+        continuation_context(PROJECT, "backend.search", &second, Detail::Summary)
+    );
+    assert_ne!(
+        continuation_context(PROJECT, "backend.search", &first, Detail::Summary),
+        continuation_context(PROJECT, "backend.search", &first, Detail::Full)
+    );
+    assert_ne!(
+        continuation_context(PROJECT, "backend.search", &first, Detail::Summary),
+        continuation_context("/other", "backend.search", &first, Detail::Summary)
+    );
+    let mut spaced = first.clone();
+    spaced.insert("query".to_owned(), json!("  ferris   "));
+    assert_eq!(
+        continuation_context(PROJECT, "backend.search", &first, Detail::Summary),
+        continuation_context(PROJECT, "backend.search", &spaced, Detail::Summary)
+    );
+    let mut different_limit = first;
+    different_limit.insert("limit".to_owned(), json!(26));
+    assert_ne!(
+        continuation_context(PROJECT, "backend.search", &spaced, Detail::Summary),
+        continuation_context(PROJECT, "backend.search", &different_limit, Detail::Summary)
+    );
 }

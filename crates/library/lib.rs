@@ -72,8 +72,8 @@ pub use command_registry::{
     COMMANDS, CommandDomain, CommandMutation, CommandSpec, command_spec, command_spec_named,
 };
 pub use cursor::{
-    CURSOR_CONTROL_BYTES, CURSOR_SCHEMA, Cursor, CursorError, CursorEvent, CursorRead,
-    CursorResetReason, CursorSub,
+    CURSOR_CONTROL_BYTES, CURSOR_QUERY_BYTES, CURSOR_SCHEMA, Cursor, CursorError, CursorEvent,
+    CursorRead, CursorResetReason, CursorSub,
 };
 pub use delta::{Delta, Intent, IntentError, IntentLog, IntentReceipt, Settings};
 pub use error::LibraryError;

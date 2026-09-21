@@ -588,6 +588,15 @@ impl Fault {
                 ),
                 Affordance::Retry,
             ),
+            ClientError::StaleCursor => Self::new(
+                FaultSlug::CursorMismatch,
+                operand,
+                Cause::new(
+                    CauseSlug::Moved,
+                    "the continuation belongs to an older immutable revision; restart the query",
+                ),
+                Affordance::Retry,
+            ),
             other => Self::from_simple_client_error(other, operand),
         }
     }
@@ -684,6 +693,13 @@ impl Fault {
                 FaultSlug::Freshness,
                 CauseSlug::Unproven,
                 "the reply did not prove the freshness this request required".to_owned(),
+                Affordance::Retry,
+            ),
+            ClientError::StaleCursor => (
+                FaultSlug::CursorMismatch,
+                CauseSlug::Moved,
+                "the continuation belongs to an older immutable revision; restart the query"
+                    .to_owned(),
                 Affordance::Retry,
             ),
             _ => (

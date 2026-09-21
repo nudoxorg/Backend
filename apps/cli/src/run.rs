@@ -10,7 +10,8 @@
 
 use backend_client::{ClientError, Session};
 use backend_library::{
-    HealthReport, ReplyDto, SurfaceCommand, SurfaceReply, ViewStateRoot, encode_id,
+    HealthReport, PageContinuation, ReplyDto, SurfaceCommand, SurfaceReply, ViewStateRoot,
+    encode_id,
 };
 use backend_present::{Engine, Fault, Probe, Request};
 
@@ -48,6 +49,21 @@ impl Engine for SessionEngine<'_> {
             Probe::Names { text, limit } => self.0.names(text, limit),
             Probe::Outline(path) => self.0.outline(path),
             Probe::OutlinePage { path, limit } => self.0.outline_page(path, limit, None),
+        }
+    }
+
+    fn probe_page(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        match probe {
+            Probe::Search { text, limit } => self.0.search_page(text, limit, continuation),
+            Probe::Names { text, limit } => self.0.names_page(text, limit, continuation),
+            _ if continuation.is_none() => self.probe(probe),
+            _ => Err(ClientError::Protocol(
+                "this CLI command does not support continuation pages".to_owned(),
+            )),
         }
     }
 

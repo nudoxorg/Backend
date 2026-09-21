@@ -35,8 +35,8 @@ use crate::shelf::Shelf;
 use crate::status::Status;
 use backend_client::ClientError;
 use backend_library::{
-    CommandReply, HealthReport, IntentId, ReplyDto, Row, SurfaceCommand, SurfaceReply, ViewSnapshot,
-    ViewStateRoot,
+    CommandReply, HealthReport, IntentId, PageContinuation, ReplyDto, Row, SurfaceCommand,
+    SurfaceReply, ViewSnapshot, ViewStateRoot,
 };
 
 /// Rows fetched for one page's members and relations.
@@ -132,6 +132,24 @@ pub trait Engine {
     /// Returns the transport or admission failure the endpoint produced.
     fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError>;
 
+    /// Answers a bounded probe continuation.
+    ///
+    /// Engines that do not expose continuation transport may still answer a
+    /// first page through the default implementation, but a supplied cursor
+    /// is rejected rather than silently restarted at page one.
+    fn probe_page(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        if continuation.is_some() {
+            return Err(ClientError::Protocol(
+                "this engine does not support continuation pages".to_owned(),
+            ));
+        }
+        self.probe(probe)
+    }
+
     /// Executes one durable product operation.
     ///
     /// # Errors
@@ -170,6 +188,15 @@ impl Answer {
             Self::Product(_) => "product",
         }
     }
+
+    /// Returns a typed continuation carried by a bounded records answer.
+    #[must_use]
+    pub fn continuation(&self) -> Option<PageContinuation> {
+        match self {
+            Self::Records(records) => records.continuation(),
+            _ => None,
+        }
+    }
 }
 
 /// Executes one typed request against a connected engine.
@@ -200,6 +227,46 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
         }
         Request::Outline(path) => outline(engine, path),
         Request::Surface(command) => surface(engine, command),
+    }
+}
+
+/// Answers a request at an owner-issued continuation, preserving the same
+/// projection and admission path as the first page.
+pub fn answer_paged(
+    engine: &mut dyn Engine,
+    request: &Request,
+    continuation: Option<PageContinuation>,
+) -> Result<Answer, Fault> {
+    match request {
+        Request::Search { text, limit } => {
+            let snapshot = snapshot_page(
+                engine,
+                Probe::Search {
+                    text,
+                    limit: *limit,
+                },
+                continuation,
+                "search",
+            )?;
+            Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
+        }
+        Request::Resolve { text, limit } => {
+            let snapshot = snapshot_page(
+                engine,
+                Probe::Names {
+                    text,
+                    limit: *limit,
+                },
+                continuation,
+                "resolve",
+            )?;
+            Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
+        }
+        _ if continuation.is_some() => Err(Fault::usage(
+            "cursor",
+            "this command does not expose continuation pages",
+        )),
+        _ => answer(engine, request),
     }
 }
 
@@ -337,6 +404,30 @@ fn snapshot(
         CommandReply::Search(snapshot) | CommandReply::Names(snapshot) => Ok(snapshot),
         _ => Err(shape(what)),
     }
+}
+
+fn snapshot_page(
+    engine: &mut dyn Engine,
+    probe: Probe<'_>,
+    continuation: Option<PageContinuation>,
+    what: &str,
+) -> Result<ViewSnapshot, Fault> {
+    let reply = read_page(engine, probe, continuation)?;
+    match reply.reply {
+        CommandReply::Search(snapshot) | CommandReply::Names(snapshot) => Ok(snapshot),
+        _ => Err(shape(what)),
+    }
+}
+
+fn read_page(
+    engine: &mut dyn Engine,
+    probe: Probe<'_>,
+    continuation: Option<PageContinuation>,
+) -> Result<ReplyDto, Fault> {
+    let operand = probe.operand();
+    engine
+        .probe_page(probe, continuation)
+        .map_err(|error| Fault::from_client_error(&error, operand))
 }
 
 fn read(engine: &mut dyn Engine, probe: Probe<'_>) -> Result<ReplyDto, Fault> {

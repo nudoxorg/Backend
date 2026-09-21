@@ -16,6 +16,9 @@ pub const CURSOR_SCHEMA: u16 = crate::canonical::PROTOCOL_SCHEMA;
 /// caller-owned typed cursor and returns that already admitted value.
 pub const CURSOR_CONTROL_BYTES: usize = 2 + 32 * 5 + 2 + 8;
 
+/// Byte length of a self-describing bounded-query cursor envelope.
+pub const CURSOR_QUERY_BYTES: usize = CURSOR_CONTROL_BYTES + 8;
+
 /// Bounded position in one branch/log/view/schema stream.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Cursor {
@@ -246,6 +249,46 @@ impl Cursor {
         );
         let expected = Self::for_view_root_at(root, sequence);
         Self::decode_control_against(bytes, expected)
+    }
+
+    /// Encodes this cursor for a bounded query continuation.
+    ///
+    /// The envelope carries the same authenticated identity fields as the
+    /// local control cursor plus the query offset. It is only an opaque
+    /// transport representation; [`decode_query_against`](Self::decode_query_against)
+    /// admits it by comparing every identity field with an owner cursor.
+    #[must_use]
+    pub fn encode_query(self) -> Box<[u8]> {
+        let mut bytes = self.encode_control().into_vec();
+        bytes.extend_from_slice(&self.query_offset.to_be_bytes());
+        bytes.into_boxed_slice()
+    }
+
+    /// Admits a bounded-query cursor against an owner-provided cursor.
+    ///
+    /// Raw bytes never become a typed cursor on their own. The owner cursor
+    /// supplies recipe, version, branch, log, schema, and root; only the
+    /// checked offset is read from the envelope.
+    ///
+    /// # Errors
+    /// Returns an error when the envelope is malformed, carries a different
+    /// owner identity, or does not describe a positive query offset.
+    pub fn decode_query_against(bytes: &[u8], owner: Self) -> Result<Self, String> {
+        if bytes.len() != CURSOR_QUERY_BYTES {
+            return Err("invalid query cursor length".to_owned());
+        }
+        if bytes[..CURSOR_CONTROL_BYTES] != *owner.encode_control() {
+            return Err("query cursor does not match the owner context".to_owned());
+        }
+        let offset = u64::from_be_bytes(
+            bytes[CURSOR_CONTROL_BYTES..]
+                .try_into()
+                .map_err(|_| "invalid query cursor offset".to_owned())?,
+        );
+        if offset == 0 {
+            return Err("query cursor offset must be positive".to_owned());
+        }
+        Ok(owner.with_query_offset(offset))
     }
 
     /// Advances this cursor across one checked event.
@@ -677,6 +720,23 @@ mod tests {
             sub.read(&other, &[], make_root(root)),
             Err(CursorError::WrongBranch)
         );
+    }
+
+    #[test]
+    fn query_cursor_round_trips_only_against_its_owner() {
+        let root = view_state_root(&[]);
+        let owner = Cursor::for_view_root(&make_root(root));
+        let continuation = owner.with_query_offset(17);
+        let encoded = continuation.encode_query();
+        assert_eq!(
+            Cursor::decode_query_against(&encoded, owner),
+            Ok(continuation)
+        );
+        let other = Cursor::for_view_root(&make_root(view_state_root(&[(
+            "other".to_owned(),
+            "row".to_owned(),
+        )])));
+        assert!(Cursor::decode_query_against(&encoded, other).is_err());
     }
 
     #[test]

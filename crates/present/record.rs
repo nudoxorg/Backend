@@ -10,7 +10,7 @@ use crate::coverage::CoverageLine;
 use crate::identity::Identity;
 use crate::language::Language;
 use crate::signature::Signature;
-use backend_library::{DeclarationKind, Row, RowState};
+use backend_library::{DeclarationKind, PageContinuation, Row, RowState};
 
 /// The lifecycle of one result row.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -165,6 +165,7 @@ pub struct RecordList {
     coverage: CoverageLine,
     records: Box<[Record]>,
     more: bool,
+    continuation: Option<PageContinuation>,
 }
 
 impl RecordList {
@@ -180,6 +181,7 @@ impl RecordList {
             coverage,
             records: records.into(),
             more: false,
+            continuation: None,
         }
     }
 
@@ -187,6 +189,14 @@ impl RecordList {
     #[must_use]
     pub const fn with_more(mut self, more: bool) -> Self {
         self.more = more;
+        self
+    }
+
+    /// Retains the owner-issued continuation for a following page.
+    #[must_use]
+    pub const fn with_continuation(mut self, continuation: Option<PageContinuation>) -> Self {
+        self.continuation = continuation;
+        self.more = self.continuation.is_some();
         self
     }
 
@@ -212,6 +222,12 @@ impl RecordList {
     #[must_use]
     pub const fn has_more(&self) -> bool {
         self.more
+    }
+
+    /// Returns the owner-issued continuation, when another page follows.
+    #[must_use]
+    pub const fn continuation(&self) -> Option<PageContinuation> {
+        self.continuation
     }
 
     /// Returns whether this page carried no record.

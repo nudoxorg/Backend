@@ -27,7 +27,8 @@
 use super::{Engine, Probe, Product};
 use backend_client::ClientError;
 use backend_library::{
-    GraphQueryPage, GraphValue, HealthReport, ReplyDto, SurfaceCommand, SurfaceReply, ViewStateRoot,
+    GraphQueryPage, GraphValue, HealthReport, PageContinuation, ReplyDto, SurfaceCommand,
+    SurfaceReply, ViewStateRoot,
 };
 use std::collections::BTreeMap;
 
@@ -152,6 +153,17 @@ impl<E: Endpoint> Engine for Reconnecting<E> {
         self.attempt(repeatable, |product| product.probe(probe))
     }
 
+    fn probe_page(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let repeatable = probe_is_repeatable(&probe);
+        self.attempt(repeatable, |product| {
+            product.probe_page(probe, continuation)
+        })
+    }
+
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         let repeatable = surface_is_repeatable(&command);
         self.attempt(repeatable, |product| product.surface(command.clone()))
@@ -159,14 +171,37 @@ impl<E: Endpoint> Engine for Reconnecting<E> {
 }
 
 impl<E: Endpoint> Product for Reconnecting<E> {
+    fn encode_continuation(
+        &mut self,
+        continuation: PageContinuation,
+    ) -> Result<String, ClientError> {
+        self.product.encode_continuation(continuation)
+    }
+
+    fn decode_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError> {
+        self.product.decode_continuation(token)
+    }
+
+    fn graph_page(
+        &mut self,
+        coordinate: String,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.attempt(Repeatable::Yes, |product| {
+            product.graph_page(coordinate.clone(), limit, continuation)
+        })
+    }
+
     fn graph_query(
         &mut self,
         query: String,
         variables: BTreeMap<String, GraphValue>,
         limit: u16,
+        continuation: Option<PageContinuation>,
     ) -> Result<GraphQueryPage, ClientError> {
         self.attempt(Repeatable::Yes, |product| {
-            product.graph_query(query.clone(), variables.clone(), limit)
+            product.graph_query(query.clone(), variables.clone(), limit, continuation)
         })
     }
 }
@@ -302,11 +337,24 @@ mod tests {
     }
 
     impl Product for Connection {
+        fn encode_continuation(&mut self, _: PageContinuation) -> Result<String, ClientError> {
+            Err(ClientError::Protocol(
+                "fixture has no portable cursor".to_owned(),
+            ))
+        }
+
+        fn decode_continuation(&mut self, _: &str) -> Result<PageContinuation, ClientError> {
+            Err(ClientError::Protocol(
+                "fixture has no portable cursor".to_owned(),
+            ))
+        }
+
         fn graph_query(
             &mut self,
             _: String,
             _: BTreeMap<String, GraphValue>,
             _: u16,
+            _: Option<PageContinuation>,
         ) -> Result<GraphQueryPage, ClientError> {
             self.record("graph-query")?;
             Ok(GraphQueryPage {
@@ -403,7 +451,7 @@ mod tests {
                 "dead:health" => drop(handle.health().expect("health recovers")),
                 "dead:graph-query" => drop(
                     handle
-                        .graph_query(String::new(), BTreeMap::new(), 1)
+                        .graph_query(String::new(), BTreeMap::new(), 1, None)
                         .expect("graph query recovers"),
                 ),
                 "dead:subscriptions" => drop(

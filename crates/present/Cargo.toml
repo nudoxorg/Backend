@@ -12,6 +12,9 @@ backend-library = { path = "../library" }
 serde.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+allocation-counter.workspace = true
+
 [lints]
 workspace = true
 

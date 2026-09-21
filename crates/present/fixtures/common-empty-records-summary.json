@@ -1,0 +1,1 @@
+{"query":"ferris","coverage":[{"lane":"exact","state":"unobserved"},{"lane":"names","state":"unobserved"},{"lane":"graph","state":"unobserved"},{"lane":"semantic","state":"unobserved"}],"readiness":"unknown","records":[],"more":false,"answer":"records","detail":"summary","budget":{"bytes":334,"estimatedTokens":84,"bytesPerToken":4}}

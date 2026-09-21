@@ -1240,6 +1240,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "backend-client",
+ "backend-engine",
  "backend-extension-trustfall",
  "backend-library",
  "backend-present",
@@ -1248,6 +1249,7 @@ dependencies = [
  "blake3",
  "futures-executor",
  "futures-util",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1270,6 +1272,7 @@ dependencies = [
 name = "backend-present"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "backend-client",
  "backend-library",
  "serde",

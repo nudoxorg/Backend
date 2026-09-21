@@ -46,12 +46,17 @@ pub(super) fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'
 
 pub(super) fn limit(arguments: &Map<String, Value>) -> Result<u16, RpcError> {
     match arguments.get("limit") {
-        None => Ok(50),
+        None => Ok(backend_present::DEFAULT_LIMIT),
         Some(value) => value
             .as_u64()
             .and_then(|value| u16::try_from(value).ok())
-            .filter(|value| (1..=1000).contains(value))
-            .ok_or_else(|| RpcError::invalid("limit must be an integer from 1 through 1000")),
+            .filter(|value| (1..=backend_library::QueryLimit::MAX).contains(value))
+            .ok_or_else(|| {
+                RpcError::invalid(format!(
+                    "limit must be an integer from 1 through {}",
+                    backend_library::QueryLimit::MAX
+                ))
+            }),
     }
 }
 
@@ -182,7 +187,7 @@ pub(super) fn read_line(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>
         }
         let end = available.iter().position(|byte| *byte == b'\n');
         let take = end.map_or(available.len(), |position| position + 1);
-        if output.len().saturating_add(take) > crate::MAX_FRAME.saturating_add(1) {
+        if output.len().saturating_add(take) > crate::MAX_MCP_REQUEST_FRAME.saturating_add(1) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "MCP message exceeds the bounded frame",
@@ -201,14 +206,40 @@ pub(super) fn read_line(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>
 }
 
 pub(super) fn write_message(writer: &mut impl Write, value: &Value) -> io::Result<()> {
-    let body = serde_json::to_vec(value).map_err(io::Error::other)?;
-    if body.len() > crate::MAX_FRAME {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "MCP response exceeds the bounded frame",
-        ));
-    }
-    writer.write_all(&body)?;
+    let mut body = BoundedBuffer::new(crate::MAX_MCP_RESPONSE_FRAME);
+    serde_json::to_writer(&mut body, value).map_err(io::Error::other)?;
+    writer.write_all(&body.bytes)?;
     writer.write_all(b"\n")?;
     writer.flush()
+}
+
+struct BoundedBuffer {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl BoundedBuffer {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(limit.min(64 * 1024)),
+            limit,
+        }
+    }
+}
+
+impl Write for BoundedBuffer {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.bytes.len().saturating_add(bytes.len()) > self.limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "MCP response exceeds the bounded frame",
+            ));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }

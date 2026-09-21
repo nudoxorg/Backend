@@ -1,0 +1,22 @@
+{
+  "schema": "backend-present.payload-budget/v1",
+  "tokenizer": {
+    "implementation": "tiktoken",
+    "version": "0.11.0",
+    "encoding": "cl100k_base",
+    "artifact_sha256": "8613f818e5af318d868379772ce5234e3a3e8519b6c611d94cf708fdfc580fbc",
+    "hash_method": "sha256(canonical-json(sort_keys=true,separators=(',',':'),mergeable-ranks keys=hex,special-tokens,pattern))"
+  },
+  "fixtures": {
+    "common_empty_records_summary": {
+      "bytes": 334,
+      "estimated_tokens": 84,
+      "real_tokens": 87
+    },
+    "worst_200_full_records": {
+      "bytes": 100025,
+      "estimated_tokens": 25007,
+      "real_tokens": 23460
+    }
+  }
+}

@@ -12,22 +12,25 @@
 //!
 //! Two rules decide every `tools/call` result:
 //!
-//! * the text block is `markdown::answer`, and `structuredContent` is
-//!   `answer_value` — the same typed DTO the CLI's `--format json` emits;
+//! * the text block is `markdown::answer`, and `structuredContent` uses the
+//!   same typed projection the CLI's `--format json` emits;
 //! * `isError` is true exactly when the answer is a [`Fault`], and the fault is
 //!   rendered in the shared three-line grammar with its affordance as the exact
 //!   next tool call an agent can paste back.
 
 use backend_client::{ClientError, Session};
 use backend_library::{
-    GraphQueryPage, GraphValue, HealthReport, PageTerminal, ReplyDto, SurfaceCommand, SurfaceReply,
-    ViewStateRoot, encode_id,
+    GraphQueryPage, GraphQueryRow, GraphValue, HealthReport, PageContinuation, PageTerminal,
+    ReplyDto, SurfaceCommand, SurfaceReply, ViewStateRoot, encode_id,
 };
 use backend_present::{
-    Answer, Engine, Fault, Invocation, Probe, Request, answer_value, fault_value, grammar_for_tool,
-    lower, markdown,
+    Answer, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Engine, Fault, Invocation, Probe, Request,
+    answer_paged, encode_answer, encode_serializable, fault_value, grammar_for_tool, lower,
+    markdown, oversized_fault, record_list,
 };
+use serde::{Serialize, Serializer, ser::{SerializeMap, SerializeSeq}};
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 
 mod codec;
@@ -35,8 +38,8 @@ mod reconnect;
 mod resources;
 mod tools;
 use codec::{
-    empty_cursor, error_reply, limit, no_extra, object, query_variables, read_line, string, success,
-    valid_id, write_message,
+    empty_cursor, error_reply, limit, no_extra, object, query_variables, read_line, string,
+    success, valid_id, write_message,
 };
 use tools::{QUERY_TOOL, SURFACE_TOOL, list_tools};
 
@@ -50,11 +53,34 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// It is the shared driver's [`Engine`] plus the one capability that is not a
 /// registry row: the typed Trustfall lane behind `backend.query`.
 pub(super) trait Product: Engine {
+    /// Encodes an owner-issued continuation as a self-describing token.
+    fn encode_continuation(
+        &mut self,
+        continuation: PageContinuation,
+    ) -> Result<String, ClientError>;
+
+    /// Admits a self-describing continuation against the current owner.
+    fn decode_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError>;
+
+    /// Reads one bounded graph-neighborhood page.
+    fn graph_page(
+        &mut self,
+        coordinate: String,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let _ = (coordinate, limit, continuation);
+        Err(ClientError::Protocol(
+            "this product does not expose graph pagination".to_owned(),
+        ))
+    }
+
     fn graph_query(
         &mut self,
         query: String,
         variables: std::collections::BTreeMap<String, GraphValue>,
         limit: u16,
+        continuation: Option<PageContinuation>,
     ) -> Result<GraphQueryPage, ClientError>;
 }
 
@@ -97,19 +123,56 @@ impl Engine for SessionProduct {
         }
     }
 
+    fn probe_page(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        match probe {
+            Probe::Search { text, limit } => self.0.search_page(text, limit, continuation),
+            Probe::Names { text, limit } => self.0.names_page(text, limit, continuation),
+            _ if continuation.is_none() => self.probe(probe),
+            _ => Err(ClientError::Protocol(
+                "this MCP command does not support continuation pages".to_owned(),
+            )),
+        }
+    }
+
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         self.0.surface(command)
     }
 }
 
 impl Product for SessionProduct {
+    fn encode_continuation(
+        &mut self,
+        continuation: PageContinuation,
+    ) -> Result<String, ClientError> {
+        Ok(self.0.encode_page_continuation(continuation))
+    }
+
+    fn decode_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError> {
+        self.0.decode_page_continuation(token)
+    }
+
+    fn graph_page(
+        &mut self,
+        coordinate: String,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.0.graph_page(&coordinate, limit, continuation)
+    }
+
     fn graph_query(
         &mut self,
         query: String,
         variables: std::collections::BTreeMap<String, GraphValue>,
         limit: u16,
+        continuation: Option<PageContinuation>,
     ) -> Result<GraphQueryPage, ClientError> {
-        self.0.graph_query(query, variables, limit, None, false)
+        self.0
+            .graph_query(query, variables, limit, continuation, false)
     }
 }
 
@@ -133,12 +196,13 @@ impl reconnect::Endpoint for SessionEndpoint {
 pub(super) fn serve_stdio(
     session: Session,
     project: String,
+    cursor_secret: [u8; 32],
     reader: &mut impl BufRead,
     writer: &mut impl Write,
 ) -> io::Result<()> {
     let endpoint = SessionEndpoint(session.endpoint().to_path_buf());
     let product = reconnect::Reconnecting::new(endpoint, SessionProduct::new(session));
-    let mut server = Server::new(product, project);
+    let mut server = Server::with_authority(product, project, cursor_secret);
     loop {
         let Some(line) = read_line(reader)? else {
             return Ok(());
@@ -154,6 +218,7 @@ pub(super) struct Server<P> {
     project: String,
     handshake: HandshakeState,
     protocol: &'static str,
+    cursor_secret: [u8; 32],
 }
 
 /// MCP's initialization handshake is a protocol state, not a boolean.
@@ -169,12 +234,13 @@ enum HandshakeState {
 }
 
 impl<P: Product> Server<P> {
-    pub(super) fn new(product: P, project: String) -> Self {
+    pub(super) fn with_authority(product: P, project: String, cursor_secret: [u8; 32]) -> Self {
         Self {
             product,
             project,
             handshake: HandshakeState::AwaitInitialize,
             protocol: STABLE_PROTOCOL,
+            cursor_secret,
         }
     }
 
@@ -289,39 +355,87 @@ impl<P: Product> Server<P> {
             Some(Value::Object(arguments)) => arguments,
             Some(_) => return Err(RpcError::invalid("arguments must be an object")),
         };
+        let detail = response_detail(arguments)?;
+        let context = continuation_context(&self.project, name, arguments, detail);
+        let continuation = self.continuation(arguments, &context)?;
         if name == QUERY_TOOL {
-            return self.query_tool(arguments);
+            return self.query_tool(arguments, detail, continuation, &context);
+        }
+        if name == "backend.graph"
+            && (arguments.contains_key("limit") || arguments.contains_key("cursor"))
+        {
+            return self.graph_tool(arguments, detail, continuation, &context);
         }
         if name == SURFACE_TOOL {
-            return self.surface_tool(arguments);
+            if continuation.is_some() {
+                return Err(RpcError::invalid(
+                    "cursor is only valid for a paged search or graph query",
+                ));
+            }
+            let mut surface_arguments = arguments.clone();
+            surface_arguments.remove("detail");
+            return self.surface_tool(&surface_arguments);
         }
         let Some(grammar) = grammar_for_tool(name) else {
             return Err(RpcError::new(-32602, "Unknown tool"));
         };
-        let planned = Invocation::from_json(grammar, arguments)
+        let mut command_arguments = arguments.clone();
+        command_arguments.remove("detail");
+        command_arguments.remove("cursor");
+        let planned = Invocation::from_json(grammar, &command_arguments)
             .and_then(|invocation| lower(&invocation, &self.project));
-        Ok(match planned {
-            Ok(request) => match backend_present::answer(&mut self.product, &request) {
-                Ok(answer) => rendered(&answer),
-                Err(fault) => refused(&fault),
+        match planned {
+            Ok(request) => match answer_paged(&mut self.product, &request, continuation) {
+                Ok(answer) => self.rendered(&answer, detail, &context),
+                Err(fault) => Ok(refused(&fault)),
             },
-            Err(fault) => refused(&fault),
-        })
+            Err(fault) => Ok(refused(&fault)),
+        }
     }
 
-    fn query_tool(&mut self, arguments: &Map<String, Value>) -> Result<Value, RpcError> {
-        no_extra(arguments, &["query", "variables", "limit"])?;
+    fn query_tool(
+        &mut self,
+        arguments: &Map<String, Value>,
+        detail: Detail,
+        continuation: Option<PageContinuation>,
+        context: &[u8],
+    ) -> Result<Value, RpcError> {
+        no_extra(
+            arguments,
+            &["query", "variables", "limit", "cursor", "detail"],
+        )?;
         let query = string(arguments, "query")?.to_owned();
         let variables = query_variables(arguments)?;
-        Ok(
-            match self.product.graph_query(query.clone(), variables, limit(arguments)?) {
-                Ok(page) => graph_page_result(&page),
-                Err(error) => refused(&Fault::from_client_error(
-                    &error,
-                    backend_present::Operand::Text(query),
-                )),
-            },
-        )
+        match self
+            .product
+            .graph_query(query.clone(), variables, limit(arguments)?, continuation)
+        {
+            Ok(page) => self.graph_page_result(&page, detail, context),
+            Err(error) => Ok(refused(&Fault::from_client_error(
+                &error,
+                backend_present::Operand::Text(query),
+            ))),
+        }
+    }
+
+    fn graph_tool(
+        &mut self,
+        arguments: &Map<String, Value>,
+        detail: Detail,
+        continuation: Option<PageContinuation>,
+        context: &[u8],
+    ) -> Result<Value, RpcError> {
+        no_extra(arguments, &["coordinate", "limit", "cursor", "detail"])?;
+        let coordinate = string(arguments, "coordinate")?.to_owned();
+        let reply = self
+            .product
+            .graph_page(coordinate.clone(), limit(arguments)?, continuation)
+            .map_err(|error| RpcError::tool(error.to_string()))?;
+        let backend_library::CommandReply::ProjectionPage(page) = reply.reply else {
+            return Err(RpcError::tool("graph page reply changed shape"));
+        };
+        let answer = Answer::Records(Box::new(record_list(&coordinate, &page.snapshot)));
+        self.rendered(&answer, detail, context)
     }
 
     fn surface_tool(&mut self, arguments: &Map<String, Value>) -> Result<Value, RpcError> {
@@ -374,6 +488,135 @@ impl<P: Product> Server<P> {
             }]
         }))
     }
+
+    fn continuation(
+        &mut self,
+        arguments: &Map<String, Value>,
+        context: &[u8],
+    ) -> Result<Option<PageContinuation>, RpcError> {
+        let Some(value) = arguments.get("cursor") else {
+            return Ok(None);
+        };
+        let token = value
+            .as_str()
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
+        let owner_token = self.verify_cursor_token(token, context).ok_or_else(|| {
+            RpcError::invalid("cursor is unknown, expired, or belongs to another MCP session")
+        })?;
+        self.product
+            .decode_continuation(owner_token)
+            .map(Some)
+            .map_err(|error| match error {
+                ClientError::StaleCursor => RpcError::stale_cursor(),
+                _ => RpcError::invalid(
+                    "cursor is unknown, expired, or belongs to another MCP session",
+                ),
+            })
+    }
+
+    fn issue_continuation(
+        &mut self,
+        continuation: PageContinuation,
+        context: &[u8],
+    ) -> Result<String, RpcError> {
+        let owner_token = self
+            .product
+            .encode_continuation(continuation)
+            .map_err(|error| RpcError::tool(error.to_string()))?;
+        Ok(self.sign_cursor_token(&owner_token, context))
+    }
+
+    fn sign_cursor_token(&self, owner_token: &str, context: &[u8]) -> String {
+        self.sign_cursor_token_at(unix_seconds().saturating_add(900), owner_token, context)
+    }
+
+    fn sign_cursor_token_at(&self, expiry: u64, owner_token: &str, context: &[u8]) -> String {
+        let body = format!("{expiry}-{owner_token}");
+        let mac = self.cursor_mac(&body, context);
+        format!("mcp1-{body}-{}", hex_bytes(&mac.as_bytes()[..16]))
+    }
+
+    fn verify_cursor_token<'a>(&self, token: &'a str, context: &[u8]) -> Option<&'a str> {
+        let body = token.strip_prefix("mcp1-")?;
+        let (body, encoded_mac) = body.rsplit_once('-')?;
+        let (expiry, owner_token) = body.split_once('-')?;
+        let expiry = expiry.parse::<u64>().ok()?;
+        if expiry < unix_seconds() {
+            return None;
+        }
+        let expected = self.cursor_mac(body, context);
+        if encoded_mac != hex_bytes(&expected.as_bytes()[..16]) {
+            return None;
+        }
+        Some(owner_token)
+    }
+
+    fn cursor_mac(&self, body: &str, context: &[u8]) -> blake3::Hash {
+        let mut payload = Vec::with_capacity(body.len() + context.len() + 1);
+        payload.extend_from_slice(body.as_bytes());
+        payload.push(0);
+        payload.extend_from_slice(context);
+        blake3::keyed_hash(&self.cursor_secret, &payload)
+    }
+
+    fn rendered(
+        &mut self,
+        answer: &Answer,
+        detail: Detail,
+        context: &[u8],
+    ) -> Result<Value, RpcError> {
+        let next = answer
+            .continuation()
+            .map(|cursor| self.issue_continuation(cursor, context))
+            .transpose()?;
+        let payload = match encode_answer(
+            answer,
+            detail,
+            next.as_deref(),
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => return Ok(refused(&oversized_fault(error))),
+        };
+        let structured: Value = serde_json::from_slice(&payload.bytes)
+            .map_err(|error| RpcError::tool(format!("typed projection decode failed: {error}")))?;
+        let text = bounded_text(&markdown::answer(answer));
+        Ok(json!({
+            "content": [{ "type": "text", "text": text }],
+            "structuredContent": structured,
+            "isError": false
+        }))
+    }
+
+    fn graph_page_result(
+        &mut self,
+        page: &GraphQueryPage,
+        detail: Detail,
+        context: &[u8],
+    ) -> Result<Value, RpcError> {
+        let next = match page.terminal {
+            PageTerminal::More(cursor) => Some(self.issue_continuation(cursor, context)?),
+            PageTerminal::Complete | PageTerminal::Cancelled => None,
+        };
+        let payload = match encode_serializable(
+            "query",
+            detail,
+            next.as_deref(),
+            GraphPageBody { page },
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => return Ok(refused(&oversized_fault(error))),
+        };
+        let value: Value = serde_json::from_slice(&payload.bytes)
+            .map_err(|error| RpcError::tool(format!("typed graph projection decode failed: {error}")))?;
+        Ok(json!({
+            "content": [{ "type": "text", "text": bounded_text(&graph_page_text(page)) }],
+            "structuredContent": value,
+            "isError": false
+        }))
+    }
 }
 
 const INSTRUCTIONS: &str = "Every tool is one row of one command registry, grouped by domain in \
@@ -389,30 +632,86 @@ fn abbreviate(bytes: &[u8; 32]) -> String {
     encode_id(bytes).chars().take(12).collect()
 }
 
-/// Renders one answer: Markdown for a reader, the typed DTO for a program.
-fn rendered(answer: &Answer) -> Value {
-    json!({
-        "content": [{ "type": "text", "text": markdown::answer(answer) }],
-        "structuredContent": answer_value(answer),
-        "isError": false
+pub(super) fn read_authority_secret(path: &std::path::Path) -> Result<[u8; 32], String> {
+    backend_engine::read_authority_secret(path).map_err(|error| {
+        format!(
+            "cannot admit MCP authority secret {}: {error}",
+            path.display()
+        )
     })
 }
 
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn continuation_context(
+    workspace: &str,
+    name: &str,
+    arguments: &Map<String, Value>,
+    detail: Detail,
+) -> Vec<u8> {
+    let mut canonical = BTreeMap::new();
+    canonical.insert("detail", Value::String(detail.name().to_owned()));
+    canonical.insert("schema", Value::String("mcp1".to_owned()));
+    canonical.insert("tool", Value::String(name.to_owned()));
+    canonical.insert("workspace", Value::String(workspace.to_owned()));
+    for (key, value) in arguments {
+        if key != "cursor" {
+            canonical.insert(key.as_str(), normalize_context_value(key, value));
+        }
+    }
+    serde_json::to_vec(&canonical).unwrap_or_default()
+}
+
+/// Canonicalizes caller text before it enters a cursor MAC.
+///
+/// Search and Trustfall clients commonly differ only in surrounding or
+/// repeated whitespace. Treating those spellings as the same query keeps a
+/// continuation stable across transports while retaining case, punctuation,
+/// variables, and coordinate identity exactly. All other values are retained
+/// recursively so a cursor cannot cross a limit, variable, or projection
+/// boundary by accident.
+fn normalize_context_value(key: &str, value: &Value) -> Value {
+    match value {
+        Value::String(text) if matches!(key, "query" | "text" | "coordinate") => {
+            let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            Value::String(normalized)
+        }
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|value| normalize_context_value(key, value))
+                .collect(),
+        ),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(field, value)| (field.clone(), normalize_context_value(field, value)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+/// Renders one answer: Markdown for a reader, the typed DTO for a program.
 /// Renders one fault in the shared three-line grammar.
 fn refused(fault: &Fault) -> Value {
     json!({
         "content": [{ "type": "text", "text": markdown::fault(fault) }],
         "structuredContent": fault_value(fault),
         "isError": true
-    })
-}
-
-fn graph_page_result(page: &GraphQueryPage) -> Value {
-    let value = graph_query_page_value(page);
-    json!({
-        "content": [{ "type": "text", "text": graph_page_text(page) }],
-        "structuredContent": value,
-        "isError": false
     })
 }
 
@@ -495,6 +794,18 @@ impl RpcError {
         }
     }
 
+    fn stale_cursor() -> Self {
+        Self {
+            code: -32010,
+            message: "Stale cursor",
+            kind: "stale_cursor",
+            detail: Some(
+                "the continuation belongs to an older immutable revision; restart the query"
+                    .to_owned(),
+            ),
+        }
+    }
+
     /// Lowers one shared fault into the JSON-RPC error a resource read reports.
     fn from_fault(fault: &Fault) -> Self {
         Self {
@@ -538,16 +849,106 @@ fn graph_value(value: &GraphValue) -> Value {
     }
 }
 
-fn graph_query_page_value(page: &GraphQueryPage) -> Value {
-    json!({
-        "answer": "query",
-        "revision": encode_id(page.revision.as_bytes()),
-        "rows": page.rows.iter().map(|row| Value::Object(
-            row.fields().iter().map(|(name, value)| (name.clone(), graph_value(value))).collect()
-        )).collect::<Vec<_>>(),
-        "terminal": terminal_name(page.terminal),
-        "emitted": page.rows.len()
-    })
+struct GraphPageBody<'a> {
+    page: &'a GraphQueryPage,
+}
+
+impl Serialize for GraphPageBody<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(4))?;
+        map.serialize_entry("revision", &encode_id(self.page.revision.as_bytes()))?;
+        map.serialize_entry("rows", &GraphRows(&self.page.rows))?;
+        map.serialize_entry("terminal", terminal_name(self.page.terminal))?;
+        map.serialize_entry("emitted", &self.page.rows.len())?;
+        map.end()
+    }
+}
+
+struct GraphRows<'a>(&'a [GraphQueryRow]);
+
+impl Serialize for GraphRows<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for row in self.0 {
+            sequence.serialize_element(&GraphRow(row))?;
+        }
+        sequence.end()
+    }
+}
+
+struct GraphRow<'a>(&'a GraphQueryRow);
+
+impl Serialize for GraphRow<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.0.fields().len()))?;
+        for (name, value) in self.0.fields() {
+            map.serialize_entry(name, &GraphValueRef(value))?;
+        }
+        map.end()
+    }
+}
+
+struct GraphValueRef<'a>(&'a GraphValue);
+
+impl Serialize for GraphValueRef<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self.0 {
+            GraphValue::Null => serializer.serialize_unit(),
+            GraphValue::Boolean(value) => serializer.serialize_bool(*value),
+            GraphValue::Signed(value) => serializer.serialize_i64(*value),
+            GraphValue::Unsigned(value) => serializer.serialize_u64(*value),
+            GraphValue::Float(_) => match self.0.as_float() {
+                Some(value) => serializer.serialize_f64(value),
+                None => serializer.serialize_unit(),
+            },
+            GraphValue::String(value) => serializer.serialize_str(value),
+            GraphValue::List(values) => {
+                let mut sequence = serializer.serialize_seq(Some(values.len()))?;
+                for value in values {
+                    sequence.serialize_element(&GraphValueRef(value))?;
+                }
+                sequence.end()
+            }
+        }
+    }
+}
+
+fn response_detail(arguments: &Map<String, Value>) -> Result<Detail, RpcError> {
+    let Some(value) = arguments.get("detail") else {
+        return Ok(Detail::Summary);
+    };
+    let value = value
+        .as_str()
+        .ok_or_else(|| RpcError::invalid("detail must be summary, standard, or full"))?;
+    Detail::parse(value)
+        .ok_or_else(|| RpcError::invalid("detail must be summary, standard, or full"))
+}
+
+fn bounded_text(text: &str) -> String {
+    const MAX_TEXT_BYTES: usize = 128 * 1024;
+    if text.len() <= MAX_TEXT_BYTES {
+        return text.to_owned();
+    }
+    let mut end = MAX_TEXT_BYTES.saturating_sub(32);
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n\n… output truncated; request a narrower page or detail=summary",
+        &text[..end]
+    )
 }
 
 #[cfg(test)]

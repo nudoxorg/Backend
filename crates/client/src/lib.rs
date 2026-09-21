@@ -6,7 +6,7 @@
 #![forbid(unsafe_code)]
 
 use backend_library::{
-    Command, CommandDto, CommandFailure, CommandReply, CoverageCapability, DiffRecord,
+    Command, CommandDto, CommandFailure, CommandReply, CoverageCapability, Cursor, DiffRecord,
     DocumentQuery, GraphNeighborhoodQuery, GraphQueryPage, GraphQueryRequest, GraphValue,
     HealthReport, NameQuery, OutlineQuery, PackageReference, PageContinuation, PageRequest,
     PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto, RequestAdmissionError,
@@ -65,6 +65,12 @@ pub enum ClientError {
     },
     /// A continuation cursor did not identify the returned root.
     CursorMismatch,
+    /// A continuation was issued for an older immutable view revision.
+    ///
+    /// This is intentionally distinct from malformed protocol input: callers
+    /// can discard the token and restart the same query against the current
+    /// revision without treating the daemon as unhealthy.
+    StaleCursor,
 }
 
 impl fmt::Display for ClientError {
@@ -86,6 +92,9 @@ impl fmt::Display for ClientError {
                 write!(formatter, "request id {observed} does not match {expected}")
             }
             Self::CursorMismatch => formatter.write_str("daemon returned an invalid cursor"),
+            Self::StaleCursor => {
+                formatter.write_str("continuation cursor belongs to an older revision")
+            }
         }
     }
 }
@@ -298,6 +307,45 @@ impl Session {
         &self.endpoint
     }
 
+    /// Encodes an owner-issued query continuation for a process-independent
+    /// MCP token. The bytes include the immutable owner identity and offset;
+    /// they are still admitted against the current revision before use.
+    #[must_use]
+    pub fn encode_page_continuation(&self, continuation: PageContinuation) -> String {
+        let mut token = String::from("pc1-");
+        for byte in continuation.cursor().encode_query().iter().copied() {
+            use fmt::Write as _;
+            let _ = write!(token, "{byte:02x}");
+        }
+        token
+    }
+
+    /// Decodes and admits a process-independent query continuation against
+    /// the current owner revision.
+    ///
+    /// # Errors
+    /// Returns a protocol error when the token is malformed or belongs to a
+    /// different revision, recipe, branch, log, or schema.
+    pub fn decode_page_continuation(
+        &mut self,
+        token: &str,
+    ) -> Result<PageContinuation, ClientError> {
+        let encoded = token
+            .strip_prefix("pc1-")
+            .ok_or_else(|| ClientError::Protocol("unknown continuation token schema".to_owned()))?;
+        let bytes = decode_hex(encoded)
+            .ok_or_else(|| ClientError::Protocol("malformed continuation token".to_owned()))?;
+        let owner = self.revision()?.cursor();
+        let cursor = Cursor::decode_query_against(&bytes, owner).map_err(|error| {
+            if error == "query cursor does not match the owner context" {
+                ClientError::StaleCursor
+            } else {
+                ClientError::Protocol(error)
+            }
+        })?;
+        Ok(PageContinuation::from_cursor(cursor))
+    }
+
     /// Replaces this session's connection with a fresh one to the same
     /// endpoint.
     ///
@@ -442,6 +490,32 @@ impl Session {
         )
     }
 
+    /// Reads or resumes one bounded search page at the current revision.
+    ///
+    /// The continuation is accepted only when the daemon's producer
+    /// certificate and this session's remembered page claim match it. A raw
+    /// caller cursor therefore cannot fabricate a result or restart a query
+    /// against a different view root.
+    pub fn search_page(
+        &mut self,
+        text: &str,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let revision = self.revision()?;
+        let limit = QueryLimit::new(limit)
+            .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
+        let query = Query::new(text, revision.root, limit);
+        let query = match continuation {
+            Some(cursor) => query.with_cursor(cursor.cursor()),
+            None => query,
+        };
+        self.send_success(
+            Command::Search(query),
+            Some(self.page_certificate(revision.certificate, continuation)),
+        )
+    }
+
     /// Searches declaration names at the current immutable revision.
     ///
     /// # Errors
@@ -453,6 +527,27 @@ impl Session {
         self.send_success(
             Command::Name(NameQuery::new(text, revision.root, limit)),
             Some(revision.certificate),
+        )
+    }
+
+    /// Reads or resumes one bounded name-resolution page at the current revision.
+    pub fn names_page(
+        &mut self,
+        text: &str,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let revision = self.revision()?;
+        let limit = QueryLimit::new(limit)
+            .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
+        let query = NameQuery::new(text, revision.root, limit);
+        let query = match continuation {
+            Some(cursor) => query.with_cursor(cursor.cursor()),
+            None => query,
+        };
+        self.send_success(
+            Command::Name(query),
+            Some(self.page_certificate(revision.certificate, continuation)),
         )
     }
 
@@ -897,6 +992,20 @@ fn with_page_continuation_claim(
         root: encode_id(cursor.root().as_bytes()),
         sequence: cursor.sequence(),
     })
+}
+
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+    if value.is_empty() || value.len() % 2 != 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    let mut chars = value.bytes();
+    while let (Some(high), Some(low)) = (chars.next(), chars.next()) {
+        let high = (high as char).to_digit(16)? as u8;
+        let low = (low as char).to_digit(16)? as u8;
+        bytes.push(high << 4 | low);
+    }
+    Some(bytes)
 }
 
 fn health_from_reply(reply: ReplyDto) -> Result<HealthReport, ClientError> {

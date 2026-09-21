@@ -7,7 +7,10 @@
 //! MCP puts in `structuredContent`. All this module decides is which of the
 //! three the caller asked for, and what exit code a fault means.
 
-use backend_present::{Answer, Fault, FaultSlug, answer_value, fault_value, markdown, text};
+use backend_present::{
+    Answer, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Fault, FaultSlug, encode_answer, fault_value,
+    markdown, oversized_fault, text,
+};
 use std::process::ExitCode;
 
 use crate::options::{Format, Options};
@@ -27,7 +30,7 @@ pub fn answer(answer: &Answer, options: &Options) -> String {
     match options.format() {
         Format::Human => text::answer(answer, options.theme()),
         Format::Markdown => markdown_text(answer),
-        Format::Json => json(answer),
+        Format::Json => json_with_detail(answer, options.detail()),
     }
 }
 
@@ -40,7 +43,17 @@ pub fn markdown_text(answer: &Answer) -> String {
 /// Renders one answer as the stable typed JSON projection.
 #[must_use]
 pub fn json(answer: &Answer) -> String {
-    encode(&answer_value(answer))
+    json_with_detail(answer, Detail::Summary)
+}
+
+/// Renders the bounded typed projection shared with MCP.
+#[must_use]
+pub fn json_with_detail(answer: &Answer, detail: Detail) -> String {
+    match encode_answer(answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES) {
+        Ok(payload) => String::from_utf8(payload.bytes.into_vec())
+            .unwrap_or_else(|_| encode(&fault_value(&Fault::usage("response", "invalid UTF-8")))),
+        Err(error) => encode(&fault_value(&oversized_fault(error))),
+    }
 }
 
 /// Renders one fault in the caller's chosen format.

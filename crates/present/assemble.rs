@@ -26,8 +26,8 @@ use crate::record::{Record, RecordList};
 use crate::shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
 use crate::signature::Signature;
 use backend_library::{
-    Coverage, Document, Outline, Row, RowId, RowState, SourceAvailability, SourceExcerpt,
-    SymbolKey, ViewRoot, ViewSnapshot,
+    Coverage, Document, Outline, PageContinuation, Row, RowId, RowState, SourceAvailability,
+    SourceExcerpt, SymbolKey, ViewRoot, ViewSnapshot,
 };
 use std::collections::BTreeMap;
 
@@ -182,6 +182,7 @@ pub fn record_list(query: &str, snapshot: &ViewSnapshot) -> RecordList {
         snapshot.root.coverage(),
         snapshot.next.is_some(),
     )
+    .with_continuation(snapshot.next.map(PageContinuation::from_cursor))
 }
 
 /// Builds one result page from rows a surface already holds.

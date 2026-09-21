@@ -16,6 +16,7 @@ path = "src/lib.rs"
 [dependencies]
 axum.workspace = true
 backend-client = { path = "../../crates/client" }
+backend-engine = { path = "../../crates/engine" }
 backend-extension-trustfall = { path = "../../extensions/trustfall" }
 backend-library = { path = "../../crates/library" }
 backend-present = { path = "../../crates/present" }
@@ -24,6 +25,7 @@ backend-runtime = { path = "../../crates/runtime" }
 blake3.workspace = true
 futures-executor.workspace = true
 futures-util.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net"] }
 

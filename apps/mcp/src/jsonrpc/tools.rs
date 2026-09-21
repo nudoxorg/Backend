@@ -57,6 +57,39 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     for spec in grammar.options() {
         properties.insert(spec.name().to_owned(), property(*spec));
     }
+    // Presentation controls are shared by every read tool. Keeping them out
+    // of the command grammar avoids making a presentation preference look
+    // like a daemon operand while still making the accepted JSON explicit.
+    properties.insert(
+        "detail".to_owned(),
+        json!({
+            "type": "string",
+            "enum": ["summary", "standard", "full"],
+            "default": "summary",
+            "description": "Response projection; summary is context-efficient, full opts into every available field."
+        }),
+    );
+    if matches!(grammar.name(), "search" | "resolve" | "name" | "graph") {
+        properties.insert(
+            "cursor".to_owned(),
+            json!({
+                "type": "string",
+                "description": "Opaque continuation returned by the preceding page."
+            }),
+        );
+        if grammar.name() == "graph" {
+            properties.insert(
+                "limit".to_owned(),
+                json!({
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "default": 25,
+                    "description": "Maximum graph rows in this page."
+                }),
+            );
+        }
+    }
     let title = grammar.spec().map_or_else(|| grammar.name(), |spec| spec.title);
     let write = grammar.is_write();
     json!({
@@ -135,7 +168,9 @@ fields, and worked queries you can run unchanged.",
                     "description": "Scalar or list query variables.",
                     "additionalProperties": true
                 },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 50 }
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 25 },
+                "cursor": { "type": "string", "description": "Opaque continuation returned by the preceding page." },
+                "detail": { "type": "string", "enum": ["summary", "standard", "full"], "default": "summary" }
             },
             "required": ["query"],
             "additionalProperties": false
