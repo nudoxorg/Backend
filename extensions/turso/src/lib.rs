@@ -15,9 +15,16 @@ use backend_library::{
 };
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const SCHEMA_VERSION: i64 = 1;
 const MAX_AUDIT_ROOTS: i64 = 128;
+/// A bounded wait for another process-owned writer lane.
+///
+/// Turso's busy handler yields while a WAL writer is publishing. Keeping this
+/// finite is important: a dead or wedged peer must surface as an error rather
+/// than turning a local-first query into an unbounded wait.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS backend_projection_meta (
@@ -209,8 +216,19 @@ impl TursoProjection {
         let text = path
             .to_str()
             .ok_or_else(|| ProjectionError::NonUtf8Path(path.to_path_buf()))?;
-        let database = turso::Builder::new_local(text).build().await?;
+        // Every projection handle may be opened by a different process (the
+        // GUI, MCP daemon, and CLI can all observe the same workspace). The
+        // default in-process WAL rejects that topology and turns an otherwise
+        // safe reader/writer overlap into `database is locked`. Turso's
+        // multiprocess WAL keeps immutable read snapshots independent from the
+        // single serialized writer lane and persists the coordination state
+        // next to the database.
+        let database = turso::Builder::new_local(text)
+            .experimental_multiprocess_wal(true)
+            .build()
+            .await?;
         let connection = database.connect()?;
+        connection.busy_timeout(BUSY_TIMEOUT)?;
         connection.execute_batch(SCHEMA).await?;
         let projection = Self {
             _database: database,
@@ -250,7 +268,23 @@ impl TursoProjection {
 
         let row_count =
             i64::try_from(view.row_count()).map_err(|_| ProjectionError::RowCountOverflow)?;
-        let tx = self.connection.transaction().await?;
+        // Acquire the one Turso writer lane before touching rows. The
+        // metadata check is repeated inside this transaction so a writer that
+        // waited behind another publisher returns a typed stale transition and
+        // performs zero row work.
+        let tx = self
+            .connection
+            .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
+            .await?;
+        if let Some(current) = metadata_from(&tx).await?
+            && current.root.as_slice() == view.root().as_bytes()
+            && current.view_version.as_slice() == view.version().as_bytes()
+        {
+            tx.rollback().await?;
+            return Ok(ProjectionUpdate::Reused {
+                rows: u64::try_from(current.row_count).unwrap_or(0),
+            });
+        }
         tx.execute("DELETE FROM backend_projection_rows", ())
             .await?;
         for row in view.rows() {
@@ -344,7 +378,20 @@ impl TursoProjection {
         let target = last.target_view();
         let target_count =
             i64::try_from(target.row_count()).map_err(|_| ProjectionError::RowCountOverflow)?;
-        let tx = self.connection.transaction().await?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
+            .await?;
+        let Some(current) = metadata_from(&tx).await? else {
+            tx.rollback().await?;
+            return Err(ProjectionError::StaleTransition);
+        };
+        if current.root.as_slice() != first.base_root().as_bytes()
+            || current.view_version.as_slice() != first.base_version().as_bytes()
+        {
+            tx.rollback().await?;
+            return Err(ProjectionError::StaleTransition);
+        }
         let mut changed_rows = 0_u64;
         for delta in deltas {
             let affected = apply_delta(&tx, delta.delta()).await?;
@@ -394,13 +441,15 @@ impl TursoProjection {
     ///
     /// Returns an error when query execution or metadata decoding fails.
     pub async fn search(&self, text: &str, limit: u32) -> Result<RootedRows, ProjectionError> {
-        let metadata = self
-            .metadata()
+        // Keep the root fence and the rows in one read transaction. A pair of
+        // independent statements can otherwise observe `base` for the fence
+        // and `target` for the rows when a writer commits between them.
+        let tx = self.connection.unchecked_transaction().await?;
+        let metadata = metadata_from(&tx)
             .await?
             .ok_or(ProjectionError::StaleTransition)?;
         let pattern = format!("%{}%", escape_like(text));
-        let mut rows = self
-            .connection
+        let mut rows = tx
             .query(
                 "SELECT row_id FROM backend_projection_rows \
                  WHERE label LIKE ?1 ESCAPE '\\' OR signature LIKE ?1 ESCAPE '\\' \
@@ -412,6 +461,8 @@ impl TursoProjection {
         while let Some(row) = rows.next().await? {
             ids.push(row.get::<String>(0)?);
         }
+        drop(rows);
+        tx.rollback().await?;
         Ok(RootedRows {
             root: metadata.root.into_boxed_slice(),
             ids: ids.into_boxed_slice(),
@@ -419,25 +470,79 @@ impl TursoProjection {
     }
 
     async fn metadata(&self) -> Result<Option<Metadata>, ProjectionError> {
-        let mut rows = self
-            .connection
-            .query(
-                "SELECT schema_version, root, view_version, row_count \
-                 FROM backend_projection_meta WHERE singleton=1",
-                (),
-            )
-            .await?;
-        let Some(row) = rows.next().await? else {
-            return Ok(None);
-        };
-        Ok(Some(Metadata {
-            schema_version: row.get(0)?,
-            root: row.get(1)?,
-            view_version: row.get(2)?,
-            row_count: row.get(3)?,
-        }))
+        metadata_from(&self.connection).await
     }
 
+    async fn package_graph_metadata(
+        &self,
+    ) -> Result<Option<PackageGraphMetadata>, ProjectionError> {
+        package_graph_metadata_from(&self.connection).await
+    }
+}
+
+async fn metadata_from(
+    connection: &turso::Connection,
+) -> Result<Option<Metadata>, ProjectionError> {
+    let mut rows = connection
+        .query(
+            "SELECT schema_version, root, view_version, row_count \
+             FROM backend_projection_meta WHERE singleton=1",
+            (),
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(None);
+    };
+    Ok(Some(Metadata {
+        schema_version: row.get(0)?,
+        root: row.get(1)?,
+        view_version: row.get(2)?,
+        row_count: row.get(3)?,
+    }))
+}
+
+async fn package_graph_metadata_from(
+    connection: &turso::Connection,
+) -> Result<Option<PackageGraphMetadata>, ProjectionError> {
+    let mut rows = connection
+        .query(
+            "SELECT root, edge_count FROM backend_projection_package_graph_meta \
+             WHERE singleton=1",
+            (),
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(None);
+    };
+    Ok(Some(PackageGraphMetadata {
+        root: row.get(0)?,
+        edge_count: row.get(1)?,
+    }))
+}
+
+async fn package_state_from(
+    connection: &turso::Connection,
+    root: &[u8],
+    source: &str,
+) -> Result<Option<PackageGraphState>, ProjectionError> {
+    let mut rows = connection
+        .query(
+            "SELECT state, reason FROM backend_projection_package_states \
+             WHERE root=?1 AND source=?2",
+            turso::params![root, source],
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(None);
+    };
+    Ok(Some(PackageGraphState {
+        source: source.to_owned(),
+        kind: row.get(0)?,
+        reason: row.get(1)?,
+    }))
+}
+
+impl TursoProjection {
     /// Replaces the package graph projection for one immutable view root.
     ///
     /// The graph is deliberately fenced independently from the UI row
@@ -448,7 +553,10 @@ impl TursoProjection {
     pub async fn synchronize_package_graph(
         &mut self,
         root: backend_library::ViewStateRoot,
-        facts: &[(PackageReference, DependencyFacts<Box<[PackageDependencyRecord]>>)],
+        facts: &[(
+            PackageReference,
+            DependencyFacts<Box<[PackageDependencyRecord]>>,
+        )],
     ) -> Result<ProjectionUpdate, ProjectionError> {
         let root_bytes = root.as_bytes();
         if let Some(metadata) = self.package_graph_metadata().await?
@@ -465,9 +573,20 @@ impl TursoProjection {
                 DependencyFacts::Unknown(_) | DependencyFacts::Unavailable(_) => 0,
             })
             .sum::<usize>();
-        let edge_count_i64 = i64::try_from(edge_count)
-            .map_err(|_| ProjectionError::GraphRowCountOverflow)?;
-        let tx = self.connection.transaction().await?;
+        let edge_count_i64 =
+            i64::try_from(edge_count).map_err(|_| ProjectionError::GraphRowCountOverflow)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
+            .await?;
+        if let Some(current) = package_graph_metadata_from(&tx).await?
+            && current.root.as_slice() == root_bytes
+        {
+            tx.rollback().await?;
+            return Ok(ProjectionUpdate::Reused {
+                rows: u64::try_from(current.edge_count).unwrap_or(0),
+            });
+        }
         tx.execute("DELETE FROM backend_projection_package_edges", ())
             .await?;
         tx.execute("DELETE FROM backend_projection_package_states", ())
@@ -505,12 +624,11 @@ impl TursoProjection {
         &self,
         source: &PackageReference,
     ) -> Result<RootedPackageGraph, ProjectionError> {
-        let metadata = self
-            .package_graph_metadata()
+        let tx = self.connection.unchecked_transaction().await?;
+        let metadata = package_graph_metadata_from(&tx)
             .await?
             .ok_or(ProjectionError::StaleTransition)?;
-        let mut rows = self
-            .connection
+        let mut rows = tx
             .query(
                 "SELECT edge_id, source, target_ecosystem, target_name, requirement, resolved, \
                  scope, optional, authority, frontier, provenance, facts_version \
@@ -523,9 +641,12 @@ impl TursoProjection {
         while let Some(row) = rows.next().await? {
             edges.push(decode_package_edge(&row)?);
         }
-        let state = self.package_state(&metadata.root, source.as_str()).await?;
+        drop(rows);
+        let root = metadata.root.clone().into_boxed_slice();
+        let state = package_state_from(&tx, &metadata.root, source.as_str()).await?;
+        tx.rollback().await?;
         Ok(RootedPackageGraph {
-            root: metadata.root.into_boxed_slice(),
+            root,
             edges: edges.into_boxed_slice(),
             state,
         })
@@ -540,19 +661,20 @@ impl TursoProjection {
         &self,
         target: &PackageReference,
     ) -> Result<RootedPackageGraph, ProjectionError> {
-        let metadata = self
-            .package_graph_metadata()
+        let tx = self.connection.unchecked_transaction().await?;
+        let metadata = package_graph_metadata_from(&tx)
             .await?
             .ok_or(ProjectionError::StaleTransition)?;
         let PackageReference::Purl(target_url) = target else {
+            let root = metadata.root.into_boxed_slice();
+            tx.rollback().await?;
             return Ok(RootedPackageGraph {
-                root: metadata.root.into_boxed_slice(),
+                root,
                 edges: Box::new([]),
                 state: None,
             });
         };
-        let mut rows = self
-            .connection
+        let mut rows = tx
             .query(
                 "SELECT edge_id, source, target_ecosystem, target_name, requirement, resolved, \
                  scope, optional, authority, frontier, provenance, facts_version \
@@ -560,7 +682,12 @@ impl TursoProjection {
                  AND target_name=?3 AND (resolved IS NULL OR resolved=?4) ORDER BY edge_id",
                 turso::params![
                     metadata.root.as_slice(),
-                    i64::from(target_url.package_type().registry().map_or(0, |value| value as u8)),
+                    i64::from(
+                        target_url
+                            .package_type()
+                            .registry()
+                            .map_or(0, |value| value as u8)
+                    ),
                     target_url.lineage_name(),
                     target.as_str()
                 ],
@@ -570,52 +697,14 @@ impl TursoProjection {
         while let Some(row) = rows.next().await? {
             edges.push(decode_package_edge(&row)?);
         }
+        drop(rows);
+        let root = metadata.root.into_boxed_slice();
+        tx.rollback().await?;
         Ok(RootedPackageGraph {
-            root: metadata.root.into_boxed_slice(),
+            root,
             edges: edges.into_boxed_slice(),
             state: None,
         })
-    }
-
-    async fn package_graph_metadata(&self) -> Result<Option<PackageGraphMetadata>, ProjectionError> {
-        let mut rows = self
-            .connection
-            .query(
-                "SELECT root, edge_count FROM backend_projection_package_graph_meta \
-                 WHERE singleton=1",
-                (),
-            )
-            .await?;
-        let Some(row) = rows.next().await? else {
-            return Ok(None);
-        };
-        Ok(Some(PackageGraphMetadata {
-            root: row.get(0)?,
-            edge_count: row.get(1)?,
-        }))
-    }
-
-    async fn package_state(
-        &self,
-        root: &[u8],
-        source: &str,
-    ) -> Result<Option<PackageGraphState>, ProjectionError> {
-        let mut rows = self
-            .connection
-            .query(
-                "SELECT state, reason FROM backend_projection_package_states \
-                 WHERE root=?1 AND source=?2",
-                turso::params![root, source],
-            )
-            .await?;
-        let Some(row) = rows.next().await? else {
-            return Ok(None);
-        };
-        Ok(Some(PackageGraphState {
-            source: source.to_owned(),
-            kind: row.get(0)?,
-            reason: row.get(1)?,
-        }))
     }
 }
 
@@ -739,8 +828,8 @@ fn decode_package_edge(row: &turso::Row) -> Result<PackageDependencyRecord, Proj
     let source = PackageReference::parse(row.get::<String>(1)?).map_err(|_| {
         ProjectionError::Database(turso::Error::Misuse("invalid graph source".to_owned()))
     })?;
-    let target_ecosystem = backend_library::RegistryEcosystem::parse_canonical(
-        match row.get::<i64>(2)? {
+    let target_ecosystem =
+        backend_library::RegistryEcosystem::parse_canonical(match row.get::<i64>(2)? {
             1 => "cargo",
             2 => "npm",
             3 => "pypi",
@@ -748,10 +837,15 @@ fn decode_package_edge(row: &turso::Row) -> Result<PackageDependencyRecord, Proj
             5 => "nuget",
             6 => "golang",
             7 => "cpp",
-            _ => return Err(ProjectionError::Database(turso::Error::Misuse("invalid graph ecosystem".to_owned()))),
-        },
-    )
-    .map_err(|_| ProjectionError::Database(turso::Error::Misuse("invalid graph ecosystem".to_owned())))?;
+            _ => {
+                return Err(ProjectionError::Database(turso::Error::Misuse(
+                    "invalid graph ecosystem".to_owned(),
+                )));
+            }
+        })
+        .map_err(|_| {
+            ProjectionError::Database(turso::Error::Misuse("invalid graph ecosystem".to_owned()))
+        })?;
     let name = backend_library::ProductText::new(row.get::<String>(3)?).map_err(|_| {
         ProjectionError::Database(turso::Error::Misuse("invalid graph target name".to_owned()))
     })?;
@@ -762,28 +856,46 @@ fn decode_package_edge(row: &turso::Row) -> Result<PackageDependencyRecord, Proj
         .get::<Option<String>>(5)?
         .map(|value| PackageReference::parse(value))
         .transpose()
-        .map_err(|_| ProjectionError::Database(turso::Error::Misuse("invalid graph resolution".to_owned())))?;
+        .map_err(|_| {
+            ProjectionError::Database(turso::Error::Misuse("invalid graph resolution".to_owned()))
+        })?;
     let scope = match row.get::<i64>(6)? {
         0 => DependencyScope::Runtime,
         1 => DependencyScope::Optional,
         2 => DependencyScope::Development,
         3 => DependencyScope::Build,
         4 => DependencyScope::Peer,
-        _ => return Err(ProjectionError::Database(turso::Error::Misuse("invalid graph scope".to_owned()))),
+        _ => {
+            return Err(ProjectionError::Database(turso::Error::Misuse(
+                "invalid graph scope".to_owned(),
+            )));
+        }
     };
     let authority = match row.get::<i64>(8)? {
         0 => DependencyAuthority::RegistryMetadata,
         1 => DependencyAuthority::ArchiveManifest,
         2 => DependencyAuthority::ForgeManifest,
         3 => DependencyAuthority::LocalManifest,
-        _ => return Err(ProjectionError::Database(turso::Error::Misuse("invalid graph authority".to_owned()))),
+        _ => {
+            return Err(ProjectionError::Database(turso::Error::Misuse(
+                "invalid graph authority".to_owned(),
+            )));
+        }
     };
     let frontier: Vec<u8> = row.get(9)?;
     let provenance: Vec<u8> = row.get(10)?;
     let facts_version: Vec<u8> = row.get(11)?;
-    let frontier: [u8; 32] = frontier.try_into().map_err(|_| ProjectionError::Database(turso::Error::Misuse("invalid graph frontier".to_owned())))?;
-    let provenance: [u8; 32] = provenance.try_into().map_err(|_| ProjectionError::Database(turso::Error::Misuse("invalid graph provenance".to_owned())))?;
-    let facts_version: [u8; 32] = facts_version.try_into().map_err(|_| ProjectionError::Database(turso::Error::Misuse("invalid graph facts version".to_owned())))?;
+    let frontier: [u8; 32] = frontier.try_into().map_err(|_| {
+        ProjectionError::Database(turso::Error::Misuse("invalid graph frontier".to_owned()))
+    })?;
+    let provenance: [u8; 32] = provenance.try_into().map_err(|_| {
+        ProjectionError::Database(turso::Error::Misuse("invalid graph provenance".to_owned()))
+    })?;
+    let facts_version: [u8; 32] = facts_version.try_into().map_err(|_| {
+        ProjectionError::Database(turso::Error::Misuse(
+            "invalid graph facts version".to_owned(),
+        ))
+    })?;
     let record = PackageDependencyRecord::new(
         source,
         backend_library::PackageDependencyTarget {
@@ -794,7 +906,11 @@ fn decode_package_edge(row: &turso::Row) -> Result<PackageDependencyRecord, Proj
         },
         scope,
         row.get::<i64>(7)? != 0,
-        backend_library::DependencyEvidence { authority, frontier, provenance },
+        backend_library::DependencyEvidence {
+            authority,
+            frontier,
+            provenance,
+        },
     );
     if record.facts_version != facts_version {
         return Err(ProjectionError::Database(turso::Error::Misuse(
@@ -1026,6 +1142,8 @@ mod tests {
         RegistryEcosystem,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::thread;
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
@@ -1152,6 +1270,190 @@ mod tests {
     }
 
     #[test]
+    fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
+        futures_executor::block_on(async {
+            const READERS: usize = 12;
+            const WRITERS: usize = 4;
+
+            let path = path();
+            let base = root(Vec::new());
+            let package = package_key("workspace");
+            let first_row = Row::new(RowId::Package(package), base.basis(), "workspace");
+            let first_prepared = base
+                .prepare(
+                    ViewDelta::Upsert { row: first_row },
+                    capability(base.basis().object),
+                )
+                .unwrap_or_else(|error| panic!("prepare first delta: {error:?}"));
+            let (first_view, first_delta) = base
+                .clone()
+                .commit(first_prepared)
+                .unwrap_or_else(|error| panic!("commit first delta: {error:?}"));
+            let second_row = Row::new(
+                RowId::Package(package_key("workspace-v2")),
+                first_view.basis(),
+                "workspace-v2",
+            );
+            let second_prepared = first_view
+                .prepare(
+                    ViewDelta::Upsert { row: second_row },
+                    capability(first_view.basis().object),
+                )
+                .unwrap_or_else(|error| panic!("prepare second delta: {error:?}"));
+            let (second_view, second_delta) = first_view
+                .clone()
+                .commit(second_prepared)
+                .unwrap_or_else(|error| panic!("commit second delta: {error:?}"));
+
+            let mut initial = TursoProjection::open(&path)
+                .await
+                .unwrap_or_else(|error| panic!("open initial projection: {error}"));
+            assert_eq!(
+                initial
+                    .synchronize(&base)
+                    .await
+                    .unwrap_or_else(|error| panic!("synchronize base: {error}")),
+                ProjectionUpdate::Rebuilt { rows: 0 }
+            );
+            drop(initial);
+
+            let barrier = Arc::new(Barrier::new(READERS + WRITERS));
+            let (reader_sender, reader_receiver) = mpsc::channel();
+            let (writer_sender, writer_receiver) = mpsc::channel();
+            let mut handles = Vec::with_capacity(READERS + WRITERS);
+
+            for _ in 0..READERS {
+                let barrier = Arc::clone(&barrier);
+                let sender = reader_sender.clone();
+                let path = path.clone();
+                let base = base.clone();
+                handles.push(thread::spawn(move || {
+                    let prepared = futures_executor::block_on(async {
+                        let mut projection = TursoProjection::open(&path).await?;
+                        let update = projection.synchronize(&base).await?;
+                        if !matches!(update, ProjectionUpdate::Reused { .. }) {
+                            return Err(ProjectionError::StaleTransition);
+                        }
+                        Ok(projection)
+                    });
+                    barrier.wait();
+                    let result = match prepared {
+                        Ok(projection) => {
+                            futures_executor::block_on(projection.search("workspace", 8))
+                        }
+                        Err(error) => Err(error),
+                    };
+                    sender.send(result).expect("reader result receiver");
+                }));
+            }
+
+            for _ in 0..WRITERS {
+                let barrier = Arc::clone(&barrier);
+                let sender = writer_sender.clone();
+                let path = path.clone();
+                let base = base.clone();
+                let first_delta = first_delta.clone();
+                handles.push(thread::spawn(move || {
+                    let prepared = futures_executor::block_on(async {
+                        let mut projection = TursoProjection::open(&path).await?;
+                        let update = projection.synchronize(&base).await?;
+                        if !matches!(update, ProjectionUpdate::Reused { .. }) {
+                            return Err(ProjectionError::StaleTransition);
+                        }
+                        Ok(projection)
+                    });
+                    barrier.wait();
+                    let result = match prepared {
+                        Ok(mut projection) => {
+                            futures_executor::block_on(projection.apply(&first_delta))
+                        }
+                        Err(error) => Err(error),
+                    };
+                    sender.send(result).expect("writer result receiver");
+                }));
+            }
+            drop(reader_sender);
+            drop(writer_sender);
+
+            for handle in handles {
+                handle.join().expect("stress worker should not panic");
+            }
+
+            for _ in 0..READERS {
+                let rows = reader_receiver
+                    .recv()
+                    .unwrap_or_else(|error| panic!("reader result: {error}"))
+                    .unwrap_or_else(|error| panic!("reader failed: {error}"));
+                let is_base = rows.root.as_ref() == base.root().as_bytes();
+                let is_first = rows.root.as_ref() == first_view.root().as_bytes();
+                assert!(is_base || is_first, "reader crossed a committed root fence");
+                assert_eq!(rows.ids.len(), usize::from(is_first));
+            }
+
+            let mut advanced = 0;
+            let mut stale = 0;
+            for _ in 0..WRITERS {
+                match writer_receiver
+                    .recv()
+                    .unwrap_or_else(|error| panic!("writer result: {error}"))
+                {
+                    Ok(ProjectionUpdate::Advanced { changed_rows }) => {
+                        assert_eq!(changed_rows, 1);
+                        advanced += 1;
+                    }
+                    Err(ProjectionError::StaleTransition) => stale += 1,
+                    other => panic!("unexpected overlapping writer outcome: {other:?}"),
+                }
+            }
+            assert_eq!(advanced, 1, "exactly one writer may publish the base delta");
+            assert_eq!(stale, WRITERS - 1, "losers must be typed stale transitions");
+
+            let mut restarted = TursoProjection::open(&path)
+                .await
+                .unwrap_or_else(|error| panic!("reopen projection: {error}"));
+            assert_eq!(
+                restarted
+                    .synchronize(&first_view)
+                    .await
+                    .unwrap_or_else(|error| panic!("restart recovery: {error}")),
+                ProjectionUpdate::Reused { rows: 1 }
+            );
+            assert_eq!(
+                restarted
+                    .apply(&second_delta)
+                    .await
+                    .unwrap_or_else(|error| panic!("publish second delta: {error}")),
+                ProjectionUpdate::Advanced { changed_rows: 1 }
+            );
+            assert_eq!(
+                restarted
+                    .synchronize(&second_view)
+                    .await
+                    .unwrap_or_else(|error| panic!("second exact-root no-op: {error}")),
+                ProjectionUpdate::Reused { rows: 2 }
+            );
+            assert_eq!(
+                restarted
+                    .apply_all(&[])
+                    .await
+                    .unwrap_or_else(|error| panic!("empty delta no-op: {error}")),
+                ProjectionUpdate::Reused { rows: 2 }
+            );
+            let rows = restarted
+                .search("workspace", 8)
+                .await
+                .unwrap_or_else(|error| panic!("post-restart search: {error}"));
+            assert_eq!(rows.root.as_ref(), second_view.root().as_bytes());
+            assert_eq!(rows.ids.len(), 2);
+
+            for suffix in ["", "-wal", "-shm"] {
+                let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
+                let _ = std::fs::remove_file(sidecar);
+            }
+        });
+    }
+
+    #[test]
     fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
         futures_executor::block_on(async {
             let path = path();
@@ -1160,13 +1462,8 @@ mod tests {
             let target = PackageReference::parse("pkg:cargo/serde@1.0.0").expect("target");
             let edge = PackageDependencyRecord::new(
                 source.clone(),
-                PackageDependencyTarget::new(
-                    RegistryEcosystem::Cargo,
-                    "serde",
-                    "^1",
-                    None,
-                )
-                .expect("target facts"),
+                PackageDependencyTarget::new(RegistryEcosystem::Cargo, "serde", "^1", None)
+                    .expect("target facts"),
                 DependencyScope::Runtime,
                 false,
                 DependencyEvidence {
@@ -1194,16 +1491,20 @@ mod tests {
                     .expect("reuse graph"),
                 ProjectionUpdate::Reused { rows: 1 }
             );
-            let forward = projection.package_dependencies(&source).await.expect("forward");
+            let forward = projection
+                .package_dependencies(&source)
+                .await
+                .expect("forward");
             assert_eq!(forward.edges.as_ref(), &[edge]);
-            let reverse = projection.package_dependents(&target).await.expect("reverse");
+            let reverse = projection
+                .package_dependents(&target)
+                .await
+                .expect("reverse");
             assert_eq!(reverse.edges.len(), 1);
             assert_eq!(reverse.edges[0].source, source);
             let unknown = vec![(
                 target.clone(),
-                DependencyFacts::Unavailable(
-                    ProductText::new("metadata timeout").expect("reason"),
-                ),
+                DependencyFacts::Unavailable(ProductText::new("metadata timeout").expect("reason")),
             )];
             let next = view_state_root(&[("graph".to_owned(), "next".to_owned())]);
             projection
