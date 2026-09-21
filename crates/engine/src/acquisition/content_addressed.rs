@@ -110,6 +110,11 @@ pub enum ContentStoreError {
     TransferBusy,
     /// A claimed object on disk failed an explicit integrity verification.
     CorruptObject { path: PathBuf },
+    /// A caller rejected the staged bytes before immutable publication.
+    ///
+    /// The temporary is moved to quarantine before this error is returned so
+    /// an integrity or policy rejection can never become a reachable object.
+    VerificationRejected { quarantine: Option<PathBuf> },
     /// A supplied archive path is not a safe canonical relative path.
     InvalidArchivePath,
     /// An archive path was admitted more than once.
@@ -149,6 +154,9 @@ impl fmt::Display for ContentStoreError {
             }
             Self::CorruptObject { path } => {
                 write!(formatter, "content object is corrupt: {}", path.display())
+            }
+            Self::VerificationRejected { .. } => {
+                formatter.write_str("staged content failed adapter verification")
             }
             Self::InvalidArchivePath => {
                 formatter.write_str("archive path is not canonical and relative")
@@ -524,9 +532,35 @@ impl ContentAddressedStore {
         mut source: R,
         maximum: u64,
     ) -> Result<ObjectAdmission, ContentStoreError> {
+        self.admit_reader_verified(expected, &mut source, maximum, |_path, _bytes, _object| {
+            Ok(())
+        })
+    }
+
+    /// Streams one object into private storage, lets an adapter verify the
+    /// closed temporary file, and publishes only after that verification
+    /// succeeds.
+    ///
+    /// The verifier receives a stable path after the temporary has been
+    /// flushed and closed. This keeps adapter-specific checksum logic outside
+    /// the content store while retaining one publication path for every
+    /// producer. A rejected temporary is quarantined and never linked into
+    /// the immutable object namespace.
+    pub fn admit_reader_verified<R, V>(
+        &self,
+        expected: Option<RawArchiveObjectId>,
+        mut source: R,
+        maximum: u64,
+        verifier: V,
+    ) -> Result<ObjectAdmission, ContentStoreError>
+    where
+        R: Read,
+        V: FnOnce(&Path, u64, RawArchiveObjectId) -> Result<(), ContentStoreError>,
+    {
         if let Some(object) = expected
             && let Some(bytes) = self.object_len(object)?
         {
+            self.verify_object(object, maximum)?;
             return Ok(ObjectAdmission::Reused { object, bytes });
         }
         let mut temp = self.create_temp("object")?;
@@ -542,7 +576,37 @@ impl ContentAddressedStore {
                 quarantine: Some(quarantine),
             });
         }
+        temp.sync_close()?;
+        if let Err(error) = verifier(temp.path(), length, actual) {
+            let quarantine = temp.quarantine("verification").ok();
+            if matches!(error, ContentStoreError::VerificationRejected { .. }) {
+                return Err(ContentStoreError::VerificationRejected { quarantine });
+            }
+            return Err(error);
+        }
         self.publish_temp(&mut temp, actual, length)
+    }
+
+    /// Admits every regular file below a local directory into the same
+    /// content-addressed object root used by registry archives, then returns
+    /// one canonical tree. Paths are slash-separated and traversal is
+    /// deterministic, so an archive adapter can construct the identical tree
+    /// without copying or rehashing unchanged file bytes.
+    pub fn admit_directory(
+        &self,
+        root: impl AsRef<Path>,
+        budget: ArchiveBudget,
+    ) -> Result<ArchiveManifest, ContentStoreError> {
+        let root = root.as_ref();
+        if !root.is_dir() {
+            return Err(ContentStoreError::Io(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "source root is not a directory",
+            )));
+        }
+        let mut builder = ArchiveManifestBuilder::new(budget);
+        admit_directory_entries(self, root, root, &mut builder, budget.max_entry_bytes)?;
+        builder.finish()
     }
 
     fn publish_temp(
@@ -559,7 +623,7 @@ impl ContentAddressedStore {
         let admission = match fs::hard_link(temp.path(), &target) {
             Ok(()) => ObjectAdmission::Published { object, bytes },
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let existing = fs::metadata(&target)?.len();
+                let existing = self.verify_object(object, bytes)?;
                 ObjectAdmission::Reused {
                     object,
                     bytes: existing,
@@ -574,7 +638,7 @@ impl ContentAddressedStore {
                 {
                     Ok(file) => file,
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        let existing = fs::metadata(&target)?.len();
+                        let existing = self.verify_object(object, bytes)?;
                         return Ok(ObjectAdmission::Reused {
                             object,
                             bytes: existing,
@@ -639,6 +703,42 @@ impl ContentAddressedStore {
     ) -> Result<ResumableTransfer, ContentStoreError> {
         ResumableTransfer::open(self.clone(), id, expected, expected_length)
     }
+}
+
+fn admit_directory_entries(
+    store: &ContentAddressedStore,
+    root: &Path,
+    directory: &Path,
+    builder: &mut ArchiveManifestBuilder,
+    maximum_entry_bytes: u64,
+) -> Result<(), ContentStoreError> {
+    let mut children = fs::read_dir(directory)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    children.sort();
+    for path in children {
+        let file_type = fs::symlink_metadata(&path)?.file_type();
+        if file_type.is_dir() {
+            admit_directory_entries(store, root, &path, builder, maximum_entry_bytes)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            return Err(ContentStoreError::InvalidArchivePath);
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| ContentStoreError::InvalidArchivePath)?
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        let metadata = fs::metadata(&path)?;
+        if metadata.len() > maximum_entry_bytes {
+            return Err(ContentStoreError::ArchiveBytesLimit);
+        }
+        let mut file = File::open(&path)?;
+        let admission = store.admit_reader(None, &mut file, maximum_entry_bytes)?;
+        builder.push_file(relative, admission.object(), admission.bytes(), 0)?;
+    }
+    Ok(())
 }
 
 fn stream_to_temp<R: Read>(
@@ -990,7 +1090,20 @@ impl ResumableTransfer {
     }
 
     /// Verifies and atomically publishes the completed transfer.
-    pub fn finish(mut self) -> Result<ObjectAdmission, ContentStoreError> {
+    pub fn finish(self) -> Result<ObjectAdmission, ContentStoreError> {
+        self.finish_verified(|_path, _bytes, _object| Ok(()))
+    }
+
+    /// Verifies a completed transfer with an adapter before publishing it.
+    ///
+    /// This is the durable counterpart to
+    /// [`ContentAddressedStore::admit_reader_verified`]. The transfer bytes
+    /// remain private until the verifier accepts them, so a process crash or
+    /// a rejected checksum cannot leave a reachable untrusted object.
+    pub fn finish_verified<V>(mut self, verifier: V) -> Result<ObjectAdmission, ContentStoreError>
+    where
+        V: FnOnce(&Path, u64, RawArchiveObjectId) -> Result<(), ContentStoreError>,
+    {
         let received = self.checkpoint.received;
         if let Some(expected_length) = self.checkpoint.expected_length
             && received != expected_length
@@ -1017,6 +1130,16 @@ impl ResumableTransfer {
                 quarantine: Some(quarantine),
             });
         }
+        if let Some(file) = self.file.take() {
+            file.sync_all()?;
+        }
+        if let Err(error) = verifier(&self.data_path, received, actual) {
+            let quarantine = self.quarantine("verification").ok();
+            if matches!(error, ContentStoreError::VerificationRejected { .. }) {
+                return Err(ContentStoreError::VerificationRejected { quarantine });
+            }
+            return Err(error);
+        }
         let target = self.store.object_path_for(actual);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
@@ -1029,7 +1152,7 @@ impl ResumableTransfer {
             },
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => ObjectAdmission::Reused {
                 object: actual,
-                bytes: fs::metadata(&target)?.len(),
+                bytes: self.store.verify_object(actual, received)?,
             },
             Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
                 let mut source = File::open(&self.data_path)?;
@@ -1064,7 +1187,7 @@ impl ResumableTransfer {
         mut self,
         object: RawArchiveObjectId,
     ) -> Result<ObjectAdmission, ContentStoreError> {
-        let bytes = fs::metadata(self.store.object_path_for(object))?.len();
+        let bytes = self.store.verify_object(object, self.checkpoint.received)?;
         fs::remove_file(&self.data_path)?;
         let _ = fs::remove_file(&self.state_path);
         let _ = fs::remove_file(&self.owner_path);
@@ -1180,9 +1303,13 @@ fn read_checkpoint(path: &Path) -> Result<Option<TransferCheckpoint>, ContentSto
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{
-        Arc, Barrier,
-        atomic::{AtomicUsize, Ordering},
+    use crate::acquisition::SourceSnapshot;
+    use std::{
+        io::Write,
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
     fn root(label: &str) -> PathBuf {
@@ -1284,6 +1411,29 @@ mod tests {
     }
 
     #[test]
+    fn adapter_rejection_is_quarantined_before_publication() {
+        let path = root("verified-rejection");
+        clean(&path);
+        let store = ContentAddressedStore::open(&path).expect("store");
+        let error = store
+            .admit_reader_verified(None, &b"untrusted"[..], 1024, |_path, _bytes, _object| {
+                Err(ContentStoreError::VerificationRejected { quarantine: None })
+            })
+            .expect_err("adapter rejection");
+        let ContentStoreError::VerificationRejected { quarantine } = error else {
+            panic!("wrong error")
+        };
+        assert!(quarantine.is_some_and(|path| path.exists()));
+        assert_eq!(
+            fs::read_dir(store.root().join("objects"))
+                .expect("objects")
+                .count(),
+            0
+        );
+        clean(&path);
+    }
+
+    #[test]
     fn active_temp_survives_stale_scavenge() {
         let path = root("scavenge");
         clean(&path);
@@ -1342,5 +1492,48 @@ mod tests {
         let manifest = builder.finish().expect("manifest");
         assert_eq!(manifest.entries().len(), 1);
         assert_eq!(manifest.bytes(), 6);
+    }
+
+    #[test]
+    fn local_directory_and_archive_rows_share_tree_and_snapshot_identity() {
+        let source_root = root("tree-source");
+        let store_root = root("tree-store");
+        clean(&source_root);
+        clean(&store_root);
+        fs::create_dir_all(source_root.join("src")).expect("source directory");
+        let mut main = File::create(source_root.join("src/main.rs")).expect("source file");
+        main.write_all(b"fn main() {}\n").expect("source bytes");
+        fs::write(source_root.join("README.md"), b"# sample\n").expect("readme");
+
+        let store = ContentAddressedStore::open(&store_root).expect("store");
+        let local = store
+            .admit_directory(&source_root, ArchiveBudget::default())
+            .expect("local admission");
+        // The archive row extent is supplied by its archive metadata in the
+        // real adapter. Rebuild the rows with the local file lengths so only
+        // the canonical object identities determine the tree root.
+        let mut archive = ArchiveManifestBuilder::new(ArchiveBudget::default());
+        for entry in local.entries() {
+            let bytes = fs::metadata(source_root.join(entry.path.as_ref()))
+                .expect("source metadata")
+                .len();
+            archive
+                .push_file(Arc::clone(&entry.path), entry.object, bytes, entry.mode)
+                .expect("archive row");
+        }
+        let archive = archive.finish().expect("archive admission");
+        assert_eq!(local.id(), archive.id());
+        assert_eq!(local.entries(), archive.entries());
+
+        let source = [7; ID_BYTES];
+        let cursor = [9; ID_BYTES];
+        let local_snapshot = SourceSnapshot::new(source, cursor, 1, local.tree_arc(), Vec::new())
+            .expect("local snapshot");
+        let archive_snapshot =
+            SourceSnapshot::new(source, cursor, 1, archive.tree_arc(), Vec::new())
+                .expect("archive snapshot");
+        assert_eq!(local_snapshot.id(), archive_snapshot.id());
+        clean(&source_root);
+        clean(&store_root);
     }
 }

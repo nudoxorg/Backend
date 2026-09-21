@@ -9,6 +9,8 @@ pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, Registry
 
 use super::AcquisitionError;
 use crate::capability::CapabilityArtifactId;
+use backend_version::{ObjectVersionHasher, Schema, SchemaIdentity};
+use std::io::Read;
 
 /// Stable public identity of a registry source. Credentials are excluded.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -51,6 +53,53 @@ impl PublishedArtifactClaim {
     pub fn admit(self, bytes: &[u8]) -> Result<CapabilityArtifactId, AcquisitionError> {
         let id = CapabilityArtifactId::from_value(bytes);
         if id.as_bytes() == &self.0 {
+            Ok(id)
+        } else {
+            Err(AcquisitionError::CorruptJournal)
+        }
+    }
+
+    /// Recomputes and admits the canonical artifact identity from a bounded
+    /// stream without materializing the payload. Recovery uses this path to
+    /// validate durable receipts while leaving the one unavoidable byte copy
+    /// to capability installation itself.
+    pub(crate) fn admit_reader<R: Read>(
+        self,
+        mut reader: R,
+        length: u64,
+    ) -> Result<CapabilityArtifactId, AcquisitionError> {
+        let payload_length = usize::try_from(length).map_err(|_| AcquisitionError::Bounds)?;
+        let schema = SchemaIdentity::new(
+            crate::capability::CapabilityArtifactSchema::DOMAIN,
+            crate::capability::CapabilityArtifactSchema::TYPE,
+            crate::capability::CapabilityArtifactSchema::VERSION,
+        );
+        let mut hasher = ObjectVersionHasher::new(schema, payload_length)
+            .map_err(|_| AcquisitionError::Bounds)?;
+        let mut total = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            total = total
+                .checked_add(u64::try_from(read).map_err(|_| AcquisitionError::Bounds)?)
+                .ok_or(AcquisitionError::Bounds)?;
+            if total > length {
+                return Err(AcquisitionError::CorruptJournal);
+            }
+            hasher
+                .update(&buffer[..read])
+                .map_err(|_| AcquisitionError::CorruptJournal)?;
+        }
+        if total != length {
+            return Err(AcquisitionError::CorruptJournal);
+        }
+        let id = hasher
+            .finish_version::<crate::capability::CapabilityArtifactSchema>()
+            .map_err(|_| AcquisitionError::CorruptJournal)?;
+        if *id.as_bytes() == self.0 {
             Ok(id)
         } else {
             Err(AcquisitionError::CorruptJournal)

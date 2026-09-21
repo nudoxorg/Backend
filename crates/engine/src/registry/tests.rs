@@ -798,6 +798,81 @@ fn crash_after_object_write_recovers_the_same_pending_intent() {
 }
 
 #[test]
+fn registry_archive_stage_restarts_from_its_durable_transfer_checkpoint() {
+    let archive = b"checkpointed registry archive".to_vec();
+    let digest = *CapabilityArtifactId::from_value(&archive).as_bytes();
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/checkpoint@1.0.0").expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(digest),
+        provenance: ProvenanceDigest::from_authenticated_feed([4; 32]),
+        facts: ReleaseFacts::default(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from("https://registry.example.test/checkpoint.crate"),
+    };
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://registry.example.test")
+        .expect("endpoint");
+    let root = temporary("archive-stage-resume");
+    let faults = Arc::new(Faults::default());
+    faults.arm(Boundary::ObjectWrite);
+    let (owner, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("owner");
+    let owner = owner.with_faults(Arc::clone(&faults));
+    let stage = owner.archive_stage();
+    let error = stage
+        .verify_and_store(
+            &package,
+            ArchiveArtifact::from_bytes(archive.clone()),
+            archive.len(),
+            backend_advisory::AdvisoryPackageDto::unknown(),
+        )
+        .expect_err("fault before publication");
+    assert!(matches!(error, AcquisitionError::Injected(_)));
+    let transfer_root = storage_root(&root, &endpoint)
+        .join("registry-content")
+        .join("transfers");
+    assert!(
+        fs::read_dir(&transfer_root)
+            .expect("transfer directory")
+            .any(|entry| entry.ok().is_some_and(|entry| entry
+                .path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                == Some("part")))
+    );
+    drop(owner);
+
+    let (reopened, _) =
+        RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
+            .expect("reopen owner");
+    let publication = reopened
+        .archive_stage()
+        .verify_and_store(
+            &package,
+            ArchiveArtifact::from_bytes(archive.clone()),
+            archive.len(),
+            backend_advisory::AdvisoryPackageDto::unknown(),
+        )
+        .expect("resume and publish");
+    assert_eq!(
+        publication.raw_object,
+        crate::acquisition::RawArchiveObjectId::from_bytes(&archive)
+    );
+    assert_eq!(publication.bytes, archive.len() as u64);
+    assert!(
+        fs::read_dir(&transfer_root)
+            .expect("transfer directory")
+            .all(|entry| entry.ok().is_none_or(|entry| entry
+                .path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                != Some("part")))
+    );
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
 fn offline_policy_never_calls_transport_and_secrets_are_redacted() {
     struct PanicTransport;
     impl RegistryTransport for PanicTransport {
@@ -2290,7 +2365,7 @@ fn cold_cache_resolution_is_typed_for_every_ecosystem() {
             layout.join("registry.journal").is_file(),
             "{ecosystem:?} cache root is not deterministic"
         );
-        assert!(layout.join("registry-objects").is_dir());
+        assert!(layout.join("registry-content").is_dir());
         fs::remove_dir_all(root).expect("cleanup");
     }
 }
@@ -2314,7 +2389,7 @@ fn acquisition_cache_layout_is_deterministic_and_ecosystem_scoped() {
         RegistryOwner::open(&root, cargo.clone(), AcquisitionPolicy::Offline, limits())
             .expect("owner");
     assert!(cargo_root.join("registry.journal").is_file());
-    assert!(cargo_root.join("registry-objects").is_dir());
+    assert!(cargo_root.join("registry-content").is_dir());
     drop(owner);
     let (_, recovery) =
         RegistryOwner::open(&root, cargo, AcquisitionPolicy::Offline, limits()).expect("reopen");
@@ -3028,9 +3103,13 @@ fn read_artifact_unknown_is_none_and_tamper_is_corruption() {
     assert_eq!(owner.published_packages().len(), 1);
     server.join().expect("server");
     // Tampering with the content-addressed object is corruption, not a new version.
+    let raw = receipt.packages[0].raw_object.to_bytes();
+    let encoded = transport::hex(&raw);
     let object_path = storage_root(&root, &endpoint)
-        .join("registry-objects")
-        .join(transport::hex(&digest));
+        .join("registry-content")
+        .join("objects")
+        .join(&encoded[..2])
+        .join(&encoded[2..]);
     let mut tampered = archive.to_vec();
     tampered[0] ^= 0xff;
     fs::write(&object_path, &tampered).expect("tamper");

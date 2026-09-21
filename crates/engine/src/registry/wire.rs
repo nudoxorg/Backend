@@ -1,20 +1,21 @@
 //! Canonical registry journal grammar.
 
 use super::identity::{admit_registry_coordinate, coordinate_from_registry_parts};
-use backend_advisory::AdvisoryPackageDto;
 use super::{
     AcquisitionError, AcquisitionIntent, AcquisitionReceipt, CanonicalFeedV1, DownloadCount,
     DownloadCountGap, FeedCursor, PackageName, PackageVersion, ProvenanceDigest,
     PublishedArtifactClaim, PublishedPackage, RegistryEcosystem, RegistryId, ReleaseFacts,
     ReleaseStanding, RemoteRegistry, SecurityStanding,
 };
+use crate::acquisition::RawArchiveObjectId;
 use crate::journal::{JournalCodec, JournalDomain, JournalError};
+use backend_advisory::AdvisoryPackageDto;
 
 pub(crate) enum RegistryLog {}
 impl JournalDomain for RegistryLog {
     const DOMAIN: u8 = 0x91;
     const TYPE: u16 = 1;
-    const VERSION: u8 = 4;
+    const VERSION: u8 = 5;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -126,6 +127,7 @@ fn put_package(out: &mut Vec<u8>, value: &PublishedPackage) {
     out.push(coordinate.ecosystem() as u8);
     put_text(out, name.as_str());
     put_text(out, coordinate.version().as_str());
+    out.extend_from_slice(value.raw_object.as_bytes());
     out.extend_from_slice(&value.artifact.as_bytes());
     put_u64(out, value.bytes);
     out.extend_from_slice(&value.provenance.as_bytes());
@@ -143,18 +145,21 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
         .map_err(|_| AcquisitionError::CorruptJournal)?;
     let name = PackageName::new(read_text(bytes, at)?)?;
     let version = PackageVersion::new(read_text(bytes, at)?)?;
+    let raw_object = RawArchiveObjectId::from_encoded(take_array(bytes, at)?);
     let digest = take_array(bytes, at)?;
     let byte_count = read_u64(bytes, at)?;
     let provenance = take_array(bytes, at)?;
     let upstream_integrity = take_array(bytes, at)?;
     let facts = read_facts(bytes, at)?;
-    let advisory_len = usize::try_from(read_u32(bytes, at)?).map_err(|_| AcquisitionError::Bounds)?;
+    let advisory_len =
+        usize::try_from(read_u32(bytes, at)?).map_err(|_| AcquisitionError::Bounds)?;
     if advisory_len > 4 * 1024 * 1024 {
         return Err(AcquisitionError::Bounds);
     }
     let advisory = serde_json::from_slice::<AdvisoryPackageDto>(take(bytes, at, advisory_len)?)
         .map_err(|_| AcquisitionError::CorruptJournal)?;
-    let dependency_len = usize::try_from(read_u32(bytes, at)?).map_err(|_| AcquisitionError::Bounds)?;
+    let dependency_len =
+        usize::try_from(read_u32(bytes, at)?).map_err(|_| AcquisitionError::Bounds)?;
     if dependency_len > 16 * 1024 * 1024 {
         return Err(AcquisitionError::Bounds);
     }
@@ -166,6 +171,7 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
         coordinate,
         registry,
         artifact: PublishedArtifactClaim::from_journal(digest),
+        raw_object,
         bytes: byte_count,
         provenance: ProvenanceDigest::from_journal(provenance),
         upstream_integrity,

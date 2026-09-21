@@ -3,18 +3,15 @@
 use std::{
     collections::BTreeMap,
     fmt,
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    fs::{self, File},
+    io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
 
 use crate::{
-    capability::CapabilityArtifactId,
+    acquisition::{ContentAddressedStore, ContentStoreError, RawArchiveObjectId, TransferId},
     effects::{EffectKey, effect_key},
     fault::{Boundary, Faults},
     journal::{HashChainJournal, JournalError},
@@ -66,8 +63,10 @@ pub struct PublishedPackage {
     /// Exact package coordinate.
     pub coordinate: PackageCoordinate,
     pub(crate) registry: super::RegistryCoordinate,
-    /// Canonical identity recomputed from downloaded bytes.
+    /// Canonical capability identity recomputed from downloaded bytes.
     pub artifact: PublishedArtifactClaim,
+    /// Raw content identity used by the shared local/registry object store.
+    pub raw_object: RawArchiveObjectId,
     /// Admitted archive byte extent.
     pub bytes: u64,
     /// Digest of authenticated provenance evidence.
@@ -251,7 +250,7 @@ pub struct RegistryOwner<S: FeedSchema = CanonicalFeedV1> {
     policy: AcquisitionPolicy,
     limits: AcquisitionLimits,
     journal: HashChainJournal<RegistryLog>,
-    objects: PathBuf,
+    objects: ContentAddressedStore,
     cursor: FeedCursor<RemoteRegistry, S>,
     pending: Option<AcquisitionIntent<S>>,
     last_receipt: Option<AcquisitionReceipt<S>>,
@@ -305,8 +304,8 @@ impl RegistryOwner {
         let limits = limits.validate()?;
         let root = storage_root(root.as_ref(), &endpoint);
         fs::create_dir_all(&root)?;
-        let objects = root.join("registry-objects");
-        fs::create_dir_all(&objects)?;
+        let objects = ContentAddressedStore::open(root.join("registry-content"))
+            .map_err(content_store_error)?;
         let (journal, recovery) =
             HashChainJournal::<RegistryLog>::open(root.join("registry.journal"))?;
         let mut cursor = FeedCursor::genesis(endpoint.id());
@@ -631,11 +630,13 @@ impl RegistryOwner {
         let Some(publication) = self.catalog.get(coordinate) else {
             return Ok(None);
         };
-        let path = self
-            .objects
-            .join(super::transport::hex(&publication.artifact.as_bytes()));
+        self.objects
+            .verify_object(publication.raw_object, publication.bytes)
+            .map_err(content_store_error)?;
         let mut bytes = Vec::new();
-        File::open(path)?
+        self.objects
+            .open_object(publication.raw_object)
+            .map_err(content_store_error)?
             .take(publication.bytes.saturating_add(1))
             .read_to_end(&mut bytes)?;
         if u64::try_from(bytes.len()).map_err(|_| AcquisitionError::Bounds)? != publication.bytes {
@@ -808,6 +809,7 @@ impl RegistryOwner {
                         coordinate: existing.coordinate.clone(),
                         registry: existing.registry.clone(),
                         artifact: existing.artifact,
+                        raw_object: existing.raw_object,
                         bytes: existing.bytes,
                         provenance: package.provenance,
                         upstream_integrity,
@@ -907,7 +909,7 @@ enum PageAcquisition {
 /// is first-writer-wins.
 #[derive(Clone)]
 pub(crate) struct ArchiveStageContext {
-    objects: PathBuf,
+    objects: ContentAddressedStore,
     limits: AcquisitionLimits,
     faults: Arc<Faults>,
 }
@@ -938,29 +940,52 @@ impl ArchiveStageContext {
         let mut reader = artifact
             .into_reader(self.limits.max_archive_bytes)
             .map_err(AcquisitionError::Transport)?;
-        let (temporary, artifact) = stage_verified_archive(&self.objects, package, &mut reader)?;
-        let registry = match super::admit_registry_coordinate(&package.coordinate) {
-            Ok(registry) => registry,
-            Err(error) => {
-                let _ = fs::remove_file(&temporary);
-                return Err(error);
-            }
-        };
+        let bytes = u64::try_from(bytes).map_err(|_| AcquisitionError::Bounds)?;
+        let registry = super::admit_registry_coordinate(&package.coordinate)?;
+        let mut transfer_key = Vec::with_capacity(
+            package.coordinate.as_str().len() + std::mem::size_of_val(&package.integrity_version()),
+        );
+        transfer_key.extend_from_slice(package.coordinate.as_str().as_bytes());
+        transfer_key.extend_from_slice(&package.integrity_version());
+        let transfer_id = TransferId::from_parts(&transfer_key, None, Some(bytes));
+        let mut transfer = self
+            .objects
+            .resume_or_start(transfer_id, None, Some(bytes))
+            .map_err(content_store_error)?;
+        let offset = transfer.resume_offset();
+        if offset > reader.length() {
+            return Err(AcquisitionError::CorruptJournal);
+        }
+        reader
+            .seek(SeekFrom::Start(offset))
+            .map_err(|_| AcquisitionError::Transport(TransportFailure::Protocol))?;
+        transfer
+            .append(&mut reader, bytes)
+            .map_err(content_store_error)?;
         if let Err(error) = self.faults.trip(Boundary::ObjectWrite) {
-            let _ = fs::remove_file(&temporary);
             return Err(AcquisitionError::Injected(error));
         }
-        publish_immutable(
-            &self.objects,
-            artifact,
-            temporary,
-            u64::try_from(bytes).map_err(|_| AcquisitionError::Bounds)?,
-        )?;
+        let mut capability = None;
+        let admission = transfer
+            .finish_verified(|path, length, _raw| {
+                let mut file = File::open(path).map_err(ContentStoreError::from)?;
+                let artifact = package
+                    .stream_to(&mut file, &mut io::sink(), length)
+                    .map_err(|_| ContentStoreError::VerificationRejected { quarantine: None })?;
+                capability = Some(artifact);
+                Ok(())
+            })
+            .map_err(content_store_error)?;
+        if admission.bytes() != bytes {
+            return Err(AcquisitionError::CorruptJournal);
+        }
+        let capability = capability.ok_or(AcquisitionError::CorruptJournal)?;
         Ok(PublishedPackage {
             coordinate: package.coordinate.clone(),
             registry,
-            artifact: PublishedArtifactClaim::verified(artifact),
-            bytes: u64::try_from(bytes).map_err(|_| AcquisitionError::Bounds)?,
+            artifact: PublishedArtifactClaim::verified(capability),
+            raw_object: admission.object(),
+            bytes,
             provenance: package.provenance,
             upstream_integrity: package.integrity_version(),
             facts: package.facts,
@@ -970,166 +995,44 @@ impl ArchiveStageContext {
     }
 }
 
-static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-fn stage_verified_archive(
-    directory: &Path,
-    package: &super::RemotePackage,
-    reader: &mut super::transport::ArchiveReader,
-) -> Result<(PathBuf, CapabilityArtifactId), AcquisitionError> {
-    let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temporary = directory.join(format!(".archive.{}.{}.tmp", std::process::id(), sequence));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temporary)?;
-    let length = reader.length();
-    let artifact = match package.stream_to(reader, &mut file, length) {
-        Ok(artifact) => artifact,
-        Err(error) => {
-            let _ = fs::remove_file(&temporary);
-            return Err(AcquisitionError::Transport(error));
+fn content_store_error(error: ContentStoreError) -> AcquisitionError {
+    match error {
+        ContentStoreError::Io(error) if error.kind() == io::ErrorKind::NotFound => {
+            AcquisitionError::CorruptJournal
         }
-    };
-    if let Err(error) = file.sync_all() {
-        drop(file);
-        let _ = fs::remove_file(&temporary);
-        return Err(error.into());
-    }
-    drop(file);
-    Ok((temporary, artifact))
-}
-
-fn write_immutable<R: Read>(
-    directory: &Path,
-    id: CapabilityArtifactId,
-    mut reader: R,
-    bytes: u64,
-) -> Result<(), AcquisitionError> {
-    let name = super::transport::hex(id.as_bytes());
-    let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temporary = directory.join(format!(".{name}.{}.{}.tmp", std::process::id(), sequence));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temporary)?;
-    if let Err(error) = copy_exact(&mut reader, &mut file, bytes) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error);
-    }
-    if let Err(error) = file.sync_all() {
-        drop(file);
-        let _ = fs::remove_file(&temporary);
-        return Err(error.into());
-    }
-    drop(file);
-    publish_immutable(directory, id, temporary, bytes)
-}
-
-fn publish_immutable(
-    directory: &Path,
-    id: CapabilityArtifactId,
-    temporary: PathBuf,
-    bytes: u64,
-) -> Result<(), AcquisitionError> {
-    let name = super::transport::hex(id.as_bytes());
-    let target = directory.join(&name);
-    if target.exists() {
-        let same = files_equal(&temporary, &target, bytes);
-        let _ = fs::remove_file(&temporary);
-        let same = same?;
-        if !same {
-            return Err(AcquisitionError::CorruptJournal);
+        ContentStoreError::Io(error) => AcquisitionError::Io(error),
+        ContentStoreError::Bounds { maximum } => AcquisitionError::Overrun {
+            measured: maximum,
+            limit: maximum,
+        },
+        ContentStoreError::ArchiveBytesLimit
+        | ContentStoreError::ArchiveEntryLimit
+        | ContentStoreError::ArchivePathLimit => AcquisitionError::Bounds,
+        ContentStoreError::DigestMismatch { .. }
+        | ContentStoreError::VerificationRejected { .. } => {
+            AcquisitionError::Transport(TransportFailure::Integrity)
         }
-        return Ok(());
-    }
-    match fs::hard_link(&temporary, &target) {
-        Ok(()) => {
-            fs::remove_file(&temporary)?;
-            File::open(directory)?.sync_all()?;
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let same = files_equal(&temporary, &target, bytes);
-            let _ = fs::remove_file(&temporary);
-            let same = same?;
-            if !same {
-                return Err(AcquisitionError::CorruptJournal);
-            }
-            Ok(())
-        }
-        Err(error) => {
-            let _ = fs::remove_file(&temporary);
-            return Err(error.into());
-        }
+        ContentStoreError::LengthMismatch { .. }
+        | ContentStoreError::TransferStateMismatch
+        | ContentStoreError::TransferBusy
+        | ContentStoreError::CorruptObject { .. }
+        | ContentStoreError::InvalidArchivePath
+        | ContentStoreError::DuplicateArchivePath => AcquisitionError::CorruptJournal,
     }
 }
 
-fn copy_exact<R: Read, W: Write>(
-    reader: &mut R,
-    writer: &mut W,
-    expected: u64,
-) -> Result<(), AcquisitionError> {
-    let mut buffer = [0_u8; 64 * 1024];
-    let mut total = 0_u64;
-    loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        total = total
-            .checked_add(u64::try_from(read).map_err(|_| AcquisitionError::Bounds)?)
-            .ok_or(AcquisitionError::Bounds)?;
-        if total > expected {
-            return Err(AcquisitionError::Overrun {
-                measured: total,
-                limit: expected,
-            });
-        }
-        writer.write_all(&buffer[..read])?;
-    }
-    if total != expected {
-        return Err(AcquisitionError::CorruptJournal);
-    }
-    Ok(())
-}
-
-fn files_equal(left: &Path, right: &Path, expected: u64) -> Result<bool, AcquisitionError> {
-    if fs::metadata(left)?.len() != expected || fs::metadata(right)?.len() != expected {
-        return Ok(false);
-    }
-    let mut left = File::open(left)?;
-    let mut right = File::open(right)?;
-    let mut left_buffer = [0_u8; 64 * 1024];
-    let mut right_buffer = [0_u8; 64 * 1024];
-    loop {
-        let left_read = left.read(&mut left_buffer)?;
-        let right_read = right.read(&mut right_buffer)?;
-        if left_read != right_read {
-            return Ok(false);
-        }
-        if left_read == 0 {
-            return Ok(true);
-        }
-        if left_buffer[..left_read] != right_buffer[..right_read] {
-            return Ok(false);
-        }
-    }
-}
 fn verify_receipt_objects(
-    directory: &Path,
+    store: &ContentAddressedStore,
     receipt: &AcquisitionReceipt,
 ) -> Result<(), AcquisitionError> {
     for package in &receipt.packages {
-        let path = directory.join(super::transport::hex(&package.artifact.as_bytes()));
-        let mut bytes = Vec::new();
-        File::open(path)?
-            .take(package.bytes.saturating_add(1))
-            .read_to_end(&mut bytes)?;
-        if u64::try_from(bytes.len()).map_err(|_| AcquisitionError::Bounds)? != package.bytes {
-            return Err(AcquisitionError::CorruptJournal);
-        }
-        let _ = package.artifact.admit(&bytes)?;
+        store
+            .verify_object(package.raw_object, package.bytes)
+            .map_err(content_store_error)?;
+        let file = store
+            .open_object(package.raw_object)
+            .map_err(content_store_error)?;
+        let _ = package.artifact.admit_reader(file, package.bytes)?;
     }
     Ok(())
 }
@@ -1143,32 +1046,37 @@ mod immutable_object_tests {
         let directory = std::env::temp_dir().join(format!(
             "backend-registry-object-race-{}-{}",
             std::process::id(),
-            TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            package_test_nonce()
         ));
-        fs::create_dir_all(&directory).expect("object directory");
+        let store = Arc::new(ContentAddressedStore::open(&directory).expect("object store"));
         let bytes = Arc::<[u8]>::from(vec![0x5a; 256 * 1024]);
-        let id = CapabilityArtifactId::from_value(&bytes);
         let mut writers = Vec::new();
         for _ in 0..16 {
-            let directory = directory.clone();
+            let store = Arc::clone(&store);
             let bytes = Arc::clone(&bytes);
             writers.push(std::thread::spawn(move || {
-                write_immutable(&directory, id, bytes.as_ref(), bytes.len() as u64)
+                store.admit_reader(None, bytes.as_ref(), bytes.len() as u64)
             }));
         }
+        let mut published = 0;
+        let mut object = None;
         for writer in writers {
-            writer.join().expect("writer thread").expect("publication");
+            let admission = writer.join().expect("writer thread").expect("publication");
+            published += usize::from(admission.was_published());
+            object = Some(admission.object());
         }
-        let target = directory.join(super::super::transport::hex(id.as_bytes()));
-        assert_eq!(fs::read(target).expect("published object"), &*bytes);
+        assert_eq!(published, 1);
+        let object = object.expect("object");
         assert_eq!(
-            fs::read_dir(&directory)
-                .expect("directory")
-                .filter_map(Result::ok)
-                .count(),
-            1
+            fs::read(store.object_path(object)).expect("published object"),
+            &*bytes
         );
         fs::remove_dir_all(directory).expect("cleanup");
+    }
+
+    fn package_test_nonce() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 }
 

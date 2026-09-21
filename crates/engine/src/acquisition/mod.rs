@@ -2635,6 +2635,7 @@ impl AcquisitionService {
                                     coordinate: existing.coordinate.clone(),
                                     registry: existing.registry.clone(),
                                     artifact: existing.artifact,
+                                    raw_object: existing.raw_object,
                                     bytes: existing.bytes,
                                     provenance: package.provenance,
                                     upstream_integrity: package.integrity_version(),
@@ -2838,8 +2839,7 @@ fn registry_catalog_snapshot(
         // extent. Rehydrate the object identity from those durable facts; a
         // warm snapshot must never reopen or hash every archive in the
         // catalog.
-        let object =
-            RawArchiveObjectId::from_verified_claim(package.bytes, package.artifact.as_bytes());
+        let object = package.raw_object;
         let coordinate = Arc::from(package.coordinate.as_str());
         entries.push(ManifestEntry {
             path: coordinate,
@@ -2901,8 +2901,7 @@ fn registry_result(
         .read_artifact(&package.coordinate)
         .map_err(|_| AcquisitionOutcome::Corrupt(CorruptReason::Journal))?
         .ok_or(AcquisitionOutcome::Corrupt(CorruptReason::Journal))?;
-    let object =
-        RawArchiveObjectId::from_verified_claim(package.bytes, package.artifact.as_bytes());
+    let object = package.raw_object;
     if request
         .artifact
         .is_some_and(|expected| expected != RawArchiveObjectId::from_bytes(artifact.bytes()))
