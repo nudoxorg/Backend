@@ -19,7 +19,9 @@ use super::actions::{
 use crate::host::lease::HostMode;
 use crate::reducer::model::Model;
 use crate::store::catalog::{Ask, CatalogStore};
-use crate::store::document::{DocumentStore, Subject, Target};
+use crate::store::document::{
+    DocumentStore, ReaderEntry, ReaderEntryFault, ReaderRoute, Subject, Target,
+};
 use crate::store::events::{CatalogEvent, DocumentEvent};
 use crate::store::index::IndexStore;
 use crate::store::jobs::{JobKind, JobsStore};
@@ -48,7 +50,6 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::tree::TreeState;
-use gpui_elements::editable_text::{EditableTextState, StringStorage, TextChanged};
 #[cfg(feature = "visual-harness")]
 use serde::Serialize;
 use std::path::PathBuf;
@@ -110,15 +111,19 @@ pub(crate) struct Workspace {
     pub(super) catalog: Entity<CatalogStore>,
     pub(super) registry: Entity<RegistryStore>,
     pub(super) shell: Entity<ShellStore>,
-    pub(super) field: Entity<EditableTextState>,
-    pub(super) coordinate: Entity<EditableTextState>,
+    pub(super) field: Entity<InputState>,
+    pub(super) coordinate: Entity<InputState>,
     /// Dedicated to the source sheet so in-page find never opens the omnibar.
-    pub(super) source_field: Entity<EditableTextState>,
+    pub(super) source_field: Entity<InputState>,
+    pending_field: Option<String>,
+    pending_coordinate: Option<String>,
     pub(super) adding: bool,
     pub(super) add_fault: Option<String>,
     pub(super) add_ecosystem: backend_library::RegistryEcosystem,
     pub(super) transients: TransientStack,
     pub(super) source_open: bool,
+    /// Focus target to restore when the source reader sheet is dismissed.
+    pub(super) source_restore_focus: Option<FocusHandle>,
     pub(super) source_cache: Option<super::source::SourceCache>,
     /// Graph source navigation waits for the internal document reader to
     /// settle before opening its captured-source sheet.
@@ -251,6 +256,8 @@ impl Workspace {
             field,
             coordinate,
             source_field,
+            pending_field: None,
+            pending_coordinate: None,
         } = stores;
         if capture_time.is_some() {
             shell.update(cx, |shell, cx| shell.set_capture_mode(true, cx));
@@ -272,6 +279,7 @@ impl Workspace {
             add_ecosystem: backend_library::RegistryEcosystem::Cargo,
             transients: TransientStack::default(),
             source_open: false,
+            source_restore_focus: None,
             source_cache: None,
             pending_graph_source: None,
             source_query_cache: None,
@@ -317,9 +325,12 @@ impl Workspace {
             catalog: cx.new(|_| CatalogStore::new(endpoint.clone())),
             registry: cx.new(|cx| RegistryStore::new(endpoint.clone(), window, cx)),
             shell: cx.new(|_| ShellStore::new(data, prefs)),
-            field: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
-            coordinate: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
-            source_field: cx.new(|cx| EditableTextState::new(StringStorage::default(), cx)),
+            field: cx.new(|cx| {
+                InputState::new(window, cx).placeholder("Search packages, files, or commands")
+            }),
+            coordinate: cx
+                .new(|cx| InputState::new(window, cx).placeholder("name, or name@version")),
+            source_field: cx.new(|cx| InputState::new(window, cx).placeholder("Find in source…")),
         }
     }
 
@@ -345,7 +356,7 @@ impl Workspace {
             cx.subscribe(parts.coordinate, |this, field, event: &InputEvent, cx| {
                 this.on_coordinate_typed(&field, event, cx);
             }),
-            cx.subscribe(parts.source_field, |_, _, _: &TextChanged, cx| cx.notify()),
+            cx.subscribe(parts.source_field, |_, _, _: &InputEvent, cx| cx.notify()),
         ]
     }
 
@@ -985,6 +996,49 @@ impl Workspace {
         self.dismiss_sheet(cx);
     }
 
+    /// Completes a typed package-to-reader handoff without inventing a page.
+    /// The document store validates its tab and index generations before it
+    /// creates or activates the real package tab.
+    pub(crate) fn open_reader_entry(
+        &mut self,
+        entry: &ReaderEntry,
+        target: Target,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<ReaderRoute, ReaderEntryFault> {
+        let route = self.document.update(cx, |document, cx| {
+            document.open_reader_entry(entry, target, cx)
+        });
+        if route.is_ok() {
+            self.remember(
+                Recent::Package {
+                    coordinate: entry.coordinate().to_owned(),
+                },
+                cx,
+            );
+            if let Ok(ReaderRoute::Search { scope }) = &route {
+                // Close any previous sheet first; setting the scoped query
+                // reopens the real search store and owns focus for the route.
+                self.dismiss_sheet(cx);
+                self.search.update(cx, |search, cx| {
+                    search.set_text(format!("@{scope} "), cx);
+                });
+                self.shell.update(cx, |shell, cx| {
+                    shell.focus_on(Focus::Omnibar, cx);
+                });
+                let handle = self.field.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            } else {
+                if matches!(&route, Ok(ReaderRoute::Source { .. })) {
+                    self.source_restore_focus = Some(self.focus.clone());
+                    self.source_open = true;
+                }
+                self.dismiss_sheet(cx);
+            }
+        }
+        route
+    }
+
     /// Records one subject in the reader's recents.
     fn remember(&mut self, entry: Recent, cx: &mut Context<Self>) {
         self.shell.update(cx, |shell, cx| shell.remember(entry, cx));
@@ -1461,12 +1515,13 @@ impl Workspace {
 
     fn find_in_source(&mut self, _: &FindInSource, window: &mut Window, cx: &mut Context<Self>) {
         if !self.source_open {
-            self.toggle_source(cx);
+            self.toggle_source(window, cx);
         }
         if !self.source_open {
             return;
         }
-        self.source_field.update(cx, EditableTextState::select_document);
+        self.source_field
+            .update(cx, |field, cx| field.select_all(window, cx));
         let handle = self.source_field.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
     }
@@ -1538,9 +1593,9 @@ impl Workspace {
             Subject::Declaration { symbol, .. } => {
                 Some(backend_library::encode_id(symbol.as_bytes()))
             }
-            Subject::Project { coordinate } | Subject::Package { coordinate } => {
-                Some(coordinate.clone())
-            }
+            Subject::Project { coordinate }
+            | Subject::Outline { coordinate }
+            | Subject::Package { coordinate } => Some(coordinate.clone()),
         }
     }
 
@@ -1610,9 +1665,8 @@ impl Workspace {
             self.restore_focus(window, cx);
             return;
         }
-        if self.transients.top() == Some(Transient::Source) || self.source_open {
-            self.close_source(cx);
-            self.restore_focus(window, cx);
+        if self.source_open {
+            self.close_source(window, cx);
             return;
         }
         if self.transients.top() == Some(Transient::Add) || self.adding {
@@ -1699,7 +1753,13 @@ impl Workspace {
     }
 
     fn accept(&mut self, _: &Accept, window: &mut Window, cx: &mut Context<Self>) {
-        if self.source_open && self.source_field.read(cx).focus_handle(cx).is_focused(window) {
+        if self.source_open
+            && self
+                .source_field
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        {
             self.move_source_match(1, cx);
             return;
         }
@@ -1815,9 +1875,9 @@ struct Stores {
     catalog: Entity<CatalogStore>,
     registry: Entity<RegistryStore>,
     shell: Entity<ShellStore>,
-    field: Entity<EditableTextState>,
-    coordinate: Entity<EditableTextState>,
-    source_field: Entity<EditableTextState>,
+    field: Entity<InputState>,
+    coordinate: Entity<InputState>,
+    source_field: Entity<InputState>,
 }
 
 /// Every entity the window observes, named so wiring stays one call.
@@ -1830,9 +1890,9 @@ struct Wiring<'a> {
     catalog: &'a Entity<CatalogStore>,
     registry: &'a Entity<RegistryStore>,
     shell: &'a Entity<ShellStore>,
-    field: &'a Entity<EditableTextState>,
-    coordinate: &'a Entity<EditableTextState>,
-    source_field: &'a Entity<EditableTextState>,
+    field: &'a Entity<InputState>,
+    coordinate: &'a Entity<InputState>,
+    source_field: &'a Entity<InputState>,
 }
 
 /// Returns how many rows one page-up or page-down step moves.

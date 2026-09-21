@@ -52,6 +52,7 @@ pub(crate) struct SourceView {
     lines: Arc<[Line]>,
     truncated: bool,
     doors: usize,
+    current_line: Option<usize>,
 }
 
 /// The result of searching one already-built source view.
@@ -60,7 +61,7 @@ pub(crate) struct SourceView {
 /// second source fetch or a substring copied into view state. That keeps the
 /// source sheet honest when the producer returned a partial excerpt and lets
 /// the caller report an exact count while preserving line numbers and links.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SourceSearch {
     matches: usize,
     first_line: Option<usize>,
@@ -100,6 +101,9 @@ impl SourceView {
         resolve: &dyn Fn(&str) -> Option<SymbolKey>,
     ) -> Self {
         let mut doors = 0_usize;
+        let current_line = lines
+            .iter()
+            .position(|line| line.number().get() == current);
         let lines: Arc<[Line]> = lines
             .iter()
             .map(|line| {
@@ -113,6 +117,7 @@ impl SourceView {
             lines,
             truncated: truncation == Truncation::Truncated,
             doors,
+            current_line,
         }
     }
 
@@ -124,6 +129,11 @@ impl SourceView {
     /// Returns how many identifiers on these lines open a page.
     pub(crate) const fn doors(&self) -> usize {
         self.doors
+    }
+
+    /// Returns the zero-based retained line matching the declaration anchor.
+    pub(crate) const fn current_line(&self) -> Option<usize> {
+        self.current_line
     }
 
     /// Searches the captured excerpt without changing its token or link data.
@@ -433,5 +443,33 @@ mod tests {
         assert_eq!(view.search(&theme, "missing").first_line(), None);
         assert_eq!(view.doors(), 0, "the own declaration is not a source door");
         assert_eq!(view.search(&theme, "Beacon").matches(), 1);
+    }
+
+    #[test]
+    fn source_anchor_resolves_to_the_retained_zero_based_line() {
+        let lines = [line(40, "before"), line(41, "pub fn ferris() {}"), line(42, "after")];
+        let view = SourceView::build(
+            &Theme::default(),
+            Language::Rust,
+            &lines,
+            41,
+            Truncation::Complete,
+            &|_| None,
+        );
+        assert_eq!(view.current_line(), Some(1));
+    }
+
+    #[test]
+    fn source_anchor_is_absent_when_capture_starts_after_the_declaration() {
+        let lines = [line(40, "before"), line(42, "after")];
+        let view = SourceView::build(
+            &Theme::default(),
+            Language::Rust,
+            &lines,
+            41,
+            Truncation::Truncated,
+            &|_| None,
+        );
+        assert_eq!(view.current_line(), None);
     }
 }

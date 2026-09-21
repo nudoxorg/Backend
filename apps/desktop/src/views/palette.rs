@@ -93,7 +93,10 @@ impl Workspace {
         if wanted.is_empty() {
             return match self.document.read(cx).tab()?.subject()? {
                 Subject::Declaration { symbol, .. } => Some(*symbol),
-                Subject::Home | Subject::Project { .. } | Subject::Package { .. } => None,
+                Subject::Home
+                | Subject::Project { .. }
+                | Subject::Outline { .. }
+                | Subject::Package { .. } => None,
             };
         }
         if wanted.contains("::") {

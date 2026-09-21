@@ -21,14 +21,14 @@ use crate::theme::tokens::{Space, hairline, space};
 use crate::ui::icon::Icon;
 use crate::ui::source::{self, SourceSearch, SourceView};
 use crate::ui::tip::{Tip, Tipped as _};
-use crate::ui::{button, fault as fault_ui, glyph, surface, text};
+use crate::ui::{button, components, fault as fault_ui, glyph, surface, text};
 use backend_present::{Page, Source};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, Context, Div, InteractiveElement, IntoElement, ParentElement, ScrollStrategy,
     StatefulInteractiveElement, Styled, div, px,
 };
-use gpui_elements::editable_text::text_input;
+use std::sync::Arc;
 
 /// Widest the sheet grows, in pixels.
 const SHEET_WIDTH: f32 = 960.0;
@@ -53,36 +53,40 @@ pub(crate) struct SourceQueryCache {
 
 impl Workspace {
     /// Opens or closes the source sheet for the page being read.
-    pub(crate) fn toggle_source(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_source(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
         if !self.source_open && !self.has_open_page(cx) {
             return;
         }
-        self.source_open = !self.source_open;
-        if !self.source_open {
-            self.source_field
-                .update(cx, |field, cx| field.emplace("", cx));
+        if self.source_open {
+            self.close_source(window, cx);
+        } else {
+            self.source_restore_focus = Some(self.focus.clone());
+            self.source_open = true;
             self.source_query_cache = None;
+            cx.notify();
         }
-        cx.notify();
     }
 
     /// Opens the source sheet before the page has arrived, for the preview scenes.
     #[cfg(feature = "preview")]
     pub(crate) fn preview_source(&mut self, cx: &mut Context<Self>) {
+        self.source_restore_focus = Some(self.focus.clone());
         self.source_open = true;
-        self.source_field
-            .update(cx, |field, cx| field.emplace("", cx));
         self.source_query_cache = None;
         cx.notify();
     }
 
     /// Closes the source sheet.
-    pub(super) fn close_source(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn close_source(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
         if self.source_open {
             self.source_open = false;
+            let restore = self.source_restore_focus.take();
             self.source_field
-                .update(cx, |field, cx| field.emplace("", cx));
+                .update(cx, |field, cx| field.set_value("", window, cx));
             self.source_query_cache = None;
+            if let Some(restore) = restore {
+                window.focus(&restore, cx);
+            }
             cx.notify();
         }
     }
@@ -106,7 +110,7 @@ impl Workspace {
                 .child(
                     surface::scrim(theme)
                         .id("source-scrim")
-                        .on_click(cx.listener(|this, _, _, cx| this.close_source(cx))),
+                        .on_click(cx.listener(|this, _, window, cx| this.close_source(window, cx))),
                 )
                 .child(
                     div()
@@ -145,7 +149,7 @@ impl Workspace {
         let spelling = format!("{path}:{line}");
         let copied = spelling.clone();
         let target = path.to_owned();
-        let query = self.source_field.read(cx).as_str().to_owned();
+        let query = self.source_field.read(cx).value().to_string();
         let search = self.source_search(page, &query, cx).unwrap_or_default();
         let facts = self.source_facts(page, &query, &search, cx);
         div()
@@ -184,18 +188,11 @@ impl Workspace {
                     .h(px(26.0))
                     .flex()
                     .items_center()
-                    .child(
-                        text_input("source-find-field")
-                            .state(self.source_field.downgrade())
-                            .placeholder("Find in source…")
-                            .placeholder_color(theme.paint(Paint::TextFaint))
-                            .selection_color(theme.paint(Paint::GiltWash))
-                            .caret_color(theme.paint(Paint::Gilt))
-                            .text_size(crate::theme::tokens::type_size(
-                                crate::theme::tokens::TypeScale::Small,
-                            ))
-                            .text_color(theme.paint(Paint::TextStrong)),
-                    ),
+                    .child(components::search_input(
+                        theme,
+                        &self.source_field,
+                        "Find in source",
+                    )),
             )
             .child(
                 button::button(
@@ -219,7 +216,7 @@ impl Workspace {
             .child(
                 button::icon_button(theme, "source-close", Icon::Close)
                     .tip(Tip::new("Close").key(keys::DISMISS))
-                    .on_click(cx.listener(|this, _, _, cx| this.close_source(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.close_source(window, cx))),
             )
     }
 
@@ -254,7 +251,7 @@ impl Workspace {
     }
 
     fn source_body(&mut self, theme: &Theme, page: &Page, cx: &mut Context<Self>) -> AnyElement {
-        let query = self.source_field.read(cx).as_str().to_owned();
+        let query = self.source_field.read(cx).value().to_string();
         let search = self.source_search(page, &query, cx).unwrap_or_default();
         let searching_captured = matches!(page.source(), Source::Captured { .. });
         let body: AnyElement = match page.source() {
@@ -268,9 +265,9 @@ impl Workspace {
                         &search,
                         &self.source_scroll,
                         self.source_active_match,
-                        move |symbol, _, cx| {
+                        move |symbol, window, cx| {
                             entity.update(cx, |workspace, cx| {
-                                workspace.close_source(cx);
+                                workspace.close_source(window, cx);
                                 workspace.open_symbol(symbol, Target::Child, cx);
                             });
                         },
@@ -363,6 +360,10 @@ impl Workspace {
             *truncation,
             &resolve,
         );
+        if let Some(line) = view.current_line() {
+            self.source_scroll
+                .scroll_to_item(line, ScrollStrategy::Center);
+        }
         self.source_cache = Some(SourceCache {
             coordinate: coordinate.to_owned(),
             appearance,
@@ -410,7 +411,7 @@ impl Workspace {
 
     /// Moves the active source match and keeps it in view.
     pub(super) fn move_source_match(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let query = self.source_field.read(cx).as_str().to_owned();
+        let query = self.source_field.read(cx).value().to_string();
         let appearance = self.shell.read(cx).prefs().appearance();
         let generation = self.document.read(cx).generation();
         let search = self
@@ -442,9 +443,9 @@ impl Workspace {
     }
 
     /// Returns the declaration page the reader is showing, if any.
-    fn open_page(&self, cx: &Context<Self>) -> Option<Page> {
+    fn open_page(&self, cx: &Context<Self>) -> Option<Arc<Page>> {
         match self.document.read(cx).tab()?.content() {
-            Content::Page(page) => Some((**page).clone()),
+            Content::Page(page) => Some(Arc::clone(page)),
             _ => None,
         }
     }

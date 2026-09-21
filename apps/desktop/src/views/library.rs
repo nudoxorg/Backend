@@ -614,6 +614,42 @@ fn rail_dot(
         }))
 }
 
+fn close_button(theme: &Theme, at: usize, id: TabId, cx: &mut Context<Workspace>) -> impl IntoElement {
+    button::icon_button(theme, format!("tab-close-{at}"), Icon::Close)
+        .tip(Tip::new("Close").detail("Its branches move up to the page it was opened from.").key(keys::CLOSE_TAB))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.document.update(cx, |document, cx| document.close(id, cx));
+        }))
+}
+
+fn tab_glyph(
+    theme: &Theme,
+    row: &TreeRow,
+    index: &gpui::Entity<crate::store::index::IndexStore>,
+    cx: &Context<Workspace>,
+) -> AnyElement {
+    match &row.subject {
+        Some(Subject::Home) | None => {
+            icon::sized(theme, Icon::Home, 13.0, Paint::TextDim).into_any_element()
+        }
+        Some(Subject::Project { .. } | Subject::Outline { .. }) => {
+            glyph::package_tile(theme, false).into_any_element()
+        }
+        Some(Subject::Package { coordinate }) => {
+            let language = Spelling::of(coordinate)
+                .ecosystem()
+                .map_or(backend_present::Language::Unknown, super::home::ecosystem_language);
+            glyph::language_tag(theme, language).into_any_element()
+        }
+        Some(Subject::Declaration { symbol, .. }) => {
+            let kind = index
+                .read(cx)
+                .entry(*symbol)
+                .and_then(crate::store::index::Entry::kind);
+            glyph::kind_mark(theme, kind, 12.0).into_any_element()
+        }
+    }
+}
 fn tab_tip(row: &TreeRow) -> Tip {
     let coordinate = row
         .subject

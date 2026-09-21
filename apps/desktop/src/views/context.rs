@@ -190,7 +190,7 @@ impl Workspace {
     pub(super) fn context_available(&self, cx: &Context<Self>) -> bool {
         matches!(
             self.document.read(cx).tab().and_then(super::super::store::document::Tab::subject),
-            Some(Subject::Declaration { .. } | Subject::Project { .. })
+            Some(Subject::Declaration { .. } | Subject::Project { .. } | Subject::Outline { .. })
         )
     }
 
@@ -203,7 +203,9 @@ impl Workspace {
         let generation = self.document.read(cx).generation();
         let key = match &subject {
             Some(Subject::Declaration { symbol, .. }) => ContextKey::Declaration(*symbol),
-            Some(Subject::Project { coordinate }) => ContextKey::Project(coordinate.clone()),
+            Some(Subject::Project { coordinate } | Subject::Outline { coordinate }) => {
+                ContextKey::Project(coordinate.clone())
+            }
             Some(Subject::Home | Subject::Package { .. }) | None => ContextKey::Empty,
         };
         let index_version = self.index.read(cx).version();
@@ -222,7 +224,7 @@ impl Workspace {
                     .project_of(symbol)
                     .map(|project| declaration_rows(project, symbol))
                     .unwrap_or_default(),
-                Some(Subject::Project { coordinate }) => index
+                Some(Subject::Project { coordinate } | Subject::Outline { coordinate }) => index
                     .project(&coordinate)
                     .map(project_rows)
                     .unwrap_or_default(),

@@ -22,18 +22,19 @@
 //! install them, never what they mean.
 
 use super::events::DocumentEvent;
-use super::index::IndexStore;
+use super::index::{IndexStore, ProjectIndex};
 use super::service::{Endpoint, Outcome, Request};
 use super::workspace::{WorkspaceStore, coordinate_operand};
 use crate::presentation::fault::wrong_shape;
 use backend_library::{DeclarationKind, Row, SymbolKey, encode_id};
 use backend_present::{
-    Affordance, Cause, CauseSlug, Coordinate, Fault, FaultSlug, Identity, Operand, Page,
+    Affordance, Cause, CauseSlug, Coordinate, Fault, FaultSlug, Identity, Operand, Page, Source,
     page_from_document,
 };
 use gpui::AppContext as _;
 use gpui::Context;
 use gpui::{Entity, EventEmitter, Modifiers, Pixels, Point, ScrollHandle, Task};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How many pages are remembered across tabs.
@@ -47,6 +48,40 @@ const CARD_PREVIEW: usize = 140;
 
 /// How long the pointer must rest before a hover card is requested.
 const HOVER_DELAY: Duration = Duration::from_millis(350);
+
+type PageHandle = Arc<Page>;
+
+#[derive(Default)]
+struct PageCache {
+    entries: Vec<(String, PageHandle)>,
+}
+
+impl PageCache {
+    const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    fn get(&self, coordinate: &str) -> Option<PageHandle> {
+        self.entries
+            .iter()
+            .find(|(key, _)| key == coordinate)
+            .map(|(_, page)| Arc::clone(page))
+    }
+
+    fn insert(&mut self, coordinate: String, page: PageHandle) {
+        self.entries.retain(|(key, _)| *key != coordinate);
+        self.entries.push((coordinate, page));
+        while self.entries.len() > PAGE_CACHE {
+            self.entries.remove(0);
+        }
+    }
+
+    fn retain(&mut self, keep: impl FnMut(&(String, PageHandle)) -> bool) {
+        self.entries.retain(keep);
+    }
+}
 
 /// What a tab is showing.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,6 +105,17 @@ pub(crate) enum Subject {
         /// Pinned package coordinate, `pkg:ecosystem/name@version`.
         coordinate: String,
     },
+    /// The declaration outline for a project/package handoff.
+    ///
+    /// This is intentionally separate from [`Subject::Project`].  A docs
+    /// route is a reader page rooted at the project, while a code route is an
+    /// outline projection. Keeping that distinction in the subject prevents
+    /// the package surface from accidentally collapsing every tab into the
+    /// same project view.
+    Outline {
+        /// Exact project coordinate whose declarations are outlined.
+        coordinate: String,
+    },
 }
 
 impl Subject {
@@ -79,7 +125,8 @@ impl Subject {
             Self::Home => "",
             Self::Declaration { coordinate, .. }
             | Self::Project { coordinate }
-            | Self::Package { coordinate } => coordinate,
+            | Self::Package { coordinate }
+            | Self::Outline { coordinate } => coordinate,
         }
     }
 
@@ -89,7 +136,8 @@ impl Subject {
             Self::Home => None,
             Self::Declaration { coordinate, .. }
             | Self::Project { coordinate }
-            | Self::Package { coordinate } => Some(Identity::parse(coordinate)),
+            | Self::Package { coordinate }
+            | Self::Outline { coordinate } => Some(Identity::parse(coordinate)),
         }
     }
 
@@ -97,7 +145,10 @@ impl Subject {
     pub(crate) fn title(&self) -> String {
         match self {
             Self::Home => "Browse".to_owned(),
-            Self::Declaration { .. } | Self::Project { .. } | Self::Package { .. } => self
+            Self::Declaration { .. }
+            | Self::Project { .. }
+            | Self::Package { .. }
+            | Self::Outline { .. } => self
                 .identity()
                 .map(|identity| identity.name().to_owned())
                 .filter(|name| !name.is_empty())
@@ -109,7 +160,7 @@ impl Subject {
     pub(crate) fn project_root(&self) -> Option<String> {
         match self {
             Self::Home | Self::Package { .. } => None,
-            Self::Project { coordinate } => Some(coordinate.clone()),
+            Self::Project { coordinate } | Self::Outline { coordinate } => Some(coordinate.clone()),
             Self::Declaration { .. } => self
                 .identity()
                 .and_then(|identity| identity.project().map(|project| project.root().to_owned())),
@@ -127,6 +178,163 @@ pub(crate) enum Target {
     Child,
     /// Open under the active tab without switching.
     Background,
+}
+
+/// Reader surface requested by a package entry point.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ReaderIntent {
+    /// Package documentation and declaration pages.
+    Docs,
+    /// Captured source for a declaration.
+    Source,
+    /// The package's indexed declarations.
+    Code,
+    /// Code and documentation search scoped to the package.
+    Search,
+}
+
+/// A typed package-to-reader handoff.
+///
+/// The entry carries both store generations observed when it was produced.
+/// A package route that arrives after the shelf changed is rejected instead
+/// of showing a textual placeholder for data that is no longer authoritative.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ReaderEntry {
+    coordinate: String,
+    intent: ReaderIntent,
+    document_generation: u64,
+    index_version: [u8; 32],
+}
+
+/// The concrete route resolved from one package handoff.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ReaderRoute {
+    /// Documentation resolves to the package/project hierarchy or a known declaration.
+    Docs { subject: Subject },
+    /// Source resolves only for an admitted declaration.
+    Source { subject: Subject, symbol: SymbolKey },
+    /// Code resolves to the indexed package/project outline.
+    Code { subject: Subject },
+    /// Search retains the package/project scope for the search store.
+    Search { scope: String },
+}
+
+/// Why a typed package handoff cannot be opened against the current stores.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReaderEntryFault {
+    /// The handoff was created against a previous tab or index revision.
+    Stale,
+    /// The coordinate is absent from the live index.
+    NotIndexed,
+    /// Source requires a declaration coordinate, not only a package root.
+    DeclarationRequired,
+}
+
+/// Closed reader coverage failures.  These are deliberately separate from a
+/// transport/client error: a missing capture is a truthful product state,
+/// while a failed request is an operational failure and a pending tab is
+/// neither.  Keeping the states typed prevents a renderer from turning all
+/// three into the same vague "unavailable" panel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReaderCoverageFault {
+    /// The producer admitted the declaration but retained no source bytes.
+    AbsentCapture,
+    /// A source site exists, but the semantic authority did not provide bytes.
+    SemanticAuthorityUnavailable,
+    /// The requested declaration is still being fetched.
+    Pending,
+    /// The response belongs to a superseded tab/index generation.
+    Stale,
+    /// The local service failed while resolving the reader page.
+    Service,
+}
+
+impl ReaderCoverageFault {
+    /// Classifies the source coverage encoded in a shared presentation page.
+    pub(crate) const fn for_source(source: &Source) -> Option<Self> {
+        match source {
+            Source::Captured { .. } => None,
+            Source::Sited { .. } => Some(Self::SemanticAuthorityUnavailable),
+            Source::Absent { .. } => Some(Self::AbsentCapture),
+        }
+    }
+}
+
+impl ReaderEntry {
+    pub(crate) fn coordinate(&self) -> &str {
+        &self.coordinate
+    }
+
+    pub(crate) const fn intent(&self) -> ReaderIntent {
+        self.intent
+    }
+
+    pub(crate) fn is_current(&self, document_generation: u64, index_version: [u8; 32]) -> bool {
+        self.document_generation == document_generation && self.index_version == index_version
+    }
+
+    fn resolve(&self, index: &IndexStore) -> Result<ReaderRoute, ReaderEntryFault> {
+        let symbol = index.symbol_for(&self.coordinate);
+        let project = index
+            .project(&self.coordinate)
+            .or_else(|| symbol.and_then(|symbol| index.project_of(symbol)));
+        self.resolve_parts(symbol, project.map(ProjectIndex::root))
+    }
+
+    fn resolve_parts(
+        &self,
+        symbol: Option<SymbolKey>,
+        project_root: Option<&str>,
+    ) -> Result<ReaderRoute, ReaderEntryFault> {
+        match self.intent {
+            ReaderIntent::Docs => {
+                if let Some(symbol) = symbol {
+                    Ok(ReaderRoute::Docs {
+                        subject: Subject::Declaration {
+                            symbol,
+                            coordinate: self.coordinate.clone(),
+                        },
+                    })
+                } else if let Some(coordinate) = project_root {
+                    Ok(ReaderRoute::Docs {
+                        subject: Subject::Project {
+                            coordinate: coordinate.to_owned(),
+                        },
+                    })
+                } else {
+                    Err(ReaderEntryFault::NotIndexed)
+                }
+            }
+            ReaderIntent::Source => {
+                let Some(symbol) = symbol else {
+                    return Err(if project_root.is_some() {
+                        ReaderEntryFault::DeclarationRequired
+                    } else {
+                        ReaderEntryFault::NotIndexed
+                    });
+                };
+                Ok(ReaderRoute::Source {
+                    subject: Subject::Declaration {
+                        symbol,
+                        coordinate: self.coordinate.clone(),
+                    },
+                    symbol,
+                })
+            }
+            ReaderIntent::Code => project_root
+                .map(|coordinate| ReaderRoute::Code {
+                    subject: Subject::Outline {
+                        coordinate: coordinate.to_owned(),
+                    },
+                })
+                .ok_or(ReaderEntryFault::NotIndexed),
+            ReaderIntent::Search => project_root
+                .map(|scope| ReaderRoute::Search {
+                    scope: Identity::parse(scope).name().to_owned(),
+                })
+                .ok_or(ReaderEntryFault::NotIndexed),
+        }
+    }
 }
 
 /// Returns where a click with these modifiers should open a link.
@@ -154,7 +362,7 @@ pub(crate) enum Content {
     /// The browse page.
     Home,
     /// A declaration page.
-    Page(Box<Page>),
+    Page(Arc<Page>),
     /// A project page; its rows come from the index store.
     Project {
         /// Exact project coordinate.
@@ -163,6 +371,11 @@ pub(crate) enum Content {
     /// A registry package page; its facts come from the registry store.
     Package {
         /// Pinned package coordinate.
+        coordinate: String,
+    },
+    /// A declaration outline, distinct from the docs/project page.
+    Outline {
+        /// Exact project coordinate.
         coordinate: String,
     },
     /// The subject could not be read.
@@ -321,7 +534,7 @@ pub(crate) struct DocumentStore {
     tabs: Vec<Tab>,
     active: Option<TabId>,
     next_id: u64,
-    pages: Vec<(String, Page)>,
+    pages: PageCache,
     hover: Option<Hover>,
     cards: Vec<(String, HoverCard)>,
     hover_task: Option<Task<()>>,
@@ -343,7 +556,7 @@ impl DocumentStore {
             tabs: Vec::new(),
             active: None,
             next_id: 1,
-            pages: Vec::new(),
+            pages: PageCache::new(),
             hover: None,
             cards: Vec::new(),
             hover_task: None,
@@ -375,10 +588,53 @@ impl DocumentStore {
     /// and a page that is merely re-rendered does not flicker.
     pub(crate) fn generation(&self) -> u64 {
         let tab = self.active.map_or(0, |id| id.0);
-        self.tab()
-            .map_or(tab, |open| tab.wrapping_mul(1024).wrapping_add(open.generation))
+        self.tab().map_or(tab, |open| {
+            tab.wrapping_mul(1024).wrapping_add(open.generation)
+        })
     }
 
+    /// Creates a typed package handoff from the live document and index state.
+    pub(crate) fn reader_entry(
+        &self,
+        coordinate: &str,
+        intent: ReaderIntent,
+        cx: &Context<Self>,
+    ) -> Option<ReaderEntry> {
+        (!coordinate.trim().is_empty()).then(|| ReaderEntry {
+            coordinate: coordinate.to_owned(),
+            intent,
+            document_generation: self.generation(),
+            index_version: self.index.read(cx).version(),
+        })
+    }
+
+    /// Resolves a typed package handoff through the real document store.
+    ///
+    /// The caller receives `false` when its route was produced against stale
+    /// tab or index state, so a package surface never falls back to a
+    /// misleading unavailable panel.
+    pub(crate) fn open_reader_entry(
+        &mut self,
+        entry: &ReaderEntry,
+        target: Target,
+        cx: &mut Context<Self>,
+    ) -> Result<ReaderRoute, ReaderEntryFault> {
+        let current_generation = self.generation();
+        let current_version = self.index.read(cx).version();
+        if !entry.is_current(current_generation, current_version) {
+            return Err(ReaderEntryFault::Stale);
+        }
+        let route = entry.resolve(&self.index.read(cx));
+        if let Ok(route) = &route {
+            match route {
+                ReaderRoute::Docs { subject }
+                | ReaderRoute::Source { subject, .. }
+                | ReaderRoute::Code { subject } => self.open(subject.clone(), target, cx),
+                ReaderRoute::Search { .. } => {}
+            }
+        }
+        route
+    }
 
     /// Returns the tabs as a tree, parents before children, in creation order.
     pub(crate) fn tree(&self) -> Vec<TreeRow> {
@@ -405,7 +661,11 @@ impl DocumentStore {
             active: self.active == Some(tab.id),
             loading: tab.pending.is_some(),
         });
-        for child in self.tabs.iter().filter(|other| other.parent == Some(tab.id)) {
+        for child in self
+            .tabs
+            .iter()
+            .filter(|other| other.parent == Some(tab.id))
+        {
             self.walk(child, depth.saturating_add(1), rows);
         }
     }
@@ -415,7 +675,12 @@ impl DocumentStore {
     /// A key the shelf does not hold — a link into a package that is not
     /// indexed — opens as a fault that says so, rather than as a request the
     /// engine would refuse or a page titled by sixty-four hex digits.
-    pub(crate) fn open_symbol(&mut self, symbol: SymbolKey, target: Target, cx: &mut Context<Self>) {
+    pub(crate) fn open_symbol(
+        &mut self,
+        symbol: SymbolKey,
+        target: Target,
+        cx: &mut Context<Self>,
+    ) {
         let coordinate = self
             .index
             .read(cx)
@@ -685,6 +950,9 @@ impl DocumentStore {
             Subject::Project { coordinate } => {
                 self.show_static(id, Content::Project { coordinate }, cx);
             }
+            Subject::Outline { coordinate } => {
+                self.show_static(id, Content::Outline { coordinate }, cx);
+            }
             Subject::Package { coordinate } => {
                 self.show_static(id, Content::Package { coordinate }, cx);
             }
@@ -712,10 +980,11 @@ impl DocumentStore {
         cx: &mut Context<Self>,
     ) {
         if let Some(cached) = self.cached(&coordinate) {
-            self.show_static(id, Content::Page(Box::new(cached)), cx);
+            self.show_static(id, Content::Page(cached), cx);
             return;
         }
         let generation = self.begin(id, &coordinate, cx);
+        let index_version = self.index.read(cx).version();
         let endpoint = self.endpoint.clone();
         let wanted = coordinate.clone();
         cx.spawn(async move |this, cx| {
@@ -723,7 +992,15 @@ impl DocumentStore {
                 .background_spawn(async move { fetch(&endpoint, symbol, &wanted) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.finish(id, generation, symbol, &coordinate, parts, cx);
+                this.finish(
+                    id,
+                    generation,
+                    index_version,
+                    symbol,
+                    &coordinate,
+                    parts,
+                    cx,
+                );
             });
         })
         .detach();
@@ -744,21 +1021,26 @@ impl DocumentStore {
         &mut self,
         id: TabId,
         generation: u64,
+        index_version: [u8; 32],
         symbol: SymbolKey,
         coordinate: &str,
         parts: Parts,
         cx: &mut Context<Self>,
     ) {
-        let stale = self
-            .find(id)
-            .is_none_or(|tab| tab.generation != generation);
+        let stale = self.find(id).is_none_or(|tab| {
+            tab.generation != generation
+                || tab
+                    .subject()
+                    .is_none_or(|subject| subject.coordinate() != coordinate)
+        }) || self.index.read(cx).version() != index_version;
         if stale {
             return;
         }
         let content = match self.assemble(symbol, coordinate, parts, cx) {
             Ok(page) => {
-                self.remember(coordinate.to_owned(), page.clone());
-                Content::Page(Box::new(page))
+                let page = Arc::new(page);
+                self.remember(coordinate.to_owned(), Arc::clone(&page));
+                Content::Page(page)
             }
             Err(fault) => Content::Faulted(Box::new(fault)),
         };
@@ -783,7 +1065,9 @@ impl DocumentStore {
         let members = workspace.page_rows(symbol);
         let relations = parts.relations.unwrap_or_default();
         let page = page_from_document(coordinate, &document, &members, &relations, parts.notes);
-        let near = index.project_of(symbol).map(|project| project.root().to_owned());
+        let near = index
+            .project_of(symbol)
+            .map(|project| project.root().to_owned());
         let resolver = |name: &str| index.resolve_name(name, near.as_deref());
         Ok(match page.signature().cloned() {
             Some(signature) => page.with_signature(signature.resolve_types(resolver)),
@@ -791,19 +1075,12 @@ impl DocumentStore {
         })
     }
 
-    fn cached(&self, coordinate: &str) -> Option<Page> {
-        self.pages
-            .iter()
-            .find(|(key, _)| key == coordinate)
-            .map(|(_, page)| page.clone())
+    fn cached(&self, coordinate: &str) -> Option<Arc<Page>> {
+        self.pages.get(coordinate)
     }
 
-    fn remember(&mut self, coordinate: String, page: Page) {
-        self.pages.retain(|(key, _)| *key != coordinate);
-        self.pages.push((coordinate, page));
-        while self.pages.len() > PAGE_CACHE {
-            self.pages.remove(0);
-        }
+    fn remember(&mut self, coordinate: String, page: Arc<Page>) {
+        self.pages.insert(coordinate, page);
     }
 }
 
@@ -848,7 +1125,11 @@ impl DocumentStore {
             return;
         }
         let endpoint = self.endpoint.clone();
-        let kind = self.index.read(cx).entry(symbol).and_then(super::index::Entry::kind);
+        let kind = self
+            .index
+            .read(cx)
+            .entry(symbol)
+            .and_then(super::index::Entry::kind);
         self.hover_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(HOVER_DELAY).await;
             let outcome = cx
@@ -969,4 +1250,144 @@ fn not_on_shelf(encoded: &str) -> Fault {
         ),
         Affordance::None,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use backend_library::symbol_key;
+    use backend_present::{LineNumber, PackagePath, Source, SourceSite, Truncation};
+
+    #[test]
+    fn page_cache_reuses_the_same_page_handle_across_frames() {
+        let site = SourceSite::new(
+            PackagePath::new("src/lib.rs"),
+            LineNumber::new(1).expect("one-based line"),
+        );
+        let page = Arc::new(Page::new(
+            Identity::parse("/abs/polyglot::src/lib.rs:1::ferris"),
+            None,
+            Source::Captured {
+                lines: Box::new([]),
+                site,
+                truncation: Truncation::Complete,
+            },
+        ));
+        let mut cache = PageCache::default();
+        cache.insert(
+            "/abs/polyglot::src/lib.rs:1::ferris".to_owned(),
+            Arc::clone(&page),
+        );
+
+        let first = cache
+            .get("/abs/polyglot::src/lib.rs:1::ferris")
+            .expect("cached page");
+        let second = cache
+            .get("/abs/polyglot::src/lib.rs:1::ferris")
+            .expect("cached page");
+        assert!(Arc::ptr_eq(&page, &first));
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn reader_entry_resolves_each_intent_to_a_distinct_store_route() {
+        let symbol = symbol_key("/abs/polyglot::src/lib.rs:1::ferris");
+        let coordinate = "/abs/polyglot::src/lib.rs:1::ferris".to_owned();
+        let route = |intent| {
+            ReaderEntry {
+                coordinate: coordinate.clone(),
+                intent,
+                document_generation: 7,
+                index_version: [3; 32],
+            }
+            .resolve_parts(Some(symbol), Some("/abs/polyglot"))
+            .expect("indexed route")
+        };
+
+        assert!(matches!(
+            route(ReaderIntent::Docs),
+            ReaderRoute::Docs { .. }
+        ));
+        assert!(matches!(
+            route(ReaderIntent::Source),
+            ReaderRoute::Source { .. }
+        ));
+        assert!(matches!(
+            route(ReaderIntent::Code),
+            ReaderRoute::Code { .. }
+        ));
+        assert_eq!(
+            route(ReaderIntent::Search),
+            ReaderRoute::Search {
+                scope: "polyglot".to_owned()
+            }
+        );
+        assert_ne!(route(ReaderIntent::Docs), route(ReaderIntent::Source));
+        assert_ne!(route(ReaderIntent::Docs), route(ReaderIntent::Code));
+        assert_ne!(route(ReaderIntent::Code), route(ReaderIntent::Search));
+
+        let entry = ReaderEntry {
+            coordinate,
+            intent: ReaderIntent::Docs,
+            document_generation: 7,
+            index_version: [3; 32],
+        };
+        assert!(entry.is_current(7, [3; 32]));
+        assert!(!entry.is_current(8, [3; 32]));
+        assert!(!entry.is_current(7, [4; 32]));
+    }
+
+    #[test]
+    fn source_route_rejects_a_project_root_without_a_declaration() {
+        let entry = ReaderEntry {
+            coordinate: "/abs/polyglot".to_owned(),
+            intent: ReaderIntent::Source,
+            document_generation: 1,
+            index_version: [0; 32],
+        };
+        assert_eq!(
+            entry.resolve_parts(None, Some("/abs/polyglot")),
+            Err(ReaderEntryFault::DeclarationRequired)
+        );
+    }
+
+    #[test]
+    fn reader_coverage_keeps_absent_and_authority_failures_distinct() {
+        let site = SourceSite::new(
+            PackagePath::new("src/lib.rs"),
+            LineNumber::new(3).expect("one-based line"),
+        );
+        let absent = Source::Absent {
+            fault: Fault::new(
+                FaultSlug::NotFound,
+                Operand::Whole,
+                Cause::new(CauseSlug::Absent, "source was not captured"),
+                Affordance::None,
+            ),
+        };
+        let sited = Source::Sited {
+            site,
+            fault: Fault::new(
+                FaultSlug::SourceUnavailable,
+                Operand::Whole,
+                Cause::new(
+                    CauseSlug::NotResident,
+                    "semantic source authority unavailable",
+                ),
+                Affordance::None,
+            ),
+        };
+        assert_eq!(
+            ReaderCoverageFault::for_source(&absent),
+            Some(ReaderCoverageFault::AbsentCapture)
+        );
+        assert_eq!(
+            ReaderCoverageFault::for_source(&sited),
+            Some(ReaderCoverageFault::SemanticAuthorityUnavailable)
+        );
+        assert_ne!(
+            ReaderCoverageFault::for_source(&absent),
+            ReaderCoverageFault::for_source(&sited)
+        );
+    }
 }

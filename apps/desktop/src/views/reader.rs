@@ -95,6 +95,9 @@ impl Workspace {
             Content::Project { coordinate } => {
                 vec![self.project_page(theme, coordinate, cx).into_any_element()]
             }
+            Content::Outline { coordinate } => {
+                vec![self.project_page(theme, coordinate, cx).into_any_element()]
+            }
             Content::Package { coordinate } => vec![self.package_page(theme, coordinate, cx)],
             Content::Faulted(fault) => {
                 let actions = Self::affordances(theme, "reader", fault, "", cx);
@@ -144,4 +147,3 @@ fn loading_bar(theme: &Theme, identity: &Identity) -> Div {
                 .child(identity.name().to_owned()),
         )
 }
-
