@@ -354,9 +354,7 @@ fn capture_live_workspace_mode(
             cx.set_global(HarnessLocale(locale));
             cx.set_global(HarnessDirection(config.text_direction.clone()));
             let workspace = cx.new(|cx| Workspace::new(opened, window, cx));
-            if state_for_build.id == "onboarding"
-                || state_for_build.id.starts_with("onboarding-")
-            {
+            if state_for_build.id == "onboarding" || state_for_build.id.starts_with("onboarding-") {
                 workspace.update(cx, |workspace, cx| workspace.harness_set_onboarding(cx));
             }
             workspace.update(cx, |workspace, cx| {
@@ -405,6 +403,7 @@ fn reader_surface(page: Option<PageState>) -> crate::ReaderSurface {
         Some(PageState::Security) => crate::ReaderSurface::Security,
         Some(PageState::CodeSearch) => crate::ReaderSurface::CodeSearch,
     }
+}
 
 /// Starts the ordinary attached/embedded host for every capture, except for
 /// the explicit onboarding state. That state gets a fresh, empty durable
