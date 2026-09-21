@@ -148,6 +148,7 @@ selected=""
 selected_lock=""
 selected_slot=""
 selected_overflow_path=""
+selected_lock_acquired=false
 released=false
 worktree_lock_acquired=false
 cargo_pid=""
@@ -155,7 +156,7 @@ cargo_pid=""
 release_all() {
   [ "$released" = true ] && return
   released=true
-  if [ -n "$selected_lock" ] && [ "$(cat "$selected_lock/pid" 2>/dev/null || true)" = "$$" ]; then
+  if [ "$selected_lock_acquired" = true ] && [ -n "$selected_lock" ]; then
     rm -f "$selected_lock/pid" "$selected_lock/start" "$selected_lock/workspace"
     rmdir "$selected_lock" 2>/dev/null || true
   fi
@@ -233,12 +234,15 @@ acquire_slot() {
   candidate="$1"
   lock="$cache_root/locks/slot-$candidate.lock"
   if mkdir "$lock" 2>/dev/null; then
+    # Publish ownership to the EXIT trap before any metadata write. A signal
+    # in the tiny initialization window must still remove this fresh lock.
+    selected_lock="$lock"
+    selected="$cache_root/build/slot-$candidate"
+    selected_slot="$candidate"
+    selected_lock_acquired=true
     printf '%s\n' "$$" > "$lock/pid"
     process_start_token "$$" > "$lock/start"
     printf '%s\n' "$workspace_root" > "$lock/workspace"
-    selected="$cache_root/build/slot-$candidate"
-    selected_lock="$lock"
-    selected_slot="$candidate"
     slot_identity="$cache_root/affinity/slot-$candidate.owner"
     previous_workspace="$(cat "$slot_identity" 2>/dev/null || true)"
     # Cargo's intermediate graph is only reusable within one canonical
@@ -254,6 +258,7 @@ acquire_slot() {
         selected=""
         selected_lock=""
         selected_slot=""
+        selected_lock_acquired=false
         return 75
       fi
     fi
@@ -314,21 +319,23 @@ elif [ -z "$selected" ]; then
   lane_key="$worktree_key"
   overflow_lock="$cache_root/locks/overflow-$lane_key.lock"
   if mkdir "$overflow_lock" 2>/dev/null; then
-    printf '%s\n' "$$" > "$overflow_lock/pid"
-    process_start_token "$$" > "$overflow_lock/start"
-    printf '%s\n' "$workspace_root" > "$overflow_lock/workspace"
     selected="$cache_root/build/overflow-$lane_key"
     selected_lock="$overflow_lock"
     selected_overflow_path="$selected"
+    selected_lock_acquired=true
+    printf '%s\n' "$$" > "$overflow_lock/pid"
+    process_start_token "$$" > "$overflow_lock/start"
+    printf '%s\n' "$workspace_root" > "$overflow_lock/workspace"
   else
     recover_stale_lock "$overflow_lock" || true
     if mkdir "$overflow_lock" 2>/dev/null; then
-      printf '%s\n' "$$" > "$overflow_lock/pid"
-      process_start_token "$$" > "$overflow_lock/start"
-      printf '%s\n' "$workspace_root" > "$overflow_lock/workspace"
       selected="$cache_root/build/overflow-$lane_key"
       selected_lock="$overflow_lock"
       selected_overflow_path="$selected"
+      selected_lock_acquired=true
+      printf '%s\n' "$$" > "$overflow_lock/pid"
+      process_start_token "$$" > "$overflow_lock/start"
+      printf '%s\n' "$workspace_root" > "$overflow_lock/workspace"
     else
       # A live owner can only be an invocation outside this wrapper's
       # worktree lease. Never share its mutable path; use bounded scratch and
