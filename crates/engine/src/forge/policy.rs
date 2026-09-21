@@ -39,7 +39,7 @@ impl Default for ForgeAcquisitionLimits {
 }
 
 impl ForgeAcquisitionLimits {
-    fn validate(self) -> Result<Self, ForgeRejectReason> {
+    pub(super) fn validate(self) -> Result<Self, ForgeRejectReason> {
         if self.max_archive_bytes == 0
             || self.max_archive_bytes > MAX_ARCHIVE_BYTES
             || self.max_metadata_bytes == 0

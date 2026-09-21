@@ -186,7 +186,7 @@ impl ForgeRevision {
         Err(ForgeCoordinateError::RevisionKindRequired)
     }
 
-    fn canonical_bytes(&self) -> Vec<u8> {
+    pub(super) fn canonical_bytes(&self) -> Vec<u8> {
         match self {
             Self::Commit(commit) => format!("commit:{}", commit.as_hex()).into_bytes(),
             Self::Tag(tag) => format!("tag:{}", tag.as_str()).into_bytes(),
@@ -286,7 +286,7 @@ impl ForgeCoordinate {
         *hasher.finalize().as_bytes()
     }
 
-    fn identity_is_valid(&self) -> bool {
+    pub(super) fn identity_is_valid(&self) -> bool {
         self.identity == self.derive_identity()
     }
 

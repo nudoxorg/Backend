@@ -189,7 +189,7 @@ impl ForgeRepositoryMetadata {
         }
     }
 
-    fn from_json(owner: &str, value: &Value) -> Self {
+    pub(super) fn from_json(owner: &str, value: &Value) -> Self {
         let recorded_text = |value: Option<&Value>| {
             value
                 .and_then(Value::as_str)

@@ -69,7 +69,7 @@ impl ForgeArchive {
         Self::from_reader(Cursor::new(bytes), ForgeArchiveFormat::Zip, None::<String>)
     }
 
-    fn into_reader(self) -> Box<dyn Read> {
+    pub(super) fn into_reader(self) -> Box<dyn Read> {
         self.source
     }
 }
