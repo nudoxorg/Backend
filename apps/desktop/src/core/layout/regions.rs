@@ -175,39 +175,6 @@ pub enum SheetKind {
     Details,
 }
 
-/// Side from which a sheet enters the shell.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum SheetSide {
-    /// Left-side project chooser.
-    Left,
-    /// Right-side contextual details.
-    Right,
-}
-
-/// A component-managed sheet presentation. `open` remains a presentation
-/// concern; reducer-owned pane preference is represented by the containing
-/// region and is never duplicated as transient focus or route state.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct SheetPresentation {
-    /// Sheet semantic identity.
-    pub kind: SheetKind,
-    /// Entry side.
-    pub side: SheetSide,
-    /// Clamped sheet bounds.
-    pub bounds: RegionBounds,
-    /// Whether the CE sheet should currently be mounted open.
-    pub open: bool,
-}
-
-/// Overlay/sheet presentation emitted by the canonical resolver.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum OverlayPresentation {
-    /// No collapsed pane requires a sheet trigger.
-    None,
-    /// One collapsed pane is the deterministic primary sheet target.
-    Sheet(SheetPresentation),
-}
-
 /// All shell regions and the safe reader rectangle for one frame.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ShellRegions {
@@ -225,8 +192,6 @@ pub struct ShellRegions {
     pub status: RegionSlot,
     /// Safe content and overflow policies.
     pub safe_content: SafeContentBounds,
-    /// Sheet/drawer presentation.
-    pub overlay: OverlayPresentation,
 }
 
 impl ShellRegions {

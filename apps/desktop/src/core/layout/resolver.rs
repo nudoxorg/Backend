@@ -2,8 +2,8 @@
 
 use super::input::{LayoutInput, LogicalPx, TextScale, WindowContentSize};
 use super::regions::{
-    HorizontalOverflow, OverlayPresentation, PanelMode, RegionBounds, RegionId, RegionPresentation,
-    RegionSlot, SafeContentBounds, SheetKind, SheetPresentation, SheetSide, ShellRegions,
+    HorizontalOverflow, PanelMode, RegionBounds, RegionId, RegionPresentation, RegionSlot,
+    SafeContentBounds, SheetKind, ShellRegions,
 };
 use super::tokens::LayoutTokens;
 
@@ -235,17 +235,6 @@ pub fn resolve(input: LayoutInput) -> ResponsiveLayout {
         RegionBounds::new(0, status_y, width, status_height),
         RegionPresentation::Full,
     );
-    let overlay = overlay_for(
-        width,
-        titlebar_height,
-        body_height,
-        tokens,
-        shelf,
-        context,
-        shelf_requested,
-        context_requested,
-    );
-
     let collapse = if icon_status {
         CollapseStage::IconStatus
     } else if icon_navigation {
@@ -280,7 +269,6 @@ pub fn resolve(input: LayoutInput) -> ResponsiveLayout {
             context_rail: context_region,
             status: status_region,
             safe_content,
-            overlay,
         },
         orbit: PanelMode::Rail,
         shelf,
@@ -297,58 +285,12 @@ fn scaled_threshold(base: u32, scale: TextScale) -> u32 {
         / 100
 }
 
-fn overlay_for(
-    width: u32,
-    titlebar: u32,
-    body_height: u32,
-    tokens: LayoutTokens,
-    shelf: PanelMode,
-    context: PanelMode,
-    shelf_requested: bool,
-    context_requested: bool,
-) -> OverlayPresentation {
-    let context_sheet_width = tokens.context.get().min(width);
-    let shelf_sheet_width = tokens.shelf.get().min(width);
-    let sheet_bounds = |side: SheetSide, sheet_width: u32| {
-        let x = match side {
-            SheetSide::Left => 0,
-            SheetSide::Right => width.saturating_sub(sheet_width),
-        };
-        RegionBounds::new(x, titlebar, sheet_width, body_height)
-    };
-    if context == PanelMode::Sheet && context_requested {
-        return OverlayPresentation::Sheet(SheetPresentation {
-            kind: if width <= 120 {
-                SheetKind::Details
-            } else {
-                SheetKind::Context
-            },
-            side: SheetSide::Right,
-            bounds: sheet_bounds(SheetSide::Right, context_sheet_width),
-            open: false,
-        });
-    }
-    if shelf == PanelMode::Sheet && shelf_requested {
-        return OverlayPresentation::Sheet(SheetPresentation {
-            kind: if width <= 120 {
-                SheetKind::Details
-            } else {
-                SheetKind::Shelf
-            },
-            side: SheetSide::Left,
-            bounds: sheet_bounds(SheetSide::Left, shelf_sheet_width),
-            open: false,
-        });
-    }
-    OverlayPresentation::None
-}
-
 #[cfg(test)]
 mod tests {
     use super::{CollapseStage, PanelMode, WidthClass, resolve};
     use crate::core::layout::{
-        LayoutInput, LogicalPx, OverlayPresentation, PanelPreferences, RegionBounds, RegionId,
-        RegionPresentation, TextScale,
+        LayoutInput, LogicalPx, PanelPreferences, RegionBounds, RegionId, RegionPresentation,
+        SheetKind, TextScale,
     };
 
     fn input(width: u32, height: u32, scale: u16) -> LayoutInput {
@@ -524,19 +466,19 @@ mod tests {
                 layout.region(RegionId::Status).bounds.y
                     >= layout.region(RegionId::Titlebar).bounds.bottom()
             );
-            if let OverlayPresentation::Sheet(sheet) = layout.regions.overlay {
-                assert!(sheet.bounds.right() <= LogicalPx::new(width));
-                assert!(sheet.bounds.bottom() <= LogicalPx::new(800));
-                assert!(matches!(
-                    layout
-                        .region(match sheet.kind {
-                            super::SheetKind::Shelf => RegionId::ProjectShelf,
-                            super::SheetKind::Context | super::SheetKind::Details =>
-                                RegionId::ContextRail,
-                        })
-                        .presentation,
+            if layout.shelf == PanelMode::Sheet {
+                assert_eq!(
+                    layout.region(RegionId::ProjectShelf).presentation,
                     RegionPresentation::Sheet
-                ));
+                );
+                assert!(layout.sheet_width(SheetKind::Shelf) <= LogicalPx::new(width));
+            }
+            if layout.context == PanelMode::Sheet {
+                assert_eq!(
+                    layout.region(RegionId::ContextRail).presentation,
+                    RegionPresentation::Sheet
+                );
+                assert!(layout.sheet_width(SheetKind::Context) <= LogicalPx::new(width));
             }
         }
     }
@@ -568,10 +510,8 @@ mod tests {
                     let safe = layout.safe_content().bounds;
                     assert!(safe.right() <= LogicalPx::new(width));
                     assert!(safe.bottom() <= LogicalPx::new(height));
-                    if let OverlayPresentation::Sheet(sheet) = layout.regions.overlay {
-                        assert!(sheet.bounds.right() <= LogicalPx::new(width));
-                        assert!(sheet.bounds.bottom() <= LogicalPx::new(height));
-                    }
+                    assert!(layout.sheet_width(SheetKind::Shelf) <= LogicalPx::new(width));
+                    assert!(layout.sheet_width(SheetKind::Context) <= LogicalPx::new(width));
                 }
             }
         }

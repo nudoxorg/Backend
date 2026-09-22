@@ -44,13 +44,13 @@ impl LogicalPx {
     /// Returns the smaller logical length.
     #[must_use]
     pub const fn min(self, other: Self) -> Self {
-        Self(self.0.min(other.0))
+        if self.0 <= other.0 { self } else { other }
     }
 
     /// Returns the larger logical length.
     #[must_use]
     pub const fn max(self, other: Self) -> Self {
-        Self(self.0.max(other.0))
+        if self.0 >= other.0 { self } else { other }
     }
 }
 
@@ -102,7 +102,13 @@ impl TextScale {
     /// Clamps an arbitrary preference to the supported range.
     #[must_use]
     pub const fn percent(value: u16) -> Self {
-        Self(value.clamp(Self::MIN, Self::MAX))
+        if value < Self::MIN {
+            Self(Self::MIN)
+        } else if value > Self::MAX {
+            Self(Self::MAX)
+        } else {
+            Self(value)
+        }
     }
 
     /// Returns the percentage represented by this scale.

@@ -1,6 +1,6 @@
 //! Window chrome, shelf, and transient overlays.
 
-use super::primitives::{heading, route_label, short_root};
+use super::primitives::{heading, route_label};
 use crate::core::layout::{PanelMode, RegionId, ResponsiveLayout, SheetKind};
 use crate::model::AppSnapshot;
 use crate::navigation::{
@@ -577,7 +577,7 @@ pub(super) fn sync_overlay(
     cx: &mut Context<UiRootEntity>,
 ) {
     let desired = snapshot.overlay();
-    if let Some(overlay) = desired.copied() {
+    if let Some(overlay) = desired {
         if window.has_active_dialog(cx) {
             return;
         }

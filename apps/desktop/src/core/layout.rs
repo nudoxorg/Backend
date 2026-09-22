@@ -16,8 +16,8 @@ mod transition;
 pub use adapter::LayoutCache;
 pub use input::{LayoutInput, LogicalPx, PanelPreferences, TextScale, WindowContentSize};
 pub use regions::{
-    HorizontalOverflow, OverlayPresentation, RegionBounds, RegionId, RegionPresentation,
-    RegionSlot, SafeContentBounds, SheetKind, SheetPresentation, SheetSide, ShellRegions,
+    HorizontalOverflow, PanelMode, RegionBounds, RegionId, RegionPresentation, RegionSlot,
+    SafeContentBounds, SheetKind, ShellRegions,
 };
-pub use resolver::{CollapseStage, PanelMode, ResponsiveLayout, WidthClass, resolve};
+pub use resolver::{CollapseStage, ResponsiveLayout, WidthClass, resolve};
 pub use transition::{LayoutTransitionKind, TransitionPlan, transition_plan};
