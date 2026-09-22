@@ -166,6 +166,9 @@ impl RegistryGateway {
                         .identity()
                         .map_err(|error| error.to_string())?,
                     native_metadata: published.native_metadata.clone(),
+                    forge_sources: service
+                        .forge_sources_for(&published)
+                        .map_err(|error| error.to_string())?,
                     advisory: published.advisory.clone(),
                 });
             }

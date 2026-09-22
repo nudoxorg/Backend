@@ -7,6 +7,11 @@ resource budgets; they do not use wall-clock thresholds.
 
 The integration suite covers:
 
+- production Tantivy cold/warm/reopen ingestion, one-file add/no-op/delete
+  deltas, exact/prefix/full-text queries, and concurrent readers;
+- shared nested/root `.gitignore` discovery plus generated-root coverage for
+  `.next`, `.angular/cache`, `dist`, `build`, `bin`, `obj`, and `coverage`, with
+  typed oversized-source retention;
 - one-key path-copy updates at three map sizes, subtree reuse, exact delta
   apply/inversion, and a full rebuild oracle;
 - uniform and clustered random edits, deletes/re-adds, and repeated hot-key
@@ -36,7 +41,8 @@ cargo run -p backend-performance-tests --bin structural --offline
 ```
 
 The harness prints p50/p95/p99 nanoseconds as descriptive measurements. Each
-line also reports the relevant structural counters: store visits/copies/reuse
+line also reports wall/CPU/RSS/FD and storage evidence where the host exposes
+it, plus the relevant structural counters: store visits/copies/reuse
 and encoded bytes, flow input/output/no-op/compaction/seek/join rows,
 replication chunks and retained/resumed bytes, and scheduler coalesced and
 hedged reservations. Timing values are never used as pass/fail criteria.

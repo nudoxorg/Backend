@@ -3,20 +3,28 @@
 use super::identity::{admit_registry_coordinate, coordinate_from_registry_parts};
 use super::{
     AcquisitionError, AcquisitionIntent, AcquisitionReceipt, CanonicalFeedV1, DownloadCount,
-    DownloadCountGap, FeedCursor, PackageName, PackageVersion, ProvenanceDigest,
+    DownloadCountGap, FeedCursor, PackageCoordinate, PackageName, PackageVersion, ProvenanceDigest,
     PublishedArtifactClaim, PublishedPackage, RegistryEcosystem, RegistryId, ReleaseFacts,
     ReleaseStanding, RemoteRegistry, SecurityStanding,
 };
 use crate::acquisition::RawArchiveObjectId;
 use crate::journal::{JournalCodec, JournalDomain, JournalError};
 use backend_advisory::AdvisoryPackageDto;
-use backend_library::{RegistryNativeMetadata, MAX_REGISTRY_NATIVE_METADATA_BYTES};
+use backend_library::{
+    MAX_REGISTRY_FORGE_ASSOCIATION_BYTES,
+    MAX_REGISTRY_FORGE_ASSOCIATIONS, MAX_REGISTRY_NATIVE_METADATA_BYTES, RegistryNativeMetadata,
+    PackageReference, RegistryForgeAssociation,
+};
 
 pub(crate) enum RegistryLog {}
 impl JournalDomain for RegistryLog {
     const DOMAIN: u8 = 0x91;
     const TYPE: u16 = 1;
-    const VERSION: u8 = 5;
+    // Version seven makes normalized forge references, canonical association
+    // bytes, and authenticated facts roots explicit journal contracts. Older
+    // frames are not guessed at package boundaries because their trailing
+    // bytes were ambiguous.
+    const VERSION: u8 = 7;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,6 +32,11 @@ pub(crate) enum RegistryRecord {
     Prepared(AcquisitionIntent),
     Settled(AcquisitionIntent),
     Committed(AcquisitionIntent, AcquisitionReceipt),
+    ForgeLinked {
+        coordinate: PackageCoordinate,
+        associations: Box<[RegistryForgeAssociation]>,
+        facts_root: [u8; 32],
+    },
 }
 
 impl JournalCodec for RegistryLog {
@@ -43,9 +56,26 @@ impl JournalCodec for RegistryLog {
                 put_intent(out, intent);
                 put_cursor(out, receipt.base);
                 put_cursor(out, receipt.target);
+                out.extend_from_slice(&receipt.facts_root);
                 put_u32(out, receipt.packages.len());
                 for package in &receipt.packages {
                     put_package(out, package);
+                }
+            }
+            RegistryRecord::ForgeLinked {
+                coordinate,
+                associations,
+                facts_root,
+            } => {
+                debug_assert!(associations
+                    .windows(2)
+                    .all(|pair| pair[0].facts_version < pair[1].facts_version));
+                out.push(4);
+                put_text(out, coordinate.as_str());
+                out.extend_from_slice(facts_root);
+                put_u32(out, associations.len());
+                for association in associations {
+                    put_association(out, association);
                 }
             }
         }
@@ -66,6 +96,10 @@ impl RegistryLog {
                 let intent = read_intent(bytes, &mut at)?;
                 let base = read_cursor(bytes, &mut at)?;
                 let target = read_cursor(bytes, &mut at)?;
+                let facts_root = take_array(bytes, &mut at)?;
+                if facts_root == [0; 32] {
+                    return Err(AcquisitionError::CorruptJournal);
+                }
                 let count = usize::try_from(read_u32(bytes, &mut at)?)
                     .map_err(|_| AcquisitionError::Bounds)?;
                 if count > 4096 {
@@ -80,8 +114,50 @@ impl RegistryLog {
                     base,
                     target,
                     packages,
+                    facts_root,
                 };
                 RegistryRecord::Committed(intent, receipt)
+            }
+            4 => {
+                let coordinate = PackageCoordinate::parse(read_text(bytes, &mut at)?)
+                    .map_err(|_| AcquisitionError::CorruptJournal)?;
+                let facts_root = take_array(bytes, &mut at)?;
+                if facts_root == [0; 32] {
+                    return Err(AcquisitionError::CorruptJournal);
+                }
+                let count = usize::try_from(read_u32(bytes, &mut at)?)
+                    .map_err(|_| AcquisitionError::Bounds)?;
+                if count > MAX_REGISTRY_FORGE_ASSOCIATIONS {
+                    return Err(AcquisitionError::Bounds);
+                }
+                let registry = PackageReference::Purl(coordinate.clone());
+                let mut associations = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let length = usize::try_from(read_u32(bytes, &mut at)?)
+                        .map_err(|_| AcquisitionError::Bounds)?;
+                    if length > MAX_REGISTRY_FORGE_ASSOCIATION_BYTES {
+                        return Err(AcquisitionError::Bounds);
+                    }
+                    let association = RegistryForgeAssociation::decode_canonical(
+                        take(bytes, &mut at, length)?,
+                    )
+                    .map_err(|_| AcquisitionError::CorruptJournal)?;
+                    if association.admit_for_registry(&registry).is_err() {
+                        return Err(AcquisitionError::CorruptJournal);
+                    }
+                    associations.push(association);
+                }
+                if associations
+                    .windows(2)
+                    .any(|pair| pair[0].facts_version >= pair[1].facts_version)
+                {
+                    return Err(AcquisitionError::CorruptJournal);
+                }
+                RegistryRecord::ForgeLinked {
+                    coordinate,
+                    associations: associations.into_boxed_slice(),
+                    facts_root,
+                }
             }
             _ => return Err(AcquisitionError::CorruptJournal),
         };
@@ -123,6 +199,13 @@ fn read_cursor(
     ))
 }
 fn put_package(out: &mut Vec<u8>, value: &PublishedPackage) {
+    debug_assert!(
+        value
+            .forge_source_ids
+            .windows(2)
+            .all(|window| window[0] < window[1]),
+        "forge source references must be sorted and unique before encoding"
+    );
     let coordinate = &value.registry;
     let name = coordinate.qualified_name();
     out.push(coordinate.ecosystem() as u8);
@@ -139,6 +222,10 @@ fn put_package(out: &mut Vec<u8>, value: &PublishedPackage) {
     put_facts(out, value.facts);
     put_json(out, &value.advisory);
     put_json(out, &value.dependency_facts);
+    put_u32(out, value.forge_source_ids.len());
+    for id in &value.forge_source_ids {
+        out.extend_from_slice(id);
+    }
 }
 fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, AcquisitionError> {
     let ecosystem = RegistryEcosystem::try_from(take_byte(bytes, at)?)
@@ -178,6 +265,19 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
         .map_err(|_| AcquisitionError::CorruptJournal)?;
     let coordinate = coordinate_from_registry_parts(ecosystem, name.as_str(), version.as_str())?;
     let registry = admit_registry_coordinate(&coordinate)?;
+    let forge_count = usize::try_from(read_u32(bytes, at)?)
+        .map_err(|_| AcquisitionError::Bounds)?;
+    if forge_count > MAX_REGISTRY_FORGE_ASSOCIATIONS {
+        return Err(AcquisitionError::Bounds);
+    }
+    let mut ids = Vec::with_capacity(forge_count);
+    for _ in 0..forge_count {
+        ids.push(take_array(bytes, at)?);
+    }
+    if ids.windows(2).any(|window| window[0] >= window[1]) {
+        return Err(AcquisitionError::CorruptJournal);
+    }
+    let forge_source_ids = ids.into_boxed_slice();
     Ok(PublishedPackage {
         coordinate,
         registry,
@@ -187,6 +287,7 @@ fn read_package(bytes: &[u8], at: &mut usize) -> Result<PublishedPackage, Acquis
         provenance: ProvenanceDigest::from_journal(provenance),
         upstream_integrity,
         native_metadata,
+        forge_source_ids,
         facts,
         advisory,
         dependency_facts,
@@ -282,6 +383,18 @@ fn put_json<T: serde::Serialize>(out: &mut Vec<u8>, value: &T) {
             // JournalCodec is intentionally infallible. A serialization
             // failure is encoded as an impossible bounded length so the
             // reader rejects the record instead of silently dropping facts.
+            out.extend_from_slice(&u32::MAX.to_be_bytes());
+        }
+    }
+}
+
+fn put_association(out: &mut Vec<u8>, value: &RegistryForgeAssociation) {
+    match value.encode_canonical() {
+        Ok(bytes) => {
+            put_u32(out, bytes.len());
+            out.extend_from_slice(&bytes);
+        }
+        Err(_) => {
             out.extend_from_slice(&u32::MAX.to_be_bytes());
         }
     }

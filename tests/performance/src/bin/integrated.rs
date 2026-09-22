@@ -28,7 +28,8 @@ use backend_extension_tantivy::{
 use backend_extension_turso::{ProjectionUpdate, TursoProjection};
 use backend_library::{
     Basis, Command as LibraryCommand, CommandDto, Coverage, CoverageCapability, Cursor,
-    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope, DiscoveryPolicy,
+    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
+    source_selection_policy,
     Fragment, Frontier, Library, PackageDependencyRecord, PackageDependencyTarget,
     PackageReference, ProductText, Query, QueryLimit, RequestAdmissionError, Row, RowId, ViewDelta,
     ViewRoot, admit_complete_scope, admit_producer_observation, object_version, package_key,
@@ -42,7 +43,7 @@ use backend_version::{
 };
 use backend_worker::InputCas;
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::error::Error;
 use std::fmt::Write as FmtWrite;
@@ -58,7 +59,7 @@ use std::time::{Duration, Instant};
 
 type BenchResult<T> = Result<T, Box<dyn Error>>;
 
-const JSON_SCHEMA: &str = "nudox.integrated-benchmark.v3";
+const JSON_SCHEMA: &str = "nudox.integrated-benchmark.v4";
 const MAX_RELATION_ROW_BYTES: usize = 32 * 1024;
 const MAX_LARGE_CORPUS_FILES: usize = 256;
 const MAX_LARGE_CORPUS_BYTES: usize = 4 * 1024 * 1024;
@@ -208,6 +209,8 @@ struct DeltaMeasurement {
     bytes_read: usize,
     bytes_written: usize,
     cas_reused_bytes: usize,
+    cache_hit: bool,
+    work_avoided_rows: usize,
     semantic_rows_rebuilt: usize,
     changed_rows: usize,
     base_root: String,
@@ -321,6 +324,9 @@ struct DiscoveryMeasurement {
     admitted_files: usize,
     skipped_generated_files: usize,
     skipped_gitignore_files: usize,
+    oversized_claimed_files: usize,
+    typed_unavailable_rows: usize,
+    skipped_generated_by_directory: BTreeMap<String, usize>,
     storage_bytes: usize,
     wall: Stats,
     correctness: Correctness,
@@ -850,7 +856,11 @@ fn walk_sources(root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     if !root.is_dir() {
         return Ok(());
     }
-    let policy = DiscoveryPolicy::new().exclude(".local/**");
+    // Keep the benchmark's source walk on the exact policy package-graph and
+    // local ingest use.  The extra local exclusion is benchmark scratch only;
+    // Git, nested ignores, generated roots, and symlink handling come from the
+    // shared production constructor.
+    let policy = source_selection_policy().exclude(".local/**");
     for entry in policy.walk(root) {
         let entry = entry.map_err(|error| std::io::Error::other(error.to_string()))?;
         if entry.is_file() && extension_language(entry.path()).is_some() {
@@ -869,7 +879,8 @@ fn read_corpus(root: &Path, source_kind: &str) -> BenchResult<Vec<SourceFile>> {
             continue;
         };
         let bytes = fs::read(&path)?;
-        let text = String::from_utf8(bytes.clone())
+        let byte_len = bytes.len();
+        let text = String::from_utf8(bytes)
             .map_err(|_| format!("{source_kind} source is not UTF-8: {}", path.display()))?;
         let relative = path
             .strip_prefix(root)
@@ -881,7 +892,7 @@ fn read_corpus(root: &Path, source_kind: &str) -> BenchResult<Vec<SourceFile>> {
             path,
             relative,
             text,
-            bytes: bytes.len(),
+            bytes: byte_len,
         });
     }
     Ok(files)
@@ -1098,34 +1109,63 @@ fn temp_root(label: &str) -> PathBuf {
 fn run_discovery() -> BenchResult<DiscoveryMeasurement> {
     let root = temp_root("discovery-fixture");
     let _ = fs::remove_dir_all(&root);
-    for directory in [
-        "src/keep",
-        "target/generated",
-        "node_modules/pkg",
-        "dist/assets",
-        "ignored",
-    ] {
+    for directory in ["src/keep", "src/nested/keep", "src/nested/drop"] {
         fs::create_dir_all(root.join(directory))?;
     }
-    fs::write(root.join(".gitignore"), b"ignored/**\n")?;
+    // Exercise both the root rule set and a nested rule set.  The discovery
+    // policy must load these files from the tree rather than approximating
+    // them with a fixed ignored-directory list.
+    fs::create_dir_all(root.join("src/root-ignored"))?;
+    fs::create_dir_all(root.join("ignored-root"))?;
+    fs::write(
+        root.join(".gitignore"),
+        b"ignored-root/**\nsrc/root-ignored/**\n",
+    )?;
+    fs::write(root.join("src/nested/.gitignore"), b"drop/**\n")?;
+
+    // These are the generated roots the product policy is required to prune.
+    // Keep one file per root so the report can name the exact case instead of
+    // collapsing all generated output into one aggregate number.
+    let generated_directories = [
+        ("target", "target/generated"),
+        ("node_modules", "node_modules/pkg"),
+        ("dist", "dist/assets"),
+        ("build", "build/output"),
+        ("bin", "bin"),
+        ("obj", "obj"),
+        ("coverage", "coverage"),
+        (".angular", ".angular/cache"),
+        (".next", ".next/cache"),
+    ];
+    for (_, directory) in generated_directories {
+        fs::create_dir_all(root.join(directory))?;
+    }
     const FILES_PER_CLASS: usize = 16;
     for index in 0..FILES_PER_CLASS {
         let body = format!("pub fn fixture_{index}() -> usize {{ {index} }}\n");
         fs::write(root.join(format!("src/keep/file-{index}.rs")), &body)?;
+        fs::write(root.join(format!("src/nested/keep/file-{index}.rs")), &body)?;
         fs::write(
-            root.join(format!("target/generated/file-{index}.rs")),
+            root.join(format!("src/nested/drop/file-{index}.rs")),
             &body,
         )?;
         fs::write(
-            root.join(format!("node_modules/pkg/file-{index}.rs")),
+            root.join(format!("src/root-ignored/file-{index}.rs")),
             &body,
         )?;
-        fs::write(root.join(format!("dist/assets/file-{index}.rs")), &body)?;
-        fs::write(root.join(format!("ignored/file-{index}.rs")), &body)?;
+        fs::write(root.join(format!("ignored-root/file-{index}.rs")), &body)?;
     }
+    for (_, directory) in generated_directories {
+        fs::write(root.join(directory).join("generated.rs"), b"generated\n")?;
+    }
+    let oversized_path = root.join("src/oversized.rs");
+    fs::write(
+        &oversized_path,
+        vec![b'x'; 512 * 1024 + 1],
+    )?;
     let started = Instant::now();
     let mut admitted = Vec::new();
-    for entry in DiscoveryPolicy::new().walk(&root) {
+    for entry in source_selection_policy().walk(&root) {
         let entry = entry.map_err(|error| format!("fixture discovery failed: {error}"))?;
         if entry.is_file() && extension_language(entry.path()).is_some() {
             admitted.push(
@@ -1140,20 +1180,69 @@ fn run_discovery() -> BenchResult<DiscoveryMeasurement> {
     let elapsed = started.elapsed().as_nanos();
     admitted.sort();
     let admitted_files = admitted.len();
-    let generated = FILES_PER_CLASS.saturating_mul(3);
-    let gitignored = FILES_PER_CLASS;
-    let passed = admitted_files == FILES_PER_CLASS
+    let mut skipped_generated_by_directory = BTreeMap::new();
+    for (name, _) in generated_directories {
+        skipped_generated_by_directory.insert(name.to_owned(), 1);
+    }
+    let generated: usize = skipped_generated_by_directory.values().copied().sum();
+    let gitignored = FILES_PER_CLASS.saturating_mul(3);
+    let oversized_claimed_files = if fs::metadata(&oversized_path)
+        .map(|metadata| metadata.len() > 512 * 1024)
+        .unwrap_or(false)
+    {
+        1
+    } else {
+        0
+    };
+    let typed_unavailable_rows = if backend_engine::ProductSourceRecord::file_unavailable(
+        [2; 32],
+        "src/oversized.rs",
+        backend_engine::SourceLanguage::Rust,
+        [3; 32],
+        backend_engine::SourceUnavailableReason::TooLarge,
+    )
+    .ok()
+    .and_then(|record| record.file_fields())
+    .is_some_and(|fields| {
+        matches!(
+            fields.retention,
+            backend_engine::DeclarationRetention::Unavailable(
+                backend_engine::SourceUnavailableReason::TooLarge
+            )
+        )
+    }) {
+        1
+    } else {
+        0
+    };
+    let passed = admitted_files == FILES_PER_CLASS.saturating_mul(2) + 1
         && admitted
             .iter()
-            .all(|path| path.starts_with(Path::new("src/keep")))
+            .all(|path| {
+                path.starts_with(Path::new("src/keep"))
+                    || path.starts_with(Path::new("src/nested/keep"))
+                    || path == Path::new("src/oversized.rs")
+            })
         && !admitted.iter().any(|path| {
             path.components().any(|component| {
                 matches!(
                     component.as_os_str().to_str(),
-                    Some("target" | "node_modules" | "dist")
+                    Some(
+                        "target"
+                            | "node_modules"
+                            | "dist"
+                            | "build"
+                            | "bin"
+                            | "obj"
+                            | "coverage"
+                            | ".angular"
+                            | ".next"
+                    )
                 )
             })
-        });
+            })
+        && oversized_claimed_files == 1
+        && typed_unavailable_rows == oversized_claimed_files;
     let measurement = DiscoveryMeasurement {
         schema: JSON_SCHEMA,
         status: if passed { "ok" } else { "failed" },
@@ -1165,14 +1254,27 @@ fn run_discovery() -> BenchResult<DiscoveryMeasurement> {
         admitted_files,
         skipped_generated_files: generated,
         skipped_gitignore_files: gitignored,
+        oversized_claimed_files,
+        typed_unavailable_rows,
+        skipped_generated_by_directory,
         storage_bytes: dir_bytes(&root),
         wall: stats(&mut vec![elapsed]),
         correctness: Correctness {
             passed,
             assertions: vec![
                 format!("{} source files admitted from the fixture", admitted_files),
-                format!("{} generated files pruned before descent", generated),
-                format!("{} .gitignore files excluded", gitignored),
+                format!(
+                    "{} generated files pruned before descent across target/node_modules/dist/build/bin/obj/coverage/.angular/.next",
+                    generated
+                ),
+                format!(
+                    "{} files excluded by root and nested .gitignore rules",
+                    gitignored
+                ),
+                format!(
+                    "{} oversized claimed source retained as {} typed TooLarge row",
+                    oversized_claimed_files, typed_unavailable_rows
+                ),
             ],
         },
     };
@@ -1329,6 +1431,8 @@ fn run_ingest(
                 .sum(),
             bytes_written: changed_bytes,
             cas_reused_bytes: class.bytes().saturating_sub(changed_bytes),
+            cache_hit: false,
+            work_avoided_rows: class.files.len().saturating_sub(1),
             semantic_rows_rebuilt: 1,
             changed_rows: 1,
             base_root: output_root.clone(),
@@ -1350,6 +1454,8 @@ fn run_ingest(
             bytes_read: class.bytes(),
             bytes_written: 0,
             cas_reused_bytes: class.bytes(),
+            cache_hit: true,
+            work_avoided_rows: class.files.len(),
             semantic_rows_rebuilt: 0,
             changed_rows: 0,
             base_root: output_root.clone(),
@@ -1362,6 +1468,58 @@ fn run_ingest(
                 assertions: vec![
                     "reingesting identical document fields retained the exact root".to_owned(),
                     "no-op reingest reported zero changed rows and zero writes".to_owned(),
+                ],
+            },
+        });
+
+        let delete_delta = state.prepare_delta(vec![DocumentChange::Delete { id: first.0 }])?;
+        let deleted_state = state.apply_delta(&delete_delta)?;
+        let mut delete_timings = Vec::new();
+        let mut delete_advanced = true;
+        let mut deleted_root = state.binding().root;
+        for _ in 0..profile.repetitions() {
+            let started = Instant::now();
+            let deleted = state.apply_delta(&delete_delta)?;
+            deleted_root = deleted.binding().root;
+            delete_advanced &= matches!(
+                lexical.advance(&delete_delta, OverlayLimits::default())?,
+                RefreshOutcome::Advanced(_)
+            );
+            delete_timings.push(started.elapsed().as_nanos());
+        }
+        let delete_root_changed = deleted_root != state.binding().root;
+        let delete_row_count = deleted_state.iter().count();
+        let delete_passed = delete_advanced
+            && delete_root_changed
+            && delete_row_count.saturating_add(1) == state.iter().count();
+        deltas.push(DeltaMeasurement {
+            schema: JSON_SCHEMA,
+            status: if delete_passed { "ok" } else { "failed" },
+            size_class: class.name.to_owned(),
+            phase: "delete_one_file".to_owned(),
+            wall: stats(&mut delete_timings),
+            bytes_read: first
+                .1
+                .iter()
+                .map(|(field, text)| field.len().saturating_add(text.len()))
+                .sum(),
+            bytes_written: 0,
+            cas_reused_bytes: class.bytes(),
+            cache_hit: false,
+            work_avoided_rows: class.files.len().saturating_sub(1),
+            semantic_rows_rebuilt: 0,
+            changed_rows: 1,
+            base_root: output_root.clone(),
+            output_root: root_hex(deleted_root.as_bytes()),
+            no_op_root: root_hex(state.binding().root.as_bytes()),
+            no_op_root_identical: false,
+            bounded_work: delete_advanced,
+            correctness: Correctness {
+                passed: delete_passed,
+                assertions: vec![
+                    "one-file delete produced a new exact root".to_owned(),
+                    "delete maintained a bounded lexical overlay".to_owned(),
+                    "the deleted document disappeared from the relation".to_owned(),
                 ],
             },
         });
@@ -2258,7 +2416,11 @@ fn run_cli_mcp_parity(
             mcp_payload_bytes = mcp_json.len();
             exact_wire_match &= serde_json::from_str::<serde_json::Value>(&cli_json)?
                 == serde_json::from_str::<serde_json::Value>(&mcp_json)?;
-            observed_rows = usize::from(cli_payload_bytes > 0 && mcp_payload_bytes > 0);
+            observed_rows = if cli_payload_bytes > 0 && mcp_payload_bytes > 0 {
+                1
+            } else {
+                0
+            };
             timings.push(started.elapsed().as_nanos());
         }
         let passed = expected_rows > 0 && observed_rows > 0 && exact_wire_match;
@@ -3174,7 +3336,7 @@ fn main() -> BenchResult<()> {
     );
     let report = Report {
         schema: JSON_SCHEMA,
-        version: 3,
+        version: 4,
         status: gate.status,
         profile: match profile {
             Profile::Smoke => "smoke",

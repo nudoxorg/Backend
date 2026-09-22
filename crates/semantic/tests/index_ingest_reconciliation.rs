@@ -394,6 +394,75 @@ fn shuffled_sets_are_deterministic_and_replace_images() -> Result<(), String> {
 }
 
 #[test]
+fn permuted_local_rows_preserve_every_operation_borrowed_identity() -> Result<(), String> {
+    let (view, first) = image()?;
+    let (second_view, second) = image_with_seed(9)?;
+    let a = row("a", view, first)?;
+    let b = row("b", view, first)?;
+    let c = row("c", view, first)?;
+    let steady = row("steady", view, first)?;
+    let replacement = row("a", second_view, second)?;
+    let d = row("d", view, first)?;
+    let rebind = IngestedVersion::new(
+        IngestionOrigin::Scrape,
+        b.coordinate(),
+        publication(
+            view,
+            first,
+            IndexLocatorFacts::new(
+                GenerationId::from_canonical_bytes(b"new-generation"),
+                IndexSnapshotId::from_canonical_bytes(b"snapshot"),
+                ContentId::<CompilePublicationDomain>::from_canonical_bytes(b"publication"),
+            ),
+        )?,
+        entities(view, first)?,
+    )
+    .map_err(|e| format!("{e:?}"))?;
+
+    // The local rows are intentionally in a permutation whose sorted positions
+    // differ from their caller-visible indexes. Every variant below must retain
+    // the row borrowed from the correct original array slot.
+    let local = [steady, a, b, c];
+    let desired = [d, replacement, steady, rebind];
+    let mut output = [ReconciliationOperation::Remove(&a); 6];
+    let count = reconcile_into(&local, &desired, &mut output).map_err(|e| format!("{e:?}"))?;
+    if count != 5 {
+        return Err("wrong operation count".into());
+    }
+    if !matches!(
+        output[0],
+        ReconciliationOperation::Replace {
+            local: found,
+            desired: wanted,
+        } if std::ptr::eq(found, &local[1]) && std::ptr::eq(wanted, &desired[1])
+    ) {
+        return Err("replace borrowed the wrong permuted local row".into());
+    }
+    if !matches!(
+        output[1],
+        ReconciliationOperation::Rebind {
+            local: found,
+            desired: wanted,
+        } if std::ptr::eq(found, &local[2]) && std::ptr::eq(wanted, &desired[3])
+    ) {
+        return Err("rebind borrowed the wrong permuted local row".into());
+    }
+    if !matches!(output[2], ReconciliationOperation::Insert(found) if std::ptr::eq(found, &desired[0]))
+    {
+        return Err("insert borrowed the wrong desired row".into());
+    }
+    if !matches!(output[3], ReconciliationOperation::Unchanged(found) if std::ptr::eq(found, &desired[2]))
+    {
+        return Err("unchanged borrowed the wrong desired row".into());
+    }
+    if !matches!(output[4], ReconciliationOperation::Remove(found) if std::ptr::eq(found, &local[3]))
+    {
+        return Err("remove borrowed the wrong permuted local row".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn verified_locator_admission_rejects_cross_image_and_duplicates() -> Result<(), String> {
     let (view, image) = image()?;
     let (wrong_view, wrong) = image_with_seed(9)?;

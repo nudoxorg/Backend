@@ -2,9 +2,9 @@
 
 `src/bin/integrated.rs` drives the production Tantivy, Turso, CAS, library,
 CLI, MCP, and optional desktop GUI contracts over real source files. It emits
-`nudox.integrated-benchmark.v3` JSON and a concise Markdown report beside it;
+`nudox.integrated-benchmark.v4` JSON and a concise Markdown report beside it;
 timings are descriptive measurements and correctness assertions are recorded
-beside every result. The v3 lanes add ignore-aware discovery, fresh/graceful/
+beside every result. The v4 lanes add ignore-aware discovery, fresh/graceful/
 SIGKILL/offline Turso lifecycle checks, CLI/MCP parity for every admitted
 language, bounded RSS/file-descriptor sampling, throughput/reuse rows, and an
 explicit backend_1 comparison row.
@@ -43,6 +43,15 @@ their actual boundaries, including durable_publish_and_reopen,
 warm_in_memory_build, and first_in_memory_search.
 The production Tantivy API currently exposes exact, prefix, and full-text
 queries; fuzzy construction is unavailable and is recorded as unsupported.
+Ingest emits explicit one-file add, no-op, and delete rows. Delta rows include
+the measured source bytes read and durable bytes written, whether the path hit
+an immutable cache, and the number of semantic rows avoided by the delta-local
+path; a delete must advance to a distinct root and remove exactly one document.
+The discovery lane uses the shared package/source policy against a fixture with
+root and nested `.gitignore` files, and reports each generated root separately
+(`.next`, `.angular/cache`, `dist`, `build`, `bin`, `obj`, `coverage`, and the
+other default tool roots). Claimed oversized source is retained as a typed
+`TooLarge` row rather than failing the rest of the project.
 
 For a promotion run, use the release profile explicitly:
 

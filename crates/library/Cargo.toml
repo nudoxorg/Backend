@@ -18,6 +18,7 @@ backend-compile = { path = "../compile" }
 backend-execution = { path = "../execution" }
 serde.workspace = true
 serde_json.workspace = true
+ureq.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true

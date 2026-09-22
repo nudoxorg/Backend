@@ -68,9 +68,11 @@ pub(super) fn throughput_measurements(
     }
     for item in catalog {
         let elapsed = item.wall.p50_ns.unwrap_or(item.wall.min_ns);
-        let reused =
-            usize::from(item.operation.contains("warm") || item.operation.contains("restart"))
-                .saturating_mul(item.database_bytes);
+        let reused = if item.operation.contains("warm") || item.operation.contains("restart") {
+            item.database_bytes
+        } else {
+            0
+        };
         measurements.push(throughput_row(
             format!("catalog/{}", item.operation),
             item.size_class.clone(),
@@ -156,7 +158,7 @@ fn format_ns(value: Option<u128>) -> String {
 
 pub(super) fn markdown_report(report: &Report) -> String {
     let mut markdown = String::new();
-    let _ = writeln!(markdown, "# Nudox index benchmark v3\n");
+    let _ = writeln!(markdown, "# Nudox index benchmark v4\n");
     let _ = writeln!(markdown, "- Status: `{}`", report.status);
     let _ = writeln!(markdown, "- Commit: `{}`", report.commit);
     let _ = writeln!(
@@ -232,6 +234,23 @@ pub(super) fn markdown_report(report: &Report) -> String {
         );
     }
     for item in report
+        .deltas
+        .iter()
+        .filter(|item| item.size_class == "large")
+    {
+        let _ = writeln!(
+            markdown,
+            "- delta `{}`: p50 {} ns, changed rows {}, cache hit {}, work avoided rows {}, bytes read {}, bytes written {}",
+            item.phase,
+            format_ns(item.wall.p50_ns),
+            item.changed_rows,
+            item.cache_hit,
+            item.work_avoided_rows,
+            item.bytes_read,
+            item.bytes_written
+        );
+    }
+    for item in report
         .catalog
         .iter()
         .filter(|item| item.size_class == "large")
@@ -247,12 +266,27 @@ pub(super) fn markdown_report(report: &Report) -> String {
     }
     let _ = writeln!(
         markdown,
-        "- discovery: admitted {}, skipped generated {}, skipped .gitignore {}, p50 {} ns",
+        "- discovery: admitted {}, skipped generated {}, skipped .gitignore {}, oversized claimed {}, typed unavailable {}, p50 {} ns",
         report.discovery.admitted_files,
         report.discovery.skipped_generated_files,
         report.discovery.skipped_gitignore_files,
+        report.discovery.oversized_claimed_files,
+        report.discovery.typed_unavailable_rows,
         format_ns(report.discovery.wall.p50_ns)
     );
+    if !report.discovery.skipped_generated_by_directory.is_empty() {
+        let _ = writeln!(
+            markdown,
+            "  generated roots: {}",
+            report
+                .discovery
+                .skipped_generated_by_directory
+                .iter()
+                .map(|(directory, files)| format!("{directory}={files}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     for item in &report.lifecycle {
         let _ = writeln!(
             markdown,

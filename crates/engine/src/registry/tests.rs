@@ -269,6 +269,65 @@ fn acquisition_service_reuses_a_cached_release_after_not_modified() {
     ));
     assert_eq!(transport.pages, 2, "refresh must exercise the 304 branch");
     assert_eq!(transport.archives, 1, "304 must reuse the durable archive");
+
+    let before_lineage_epoch = service.policy_epoch();
+    let published = service
+        .published_packages()
+        .into_iter()
+        .next()
+        .expect("cached publication");
+    let association = backend_library::RegistryForgeAssociation::new(
+        backend_library::PackageReference::Purl(published.coordinate.clone()),
+        Box::new([]),
+        backend_library::RegistryForgeAssociationState::Unavailable {
+            reason: backend_library::ForgeUnavailableReason::Offline,
+            blobs: Box::new([]),
+        },
+        backend_library::RegistryForgeProvenance::RegistryMetadata,
+    )
+    .expect("typed forge lineage");
+    service
+        .link_forge_associations(
+            &published.coordinate,
+            vec![association.clone()].into_boxed_slice(),
+        )
+        .expect("link forge lineage");
+    assert_ne!(service.policy_epoch(), before_lineage_epoch);
+    let linked = service
+        .published_packages()
+        .into_iter()
+        .next()
+        .expect("linked publication");
+    let joined = service
+        .forge_sources_for(&linked)
+        .expect("joined forge lineage");
+    assert_eq!(joined.as_ref(), &[association.clone()]);
+    let linked_facts_root = service.facts_frontier();
+
+    drop(service);
+    let (recovered_owner, _) = RegistryOwner::open(
+        &root,
+        RegistryEndpoint::new(
+            RegistryEcosystem::Cargo,
+            "http://127.0.0.1:9/etag-revalidation",
+        )
+        .expect("same endpoint"),
+        AcquisitionPolicy::Online,
+        limits(),
+    )
+    .expect("recover linked lineage");
+    let recovered = recovered_owner
+        .published_packages()
+        .next()
+        .expect("recovered publication");
+    assert_eq!(recovered_owner.facts_frontier(), linked_facts_root);
+    assert_eq!(
+        recovered_owner
+            .forge_sources_for(recovered)
+            .expect("recovered forge lineage")
+            .as_ref(),
+        &[association]
+    );
     fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -829,6 +888,7 @@ fn registry_archive_stage_restarts_from_its_durable_transfer_checkpoint() {
         integrity: transport::ArchiveIntegrity::Canonical(digest),
         provenance: ProvenanceDigest::from_authenticated_feed([4; 32]),
         facts: ReleaseFacts::default(),
+        native_metadata: test_native_metadata(),
         advisory: None,
         dependency_facts: unavailable_dependency_facts(),
         archive_url: Arc::from("https://registry.example.test/checkpoint.crate"),
@@ -960,6 +1020,7 @@ fn http_archive_resume_uses_authenticated_range_and_reopens_at_multiple_offsets(
         integrity: transport::ArchiveIntegrity::Canonical(digest),
         provenance: ProvenanceDigest::from_authenticated_feed([6; 32]),
         facts: ReleaseFacts::default(),
+        native_metadata: test_native_metadata(),
         advisory: None,
         dependency_facts: unavailable_dependency_facts(),
         archive_url: Arc::from(format!("{endpoint_text}/archive")),
@@ -1083,6 +1144,7 @@ fn http_archive_resume_reconciles_a_completed_prefix_from_416() {
         integrity: transport::ArchiveIntegrity::Canonical(digest),
         provenance: ProvenanceDigest::from_authenticated_feed([8; 32]),
         facts: ReleaseFacts::default(),
+        native_metadata: test_native_metadata(),
         advisory: None,
         dependency_facts: unavailable_dependency_facts(),
         archive_url: Arc::from(format!("{endpoint_text}/archive")),
@@ -1195,6 +1257,7 @@ fn http_archive_resume_restarts_when_origin_ignores_range() {
         integrity: transport::ArchiveIntegrity::Canonical(digest),
         provenance: ProvenanceDigest::from_authenticated_feed([10; 32]),
         facts: ReleaseFacts::default(),
+        native_metadata: test_native_metadata(),
         advisory: None,
         dependency_facts: unavailable_dependency_facts(),
         archive_url: Arc::from(format!("{endpoint_text}/archive")),
@@ -1357,6 +1420,7 @@ fn http_archive_resume_quarantines_prefix_when_validator_changes() {
         integrity: transport::ArchiveIntegrity::Canonical(digest),
         provenance: ProvenanceDigest::from_authenticated_feed([11; 32]),
         facts: ReleaseFacts::default(),
+        native_metadata: test_native_metadata(),
         advisory: None,
         dependency_facts: unavailable_dependency_facts(),
         archive_url: Arc::from(format!("{endpoint_text}/archive")),
@@ -1473,6 +1537,7 @@ fn http_archive_resume_rejects_sparse_or_malformed_206() {
         integrity: transport::ArchiveIntegrity::Canonical(digest),
         provenance: ProvenanceDigest::from_authenticated_feed([12; 32]),
         facts: ReleaseFacts::default(),
+        native_metadata: test_native_metadata(),
         advisory: None,
         dependency_facts: unavailable_dependency_facts(),
         archive_url: Arc::from(format!("{endpoint_text}/archive")),

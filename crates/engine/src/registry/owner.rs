@@ -31,6 +31,11 @@ use super::{
     PackageCoordinate, PublishedArtifactClaim, RegistryEndpoint, RegistryTransport, RemoteRegistry,
     TransportFailure, TransportResult,
 };
+use super::frontier::{
+    apply_prepared_forge_link, apply_receipt_to_catalog, prepare_forge_link,
+    prepare_receipt_facts,
+    facts_store_error, validate_receipt_catalog, valid_forge_source_ids, FactsMerkleMap,
+};
 
 /// Durable external effect intent. The key covers every request field.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,6 +85,8 @@ pub struct PublishedPackage {
     pub facts: super::ReleaseFacts,
     /// Versioned native registry metadata captured at the same source frontier.
     pub native_metadata: backend_library::RegistryNativeMetadata,
+    /// Content IDs for versioned forge lineage facts in the owner association table.
+    pub forge_source_ids: Box<[[u8; 32]]>,
     /// Versioned advisory facts and the policy decision admitted before staging.
     pub advisory: AdvisoryPackageDto,
     /// Dependency facts captured at the same immutable source frontier.
@@ -98,6 +105,12 @@ pub struct AcquisitionReceipt<S: FeedSchema = CanonicalFeedV1> {
     pub target: FeedCursor<RemoteRegistry, S>,
     /// Complete package set published by this page.
     pub packages: Vec<PublishedPackage>,
+    /// Authenticated facts-map root after this receipt is applied.
+    ///
+    /// The journal carries this root beside package/association IDs so
+    /// recovery can verify that replay reopened the exact same persistent
+    /// projection without serializing a second copy of its rows.
+    pub facts_root: [u8; 32],
 }
 
 /// Recovered feed state. Pending intent is retried from the same cursor.
@@ -260,7 +273,9 @@ pub struct RegistryOwner<S: FeedSchema = CanonicalFeedV1> {
     pending: Option<AcquisitionIntent<S>>,
     last_receipt: Option<AcquisitionReceipt<S>>,
     catalog: BTreeMap<PackageCoordinate, PublishedPackage>,
-    facts_frontier: [u8; 32],
+    forge_associations: BTreeMap<[u8; 32], backend_library::RegistryForgeAssociation>,
+    forge_refcounts: BTreeMap<[u8; 32], u32>,
+    facts_map: FactsMerkleMap,
     faults: Arc<Faults>,
     readiness: RegistryReadiness,
     advisory_gate: Option<AcquisitionGate>,
@@ -354,6 +369,9 @@ impl RegistryOwner {
         let mut pending: BTreeMap<EffectKey, AcquisitionIntent> = BTreeMap::new();
         let mut last_receipt = None;
         let mut catalog = BTreeMap::new();
+        let mut forge_associations = BTreeMap::new();
+        let mut forge_refcounts = BTreeMap::new();
+        let mut facts_map = FactsMerkleMap::try_new().map_err(facts_store_error)?;
         for frame in recovery.frames {
             match RegistryLog::decode_record(&frame.payload)? {
                 RegistryRecord::Prepared(intent) => {
@@ -388,15 +406,58 @@ impl RegistryOwner {
                         return Err(AcquisitionError::CorruptJournal);
                     }
                     verify_receipt_objects(&objects, &receipt)?;
-                    validate_receipt_catalog(&catalog, &receipt, limits.max_catalog_items)?;
-                    apply_receipt_to_catalog(&mut catalog, &receipt);
+                    validate_receipt_catalog(
+                        &catalog,
+                        &forge_associations,
+                        &receipt,
+                        limits.max_catalog_items,
+                    )?;
+                    let prepared_facts = prepare_receipt_facts(&facts_map, &receipt)?;
+                    if prepared_facts.target_root() != receipt.facts_root {
+                        return Err(AcquisitionError::CorruptJournal);
+                    }
+                    apply_receipt_to_catalog(
+                        &mut catalog,
+                        &mut forge_associations,
+                        &mut forge_refcounts,
+                        &mut facts_map,
+                        &receipt,
+                        prepared_facts,
+                    )?;
                     cursor = receipt.target;
                     last_receipt = Some(receipt);
                 }
+                RegistryRecord::ForgeLinked {
+                    coordinate,
+                    associations,
+                    facts_root,
+                } => {
+                    let prepared = prepare_forge_link(
+                        &catalog,
+                        &forge_associations,
+                        &facts_map,
+                        &coordinate,
+                        associations,
+                    )?;
+                    if prepared.target_root() != facts_root {
+                        return Err(AcquisitionError::CorruptJournal);
+                    }
+                    apply_prepared_forge_link(
+                        &mut catalog,
+                        &mut forge_associations,
+                        &mut forge_refcounts,
+                        &mut facts_map,
+                        prepared,
+                    )?;
+                }
+            }
+        }
+        for package in catalog.values() {
+            if !valid_forge_source_ids(package, &forge_associations) {
+                return Err(AcquisitionError::CorruptJournal);
             }
         }
         let pending = pending.into_values().next();
-        let facts_frontier = catalog_facts_frontier(&catalog);
         let report = RegistryRecovery {
             cursor,
             pending,
@@ -424,7 +485,9 @@ impl RegistryOwner {
                 pending,
                 last_receipt,
                 catalog,
-                facts_frontier,
+                forge_associations,
+                forge_refcounts,
+                facts_map,
                 faults: Arc::new(Faults::default()),
                 readiness,
                 advisory_gate: None,
@@ -522,15 +585,30 @@ impl RegistryOwner {
             base: self.cursor,
             target,
             packages: publications,
+            facts_root: [0; 32],
         };
-        validate_receipt_catalog(&self.catalog, &receipt, self.limits.max_catalog_items)?;
+        validate_receipt_catalog(
+            &self.catalog,
+            &self.forge_associations,
+            &receipt,
+            self.limits.max_catalog_items,
+        )?;
+        let prepared_facts = prepare_receipt_facts(&self.facts_map, &receipt)?;
+        let mut receipt = receipt;
+        receipt.facts_root = prepared_facts.target_root();
         self.faults
             .trip(Boundary::EffectConfirmed)
             .map_err(AcquisitionError::Injected)?;
         self.journal
             .append(&RegistryRecord::Committed(intent, receipt.clone()))?;
-        apply_receipt_to_catalog(&mut self.catalog, &receipt);
-        self.facts_frontier = catalog_facts_frontier(&self.catalog);
+        apply_receipt_to_catalog(
+            &mut self.catalog,
+            &mut self.forge_associations,
+            &mut self.forge_refcounts,
+            &mut self.facts_map,
+            &receipt,
+            prepared_facts,
+        )?;
         self.cursor = target;
         self.readiness = RegistryReadiness::Ready {
             source: self.endpoint.id(),
@@ -588,7 +666,7 @@ impl RegistryOwner {
             Some(backend_advisory::OfflinePolicy::Warn) => 2,
             Some(backend_advisory::OfflinePolicy::FailClosed) => 3,
         }]);
-        hasher.update(&self.facts_frontier);
+        hasher.update(&self.facts_map.root());
         let digest = hasher.finalize();
         u64::from_be_bytes(
             digest.as_bytes()[..8]
@@ -645,14 +723,77 @@ impl RegistryOwner {
         self.catalog.values()
     }
 
+    /// Joins normalized forge lineage facts for one published release.
+    ///
+    /// The returned projection is bounded and cloned for transport; the
+    /// owner retains one shared association table keyed by content ID.
+    pub fn forge_sources_for(
+        &self,
+        package: &PublishedPackage,
+    ) -> Result<Box<[backend_library::RegistryForgeAssociation]>, AcquisitionError> {
+        if !valid_forge_source_ids(package, &self.forge_associations) {
+            return Err(AcquisitionError::CorruptJournal);
+        }
+        package
+            .forge_source_ids
+            .iter()
+            .map(|association_id| {
+                self.forge_associations
+                    .get(association_id)
+                    .cloned()
+                    .ok_or(AcquisitionError::CorruptJournal)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Vec::into_boxed_slice)
+    }
+
+    /// Persists the exact forge receipt facts joined to one registry release.
+    ///
+    /// Associations are normalized by their content identity in the owner
+    /// journal. Replacing a link changes the facts frontier and therefore the
+    /// next source snapshot/delta root without re-reading archive bytes.
+    pub fn link_forge_associations(
+        &mut self,
+        coordinate: &PackageCoordinate,
+        associations: Box<[backend_library::RegistryForgeAssociation]>,
+    ) -> Result<(), AcquisitionError> {
+        if !self.catalog.contains_key(coordinate) {
+            return Err(AcquisitionError::InvalidCoordinate);
+        }
+        if associations.len() > backend_library::MAX_REGISTRY_FORGE_ASSOCIATIONS {
+            return Err(AcquisitionError::Bounds);
+        }
+        let prepared = prepare_forge_link(
+            &self.catalog,
+            &self.forge_associations,
+            &self.facts_map,
+            coordinate,
+            associations,
+        )?;
+        let event = RegistryRecord::ForgeLinked {
+            coordinate: coordinate.clone(),
+            associations: prepared.associations().to_vec().into_boxed_slice(),
+            facts_root: prepared.target_root(),
+        };
+        self.journal.append(&event)?;
+        apply_prepared_forge_link(
+            &mut self.catalog,
+            &mut self.forge_associations,
+            &mut self.forge_refcounts,
+            &mut self.facts_map,
+            prepared,
+        )?;
+        Ok(())
+    }
+
     /// Content identity of the mutable release-facts/advisory frontier.
     ///
     /// Archive claims are immutable and live in the receipt. This compact
     /// digest lets consumers key metadata snapshots without reopening any
     /// archive payloads.
     #[must_use]
-    pub const fn facts_frontier(&self) -> [u8; 32] {
-        self.facts_frontier
+    pub fn facts_frontier(&self) -> [u8; 32] {
+        self.facts_map.root()
     }
 
     /// Returns a constant-size status suitable for client readiness projection.
@@ -813,15 +954,30 @@ impl RegistryOwner {
             base: self.cursor,
             target,
             packages: publications,
+            facts_root: [0; 32],
         };
-        validate_receipt_catalog(&self.catalog, &receipt, self.limits.max_catalog_items)?;
+        validate_receipt_catalog(
+            &self.catalog,
+            &self.forge_associations,
+            &receipt,
+            self.limits.max_catalog_items,
+        )?;
+        let prepared_facts = prepare_receipt_facts(&self.facts_map, &receipt)?;
+        let mut receipt = receipt;
+        receipt.facts_root = prepared_facts.target_root();
         self.faults
             .trip(Boundary::EffectConfirmed)
             .map_err(AcquisitionError::Injected)?;
         self.journal
             .append(&RegistryRecord::Committed(intent, receipt.clone()))?;
-        apply_receipt_to_catalog(&mut self.catalog, &receipt);
-        self.facts_frontier = catalog_facts_frontier(&self.catalog);
+        apply_receipt_to_catalog(
+            &mut self.catalog,
+            &mut self.forge_associations,
+            &mut self.forge_refcounts,
+            &mut self.facts_map,
+            &receipt,
+            prepared_facts,
+        )?;
         self.cursor = target;
         self.readiness = RegistryReadiness::Ready {
             source: self.endpoint.id(),
@@ -857,6 +1013,7 @@ impl RegistryOwner {
                         upstream_integrity,
                         facts: package.facts,
                         native_metadata: package.native_metadata.clone(),
+                        forge_source_ids: existing.forge_source_ids.clone(),
                         advisory,
                         dependency_facts: package.dependency_facts.clone(),
                     });
@@ -1089,6 +1246,7 @@ impl ArchiveStageContext {
             upstream_integrity: package.integrity_version(),
             facts: package.facts,
             native_metadata: package.native_metadata.clone(),
+            forge_source_ids: Box::new([]),
             advisory,
             dependency_facts: package.dependency_facts.clone(),
         })
@@ -1190,79 +1348,6 @@ mod immutable_object_tests {
     }
 }
 
-fn validate_receipt_catalog(
-    catalog: &BTreeMap<PackageCoordinate, PublishedPackage>,
-    receipt: &AcquisitionReceipt,
-    maximum: usize,
-) -> Result<(), AcquisitionError> {
-    if receipt
-        .packages
-        .windows(2)
-        .any(|pair| pair[0].coordinate >= pair[1].coordinate)
-    {
-        return Err(AcquisitionError::CorruptJournal);
-    }
-    let mut additional = 0usize;
-    for package in &receipt.packages {
-        match catalog.get(&package.coordinate) {
-            Some(existing) if existing.artifact != package.artifact => {
-                return Err(AcquisitionError::CorruptJournal);
-            }
-            Some(_) => {}
-            None => additional = additional.checked_add(1).ok_or(AcquisitionError::Bounds)?,
-        }
-    }
-    let total = catalog
-        .len()
-        .checked_add(additional)
-        .ok_or(AcquisitionError::Bounds)?;
-    if total > maximum {
-        return Err(AcquisitionError::Overrun {
-            measured: u64::try_from(total).map_err(|_| AcquisitionError::Bounds)?,
-            limit: u64::try_from(maximum).map_err(|_| AcquisitionError::Bounds)?,
-        });
-    }
-    Ok(())
-}
-
-fn apply_receipt_to_catalog(
-    catalog: &mut BTreeMap<PackageCoordinate, PublishedPackage>,
-    receipt: &AcquisitionReceipt,
-) {
-    for package in &receipt.packages {
-        catalog.insert(package.coordinate.clone(), package.clone());
-    }
-}
-
-fn catalog_facts_frontier(catalog: &BTreeMap<PackageCoordinate, PublishedPackage>) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.registry.facts-frontier.v1\0");
-    for package in catalog.values() {
-        let coordinate = package.coordinate.as_str().as_bytes();
-        hasher.update(&(coordinate.len() as u64).to_be_bytes());
-        hasher.update(coordinate);
-        hasher.update(&package.artifact.as_bytes());
-        hasher.update(&package.bytes.to_be_bytes());
-        hasher.update(&package.facts.version());
-        let native_metadata = package.native_metadata.encode_canonical();
-        if let Ok(identity) = package.native_metadata.identity() {
-            hasher.update(&identity);
-        } else {
-            hasher.update(&(native_metadata.len() as u64).to_be_bytes());
-            hasher.update(&native_metadata);
-        }
-        // Advisory DTOs are already the canonical wire projection. Keeping
-        // their serialized bytes in the frontier means withdrawals, coverage,
-        // and policy changes invalidate only metadata roots.
-        if let Ok(bytes) = serde_json::to_vec(&package.advisory) {
-            hasher.update(&(bytes.len() as u64).to_be_bytes());
-            hasher.update(&bytes);
-        } else {
-            hasher.update(&0_u64.to_be_bytes());
-        }
-    }
-    *hasher.finalize().as_bytes()
-}
 
 fn coordinate_key(coordinate: &PackageCoordinate) -> Vec<u8> {
     coordinate.as_str().as_bytes().to_vec()

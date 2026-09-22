@@ -391,9 +391,13 @@ struct SearchableToken {
 }
 
 fn searchable_tokens(text: &str) -> Vec<SearchableToken> {
-    let mut tokens = std::collections::BTreeSet::new();
+    // The projection only needs canonical order after tokenization.  A tree
+    // allocates one node per token while this bounded vector can sort and
+    // deduplicate in place, retaining the same `(searchable, ranking)` set
+    // with fewer allocations and better locality during cold ingest.
+    let mut tokens = Vec::new();
     for raw in text.split_whitespace().filter(|token| !token.is_empty()) {
-        tokens.insert(SearchableToken {
+        tokens.push(SearchableToken {
             searchable: raw.to_owned(),
             ranking: raw.to_owned(),
         });
@@ -401,7 +405,7 @@ fn searchable_tokens(text: &str) -> Vec<SearchableToken> {
             if identifier.is_empty() {
                 continue;
             }
-            tokens.insert(SearchableToken {
+            tokens.push(SearchableToken {
                 searchable: identifier.to_owned(),
                 ranking: raw.to_owned(),
             });
@@ -411,29 +415,33 @@ fn searchable_tokens(text: &str) -> Vec<SearchableToken> {
             }));
         }
     }
-    tokens.into_iter().collect()
+    tokens.sort_unstable();
+    tokens.dedup();
+    tokens
 }
 
 fn identifier_words(identifier: &str) -> impl Iterator<Item = &str> {
-    let characters = identifier.char_indices().collect::<Vec<_>>();
     let mut words = Vec::new();
+    let mut characters = identifier.char_indices().peekable();
+    let Some((_, mut previous)) = characters.next() else {
+        return words.into_iter();
+    };
     let mut start = 0;
-    for index in 1..characters.len() {
-        let previous = characters[index - 1].1;
-        let current = characters[index].1;
-        let next = characters.get(index + 1).map(|(_, character)| *character);
+    while let Some((index, current)) = characters.next() {
+        let next = characters.peek().map(|(_, character)| *character);
         let case_boundary = (previous.is_lowercase() && current.is_uppercase())
             || (previous.is_uppercase()
                 && current.is_uppercase()
                 && next.is_some_and(char::is_lowercase));
         let class_boundary = previous.is_numeric() != current.is_numeric();
         if case_boundary || class_boundary {
-            let end = characters[index].0;
+            let end = index;
             if start < end {
                 words.push(&identifier[start..end]);
             }
             start = end;
         }
+        previous = current;
     }
     if start < identifier.len() {
         words.push(&identifier[start..]);

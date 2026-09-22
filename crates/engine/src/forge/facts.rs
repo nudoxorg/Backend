@@ -118,39 +118,6 @@ pub enum ForgeFact<T> {
     Unavailable(ForgeUnavailableReason),
 }
 
-/// Why one forge metadata value is unavailable.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ForgeUnavailableReason {
-    /// The selected authority omits this field.
-    AuthorityOmitted,
-    /// The metadata endpoint could not be reached.
-    Unreachable,
-    /// The authority does not implement this operation.
-    Unsupported,
-    /// Local policy is offline.
-    Offline,
-    /// A configured bound rejected the response.
-    Bounds,
-    /// The response was malformed.
-    Malformed,
-}
-
-impl ForgeUnavailableReason {
-    /// Stable product-facing reason spelling.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::AuthorityOmitted => "authority omitted",
-            Self::Unreachable => "authority unreachable",
-            Self::Unsupported => "authority unsupported",
-            Self::Offline => "offline",
-            Self::Bounds => "response exceeded bounds",
-            Self::Malformed => "authority response malformed",
-        }
-    }
-}
-
 /// Repository metadata returned by a forge authority.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

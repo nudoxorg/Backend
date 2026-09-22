@@ -24,9 +24,11 @@ mod command_registry;
 mod cursor;
 mod delta;
 mod error;
+mod forge_identity;
 mod graph_query;
 mod rich_graph;
 mod package_graph;
+mod registry_forge;
 mod registry_native;
 /// Transport-independent application service and reply vocabulary.
 pub mod interface;
@@ -92,6 +94,10 @@ pub use cursor::{
 };
 pub use delta::{Delta, Intent, IntentError, IntentLog, IntentReceipt, Settings};
 pub use error::LibraryError;
+pub use forge_identity::{
+    ForgeCoordinate, ForgeCoordinateError, ForgeHashAlgorithm, ForgeObjectId, ForgeProvider,
+    ForgeRefName, ForgeRevision, ForgeUnavailableReason,
+};
 pub use graph_query::{
     AdmittedGraphQueryInput, GraphQueryControl, GraphQueryError, GraphQueryPage, GraphQueryRequest,
     GraphQueryRow, GraphValue, MAX_GRAPH_QUERY_BYTES, MAX_GRAPH_QUERY_FIELDS,
@@ -122,6 +128,16 @@ pub use registry_native::{
     RegistryNativeMetadataCodecError,
     RegistryNativeObservation, RegistryNativeProvenance, RegistryNativeVulnerability,
     RegistryNpmMetadata, RegistryNugetMetadata, RegistryPypiMetadata,
+};
+pub use registry_forge::{
+    MAX_REGISTRY_FORGE_ASSOCIATIONS, MAX_REGISTRY_FORGE_BLOBS,
+    MAX_REGISTRY_FORGE_CANDIDATES, MAX_REGISTRY_FORGE_ASSOCIATION_BYTES,
+    REGISTRY_FORGE_ASSOCIATION_VERSION,
+    RegistryForgeAssociation, RegistryForgeAssociationError, RegistryForgeAssociationState,
+    RegistryForgeBlobFrontier, RegistryForgeBlobKind, RegistryForgeBlobPage,
+    RegistryForgeBlobRef, RegistryForgeCandidate,
+    RegistryForgeConfidence, RegistryForgeProvenance, RegistryForgeSourceIdentity,
+    MAX_REGISTRY_FORGE_PAGES, REGISTRY_FORGE_BLOB_FRONTIER_VERSION,
 };
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,

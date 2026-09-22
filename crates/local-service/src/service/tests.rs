@@ -118,3 +118,31 @@ fn malformed_command_errors_preserve_the_shared_reply_version_and_correlation() 
         backend_engine::CommandReply::Error(_)
     ));
 }
+
+#[test]
+fn ingest_execution_errors_are_not_labeled_as_invalid_command_frames() {
+    let limits = FrameLimits {
+        max_frame: 1024,
+        max_cursor: 128,
+        max_frames_per_connection: 2,
+        transport: backend_engine::TransportLimits {
+            max_frame: 1024,
+            max_chunk: 1024,
+            ..backend_engine::TransportLimits::default()
+        },
+    };
+    let payload = error_payload(
+        RequestCorrelation::Command(48),
+        &ProtocolError::CommandExecution(
+            "read source src/oversized.rs: typed TooLarge diagnostic".to_owned(),
+        ),
+        limits,
+    );
+    let reply = backend_engine::decode_reply_dto(&payload).expect("shared command error reply");
+    let backend_engine::CommandReply::Error(message) = reply.reply else {
+        panic!("execution failures must use the typed command error reply");
+    };
+    assert!(message.contains("command execution failed"));
+    assert!(message.contains("typed TooLarge diagnostic"));
+    assert!(!message.contains("invalid command frame"));
+}

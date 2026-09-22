@@ -2231,6 +2231,17 @@ impl AcquisitionService {
             .policy_epoch()
     }
 
+    /// Returns the authenticated registry facts root used by snapshot and
+    /// GUI projections. Recovery must reproduce this exact root from the
+    /// versioned journal without reopening archive bytes.
+    #[must_use]
+    pub fn facts_frontier(&self) -> [u8; ID_BYTES] {
+        self.owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .facts_frontier()
+    }
+
     /// Stable source identity for request construction.
     #[must_use]
     pub fn source_id(&self) -> [u8; ID_BYTES] {
@@ -2261,6 +2272,46 @@ impl AcquisitionService {
             .published_packages()
             .cloned()
             .collect()
+    }
+
+    /// Joins the normalized forge lineage facts for one borrowed publication.
+    /// The association table remains owned by the registry journal; this
+    /// method only clones the bounded surface projection.
+    pub fn forge_sources_for(
+        &self,
+        package: &crate::registry::PublishedPackage,
+    ) -> Result<Box<[backend_library::RegistryForgeAssociation]>, RegistryAcquisitionError> {
+        self.owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .forge_sources_for(package)
+    }
+
+    /// Appends a validated registry-to-forge association delta and advances
+    /// the owner's authenticated facts frontier in bounded path work.
+    pub fn link_forge_associations(
+        &self,
+        coordinate: &crate::registry::PackageCoordinate,
+        associations: Box<[backend_library::RegistryForgeAssociation]>,
+    ) -> Result<(), RegistryAcquisitionError> {
+        self.owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .link_forge_associations(coordinate, associations)
+    }
+
+    /// Converts an admitted forge acquisition receipt into the normalized
+    /// registry lineage event used by the same owner journal.
+    pub fn link_forge_receipt(
+        &self,
+        coordinate: &crate::registry::PackageCoordinate,
+        result: &crate::forge::ForgeAcquisitionResult,
+    ) -> Result<(), RegistryAcquisitionError> {
+        let registry = backend_library::PackageReference::Purl(coordinate.clone());
+        let association = result
+            .registry_association(registry)
+            .map_err(|_| RegistryAcquisitionError::Transport(TransportFailure::Protocol))?;
+        self.link_forge_associations(coordinate, vec![association].into_boxed_slice())
     }
 
     /// Reads one owner-admitted archive without changing acquisition state.
@@ -2642,6 +2693,7 @@ impl AcquisitionService {
                                     upstream_integrity: package.integrity_version(),
                                     facts: package.facts,
                                     native_metadata: package.native_metadata.clone(),
+                                    forge_source_ids: existing.forge_source_ids.clone(),
                                     advisory,
                                     dependency_facts: package.dependency_facts.clone(),
                                 });

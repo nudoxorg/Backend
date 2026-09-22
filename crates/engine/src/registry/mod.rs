@@ -23,6 +23,7 @@
 mod ecosystem;
 mod facts;
 mod feed;
+mod frontier;
 mod identity;
 mod owner;
 mod router;

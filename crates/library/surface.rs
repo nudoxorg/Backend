@@ -1,6 +1,6 @@
 //! Typed commands and results owned by the durable product service.
 
-use crate::{CommandId, RegistryNativeMetadata};
+use crate::{CommandId, RegistryForgeAssociation, RegistryNativeMetadata};
 use backend_advisory::{AdvisoryPackageDto, OverrideEvidence};
 pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
 use serde::{Deserialize, Serialize};
@@ -877,6 +877,9 @@ pub struct RegistryPackageRecord {
     pub native_metadata_version: [u8; 32],
     /// Complete bounded native registry metadata for this release.
     pub native_metadata: RegistryNativeMetadata,
+    /// Versioned, typed forge lineage facts for this release.
+    #[serde(default)]
+    pub forge_sources: Box<[RegistryForgeAssociation]>,
     /// Complete typed advisory evidence and acquisition decision for this version.
     pub advisory: AdvisoryPackageDto,
 }
@@ -1249,20 +1252,23 @@ impl SurfaceReply {
         if count > MAX_PRODUCT_ROWS {
             Err(ProductAdmissionError::RowBound)
         } else {
-            let valid_registry_rows = match self {
+            match self {
                 Self::Explored(rows)
                 | Self::Package(rows)
                 | Self::IndexSearch(rows)
-                | Self::PackageVersions(rows) => rows.iter().all(valid_registry_record),
+                | Self::PackageVersions(rows) => {
+                    for row in rows {
+                        admit_registry_record(row)?;
+                    }
+                }
                 Self::Dependents(RegistryMetadata::Recorded(rows))
                 | Self::Owner(RegistryMetadata::Recorded(rows)) => {
-                    rows.iter().all(valid_registry_record)
+                    for row in rows {
+                        admit_registry_record(row)?;
+                    }
                 }
-                Self::PackageProfile { latest: Some(row), .. } => valid_registry_record(row),
-                _ => true,
-            };
-            if !valid_registry_rows {
-                return Err(ProductAdmissionError::NativeMetadata);
+                Self::PackageProfile { latest: Some(row), .. } => admit_registry_record(row)?,
+                _ => {}
             }
             Ok(())
         }
@@ -1404,15 +1410,29 @@ fn registry_package_record_bound(record: &RegistryPackageRecord) -> usize {
         .saturating_add(
             serde_json::to_vec(&record.native_metadata).map_or(0, |bytes| bytes.len()),
         )
+        .saturating_add(
+            serde_json::to_vec(&record.forge_sources).map_or(0, |bytes| bytes.len()),
+        )
         .saturating_add(serde_json::to_vec(&record.advisory).map_or(0, |bytes| bytes.len()))
 }
 
-fn valid_registry_record(record: &RegistryPackageRecord) -> bool {
-    record.native_metadata.admit().is_ok()
-        && record
-            .native_metadata
-            .identity()
-            .is_ok_and(|identity| identity == record.native_metadata_version)
+fn admit_registry_record(record: &RegistryPackageRecord) -> Result<(), ProductAdmissionError> {
+    let native_identity_matches = record
+        .native_metadata
+        .identity()
+        .is_ok_and(|identity| identity == record.native_metadata_version);
+    if record.native_metadata.admit().is_err() || !native_identity_matches {
+        return Err(ProductAdmissionError::NativeMetadata);
+    }
+    if record.forge_sources.len() > crate::MAX_REGISTRY_FORGE_ASSOCIATIONS
+        || record
+            .forge_sources
+            .iter()
+            .any(|association| association.admit_for_registry(&record.coordinate).is_err())
+    {
+        return Err(ProductAdmissionError::ForgeAssociation);
+    }
+    Ok(())
 }
 
 fn dependency_record_bound(record: &crate::PackageDependencyRecord) -> usize {
@@ -1493,6 +1513,8 @@ pub enum ProductAdmissionError {
     DependencyShape,
     /// Native registry metadata is malformed, oversized, or has a stale identity.
     NativeMetadata,
+    /// Registry-to-forge lineage facts are malformed, stale, or attached to another package.
+    ForgeAssociation,
 }
 impl core::fmt::Display for ProductAdmissionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -1507,6 +1529,9 @@ impl core::fmt::Display for ProductAdmissionError {
             Self::SemanticVersionShape => "semantic version selection is inconsistent",
             Self::DependencyShape => "dependency fact has an invalid or duplicate identity",
             Self::NativeMetadata => "native registry metadata is invalid or has a stale identity",
+            Self::ForgeAssociation => {
+                "registry-to-forge lineage is invalid or has a stale identity"
+            }
         })
     }
 }
@@ -1560,6 +1585,7 @@ mod tests {
             facts_version: [0; 32],
             native_metadata_version: native_metadata.identity().expect("native metadata identity"),
             native_metadata,
+            forge_sources: Box::new([]),
             advisory: AdvisoryPackageDto::unknown(),
         };
         let reply = SurfaceReply::Explored(vec![record].into_boxed_slice());

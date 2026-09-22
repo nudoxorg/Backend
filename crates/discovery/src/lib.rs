@@ -757,6 +757,48 @@ mod tests {
     }
 
     #[test]
+    fn root_and_nested_gitignore_files_are_both_applied() {
+        let scratch = Scratch::new("root-and-nested-ignore");
+        fs::create_dir_all(scratch.0.join("src/nested")).expect("nested");
+        fs::write(
+            scratch.0.join(".gitignore"),
+            b"root-drop.rs\nsrc/nested/drop.rs\n",
+        )
+        .expect("root ignore");
+        fs::write(scratch.0.join("src/nested/.gitignore"), b"nested-drop.rs\n")
+            .expect("nested ignore");
+        fs::write(scratch.0.join("root-drop.rs"), b"drop").expect("root drop");
+        fs::write(scratch.0.join("root-keep.rs"), b"keep").expect("root keep");
+        fs::write(scratch.0.join("src/nested/drop.rs"), b"drop").expect("nested drop");
+        fs::write(scratch.0.join("src/nested/nested-drop.rs"), b"drop")
+            .expect("nested local drop");
+        fs::write(scratch.0.join("src/nested/nested-keep.rs"), b"keep")
+            .expect("nested keep");
+
+        let mut paths = DiscoveryPolicy::default()
+            .walk(&scratch.0)
+            .map(|entry| {
+                entry
+                    .expect("discovery")
+                    .path()
+                    .strip_prefix(&scratch.0)
+                    .expect("relative")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .filter(|path| path.ends_with(".rs"))
+            .collect::<Vec<_>>();
+        paths.sort();
+        assert_eq!(
+            paths,
+            [
+                "root-keep.rs",
+                "src/nested/nested-keep.rs",
+            ]
+        );
+    }
+
+    #[test]
     fn local_git_exclude_and_escaped_patterns_are_applied_without_git() {
         let scratch = Scratch::new("exclude");
         fs::create_dir_all(scratch.0.join(".git/info")).expect("git metadata");

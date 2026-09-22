@@ -1,4 +1,5 @@
 use super::*;
+use backend_library::{RegistryForgeAssociationState, RegistryForgeBlobKind};
 
 use std::{
     fs,
@@ -274,6 +275,36 @@ fn fixture_acquisition_reuses_content_and_restarts_offline() {
     assert_eq!(product.manifests[0].path.as_str(), "Cargo.toml");
     assert_eq!(first.snapshot.id().to_bytes(), first.receipt.snapshot);
     assert_eq!(first.delta.id().to_bytes(), first.receipt.delta);
+    let lineage = first
+        .registry_association(
+            PackageReference::parse("pkg:cargo/widget@1.0.0").expect("registry coordinate"),
+        )
+        .expect("registry lineage");
+    assert!(lineage.is_resolved());
+    assert_eq!(lineage.candidates.len(), 1);
+    assert_eq!(
+        lineage.candidates[0].source.coordinate,
+        first.coordinate
+    );
+    let RegistryForgeAssociationState::Resolved { blobs, .. } = &lineage.state else {
+        panic!("receipt lineage must resolve");
+    };
+    assert!(blobs.iter().any(|blob| {
+        blob.kind == RegistryForgeBlobKind::Archive
+            && blob.content_id == first.archive.to_bytes()
+    }));
+    assert!(blobs.iter().any(|blob| {
+        blob.kind == RegistryForgeBlobKind::TreeManifest
+            && blob.content_id == first.tree.id().to_bytes()
+    }));
+    assert!(blobs.iter().any(|blob| {
+        blob.kind == RegistryForgeBlobKind::SourceSnapshot
+            && blob.content_id == first.snapshot.id().to_bytes()
+    }));
+    assert!(blobs.iter().any(|blob| {
+        blob.kind == RegistryForgeBlobKind::SourceDelta
+            && blob.content_id == first.delta.id().to_bytes()
+    }));
     let calls = fixture.calls.load(Ordering::Relaxed);
     let second = service.acquire(&coordinate(), &mut fixture);
     assert!(matches!(second, ForgeAcquisitionOutcome::Hit(_)));

@@ -35,21 +35,15 @@ use std::{
     io::{self, Cursor, Read, Seek, SeekFrom},
     path::PathBuf,
     process::{Child, ChildStdout, Command, Stdio},
-    str::FromStr,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const ID_BYTES: usize = 32;
-const MAX_COORDINATE_BYTES: usize = 2_048;
-const MAX_REF_BYTES: usize = 512;
-const MAX_OWNER_BYTES: usize = 512;
-const MAX_REPOSITORY_BYTES: usize = 256;
 const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 2 * 1024 * 1024;
 const MAX_README_BYTES: usize = 256 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
-const GIT_HASH_BYTES: usize = 20;
 
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -109,50 +103,6 @@ fn hex(bytes: &[u8]) -> String {
     result
 }
 
-fn decode_hex(value: &str) -> Option<Vec<u8>> {
-    if value.is_empty() || value.len() % 2 != 0 {
-        return None;
-    }
-    let bytes = value.as_bytes();
-    let mut result = Vec::with_capacity(bytes.len() / 2);
-    let nibble = |byte: u8| match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    };
-    let mut index = 0;
-    while index < bytes.len() {
-        result.push((nibble(bytes[index])? << 4) | nibble(bytes[index + 1])?);
-        index += 2;
-    }
-    Some(result)
-}
-
-fn text(value: &str, maximum: usize) -> Result<Arc<str>, ForgeCoordinateError> {
-    if value.is_empty()
-        || value.len() > maximum
-        || value.trim() != value
-        || value
-            .bytes()
-            .any(|byte| byte == 0 || byte == b'\n' || byte == b'\r')
-    {
-        return Err(ForgeCoordinateError::NonCanonicalText);
-    }
-    Ok(Arc::from(value))
-}
-
-fn path_part(value: &str, maximum: usize) -> Result<Arc<str>, ForgeCoordinateError> {
-    let value = text(value, maximum)?;
-    if value
-        .split('/')
-        .any(|part| part.is_empty() || part == "." || part == ".." || part.contains('\\'))
-    {
-        return Err(ForgeCoordinateError::UnsafePath);
-    }
-    Ok(value)
-}
-
 mod archive;
 mod facts;
 mod identity;
@@ -165,10 +115,10 @@ mod service;
 mod tests;
 mod transport;
 
-pub use facts::{ForgeFact, ForgeRepositoryMetadata, ForgeResolution, ForgeUnavailableReason};
+pub use facts::{ForgeFact, ForgeRepositoryMetadata, ForgeResolution};
 pub use identity::{
     ForgeCoordinate, ForgeCoordinateError, ForgeHashAlgorithm, ForgeObjectId, ForgeProvider,
-    ForgeRefName, ForgeRevision,
+    ForgeRefName, ForgeRevision, ForgeUnavailableReason,
 };
 pub use model::{
     ForgeAcquisitionOutcome, ForgeAcquisitionResult, ForgePackageManifest, ForgeReceipt,

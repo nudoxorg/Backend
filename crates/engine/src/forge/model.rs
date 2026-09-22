@@ -77,6 +77,78 @@ pub struct ForgeAcquisitionResult {
 }
 
 impl ForgeAcquisitionResult {
+    /// Projects an exact forge receipt into the normalized registry lineage
+    /// association used by package/release joins.
+    pub fn registry_association(
+        &self,
+        registry: backend_library::PackageReference,
+    ) -> Result<backend_library::RegistryForgeAssociation, ForgeProtocolError> {
+        self.registry_association_with(
+            registry,
+            backend_library::RegistryForgeProvenance::Derived(ProductText::from_static(
+                "forge-acquisition-receipt",
+            )),
+            backend_library::RegistryForgeConfidence::Exact,
+        )
+    }
+
+    /// Projects an exact forge receipt while retaining the caller's typed
+    /// provenance and confidence classification.
+    pub fn registry_association_with(
+        &self,
+        registry: backend_library::PackageReference,
+        provenance: backend_library::RegistryForgeProvenance,
+        confidence: backend_library::RegistryForgeConfidence,
+    ) -> Result<backend_library::RegistryForgeAssociation, ForgeProtocolError> {
+        let candidate = backend_library::RegistryForgeCandidate {
+            source: backend_library::RegistryForgeSourceIdentity {
+                coordinate: self.coordinate.clone(),
+            },
+            confidence,
+        };
+        let blobs = [
+            backend_library::RegistryForgeBlobRef::new(
+                backend_library::RegistryForgeBlobKind::Archive,
+                self.archive.to_bytes(),
+                0,
+                None,
+            ),
+            backend_library::RegistryForgeBlobRef::new(
+                backend_library::RegistryForgeBlobKind::TreeManifest,
+                self.tree.id().to_bytes(),
+                0,
+                None,
+            ),
+            backend_library::RegistryForgeBlobRef::new(
+                backend_library::RegistryForgeBlobKind::SourceSnapshot,
+                self.snapshot.id().to_bytes(),
+                0,
+                None,
+            ),
+            backend_library::RegistryForgeBlobRef::new(
+                backend_library::RegistryForgeBlobKind::SourceDelta,
+                self.delta.id().to_bytes(),
+                0,
+                None,
+            ),
+        ]
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ForgeProtocolError::Malformed)?
+        .into_boxed_slice();
+        backend_library::RegistryForgeAssociation::new(
+            registry,
+            vec![candidate].into_boxed_slice(),
+            backend_library::RegistryForgeAssociationState::Resolved {
+                commit: self.resolution.commit.clone(),
+                tree: self.resolution.tree.clone(),
+                blobs,
+            },
+            provenance,
+        )
+        .map_err(|_| ForgeProtocolError::Malformed)
+    }
+
     /// Projects an admitted forge result into the GUI/product package DTO.
     /// The projection preserves every recorded/unavailable metadata fact and
     /// uses the same manifest paths and dependency rows admitted by the

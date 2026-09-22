@@ -11,8 +11,8 @@ use crate::index_vocabulary::{
 /// This is a measured page budget, not a product wall: real multi-package
 /// ingestion pages exceed the old 64-row bound, so it is raised to a bounded
 /// 256 rows (matching the per-segment row scale) while keeping the
-/// `O(rows^2)` duplicate check and the fixed `[bool; ..]` ordering scratch
-/// bounded. A page beyond this still returns the typed
+/// `O(rows log rows)` index ordering and duplicate check plus fixed `[usize; ..]`
+/// scratch bounded. A page beyond this still returns the typed
 /// [`ReconciliationFault::InputTooLong`] rejection.
 pub const MAX_RECONCILIATION_ROWS: usize = 256;
 
@@ -233,105 +233,106 @@ pub fn reconcile_into<'record, 'coordinate, 'entities>(
     if local.len() > MAX_RECONCILIATION_ROWS || desired.len() > MAX_RECONCILIATION_ROWS {
         return Err(ReconciliationFault::InputTooLong);
     }
-    check_duplicates(local)?;
-    check_duplicates(desired)?;
-    let mut removals = 0;
-    for row in local {
-        if find_coordinate(desired, row.coordinate()).is_none() {
-            removals += 1;
-        }
+    // Keep sorting scratch on the stack.  The old implementation repeatedly
+    // scanned both unsorted inputs for every row, making a full bounded page
+    // quadratic in duplicate checks, matches, and ordering.  Sorting indexes
+    // preserves borrowed rows and gives us one canonical order for all three
+    // passes without allocating or copying package records.
+    let mut local_order = [0_usize; MAX_RECONCILIATION_ROWS];
+    let mut desired_order = [0_usize; MAX_RECONCILIATION_ROWS];
+    for (index, slot) in local_order.iter_mut().take(local.len()).enumerate() {
+        *slot = index;
     }
+    for (index, slot) in desired_order.iter_mut().take(desired.len()).enumerate() {
+        *slot = index;
+    }
+    local_order[..local.len()].sort_unstable_by(|left, right| {
+        coordinate_cmp(local[*left].coordinate(), local[*right].coordinate())
+    });
+    desired_order[..desired.len()].sort_unstable_by(|left, right| {
+        coordinate_cmp(desired[*left].coordinate(), desired[*right].coordinate())
+    });
+    check_sorted_duplicates(local, &local_order[..local.len()])?;
+    check_sorted_duplicates(desired, &desired_order[..desired.len()])?;
+    let removals = local_order[..local.len()]
+        .iter()
+        .filter(|index| {
+            desired_order[..desired.len()]
+                .binary_search_by(|desired_index| {
+                    coordinate_cmp(
+                        desired[*desired_index].coordinate(),
+                        local[**index].coordinate(),
+                    )
+                })
+                .is_err()
+        })
+        .count();
     let required = desired.len() + removals;
     if out.len() < required {
         return Err(ReconciliationFault::OutputTooShort { required });
     }
     let mut written = 0;
-    let mut desired_used = [false; MAX_RECONCILIATION_ROWS];
-    let mut rank = 0;
-    while rank < desired.len() {
-        let index = next_coordinate(desired, &mut desired_used);
-        let desired_row = &desired[index];
-        match find_coordinate(local, desired_row.coordinate()) {
-            Some(local_index) if local[local_index] == *desired_row => {
-                out[written] = ReconciliationOperation::Unchanged(desired_row)
+    for desired_index in desired_order[..desired.len()].iter().copied() {
+        let desired_row = &desired[desired_index];
+        match local_order[..local.len()].binary_search_by(|local_index| {
+            coordinate_cmp(local[*local_index].coordinate(), desired_row.coordinate())
+        }) {
+            Ok(sorted_position) => {
+                // `binary_search_by` returns the position in the sorted
+                // scratch slice.  Convert it back to the caller's row index
+                // before borrowing the local record; unsorted inputs are a
+                // supported contract, not an incidental case.
+                let local_index = local_order[sorted_position];
+                out[written] = if local[local_index] == *desired_row {
+                    ReconciliationOperation::Unchanged(desired_row)
+                } else if local[local_index].image() == desired_row.image() {
+                    ReconciliationOperation::Rebind {
+                        local: &local[local_index],
+                        desired: desired_row,
+                    }
+                } else {
+                    ReconciliationOperation::Replace {
+                        local: &local[local_index],
+                        desired: desired_row,
+                    }
+                };
             }
-            Some(local_index) if local[local_index].image() == desired_row.image() => {
-                out[written] = ReconciliationOperation::Rebind {
-                    local: &local[local_index],
-                    desired: desired_row,
-                }
-            }
-            Some(local_index) => {
-                out[written] = ReconciliationOperation::Replace {
-                    local: &local[local_index],
-                    desired: desired_row,
-                }
-            }
-            None => out[written] = ReconciliationOperation::Insert(desired_row),
+            Err(_) => out[written] = ReconciliationOperation::Insert(desired_row),
         }
         written += 1;
-        rank += 1;
     }
-    let mut local_used = [false; MAX_RECONCILIATION_ROWS];
-    let mut local_rank = 0;
-    while local_rank < local.len() {
-        let index = next_coordinate(local, &mut local_used);
-        let row = &local[index];
-        if find_coordinate(desired, row.coordinate()).is_none() {
+    for local_index in local_order[..local.len()].iter().copied() {
+        let row = &local[local_index];
+        if desired_order[..desired.len()]
+            .binary_search_by(|desired_index| {
+                coordinate_cmp(desired[*desired_index].coordinate(), row.coordinate())
+            })
+            .is_err()
+        {
             out[written] = ReconciliationOperation::Remove(row);
             written += 1;
         }
-        local_rank += 1;
     }
     Ok(written)
 }
 
-fn check_duplicates<'a, 'e>(
+fn check_sorted_duplicates<'a, 'e>(
     rows: &[IngestedVersion<'a, 'e>],
+    order: &[usize],
 ) -> Result<(), ReconciliationFault<'a>> {
-    let mut left = 0;
-    while left < rows.len() {
-        let mut right = left + 1;
-        while right < rows.len() {
-            if rows[left].coordinate() == rows[right].coordinate() {
-                return Err(ReconciliationFault::DuplicateCoordinate(
-                    PackageCoordinate {
-                        lineage: rows[left].coordinate().lineage,
-                        version: rows[left].coordinate().version,
-                    },
-                ));
-            }
-            right += 1;
+    for pair in order.windows(2) {
+        let left = &rows[pair[0]];
+        let right = &rows[pair[1]];
+        if coordinate_cmp(left.coordinate(), right.coordinate()).is_eq() {
+            return Err(ReconciliationFault::DuplicateCoordinate(
+                PackageCoordinate {
+                    lineage: left.coordinate().lineage,
+                    version: left.coordinate().version,
+                },
+            ));
         }
-        left += 1;
     }
     Ok(())
-}
-
-fn find_coordinate<'a, 'e>(
-    rows: &[IngestedVersion<'a, 'e>],
-    coordinate: PackageCoordinate<'a>,
-) -> Option<usize> {
-    rows.iter().position(|row| row.coordinate() == coordinate)
-}
-
-fn next_coordinate<'a, 'e>(
-    rows: &[IngestedVersion<'a, 'e>],
-    used: &mut [bool; MAX_RECONCILIATION_ROWS],
-) -> usize {
-    let mut selected = 0;
-    while used[selected] {
-        selected += 1;
-    }
-    for index in (selected + 1)..rows.len() {
-        if !used[index]
-            && coordinate_cmp(rows[index].coordinate(), rows[selected].coordinate()).is_lt()
-        {
-            selected = index;
-        }
-    }
-    used[selected] = true;
-    selected
 }
 
 fn coordinate_cmp<'a>(
