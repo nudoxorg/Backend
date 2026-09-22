@@ -3,11 +3,11 @@
 use super::Library;
 use crate::arrangement::ArrangementPage;
 use crate::{
-    Cursor, Document, DocumentQuery, Freshness, Frontier, GraphNeighborhoodQuery, GraphRelation, LibraryError,
-    NameQuery, Outline, OutlineExtent, OutlineNode, OutlineQuery, PackageKey, PageRequest,
-    PageTerminal, ProjectionPage, Query, QueryLimit, RankedSearchSnapshot, ReadManifest, Row,
-    RowId, SymbolKey, ViewRecipeId, ViewRevision, ViewRoot, ViewSnapshot, ViewStateRoot,
-    view_identity_bytes,
+    Cursor, Document, DocumentQuery, Freshness, Frontier, GraphNeighborhoodQuery, GraphRelation,
+    LibraryError, NameQuery, Outline, OutlineExtent, OutlineNode, OutlineQuery, PackageKey,
+    PageRequest, PageTerminal, ProjectionPage, Query, QueryLimit, RankedSearchSnapshot,
+    ReadManifest, Row, RowId, SymbolKey, ViewRecipeId, ViewRevision, ViewRoot, ViewSnapshot,
+    ViewStateRoot, view_identity_bytes,
 };
 use crate::{ReferenceFact, ReferenceRecord};
 use std::collections::BTreeSet;
@@ -561,8 +561,7 @@ impl Library {
             }
             if self.view.row(relation.from).is_none() || self.view.row(relation.to).is_none() {
                 return Err(LibraryError::InvalidQuery(
-                    "semantic graph relation endpoint is absent from the selected view"
-                        .to_owned(),
+                    "semantic graph relation endpoint is absent from the selected view".to_owned(),
                 ));
             }
             ids.insert(relation.from);
@@ -779,6 +778,10 @@ impl Library {
             },
         );
         let id = self.query_recipe_with_manifest(recipe, &manifest_bytes);
+        let next_offset = next_offset
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| LibraryError::CursorMismatch)?;
         let coverage = self.view.coverage.to_vec();
         let basis = self.revision_basis();
         let frontier = self.revision_frontier();
@@ -800,7 +803,7 @@ impl Library {
                     cursor.sequence(),
                 ),
             );
-            next_offset.map_or(next, |offset| next.with_query_offset(offset as u64))
+            next_offset.map_or(next, |offset| next.with_query_offset(offset))
         });
         Ok(ViewSnapshot {
             root,

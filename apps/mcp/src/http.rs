@@ -3,7 +3,7 @@
 //! The transport owns connection/session concerns only. Every request still
 //! enters the same JSON-RPC server and typed product session as stdio MCP.
 
-use crate::jsonrpc::{Server, SessionProduct};
+use crate::jsonrpc::{ReconnectingProduct, Server, reconnecting_product};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
@@ -109,10 +109,11 @@ impl SessionId {
 }
 
 /// The live MCP sessions, each owning one connected daemon session.
-type LiveSessions = HashMap<SessionId, Arc<Mutex<Server<SessionProduct>>>>;
+type LiveSessions = HashMap<SessionId, Arc<Mutex<Server<ReconnectingProduct>>>>;
 
 struct Sessions {
     endpoint: PathBuf,
+    paths: backend_runtime::WorkspacePaths,
     project: String,
     cursor_secret: [u8; 32],
     token: BearerToken,
@@ -174,7 +175,7 @@ impl Sessions {
             Err(error) => return rpc_error(StatusCode::BAD_GATEWAY, -32603, &error.to_string()),
         };
         let mut server = Server::with_authority(
-            SessionProduct::new(product),
+            reconnecting_product(product, &self.paths),
             self.project.clone(),
             self.cursor_secret,
         );
@@ -302,11 +303,19 @@ fn run(paths: &backend_runtime::WorkspacePaths, bind: LoopbackBind) -> Result<()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
-    runtime.block_on(serve(endpoint, project, cursor_secret, token, bind))
+    runtime.block_on(serve(
+        endpoint,
+        paths.clone(),
+        project,
+        cursor_secret,
+        token,
+        bind,
+    ))
 }
 
 async fn serve(
     endpoint: PathBuf,
+    paths: backend_runtime::WorkspacePaths,
     project: String,
     cursor_secret: [u8; 32],
     token: BearerToken,
@@ -318,6 +327,7 @@ async fn serve(
     let address = listener.local_addr().map_err(|error| error.to_string())?;
     let state = Arc::new(Sessions {
         endpoint,
+        paths,
         project,
         cursor_secret,
         token: token.clone(),

@@ -7,7 +7,7 @@
 
 use backend_library::{
     AdmittedGraphQueryInput, Command, CommandDto, CommandFailure, CommandMutation, CommandReply,
-    CoverageCapability, Cursor, DiffRecord, DocumentQuery, GraphNeighborhoodQuery, GraphQueryPage,
+    CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery, GraphQueryPage,
     GraphQueryRequest, GraphValue, HealthReport, NameQuery, OutlineQuery, PackageReference,
     PageContinuation, PageRequest, PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto,
     RequestAdmissionError, SemanticGenerationId, SemanticLanguageProfile, SemanticVersionRecord,
@@ -267,6 +267,20 @@ pub struct Session {
     continuations: BTreeMap<backend_library::Cursor, WireCertificate>,
 }
 
+/// The producer certificate state needed to resume one bounded page after a
+/// transport reconnect.
+///
+/// A continuation is an owner-issued identity, not a property of one socket.
+/// Keeping the certificate alongside the typed cursor lets a replacement
+/// session re-admit the same page request against its current revision. The
+/// map is intentionally private so callers cannot manufacture a continuation
+/// by inserting raw identities.
+#[cfg(any(unix, windows))]
+#[derive(Default)]
+pub struct SessionContinuationState {
+    continuations: BTreeMap<backend_library::Cursor, WireCertificate>,
+}
+
 /// One admitted health revision retained long enough to build a dependent
 /// query request without copying the view.
 #[cfg(any(unix, windows))]
@@ -308,9 +322,10 @@ impl Session {
         &self.endpoint
     }
 
-    /// Encodes an owner-issued query continuation for a process-independent
-    /// MCP token. The bytes include the immutable owner identity and offset;
-    /// they are still admitted against the current revision before use.
+    /// Encodes an owner-issued query continuation for this authenticated MCP
+    /// session. The bytes include the immutable owner identity and offset;
+    /// the session retains the matching producer certificate so a reconnect
+    /// can re-admit it without trusting raw cursor bytes.
     #[must_use]
     pub fn encode_page_continuation(&self, continuation: PageContinuation) -> String {
         let mut token = String::from("pc1-");
@@ -321,12 +336,13 @@ impl Session {
         token
     }
 
-    /// Decodes and admits a process-independent query continuation against
-    /// the current owner revision.
+    /// Decodes and admits a query continuation retained by this session
+    /// against the current owner revision.
     ///
     /// # Errors
-    /// Returns a protocol error when the token is malformed or belongs to a
-    /// different revision, recipe, branch, log, or schema.
+    /// Returns a protocol error when the token is malformed or was not issued
+    /// by this admitted session. The current owner revision is checked
+    /// separately so a stale root is reported as [`ClientError::StaleCursor`].
     pub fn decode_page_continuation(
         &mut self,
         token: &str,
@@ -334,27 +350,55 @@ impl Session {
         let encoded = token
             .strip_prefix("pc1-")
             .ok_or_else(|| ClientError::Protocol("unknown continuation token schema".to_owned()))?;
+        if encoded.len() != backend_library::CURSOR_QUERY_BYTES.saturating_mul(2) {
+            return Err(ClientError::Protocol(
+                "malformed continuation token".to_owned(),
+            ));
+        }
         let bytes = decode_hex(encoded)
             .ok_or_else(|| ClientError::Protocol("malformed continuation token".to_owned()))?;
+        // The recipe is query-specific, so it deliberately cannot be checked
+        // against the ordinary owner cursor. Only a cursor retained from an
+        // owner-admitted page may supply that typed recipe; raw token bytes
+        // never become a new identity here. This is also what keeps a real
+        // search, name, graph, or Trustfall cursor distinct from the view
+        // cursor returned by `revision()`.
+        let cursor = self
+            .continuations
+            .keys()
+            .copied()
+            .find(|cursor| cursor.encode_query().as_ref() == bytes.as_slice())
+            .ok_or_else(|| ClientError::Protocol("unknown continuation token".to_owned()))?;
         let owner = self.revision()?.cursor();
-        let cursor = Cursor::decode_query_against(&bytes, owner).map_err(|error| {
-            if error == "query cursor does not match the owner context" {
-                ClientError::StaleCursor
-            } else {
-                ClientError::Protocol(error)
-            }
-        })?;
+        if cursor.query_offset() == 0 || !cursor.matches_owner(owner) {
+            return Err(ClientError::StaleCursor);
+        }
         Ok(PageContinuation::from_cursor(cursor))
+    }
+
+    /// Takes the owner-admitted continuation certificates before a product is
+    /// replaced by a reconnecting transport.
+    #[must_use]
+    pub fn take_continuation_state(&mut self) -> SessionContinuationState {
+        SessionContinuationState {
+            continuations: std::mem::take(&mut self.continuations),
+        }
+    }
+
+    /// Restores continuation certificates into a freshly authenticated
+    /// session. They remain subject to the current owner-root check when used.
+    pub fn restore_continuation_state(&mut self, state: SessionContinuationState) {
+        self.continuations = state.continuations;
     }
 
     /// Replaces this session's connection with a fresh one to the same
     /// endpoint.
     ///
-    /// Request numbering and remembered page continuations belong to the
-    /// connection that issued them, so both are discarded: a continuation
-    /// certificate admitted by the old connection proves nothing about the
-    /// new one. The session keeps its identity so callers hold one handle
-    /// across a connection the daemon retired.
+    /// Request numbering belongs to the connection, while remembered page
+    /// continuations belong to the owner revision. Request IDs restart on the
+    /// replacement stream; retained continuation certificates are admitted
+    /// again against the replacement session's current owner root before a
+    /// page request is sent.
     ///
     /// # Errors
     /// Returns an error when the endpoint is unavailable or cannot
@@ -362,7 +406,6 @@ impl Session {
     pub fn reconnect(&mut self) -> Result<(), ClientError> {
         self.transport = UnixCommandTransport::connect(&self.endpoint)?;
         self.next_request_id = 1;
-        self.continuations.clear();
         Ok(())
     }
 

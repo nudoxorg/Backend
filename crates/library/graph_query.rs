@@ -317,17 +317,14 @@ impl GraphQueryRequest {
             return Ok(0);
         };
         let cursor = continuation.cursor();
-        if cursor.recipe() != self.recipe()
-            || cursor.version() != owner.version()
-            || cursor.branch() != owner.branch()
-            || cursor.log() != owner.log()
-            || cursor.schema() != owner.schema()
-            || cursor.root() != owner.root()
-            || cursor.sequence() > owner.sequence()
-        {
+        if cursor.recipe() != self.recipe() || !cursor.matches_owner(owner) {
             return Err(GraphQueryError::ContinuationMismatch);
         }
-        usize::try_from(cursor.query_offset()).map_err(|_| GraphQueryError::OffsetTooLarge)
+        let offset =
+            usize::try_from(cursor.query_offset()).map_err(|_| GraphQueryError::OffsetTooLarge)?;
+        (offset > 0)
+            .then_some(offset)
+            .ok_or(GraphQueryError::ContinuationMismatch)
     }
 
     /// Creates the next opaque continuation after owner-side execution.
@@ -344,6 +341,10 @@ impl GraphQueryRequest {
         if !self.page.basis().matches(owner.root()) {
             return Err(GraphQueryError::ContinuationMismatch);
         }
+        let offset = u64::try_from(next_offset).map_err(|_| GraphQueryError::OffsetTooLarge)?;
+        if offset == 0 {
+            return Err(GraphQueryError::ContinuationMismatch);
+        }
         let cursor = Cursor::for_view(
             self.recipe(),
             owner.version(),
@@ -355,7 +356,7 @@ impl GraphQueryRequest {
                 owner.sequence(),
             ),
         )
-        .with_query_offset(next_offset as u64);
+        .with_query_offset(offset);
         Ok(PageContinuation::from_cursor(cursor))
     }
 }

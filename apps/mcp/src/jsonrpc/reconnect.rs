@@ -40,11 +40,19 @@ pub(crate) trait Endpoint {
     /// The connected product this endpoint yields.
     type Product: Product;
 
-    /// Opens one fresh connection.
+    /// Opens one fresh connection, transferring owner-admitted page state
+    /// from the retired product when one exists.
     ///
     /// # Errors
     /// Returns the client fault when the endpoint cannot be reached.
-    fn connect(&mut self) -> Result<Self::Product, ClientError>;
+    fn connect(&mut self, previous: Option<Self::Product>) -> Result<Self::Product, ClientError>;
+
+    /// Retires a replacement lease that also disconnected during its one
+    /// allowed retry. Stateful endpoints may move bounded admission state to
+    /// their next connection attempt; stateless fixtures can let it drop.
+    fn retire(&mut self, previous: Self::Product) {
+        drop(previous);
+    }
 }
 
 /// Whether repeating a call after a reconnect is the same as making it once.
@@ -61,10 +69,10 @@ pub(crate) struct Reconnecting<E: Endpoint> {
     endpoint: E,
     /// The current transport lease, if one is available.
     ///
-    /// A dead lease is dropped before opening its replacement. Keeping an
-    /// `Option` here is deliberate: when the replacement cannot be opened,
-    /// the next request starts from the endpoint rather than sending another
-    /// request through the same dead stream.
+    /// A dead lease is removed before opening its replacement. The retired
+    /// product is passed to the endpoint so it can transfer bounded owner
+    /// state such as continuation certificates; it is never used for another
+    /// request.
     product: Option<E::Product>,
 }
 
@@ -91,7 +99,7 @@ impl<E: Endpoint> Reconnecting<E> {
         // therefore bounded to one fresh endpoint attempt rather than first
         // touching an already-dead product again.
         if self.product.is_none() {
-            self.product = Some(self.endpoint.connect()?);
+            self.product = Some(self.endpoint.connect(None)?);
         }
         let first = match self.product.as_mut() {
             Some(product) => call(product),
@@ -102,8 +110,8 @@ impl<E: Endpoint> Reconnecting<E> {
                 // Drop the dead transport lease before opening a replacement
                 // either way: the agent's next call must not meet the same
                 // socket, even if opening the replacement fails.
-                self.product = None;
-                let mut replacement = self.endpoint.connect()?;
+                let previous = self.product.take();
+                let mut replacement = self.endpoint.connect(previous)?;
                 match repeatable {
                     Repeatable::Yes => {
                         let result = call(&mut replacement);
@@ -112,11 +120,12 @@ impl<E: Endpoint> Reconnecting<E> {
                         // second dead lease: the following request should
                         // begin at the endpoint and make one bounded fresh
                         // connection attempt.
-                        self.product = if matches!(&result, Err(ClientError::Disconnected(_))) {
-                            None
+                        if matches!(&result, Err(ClientError::Disconnected(_))) {
+                            self.endpoint.retire(replacement);
+                            self.product = None;
                         } else {
-                            Some(replacement)
-                        };
+                            self.product = Some(replacement);
+                        }
                         result
                     }
                     Repeatable::No => {
@@ -217,7 +226,7 @@ impl<E: Endpoint> Product for Reconnecting<E> {
         continuation: PageContinuation,
     ) -> Result<String, ClientError> {
         if self.product.is_none() {
-            self.product = Some(self.endpoint.connect()?);
+            self.product = Some(self.endpoint.connect(None)?);
         }
         match self.product.as_mut() {
             Some(product) => product.encode_continuation(continuation),
@@ -545,7 +554,10 @@ mod tests {
     impl Endpoint for TimedFixture {
         type Product = TimedConnection;
 
-        fn connect(&mut self) -> Result<Self::Product, ClientError> {
+        fn connect(
+            &mut self,
+            _previous: Option<Self::Product>,
+        ) -> Result<Self::Product, ClientError> {
             self.connects = self.connects.checked_add(1).expect("connect count");
             Ok(TimedConnection {
                 inner: Connection {
@@ -570,7 +582,10 @@ mod tests {
     impl Endpoint for Fixture {
         type Product = Connection;
 
-        fn connect(&mut self) -> Result<Self::Product, ClientError> {
+        fn connect(
+            &mut self,
+            _previous: Option<Self::Product>,
+        ) -> Result<Self::Product, ClientError> {
             self.connects = self.connects.checked_add(1).expect("connect count");
             Ok(Connection {
                 log: Arc::clone(&self.log),
@@ -591,6 +606,58 @@ mod tests {
             connects: 0,
         };
         (Reconnecting::new(endpoint, dead), log)
+    }
+
+    /// A reconnect must hand the retired lease to its endpoint. The real
+    /// session endpoint uses that ownership transfer to move continuation
+    /// certificates; this fixture proves the wrapper does not silently drop
+    /// the state before the endpoint gets a chance to move it.
+    struct TransferFixture {
+        log: Log,
+        saw_previous: bool,
+    }
+
+    impl Endpoint for TransferFixture {
+        type Product = Connection;
+
+        fn connect(
+            &mut self,
+            previous: Option<Self::Product>,
+        ) -> Result<Self::Product, ClientError> {
+            self.saw_previous = previous.is_some();
+            Ok(Connection {
+                log: Arc::clone(&self.log),
+                alive: true,
+            })
+        }
+    }
+
+    struct RetireFixture {
+        log: Log,
+        connects: usize,
+        saw_previous: bool,
+        retired: bool,
+    }
+
+    impl Endpoint for RetireFixture {
+        type Product = Connection;
+
+        fn connect(
+            &mut self,
+            previous: Option<Self::Product>,
+        ) -> Result<Self::Product, ClientError> {
+            self.saw_previous |= previous.is_some();
+            self.connects = self.connects.saturating_add(1);
+            Ok(Connection {
+                log: Arc::clone(&self.log),
+                alive: self.connects > 1,
+            })
+        }
+
+        fn retire(&mut self, previous: Self::Product) {
+            self.retired = true;
+            drop(previous);
+        }
     }
 
     fn calls(log: &Log) -> Vec<String> {
@@ -621,6 +688,61 @@ mod tests {
         assert_eq!(
             handle.endpoint.connects, 1,
             "exactly one reconnect, never a loop"
+        );
+    }
+
+    #[test]
+    fn reconnect_transfers_the_retired_product_to_the_endpoint() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let dead = Connection {
+            log: Arc::clone(&log),
+            alive: false,
+        };
+        let endpoint = TransferFixture {
+            log: Arc::clone(&log),
+            saw_previous: false,
+        };
+        let mut handle = Reconnecting::new(endpoint, dead);
+
+        handle
+            .probe(Probe::Packages)
+            .expect("a read must recover on the replacement lease");
+        assert!(handle.endpoint.saw_previous);
+    }
+
+    #[test]
+    fn a_second_disconnect_parks_the_replacement_for_the_next_call() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let dead = Connection {
+            log: Arc::clone(&log),
+            alive: false,
+        };
+        let endpoint = RetireFixture {
+            log: Arc::clone(&log),
+            connects: 0,
+            saw_previous: false,
+            retired: false,
+        };
+        let mut handle = Reconnecting::new(endpoint, dead);
+
+        let first = handle
+            .probe(Probe::Packages)
+            .expect_err("one bounded retry must still report its disconnect");
+        assert!(matches!(first, ClientError::Disconnected(_)));
+        assert!(handle.endpoint.saw_previous);
+        assert!(handle.endpoint.retired);
+
+        handle
+            .probe(Probe::Packages)
+            .expect("the following call must open a new lease");
+        assert_eq!(handle.endpoint.connects, 2);
+        assert_eq!(
+            calls(&log),
+            vec![
+                "dead:packages".to_owned(),
+                "dead:packages".to_owned(),
+                "live:packages".to_owned(),
+            ]
         );
     }
 
@@ -914,12 +1036,15 @@ mod tests {
         impl Endpoint for Flaky {
             type Product = Connection;
 
-            fn connect(&mut self) -> Result<Self::Product, ClientError> {
+            fn connect(
+                &mut self,
+                _previous: Option<Self::Product>,
+            ) -> Result<Self::Product, ClientError> {
                 if self.fail_connects > 0 {
                     self.fail_connects -= 1;
                     return Err(ClientError::Io("daemon is restarting".to_owned()));
                 }
-                self.inner.connect()
+                self.inner.connect(_previous)
             }
         }
 

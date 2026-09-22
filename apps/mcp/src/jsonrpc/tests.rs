@@ -502,6 +502,11 @@ fn the_surface_escape_hatch_still_advertises_every_typed_operation() {
         .map(|spec| Value::String(spec.name.to_owned()))
         .collect::<Vec<_>>();
     assert_eq!(advertised, &expected);
+    assert_eq!(
+        surface["inputSchema"]["properties"]["detail"]["enum"],
+        json!(["summary", "standard", "full"]),
+        "the escape hatch must advertise the presentation control it accepts"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1061,6 +1066,32 @@ fn cancellation_notifications_are_silent_and_do_not_poison_the_session() {
 }
 
 #[test]
+fn deeply_nested_json_is_rejected_before_tool_admission() {
+    let mut server = ready(Fake::default());
+    let mut nested = Value::String("x".to_owned());
+    for _ in 0..=super::codec::MAX_JSON_DEPTH {
+        nested = Value::Array(vec![nested]);
+    }
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "tools/call",
+        "params": {
+            "name": QUERY_TOOL,
+            "arguments": {
+                "query": "{ Declaration { coordinate @output } }",
+                "variables": { "nested": nested }
+            }
+        }
+    });
+    let response = server
+        .handle(&serde_json::to_vec(&request).expect("nested request is JSON"))
+        .expect("invalid requests receive a response");
+    assert_eq!(response["error"]["code"], -32600);
+    assert_eq!(server.product.graph_query_calls, 0);
+}
+
+#[test]
 fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
     let mut server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
     let initialized = server
@@ -1132,6 +1163,10 @@ fn newline_codec_rejects_malformed_and_oversized_jsonrpc_frames() {
     let mut oversized = vec![b'x'; crate::MAX_MCP_REQUEST_FRAME + 1];
     oversized.push(b'\n');
     let mut reader = io::BufReader::new(oversized.as_slice());
+    assert!(read_line(&mut reader).is_err());
+
+    let unterminated = vec![b'x'; crate::MAX_MCP_REQUEST_FRAME + 1];
+    let mut reader = io::BufReader::new(unterminated.as_slice());
     assert!(read_line(&mut reader).is_err());
 
     let mut output = Vec::new();
@@ -1222,7 +1257,7 @@ fn continuation_context_binds_workspace_query_limit_and_detail() {
     );
     let mut spaced = first.clone();
     spaced.insert("query".to_owned(), json!("  ferris   "));
-    assert_eq!(
+    assert_ne!(
         continuation_context(PROJECT, "backend.search", &first, Detail::Summary),
         continuation_context(PROJECT, "backend.search", &spaced, Detail::Summary)
     );

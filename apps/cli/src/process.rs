@@ -12,12 +12,12 @@
 //! implied by silence.
 
 use crate::invoke::{self, SURFACE_VERB};
-use backend_present::{Request, lower, lower_surface_json};
 use crate::options::{self, Options};
 use crate::render;
 use crate::run::{self, Answer};
 use backend_client::Session;
 use backend_present::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, grammar_for};
+use backend_present::{Request, lower, lower_surface_json};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -49,10 +49,7 @@ fn early_exit(args: &[String]) -> Option<ExitCode> {
             .iter()
             .find(|word| !word.starts_with('-'))
             .and_then(|word| grammar_for(word));
-        println!(
-            "{}",
-            topic.map_or_else(invoke::help, invoke::help_for)
-        );
+        println!("{}", topic.map_or_else(invoke::help, invoke::help_for));
         return Some(ExitCode::SUCCESS);
     }
     if args.iter().any(|word| word == "--version" || word == "-V") {
@@ -78,7 +75,10 @@ fn run_words(words: &[String], options: &Options) -> Result<String, Fault> {
         )
     })?;
     let mut session = Session::connect(&endpoint).map_err(|error| {
-        Fault::from_client_error(&error, Operand::Path(endpoint.to_string_lossy().into_owned()))
+        Fault::from_client_error(
+            &error,
+            Operand::Path(endpoint.to_string_lossy().into_owned()),
+        )
     })?;
     let answer = run::execute(&mut session, &request)?;
     if let Request::Index(path) = &request {
@@ -110,11 +110,10 @@ fn workspace(options: &Options) -> Result<backend_runtime::WorkspacePaths, Fault
     .map_err(|error| {
         Fault::new(
             FaultSlug::Endpoint,
-            Operand::Path(
-                options
-                    .project()
-                    .map_or_else(|| ".".to_owned(), |path| path.to_string_lossy().into_owned()),
-            ),
+            Operand::Path(options.project().map_or_else(
+                || ".".to_owned(),
+                |path| path.to_string_lossy().into_owned(),
+            )),
             Cause::new(
                 CauseSlug::Unreachable,
                 format!("the workspace could not be opened: {error}"),
@@ -141,7 +140,11 @@ fn watch_readiness(session: &mut Session, path: &str, options: &Options) {
         };
         let status = backend_present::Status::from_report(&report, None);
         let line = format!("\r\u{1b}[2K{} {}", name, status.coverage().render());
-        if stderr.write_all(line.as_bytes()).and_then(|()| stderr.flush()).is_err() {
+        if stderr
+            .write_all(line.as_bytes())
+            .and_then(|()| stderr.flush())
+            .is_err()
+        {
             return;
         }
         if status.readiness() == "ready" {
@@ -189,6 +192,17 @@ pub fn answer_with_session(
     words: &[String],
     options: &Options,
 ) -> Result<Answer, Fault> {
-    let request = plan(words, options, "")?;
+    let project = options
+        .project()
+        .map(backend_runtime::normalize_surface_path)
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(backend_runtime::normalize_surface_path)
+        })
+        .unwrap_or_else(|| PathBuf::from("."))
+        .to_string_lossy()
+        .into_owned();
+    let request = plan(words, options, &project)?;
     run::execute(session, &request)
 }

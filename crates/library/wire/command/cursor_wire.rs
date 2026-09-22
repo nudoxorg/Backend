@@ -53,13 +53,7 @@ pub(crate) fn cursor_from_wire_against_owner(
         }
         Ok(owner.root())
     })?;
-    if admitted.version() != owner.version()
-        || admitted.branch() != owner.branch()
-        || admitted.log() != owner.log()
-        || admitted.schema() != owner.schema()
-        || admitted.root() != owner.root()
-        || admitted.sequence() > owner.sequence()
-    {
+    if !admitted.matches_owner(owner) {
         return Err("cursor does not match the owner context".to_owned());
     }
     certificate.cursor_claim(admitted.with_query_offset(0))?;

@@ -168,7 +168,7 @@ impl Cursor {
     /// Subscription cursors leave this value at zero. It is intentionally not
     /// part of the branch/log stream identity or wire frontier.
     #[must_use]
-    pub(crate) const fn query_offset(self) -> u64 {
+    pub const fn query_offset(self) -> u64 {
         self.query_offset
     }
 
@@ -183,6 +183,23 @@ impl Cursor {
     #[must_use]
     pub const fn frontier(self) -> Frontier {
         Frontier::new(self.branch, self.log, self.schema, self.root, self.sequence)
+    }
+
+    /// Returns whether this cursor belongs to the supplied owner frontier.
+    ///
+    /// Recipe and query offset are intentionally excluded: callers that own a
+    /// query must compare its recipe separately, while the offset is the
+    /// bounded position being admitted. This predicate centralizes the
+    /// version, branch, log, schema, visible-root, and sequence checks shared
+    /// by client, graph-query, and wire admission.
+    #[must_use]
+    pub fn matches_owner(self, owner: Self) -> bool {
+        self.version == owner.version
+            && self.branch == owner.branch
+            && self.log == owner.log
+            && self.schema == owner.schema
+            && self.root == owner.root
+            && self.sequence <= owner.sequence
     }
 
     /// Encodes this subscription cursor for the authenticated local control
@@ -737,6 +754,37 @@ mod tests {
             "row".to_owned(),
         )])));
         assert!(Cursor::decode_query_against(&encoded, other).is_err());
+    }
+
+    #[test]
+    fn owner_matching_allows_prior_sequence_but_rejects_foreign_frontiers() {
+        let root = view_state_root(&[]);
+        let base = Cursor::for_view_root(&make_root(root));
+        let owner = Cursor::for_view(
+            base.recipe(),
+            base.version(),
+            Frontier::new(base.branch(), base.log(), base.schema(), base.root(), 4),
+        );
+        let prior = Cursor::for_view(
+            owner.recipe(),
+            owner.version(),
+            Frontier::new(owner.branch(), owner.log(), owner.schema(), owner.root(), 3),
+        )
+        .with_query_offset(9);
+        assert!(prior.matches_owner(owner));
+
+        let future = Cursor::for_view(
+            owner.recipe(),
+            owner.version(),
+            Frontier::new(owner.branch(), owner.log(), owner.schema(), owner.root(), 5),
+        );
+        assert!(!future.matches_owner(owner));
+
+        let foreign = Cursor::for_view_root(&make_root(view_state_root(&[(
+            "foreign".to_owned(),
+            "root".to_owned(),
+        )])));
+        assert!(!foreign.matches_owner(owner));
     }
 
     #[test]

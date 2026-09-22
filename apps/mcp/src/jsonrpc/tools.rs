@@ -85,20 +85,7 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     // Presentation controls are shared by every read tool. Keeping them out
     // of the command grammar avoids making a presentation preference look
     // like a daemon operand while still making the accepted JSON explicit.
-    let default_detail = match default_detail(grammar.tool()) {
-        Detail::Summary => "summary",
-        Detail::Standard => "standard",
-        Detail::Full => "full",
-    };
-    properties.insert(
-        "detail".to_owned(),
-        json!({
-            "type": "string",
-            "enum": ["summary", "standard", "full"],
-            "default": default_detail,
-            "description": "Response projection; summary is context-efficient, standard returns the tool's useful working set, and full opts into every available field."
-        }),
-    );
+    properties.insert("detail".to_owned(), detail_property(grammar.tool()));
     if matches!(grammar.name(), "search" | "resolve" | "name" | "graph") {
         properties.insert(
             "cursor".to_owned(),
@@ -167,6 +154,23 @@ fn property(spec: ArgumentSpec) -> Value {
     value
 }
 
+/// Projects the presentation control accepted by every response-bearing MCP
+/// tool. Keeping this constructor shared makes the advertised enum and its
+/// default follow the same [`Detail`] parser used at call time.
+fn detail_property(tool: &str) -> Value {
+    let default_detail = match default_detail(tool) {
+        Detail::Summary => "summary",
+        Detail::Standard => "standard",
+        Detail::Full => "full",
+    };
+    json!({
+        "type": "string",
+        "enum": ["summary", "standard", "full"],
+        "default": default_detail,
+        "description": "Response projection; summary is context-efficient, standard returns the tool's useful working set, and full opts into every available field."
+    })
+}
+
 /// The shape every `structuredContent` takes: one tagged presentation answer.
 fn answer_schema() -> Value {
     json!({
@@ -202,7 +206,7 @@ fn query_tool() -> Value {
                 },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 25 },
                 "cursor": { "type": "string", "description": "Opaque continuation returned by the preceding page." },
-                "detail": { "type": "string", "enum": ["summary", "standard", "full"], "default": "summary" }
+                "detail": detail_property(QUERY_TOOL)
             },
             "required": ["query"],
             "additionalProperties": false
@@ -242,7 +246,8 @@ fn surface_tool() -> Value {
                     },
                     "required": ["operation"],
                     "additionalProperties": true
-                }
+                },
+                "detail": detail_property(SURFACE_TOOL)
             },
             "required": ["command"],
             "additionalProperties": false

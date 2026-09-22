@@ -42,8 +42,8 @@ mod reconnect;
 mod resources;
 mod tools;
 use codec::{
-    empty_cursor, error_reply, limit, no_extra, object, query_variables, read_line, string,
-    success, valid_id, write_message,
+    empty_cursor, error_reply, json_depth_within, limit, no_extra, object, query_variables,
+    read_line, string, success, valid_id, write_message,
 };
 use tools::{QUERY_TOOL, SURFACE_TOOL, list_tools};
 
@@ -101,6 +101,10 @@ pub(super) struct SessionProduct(Session);
 impl SessionProduct {
     pub(super) const fn new(session: Session) -> Self {
         Self(session)
+    }
+
+    fn into_session(self) -> Session {
+        self.0
     }
 }
 
@@ -191,16 +195,58 @@ struct SessionEndpoint {
     /// The complete runtime selection, retained for reconnects that need to
     /// compose a daemon after its previous process exited.
     paths: backend_runtime::WorkspacePaths,
+    /// Bounded continuation state retained if the daemon is still between
+    /// leases and the replacement dial has not succeeded yet.
+    pending_continuation_state: Option<backend_client::SessionContinuationState>,
 }
 
 impl reconnect::Endpoint for SessionEndpoint {
     type Product = SessionProduct;
 
-    fn connect(&mut self) -> Result<Self::Product, ClientError> {
-        let endpoint =
-            backend_runtime::ensure_locald(&self.paths).map_err(map_runtime_connect_error)?;
-        Session::connect(endpoint).map(SessionProduct::new)
+    fn connect(&mut self, previous: Option<Self::Product>) -> Result<Self::Product, ClientError> {
+        let state = previous
+            .map(SessionProduct::into_session)
+            .map(|mut session| session.take_continuation_state())
+            .or_else(|| self.pending_continuation_state.take());
+        let endpoint = match backend_runtime::ensure_locald(&self.paths) {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                self.pending_continuation_state = state;
+                return Err(map_runtime_connect_error(error));
+            }
+        };
+        let mut session = match Session::connect(endpoint) {
+            Ok(session) => session,
+            Err(error) => {
+                self.pending_continuation_state = state;
+                return Err(error);
+            }
+        };
+        if let Some(state) = state {
+            session.restore_continuation_state(state);
+        }
+        Ok(SessionProduct::new(session))
     }
+
+    fn retire(&mut self, previous: Self::Product) {
+        let mut session = previous.into_session();
+        self.pending_continuation_state = Some(session.take_continuation_state());
+    }
+}
+
+pub(super) type ReconnectingProduct = reconnect::Reconnecting<SessionEndpoint>;
+
+pub(super) fn reconnecting_product(
+    session: Session,
+    paths: &backend_runtime::WorkspacePaths,
+) -> ReconnectingProduct {
+    reconnect::Reconnecting::new(
+        SessionEndpoint {
+            paths: paths.clone(),
+            pending_continuation_state: None,
+        },
+        SessionProduct::new(session),
+    )
 }
 
 /// Converts a daemon restart window into the same reconnectable class as a
@@ -243,6 +289,7 @@ pub(super) fn serve_stdio(
 ) -> io::Result<()> {
     let endpoint = SessionEndpoint {
         paths: paths.clone(),
+        pending_continuation_state: None,
     };
     let product = reconnect::Reconnecting::new(endpoint, SessionProduct::new(session));
     let working_directory = std::env::current_dir()
@@ -319,6 +366,14 @@ impl<P: Product> Server<P> {
                 ));
             }
         };
+        if !json_depth_within(&value) {
+            return Some(error_reply(
+                Value::Null,
+                -32600,
+                "Invalid Request",
+                Some(json!({ "detail": "JSON nesting exceeds the bounded request depth" })),
+            ));
+        }
         let Some(object) = value.as_object() else {
             return Some(error_reply(Value::Null, -32600, "Invalid Request", None));
         };
@@ -830,40 +885,10 @@ fn continuation_context(
     canonical.insert("workspace", Value::String(workspace.to_owned()));
     for (key, value) in arguments {
         if key != "cursor" {
-            canonical.insert(key.as_str(), normalize_context_value(key, value));
+            canonical.insert(key.as_str(), value.clone());
         }
     }
     serde_json::to_vec(&canonical).unwrap_or_default()
-}
-
-/// Canonicalizes caller text before it enters a cursor MAC.
-///
-/// Search and Trustfall clients commonly differ only in surrounding or
-/// repeated whitespace. Treating those spellings as the same query keeps a
-/// continuation stable across transports while retaining case, punctuation,
-/// variables, and coordinate identity exactly. All other values are retained
-/// recursively so a cursor cannot cross a limit, variable, or projection
-/// boundary by accident.
-fn normalize_context_value(key: &str, value: &Value) -> Value {
-    match value {
-        Value::String(text) if matches!(key, "query" | "text" | "coordinate") => {
-            let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            Value::String(normalized)
-        }
-        Value::Array(values) => Value::Array(
-            values
-                .iter()
-                .map(|value| normalize_context_value(key, value))
-                .collect(),
-        ),
-        Value::Object(fields) => Value::Object(
-            fields
-                .iter()
-                .map(|(field, value)| (field.clone(), normalize_context_value(field, value)))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
@@ -1238,6 +1263,7 @@ fn response_detail(tool: &str, arguments: &Map<String, Value>) -> Result<Detail,
         .as_str()
         .ok_or_else(|| RpcError::invalid("detail must be summary, standard, or full"))?;
     Detail::parse(value)
+        .filter(|detail| detail.name() == value)
         .ok_or_else(|| RpcError::invalid("detail must be summary, standard, or full"))
 }
 

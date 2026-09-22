@@ -1,10 +1,17 @@
 //! Bounded JSON-RPC value, argument, URI, and newline framing helpers.
 
 use super::RpcError;
-use backend_library::GraphValue;
+use backend_library::{GraphValue, MAX_GRAPH_VALUE_DEPTH};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
+
+/// Maximum JSON nesting accepted at the JSON-RPC boundary.
+///
+/// The request frame is bounded, but a tiny deeply nested value could still
+/// exhaust the stack in a recursive argument or context projection. The
+/// iterative check keeps that hostile shape outside all recursive helpers.
+pub(super) const MAX_JSON_DEPTH: usize = 32;
 
 pub(super) fn success(id: Value, result: Value) -> Value {
     let mut reply = Map::with_capacity(3);
@@ -67,13 +74,18 @@ pub(super) fn query_variables(
         None | Some(Value::Null) => Ok(BTreeMap::new()),
         Some(Value::Object(variables)) => variables
             .iter()
-            .map(|(name, value)| query_value(value).map(|value| (name.clone(), value)))
+            .map(|(name, value)| query_value(value, 0).map(|value| (name.clone(), value)))
             .collect(),
         Some(_) => Err(RpcError::invalid("variables must be an object")),
     }
 }
 
-fn query_value(value: &Value) -> Result<GraphValue, RpcError> {
+fn query_value(value: &Value, depth: usize) -> Result<GraphValue, RpcError> {
+    if depth > MAX_GRAPH_VALUE_DEPTH {
+        return Err(RpcError::invalid(
+            "query variable exceeds the graph value nesting bound",
+        ));
+    }
     match value {
         Value::Null => Ok(GraphValue::Null),
         Value::Bool(value) => Ok(GraphValue::Boolean(*value)),
@@ -90,7 +102,7 @@ fn query_value(value: &Value) -> Result<GraphValue, RpcError> {
         Value::String(value) => Ok(GraphValue::String(value.clone())),
         Value::Array(values) => values
             .iter()
-            .map(query_value)
+            .map(|value| query_value(value, depth.saturating_add(1)))
             .collect::<Result<Vec<_>, _>>()
             .map(|values| GraphValue::List(values.into_boxed_slice())),
         Value::Object(_) => Err(RpcError::invalid(
@@ -179,6 +191,12 @@ pub(super) fn read_line(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>
     loop {
         let available = reader.fill_buf()?;
         if available.is_empty() {
+            if output.len() > crate::MAX_MCP_REQUEST_FRAME {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "MCP message exceeds the bounded frame",
+                ));
+            }
             return if output.is_empty() {
                 Ok(None)
             } else {
@@ -203,6 +221,28 @@ pub(super) fn read_line(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>
             return Ok(Some(output));
         }
     }
+}
+
+/// Checks JSON nesting without recursing into the untrusted value.
+pub(super) fn json_depth_within(value: &Value) -> bool {
+    let mut pending = vec![(value, 0_usize)];
+    while let Some((value, depth)) = pending.pop() {
+        if depth > MAX_JSON_DEPTH {
+            return false;
+        }
+        match value {
+            Value::Array(values) => {
+                pending.extend(values.iter().map(|value| (value, depth.saturating_add(1))))
+            }
+            Value::Object(fields) => pending.extend(
+                fields
+                    .values()
+                    .map(|value| (value, depth.saturating_add(1))),
+            ),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+    true
 }
 
 pub(super) fn write_message(writer: &mut impl Write, value: &Value) -> io::Result<()> {
