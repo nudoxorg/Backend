@@ -43,6 +43,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let states = GuiState::catalog();
             let mut scripts = TransitionScript::baseline();
             scripts.extend(TransitionScript::stress());
+            scripts.extend(TransitionScript::ime_contract());
             validate_run(&states, &scripts).map_err(|e| e.to_string())?;
             println!("validated {} states and {} transition scripts", states.len(), scripts.len());
             Ok(())

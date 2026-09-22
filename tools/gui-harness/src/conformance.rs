@@ -2089,6 +2089,7 @@ mod tests {
             provenance: provenance(),
             semantic_artifact: None,
             semantic_sha256: None,
+            input_transcript_artifact: None,
             baseline_within_policy: true,
             reference: None,
         };
@@ -2167,6 +2168,7 @@ mod tests {
             provenance: provenance(),
             semantic_artifact: None,
             semantic_sha256: None,
+            input_transcript_artifact: None,
             baseline_within_policy: true,
             reference: None,
         };

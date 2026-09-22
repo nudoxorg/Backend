@@ -117,6 +117,10 @@ pub struct CaptureManifest {
     /// SHA-256 of the semantic probe bytes referenced by `semantic_artifact`.
     #[serde(default)]
     pub semantic_sha256: Option<String>,
+    /// Input transcript JSON written beside this manifest, when the capture
+    /// dispatched one or more actions.
+    #[serde(default)]
+    pub input_transcript_artifact: Option<String>,
     /// Whether every requested baseline comparison satisfied its policy.
     #[serde(default)]
     pub baseline_within_policy: bool,

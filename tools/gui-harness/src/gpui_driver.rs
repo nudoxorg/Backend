@@ -1,8 +1,8 @@
 //! Direct offscreen GPUI CE capture and deterministic input driving.
 
 use crate::{
-    AnimationFrame, CaptureError, CaptureRecord, CaptureSet, GuiState, InputError, InputStep,
-    SemanticProbe, Viewport, preflight_viewport,
+    AnimationFrame, CaptureError, CaptureRecord, CaptureSet, GuiState, ImeObservation, InputError,
+    InputStep, InputTranscriptEntry, SemanticProbe, Viewport, preflight_viewport,
 };
 use gpui::{
     AnyWindowHandle, App, AssetSource, Capslock, ClipboardItem, Entity, HeadlessAppContext,
@@ -202,8 +202,55 @@ pub fn capture_gpui_state_with_timed_adapters_result<V, F, H, I, S>(
     actions: &[InputStep],
     frames: &[AnimationFrame],
     options: GpuiCaptureOptions,
+    frame_hook: H,
+    input_hook: I,
+    semantic_hook: S,
+    build_root: F,
+) -> Result<CaptureSet, CaptureError>
+where
+    V: Render + 'static,
+    F: FnOnce(&mut Window, &mut App) -> Entity<V>,
+    H: FnMut(&AnimationFrame, &mut Window, &mut App) -> Result<(), CaptureError>,
+    I: FnMut(u64, &InputStep, &mut Window, &mut App),
+    S: FnMut(
+        &AnimationFrame,
+        &image::RgbaImage,
+        Viewport,
+        &mut Window,
+        &mut App,
+    ) -> Result<Option<SemanticProbe>, CaptureError>,
+{
+    capture_gpui_state_with_timed_adapters_and_ime_result(
+        viewport,
+        state,
+        actions,
+        frames,
+        options,
+        frame_hook,
+        input_hook,
+        |_time_ms, _step, _window, _cx| {
+            Err(InputError::Unsupported {
+                capability: "ime".to_owned(),
+                evidence: "this capture adapter has no focused CE input handler; install the desktop IME adapter to dispatch EntityInputHandler events".to_owned(),
+            })
+        },
+        semantic_hook,
+        build_root,
+    )
+}
+
+/// Result-returning capture boundary with a live IME adapter. The adapter must
+/// dispatch through the focused GPUI CE `EntityInputHandler` and return
+/// readback evidence; there is intentionally no no-op default for IME steps.
+pub fn capture_gpui_state_with_timed_adapters_and_ime_result<V, F, H, I, M, S>(
+    viewport: Viewport,
+    state: GuiState,
+    actions: &[InputStep],
+    frames: &[AnimationFrame],
+    options: GpuiCaptureOptions,
     mut frame_hook: H,
     mut input_hook: I,
+    mut ime_hook: M,
     mut semantic_hook: S,
     build_root: F,
 ) -> Result<CaptureSet, CaptureError>
@@ -212,6 +259,7 @@ where
     F: FnOnce(&mut Window, &mut App) -> Entity<V>,
     H: FnMut(&AnimationFrame, &mut Window, &mut App) -> Result<(), CaptureError>,
     I: FnMut(u64, &InputStep, &mut Window, &mut App),
+    M: FnMut(u64, &InputStep, &mut Window, &mut App) -> Result<ImeObservation, InputError>,
     S: FnMut(
         &AnimationFrame,
         &image::RgbaImage,
@@ -268,9 +316,16 @@ where
     // post-action screenshot.
     let mut scheduled = Vec::new();
     let mut schedule_time = 0_u64;
+    let mut input_transcript = vec![None; actions.len()];
     for (index, step) in actions.iter().enumerate() {
         if matches!(step, InputStep::Wait { .. }) {
             schedule_time = schedule_time.saturating_add(step.duration().as_millis() as u64);
+            input_transcript[index] = Some(InputTranscriptEntry {
+                index,
+                virtual_time_ms: schedule_time,
+                step: step.clone(),
+                ime: None,
+            });
         } else {
             scheduled.push((schedule_time, index, step));
         }
@@ -284,8 +339,9 @@ where
     let mut elapsed = 0_u64;
     for frame in frames {
         let mut cursor = elapsed;
-        while let Some((at, index, step)) = scheduled.get(next_action) {
-            if *at > frame.time_ms {
+        while next_action < scheduled.len() {
+            let (at, index, step) = scheduled[next_action];
+            if at > frame.time_ms {
                 break;
             }
             // Advance to every event's timestamp before dispatching it. This
@@ -297,21 +353,28 @@ where
                 context.advance_clock(std::time::Duration::from_millis(delta));
                 context.run_until_parked();
             }
-            apply_step(
+            let ime_observation = apply_step(
                 &mut context,
                 window,
-                *at,
+                at,
                 step,
                 &mut driver_state,
                 &mut current_viewport,
                 &mut input_hook,
+                &mut ime_hook,
             )?;
+            input_transcript[index] = Some(InputTranscriptEntry {
+                index,
+                virtual_time_ms: at,
+                step: (*step).clone(),
+                ime: ime_observation,
+            });
             // GPUI dispatch can enqueue action/context work behind the
             // platform event. Drain that work before the frame hook observes
             // semantics, otherwise a key at t=0 is captured one frame late.
             context.run_until_parked();
-            input_index = Some(*index);
-            cursor = *at;
+            input_index = Some(index);
+            cursor = at;
             next_action += 1;
         }
         let delta = frame.time_ms.saturating_sub(cursor);
@@ -347,6 +410,7 @@ where
         viewport,
         frames: records,
         semantic_probes,
+        input_transcript: input_transcript.into_iter().flatten().collect(),
     })
 }
 
@@ -358,7 +422,30 @@ fn apply_step(
     driver_state: &mut DriverState,
     viewport: &mut Viewport,
     input_hook: &mut impl FnMut(u64, &InputStep, &mut Window, &mut App),
-) -> Result<(), CaptureError> {
+    ime_hook: &mut impl FnMut(
+        u64,
+        &InputStep,
+        &mut Window,
+        &mut App,
+    ) -> Result<ImeObservation, InputError>,
+) -> Result<Option<ImeObservation>, CaptureError> {
+    let ime_observation = match step {
+        InputStep::ImeText { .. }
+        | InputStep::ImeCompose { .. }
+        | InputStep::ImeCommit { .. }
+        | InputStep::ImeCancel => {
+            let observation = context
+                .update_window(window, |_, window, cx| {
+                    ime_hook(virtual_time_ms, step, window, cx)
+                })
+                .map_err(|error| CaptureError::Gpui(error.to_string()))??;
+            observation
+                .validate_for(step)
+                .map_err(CaptureError::Input)?;
+            Some(observation)
+        }
+        _ => None,
+    };
     match step {
         InputStep::Key { value } => {
             let keystroke = Keystroke::parse(value)
@@ -485,7 +572,13 @@ fn apply_step(
         InputStep::ImeText { .. }
         | InputStep::ImeCompose { .. }
         | InputStep::ImeCommit { .. }
-        | InputStep::ImeCancel => {}
+        | InputStep::ImeCancel => {
+            if ime_observation.is_none() {
+                return Err(CaptureError::Input(InputError::Ime(
+                    "IME dispatch completed without an observation".to_owned(),
+                )));
+            }
+        }
         InputStep::Modifiers {
             shift,
             control,
@@ -560,7 +653,7 @@ fn apply_step(
     // remounted CE field can actually own keyboard text.
     context.advance_clock(std::time::Duration::from_millis(1));
     context.run_until_parked();
-    Ok(())
+    Ok(ime_observation)
 }
 
 fn dispatch_text(

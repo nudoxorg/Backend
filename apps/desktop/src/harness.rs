@@ -10,12 +10,16 @@
 use backend_client::Session;
 use backend_gui_harness::{
     AnimationFrame, CaptureConfig, CaptureError, CaptureSet, GpuiCaptureOptions, GuiState,
-    InputStep, OverlayState, PageState, SemanticAnnouncement, SemanticBounds as HarnessBounds,
-    SemanticNode, SemanticProbe, SemanticRelations, SemanticRole, SemanticState, Viewport,
-    capture_gpui_state_with_timed_adapters_result,
+    ImeObservation, ImeOperation, InputError, InputStep, OverlayState, PageState,
+    SemanticAnnouncement, SemanticBounds as HarnessBounds, SemanticNode, SemanticProbe,
+    SemanticRelations, SemanticRole, SemanticState, Viewport,
+    capture_gpui_state_with_timed_adapters_and_ime_result,
 };
 use backend_library::{SurfaceCommand, SurfaceReply};
-use gpui::{App, AppContext as _, Window};
+use gpui::{
+    App, AppContext as _, Entity, EntityInputHandler as _, FocusHandle, Focusable as _, Window,
+};
+use gpui_component::{WindowExt as _, input::AnyInputState};
 use image::RgbaImage;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -60,8 +64,10 @@ pub fn capture_live(
         Rc::new(RefCell::new(None));
     let frame_root = capture_root.clone();
     let input_root = capture_root.clone();
+    let focus_restore: Rc<RefCell<Option<FocusHandle>>> = Rc::new(RefCell::new(None));
+    let input_focus_restore = focus_restore.clone();
 
-    capture_gpui_state_with_timed_adapters_result(
+    capture_gpui_state_with_timed_adapters_and_ime_result(
         config.viewport,
         state,
         actions,
@@ -75,16 +81,26 @@ pub fn capture_live(
             }
             Ok(())
         },
-        move |time_ms, step, _window, cx| {
+        move |time_ms, step, window, cx| {
             if let Some(root) = input_root.borrow().as_ref().cloned() {
                 root.update(cx, |root, _cx| {
                     root.set_capture_time(Duration::from_millis(time_ms));
                 });
                 if let InputStep::WindowFocus { focused } = step {
                     root.update(cx, |root, cx| root.set_window_focused(*focused, cx));
+                    if *focused {
+                        window.activate_window();
+                        if let Some(handle) = input_focus_restore.borrow_mut().take() {
+                            handle.focus(window, cx);
+                        }
+                    } else {
+                        *input_focus_restore.borrow_mut() = window.focused(cx);
+                        window.blur();
+                    }
                 }
             }
         },
+        dispatch_ime,
         |frame, image, viewport, window, cx| {
             capture_rendered_semantics(frame, image, viewport, window, cx)
         },
@@ -128,6 +144,149 @@ pub fn capture_live(
         },
     )
     .map_err(|error| error.to_string())
+}
+
+#[derive(Clone, Debug, Default)]
+struct ImeStateEvidence {
+    marked_range: Option<std::ops::Range<usize>>,
+    marked_text: Option<String>,
+    selected_range: Option<std::ops::Range<usize>>,
+}
+
+/// Reads IME ranges from the same CE state that installed the native
+/// `Window::handle_input` handler during paint. This is deliberately generic
+/// over the three text editors and does not maintain a second text/selection
+/// model in the harness.
+fn read_ime_state<S: gpui::EntityInputHandler>(
+    entity: &Entity<S>,
+    window: &mut Window,
+    cx: &mut App,
+) -> ImeStateEvidence {
+    entity.update(cx, |state, cx| {
+        let marked_range = state.marked_text_range(window, cx);
+        let marked_text = marked_range.clone().and_then(|range| {
+            let mut adjusted_range = None;
+            state.text_for_range(range, &mut adjusted_range, window, cx)
+        });
+        let selected_range = state
+            .selected_text_range(false, window, cx)
+            .map(|selection| selection.range);
+        ImeStateEvidence {
+            marked_range,
+            marked_text,
+            selected_range,
+        }
+    })
+}
+
+fn read_any_ime_state(
+    state: &AnyInputState,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<ImeStateEvidence, InputError> {
+    match state {
+        AnyInputState::Input(entity) => Ok(read_ime_state(entity, window, cx)),
+        AnyInputState::Textarea(entity) => Ok(read_ime_state(entity, window, cx)),
+        AnyInputState::Editor(entity) => Ok(read_ime_state(entity, window, cx)),
+        AnyInputState::Otp(_) => Err(InputError::Unsupported {
+            capability: "ime-marked-text".to_owned(),
+            evidence: "the focused GPUI CE OtpState does not implement EntityInputHandler; marked composition cannot be expressed".to_owned(),
+        }),
+    }
+}
+
+fn update_ime_state<S: gpui::EntityInputHandler>(
+    entity: &Entity<S>,
+    step: &InputStep,
+    window: &mut Window,
+    cx: &mut App,
+) -> ImeStateEvidence {
+    entity.update(cx, |state, cx| {
+        match step {
+            InputStep::ImeText { value } | InputStep::ImeCommit { value } => {
+                // CE's replace path closes the current marked range and opens
+                // one undo transaction for this commit.
+                state.replace_text_in_range(None, value, window, cx);
+            }
+            InputStep::ImeCompose { value } => {
+                // A None range tells CE to replace its existing marked range,
+                // so update-compose never appends a duplicate composition.
+                state.replace_and_mark_text_in_range(None, value, None, window, cx);
+            }
+            InputStep::ImeCancel => {
+                // Empty marked text is CE's tested cancellation path: it
+                // removes the active composition without inserting text.
+                state.replace_and_mark_text_in_range(None, "", None, window, cx);
+            }
+            _ => unreachable!("update_ime_state is only called for IME steps"),
+        }
+        let marked_range = state.marked_text_range(window, cx);
+        let marked_text = marked_range.clone().and_then(|range| {
+            let mut adjusted_range = None;
+            state.text_for_range(range, &mut adjusted_range, window, cx)
+        });
+        let selected_range = state
+            .selected_text_range(false, window, cx)
+            .map(|selection| selection.range);
+        ImeStateEvidence {
+            marked_range,
+            marked_text,
+            selected_range,
+        }
+    })
+}
+
+/// Delivers one IME action through the focused CE input entity and returns
+/// readback evidence. A missing/blurred editor is a typed unsupported result;
+/// the generic driver never treats it as a successful no-op.
+fn dispatch_ime(
+    virtual_time_ms: u64,
+    step: &InputStep,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<ImeObservation, InputError> {
+    let Some(operation) = ImeOperation::from_step(step) else {
+        return Err(InputError::Ime(
+            "dispatch_ime received a non-IME input step".to_owned(),
+        ));
+    };
+    let focused = window
+        .focused_input(cx)
+        .ok_or_else(|| InputError::Unsupported {
+            capability: "ime-focused-editor".to_owned(),
+            evidence: format!("no GPUI CE input is registered at virtual time {virtual_time_ms}ms"),
+        })?;
+    let focus_handle = focused.focus_handle(cx);
+    if !focus_handle.is_focused(window) {
+        return Err(InputError::Unsupported {
+            capability: "ime-focused-editor".to_owned(),
+            evidence: "WindowExt::focused_input returned a stale registration whose native focus handle is blurred".to_owned(),
+        });
+    }
+    let text_before = focused.value(cx).to_string();
+    let before = read_any_ime_state(&focused, window, cx)?;
+    let after = match &focused {
+        AnyInputState::Input(entity) => update_ime_state(entity, step, window, cx),
+        AnyInputState::Textarea(entity) => update_ime_state(entity, step, window, cx),
+        AnyInputState::Editor(entity) => update_ime_state(entity, step, window, cx),
+        AnyInputState::Otp(_) => unreachable!("read_any_ime_state rejects OTP before update"),
+    };
+    let text_after = focused.value(cx).to_string();
+    Ok(ImeObservation {
+        operation,
+        focused: focus_handle.is_focused(window),
+        text_before,
+        text_after,
+        marked_range_before: before.marked_range,
+        marked_range_after: after.marked_range,
+        marked_text_before: before.marked_text,
+        marked_text_after: after.marked_text,
+        selected_range_after: after.selected_range,
+        commit_count: match operation {
+            ImeOperation::Text | ImeOperation::Commit => 1,
+            ImeOperation::Compose | ImeOperation::Cancel => 0,
+        },
+    })
 }
 
 /// Projects the product's per-window action frame into the generic semantic
@@ -409,4 +568,147 @@ pub fn capture_default(
 ) -> Result<CaptureSet, CaptureError> {
     capture_live(CaptureConfig::deterministic(viewport), state, &[], frames)
         .map_err(CaptureError::Gpui)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{
+        Context, FocusHandle, Focusable as _, IntoElement, Render, TestAppContext,
+        VisualTestContext, div,
+    };
+    use gpui_component::{
+        Root,
+        input::{Input, InputState},
+    };
+
+    struct ImeProbe {
+        input: Entity<InputState>,
+        other_focus: FocusHandle,
+    }
+
+    impl Render for ImeProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .child(div().track_focus(&self.other_focus))
+                .child(Input::new(&self.input))
+        }
+    }
+
+    #[gpui::test]
+    fn ime_adapter_uses_focused_ce_state_for_compose_update_commit_cancel_and_blur(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let mut input = None;
+        let mut other_focus = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                let state = cx.new(|cx| InputState::new(window, cx));
+                let other = cx.focus_handle();
+                input = Some(state.clone());
+                other_focus = Some(other.clone());
+                let probe = cx.new(|_| ImeProbe {
+                    input: state,
+                    other_focus: other,
+                });
+                cx.new(|cx| Root::new(probe, window, cx))
+            })
+            .expect("test window")
+        });
+        let input = input.expect("input state");
+        let other_focus = other_focus.expect("fallback focus handle");
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            input.focus_handle(cx).focus(window, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let compose = cx
+            .update(|window, cx| {
+                dispatch_ime(
+                    0,
+                    &InputStep::ImeCompose {
+                        value: "n".to_owned(),
+                    },
+                    window,
+                    cx,
+                )
+            })
+            .expect("compose dispatch");
+        assert_eq!(compose.marked_text_after.as_deref(), Some("n"));
+        assert_eq!(compose.commit_count, 0);
+
+        let update = cx
+            .update(|window, cx| {
+                dispatch_ime(
+                    1,
+                    &InputStep::ImeCompose {
+                        value: "你😀".to_owned(),
+                    },
+                    window,
+                    cx,
+                )
+            })
+            .expect("composition update");
+        assert_eq!(update.marked_text_after.as_deref(), Some("你😀"));
+        assert_eq!(update.marked_range_after, Some(0..3));
+
+        let commit = cx
+            .update(|window, cx| {
+                dispatch_ime(
+                    2,
+                    &InputStep::ImeCommit {
+                        value: "你😀".to_owned(),
+                    },
+                    window,
+                    cx,
+                )
+            })
+            .expect("composition commit");
+        assert_eq!(commit.marked_range_after, None);
+        assert_eq!(commit.marked_text_after, None);
+        assert_eq!(commit.commit_count, 1);
+
+        let before_cancel = commit.text_after.clone();
+        cx.update(|window, cx| {
+            dispatch_ime(
+                3,
+                &InputStep::ImeCompose {
+                    value: "候".to_owned(),
+                },
+                window,
+                cx,
+            )
+            .expect("second composition");
+        });
+        let cancel = cx
+            .update(|window, cx| dispatch_ime(4, &InputStep::ImeCancel, window, cx))
+            .expect("composition cancel");
+        assert_eq!(cancel.text_before, before_cancel);
+        assert_eq!(cancel.text_after, before_cancel);
+        assert_eq!(cancel.marked_range_after, None);
+
+        cx.update(|window, cx| other_focus.focus(window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let rejected = cx.update(|window, cx| {
+            dispatch_ime(
+                5,
+                &InputStep::ImeText {
+                    value: "no focused editor".to_owned(),
+                },
+                window,
+                cx,
+            )
+        });
+        assert!(matches!(rejected, Err(InputError::Unsupported { .. })));
+    }
 }

@@ -42,10 +42,14 @@ pub use diff::{DiffBounds, DiffError, DiffMetrics, DiffPolicy, compare, diff_ima
 pub use gpui_driver::{
     GpuiCaptureOptions, capture_gpui_state, capture_gpui_state_with_adapters,
     capture_gpui_state_with_adapters_result, capture_gpui_state_with_adapters_result_and_semantics,
-    capture_gpui_state_with_hooks, capture_gpui_state_with_timed_adapters_result,
+    capture_gpui_state_with_hooks, capture_gpui_state_with_timed_adapters_and_ime_result,
+    capture_gpui_state_with_timed_adapters_result,
 };
 pub use input::{ActionDescriptor, ActionTarget, ActionTree};
-pub use input::{InputError, InputStep, TransitionScript, modifiers, position};
+pub use input::{
+    ImeObservation, ImeOperation, InputError, InputStep, InputTranscriptEntry, TransitionScript,
+    modifiers, position,
+};
 pub use journey::{VisibleJourney, VisibleJourneyStep};
 pub use semantics::{
     SEMANTIC_SCHEMA, SemanticAnnouncement, SemanticBounds, SemanticError, SemanticNode,
@@ -608,6 +612,10 @@ pub struct CaptureSet {
     /// Keeping these beside the in-memory pixel sequence lets the artifact
     /// writer hash and verify the exact screenshot each probe describes.
     pub semantic_probes: Vec<SemanticProbe>,
+    /// Ordered evidence for every dispatched input action. IME entries carry
+    /// readback from the focused CE editor; unsupported native capabilities
+    /// fail the capture before a green artifact can be written.
+    pub input_transcript: Vec<InputTranscriptEntry>,
 }
 
 /// A durable capture session with optional baseline comparison.
@@ -765,6 +773,12 @@ impl CaptureSession {
                     .map_err(ArtifactError::Io)
             })
             .transpose()?;
+        let input_transcript_artifact = (!capture.input_transcript.is_empty())
+            .then(|| format!("inputs/{}.json", capture.state.id));
+        if let Some(relative) = input_transcript_artifact.as_deref() {
+            self.writer
+                .write_json(relative, &capture.input_transcript)?;
+        }
         let manifest = CaptureManifest {
             schema: 1,
             state: capture.state.clone(),
@@ -778,6 +792,7 @@ impl CaptureSession {
             provenance: self.provenance.clone(),
             semantic_artifact: semantic_path,
             semantic_sha256,
+            input_transcript_artifact,
             baseline_within_policy,
             reference: self.reference.clone(),
         };
@@ -976,6 +991,7 @@ mod tests {
                 diff: None,
             }],
             semantic_probes: Vec::new(),
+            input_transcript: Vec::new(),
         };
         let result = session.write_set(&mut capture, None, Some("semantics/browse.json"));
         assert!(matches!(result, Err(CaptureError::BaselineMismatch(_))));
@@ -1010,6 +1026,7 @@ mod tests {
                 diff: None,
             }],
             semantic_probes: Vec::new(),
+            input_transcript: Vec::new(),
         };
         session
             .write_set(&mut capture, None, Some("semantics/edge.json"))

@@ -2,6 +2,7 @@
 
 use gpui::{Modifiers, Pixels, Point, point, px};
 use serde::{Deserialize, Serialize};
+use std::ops::Range;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -172,6 +173,197 @@ pub enum InputStep {
         /// Whether the window is receiving platform focus.
         focused: bool,
     },
+}
+
+/// The operation that was actually delivered to the focused GPUI CE editor.
+///
+/// Keeping this separate from [`InputStep`] makes an input transcript useful
+/// when an adapter rejects a native capability: a successful step records the
+/// operation and its post-edit evidence, while a failed step is represented by
+/// the typed [`InputError::Unsupported`] returned by the adapter.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImeOperation {
+    /// Direct text insertion through `EntityInputHandler::replace_text_in_range`.
+    Text,
+    /// Mark or update the active composition.
+    Compose,
+    /// Commit the active composition exactly once.
+    Commit,
+    /// Clear the active composition without inserting text.
+    Cancel,
+}
+
+impl ImeOperation {
+    /// Returns the operation represented by an input step, if it is an IME
+    /// step.
+    #[must_use]
+    pub const fn from_step(step: &InputStep) -> Option<Self> {
+        match step {
+            InputStep::ImeText { .. } => Some(Self::Text),
+            InputStep::ImeCompose { .. } => Some(Self::Compose),
+            InputStep::ImeCommit { .. } => Some(Self::Commit),
+            InputStep::ImeCancel => Some(Self::Cancel),
+            _ => None,
+        }
+    }
+}
+
+/// Post-dispatch evidence returned by the live desktop adapter for one IME
+/// step. The fields are read from the focused CE state after the operation;
+/// they are never synthesized from the journey or semantic action tree.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ImeObservation {
+    /// The operation delivered by the adapter.
+    pub operation: ImeOperation,
+    /// Whether the same GPUI focus handle remained focused for the operation.
+    pub focused: bool,
+    /// Full editor value before dispatch.
+    pub text_before: String,
+    /// Full editor value after dispatch.
+    pub text_after: String,
+    /// UTF-16 marked range before dispatch.
+    pub marked_range_before: Option<Range<usize>>,
+    /// UTF-16 marked range after dispatch.
+    pub marked_range_after: Option<Range<usize>>,
+    /// Marked text read back through `EntityInputHandler::text_for_range`.
+    pub marked_text_before: Option<String>,
+    /// Marked text read back through `EntityInputHandler::text_for_range`.
+    pub marked_text_after: Option<String>,
+    /// UTF-16 selection after dispatch.
+    pub selected_range_after: Option<Range<usize>>,
+    /// Number of text-commit calls made for this step. The live adapter sets
+    /// this to one for `ImeText`/`ImeCommit` and zero for composition/cancel;
+    /// CE may still close an internal undo transaction while cancelling.
+    pub commit_count: u8,
+}
+
+impl ImeObservation {
+    /// Checks that a successful observation proves the requested IME
+    /// transition took place. This rejects silent no-ops before a screenshot
+    /// can be marked green.
+    pub fn validate_for(&self, step: &InputStep) -> Result<(), InputError> {
+        let Some(operation) = ImeOperation::from_step(step) else {
+            return Ok(());
+        };
+        if self.operation != operation {
+            return Err(InputError::Ime(format!(
+                "adapter reported {:?} for {:?}",
+                self.operation, operation
+            )));
+        }
+        if !self.focused {
+            return Err(InputError::Unsupported {
+                capability: "ime-focused-editor".to_owned(),
+                evidence: "the GPUI focus handle was not focused while dispatching the IME step"
+                    .to_owned(),
+            });
+        }
+        match (operation, step) {
+            (ImeOperation::Compose, InputStep::ImeCompose { value }) => {
+                if value.is_empty() {
+                    return Err(InputError::Ime(
+                        "an empty composition is a cancellation; use ime-cancel".to_owned(),
+                    ));
+                }
+                let Some(marked) = self.marked_range_after.as_ref() else {
+                    return Err(InputError::Unsupported {
+                        capability: "ime-marked-range".to_owned(),
+                        evidence: "composition returned no marked UTF-16 range".to_owned(),
+                    });
+                };
+                let marked_len = marked.end.saturating_sub(marked.start);
+                let expected_len = value.encode_utf16().count();
+                if marked_len != expected_len
+                    || self.marked_text_after.as_deref() != Some(value.as_str())
+                {
+                    return Err(InputError::Unsupported {
+                        capability: "ime-marked-text-readback".to_owned(),
+                        evidence: format!(
+                            "marked text/range mismatch: expected {:?} ({expected_len} UTF-16 units), got {:?} / {:?}",
+                            value, self.marked_text_after, self.marked_range_after
+                        ),
+                    });
+                }
+                if self.commit_count != 0 {
+                    return Err(InputError::Ime(
+                        "composition update committed before ime-commit".to_owned(),
+                    ));
+                }
+            }
+            (ImeOperation::Commit, InputStep::ImeCommit { value })
+            | (ImeOperation::Text, InputStep::ImeText { value }) => {
+                if value.is_empty() {
+                    return Err(InputError::Ime(
+                        "empty ime-text/ime-commit would be an unobservable no-op".to_owned(),
+                    ));
+                }
+                if self.commit_count != 1 {
+                    return Err(InputError::Ime(format!(
+                        "{} must commit exactly once, observed {} commits",
+                        match operation {
+                            ImeOperation::Commit => "ime-commit",
+                            ImeOperation::Text => "ime-text",
+                            _ => unreachable!(),
+                        },
+                        self.commit_count
+                    )));
+                }
+                if self.marked_range_after.is_some() || self.marked_text_after.is_some() {
+                    return Err(InputError::Ime(
+                        "committed IME text left a marked range behind".to_owned(),
+                    ));
+                }
+                let commit_was_a_noop = !value.is_empty()
+                    && self.text_before == self.text_after
+                    && (operation == ImeOperation::Text || self.marked_range_before.is_none());
+                if commit_was_a_noop {
+                    return Err(InputError::Ime(
+                        "text input reported success without changing the editor value".to_owned(),
+                    ));
+                }
+            }
+            (ImeOperation::Cancel, InputStep::ImeCancel) => {
+                if self.marked_range_before.is_none() {
+                    return Err(InputError::Ime(
+                        "ime-cancel was dispatched without an active marked composition".to_owned(),
+                    ));
+                }
+                if self.commit_count != 0 {
+                    return Err(InputError::Ime(
+                        "ime-cancel must not commit replacement text".to_owned(),
+                    ));
+                }
+                if self.text_before != self.text_after {
+                    return Err(InputError::Ime(
+                        "ime-cancel changed the editor value".to_owned(),
+                    ));
+                }
+                if self.marked_range_after.is_some() || self.marked_text_after.is_some() {
+                    return Err(InputError::Ime(
+                        "ime-cancel left marked text behind".to_owned(),
+                    ));
+                }
+            }
+            _ => return Err(InputError::Ime("IME observation/step mismatch".to_owned())),
+        }
+        Ok(())
+    }
+}
+
+/// One input event and its live evidence. Waits carry their deterministic
+/// clock position; every dispatched action has a transcript row, including a
+/// successful IME observation.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct InputTranscriptEntry {
+    /// Original action index in the journey.
+    pub index: usize,
+    /// Deterministic virtual time at dispatch.
+    pub virtual_time_ms: u64,
+    /// Exact action delivered to GPUI/the product adapter.
+    pub step: InputStep,
+    /// Live IME evidence for IME steps.
+    pub ime: Option<ImeObservation>,
 }
 
 impl InputStep {
@@ -381,6 +573,115 @@ impl TransitionScript {
         ]
     }
 
+    /// IME contract journeys. These are deliberately separate from the
+    /// visual motion stress set so a desktop adapter can run them against a
+    /// focused CE `Input`, `Textarea`, or `Editor` and preserve the live input
+    /// transcript as evidence.
+    #[must_use]
+    pub fn ime_contract() -> Vec<Self> {
+        vec![
+            Self::new(
+                "ime-ascii-compose-update-commit",
+                "browse",
+                "browse",
+                vec![
+                    InputStep::FocusNext,
+                    InputStep::ImeCompose {
+                        value: "n".to_owned(),
+                    },
+                    InputStep::ImeCompose {
+                        value: "ni".to_owned(),
+                    },
+                    InputStep::ImeCommit {
+                        value: "你".to_owned(),
+                    },
+                ],
+            ),
+            Self::new(
+                "ime-non-latin-emoji-surrogate-boundary",
+                "browse",
+                "browse",
+                vec![
+                    InputStep::FocusNext,
+                    InputStep::ImeCompose {
+                        value: "你".to_owned(),
+                    },
+                    InputStep::ImeCompose {
+                        value: "你😀".to_owned(),
+                    },
+                    InputStep::ImeCommit {
+                        value: "你😀".to_owned(),
+                    },
+                ],
+            ),
+            Self::new(
+                "ime-replace-selection",
+                "browse",
+                "browse",
+                vec![
+                    InputStep::FocusNext,
+                    InputStep::key("cmd-a"),
+                    InputStep::ImeCompose {
+                        value: "新".to_owned(),
+                    },
+                    InputStep::ImeCommit {
+                        value: "新".to_owned(),
+                    },
+                ],
+            ),
+            Self::new(
+                "ime-cancel-without-insertion",
+                "browse",
+                "browse",
+                vec![
+                    InputStep::FocusNext,
+                    InputStep::ImeCompose {
+                        value: "候".to_owned(),
+                    },
+                    InputStep::ImeCancel,
+                ],
+            ),
+            Self::new(
+                "ime-focus-loss",
+                "browse",
+                "browse",
+                vec![
+                    InputStep::FocusNext,
+                    InputStep::ImeCompose {
+                        value: "a".to_owned(),
+                    },
+                    InputStep::WindowFocus { focused: false },
+                    InputStep::WindowFocus { focused: true },
+                    InputStep::ImeCancel,
+                ],
+            ),
+            Self::new(
+                "ime-modal-focus",
+                "browse",
+                "browse--palette",
+                vec![
+                    InputStep::key("cmd-p"),
+                    InputStep::ImeCompose {
+                        value: "候".to_owned(),
+                    },
+                    InputStep::ImeCancel,
+                    InputStep::key("escape"),
+                ],
+            ),
+            Self::new(
+                "ime-no-focused-editor-rejected",
+                "browse",
+                "browse",
+                vec![
+                    InputStep::WindowFocus { focused: false },
+                    InputStep::ImeText {
+                        value: "rejected".to_owned(),
+                    },
+                ],
+            ),
+        ]
+    }
+
     /// Validates that the script has a meaningful identity and finite timing.
     pub fn validate(&self) -> Result<(), InputError> {
         if self.id.trim().is_empty() {
@@ -439,6 +740,19 @@ pub enum InputError {
     /// layout comparison.
     #[error("text scale must be between 50% and 300%")]
     InvalidTextScale,
+    /// A native or product input capability cannot be expressed by the
+    /// active GPUI platform. Journey runners must preserve this error as a
+    /// red/unsupported result rather than treating it as a successful no-op.
+    #[error("unsupported input capability {capability:?}: {evidence}")]
+    Unsupported {
+        /// Stable capability name used by journey reports.
+        capability: String,
+        /// Concrete platform/adapter evidence for the rejection.
+        evidence: String,
+    },
+    /// The adapter or observation violated the CE input transition contract.
+    #[error("invalid IME transition: {0}")]
+    Ime(String),
 }
 
 /// Converts a serialised modifier set to GPUI's modifier type.
@@ -490,6 +804,99 @@ mod tests {
                 .iter()
                 .any(|step| matches!(step, InputStep::WindowFocus { focused: false }))
         }));
+    }
+
+    #[test]
+    fn ime_contract_journeys_cover_live_composition_edges() {
+        let scripts = TransitionScript::ime_contract();
+        for script in &scripts {
+            script.validate().expect("IME journey should validate");
+        }
+        assert_eq!(scripts.len(), 7);
+        assert!(scripts.iter().any(|script| {
+            script
+                .steps
+                .iter()
+                .any(|step| matches!(step, InputStep::ImeCompose { value } if value == "ni"))
+        }));
+        assert!(scripts.iter().any(|script| {
+            script
+                .steps
+                .iter()
+                .any(|step| matches!(step, InputStep::ImeCompose { value } if value.contains('😀')))
+        }));
+        assert!(scripts.iter().any(|script| {
+            script
+                .steps
+                .iter()
+                .any(|step| matches!(step, InputStep::ImeCancel))
+        }));
+        assert!(scripts.iter().any(|script| {
+            script
+                .steps
+                .iter()
+                .any(|step| matches!(step, InputStep::Key { value } if value == "cmd-a"))
+        }));
+        assert!(scripts.iter().any(|script| {
+            script
+                .steps
+                .iter()
+                .any(|step| matches!(step, InputStep::Key { value } if value == "cmd-p"))
+        }));
+        assert!(scripts.iter().any(|script| {
+            script
+                .steps
+                .iter()
+                .any(|step| matches!(step, InputStep::WindowFocus { focused: false }))
+        }));
+    }
+
+    #[test]
+    fn ime_observation_rejects_silent_dispatch_and_preserves_utf16_ranges() {
+        let step = InputStep::ImeCompose {
+            value: "😀".to_owned(),
+        };
+        let mut observation = ImeObservation {
+            operation: ImeOperation::Compose,
+            focused: true,
+            text_before: String::new(),
+            text_after: "😀".to_owned(),
+            marked_range_before: None,
+            marked_range_after: Some(0..2),
+            marked_text_before: None,
+            marked_text_after: Some("😀".to_owned()),
+            selected_range_after: Some(2..2),
+            commit_count: 0,
+        };
+        observation
+            .validate_for(&step)
+            .expect("emoji uses two UTF-16 code units");
+        observation.marked_range_after = None;
+        observation.marked_text_after = None;
+        assert!(matches!(
+            observation.validate_for(&step),
+            Err(InputError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn ime_cancel_requires_unchanged_text_and_no_marked_range() {
+        let step = InputStep::ImeCancel;
+        let observation = ImeObservation {
+            operation: ImeOperation::Cancel,
+            focused: true,
+            text_before: "seed".to_owned(),
+            text_after: "seed".to_owned(),
+            marked_range_before: Some(4..5),
+            marked_range_after: None,
+            marked_text_before: Some("候".to_owned()),
+            marked_text_after: None,
+            selected_range_after: Some(4..4),
+            commit_count: 0,
+        };
+        observation
+            .validate_for(&step)
+            .expect("cancel removes marked text without insertion");
     }
 
     #[test]
