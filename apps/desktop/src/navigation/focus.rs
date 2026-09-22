@@ -50,10 +50,10 @@ impl Default for ActionInterner {
 
 impl ActionInterner {
     fn intern(&mut self, id: &str) -> ActionKey {
-        let id: SharedString = id.into();
-        if let Some(key) = self.by_id.get(&id).copied() {
+        if let Some(key) = self.by_id.get(id).copied() {
             return key;
         }
+        let id: SharedString = id.into();
         let key = ActionKey::new(self.next).expect("interner key is non-zero");
         self.next = self
             .next
@@ -66,17 +66,14 @@ impl ActionInterner {
     }
 
     fn prune(&mut self, keep: &BTreeSet<ActionKey>) {
-        let stale = self
-            .by_key
-            .keys()
-            .copied()
-            .filter(|key| !keep.contains(key))
-            .collect::<Vec<_>>();
-        for key in stale {
-            if let Some(id) = self.by_key.remove(&key) {
-                self.by_id.remove(&id);
+        let Self { by_id, by_key, .. } = self;
+        by_key.retain(|key, id| {
+            let retained = keep.contains(key);
+            if !retained {
+                by_id.remove(id);
             }
-        }
+            retained
+        });
     }
 }
 
