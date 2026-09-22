@@ -14,6 +14,15 @@ mod utils;
 mod window_selection;
 
 use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString, Window};
+
+// Re-export the base selection protocol so virtualized text participants can
+// register visible runs without depending on gpui_base directly.
+pub use gpui_base::{
+    TextSelection, TextSelectionContentKey, TextSelectionCoverage, TextSelectionEndpoint,
+    TextSelectionEvent, TextSelectionHandle, TextSelectionLayer, TextSelectionProjection,
+    TextSelectionRegistration, TextSelectionRun, TextSelectionScopeId, TextSelectionSnapshot,
+    TextSelectionWindowPoints,
+};
 pub use markdown_ext::*;
 pub use node::TableData;
 pub use state::*;
