@@ -12,9 +12,9 @@
       "Compared authoritative CSS selectors and pixel measurements with static GPUI/harness source inspection.",
       "No Cargo, compiler, Nix build, or native application run was performed under the host resource ceiling."
     ],
-    "native_pixel_status": "blocked_by_build_lane",
-    "native_pixel_reason": "The parent task explicitly withheld a build lane. Existing reference pixels were available; no new native GPUI pixels were accepted as evidence.",
-    "report_commit_scope": "harness per-frame viewport provenance and resize/scale conformance support, plus this ledger"
+    "native_pixel_status": "reference_pixels_only",
+    "native_pixel_reason": "Source-only integration review; the build lane was closed and no native product capture was run.",
+    "report_commit_scope": "docs/reviews/design-adherence-v8.md and docs/reviews/design-adherence-v8.json only; static integration boundary audit"
   },
   "authority": {
     "reference_css": "/Users/mileswirht/Downloads/backend/Nudox-Design-System/artifacts/colour-with-a-job/Color.dc.html:30-459",
@@ -332,4 +332,1444 @@
     "Reference dimensions, source hashes, token values, and pixel color fields were measured with static scripts",
     "No Cargo/Nix/compiler command was run after the parent build-lane prohibition"
   ]
+,
+  "integration_audit": {
+  "status": "ordered-integration-required",
+  "scope": "static cross-branch boundary audit; no source edits and no compilation",
+  "base_worktree": "/Users/mileswirht/Documents/ChatGPT/backend-design-adherence-review-v8",
+  "base_revision": "bfc90a573a6a1573305c5c7634c83d315a467c2c",
+  "source_branches": [
+    {
+      "name": "nudox-components-v8",
+      "branch": "codex/nudox-components-v8",
+      "worktree": "/Users/mileswirht/Downloads/nudox-components-v8",
+      "head": "e8dc3411f02b7ca8c4e1702aba3ff7e320a8265d",
+      "working_tree": "dirty; no commit cherry-pickable",
+      "diff_files": [
+        "apps/desktop/Cargo.toml",
+        "apps/desktop/src/harness.rs",
+        "apps/desktop/src/lib.rs",
+        "apps/desktop/src/theme/mod.rs",
+        "apps/desktop/src/ui/components.rs",
+        "apps/desktop/src/ui/mod.rs",
+        "apps/desktop/src/ui/surface.rs",
+        "apps/desktop/src/ui/text.rs",
+        "tools/gui-harness/src/artifact.rs",
+        "tools/gui-harness/src/gpui_driver.rs",
+        "tools/gui-harness/src/lib.rs",
+        "apps/desktop/src/bin/backend-desktop-component-gallery.rs",
+        "apps/desktop/src/ui/foundation.rs"
+      ]
+    },
+    {
+      "name": "responsive-shell-v8",
+      "branch": "codex/responsive-shell-v8",
+      "worktree": "/Users/mileswirht/Documents/ChatGPT/backend-responsive-shell-v8",
+      "head": "90b907870efc5d14e76db12675eca59198db873e",
+      "working_tree": "dirty; no commit cherry-pickable",
+      "diff_files": [
+        "apps/desktop/src/bin/backend-desktop-gui-harness.rs",
+        "apps/desktop/src/harness.rs",
+        "apps/desktop/src/ui/surface.rs",
+        "apps/desktop/src/views/catalog.rs",
+        "apps/desktop/src/views/mod.rs",
+        "apps/desktop/src/views/package.rs",
+        "apps/desktop/src/views/reader.rs",
+        "apps/desktop/src/views/shell.rs",
+        "tools/gui-harness/src/state.rs"
+      ],
+      "committed_support": [
+        "apps/desktop/src/core/layout.rs"
+      ]
+    },
+    {
+      "name": "package-surface-v8",
+      "branch": "codex/package-surface-v8",
+      "worktree": "/Users/mileswirht/Downloads/backend-package-surface-v8",
+      "head": "e8dc3411f02b7ca8c4e1702aba3ff7e320a8265d",
+      "working_tree": "dirty; no commit cherry-pickable",
+      "diff_files": [
+        "apps/desktop/src/harness.rs",
+        "apps/desktop/src/model/mod.rs",
+        "apps/desktop/src/model/snapshot.rs",
+        "apps/desktop/src/runtime/client.rs",
+        "apps/desktop/src/runtime/mapping.rs",
+        "apps/desktop/src/runtime/ui_graph.rs",
+        "apps/desktop/src/views/package.rs",
+        "crates/local-service/src/builtin/registry.rs"
+      ]
+    },
+    {
+      "name": "reader-surface-v8",
+      "branch": "codex/reader-surface-v8",
+      "worktree": "/Users/mileswirht/Documents/ChatGPT/backend-reader-surface-v8",
+      "head": "e8dc3411f02b7ca8c4e1702aba3ff7e320a8265d",
+      "working_tree": "dirty; no commit cherry-pickable",
+      "diff_files": [
+        "apps/desktop/src/bin/backend-desktop-gui-harness.rs",
+        "apps/desktop/src/core/layout.rs",
+        "apps/desktop/src/harness.rs",
+        "apps/desktop/src/model/mod.rs",
+        "apps/desktop/src/model/snapshot.rs",
+        "apps/desktop/src/runtime/actor.rs",
+        "apps/desktop/src/runtime/client.rs",
+        "apps/desktop/src/runtime/mapping.rs",
+        "apps/desktop/src/runtime/tests.rs",
+        "apps/desktop/src/runtime/ui_graph.rs",
+        "apps/desktop/src/views/mod.rs",
+        "apps/desktop/src/views/primitives.rs",
+        "apps/desktop/src/views/reader.rs",
+        "apps/desktop/src/views/shell.rs",
+        "tools/gui-harness/src/artifact.rs",
+        "tools/gui-harness/src/lib.rs",
+        "tools/gui-harness/src/state.rs",
+        "apps/desktop/src/model/reader.rs"
+      ]
+    },
+    {
+      "name": "rich-graph-gui-v8",
+      "branch": "codex/rich-graph-gui-v8",
+      "worktree": "/Users/mileswirht/Documents/ChatGPT/rich-graph-gui-v8",
+      "head": "e8dc3411f02b7ca8c4e1702aba3ff7e320a8265d",
+      "working_tree": "dirty; no commit cherry-pickable",
+      "diff_files": [
+        "apps/desktop/src/bin/backend-desktop-gui-harness.rs",
+        "apps/desktop/src/core/layout.rs",
+        "apps/desktop/src/core/mod.rs",
+        "apps/desktop/src/harness.rs",
+        "apps/desktop/src/lib.rs",
+        "apps/desktop/src/model/snapshot.rs",
+        "apps/desktop/src/navigation/intent.rs",
+        "apps/desktop/src/navigation/reducer.rs",
+        "apps/desktop/src/runtime/actor.rs",
+        "apps/desktop/src/runtime/client.rs",
+        "apps/desktop/src/runtime/coordinator.rs",
+        "apps/desktop/src/runtime/mailbox.rs",
+        "apps/desktop/src/runtime/mapping.rs",
+        "apps/desktop/src/runtime/tests.rs",
+        "apps/desktop/src/runtime/ui_graph.rs",
+        "apps/desktop/src/views/catalog.rs",
+        "apps/desktop/src/views/mod.rs",
+        "apps/desktop/src/views/package.rs",
+        "apps/desktop/src/views/primitives.rs",
+        "apps/desktop/src/views/reader.rs",
+        "apps/desktop/src/views/shell.rs",
+        "apps/desktop/src/graph.rs",
+        "apps/desktop/src/views/graph.rs"
+      ]
+    },
+    {
+      "name": "motion-focus-v8",
+      "branch": "codex/motion-focus-v8",
+      "worktree": "/Users/mileswirht/Downloads/nudox-motion-focus-v8",
+      "head": "e8dc3411f02b7ca8c4e1702aba3ff7e320a8265d",
+      "working_tree": "dirty; no commit cherry-pickable",
+      "diff_files": [
+        "apps/desktop/src/core/layout.rs",
+        "apps/desktop/src/navigation/focus.rs",
+        "apps/desktop/src/navigation/mod.rs",
+        "apps/desktop/src/runtime/animation.rs",
+        "apps/desktop/src/runtime/coordinator.rs",
+        "apps/desktop/src/runtime/mod.rs",
+        "apps/desktop/src/runtime/ui_graph.rs",
+        "apps/desktop/src/theme/tokens.rs",
+        "apps/desktop/src/ui/components.rs",
+        "apps/desktop/src/views/mod.rs",
+        "apps/desktop/src/views/shell.rs",
+        "tools/gui-harness/src/artifact.rs",
+        "tools/gui-harness/src/conformance.rs",
+        "tools/gui-harness/src/gpui_driver.rs",
+        "tools/gui-harness/src/input.rs",
+        "tools/gui-harness/src/lib.rs",
+        "tools/gui-harness/src/main.rs"
+      ]
+    },
+    {
+      "name": "a11y-input-v8",
+      "branch": "codex/a11y-input-v8",
+      "worktree": "/Users/mileswirht/Downloads/backend-a11y-input-v8",
+      "head": "e8dc3411f02b7ca8c4e1702aba3ff7e320a8265d",
+      "working_tree": "dirty; no commit cherry-pickable",
+      "diff_files": [
+        "apps/desktop/src/harness.rs",
+        "apps/desktop/src/theme/mod.rs",
+        "apps/desktop/src/ui/components.rs",
+        "apps/desktop/src/views/catalog.rs",
+        "apps/desktop/src/views/mod.rs",
+        "apps/desktop/src/views/package.rs",
+        "apps/desktop/src/views/primitives.rs",
+        "apps/desktop/src/views/reader.rs",
+        "apps/desktop/src/views/shell.rs",
+        "tools/gui-harness/src/conformance.rs",
+        "tools/gui-harness/src/gpui_driver.rs",
+        "tools/gui-harness/src/input.rs",
+        "tools/gui-harness/src/lib.rs",
+        "vendor/gpui_ce_components/src/button/button.rs",
+        "vendor/gpui_ce_components/src/input/input.rs",
+        "tools/gui-harness/src/semantics.rs"
+      ]
+    }
+  ],
+  "reference_evidence": {
+    "method": "opened full references, inspected crops, and measured raster dimensions/bands with Pillow; no manifest-only claims",
+    "fresh_1280x720": [
+      {
+        "path": "/Users/mileswirht/Downloads/backend/.artifacts/external-reference/crates-io-serde-cua-1280x720.jpg",
+        "size": "1280x720",
+        "crop_paths": [
+          "/tmp/nudox-integration-audit-v8/crates-io-serde-cua-1280x720-top.png",
+          "/tmp/nudox-integration-audit-v8/crates-io-serde-cua-1280x720-left.png",
+          "/tmp/nudox-integration-audit-v8/crates-io-serde-cua-1280x720-center.png",
+          "/tmp/nudox-integration-audit-v8/crates-io-serde-cua-1280x720-right.png"
+        ],
+        "measurements": {
+          "header_band_bottom_y": 66,
+          "hero_card_left_x": 177,
+          "hero_card_right_exclusive_x": 1103,
+          "hero_card_top_y": 84,
+          "body_side_gutter": 177
+        },
+        "observations": [
+          "dark header with brand/search/account affordances",
+          "single centered dossier card with a stable reading measure"
+        ]
+      },
+      {
+        "path": "/Users/mileswirht/Downloads/backend/.artifacts/external-reference/docs-rs-serde-cua-1280x720.jpg",
+        "size": "1280x720",
+        "crop_paths": [
+          "/tmp/nudox-integration-audit-v8/docs-rs-serde-cua-1280x720-top.png",
+          "/tmp/nudox-integration-audit-v8/docs-rs-serde-cua-1280x720-left.png",
+          "/tmp/nudox-integration-audit-v8/docs-rs-serde-cua-1280x720-center.png",
+          "/tmp/nudox-integration-audit-v8/docs-rs-serde-cua-1280x720-right.png"
+        ],
+        "measurements": {
+          "toolbar_bottom_y": 31,
+          "full_sidebar_right_exclusive_x": 200,
+          "content_starts_x": 200,
+          "sidebar_divider_x": 199
+        },
+        "observations": [
+          "fixed documentation navigation stays visible beside the reading page",
+          "toolbar is a compact 31px band above content"
+        ]
+      },
+      {
+        "path": "/Users/mileswirht/Downloads/backend/.artifacts/external-reference/docs-rs-serde-lib-rs-cua-1280x720.jpg",
+        "size": "1280x720",
+        "crop_paths": [
+          "/tmp/nudox-integration-audit-v8/docs-rs-serde-lib-rs-cua-1280x720-top.png",
+          "/tmp/nudox-integration-audit-v8/docs-rs-serde-lib-rs-cua-1280x720-left.png",
+          "/tmp/nudox-integration-audit-v8/docs-rs-serde-lib-rs-cua-1280x720-center.png",
+          "/tmp/nudox-integration-audit-v8/docs-rs-serde-lib-rs-cua-1280x720-right.png"
+        ],
+        "measurements": {
+          "toolbar_bottom_y": 31,
+          "collapsed_rail_right_exclusive_x": 48,
+          "content_starts_x": 56,
+          "rail_to_content_gap": 8
+        },
+        "observations": [
+          "collapsed code view retains a narrow control rail and preserves the reading page",
+          "rail width is materially smaller than the full 200px navigation"
+        ]
+      }
+    ],
+    "design_boards": [
+      {
+        "path": "/Users/mileswirht/Downloads/backend/.local/gui-references/design/colour-1600x1000.png",
+        "size": "1600x1000",
+        "crop_paths": [
+          "/tmp/nudox-integration-audit-v8/colour-1600x1000-top.png",
+          "/tmp/nudox-integration-audit-v8/colour-1600x1000-middle.png",
+          "/tmp/nudox-integration-audit-v8/colour-1600x1000-bottom.png"
+        ],
+        "observations": [
+          "Facet ground is a dark polygonal field",
+          "voice colors and edge states are used as semantic state, not decoration"
+        ]
+      },
+      {
+        "path": "/Users/mileswirht/Downloads/backend/.local/gui-references/design/brand-1600x1000.png",
+        "size": "1600x1000",
+        "crop_paths": [
+          "/tmp/nudox-integration-audit-v8/brand-1600x1000-top.png",
+          "/tmp/nudox-integration-audit-v8/brand-1600x1000-middle.png",
+          "/tmp/nudox-integration-audit-v8/brand-1600x1000-bottom.png"
+        ],
+        "observations": [
+          "mark-derived identity is carried by stone, bevel, stripe, comb, and cut-corner motifs",
+          "routine shell geometry remains ordinary surfaces rather than a canvas drawing"
+        ]
+      },
+      {
+        "path": "/Users/mileswirht/Downloads/backend/.local/gui-references/design/descent-1600x1000.png",
+        "size": "1600x1000",
+        "crop_paths": [
+          "/tmp/nudox-integration-audit-v8/descent-1600x1000-top.png",
+          "/tmp/nudox-integration-audit-v8/descent-1600x1000-middle.png",
+          "/tmp/nudox-integration-audit-v8/descent-1600x1000-bottom.png"
+        ],
+        "observations": [
+          "Orbit → Package → Page → Source keeps one shell while depth changes",
+          "diagonal depth connectors describe transitions between route projections"
+        ]
+      },
+      {
+        "path": "/Users/mileswirht/Downloads/backend/.local/gui-references/design/language-1600x1000.png",
+        "size": "1600x1000",
+        "crop_paths": [
+          "/tmp/nudox-integration-audit-v8/language-1600x1000-top.png",
+          "/tmp/nudox-integration-audit-v8/language-1600x1000-middle.png",
+          "/tmp/nudox-integration-audit-v8/language-1600x1000-bottom.png"
+        ],
+        "observations": [
+          "hue identifies family and shape identifies kind",
+          "edge/mark state communicates evaluated, async, unsafe, generic, inherited, or deprecated semantics"
+        ]
+      }
+    ],
+    "authoritative_css": {
+      "path": "/Users/mileswirht/Downloads/backend/Nudox-Design-System/artifacts/colour-with-a-job/Color.dc.html",
+      "selectors": [
+        ".btn",
+        ".switch",
+        ".input",
+        ".scrim",
+        ".titlebar",
+        ".rail",
+        ".cut",
+        ".bevel",
+        ".resolve",
+        "details"
+      ],
+      "motion_ms": {
+        "micro": 90,
+        "quick": 160,
+        "standard": 240,
+        "emphasis": 380,
+        "scene": 620
+      },
+      "geometry_px": {
+        "titlebar": 46,
+        "rail": 54,
+        "rail_button": 38,
+        "omnibar": 30,
+        "input": 32,
+        "chamfer": 14
+      }
+    }
+  },
+  "canonical_boundary": [
+    {
+      "id": "B0",
+      "crate": "apps/desktop",
+      "authority": "The one product GUI crate; do not create a second GUI crate for components, shell, reader, graph, or accessibility.",
+      "owns": [
+        "GPUI entities",
+        "route projections",
+        "theme/token access",
+        "runtime state projection"
+      ],
+      "evidence": [
+        "all seven branches edit apps/desktop; no second product GUI crate exists"
+      ]
+    },
+    {
+      "id": "B1",
+      "crate": "tools/gui-harness",
+      "authority": "Evidence protocol only; it may drive, capture, crop, hash, and validate rendered output.",
+      "owns": [
+        "CaptureRecord",
+        "FrameArtifact.viewport",
+        "CropArtifact",
+        "SemanticProbe",
+        "journey/state manifests",
+        "dimension-aware conformance"
+      ],
+      "must_not_own": [
+        "product route state",
+        "layout decisions",
+        "synthetic component semantics",
+        "animation timing"
+      ],
+      "evidence": [
+        "motion-focus-v8 artifact/gpui_driver/conformance",
+        "a11y-input-v8 semantics.rs and semantic callback"
+      ]
+    },
+    {
+      "id": "B2",
+      "crate": "apps/desktop/src/theme",
+      "authority": "Single palette, typography, spacing, chrome geometry, motion token, and ActionFrames lifecycle.",
+      "owns": [
+        "Abyss/Glacier colors",
+        "type metrics",
+        "titlebar/rail/input sizes",
+        "90/160/240/380/620ms tokens",
+        "per-window action frame lifecycle"
+      ],
+      "must_not_own": [
+        "responsive breakpoint choice",
+        "route state",
+        "widget-local focus state"
+      ],
+      "evidence": [
+        "Color.dc.html:60,123-166,230-284",
+        "a11y theme/mod.rs:120-206"
+      ]
+    },
+    {
+      "id": "B3",
+      "crate": "apps/desktop/src/core/layout.rs",
+      "authority": "Responsive-shell geometry authority.",
+      "owns": [
+        "WidthClass",
+        "PanelMode",
+        "HeaderMode",
+        "ContentConstraints",
+        "ResponsiveLayout::resolve",
+        "package/split-pane decisions"
+      ],
+      "must_not_own": [
+        "animation clocks",
+        "graph viewport classes",
+        "per-route width enums"
+      ],
+      "evidence": [
+        "responsive-shell-v8 core/layout.rs:12-34,57-152,159-287"
+      ]
+    },
+    {
+      "id": "B4",
+      "crate": "apps/desktop/src/ui",
+      "authority": "Stateless GPUI visual builders plus the one semantic measurement seam.",
+      "owns": [
+        "foundation.rs visual builders",
+        "surface/text primitives",
+        "a11y ActionMetadata/ActionTree/ActionFrames",
+        "components::measure"
+      ],
+      "must_not_own": [
+        "reducer state",
+        "route selection",
+        "parallel gallery semantic schema"
+      ],
+      "evidence": [
+        "nudox-components-v8 foundation.rs:1-7,159-247,374-378",
+        "a11y-input-v8 components.rs:509-567,879-1065"
+      ]
+    },
+    {
+      "id": "B5",
+      "crate": "apps/desktop/src/navigation",
+      "authority": "Typed intents plus motion-focus FocusTree; GPUI FocusHandles remain native handles, not a second semantic store.",
+      "owns": [
+        "FocusId/FocusOrigin",
+        "tab order",
+        "focus-visible origin",
+        "modal trap/restore",
+        "escape routing",
+        "ActionScope stable keys"
+      ],
+      "must_not_own": [
+        "layout rectangles",
+        "semantic crop serialization"
+      ],
+      "evidence": [
+        "motion-focus-v8 navigation/focus.rs:12-121,295-480",
+        "motion-focus-v8 ui/components.rs:42-50,688-804"
+      ]
+    },
+    {
+      "id": "B6",
+      "crate": "apps/desktop/src/runtime",
+      "authority": "One actor/client/mapping/coordinator contract and one UiRootEntity projection.",
+      "owns": [
+        "EngineRequest/EngineDto/EngineEvent",
+        "CoalesceKey",
+        "AnimationTimeline",
+        "UiRootEntity",
+        "native overlay focus restoration",
+        "last resolved layout"
+      ],
+      "must_not_own": [
+        "route view markup",
+        "duplicate graph/package/reader stores"
+      ],
+      "evidence": [
+        "package actor.rs:42-155",
+        "graph actor.rs:42-187",
+        "motion animation.rs:102-247",
+        "motion ui_graph.rs:26-72,269-315"
+      ]
+    },
+    {
+      "id": "B7",
+      "crate": "apps/desktop/src/model",
+      "authority": "Immutable producer-backed read model; all snapshot clone/update paths preserve all surface resources.",
+      "owns": [
+        "PackageSurfaceState",
+        "ReaderIndex",
+        "RichGraphSnapshot resource",
+        "coverage algebra",
+        "selection identity"
+      ],
+      "must_not_own": [
+        "GPUI elements",
+        "focus handles",
+        "animation progress"
+      ],
+      "evidence": [
+        "package snapshot.rs:149-214",
+        "reader model/reader.rs:183-330",
+        "graph snapshot.rs:222-303,443-476"
+      ]
+    },
+    {
+      "id": "B8",
+      "crate": "apps/desktop/src/views",
+      "authority": "Route projections consume snapshot + ResponsiveLayout + UiRootEntity and expose only rendered controls.",
+      "owns": [
+        "shell/catalog/package/reader/graph route markup",
+        "graph hooks into rich package/reader surfaces"
+      ],
+      "must_not_own": [
+        "runtime DTO decoding",
+        "second width/focus/semantic authorities"
+      ],
+      "evidence": [
+        "responsive shell views/mod.rs:32-131",
+        "package package.rs surface helpers",
+        "reader reader.rs:72-213",
+        "graph graph.rs:406-529"
+      ]
+    },
+    {
+      "id": "B9",
+      "crate": "vendor/gpui_ce_components",
+      "authority": "Generic native interaction adapters only.",
+      "owns": [
+        "button/input labels",
+        "native focus observation",
+        "generic disabled/toggled behavior"
+      ],
+      "must_not_own": [
+        "Nudox palette or route state",
+        "application semantic schema"
+      ],
+      "evidence": [
+        "a11y-input-v8 vendor/gpui_ce_components/src/button/button.rs",
+        ".../input/input.rs"
+      ]
+    }
+  ],
+  "overlap_matrix": [
+    {
+      "path": "apps/desktop/src/ui/components.rs",
+      "symbols": [
+        "ActionRole",
+        "ActionMetadata",
+        "ActionTree",
+        "ActionFrames",
+        "button_with_state",
+        "measure"
+      ],
+      "branches": [
+        "nudox-components-v8",
+        "motion-focus-v8",
+        "a11y-input-v8"
+      ],
+      "survivor": "a11y-input-v8 rich metadata/tree/frame/measure model plus motion-focus-v8 ActionScope, stable_focus_key, focus_entries, and scoped button helpers",
+      "discard_or_adapt": [
+        "do not retain three ActionMetadata/ActionTree definitions",
+        "foundation builders must register through the rich ActionFrames seam",
+        "component-gallery metadata must not become a semantic artifact authority"
+      ],
+      "extraction_units": [
+        "semantic fields/roles/states/relations",
+        "post-layout bounds/focus/native-focus publication",
+        "ActionScope/stable key/focus-entry helpers",
+        "visual builder adapters"
+      ],
+      "evidence": [
+        "a11y components.rs:509-567,879-1065",
+        "motion components.rs:42-50,688-804"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/theme/mod.rs",
+      "symbols": [
+        "register_action",
+        "begin_action_frame_with_modal",
+        "publish_action_frame",
+        "action_bounds",
+        "action_focus_order",
+        "record_action_bounds"
+      ],
+      "branches": [
+        "nudox-components-v8",
+        "a11y-input-v8"
+      ],
+      "survivor": "a11y-input-v8 per-window frame lifecycle and modal/focus getters; retain one bounds recorder for foundation compatibility",
+      "discard_or_adapt": [
+        "rewire components foundation track_bounds to ActionFrames/measure instead of a second Theme bounds map",
+        "never publish declared bounds as measured bounds"
+      ],
+      "extraction_units": [
+        "frame lifecycle",
+        "parent/modal context",
+        "post-layout measurement bridge",
+        "harness snapshot adapter"
+      ],
+      "evidence": [
+        "a11y theme/mod.rs:120-206",
+        "components foundation.rs:374-378",
+        "components theme/mod.rs:114-122"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/core/layout.rs",
+      "symbols": [
+        "WidthClass",
+        "PanelMode",
+        "ResponsiveLayout::resolve",
+        "shelf_width",
+        "context_width"
+      ],
+      "branches": [
+        "responsive-shell-v8",
+        "reader-surface-v8",
+        "rich-graph-gui-v8",
+        "motion-focus-v8"
+      ],
+      "survivor": "responsive-shell-v8 constraint resolver with Tiny/Narrow/Medium/Wide/Ultrawide and ContentConstraints",
+      "discard_or_adapt": [
+        "reject motion-focus-v8 hardcoded PanelMode::target_width 64/248 and context 72/320",
+        "adapt reader Compact/Standard/Wide/Full and graph Compact/Regular/Wide to diagnostics derived from core layout",
+        "keep route geometry from actual width and text scale"
+      ],
+      "extraction_units": [
+        "core resolver",
+        "layout observation on UiRootEntity",
+        "route signature migration",
+        "per-route diagnostics only"
+      ],
+      "evidence": [
+        "responsive core/layout.rs:12-34,57-152,159-287",
+        "motion core/layout.rs:33-135",
+        "reader reader.rs:186-301",
+        "graph graph.rs:72-104"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/runtime/animation.rs plus views/mod.rs and route animations",
+      "symbols": [
+        "AnimationTimeline",
+        "AnimationChannel",
+        "Beat",
+        "EffectTransition",
+        "with_animation"
+      ],
+      "branches": [
+        "motion-focus-v8",
+        "responsive-shell-v8",
+        "rich-graph-gui-v8",
+        "reader-surface-v8"
+      ],
+      "survivor": "motion-focus-v8 retargetable timeline and exact Beat durations; route views read named channels",
+      "discard_or_adapt": [
+        "replace responsive EffectTransition::new(200ms) with the shared standard 240ms track",
+        "replace graph Animation::new(180ms) with an explicit Beat mapping",
+        "reader standard animation may remain only as a projection of the shared timeline"
+      ],
+      "extraction_units": [
+        "timeline/clock",
+        "channel IDs and retargeting",
+        "route bindings for panel/disclosure/graph",
+        "reduced-motion snap"
+      ],
+      "evidence": [
+        "motion animation.rs:102-247",
+        "responsive views/mod.rs:28,113-131",
+        "graph views/graph.rs:406-529",
+        "reader views/reader.rs:205-212"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/navigation/focus.rs and ui/components.rs",
+      "symbols": [
+        "FocusTree",
+        "FocusOrigin",
+        "FocusRestore",
+        "EscapeResult",
+        "ActionScope",
+        "ActionFocusEntry"
+      ],
+      "branches": [
+        "motion-focus-v8",
+        "a11y-input-v8"
+      ],
+      "survivor": "motion-focus-v8 FocusTree and modal restoration, fed by a11y ActionTree focus entries and native focus evidence",
+      "discard_or_adapt": [
+        "no duplicate app focus order in the semantic serializer",
+        "native GPUI FocusHandle is evidence/actuator while FocusTree owns product traversal"
+      ],
+      "extraction_units": [
+        "stable action key/scope",
+        "rendered action order projection",
+        "modal trap/restore",
+        "keyboard/pointer focus-visible origin"
+      ],
+      "evidence": [
+        "motion focus.rs:12-121,295-480",
+        "a11y components.rs:985-1039,1197-1288"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/runtime/ui_graph.rs",
+      "symbols": [
+        "UiRootEntity",
+        "last_layout",
+        "shelf_width_target",
+        "graph_snapshot",
+        "requested_graph",
+        "sync_rendered_actions"
+      ],
+      "branches": [
+        "responsive-shell-v8",
+        "package-surface-v8",
+        "reader-surface-v8",
+        "rich-graph-gui-v8",
+        "motion-focus-v8"
+      ],
+      "survivor": "one UiRootEntity with fields partitioned by concern: snapshot/layout, animation, focus/modal, package/reader/graph request identities",
+      "discard_or_adapt": [
+        "merge observe_layout into motion constructor",
+        "do not reset requested_graph when ensure_surface runs",
+        "do not keep package/reader/graph-specific root entities"
+      ],
+      "extraction_units": [
+        "last_layout/observation",
+        "motion/focus projection",
+        "package/reader resources",
+        "graph resource/request lane",
+        "single install constructor"
+      ],
+      "evidence": [
+        "motion ui_graph.rs:26-72,161-169,269-315",
+        "graph ui_graph.rs:33-35,101-176"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/views/mod.rs",
+      "symbols": [
+        "render_root",
+        "ResponsiveLayout::resolve",
+        "responsive_panel",
+        "route dispatch signatures"
+      ],
+      "branches": [
+        "responsive-shell-v8",
+        "reader-surface-v8",
+        "rich-graph-gui-v8",
+        "motion-focus-v8",
+        "a11y-input-v8"
+      ],
+      "survivor": "responsive-shell-v8 root composition and one window viewport/layout resolution, extended with feature route arguments and a11y frame begin/publish",
+      "discard_or_adapt": [
+        "do not let reader/graph/motion replace the root with older width APIs",
+        "one GUI harness binary and one capture path"
+      ],
+      "extraction_units": [
+        "window size/text scale resolution",
+        "shell chrome",
+        "route projection dispatch",
+        "action frame lifecycle",
+        "semantic capture callback"
+      ],
+      "evidence": [
+        "responsive views/mod.rs:32-131",
+        "branch diff overlap inventory"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/views/shell.rs, catalog.rs, primitives.rs",
+      "symbols": [
+        "primary_nav",
+        "shelf",
+        "context_panel",
+        "catalog_page",
+        "measure",
+        "button_with_state_scoped"
+      ],
+      "branches": [
+        "responsive-shell-v8",
+        "reader-surface-v8",
+        "rich-graph-gui-v8",
+        "motion-focus-v8",
+        "a11y-input-v8"
+      ],
+      "survivor": "responsive geometry and shell visual composition, enriched with motion scoped actions and a11y measure/roles",
+      "discard_or_adapt": [
+        "remove hardcoded width classes and unmeasured controls",
+        "retain surface primitives only as stateless GPUI elements"
+      ],
+      "extraction_units": [
+        "shell geometry",
+        "semantic wrappers",
+        "focus scope/trap",
+        "route-specific content panels"
+      ],
+      "evidence": [
+        "responsive shell.rs:130-150,341-365,614-620",
+        "a11y shell.rs measure sites",
+        "motion shell.rs:98-167"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/views/package.rs",
+      "symbols": [
+        "package_page",
+        "PackageSurfaceState projections",
+        "section_card",
+        "feature_graph",
+        "dependencies_body",
+        "metadata_rail"
+      ],
+      "branches": [
+        "responsive-shell-v8",
+        "package-surface-v8",
+        "rich-graph-gui-v8",
+        "a11y-input-v8"
+      ],
+      "survivor": "package-surface-v8 rich registry dossier and lane coverage; add graph package hooks and responsive/a11y wrappers",
+      "discard_or_adapt": [
+        "do not replace the rich dossier with graph branch old placeholder package view",
+        "do not decode DTOs in the view",
+        "measure every interactive lane/control through ActionFrames"
+      ],
+      "extraction_units": [
+        "snapshot/resource model",
+        "lane sections and honest coverage",
+        "graph insertion points",
+        "layout/a11y wrapper pass"
+      ],
+      "evidence": [
+        "package snapshot.rs:177-214",
+        "package package.rs surface helper inventory",
+        "graph package.rs graph hook diff"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/views/reader.rs",
+      "symbols": [
+        "document_page",
+        "source_page",
+        "reader_shell",
+        "outline_panel",
+        "reader_items",
+        "graph hook"
+      ],
+      "branches": [
+        "responsive-shell-v8",
+        "reader-surface-v8",
+        "rich-graph-gui-v8",
+        "a11y-input-v8"
+      ],
+      "survivor": "reader-surface-v8 document/source projection and ReaderIndex; add graph hook, responsive layout normalization, and a11y wrappers",
+      "discard_or_adapt": [
+        "replace WidthClass::Compact/Standard/Wide/Full with core WidthClass diagnostics",
+        "route controls must use shared semantic builders",
+        "no reader-local state authority"
+      ],
+      "extraction_units": [
+        "ReaderIndex model",
+        "document/source folios",
+        "responsive outline/context collapse",
+        "symbol graph insertion",
+        "semantic measurement"
+      ],
+      "evidence": [
+        "reader model/reader.rs:183-330",
+        "reader views/reader.rs:72-213,215-317",
+        "graph reader hook diff"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/model/snapshot.rs",
+      "symbols": [
+        "SnapshotData",
+        "PackageSurfaceState",
+        "CatalogState.reader",
+        "graph",
+        "with_* clone/update methods"
+      ],
+      "branches": [
+        "package-surface-v8",
+        "reader-surface-v8",
+        "rich-graph-gui-v8"
+      ],
+      "survivor": "one SnapshotData containing package_surface, CatalogState.reader, and graph; every clone/update path preserves all fields",
+      "discard_or_adapt": [
+        "manually merge constructors rather than cherry-picking any complete snapshot.rs",
+        "resource coverage remains typed and honest"
+      ],
+      "extraction_units": [
+        "package surface field/accessor",
+        "reader index/catalog field",
+        "graph resource/accessor",
+        "constructor preservation audit"
+      ],
+      "evidence": [
+        "package snapshot.rs:273-503",
+        "reader snapshot.rs:168-172,224-297",
+        "graph snapshot.rs:222-303,339-476"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/runtime/actor.rs, client.rs, mapping.rs, coordinator.rs, mailbox.rs",
+      "symbols": [
+        "EngineRequest",
+        "EngineDto",
+        "EngineEvent",
+        "CoalesceKey",
+        "SurfaceCommand",
+        "ReaderIndex root payload",
+        "Graph request/reply"
+      ],
+      "branches": [
+        "package-surface-v8",
+        "reader-surface-v8",
+        "rich-graph-gui-v8"
+      ],
+      "survivor": "one unified runtime contract: SurfaceCommand lanes for package facts, Root reader payload, and Graph lane keyed by GraphNodeId",
+      "discard_or_adapt": [
+        "never maintain parallel EngineRequest/EngineDto enums",
+        "merge Root fields and Coalescible match arms",
+        "preserve root-basis stale rejection for every lane"
+      ],
+      "extraction_units": [
+        "package SurfaceCommand mapping",
+        "ReaderIndex Root field",
+        "Graph EngineRequest/EngineDto/CoalesceKey",
+        "client fixtures/tests",
+        "coordinator submit/cancel branch"
+      ],
+      "evidence": [
+        "package actor.rs:42-155",
+        "reader actor.rs:43-157",
+        "graph actor.rs:42-187,236-246",
+        "graph coordinator.rs:144-164"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/harness.rs and backend-desktop-gui-harness.rs",
+      "symbols": [
+        "capture_component_gallery",
+        "capture_rendered_semantics",
+        "route fixture mapping",
+        "main CLI"
+      ],
+      "branches": [
+        "nudox-components-v8",
+        "responsive-shell-v8",
+        "package-surface-v8",
+        "reader-surface-v8",
+        "rich-graph-gui-v8",
+        "a11y-input-v8"
+      ],
+      "survivor": "one live GPUI capture entrypoint; component gallery is a route fixture and semantic evidence always comes from rendered ActionFrames",
+      "discard_or_adapt": [
+        "component_gallery_semantic_artifact cannot be a second semantic truth",
+        "one CLI must own route/state/viewport/scale/theme/motion options"
+      ],
+      "extraction_units": [
+        "capture setup",
+        "live semantic serializer",
+        "fixture route selectors",
+        "single CLI option merge"
+      ],
+      "evidence": [
+        "a11y harness.rs:114-251",
+        "components harness.rs:215-355",
+        "branch CLI diff overlap"
+      ]
+    },
+    {
+      "path": "tools/gui-harness/src/artifact.rs, gpui_driver.rs, conformance.rs, input.rs, lib.rs, state.rs",
+      "symbols": [
+        "CaptureRecord.viewport",
+        "FrameArtifact.viewport",
+        "CropRect/CropArtifact",
+        "SemanticProbe",
+        "TextScale",
+        "WindowFocus",
+        "GuiState/PageState"
+      ],
+      "branches": [
+        "nudox-components-v8",
+        "responsive-shell-v8",
+        "reader-surface-v8",
+        "rich-graph-gui-v8",
+        "motion-focus-v8",
+        "a11y-input-v8"
+      ],
+      "survivor": "motion-focus-v8 per-frame viewport/crop/resize driver plus a11y-input-v8 semantic schema/TextScale, with one union state catalog",
+      "discard_or_adapt": [
+        "semantic probe viewport must use the frame effective viewport, not only manifest viewport",
+        "union WindowFocus with TextScale and stress journeys",
+        "do not keep duplicate PageState tables",
+        "gallery synthetic JSON must be adapted to rendered semantics"
+      ],
+      "extraction_units": [
+        "artifact viewport/crops",
+        "driver viewport update",
+        "semantic callback",
+        "dimension-aware conformance",
+        "input stress steps",
+        "state matrix"
+      ],
+      "evidence": [
+        "motion artifact/gpui_driver/conformance",
+        "a11y semantics.rs:15-221",
+        "a11y input.rs:163-367",
+        "responsive/reader state.rs:15-526"
+      ]
+    },
+    {
+      "path": "apps/desktop/src/graph.rs and apps/desktop/src/views/graph.rs",
+      "symbols": [
+        "GraphProjection",
+        "ExplorerState",
+        "ViewportClass",
+        "graph_canvas",
+        "edge_segment"
+      ],
+      "branches": [
+        "rich-graph-gui-v8"
+      ],
+      "survivor": "graph model/view as a route-specific projection; rename graph_canvas to graph_surface and derive its class from core layout diagnostics",
+      "discard_or_adapt": [
+        "no GPUI canvas API was found, but the canvas name is misleading under the no-canvas contract",
+        "retain ordinary div/edge-segment children and bounded work constants",
+        "do not add SVG fallback"
+      ],
+      "extraction_units": [
+        "bounded graph projection",
+        "node/edge GPUI elements",
+        "pan/zoom state",
+        "package/reader insertion hooks"
+      ],
+      "evidence": [
+        "graph.rs:72-104,18-24,849-851",
+        "graph view.rs:406-529"
+      ]
+    }
+  ],
+  "merge_order": [
+    {
+      "unit": "U0",
+      "name": "Freeze the shared contract and extraction base",
+      "sources": [
+        "common e8dc3411f02b7ca8c4e1702aba3ff7e320a8265d",
+        "responsive-shell-v8 committed core/layout support at 90b907870efc5d14e76db12675eca59198db873e"
+      ],
+      "operation": "Do not cherry-pick dirty branch trees wholesale. Create reviewable commits from the units below; keep one CLI and one apps/desktop GUI crate.",
+      "postcondition": "Every later commit has a single owner and a bounded file list."
+    },
+    {
+      "unit": "U1",
+      "name": "Semantic primitive substrate",
+      "sources": [
+        "a11y-input-v8 apps/desktop/src/ui/components.rs and theme/mod.rs",
+        "nudox-components-v8 ui/foundation.rs adapter points"
+      ],
+      "operation": "Land ActionRole/State/Metadata/Tree/Frames, parent/modal frame lifecycle, post-layout measure, and native-focus recording. Adapt Foundation::track_bounds to this seam.",
+      "postcondition": "One ActionTree and one measured ActionFrames snapshot can explain every interactive pixel."
+    },
+    {
+      "unit": "U2",
+      "name": "Stable action scopes and product focus",
+      "sources": [
+        "motion-focus-v8 navigation/focus.rs and ui/components.rs"
+      ],
+      "operation": "Add ActionScope, stable_focus_key, focus_entries, FocusTree origin/traversal/modal restoration; feed it from U1 rendered actions.",
+      "postcondition": "Focus traversal, modal trap, escape, and restore have one product authority and one native evidence bridge."
+    },
+    {
+      "unit": "U3",
+      "name": "Retargetable animation timeline",
+      "sources": [
+        "motion-focus-v8 runtime/animation.rs and runtime/ui_graph.rs"
+      ],
+      "operation": "Land CaptureFrameClock, channels, versions, retargeting, reduced-motion snap, and UiRootEntity animation fields. Bind panel/disclosure/overlay/graph values to named channels.",
+      "postcondition": "No route uses an independent EffectTransition or raw duration without a named design Beat."
+    },
+    {
+      "unit": "U4",
+      "name": "Canonical responsive shell geometry",
+      "sources": [
+        "responsive-shell-v8 core/layout.rs and views/mod.rs/shell.rs/catalog.rs"
+      ],
+      "operation": "Keep ContentConstraints and ResponsiveLayout::resolve; add last_layout/observe_layout to the U3 root; thread one resolved layout through shell and routes; wrap controls with U1/U2 semantics.",
+      "postcondition": "A 640/1024/1280/1440 resize and 200% text scale have one geometry decision. Motion target widths derive from layout constraints.",
+      "reject": [
+        "motion-focus-v8 core/layout.rs target_width hardcodes",
+        "reader and graph local width enums as layout inputs",
+        "responsive EffectTransition 200ms as a second timing authority"
+      ]
+    },
+    {
+      "unit": "U5",
+      "name": "Stateless Facet foundation and component gallery",
+      "sources": [
+        "nudox-components-v8 ui/foundation.rs, ui/surface.rs, ui/text.rs, component-gallery binary/harness"
+      ],
+      "operation": "Land visual builders only after U1-U4; map gallery variants to real ActionFrames and shared viewport/layout/motion state. Keep GPUI div composition.",
+      "postcondition": "Gallery specimens stress the same primitives/routes and produce the same semantic schema as live surfaces."
+    },
+    {
+      "unit": "U6",
+      "name": "Package read model and live lanes",
+      "sources": [
+        "package-surface-v8 model/snapshot.rs, runtime client/mapping/coordinator, local-service registry DTO adapters"
+      ],
+      "operation": "Add PackageSurfaceState and package record retention; merge SurfaceCommand lanes and coverage mapping into the unified runtime contract.",
+      "postcondition": "Package page receives source-backed lane resources without DTO decoding or fabricated values."
+    },
+    {
+      "unit": "U7",
+      "name": "Reader model and root payload",
+      "sources": [
+        "reader-surface-v8 model/reader.rs, CatalogState.reader, Root ReaderIndex mapping"
+      ],
+      "operation": "Add ReaderIndex and coverage states; merge the Root DTO field and every SnapshotData clone/update path. Normalize width diagnostics to U4.",
+      "postcondition": "Document/source views resolve admitted rows and honest missing states at every shell width."
+    },
+    {
+      "unit": "U8",
+      "name": "Rich package and reader route projections",
+      "sources": [
+        "package-surface-v8 views/package.rs",
+        "reader-surface-v8 views/reader.rs",
+        "responsive/a11y shell adapters"
+      ],
+      "operation": "Land rich dossier and reader folios; add U4 layout, U1 measure/roles, U2 focus scopes, and explicit graph insertion points without replacing the route projection.",
+      "postcondition": "Package/reader content is real producer-backed content with collapsible panels, long-copy behavior, and measured controls."
+    },
+    {
+      "unit": "U9",
+      "name": "Bounded graph model, request lane, and GPUI surface",
+      "sources": [
+        "rich-graph-gui-v8 graph.rs/views/graph.rs/runtime graph chunks"
+      ],
+      "operation": "Merge Graph request/DTO/CoalesceKey/mapping and graph resource into U6/U7 runtime/snapshot; land bounded GraphProjection; rename graph_canvas to graph_surface; add package/reader hooks.",
+      "postcondition": "Graph is a route projection using ordinary GPUI elements, bounded work, one shell/layout, and a distinct graph request identity."
+    },
+    {
+      "unit": "U10",
+      "name": "Evidence harness union",
+      "sources": [
+        "motion-focus-v8 artifact/crops/per-frame viewport/resize and stress steps",
+        "a11y-input-v8 semantics/TextScale/conformance",
+        "responsive/reader state matrices",
+        "components gallery capture"
+      ],
+      "operation": "Merge one CLI and one CaptureSession. Each frame carries effective viewport/scale/theme/motion and a SemanticProbe from rendered ActionFrames; union WindowFocus, TextScale, resize/reversal, overlays, routes, and state cases.",
+      "postcondition": "Conformance rejects wrong physical dimensions, missing measured hit targets, focus/native disagreement, modal leakage, and uninspected crops."
+    },
+    {
+      "unit": "U11",
+      "name": "Generic vendor adapters and final visual audit",
+      "sources": [
+        "a11y-input-v8 vendor button/input adapters"
+      ],
+      "operation": "Land generic labels/focus/tab/disabled/toggled adapters only after app semantics are stable; then run the full reference capture matrix in a future build lane.",
+      "postcondition": "Vendor components remain behavior adapters, and native pixels/semantics are verified at 1280x720 plus stress sizes."
+    }
+  ],
+  "requirement_matrix": [
+    {
+      "id": "INT-001",
+      "requirement": "One GUI crate and one evidence crate boundary",
+      "selectors": [
+        "apps/desktop",
+        "tools/gui-harness",
+        "backend-desktop-gui-harness"
+      ],
+      "status": "pass_static",
+      "evidence": [
+        "seven branch inventories show all product GUI changes under apps/desktop",
+        "no second product GUI crate found"
+      ],
+      "gap": null
+    },
+    {
+      "id": "INT-002",
+      "requirement": "Responsive geometry has one authority and uses actual width/text scale",
+      "selectors": [
+        "ResponsiveLayout::resolve",
+        "ContentConstraints::for_text_scale",
+        "UiRootEntity::observe_layout"
+      ],
+      "status": "blocked_until_merge",
+      "evidence": [
+        "responsive core/layout.rs:57-287",
+        "fresh docs/crates pixels show 200px/full vs 48px/collapsed navigation affordances"
+      ],
+      "gap": "motion/reader/graph local width enums and hardcoded target widths still overlap until U4"
+    },
+    {
+      "id": "INT-003",
+      "requirement": "All interactive pixels serialize from one measured ActionFrames semantic authority",
+      "selectors": [
+        "Theme::begin_action_frame_with_modal",
+        "ActionTree",
+        "ActionFrames",
+        "components::measure",
+        "capture_rendered_semantics"
+      ],
+      "status": "blocked_until_merge",
+      "evidence": [
+        "a11y components.rs:509-567,879-1065",
+        "a11y harness.rs:114-251"
+      ],
+      "gap": "component gallery and foundation currently have a parallel record_action_bounds/synthetic semantic path"
+    },
+    {
+      "id": "INT-004",
+      "requirement": "Focus order, modal trap, escape, and native restoration have one product authority",
+      "selectors": [
+        "FocusTree::sync_action_order",
+        "ActionTree::focus_entries",
+        "UiRootEntity::sync_rendered_actions"
+      ],
+      "status": "blocked_until_merge",
+      "evidence": [
+        "motion focus.rs:295-480",
+        "motion ui_graph.rs:269-315"
+      ],
+      "gap": "motion FocusTree must be fed by a11y rich action metadata without duplicate focus order"
+    },
+    {
+      "id": "INT-005",
+      "requirement": "All visible transitions use design timing and are retargetable",
+      "selectors": [
+        "--t-micro",
+        "--t-quick",
+        "--t-std",
+        "--t-emph",
+        "--t-scene",
+        "AnimationChannel",
+        "Beat"
+      ],
+      "status": "gap",
+      "evidence": [
+        "Color.dc.html:60,127,163-165,263,271-284",
+        "motion animation.rs:208-247"
+      ],
+      "gap": "responsive shell uses raw 200ms, graph uses raw 180ms, and views do not yet bind all transitions to UiRootEntity tracks"
+    },
+    {
+      "id": "INT-006",
+      "requirement": "Package, reader, and graph routes project immutable snapshot resources",
+      "selectors": [
+        "PackageSurfaceState",
+        "CatalogState.reader",
+        "AppSnapshot::graph",
+        "views::package",
+        "views::reader",
+        "views::graph"
+      ],
+      "status": "blocked_until_merge",
+      "evidence": [
+        "package snapshot.rs:177-214",
+        "reader model/reader.rs:276-330",
+        "graph snapshot.rs:443-476"
+      ],
+      "gap": "three SnapshotData and runtime contracts require a field-preserving merge"
+    },
+    {
+      "id": "INT-007",
+      "requirement": "Runtime lanes coalesce by stable surface identity and reject stale root bases",
+      "selectors": [
+        "EngineRequest",
+        "EngineDto",
+        "EngineEvent",
+        "CoalesceKey",
+        "SurfaceCommand",
+        "GraphNodeId"
+      ],
+      "status": "blocked_until_merge",
+      "evidence": [
+        "package actor.rs:42-155",
+        "graph actor.rs:42-187,236-246"
+      ],
+      "gap": "package/reader/graph branches each modify the same actor/client/mapping/coordinator files"
+    },
+    {
+      "id": "INT-008",
+      "requirement": "Screenshot evidence stays dimension-aware after resize/scale",
+      "selectors": [
+        "CaptureRecord.viewport",
+        "FrameArtifact.viewport",
+        "CaptureSet.semantic_probes",
+        "CropArtifact"
+      ],
+      "status": "partial_static",
+      "evidence": [
+        "motion artifact/gpui_driver/conformance diff",
+        "a11y semantics.rs:171-221"
+      ],
+      "gap": "semantic callback/probe validation must use the effective per-frame viewport, not only the manifest viewport"
+    },
+    {
+      "id": "INT-009",
+      "requirement": "Stress matrix covers 1280 reference, narrow/collapsed rails, 200% text, themes, reduced motion, overlays, and focus",
+      "selectors": [
+        "GuiState",
+        "PageState",
+        "TextScale",
+        "WindowFocus",
+        "Resize",
+        "Scale"
+      ],
+      "status": "blocked_until_merge",
+      "evidence": [
+        "responsive/reader state.rs",
+        "motion input.rs:165-215",
+        "a11y input.rs:163-367"
+      ],
+      "gap": "state catalogs and input step enums are duplicated across branches"
+    },
+    {
+      "id": "INT-010",
+      "requirement": "Visual construction remains GPUI retained elements without canvas/SVG fallbacks for routine geometry",
+      "selectors": [
+        "div()",
+        "edge_segment",
+        "graph_surface"
+      ],
+      "status": "partial_static",
+      "evidence": [
+        "graph view.rs:420-529 uses div children and orthogonal segments; no canvas API found"
+      ],
+      "gap": "rename graph_canvas for contract clarity; existing SVG helpers remain an explicit brand/kind exception until a visual pass decides otherwise"
+    },
+    {
+      "id": "INT-011",
+      "requirement": "Reference shell geometry and semantic language are carried into the canonical component layer",
+      "selectors": [
+        ".titlebar",
+        ".rail",
+        ".btn",
+        ".input",
+        ".cut",
+        ".bevel",
+        "family hue",
+        "kind shape",
+        "edge state"
+      ],
+      "status": "partial_static",
+      "evidence": [
+        "crates/docs crops and design-board crops listed in reference_evidence",
+        "Color.dc.html:123-166,230-284"
+      ],
+      "gap": "Facet chamfer/bevel/weave and complete hue/kind atlas are not yet composed in all product routes"
+    }
+  ],
+  "explicit_gaps": [
+    {
+      "id": "G-INT-01",
+      "severity": "blocker",
+      "finding": "Dirty branch trees cannot be cherry-picked as commits; the overlapping files need the U1-U10 extraction sequence.",
+      "evidence": "all seven worktrees report uncommitted changes; only common heads are commit identities"
+    },
+    {
+      "id": "G-INT-02",
+      "severity": "high",
+      "finding": "Responsive shell currently has one strong resolver but competing width vocabularies in motion, reader, and graph.",
+      "measurements": {
+        "canonical_rails": {
+          "primary_nav": 54,
+          "shelf_rail": 52,
+          "context_rail": 52
+        },
+        "motion_hardcodes": {
+          "shelf_rail": 64,
+          "shelf_full": 248,
+          "context_rail": 72,
+          "context_full": 320
+        }
+      },
+      "evidence": [
+        "responsive core/layout.rs:81-95",
+        "motion core/layout.rs:44-135"
+      ]
+    },
+    {
+      "id": "G-INT-03",
+      "severity": "high",
+      "finding": "Timing is not yet a single authority at route edges.",
+      "measurements": {
+        "reference_standard_ms": 240,
+        "responsive_effect_ms": 200,
+        "graph_raw_ms": 180
+      },
+      "evidence": [
+        "Color.dc.html:60,127,163,263",
+        "responsive views/mod.rs:131",
+        "graph views/graph.rs:523-526"
+      ]
+    },
+    {
+      "id": "G-INT-04",
+      "severity": "high",
+      "finding": "Semantic probes can be dimensionally stale when a frame resizes after first paint.",
+      "evidence": [
+        "a11y gpui_driver records semantic callback with a fixed viewport argument; conformance reads manifest viewport at its initial checks",
+        "motion driver already has the correct frame-local viewport seam"
+      ]
+    },
+    {
+      "id": "G-INT-05",
+      "severity": "medium",
+      "finding": "Reader uses incompatible WidthClass::Compact/Standard/Wide/Full names and graph owns an independent Compact/Regular/Wide class.",
+      "evidence": [
+        "reader views/reader.rs:186-301",
+        "graph.rs:72-104"
+      ]
+    },
+    {
+      "id": "G-INT-06",
+      "severity": "medium",
+      "finding": "Graph view is GPUI-only but graph_canvas naming suggests a forbidden rendering primitive.",
+      "evidence": [
+        "graph views/graph.rs:406-529",
+        "graph.rs:1109"
+      ]
+    },
+    {
+      "id": "G-INT-07",
+      "severity": "medium",
+      "finding": "Component gallery synthetic semantic JSON would permit a manifest to pass without proving rendered ActionFrames.",
+      "evidence": [
+        "components harness component_gallery_semantic_artifact",
+        "a11y harness capture_rendered_semantics"
+      ]
+    },
+    {
+      "id": "G-INT-08",
+      "severity": "high",
+      "finding": "No native product pixels were run in this audit because the build lane is closed again.",
+      "evidence": "static source and reference-pixel inspection only; no Cargo/Nix/build/test/run invoked"
+    }
+  ],
+  "negative_assertions": [
+    "No subagents were spawned.",
+    "No Cargo, Nix, compiler, build, test, or native GUI run was invoked for this audit.",
+    "No product source files were edited; only these review documents are changed by this commit."
+  ]
+}
 }
