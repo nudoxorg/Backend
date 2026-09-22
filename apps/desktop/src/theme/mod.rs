@@ -12,10 +12,12 @@ pub(crate) mod palette;
 pub(crate) mod ramp;
 pub(crate) mod tokens;
 
+use crate::core::layout::{LayoutCache, LayoutInput, ResponsiveLayout, TextScale};
 use crate::ui::components::{ActionFrameToken, ActionFrames, ActionMetadata, ActionTree};
 use gpui::{App, Global, Hsla, Pixels, SharedString};
 use palette::{Appearance, Contrast, Paint, Palette};
 use ramp::Hue;
+use std::cell::RefCell;
 use std::rc::Rc;
 use tokens::{
     ControlState, Density, Elevation, InterfaceSize, Motion, Space, StateFrame, space_at,
@@ -37,6 +39,7 @@ pub(crate) struct Theme {
     action_frame: Option<ActionFrameToken>,
     action_parent: Option<SharedString>,
     modal_active: bool,
+    layout_cache: Rc<RefCell<LayoutCache>>,
 }
 
 impl Global for Theme {}
@@ -79,6 +82,7 @@ impl Theme {
             action_frame: None,
             action_parent: None,
             modal_active: false,
+            layout_cache: Rc::new(RefCell::new(LayoutCache::default())),
         }
     }
 
@@ -230,6 +234,21 @@ impl Theme {
     /// Returns the root font size implied by the reading size.
     pub(crate) fn root_pixels(&self) -> Pixels {
         self.interface.root_pixels()
+    }
+
+    /// Returns the active text scale consumed by the responsive resolver.
+    pub(crate) const fn interface_scale_percent(&self) -> u16 {
+        self.interface.get()
+    }
+
+    /// Resolves one measured shell input through the shared cache.
+    pub(crate) fn responsive_layout(&self, input: LayoutInput) -> ResponsiveLayout {
+        self.layout_cache.borrow_mut().resolve(input)
+    }
+
+    /// Returns the typed resolver scale without exposing theme internals.
+    pub(crate) fn layout_text_scale(&self) -> TextScale {
+        TextScale::percent(self.interface_scale_percent())
     }
 
     /// Returns the spacing token at this theme's responsive density.

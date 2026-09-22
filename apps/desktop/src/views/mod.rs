@@ -12,6 +12,7 @@ mod primitives;
 mod reader;
 mod shell;
 
+use crate::core::layout::{LayoutCache, PanelPreferences, ResponsiveLayout};
 use crate::model::AppSnapshot;
 use crate::navigation::{OrbitRoute, Route};
 use crate::runtime::UiRootEntity;
@@ -39,13 +40,22 @@ pub(crate) fn render_root(
         primitives::route_label(&snapshot),
         snapshot.overlay().is_some(),
     );
-    let header = shell::header(root, &theme, &snapshot, cx).into_any_element();
-    let shelf = shell::shelf_panel(root, &theme, &snapshot, cx).into_any_element();
-    let body = content_panel(root, &theme, &snapshot, cx).into_any_element();
-    let status = primitives::status_bar(&theme, &snapshot).into_any_element();
-    // Register the modal after the document shell so finalisation can mark
-    // every underlying control inert and retain the launch focus for restore.
-    let overlay = shell::overlay(root, &theme, &snapshot, cx);
+    let layout_input = LayoutCache::input_from_window(
+        window,
+        theme.layout_text_scale(),
+        PanelPreferences {
+            shelf_open: snapshot.settings().shelf_open,
+            context_open: snapshot.settings().context_open,
+        },
+    );
+    let layout = theme.responsive_layout(layout_input);
+    shell::sync_overlay(&theme, &snapshot, layout, window, cx);
+    let header = shell::header(root, &theme, &snapshot, layout, cx).into_any_element();
+    let orbit = shell::orbit_rail(&theme, &snapshot, layout, cx).into_any_element();
+    let shelf = shell::shelf_panel(root, &theme, &snapshot, layout, cx).into_any_element();
+    let body = content_panel(root, &theme, &snapshot, layout, cx).into_any_element();
+    let context = shell::context_panel(&theme, &snapshot, layout, cx).into_any_element();
+    let status = primitives::status_bar(&theme, &snapshot, layout).into_any_element();
     let shell = surface::ground(&theme)
         .size_full()
         .font_family(theme.ui_face())
@@ -55,11 +65,12 @@ pub(crate) fn render_root(
                 .flex_1()
                 .min_h(px(0.0))
                 .flex()
+                .child(orbit)
                 .child(shelf)
-                .child(body),
+                .child(body)
+                .child(context),
         )
-        .child(status)
-        .when_some(overlay, ParentElement::child);
+        .child(status);
     theme.publish_action_frame(window);
     // Keep the frame token and its per-window collector available to the next
     // harness probe without making the action tree process-global.
@@ -72,6 +83,7 @@ fn content_panel(
     root: &mut UiRootEntity,
     theme: &Theme,
     snapshot: &AppSnapshot,
+    layout: ResponsiveLayout,
     cx: &mut Context<UiRootEntity>,
 ) -> impl IntoElement {
     let content = match snapshot.route() {
@@ -85,6 +97,6 @@ fn content_panel(
         .flex_1()
         .min_w(px(0.0))
         .min_h(px(0.0))
-        .p(px(40.0))
+        .p(px(layout.content_padding.get() as f32))
         .child(content)
 }

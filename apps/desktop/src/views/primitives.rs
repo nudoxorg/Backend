@@ -1,6 +1,7 @@
 //! Shared visual vocabulary for route projections.
 
 use crate::core::ResourceTerminal;
+use crate::core::layout::{RegionId, ResponsiveLayout};
 use crate::model::AppSnapshot;
 use crate::navigation::{OrbitRoute, PackageLane, Route};
 use crate::theme::Theme;
@@ -12,7 +13,11 @@ use gpui::{
     StatefulInteractiveElement as _, Styled, div, px,
 };
 
-pub(super) fn status_bar(theme: &Theme, snapshot: &AppSnapshot) -> impl IntoElement {
+pub(super) fn status_bar(
+    theme: &Theme,
+    snapshot: &AppSnapshot,
+    layout: ResponsiveLayout,
+) -> impl IntoElement {
     theme.register_action(
         crate::ui::components::ActionMetadata::new(
             "status-bar",
@@ -34,7 +39,9 @@ pub(super) fn status_bar(theme: &Theme, snapshot: &AppSnapshot) -> impl IntoElem
         } else {
             "Waiting for live index"
         })
-        .h(px(28.0))
+        .h(px(
+            layout.region(RegionId::Status).bounds.height.get() as f32
+        ))
         .w_full()
         .flex_none()
         .flex()

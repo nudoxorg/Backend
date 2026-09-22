@@ -364,7 +364,7 @@ impl InterfaceSize {
     /// The smallest supported interface size, in percent.
     pub(crate) const MIN: u16 = 80;
     /// The largest supported interface size, in percent.
-    pub(crate) const MAX: u16 = 150;
+    pub(crate) const MAX: u16 = 200;
 
     /// The unscaled interface size.
     pub(crate) const DEFAULT: Self = Self(100);
