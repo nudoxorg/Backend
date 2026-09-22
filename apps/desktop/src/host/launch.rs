@@ -7,7 +7,8 @@
 use super::lease::{DesktopHost, HostError};
 use crate::core::{LocalProjectId, ResourceIdentity, VersionedRoot};
 use crate::model::{
-    AppSnapshot, PersistentState, SessionState, SettingsState, ShelfItem, ShelfState,
+    AppSnapshot, PersistenceRecovery, PersistentState, SessionState, SettingsState, ShelfItem,
+    ShelfState,
 };
 use crate::runtime::{DesktopRuntime, EngineActor, LocalEngineClient, UiEntityGraph};
 use crate::theme::Theme;
@@ -150,7 +151,19 @@ fn attempt_once() -> Result<Opened, String> {
         .with_generation(0)
         .observed_at(0);
     let persistence = PersistentState::at(host.data().join("desktop-state.json"));
-    let persisted = persistence.load().unwrap_or_default();
+    let admitted = persistence.load_recovering().map_err(|error| {
+        format!(
+            "admit desktop state at {}: {error}",
+            persistence.path().display()
+        )
+    })?;
+    if let PersistenceRecovery::Preserved { backup, reason } = &admitted.recovery {
+        eprintln!(
+            "backend-desktop: preserved unadmitted state at {}: {reason}",
+            backup.display()
+        );
+    }
+    let persisted = admitted.state;
     let mut shelf = Vec::with_capacity(persisted.shelf.len().saturating_add(1));
     for item in &persisted.shelf {
         if let Ok(project) = LocalProjectId::new(&item.local_path) {

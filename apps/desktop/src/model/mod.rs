@@ -7,7 +7,7 @@ pub mod viewport;
 
 pub use persistence::{
     PersistedDesktopState, PersistedPackageLane, PersistedRoute, PersistedShelfItem,
-    PersistentState,
+    PersistenceLoad, PersistenceRecovery, PersistenceRecoveryReason, PersistentState,
 };
 pub use selectors::{KeyedSelectorCache, LayoutKey, RowHeightCache, SelectorKey};
 pub use snapshot::{

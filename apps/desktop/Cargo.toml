@@ -49,6 +49,7 @@ gpui_platform = { workspace = true, features = ["x11", "wayland"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 gpui_platform = { workspace = true, features = ["wgpu"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 blake3.workspace = true
