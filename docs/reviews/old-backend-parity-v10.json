@@ -1,0 +1,646 @@
+{
+  "review": {
+    "id": "old-backend-parity-v10",
+    "date": "2026-09-22",
+    "current_checkout": "/Users/mileswirht/Downloads/backend-old-backend-parity-v10",
+    "current_branch": "codex/old-backend-parity-v10",
+    "current_commit": "d221a3d86bb8d1a09427663fa81077012fad3288",
+    "historical_checkout": "/Users/mileswirht/Downloads/backend_1",
+    "historical_commit": "1db1d6883",
+    "method": "Static source and documentation comparison. Historical checkout was read only.",
+    "commands_not_run": [
+      "cargo",
+      "nix",
+      "builds",
+      "tests",
+      "screenshots",
+      "network validation"
+    ],
+    "historical_metadata_limit": "Historical root Cargo.toml and workspace/index/Cargo.toml contain stale workspace member and path references; old source is treated as capability and UX evidence, not as a buildable architecture or instruction source.",
+    "result": "Current foundations cover shared command/presentation contracts, local-service transport, versioned storage, bounded discovery, seven syntax frontends, typed registry facts, and concrete search/vector/graph/projection adapters. Full parity is not established because desktop projections and onboarding, historical MCP/client setup compatibility, forge-only flows, live all-language multi-client journeys, and complete restart durability remain incomplete or unproven."
+  },
+  "capability_inventory": [
+    {
+      "area": "project_shelf",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/stores/project.rs",
+        "symbols": ["ProjectStore", "ProjectRow", "ProjectId", "set_active"]
+      },
+      "current": {
+        "paths": ["apps/desktop/src/model/snapshot.rs", "apps/desktop/src/views/catalog.rs", "apps/desktop/src/host/launch.rs"],
+        "symbols": ["ShelfState", "ShelfItem", "ProjectState", "LocalEngineClient::request_root", "backend_library::ProjectId::new(one)"]
+      },
+      "finding": "Shelf model and restore path exist, but project creation/selection is not connected to a durable project catalog and LocalEngineClient::request_root hardcodes backend_library::ProjectId::new(one) with one equal to 1."
+    },
+    {
+      "area": "empty_onboarding",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/views/project_panel.rs",
+        "symbols": ["ProjectPanel", "PackageStatus", "RowStatus", "empty-state rendering"]
+      },
+      "current": {
+        "paths": ["apps/desktop/src/views/catalog.rs", "apps/desktop/src/host/launch.rs"],
+        "symbols": ["home_page", "project_page", "main_entry"]
+      },
+      "finding": "Current empty shelf wording and ambient data-root startup exist, but an Add project action that creates a ready indexed project is not proven."
+    },
+    {
+      "area": "project_loading_failure",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/views/project_panel.rs",
+        "symbols": ["PackageStatus", "RowStatus::Pending", "RowStatus::Ready", "RowStatus::Failed"]
+      },
+      "current": {
+        "paths": ["apps/desktop/src/model/snapshot.rs", "apps/desktop/src/runtime/client.rs"],
+        "symbols": ["PackageSummary", "SessionState", "with_reconnect"]
+      },
+      "finding": "Typed transport and catalog paths exist, but the desktop lacks a complete visible loading, failure, retry, and stale-generation state."
+    },
+    {
+      "area": "project_switching",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/stores/project.rs",
+        "symbols": ["ProjectStore::set_active", "active"]
+      },
+      "current": {
+        "paths": ["apps/desktop/src/navigation/route.rs", "apps/desktop/src/model/snapshot.rs"],
+        "symbols": ["OrbitRoute::Project", "SessionState"]
+      },
+      "finding": "Routes can name a project, but distinct durable projects and selection propagation are not shown."
+    },
+    {
+      "area": "omni_search",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/views/omni_search.rs",
+        "symbols": ["OmniSearch", "640px overlay", "federated structural and semantic rows"]
+      },
+      "current": {
+        "paths": ["apps/desktop/src/navigation/action.rs", "apps/desktop/src/views/shell.rs", "crates/library/command_registry.rs", "crates/engine/src/retrieval"],
+        "symbols": ["ActionId::OpenCommandPalette", "command_palette", "Search", "IndexSearch"]
+      },
+      "finding": "Current command palette and retrieval authorities do not yet form a desktop omnibar with typed rows, trust sections, or federated structural/semantic results."
+    },
+    {
+      "area": "keyboard_focus",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/app/keymaps.rs",
+        "symbols": ["context keymaps", "editing/selection", "Escape and Tab focus"]
+      },
+      "current": {
+        "paths": ["apps/desktop/src/navigation/action.rs", "apps/desktop/src/views/keys.rs", "apps/desktop/src/views/shell.rs"],
+        "symbols": ["ActionId", "key constants", "Overlay::CommandPalette"]
+      },
+      "finding": "Action labels exist, but many key constants are definition-only and ActionId::shortcut uses cmd-* unconditionally; focus and platform binding need acceptance coverage."
+    },
+    {
+      "area": "navigation_history",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/stores/nav.rs",
+        "symbols": ["dock/pane navigation", "history"]
+      },
+      "current": {
+        "paths": ["apps/desktop/src/navigation/route.rs", "apps/desktop/src/navigation/history.rs", "apps/desktop/src/navigation/reducer.rs"],
+        "symbols": ["Route", "RouteDepth", "Back", "Forward", "ZoomOut"]
+      },
+      "finding": "Route identity and bounded history are modeled, but live route actions are not proven to open real document/source/graph projections."
+    },
+    {
+      "area": "package_browser",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/views/package_browser.rs",
+        "symbols": ["package versions", "metadata", "dependencies", "actions"]
+      },
+      "current": {
+        "paths": ["apps/desktop/src/views/package.rs", "crates/library/command_registry.rs"],
+        "symbols": ["PackageLane", "package_page", "package_sections", "Package", "Dependencies", "Dependents", "Releases", "Security"]
+      },
+      "finding": "Current lanes and typed package summaries exist, but bodies render requested-facts placeholders."
+    },
+    {
+      "area": "symbol_document_page",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/views/symbol_page/mod.rs",
+        "symbols": ["source", "signature", "docs", "references", "related symbols"]
+      },
+      "current": {
+        "paths": ["apps/desktop/src/views/reader.rs", "crates/library/command_registry.rs"],
+        "symbols": ["document_page", "source_page", "Document", "Outline", "Source", "Related", "References", "Read"]
+      },
+      "finding": "Command grammar is present, but reader/source projections include placeholder behavior."
+    },
+    {
+      "area": "graph_view",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/views/graph.rs",
+        "symbols": ["graph navigation", "references"]
+      },
+      "current": {
+        "paths": ["crates/engine/src/retrieval/trustfall.rs", "extensions/trustfall/src/lib.rs", "apps/desktop/src/views/reader.rs"],
+        "symbols": ["Trustfall retrieval", "Trustfall query/semantic API", "graph action"]
+      },
+      "finding": "Typed graph authority exists, but the desktop graph action currently opens the command palette."
+    },
+    {
+      "area": "settings_and_connection",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/views/settings.rs",
+        "symbols": ["Settings", "SettingsSection::Connection", "McpStatus"]
+      },
+      "current": {
+        "paths": ["apps/desktop/src/views/shell.rs", "apps/desktop/src/navigation/route.rs"],
+        "symbols": ["overlay", "Overlay::Settings", "SettingsPage"]
+      },
+      "finding": "Settings route names exist, but only a page label and reduced-motion toggle are rendered; connection, index, registry, agents, and diagnostics controls are not wired."
+    },
+    {
+      "area": "account_credentials",
+      "status": "changed_partial",
+      "historical": {
+        "path": "workspace/gui/src/app/account.rs",
+        "symbols": ["AccountGate", "AccountStatus"]
+      },
+      "current": {
+        "paths": ["apps/desktop/src/host/paths.rs", "apps/mcp/src/http.rs"],
+        "symbols": ["platform data roots", "bearer token"]
+      },
+      "finding": "Local-first startup and authenticated loopback replace the account gate, but current desktop has no visible credential/setup/status contract. Historical platform-specific sign-in wording is a wrong-language regression guard."
+    },
+    {
+      "area": "mcp_tool_names",
+      "status": "changed",
+      "historical": {
+        "path": "workspace/nudox-engine/src/mcp/server.rs",
+        "symbols": ["search", "read", "refs", "packages", "select_version", "diff", "index", "graph", "schema"]
+      },
+      "current": {
+        "paths": ["apps/mcp/src/jsonrpc/tools.rs", "crates/present/grammar.rs"],
+        "symbols": ["registry_tool", "QUERY_TOOL", "SURFACE_TOOL", "GRAMMARS"]
+      },
+      "finding": "Current emits one tool per 40 command grammars plus backend.query and backend.surface. Old nine names need explicit aliases, a compatibility profile, or a documented breaking change."
+    },
+    {
+      "area": "mcp_schema_results",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/nudox-engine/src/mcp/server.rs",
+        "symbols": ["ServerHandler", "resources/list", "resources/read", "structured tool outputs"]
+      },
+      "current": {
+        "paths": ["apps/mcp/src/jsonrpc/tools.rs", "apps/mcp/src/protocol.rs"],
+        "symbols": ["JSON schema generation", "answer enum", "bounded protocol"]
+      },
+      "finding": "Current schemas are generated and bounded, but old result details, errors, resource URIs, and semantics are not shown wire-compatible."
+    },
+    {
+      "area": "mcp_resources",
+      "status": "changed_partial",
+      "historical": {
+        "path": "workspace/nudox-engine/src/mcp/server.rs",
+        "symbols": ["nudox://schema", "nudox://package/{ecosystem}:{name}"]
+      },
+      "current": {
+        "paths": ["apps/mcp/src/jsonrpc/resources.rs"],
+        "symbols": ["resource handlers"]
+      },
+      "finding": "A current resource module exists; exact URI and payload parity needs an explicit contract check."
+    },
+    {
+      "area": "mcp_http_stdio",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/nudox-engine/src/mcp/endpoint.rs",
+        "symbols": ["McpEndpoint::start", "McpEndpoint::stop", "client_config_snippet", "loopback /mcp"]
+      },
+      "current": {
+        "paths": ["apps/mcp/src/http.rs", "apps/mcp/src/process.rs", "apps/mcp/src/transport.rs"],
+        "symbols": ["/mcp", "McpMode::Stdio", "McpMode::Framed", "McpMode::Http", "bearer", "sessions"]
+      },
+      "finding": "Current loopback HTTP, stdio, session limits, and bounded frames preserve transport foundations, but desktop does not expose visible endpoint status or copyable config."
+    },
+    {
+      "area": "mcp_reconnect_errors",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/nudox-engine/src/mcp/endpoint.rs",
+        "symbols": ["port identity/fallback", "session token", "error mapping"]
+      },
+      "current": {
+        "paths": ["apps/mcp/src/jsonrpc/reconnect.rs", "apps/mcp/src/error.rs", "apps/mcp/src/protocol.rs"],
+        "symbols": ["repeatable reads", "mutation no-replay", "typed errors"]
+      },
+      "finding": "Retry policy is explicit and avoids mutation replay, but idle reconnect, session replacement, error payloads, and client recovery need live coverage."
+    },
+    {
+      "area": "cli_command_surface",
+      "status": "changed_preserved",
+      "historical": {
+        "path": "workspace/nudox-engine/src/mcp/server.rs",
+        "symbols": ["search", "read", "refs", "packages", "index", "graph", "schema", "diff"]
+      },
+      "current": {
+        "paths": ["apps/cli/src/invoke.rs", "crates/library/command_registry.rs", "crates/present/grammar.rs"],
+        "symbols": ["CommandId", "COMMANDS", "GRAMMARS"]
+      },
+      "finding": "Shared registry covers old command domains and adds projects, forges, subscriptions, tree, health, and revisions; exact aliases and output details need a compatibility matrix."
+    },
+    {
+      "area": "cli_output_detail",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/views/package_browser.rs",
+        "symbols": ["summary/source/graph records"]
+      },
+      "current": {
+        "paths": ["apps/cli/src/options.rs", "apps/cli/src/invoke.rs", "apps/cli/src/render.rs", "crates/present"],
+        "symbols": ["human", "markdown", "json", "summary", "standard", "full"]
+      },
+      "finding": "Multiple formats and detail levels exist, but consistency for every old record and typed unavailable state is unproven."
+    },
+    {
+      "area": "live_ingest",
+      "status": "changed_partial",
+      "historical": {
+        "path": "workspace/index/ingest/main.rs",
+        "symbols": ["OpenCatalog", "migrate_to_v4", "CatalogWriter", "HomebrewIngestor", "drive_once"]
+      },
+      "current": {
+        "paths": ["crates/local-service/src/builtin/ingest.rs", "crates/local-service/src/embedded.rs", "crates/local-service/src/builtin/registry.rs"],
+        "symbols": ["bounded project ingest", "start_or_attach", "RegistryGateway"]
+      },
+      "finding": "Local-service owns source ingestion and registry acquisition; the old long-running catalog/feed/Homebrew loop is gone and needs a replacement journey for progress, watermarking, and restart."
+    },
+    {
+      "area": "live_http_server",
+      "status": "changed_partial",
+      "historical": {
+        "path": "workspace/index/server/http/router.rs",
+        "symbols": ["/search", "/search/semantic", "/packages/search", "/usages", "/expand", "/symbols/:id", "/sessions/:id", "/healthz", "/readyz", "/capabilities", "/metrics"]
+      },
+      "current": {
+        "paths": ["crates/local-service/src/embedded.rs", "apps/mcp/src/http.rs", "apps/cli/src/transport.rs"],
+        "symbols": ["start_or_attach", "/mcp", "CLI transport"]
+      },
+      "finding": "Authenticated local service consolidates ownership and transports; equivalence of old route-level results and readiness behavior is not established."
+    },
+    {
+      "area": "index_record_schema",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/index/entity/mod.rs",
+        "symbols": ["ALL_TABLE_NAMES", "Historical", "packages", "versions", "edges", "symbols_proj", "advisories", "popularity", "repo_facts", "watermarks", "object_locations"]
+      },
+      "current": {
+        "paths": ["crates/store", "crates/engine/src/registry/facts.rs", "crates/library/view/model.rs", "crates/local-service/src/builtin/product_state.rs"],
+        "symbols": ["durable objects/relations", "ReleaseFacts", "StoredState"]
+      },
+      "finding": "Typed objects, relations, and release facts cover many fields, but there is no complete mapping artifact for every old table, historical read, watermark, location, and projection field."
+    },
+    {
+      "area": "versioned_persistence",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/index/engine/dolt.rs",
+        "symbols": ["Dolt historical reads", "schema migrations", "store lifecycle"]
+      },
+      "current": {
+        "paths": ["crates/store", "extensions/turso/src/lib.rs", "crates/local-service/src/builtin/product_state.rs"],
+        "symbols": ["durable object/root/journal/recovery/pack", "root-bound projection", "StoredState"]
+      },
+      "finding": "Greenfield storage is a sound foundation and no migration is required, but product_state lacks file/parent fsync and corrupt-state recovery is not proven end to end."
+    },
+    {
+      "area": "tantivy_package_search",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/index/search/tantivy.rs",
+        "symbols": ["PackageIndex", "schema v4", "watermark", "package_id", "name_exact", "name_tokens", "description", "keywords", "ecosystem", "record", "deps", "license", "repo", "quality_ppm", "downloads", "popularity_pct_ppm"]
+      },
+      "current": {
+        "paths": ["extensions/tantivy/src/lib.rs", "crates/engine/src/retrieval/tantivy.rs", "crates/engine/src/retrieval/lexical.rs"],
+        "symbols": ["TantivyAdapter", "TantivyLexical", "bounded manifests"]
+      },
+      "finding": "Concrete adapter and bounded lexical authority exist; exact field, ranking, schema-version, watermark, and partial-index parity need mapping and a live gate."
+    },
+    {
+      "area": "semantic_vector_search",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/registry/vector",
+        "symbols": ["remote qdrant", "qdrant-edge", "ONNX/embed"]
+      },
+      "current": {
+        "paths": ["extensions/qdrant/src/lib.rs", "crates/engine/src/retrieval/qdrant.rs"],
+        "symbols": ["QdrantHttpClient", "vector query", "coverage/error modeling"]
+      },
+      "finding": "Current vector contracts exist, but old local/remote embedding and indexing behavior is not proven through current desktop, CLI, and MCP."
+    },
+    {
+      "area": "graph_dependency_queries",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/index/server/http/router.rs",
+        "symbols": ["/expand", "/usages"]
+      },
+      "current": {
+        "paths": ["extensions/trustfall/src/lib.rs", "crates/engine/src/retrieval/trustfall.rs", "crates/library/command_registry.rs"],
+        "symbols": ["Trustfall query/semantic API", "Graph", "Dependencies", "Dependents", "References"]
+      },
+      "finding": "Typed graph composition and grammar exist; live package graph and symbol references remain unproven in desktop/MCP."
+    },
+    {
+      "area": "source_producers_languages",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/nudox-engine/src/store/source/producer.rs",
+        "symbols": ["ProducerSource", "ProducerRegistry", "with_all_available", "clang/csharp/go/java/python/rust/typescript"]
+      },
+      "current": {
+        "paths": ["crates/local-service/src/builtin/ingest.rs", "frontends/clang", "frontends/csharp", "frontends/go", "frontends/java", "frontends/python", "frontends/rust", "frontends/typescript", "crates/present/grammar.rs"],
+        "symbols": ["FrontendSet::build", "language profile"]
+      },
+      "finding": "Seven current frontends match the historical baseline and grammar adds C/C++; live multi-client journeys and C#/JavaScript/TypeScript MCP remain unproven."
+    },
+    {
+      "area": "source_document_limits",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/nudox-engine/src/packages/acquire/mod.rs",
+        "symbols": ["MAX_ARTIFACT_BYTES", "oversized archive rejection"]
+      },
+      "current": {
+        "paths": ["crates/local-service/src/builtin/ingest.rs", "crates/engine/src/registry"],
+        "symbols": ["MAX_SOURCE_BYTES", "MAX_PROJECT_BYTES", "read_bounded", "TooLarge"]
+      },
+      "finding": "Current per-file TooLarge is typed and scanning continues, but generated-file filtering plus one oversized file needs a combined journey."
+    },
+    {
+      "area": "ignore_build_folders",
+      "status": "preserved_static",
+      "historical": {
+        "path": "workspace/nudox-engine/src/runtime/mod.rs",
+        "symbols": [".git", "target", "node_modules", "generated/source-local exclusions"]
+      },
+      "current": {
+        "paths": ["crates/discovery/src/lib.rs"],
+        "symbols": ["HARD_IGNORED_DIRECTORIES", "DiscoveryPolicy", ".gitignore traversal", "symlink policy"]
+      },
+      "finding": "Current statically filters target, node_modules, dist/build/bin/obj/coverage and honors nested .gitignore without Git subprocess; multi-file behavior still needs the gate."
+    },
+    {
+      "area": "registry_identities_facts",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/index and workspace/registry",
+        "symbols": ["ecosystem/catalog modules", "remote registries", "package metadata"]
+      },
+      "current": {
+        "paths": ["crates/engine/src/registry/identity.rs", "crates/engine/src/registry/ecosystem.rs", "crates/engine/src/registry/facts.rs", "crates/local-service/src/builtin/registry.rs"],
+        "symbols": ["RegistryEcosystem", "ReleaseStanding", "DownloadCount", "SecurityStanding", "RegistryGateway"]
+      },
+      "finding": "Cargo, Npm, PyPI, Maven, NuGet, Go, and Cpp/Conan identities and typed facts exist; live seven-ecosystem coverage is outstanding."
+    },
+    {
+      "area": "forge_only_projects",
+      "status": "missing_partial",
+      "historical": {
+        "path": "workspace/index/entity/repo_facts.rs and workspace/gui/src/stores/project.rs",
+        "symbols": ["repo facts", "repo lineage", "forge project integration"]
+      },
+      "current": {
+        "paths": ["crates/library/command_registry.rs", "crates/local-service/src/builtin/product_state.rs"],
+        "symbols": ["ForgeAdd", "ForgeReference", "forge_unavailable"]
+      },
+      "finding": "Command names exist, but product state returns forge-unavailable and no current GUI forge onboarding or source-history surface was found."
+    },
+    {
+      "area": "download_yanked_security",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/index entity modules and workspace/gui/src/views/package_browser.rs",
+        "symbols": ["advisories", "popularity", "repo_facts", "package/version records"]
+      },
+      "current": {
+        "paths": ["crates/engine/src/registry/facts.rs", "crates/present/product.rs", "apps/desktop/src/views/package.rs"],
+        "symbols": ["ReleaseStanding", "DownloadCount", "SecurityStanding", "ReleaseFacts", "fact rail"]
+      },
+      "finding": "Typed exact/approximate/not-reported, standing, and advisory states exist; desktop release/security lanes remain placeholders."
+    },
+    {
+      "area": "platform_paths",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/platform and views/sign_in.rs",
+        "symbols": ["platform path and credential labels"]
+      },
+      "current": {
+        "paths": ["apps/desktop/src/host/paths.rs", "apps/mcp/src/transport.rs"],
+        "symbols": ["canonical data roots", "Windows transport cfg"]
+      },
+      "finding": "Per-platform ambient data roots and Windows transport paths exist; shortcut labels, credential wording, and reconnect need platform gates."
+    },
+    {
+      "area": "cold_warm_offline_restart",
+      "status": "partial",
+      "historical": {
+        "path": "workspace/gui/src/app/lifecycle.rs and workspace/index durable catalog/watermarks",
+        "symbols": ["lifecycle", "MCP host", "index jobs", "watermarks"]
+      },
+      "current": {
+        "paths": ["docs/operations/cold-restart-v3.md", "apps/desktop/src/model/persistence.rs", "crates/local-service/src/builtin/product_state.rs", "crates/store"],
+        "symbols": ["PersistentState", "StoredState", "durable store"]
+      },
+      "finding": "Desired journeys and atomic desktop state writes exist; identity retention, product-store durability, offline cache, and corrupt recovery are not all demonstrated."
+    },
+    {
+      "area": "transition_tree",
+      "status": "evidence_only",
+      "historical": {
+        "path": "workspace2/ARCHITECTURE.md",
+        "symbols": ["transition architecture", "workspace2 interface crates"]
+      },
+      "current": {
+        "paths": ["Cargo.toml", "crates", "apps", "extensions"],
+        "symbols": ["current workspace members"]
+      },
+      "finding": "workspace2 is a duplicate transition architecture and must not return as a second command, MCP, or storage authority."
+    }
+  ],
+  "useful_product_behavior": [
+    "Project panel visibly distinguishes loading, ready, failed, and empty states; an empty corpus explains how to add/configure a project.",
+    "One keyboard-accessible search surface combines structural and semantic results with typed rows, trust/provenance, focus, and Escape behavior.",
+    "Package and symbol pages retain one selected identity while exposing dependencies, dependents, releases, security, source, documentation, and references.",
+    "MCP setup shows endpoint status, a copyable client configuration, and recovery after restart or port change.",
+    "Registry facts distinguish exact, approximate, unavailable, withheld, and privileged values and preserve standing/security/provenance; unknown is not zero.",
+    "Indexing reports progress and typed failures, ignores generated/build directories before descent, honors nested .gitignore, and continues after one oversized file."
+  ],
+  "legacy_debt_to_exclude": [
+    "Stale root/index manifests and vendor-specific patches from the historical checkout.",
+    "workspace2 duplicate transition architecture.",
+    "Historical ProjectStore incrementing-ID skeleton and forward-declared dependency stubs.",
+    "Hand-maintained duplicated MCP tool implementations.",
+    "Old account/cloud-gate assumptions that do not belong in local-first operation.",
+    "Historical platform wording that labels every credential as macOS Keychain."
+  ],
+  "parity_journeys": [
+    {
+      "id": "fresh_onboarding",
+      "gate": "From an empty per-user root, add two real local projects, observe progress, select each, and see a non-empty catalog or typed failure. Shelf and active project are visible; no silent empty corpus.",
+      "owner": ["apps/desktop", "crates/local-service", "crates/discovery"]
+    },
+    {
+      "id": "warm_restart",
+      "gate": "After selecting project, package, document, and source line, close/reopen and restore the same valid identity and catalog.",
+      "owner": ["apps/desktop/model", "crates/local-service/src/builtin/product_state.rs", "crates/store"]
+    },
+    {
+      "id": "offline_restart",
+      "gate": "With a warm root and network disabled, cached package/document facts remain browseable; missing remote fields are typed offline/unavailable and no request hangs.",
+      "owner": ["local-service/registry", "engine/retrieval", "apps/cli", "apps/mcp", "desktop"]
+    },
+    {
+      "id": "corrupt_restart",
+      "gate": "Corrupt desktop state and product temp/journal in a copy; startup recovers or reports a diagnostic while preserving the durable root, never silently replacing it with empty state.",
+      "owner": ["desktop/model/persistence", "store/recovery", "local-service/product_state"]
+    },
+    {
+      "id": "seven_ecosystems",
+      "gate": "Use live real packages in Cargo, Npm, PyPI, Maven, NuGet, Go, and Conan/C++. Show coordinates, versions, dependencies/dependents where available, download standing, release standing, security, and acquisition errors.",
+      "owner": ["engine/registry", "local-service/builtin/registry", "present", "CLI/MCP/desktop"]
+    },
+    {
+      "id": "forge_only",
+      "gate": "Add a GitHub, GitLab, Codeberg, or generic HTTPS revision without a registry coordinate, show repository/source provenance, and return typed unavailable offline.",
+      "owner": ["library forge commands", "local-service", "engine", "desktop"]
+    },
+    {
+      "id": "all_languages",
+      "gate": "For Rust, Python, TypeScript/JavaScript, Go, Java, C#, C, and C++, index a real fixture and perform search/read/source/references/graph through CLI, MCP, and desktop; C# and JS/TS have explicit MCP cases.",
+      "owner": ["frontends", "engine/compiler", "local-service", "apps/mcp", "apps/cli", "desktop"]
+    },
+    {
+      "id": "mcp_compatibility",
+      "gate": "Verify stdio and loopback /mcp, bearer/session reconnect, tools/list and tools/call schemas, result/error envelopes, resources/list/read, mutation no-replay, repeatable-read retry, and Claude-compatible copied configuration. Decide old nine names alias or breaking change.",
+      "owner": ["apps/mcp", "crates/present", "apps/desktop/settings"]
+    },
+    {
+      "id": "gui_controls",
+      "gate": "Exercise add/select project, package lanes, source/docs/graph, settings, palette/search focus, Tab, Escape, Back/Forward, ZoomOut, and copy on macOS, Windows, Linux. Every visible button changes route/state or gives typed unavailable.",
+      "owner": ["apps/desktop/navigation", "apps/desktop/views", "apps/desktop/runtime", "apps/desktop/host"]
+    },
+    {
+      "id": "ignore_oversize",
+      "gate": "Use root/nested .gitignore plus target/node_modules/dist/build/bin/obj/coverage and one generated file over the per-file limit. Ignored dirs are not descended; oversized file is TooLarge; unrelated files index.",
+      "owner": ["crates/discovery", "crates/local-service/src/builtin/ingest.rs"]
+    },
+    {
+      "id": "cold_transport_platform",
+      "gate": "Start cold on macOS, Windows, Linux and validate canonical path, endpoint ownership, stdio/loopback, reconnect after service restart, and platform-correct credentials/shortcuts.",
+      "owner": ["desktop/host", "local-service/embedded", "apps/mcp", "apps/cli"]
+    }
+  ],
+  "deltas": [
+    {
+      "id": "desktop_live_projection",
+      "priority": "P0",
+      "current_owner": ["apps/desktop/src/model", "apps/desktop/src/runtime", "apps/desktop/src/views", "apps/desktop/src/host", "crates/local-service/src/builtin"],
+      "finding": "Project selection/onboarding is incomplete; package lanes, source, graph, and docs actions are placeholders; ProjectId::new(1) is constructed by the runtime client.",
+      "remediation": "Add one typed SurfaceReply-to-snapshot projection, allocate stable project IDs from local-service state, route existing buttons through ActionId/Route, and persist shelf/project identity at the model boundary."
+    },
+    {
+      "id": "mcp_client_contract",
+      "priority": "P0",
+      "current_owner": ["apps/mcp/src/http", "apps/mcp/src/jsonrpc", "apps/desktop/src/views/shell.rs", "crates/present"],
+      "finding": "Transport exists, but historical tool/resource names and visible setup/status/config-copy behavior are not a proven client contract.",
+      "remediation": "Freeze current generated schema, add old-name aliases or a versioned compatibility profile, and expose endpoint status/config through Settings."
+    },
+    {
+      "id": "live_registry_search_graph_forge",
+      "priority": "P0",
+      "current_owner": ["crates/local-service", "crates/engine/retrieval", "crates/engine/registry", "extensions", "desktop", "apps/mcp", "apps/cli"],
+      "finding": "Static adapters do not prove a live production journey; forge commands return forge-unavailable.",
+      "remediation": "Drive one real package/project fixture per ecosystem and one forge revision through local-service and record typed result/error envelopes for all clients."
+    },
+    {
+      "id": "all_language_mcp",
+      "priority": "P0",
+      "current_owner": ["frontends/csharp", "frontends/typescript", "engine/compiler", "local-service", "apps/mcp"],
+      "finding": "All-language multi-client parity is unproven; C# and JS/TypeScript MCP are explicit regression risks.",
+      "remediation": "Add a matrix from source ingest through MCP search/read/refs/graph for seven baseline frontends plus C/C++; keep native authority optional but make baseline/degraded results deterministic."
+    },
+    {
+      "id": "durability_shelf_identity",
+      "priority": "P1",
+      "current_owner": ["crates/local-service/src/builtin/product_state.rs", "apps/desktop/src/model/persistence.rs"],
+      "finding": "Product-state temp rename lacks file/parent fsync; desktop persistence drops Package and Project shelf identities.",
+      "remediation": "Add durable commit ordering/recovery diagnostics and a validated desktop schema bump for stable shelf/project identities; fall back to typed unavailable when identity cannot be reconstructed."
+    },
+    {
+      "id": "index_field_mapping",
+      "priority": "P1",
+      "current_owner": ["crates/store", "crates/engine/registry", "crates/engine/retrieval", "extensions/tantivy", "local-service"],
+      "finding": "Old entity families, watermarks, object locations, historical reads, and Tantivy ranking fields have no single current parity map.",
+      "remediation": "Publish a field-level map to current objects/relations/projections and retain explicit not-recorded/unavailable state rather than zero or empty success."
+    },
+    {
+      "id": "registry_fact_projection",
+      "priority": "P1",
+      "current_owner": ["engine/registry", "local-service/builtin/registry", "crates/present", "apps/desktop/views/package.rs"],
+      "finding": "Typed registry facts exist but desktop projection is compact/placeholder and live ecosystem coverage is unproven.",
+      "remediation": "Complete standing/download/security/dependency/dependent/source/acquisition projections and gate all seven ecosystems with real and offline cases."
+    },
+    {
+      "id": "platform_behavior",
+      "priority": "P1",
+      "current_owner": ["apps/desktop/host", "apps/desktop/views/keys", "apps/desktop/navigation/action", "apps/mcp"],
+      "finding": "Path foundation exists but platform shortcut, transport, and credential-language behavior is unevenly visible.",
+      "remediation": "Derive labels/shortcuts from platform capabilities, bind existing key constants to actions, and run cold transport on all three platforms."
+    },
+    {
+      "id": "stale_counts_and_docs",
+      "priority": "P2",
+      "current_owner": ["crates/present/grammar.rs", "apps/mcp/src/jsonrpc/tools.rs", "docs"],
+      "finding": "Some current text says 35 commands while grammar/registry has 40; prior reports refer to retired paths/branches.",
+      "remediation": "Update count claims, mark historical reports as snapshots, and add a lightweight citation check."
+    },
+    {
+      "id": "ui_action_polish",
+      "priority": "P2",
+      "current_owner": ["apps/desktop/views", "apps/desktop/runtime", "apps/desktop/model"],
+      "finding": "Background job progress, copy actions, typed search rows, and richer route affordances from old UI are not fully wired.",
+      "remediation": "Finish the existing snapshot/action projection incrementally without restoring a second UI state system or monolithic workspace GUI."
+    }
+  ],
+  "preservation_requirements": [
+    "Stable project/package/version/symbol/document/source-span/forge identities, selected versions, route identity, active project, shelf membership, and revision/epoch.",
+    "Package coordinates/aliases, dependency/dependent edges, release standing, exact/approximate/privileged/withheld/unavailable download counts, advisories/severity, licenses, repository/forge provenance, checksums, archive size, acquisition receipts, and native metadata.",
+    "Source producer/language profile, compile/native-authority state, syntax baseline, paths, spans, diagnostics, and typed degraded/unavailable causes for every language.",
+    "Index generation, feed/git/sink watermarks, object locations, outbox/replay state, listing events, repository lineage, and schema version.",
+    "Tantivy package identity, exact/tokenized names, namespace, description, keywords, ecosystem, record/dependency/license/repository fields, quality, downloads, popularity, schema/watermark/partial-index state.",
+    "Semantic model/recipe identity, vector coverage, endpoint state, graph query authority, MCP endpoint/session identity, transport/bearer configuration, resource URI meaning, tool schema version, and reconnect/error classification."
+  ],
+  "validation": {
+    "static_reference_review": "Completed during source audit; report references are repository-relative exact files/symbols.",
+    "json_parser": "Run after writing with Python standard json.tool.",
+    "git_whitespace": "Run after writing with git diff --check.",
+    "git_scope": "Run after writing; only the Markdown and JSON review files should be changed.",
+    "not_claimed": ["Cargo", "Nix", "build", "test", "screenshots", "live packages", "network"]
+  },
+  "remaining_risks": [
+    "Desktop project identity, shelf persistence, and package/source/graph/settings live projections remain incomplete.",
+    "Current MCP transport is a foundation, but generated names/results/resources and missing desktop setup/status are not proven historical Claude/client compatibility.",
+    "No reviewed evidence proves one live all-language journey through ingest, search/read/references/graph, CLI, MCP, and desktop; C# and JavaScript/TypeScript are explicit risks.",
+    "Product-state durability and warm/offline/corrupt restart recovery are incomplete or unproven with real identities.",
+    "Typed registry, Tantivy, Qdrant, Trustfall, and forge owners exist, but historical index record families and seven-ecosystem/forge facts are not proven end to end in current clients."
+  ]
+}
