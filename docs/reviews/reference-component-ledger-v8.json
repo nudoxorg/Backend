@@ -1,0 +1,649 @@
+{
+  "schema": "nudox.reference-component-spec",
+  "version": "8",
+  "kind": "visual-forensics-ledger",
+  "status": "review-only",
+  "repository_revision": "89d606b0933d12a3a63af0aeebab712932adea1b",
+  "branch": "codex/reference-component-spec-v8",
+  "coordinate_system": {
+    "origin": "top-left",
+    "units": "CSS pixels at device scale 1",
+    "bbox_convention": "half-open [x, y, x + width, y + height)",
+    "raster_measurement_note": "Raster edge boxes are visible-component masks. Anti-aliased text envelopes are reported as row bands where they are used; they are not treated as semantic layout boxes."
+  },
+  "source_policy": {
+    "direct_measurement": "Values marked raster-measured come from deterministic pixel scans or sampled pixels in the named source raster.",
+    "css_derivation": "Values marked css-derived are copied from the source HTML/CSS or calculated from its fixed dimensions and flex/grid declarations.",
+    "inference": "Values marked inference are implementation constraints inferred from the references. They must be validated by the capture harness before being promoted to source evidence.",
+    "target_evidence": "The three 1280x720 external rasters and the four design-system artboards are source evidence. The weak responsive capture is a delta specimen only and never a target image."
+  },
+  "sources": [
+    {
+      "id": "ref.crates-io-serde-1280",
+      "kind": "external-reference-raster",
+      "path": "/Users/mileswirht/Downloads/backend/.artifacts/external-reference/crates-io-serde-cua-1280x720.jpg",
+      "sha256": "f0114c0305ceb0ee36307e0c12ae00833a12d45227f80b2bf6b78a6a632a2ba5",
+      "file_dimensions_px": {"width": 1280, "height": 720},
+      "crop_coordinates_px": {"x": 0, "y": 0, "width": 1280, "height": 720},
+      "role": "crates.io package overview information architecture and visual reference"
+    },
+    {
+      "id": "ref.docs-rs-serde-1280",
+      "kind": "external-reference-raster",
+      "path": "/Users/mileswirht/Downloads/backend/.artifacts/external-reference/docs-rs-serde-cua-1280x720.jpg",
+      "sha256": "edd8a9d8d22f070b52bba6eaf723cf51df541b0c0988df286a4b92af832dcae2",
+      "file_dimensions_px": {"width": 1280, "height": 720},
+      "crop_coordinates_px": {"x": 0, "y": 0, "width": 1280, "height": 720},
+      "role": "docs.rs reader chrome and package documentation reference"
+    },
+    {
+      "id": "ref.docs-rs-serde-lib-1280",
+      "kind": "external-reference-raster",
+      "path": "/Users/mileswirht/Downloads/backend/.artifacts/external-reference/docs-rs-serde-lib-rs-cua-1280x720.jpg",
+      "sha256": "f7ab78f2e9964d958fce09a634608b548479a046b3d194b27f7488d1af64ffd0",
+      "file_dimensions_px": {"width": 1280, "height": 720},
+      "crop_coordinates_px": {"x": 0, "y": 0, "width": 1280, "height": 720},
+      "role": "docs.rs source reader chrome, line gutter, and code surface reference"
+    },
+    {
+      "id": "ref.external-manifest",
+      "kind": "reference-manifest",
+      "path": "/Users/mileswirht/Downloads/backend/.artifacts/external-reference/manifest.json",
+      "sha256": "c6f35ec0162105fbe663666db0a1ea643b80bf8f980cb482233b0583424408f2",
+      "role": "external-reference provenance"
+    },
+    {
+      "id": "artboard.language-html",
+      "kind": "design-system-html-css",
+      "path": "/Users/mileswirht/Downloads/backend/Nudox-Design-System/artifacts/the-information-language/Language.dc.html",
+      "sha256": "803654307f626ca74eb12eb7ebd0f0ecb6842f1ddb56bb1ba257c6067da4ed4a",
+      "artboard_css_dimensions_px": {"width": 1440, "height": 1760},
+      "role": "FACET language and state grammar source"
+    },
+    {
+      "id": "artboard.brand-html",
+      "kind": "design-system-html-css",
+      "path": "/Users/mileswirht/Downloads/backend/Nudox-Design-System/artifacts/one-mark-one-language/Brand.dc.html",
+      "sha256": "6db8497548d073fc36d07c899f1ec5f4a04433a1c0cbaf8465ab1228c409462b",
+      "artboard_css_dimensions_px": {"width": 1440, "height": 1420},
+      "role": "FACET brand and wordmark source"
+    },
+    {
+      "id": "artboard.colour-html",
+      "kind": "design-system-html-css",
+      "path": "/Users/mileswirht/Downloads/backend/Nudox-Design-System/artifacts/colour-with-a-job/Color.dc.html",
+      "sha256": "aea27a1d2cdb8f4182879868376e887af1a21802cf07129a3f95216dc8d2bc21",
+      "artboard_css_dimensions_px": {"width": 1440, "height": 1340},
+      "role": "FACET colour, ink, and voice source"
+    },
+    {
+      "id": "artboard.descent-html",
+      "kind": "design-system-html-css",
+      "path": "/Users/mileswirht/Downloads/backend/Nudox-Design-System/artifacts/descent/Descent.dc.html",
+      "sha256": "ed20ae6d351f9aa401705f63e6cee381af5371e7ba207ef05a8a3111ba8dc740",
+      "artboard_css_dimensions_px": {"width": 1440, "height": 1160},
+      "role": "FACET descent, package-to-source transformation, and source reader source"
+    },
+    {
+      "id": "artboard.language-png",
+      "kind": "design-system-raster",
+      "path": "/Users/mileswirht/Downloads/backend/.local/gui-references/design/language-1600x1000.png",
+      "sha256": "ea09a8521fe7b69e212cfc93974af5dcd50bb7a2172bd63e9d6ff5190a5bea88",
+      "file_dimensions_px": {"width": 1600, "height": 1000},
+      "artboard_crop_coordinates_px": {"x": 0, "y": 0, "width": 1440, "height": 1000},
+      "role": "rendered language artboard; 160 px white export margin is excluded"
+    },
+    {
+      "id": "artboard.brand-png",
+      "kind": "design-system-raster",
+      "path": "/Users/mileswirht/Downloads/backend/.local/gui-references/design/brand-1600x1000.png",
+      "sha256": "2341b80565865b7af43fb7b5b9f95f6fbc0264c17062329bae688a2bf6c6e21",
+      "file_dimensions_px": {"width": 1600, "height": 1000},
+      "artboard_crop_coordinates_px": {"x": 0, "y": 0, "width": 1440, "height": 1000},
+      "role": "rendered brand artboard; 160 px white export margin is excluded"
+    },
+    {
+      "id": "artboard.colour-png",
+      "kind": "design-system-raster",
+      "path": "/Users/mileswirht/Downloads/backend/.local/gui-references/design/colour-1600x1000.png",
+      "sha256": "98df5e79e019a359cb1739f263e7377e0ea18c7c682716b32430b4eea0958d4e",
+      "file_dimensions_px": {"width": 1600, "height": 1000},
+      "artboard_crop_coordinates_px": {"x": 0, "y": 0, "width": 1440, "height": 1000},
+      "role": "rendered colour artboard; 160 px white export margin is excluded"
+    },
+    {
+      "id": "artboard.descent-png",
+      "kind": "design-system-raster",
+      "path": "/Users/mileswirht/Downloads/backend/.local/gui-references/design/descent-1600x1000.png",
+      "sha256": "cc43947f0a0ebcac0e648fe74d7c684917a27f997387f0fe47ff437937c2666",
+      "file_dimensions_px": {"width": 1600, "height": 1000},
+      "artboard_crop_coordinates_px": {"x": 0, "y": 0, "width": 1440, "height": 1000},
+      "role": "rendered descent artboard; 160 px white export margin is excluded"
+    },
+    {
+      "id": "weak.responsive-browse-settled",
+      "kind": "non-target-delta-raster",
+      "path": "/Users/mileswirht/Documents/ChatGPT/backend-responsive-shell-v8/.artifacts/gui-harness/responsive-1280-browse-live-weak/frames/browse/settled.png",
+      "sha256": "2f3f1e99b5279e6c3d64962eb96eabe0de25c9be9259f6c0eeead81d2d044a1e",
+      "file_dimensions_px": {"width": 1280, "height": 800},
+      "crop_coordinates_px": {"x": 0, "y": 0, "width": 1280, "height": 800},
+      "manifest_path": "/Users/mileswirht/Documents/ChatGPT/backend-responsive-shell-v8/.artifacts/gui-harness/responsive-1280-browse-live-weak/manifests/browse.json",
+      "manifest_sha256": "fbc888a11e3cd87003683d1e5070586936dda5e7f335a947dfc65029612c3d37",
+      "target_status": "excluded",
+      "exclusion_reason": "The manifest has reference:null and the frame contains a loading placeholder rather than the package dossier/content state."
+    }
+  ],
+  "tokens": {
+    "palette": [
+      {"name": "g0", "value": "#030814", "basis": "css-direct", "source": "artboard.language-html:32"},
+      {"name": "g1", "value": "#060d1b", "basis": "css-direct", "source": "artboard.language-html:32"},
+      {"name": "g2", "value": "#0a1424", "basis": "css-direct", "source": "artboard.language-html:32"},
+      {"name": "g3", "value": "#0f1b2f", "basis": "css-direct", "source": "artboard.language-html:32"},
+      {"name": "g4", "value": "#15243c", "basis": "css-direct", "source": "artboard.language-html:32"},
+      {"name": "g5", "value": "#1c304f", "basis": "css-direct", "source": "artboard.language-html:32"},
+      {"name": "g6", "value": "#25406a", "basis": "css-direct", "source": "artboard.language-html:32"},
+      {"name": "ink0", "value": "#f5f7fb", "basis": "css-direct", "source": "artboard.language-html:34"},
+      {"name": "ink1", "value": "#d2d9e5", "basis": "css-direct", "source": "artboard.language-html:34"},
+      {"name": "ink2", "value": "#9aa6ba", "basis": "css-direct", "source": "artboard.language-html:34"},
+      {"name": "ink3", "value": "#74819a", "basis": "css-direct", "source": "artboard.language-html:34"},
+      {"name": "ink4", "value": "#4c5870", "basis": "css-direct", "source": "artboard.language-html:34"},
+      {"name": "mint", "value": "#6cebad", "basis": "css-direct", "source": "artboard.language-html:35"},
+      {"name": "teal", "value": "#3fcdc6", "basis": "css-direct", "source": "artboard.language-html:35"},
+      {"name": "leaf", "value": "#2fb96c", "basis": "css-direct", "source": "artboard.language-html:35"},
+      {"name": "peri", "value": "#93a2fa", "basis": "css-direct", "source": "artboard.language-html:37"},
+      {"name": "peri-hi", "value": "#bcc6ff", "basis": "css-direct", "source": "artboard.language-html:37"},
+      {"name": "amber", "value": "#f4bb6a", "basis": "css-direct", "source": "artboard.language-html:38"},
+      {"name": "coral", "value": "#ff7a8a", "basis": "css-direct", "source": "artboard.language-html:39"},
+      {"name": "family-ns", "value": "#a9b6cc", "basis": "css-direct", "source": "artboard.language-html:41"},
+      {"name": "family-type", "value": "#5fe0b4", "basis": "css-direct", "source": "artboard.language-html:41"},
+      {"name": "family-con", "value": "#d59cf5", "basis": "css-direct", "source": "artboard.language-html:41"},
+      {"name": "family-call", "value": "#8fa6ff", "basis": "css-direct", "source": "artboard.language-html:41"},
+      {"name": "family-val", "value": "#f3c06e", "basis": "css-direct", "source": "artboard.language-html:41"}
+    ],
+    "lines": [
+      {"name": "line1", "value": "rgba(158,176,255,.07)", "basis": "css-direct", "source": "artboard.language-html:33"},
+      {"name": "line2", "value": "rgba(158,176,255,.12)", "basis": "css-direct", "source": "artboard.language-html:33"},
+      {"name": "line3", "value": "rgba(158,176,255,.22)", "basis": "css-direct", "source": "artboard.language-html:33"},
+      {"name": "signal-line", "value": "rgba(98,230,166,.34)", "basis": "css-direct", "source": "artboard.language-html:36"},
+      {"name": "peri-line", "value": "rgba(147,162,250,.4)", "basis": "css-direct", "source": "artboard.language-html:37"}
+    ],
+    "radii_px": [
+      {"name": "r1", "value": 5, "basis": "css-direct"},
+      {"name": "r2", "value": 8, "basis": "css-direct"},
+      {"name": "r3", "value": 12, "basis": "css-direct"},
+      {"name": "r4", "value": 16, "basis": "css-direct"},
+      {"name": "r5", "value": 22, "basis": "css-direct"},
+      {"name": "pill", "value": 999, "basis": "css-direct"}
+    ],
+    "typography_roles": [
+      {"name": "display-xl", "family": "Archivo or v3 display", "size_px": 46, "line_height_px": 50, "weight": 750, "letter_spacing": "-0.02em", "basis": "css-direct", "source": "artboard.language-html:104"},
+      {"name": "display", "family": "Archivo or v3 display", "size_px": 30, "line_height_px": 36, "weight": 700, "letter_spacing": "-0.015em", "basis": "css-direct", "source": "artboard.language-html:105"},
+      {"name": "title", "family": "display", "size_px": 20, "line_height_px": 26, "weight": 650, "letter_spacing": "-0.01em", "basis": "css-direct", "source": "artboard.language-html:106"},
+      {"name": "head", "family": "ui", "size_px": 15, "line_height_px": 22, "weight": 600, "basis": "css-direct", "source": "artboard.language-html:107"},
+      {"name": "body", "family": "ui", "size_px": 13.5, "line_height_px": 21, "basis": "css-direct", "source": "artboard.language-html:108"},
+      {"name": "prose", "family": "ui", "size_px": 14.5, "line_height_px": 23, "basis": "css-direct", "source": "artboard.language-html:109"},
+      {"name": "small", "family": "ui", "size_px": 12, "line_height_px": 16, "basis": "css-direct", "source": "artboard.language-html:110"},
+      {"name": "micro", "family": "display/ui v3", "size_px": 10.5, "line_height_px": 14, "weight": 650, "letter_spacing": "0.09em base, 0.1em v3", "basis": "css-direct", "source": "artboard.language-html:111,648"},
+      {"name": "code", "family": "Geist Mono", "size_px": 12.5, "line_height_px": 20, "basis": "css-direct", "source": "artboard.language-html:359"},
+      {"name": "source-line", "family": "Geist Mono", "size_px": 12.5, "line_height_px": 21, "basis": "css-direct", "source": "artboard.descent-html:976+"}
+    ],
+    "motion": [
+      {"name": "micro", "duration_ms": 90, "roles": ["hover lift", "active scale", "row background"], "easing": "snap cubic-bezier(.3,0,0,1)", "basis": "css-direct", "source": "artboard.language-html:45,123+"},
+      {"name": "quick", "duration_ms": 160, "roles": ["tooltip", "focus halo", "control color/background", "tab color"], "easing": "glide cubic-bezier(.22,1,.36,1)", "basis": "css-direct", "source": "artboard.language-html:45,123+"},
+      {"name": "standard", "duration_ms": 240, "roles": ["switch knob", "cut lift", "popover pop"], "easing": "glide or bounce", "basis": "css-direct", "source": "artboard.language-html:45,178+"},
+      {"name": "emphatic", "duration_ms": 380, "roles": ["rise/drop-in", "staggered scene item", "button sheen"], "easing": "glide/bounce", "basis": "css-direct", "source": "artboard.language-html:45,439+"},
+      {"name": "scene", "duration_ms": 620, "roles": ["resolve/loading reveal", "scene transition"], "easing": "snap", "basis": "css-direct", "source": "artboard.language-html:45,178+"}
+    ]
+  },
+  "raster_observations": [
+    {
+      "id": "crates-shell",
+      "source": "ref.crates-io-serde-1280",
+      "basis": "raster-measured",
+      "regions": [
+        {"id": "nav-visible", "bbox": {"x": 0, "y": 0, "width": 1280, "height": 64}, "dominant_color": "#141412"},
+        {"id": "nav-separator", "bbox": {"x": 0, "y": 64, "width": 1280, "height": 8}, "row_colors": {"64": "#151515", "65": "#151515", "66": "#2e2e2e", "67": "#333333", "68": "#2e2e2e", "69": "#2f2f2f", "70": "#2f2f2f", "71": "#2f2f2f"}},
+        {"id": "body-ground", "bbox": {"x": 0, "y": 72, "width": 1280, "height": 648}, "dominant_color": "#303030"}
+      ],
+      "pixel_samples": [
+        {"xy": [500, 100], "rgb": [20, 20, 18], "hex": "#141412"},
+        {"xy": [500, 240], "rgb": [48, 48, 46], "hex": "#30302e"},
+        {"xy": [500, 300], "rgb": [48, 48, 48], "hex": "#303030"}
+      ]
+    },
+    {
+      "id": "crates-package-overview",
+      "source": "ref.crates-io-serde-1280",
+      "basis": "raster-measured",
+      "regions": [
+        {"id": "package-hero-outer-visible", "bbox": {"x": 177, "y": 84, "width": 926, "height": 150}, "edge_samples": [{"xy": [176, 84], "hex": "#323230"}, {"xy": [177, 84], "hex": "#343232"}, {"xy": [182, 84], "hex": "#161614"}]},
+        {"id": "package-hero-interior", "bbox": {"x": 183, "y": 88, "width": 914, "height": 145}, "dominant_color": "#141412"},
+        {"id": "tabs-region-derived", "bbox": {"x": 177, "y": 248, "width": 926, "height": 44}, "row_bands": [{"label": "tab-label-ink", "y": [265, 279]}, {"label": "active-underline", "y": [290, 291]}]},
+        {"id": "article-card-visible", "bbox": {"x": 177, "y": 309, "width": 649, "height": 411}, "visible_to_viewport": true},
+        {"id": "article-interior-visible", "bbox": {"x": 183, "y": 311, "width": 641, "height": 409}, "dominant_color": "#141412"},
+        {"id": "metadata-column-derived", "bbox": {"x": 851, "y": 309, "width": 252, "height": 411}, "row_bands": [{"label": "metadata-heading", "y": [339, 354]}]}
+      ],
+      "text_row_bands": [
+        {"region": "hero-title", "y": [107, 134]},
+        {"region": "hero-tagline", "y": [160, 176]},
+        {"region": "article-heading", "y": [341, 357]},
+        {"region": "article-heading-second-line", "y": [365, 381]},
+        {"region": "article-body-first-lines", "y": [424, 439]}
+      ],
+      "inference": "The hero, tabs, article reader, and metadata column form one package dossier. The external image is an information-architecture reference; its web palette is not a replacement for the FACET palette."
+    },
+    {
+      "id": "docs-reader-chrome",
+      "source": "ref.docs-rs-serde-1280",
+      "basis": "raster-measured",
+      "regions": [
+        {"id": "top-chrome", "bbox": {"x": 0, "y": 0, "width": 1280, "height": 32}, "dominant_color": "#353535"},
+        {"id": "docs-sidebar", "bbox": {"x": 0, "y": 32, "width": 192, "height": 688}, "dominant_color": "#505050"},
+        {"id": "sidebar-lower-gap", "bbox": {"x": 0, "y": 528, "width": 192, "height": 31}, "dominant_color": "#353535"},
+        {"id": "docs-reader", "bbox": {"x": 200, "y": 32, "width": 1080, "height": 688}, "dominant_color": "#353535"},
+        {"id": "sidebar-divider", "bbox": {"x": 199, "y": 32, "width": 1, "height": 688}, "sample_hex": "#999999"},
+        {"id": "reader-measure-text", "bbox": {"x": 269, "y": 182, "width": 936, "height": 538}, "basis": "raster-derived from text/rule envelope"}
+      ],
+      "pixel_samples": [
+        {"xy": [0, 0], "rgb": [53, 53, 53], "hex": "#353535"},
+        {"xy": [10, 50], "rgb": [80, 80, 80], "hex": "#505050"},
+        {"xy": [200, 50], "rgb": [53, 53, 53], "hex": "#353535"}
+      ],
+      "text_row_bands": [
+        {"region": "sidebar-title", "y": [53, 70]},
+        {"region": "sidebar-subtitle", "y": [85, 95]},
+        {"region": "reader-title", "y": [74, 93]},
+        {"region": "reader-toolbar", "y": [106, 117]},
+        {"region": "reader-body", "y": [209, 344], "line_step_px": 20},
+        {"region": "reader-section-heading", "y": [370, 388]}
+      ]
+    },
+    {
+      "id": "docs-source-chrome",
+      "source": "ref.docs-rs-serde-lib-1280",
+      "basis": "raster-measured",
+      "regions": [
+        {"id": "top-chrome", "bbox": {"x": 0, "y": 0, "width": 1280, "height": 32}, "dominant_color": "#353535"},
+        {"id": "source-rail", "bbox": {"x": 0, "y": 32, "width": 49, "height": 688}, "dominant_color": "#505050"},
+        {"id": "source-divider", "bbox": {"x": 49, "y": 32, "width": 1, "height": 688}, "sample_hex": "#343434"},
+        {"id": "source-reader", "bbox": {"x": 56, "y": 32, "width": 1224, "height": 688}, "dominant_color": "#353535"},
+        {"id": "code-surface", "bbox": {"x": 72, "y": 158, "width": 1208, "height": 562}, "dominant_color": "#2a2a2a"},
+        {"id": "code-surface-top-edge", "bbox": {"x": 72, "y": 152, "width": 1208, "height": 6}, "row_colors": {"152": "#343434", "153": "#2a2a2a"}}
+      ],
+      "pixel_samples": [
+        {"xy": [0, 0], "rgb": [53, 53, 53], "hex": "#353535"},
+        {"xy": [10, 50], "rgb": [82, 82, 82], "hex": "#525252"},
+        {"xy": [50, 50], "rgb": [52, 52, 52], "hex": "#343434"},
+        {"xy": [500, 150], "rgb": [53, 53, 53], "hex": "#353535"},
+        {"xy": [72, 158], "rgb": [42, 42, 42], "hex": "#2a2a2a"}
+      ],
+      "text_row_bands": [{"region": "source-code-lines", "y": [180, 190], "line_step_px": 21, "font_role": "source-line"}],
+      "inference": "The source reader keeps a narrow navigation rail, a 64 px line-number/gutter structure, and a dark code surface below the source toolbar."
+    },
+    {
+      "id": "weak-shell-masks",
+      "source": "weak.responsive-browse-settled",
+      "basis": "raster-measured",
+      "target_status": "delta-only",
+      "regions": [
+        {"id": "weak-titlebar", "bbox": {"x": 0, "y": 0, "width": 1280, "height": 46}, "dominant_color": "#060d1b", "row_45": "#182136"},
+        {"id": "weak-rail", "bbox": {"x": 0, "y": 46, "width": 54, "height": 728}, "dominant_color": "#060d1b"},
+        {"id": "weak-side", "bbox": {"x": 54, "y": 46, "width": 280, "height": 728}, "dominant_color": "#060d1b"},
+        {"id": "weak-reader", "bbox": {"x": 334, "y": 46, "width": 646, "height": 728}, "dominant_color": "#030814"},
+        {"id": "weak-context", "bbox": {"x": 981, "y": 46, "width": 299, "height": 728}, "dominant_color": "#060d1b"},
+        {"id": "weak-status-border", "bbox": {"x": 0, "y": 774, "width": 1280, "height": 1}, "dominant_color": "#161c30"},
+        {"id": "weak-status", "bbox": {"x": 0, "y": 775, "width": 1280, "height": 25}, "dominant_color": "#030814"},
+        {"id": "weak-package-card", "bbox": {"x": 362, "y": 74, "width": 590, "height": 236}, "border_color": "#27314d", "interior_color": "#060d1b"},
+        {"id": "weak-loading-well", "bbox": {"x": 391, "y": 207, "width": 532, "height": 73}, "border_color": "#0e1424", "interior_color": "#030814"}
+      ],
+      "pixel_samples": [
+        {"xy": [10, 10], "hex": "#060d1b"},
+        {"xy": [10, 45], "hex": "#182136"},
+        {"xy": [500, 400], "hex": "#030814"},
+        {"xy": [981, 100], "hex": "#060d1b"},
+        {"xy": [362, 74], "hex": "#27314d"},
+        {"xy": [363, 75], "hex": "#060d1b"},
+        {"xy": [392, 208], "hex": "#030814"},
+        {"xy": [0, 774], "hex": "#161c30"}
+      ],
+      "text_row_bands": [
+        {"region": "package-title", "x": [392, 542], "y": [111, 125]},
+        {"region": "package-tagline", "y": [165, 178]},
+        {"region": "loading-label", "y": [238, 251]},
+        {"region": "context-labels", "y": [99, 186], "line_step_px": 38}
+      ]
+    }
+  ],
+  "css_derived_geometry": [
+    {
+      "id": "shell-v3-wide-1280",
+      "basis": "css-derived",
+      "source": "artboard.language-html:271-335,561,589,698-700",
+      "viewport_px": {"width": 1280, "height": 800},
+      "regions": [
+        {"id": "titlebar-v2", "bbox": {"x": 0, "y": 0, "width": 1280, "height": 50}, "rule": ".titlebar.v2 height:50px"},
+        {"id": "body", "bbox": {"x": 0, "y": 50, "width": 1280, "height": 724}, "rule": "remaining height after titlebar and status"},
+        {"id": "rail", "bbox": {"x": 0, "y": 50, "width": 54, "height": 724}, "rule": ".rail width:54px"},
+        {"id": "shelf", "bbox": {"x": 54, "y": 50, "width": 264, "height": 724}, "rule": ".shelf width:264px"},
+        {"id": "reader", "bbox": {"x": 318, "y": 50, "width": 662, "height": 724}, "rule": "viewport minus rail, shelf, and context"},
+        {"id": "context", "bbox": {"x": 980, "y": 50, "width": 300, "height": 724}, "rule": ".ctx width:300px"},
+        {"id": "status", "bbox": {"x": 0, "y": 774, "width": 1280, "height": 26}, "rule": ".status height:26px"}
+      ],
+      "derived_notes": ["The reader width is the flexible remainder at 1280 px after 54 + 264 + 300 px fixed columns.", "A splitter can consume its 9 px hit area without changing the visible fixed-column boundaries."]
+    },
+    {
+      "id": "artboard-inner-frame",
+      "basis": "css-derived",
+      "source": "artboard.language-html:418-420",
+      "regions": [
+        {"id": "all-doc-inner", "bbox": {"x": 64, "y": 56, "width": 1312, "height": 888}, "rule": ".doc padding:56px 64px; 1440 px artboard crop"},
+        {"id": "all-doc-inner-width", "value_px": 1312, "rule": "1440 - 64 - 64"}
+      ],
+      "height_note": "The visible PNG crop is 1000 px tall while each HTML root continues beyond it; y=944 is therefore the last full inner-frame row in the 1000 px export."
+    },
+    {
+      "id": "language-columns",
+      "basis": "css-derived",
+      "source": "artboard.language-html:907",
+      "regions": [
+        {"id": "left-column", "bbox": {"x": 64, "y": 0, "width": 667.2, "height": 0}, "rule": "available 1248 px after gap 64; flex 1.15 / 1"},
+        {"id": "column-gap", "value_px": 64, "rule": "row gap:64px"},
+        {"id": "right-column", "bbox": {"x": 795.2, "y": 0, "width": 580.8, "height": 0}, "rule": "available 1248 px after gap 64; flex 1 / 1.15"}
+      ],
+      "height_note": "The y extent is content-driven by the four language sections; the ledger records width and x exactly because section height varies with text and artboard viewport."
+    },
+    {
+      "id": "brand-hero-columns",
+      "basis": "css-derived",
+      "source": "artboard.brand-html:862+",
+      "regions": [
+        {"id": "brand-mark-column", "bbox": {"x": 64, "y": 0, "width": 330, "height": 0}, "rule": ".bhero grid-template-columns:330px 1fr"},
+        {"id": "brand-gap", "value_px": 48, "rule": ".bhero gap:48px"},
+        {"id": "brand-motifs-column", "bbox": {"x": 442, "y": 0, "width": 934, "height": 0}, "rule": "1312 - 330 - 48"},
+        {"id": "brand-motif-grid", "columns": 3, "gap_px": 34, "rule": ".bmotifs grid-template-columns:repeat(3,1fr); gap:34px 40px"}
+      ]
+    },
+    {
+      "id": "colour-columns",
+      "basis": "css-derived",
+      "source": "artboard.colour-html:911+",
+      "regions": [
+        {"id": "ground", "bbox": {"x": 64, "y": 0, "width": 737.333333, "height": 0}, "rule": "flex 7 of available 1264 px after 48 px gap"},
+        {"id": "colour-gap", "value_px": 48, "rule": "row gap:48px"},
+        {"id": "ink", "bbox": {"x": 849.333333, "y": 0, "width": 526.666667, "height": 0}, "rule": "flex 5 of available 1264 px after 48 px gap"},
+        {"id": "voice-row", "columns": 4, "gap_px": 26, "column_width_px": 308.5, "rule": "(1312 - 3*26) / 4"}
+      ]
+    },
+    {
+      "id": "descent-strip",
+      "basis": "css-derived",
+      "source": "artboard.descent-html:1025,976",
+      "regions": [
+        {"id": "descent-panel-inner", "bbox": {"x": 92, "y": 0, "width": 1256, "height": 0}, "rule": "panel x64 + 28 px left padding; 1312 - 28 - 28"},
+        {"id": "descent-strip", "bbox": {"x": 92, "y": 0, "width": 1256, "height": 640}, "rule": ".strip height:640px; source SVG viewBox remains 1312x640"},
+        {"id": "source-reader-grid", "columns_px": [64, "minmax(0,1fr)", 270], "gap_px": 22, "rule": ".srcwrap grid-template-columns:64px minmax(0,1fr) 270px; gap:0 22px; max-width:1240px; padding:18px 30px 40px 18px"}
+      ]
+    }
+  ],
+  "component_grammar": [
+    {
+      "id": "shell.chrome",
+      "basis": "css-direct + raster-measured",
+      "geometry": {"titlebar_v2_h_px": 50, "titlebar_base_h_px": 46, "titlebar_padding_left_px": 14, "titlebar_padding_right_px": 12, "status_h_px": 26},
+      "surfaces": {"ground": "#060d1b", "body": "#030814", "line": "rgba(158,176,255,.07)"},
+      "typography": "ui 13px/1.45, micro 10.5px/14 with 0.1em v3 tracking",
+      "truncation": "Every flexible label has min-width:0, white-space:nowrap, overflow:hidden, text-overflow:ellipsis.",
+      "states": ["rest keeps one-pixel line", "hover raises or lights the active plate", "focus-visible uses 2 px periwinkle edge and 5 px halo", "pressed uses translateY(1px) scale(.97) on v3 controls", "disabled uses opacity .42 and saturation .4"],
+      "acceptance_gate": "gate.shell.geometry"
+    },
+    {
+      "id": "shell.rail",
+      "basis": "css-direct",
+      "geometry": {"width_px": 54, "padding_y_px": 10, "gap_px": 4, "button_w_px": 38, "button_h_px": 38, "button_radius_px": 11},
+      "states": {"rest": "ink3", "hover": "line1 + ink0", "active": "mint + signal-soft + signal-line + 3x12 px left indicator", "pressed": "scale(.94)"},
+      "acceptance_gate": "gate.rail.states"
+    },
+    {
+      "id": "shell.shelf",
+      "basis": "css-direct",
+      "geometry": {"width_px": 264, "up_h_px": 34, "book_padding_px": [12, 12, 12, 10], "book_margin_px": [0, 10, 8, 10], "list_min_h_px": 27, "dock_item_px": 32},
+      "states": {"row": "min-height 28 px, radius 8 px, horizontal padding 8 px", "tall_row": "min-height 44 px, padding 7 px 10 px", "active": "mint gradient with 2.5 px left marker", "current": "peri-soft with 1 px peri-line inset"},
+      "acceptance_gate": "gate.shelf.rows"
+    },
+    {
+      "id": "shell.reader",
+      "basis": "css-direct + css-derived",
+      "geometry": {"measure_max_width_px": 960, "measure_padding_px": [28, 40, 60], "measure_gap_px": 24, "wide_max_width_px": 1180, "folio_max_width_px": 1080, "folio_padding_px": [26, 36, 60], "folio_gap_px": 22},
+      "reader_rule": "The body reader is flexible; at 1280 px with v3 shelf and context it is x318..980 (662 px).",
+      "acceptance_gate": "gate.reader.measure"
+    },
+    {
+      "id": "control.button",
+      "basis": "css-direct",
+      "geometry": {"base": {"h_px": 30, "pad_x_px": 13, "gap_px": 7, "radius": "pill", "font_px": 12.5}, "sm": {"h_px": 24, "pad_x_px": 10, "font_px": 11.5}, "lg": {"h_px": 38, "pad_x_px": 18, "font_px": 13.5}, "xl": {"h_px": 46, "pad_x_px": 24, "font_px": 15}},
+      "states": {"hover": "translateY(-1px), plate3, sheen crosses over 380 ms", "pressed": "translateY(1px) scale(.97)", "focus": "2 px hard periwinkle inset", "disabled": "opacity .42, saturation .4, pointer-events none", "cutb": "8 px top-left and bottom-right chamfers"},
+      "acceptance_gate": "gate.control.states"
+    },
+    {
+      "id": "control.compact",
+      "basis": "css-direct",
+      "geometry": {"icon_button": "28x28 r8; sm 22x22 r5", "kbd": "min18x18 r5, horizontal pad5", "chip": "h22 pad9 pill; sm h18 pad7; lg h28 pad12", "tag": "h16 r4", "input": "h32 pad11 r8; sm h26 pad9 r7; xl h60 pad22 r20", "switch": "32x18 with 14 px knob", "check": "16x16 r5", "radio": "16x16 circle"},
+      "acceptance_gate": "gate.control.states"
+    },
+    {
+      "id": "surface.plate",
+      "basis": "css-direct",
+      "geometry": {"card_radius_px": 12, "card_padding_px": 16, "card_padding_lg_px": 22, "glass_radius_px": 16, "codebox_radius_px": 12, "codebox_padding_px": [14, 16]},
+      "v3_grammar": "Flat plate with one lit top-left edge and one shaded bottom-right edge; the large surfaces use a 12 px chamfer polygon where the class is cut.",
+      "acceptance_gate": "gate.surface.edge"
+    },
+    {
+      "id": "reader.lens",
+      "basis": "css-direct + raster-measured",
+      "geometry": {"tab_h_px": 36, "tab_padding_x_px": 12, "tab_gap_px": 2, "active_underline_h_px": 2, "active_underline_inset_px": 10},
+      "states": {"rest": "ink2", "hover": "ink0 + line1", "active": "ink0 + signal underline with mint glow"},
+      "acceptance_gate": "gate.package.lens"
+    },
+    {
+      "id": "reader.package-dossier",
+      "basis": "external-raster information architecture + inference for Nudox shell",
+      "required_sections": ["package identity and version", "short description", "metadata chips", "lens tabs", "primary README/article reader", "metadata/links column", "install or source affordance"],
+      "order": "identity -> tabs -> reader and metadata in parallel -> source/install affordance",
+      "truncation": "Description clamps to two lines in a package card; path, version, and metadata labels ellipsize inside flex children; full text is available through a tooltip or detail view.",
+      "forbidden_state": "A loading well or placeholder copy cannot satisfy the dossier gate after settled capture.",
+      "state_variants": {
+        "data": {"required": ["all required_sections", "one active lens", "article body", "metadata column"], "settled": true},
+        "loading": {"required": ["identity shell", "fixed card geometry", "bounded loading well", "hatch/reveal affordance"], "duration_ms": 620, "settled": false},
+        "error": {"required": ["identity shell", "fault panel", "reason sentence", "retry/resolve action"], "edge": "amber or coral", "settled": true},
+        "empty": {"required": ["identity shell", "explanatory sentence", "next action", "tabs/metadata frame"], "settled": true}
+      },
+      "acceptance_gate": "gate.package.dossier"
+    },
+    {
+      "id": "reader.docs",
+      "basis": "external-raster-measured + inference",
+      "docs_chrome": {"top_h_px": 32, "sidebar_w_px": 200, "divider_x_px": 199, "reader_text_x_px": 269, "reader_right_rule_x_px": 1205},
+      "source_chrome": {"top_h_px": 32, "rail_w_px": 50, "divider_x_px": 49, "reader_x_px": 56, "code_x_px": 72, "code_bg": "#2a2a2a", "line_step_px": 21},
+      "reader_rules": "Reader body uses 20 px-ish paragraph line steps in the docs raster; source lines use 21 px. Keep source line number gutter visibly separated from code.",
+      "state_variants": {
+        "data": {"required": ["title", "toolbar", "navigation", "reader body or source lines"]},
+        "loading": {"required": ["chrome", "navigation", "bounded loading marker"], "duration_ms": 620},
+        "error": {"required": ["chrome", "navigation", "amber/coral explanation", "retry action"]},
+        "empty_search": {"required": ["chrome", "navigation", "empty result explanation", "next action"]},
+        "collapsed": {"required": ["chrome", "active navigation", "reader"], "panes": "sidebar or source rail collapsed according to responsive width"}
+      },
+      "acceptance_gate": "gate.docs.reader-source"
+    },
+    {
+      "id": "shape.cut",
+      "basis": "css-direct",
+      "geometry": {"default_chamfer_px": 14, "sm_chamfer_px": 9, "lg_chamfer_px": 22, "button_chamfer_px": 8, "here_chamfer_px": 10, "tooltip_chamfer_px": 5, "popup_chamfer_px": 7, "nodule_chamfer_px": 6, "mosaic_chamfer_px": 3},
+      "state_channel": "State lives in bevel hue/thickness/animation; content position remains fixed except explicit lift classes.",
+      "acceptance_gate": "gate.surface.edge"
+    },
+    {
+      "id": "text.truncation",
+      "basis": "css-direct",
+      "rules": ["flex child receives min-width:0", "single-line labels use nowrap + hidden overflow + ellipsis", "package descriptions clamp to two lines", "source code remains horizontally scrollable or clips at the code surface; line numbers remain fixed", "tooltip/detail affordance exposes text that was truncated"],
+      "acceptance_gate": "gate.truncation"
+    }
+  ],
+  "artboard_sections": [
+    {"id": "language", "source": "artboard.language-html", "sections": ["What a thing is", "What is true of it", "What you can do with it", "The bevel is the only state channel", "Plain until touched"], "layout_basis": "css-derived language-columns"},
+    {"id": "brand", "source": "artboard.brand-html", "sections": ["wordmark and mark", "brand motifs", "five principles", "voice and use"], "layout_basis": "css-derived brand-hero-columns"},
+    {"id": "colour", "source": "artboard.colour-html", "sections": ["Ground", "Ink", "Signal", "Edge", "Warning", "Voice panels", "family tests"], "layout_basis": "css-derived colour-columns"},
+    {"id": "descent", "source": "artboard.descent-html", "sections": ["descent map", "today/selected panel", "ordered package list", "source reader", "package-to-source strip"], "layout_basis": "css-derived descent-strip"}
+  ],
+  "responsive_transformations": [
+    {"viewport_width_px": 1280, "basis": "css-derived/inference", "shell": "full titlebar, 54 px rail, 264 px shelf, flexible reader, 300 px context", "required": ["all dossier sections visible", "reader and metadata are parallel", "no horizontal overflow"]},
+    {"viewport_width_px": 620, "basis": "inference", "shell": "hide context; retain rail and shelf if reader remains >= 300 px; otherwise make shelf an overlay", "required": ["context is not squeezed into unreadable labels", "dossier tabs remain one row or scroll with visible active state", "truncated labels expose detail affordance"]},
+    {"viewport_width_px": 380, "basis": "inference", "shell": "collapse shelf to rail/overlay; context remains hidden; reader fills body", "required": ["package identity stays visible", "metadata moves below reader or into a sheet", "no fixed-width 264/300 px panels remain in flow"]},
+    {"viewport_width_px": 240, "basis": "inference", "shell": "rail and titlebar become icon-first; shelves and metadata are overlays", "required": ["primary action remains 28 px hit target", "title/path ellipsizes", "tabs may become an icon or horizontally scrollable strip"]},
+    {"viewport_width_px": 160, "basis": "inference", "shell": "single-column reader with optional panes closed", "required": ["no content is rendered outside viewport", "only essential identity and active lens remain in the first frame"]},
+    {"viewport_width_px": 90, "basis": "inference", "shell": "icon/status surface only; detail content requires an opened sheet", "required": ["controls preserve 28 px minimum hit target where possible", "capture must record collapsed state explicitly"]}
+  ],
+  "weak_capture_delta": {
+    "source": "weak.responsive-browse-settled",
+    "target_policy": "Do not use this frame as a target or baseline image.",
+    "geometry_deltas_px": [
+      {"region": "titlebar", "actual_bbox": {"x": 0, "y": 0, "width": 1280, "height": 46}, "expected_bbox": {"x": 0, "y": 0, "width": 1280, "height": 50}, "delta": {"height": -4}, "basis": "raster-measured vs css-derived"},
+      {"region": "rail", "actual_width": 54, "expected_width": 54, "delta": {"width": 0}, "basis": "raster-measured vs css-derived"},
+      {"region": "shelf", "actual_width": 280, "expected_width": 264, "delta": {"width": 16}, "basis": "raster-measured vs css-derived"},
+      {"region": "reader-start", "actual_x": 334, "expected_x": 318, "delta": {"x": 16}, "basis": "raster-measured vs css-derived"},
+      {"region": "context", "actual_bbox": {"x": 981, "y": 46, "width": 299, "height": 728}, "expected_bbox": {"x": 980, "y": 50, "width": 300, "height": 724}, "delta": {"x": 1, "y": -4, "width": -1, "height": 4}, "basis": "raster-measured vs css-derived"},
+      {"region": "status", "actual_height": 26, "expected_height": 26, "delta": {"height": 0}, "basis": "raster-measured vs css-derived"}
+    ],
+    "content_deltas": [
+      {"region": "package-dossier", "actual": "590x236 card with 532x73 loading well", "expected": "package identity, tabs, reader, metadata, and source/install sections", "delta": "missing required dossier sections; loading placeholder remains", "basis": "raster-measured vs component grammar"},
+      {"region": "state", "actual": "single settled frame", "expected": "rest/hover/focus/pressed/disabled fixtures per component", "delta": "no state matrix evidence", "basis": "manifest and raster review"},
+      {"region": "provenance", "actual": "manifest reference:null, adapter-required revision", "expected": "named reference hash and capture coordinates", "delta": "not eligible as target evidence", "basis": "manifest-measured"}
+    ],
+    "palette_note": "Weak capture samples match the FACET abyss palette (#060d1b/#030814), while external docs references use #353535/#505050/#2a2a2a. These are separate visual systems; the mismatch is documented for cross-reference and is not itself a target failure."
+  },
+  "acceptance_gates": [
+    {
+      "id": "gate.shell.geometry",
+      "component": "shell.chrome",
+      "severity": "blocking",
+      "evaluation": "Run edge scans and fixed pixel probes on the 1280x800 capture; optionally assert computed CSS values when a DOM surface is available.",
+      "checks": [
+        {"metric": "titlebar bbox", "expected": [0, 0, 1280, 50], "tolerance_px": 1},
+        {"metric": "rail width", "expected": 54, "tolerance_px": 1},
+        {"metric": "shelf width", "expected": 264, "tolerance_px": 1},
+        {"metric": "context width", "expected": 300, "tolerance_px": 1},
+        {"metric": "status height", "expected": 26, "tolerance_px": 1},
+        {"metric": "fixed column boundary count", "expected": 4, "tolerance_px": 0}
+      ],
+      "whole_image_equality": false
+    },
+    {
+      "id": "gate.shell.palette",
+      "component": "shell.chrome",
+      "severity": "blocking",
+      "evaluation": "Probe named interior, divider, and status coordinates; compare exact sRGB values where CSS is opaque, and channel tolerance <=3 only for composited anti-aliasing.",
+      "probes": [
+        {"xy": [10, 10], "expected": "#060d1b", "tolerance_channels": 0},
+        {"xy": [10, 400], "expected": "#060d1b", "tolerance_channels": 0},
+        {"xy": [400, 400], "expected": "#030814", "tolerance_channels": 0},
+        {"xy": [10, 774], "expected": "#161c30 or line1 composited", "tolerance_channels": 3}
+      ],
+      "whole_image_equality": false
+    },
+    {
+      "id": "gate.rail.states",
+      "component": "shell.rail",
+      "severity": "blocking",
+      "evaluation": "Capture rest, hover, focus-visible, active, and pressed fixtures with the same viewport and compare component crops by masks.",
+      "checks": [
+        {"state": "rest", "check": "38x38 button and 4 px inter-button gap remain stable"},
+        {"state": "hover", "check": "line1 plate and ink0 appear; no geometry shift"},
+        {"state": "active", "check": "mint signal-soft plate plus 3x12 px left marker"},
+        {"state": "focus-visible", "check": "2 px peri outline and 5 px halo"},
+        {"state": "pressed", "check": "scale .94; no persistent displacement after release"}
+      ],
+      "whole_image_equality": false
+    },
+    {
+      "id": "gate.shelf.rows",
+      "component": "shell.shelf",
+      "severity": "blocking",
+      "evaluation": "Use connected row masks and DOM style assertions; verify row height, indentation, and active marker independently from label glyphs.",
+      "checks": ["normal row >=28 px", "tall row >=44 px", "tree child margin-left 14 px + 7 px padding-left", "active marker width 2.5 px", "ellipsis is present on constrained flexible labels"]
+    },
+    {
+      "id": "gate.reader.measure",
+      "component": "shell.reader",
+      "severity": "blocking",
+      "evaluation": "Check reader content envelope and text row bands against the shell geometry; ignore glyph-level anti-aliasing.",
+      "checks": ["measure width never exceeds 960 px", "wide measure never exceeds 1180 px", "reader has 28/40/60 px padding in the base measure", "paragraph baselines follow declared line-height within 1 px"],
+      "baseline_contract": {"raster_text_envelope_tolerance_px": 2, "layout_baseline_tolerance_px": 1, "roles": [{"name": "display", "line_height_px": 36}, {"name": "title", "line_height_px": 26}, {"name": "head", "line_height_px": 22}, {"name": "body", "line_height_px": 21}, {"name": "prose", "line_height_px": 23}, {"name": "small", "line_height_px": 16}, {"name": "micro", "line_height_px": 14}, {"name": "source", "line_height_px": 21}]}
+    },
+    {
+      "id": "gate.control.states",
+      "component": "control.button and control.compact",
+      "severity": "blocking",
+      "evaluation": "For every control fixture, scan the outer edge and interior fill; compare state-specific transforms and edge colors, never full-page pixels.",
+      "checks": ["base/size variants use exact declared heights", "hover lift is -1 px", "pressed v3 transform is +1 px and scale .97", "focus is hard 2 px peri inset", "disabled opacity is .42 and saturation is .4", "cutb chamfers are 8 px"],
+      "hit_areas": {"button_base": [30, "content-dependent width"], "button_sm": [24, "content-dependent width"], "button_lg": [38, "content-dependent width"], "button_xl": [46, "content-dependent width"], "icon_button": [28, 28], "icon_button_sm": [22, 22], "kbd_min": [18, 18], "switch": [32, 18], "check": [16, 16], "radio": [16, 16]}
+    },
+    {
+      "id": "gate.surface.edge",
+      "component": "surface.plate and shape.cut",
+      "severity": "blocking",
+      "evaluation": "Compare the four corner/chamfer edge samples and one interior sample for each surface state.",
+      "checks": ["default chamfer 14 px", "lit edge is top-left and shaded edge bottom-right", "focus edge is periwinkle", "state color is expressed by bevel/edge", "content box remains fixed unless .lift is explicitly exercised"]
+    },
+    {
+      "id": "gate.package.dossier",
+      "component": "reader.package-dossier",
+      "severity": "blocking",
+      "evaluation": "Use semantic region markers or OCR-independent DOM labels plus region masks; assert section presence/order and reject loading-only settled frames.",
+      "checks": ["identity/version region present", "description is present and at most two visible lines in card context", "metadata chips present", "lens tabs present with one active underline", "reader/article body present", "metadata or links column present", "install/source affordance present", "no loading placeholder after settled state"],
+      "reference_geometry": {"crates_hero": [177, 84, 926, 150], "crates_article_visible": [177, 309, 649, 411], "crates_metadata_visible": [851, 309, 252, 411]},
+      "whole_image_equality": false
+    },
+    {
+      "id": "gate.package.lens",
+      "component": "reader.lens",
+      "severity": "blocking",
+      "evaluation": "Measure tab row, active underline, and text row bands in a crop.",
+      "checks": ["row h36 px", "active underline h2 px with 10 px side inset", "only one active tab", "hover changes color/background without moving row"]
+    },
+    {
+      "id": "gate.docs.reader-source",
+      "component": "reader.docs",
+      "severity": "blocking",
+      "evaluation": "Use separate docs and source fixtures; compare chrome boundaries, code surface, and baseline steps to the named external rasters.",
+      "checks": ["docs top chrome 32 px", "docs sidebar 192 px visible plus divider at x199", "docs reader text starts x269", "source top chrome 32 px", "source rail 49 px plus divider x49", "code starts x72 and uses #2a2a2a surface", "source line step 21 px", "line-number gutter remains separate"],
+      "gutters": {"docs_reader_left_px": 69, "source_reader_post_divider_px": 6, "source_code_left_px": 72, "source_line_number_anchor_px": 104, "source_code_text_anchor_px": 140, "facet_code_ln_width_px": 34, "facet_code_ln_margin_left_px": -6, "facet_code_ln_padding_right_px": 12},
+      "baseline_steps_px": {"docs_body": 20, "source_lines": 21},
+      "whole_image_equality": false
+    },
+    {
+      "id": "gate.truncation",
+      "component": "text.truncation",
+      "severity": "blocking",
+      "evaluation": "Render long and short fixtures at wide and narrow widths; detect ellipsis/line clamp and verify no sibling overflow.",
+      "checks": ["flex labels have min-width:0", "single-line labels show ellipsis when constrained", "package description clamps at two lines", "tooltip/detail affordance returns full string", "source code scroll/clip does not move fixed gutter"]
+    },
+    {
+      "id": "gate.responsive",
+      "component": "responsive shell",
+      "severity": "blocking",
+      "evaluation": "Run captures at 1280, 620, 380, 240, 160, and 90 px widths; inspect component masks and overflow probes.",
+      "checks": ["fixed panes collapse according to responsive_transformations", "no horizontal overflow at any width", "active identity remains reachable", "minimum primary hit target is 28 px where a control remains visible", "collapsed overlays are explicitly marked in capture metadata"]
+    },
+    {
+      "id": "gate.motion",
+      "component": "motion contract",
+      "severity": "blocking",
+      "evaluation": "Capture event timestamps or sample animation progress at named durations; accept only the named duration within ±16 ms for deterministic frame cadence.",
+      "checks": ["90 ms micro state", "160 ms quick state", "240 ms standard transition", "380 ms emphatic scene item", "620 ms scene/resolve", "prefers-reduced-motion reduces animation/transition to 1 ms"]
+    }
+  ],
+  "crop_policy": {
+    "generated_crops": [],
+    "reason": "No PNG crops were generated. The source rasters are already deterministic, and .artifacts is ignored/user-owned in this worktree; adding derivative media would create review noise without improving the machine-readable evidence.",
+    "reproducible_crop_coordinates": "All inspected source crop coordinates are recorded in sources[].crop_coordinates_px or artboard_crop_coordinates_px."
+  }
+}
