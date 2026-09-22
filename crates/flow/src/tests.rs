@@ -2193,13 +2193,15 @@ fn demand_graph_tracks_exact_identities_and_mutating_interest() {
     let input_key = WorkKey::new(recipe(1), input(1), read(1), authority(1), equivalence(1));
     let output_key = WorkKey::new(recipe(2), input(2), read(2), authority(2), equivalence(2));
     graph.depends_on(output_key, input_key);
-    graph.add_demand(Demand {
-        consumer: 7,
-        work: output_key,
-        range: Some(4..=9),
-        freshness: Frontier::new(time(5)),
-        priority: 3,
-    });
+    graph
+        .add_demand(Demand {
+            consumer: 7,
+            work: output_key,
+            range: Some(4..=9),
+            freshness: Frontier::new(time(5)),
+            priority: 3,
+        })
+        .expect("demand admission");
     assert!(graph.is_demanded(output_key));
     graph.mark_dirty(input_key);
     assert!(graph.is_dirty(input_key));

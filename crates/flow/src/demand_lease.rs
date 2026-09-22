@@ -4,7 +4,7 @@
 //! and tests.  Live clients need a small ownership wrapper so a dropped or
 //! cancelled subscription cannot leave a demand row retained indefinitely.
 
-use super::{Demand, DemandGraph, WorkKey};
+use super::{Demand, DemandGraph, DemandToken, FlowError, WorkKey};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -15,7 +15,7 @@ use std::{
 #[derive(Clone, Debug, Default)]
 pub struct DemandStore {
     inner: Arc<Mutex<DemandGraph>>,
-    expirations: Arc<Mutex<BTreeMap<(u64, u64), Instant>>>,
+    expirations: Arc<Mutex<BTreeMap<(u64, DemandToken), Instant>>>,
 }
 
 impl DemandStore {
@@ -31,31 +31,34 @@ impl DemandStore {
     /// ID replaces its previous demand according to [`DemandGraph`] semantics;
     /// callers should keep IDs unique for concurrently live subscriptions.
     #[must_use = "retain the demand lease while the client remains interested"]
-    pub fn lease(&self, demand: Demand) -> DemandLease {
+    pub fn lease(&self, demand: Demand) -> Result<DemandLease, FlowError> {
         let consumer = demand.consumer;
-        let token = self.with_mut(|graph| graph.add_demand_with_token(demand));
-        DemandLease {
+        let token = self.with_mut(|graph| graph.add_demand_with_token(demand))?;
+        Ok(DemandLease {
             store: self.clone(),
             consumer,
             token,
             active: true,
             expires_at: None,
-        }
+        })
     }
 
     /// Retains one demand row with a bounded lease lifetime.
     #[must_use = "retain the demand lease while the client remains interested"]
-    pub fn lease_for(&self, demand: Demand, lifetime: Duration) -> DemandLease {
-        let mut lease = self.lease(demand);
-        let expires_at = Instant::now().checked_add(lifetime);
-        lease.expires_at = expires_at;
-        if let Some(expires_at) = expires_at {
-            self.expirations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert((lease.consumer, lease.token), expires_at);
-        }
-        lease
+    pub fn lease_for(&self, demand: Demand, lifetime: Duration) -> Result<DemandLease, FlowError> {
+        // A duration the process clock cannot represent must not become an
+        // accidentally unbounded lease. Preflight it before mutating the
+        // graph so failure is atomic.
+        let expires_at = Instant::now()
+            .checked_add(lifetime)
+            .ok_or(FlowError::Overflow)?;
+        let mut lease = self.lease(demand)?;
+        lease.expires_at = Some(expires_at);
+        self.expirations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((lease.consumer, lease.token), expires_at);
+        Ok(lease)
     }
 
     /// Reaps expired demand leases and returns the number released.
@@ -122,7 +125,7 @@ impl DemandStore {
 pub struct DemandLease {
     store: DemandStore,
     consumer: u64,
-    token: u64,
+    token: DemandToken,
     active: bool,
     expires_at: Option<Instant>,
 }
@@ -131,7 +134,7 @@ pub struct DemandLease {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DemandLeaseFence {
     consumer: u64,
-    token: u64,
+    token: DemandToken,
 }
 
 impl DemandLeaseFence {
@@ -143,7 +146,7 @@ impl DemandLeaseFence {
 
     /// Returns the lease generation used to reject stale cancellation.
     #[must_use]
-    pub const fn token(self) -> u64 {
+    pub const fn token(self) -> DemandToken {
         self.token
     }
 }

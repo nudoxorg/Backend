@@ -1630,13 +1630,15 @@ mod laws {
             Err(backend_flow::FlowError::DependencyCycle)
         ));
 
-        graph.add_demand(Demand {
-            consumer: 17,
-            work: key,
-            range: Some(2..=5),
-            freshness: Frontier::new(flow_time(5)),
-            priority: 9,
-        });
+        graph
+            .add_demand(Demand {
+                consumer: 17,
+                work: key,
+                range: Some(2..=5),
+                freshness: Frontier::new(flow_time(5)),
+                priority: 9,
+            })
+            .expect("law demand admission");
         assert!(graph.is_demanded(key));
         let removed = graph.remove_demand(17).unwrap_or_else(|| panic!("demand"));
         assert_eq!(removed.consumer, 17);

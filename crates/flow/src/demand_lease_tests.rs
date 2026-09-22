@@ -27,13 +27,15 @@ fn dropped_demand_lease_prunes_dependency_closure() {
             .try_depends_on(output, input)
             .expect("acyclic dependency");
     });
-    let lease = store.lease(Demand {
-        consumer: 7,
-        work: output,
-        range: None,
-        freshness: Frontier::new(Time::default()),
-        priority: 1,
-    });
+    let lease = store
+        .lease(Demand {
+            consumer: 7,
+            work: output,
+            range: None,
+            freshness: Frontier::new(Time::default()),
+            priority: 1,
+        })
+        .expect("lease admission");
     assert_eq!(store.with(DemandGraph::retained_work_count), 2);
     drop(lease);
     assert_eq!(store.with(DemandGraph::retained_work_count), 0);
@@ -57,22 +59,26 @@ fn replacing_a_consumer_releases_the_old_dependency_closure() {
     graph
         .try_depends_on(old_output, old_input)
         .expect("old dependency");
-    graph.add_demand(Demand {
-        consumer: 8,
-        work: old_output,
-        range: None,
-        freshness: Frontier::new(Time::default()),
-        priority: 1,
-    });
+    graph
+        .add_demand(Demand {
+            consumer: 8,
+            work: old_output,
+            range: None,
+            freshness: Frontier::new(Time::default()),
+            priority: 1,
+        })
+        .expect("old demand admission");
     assert_eq!(graph.retained_work_count(), 2);
 
-    graph.add_demand(Demand {
-        consumer: 8,
-        work: new_output,
-        range: None,
-        freshness: Frontier::new(Time::default()),
-        priority: 1,
-    });
+    graph
+        .add_demand(Demand {
+            consumer: 8,
+            work: new_output,
+            range: None,
+            freshness: Frontier::new(Time::default()),
+            priority: 1,
+        })
+        .expect("replacement demand admission");
     assert_eq!(graph.retained_work_count(), 1);
     assert_eq!(graph.dependency_count(old_output), 0);
 }
@@ -80,20 +86,24 @@ fn replacing_a_consumer_releases_the_old_dependency_closure() {
 #[test]
 fn an_old_lease_cannot_cancel_a_replacement_for_the_same_consumer() {
     let store = DemandStore::new();
-    let old = store.lease(Demand {
-        consumer: 9,
-        work: work(13),
-        range: None,
-        freshness: Frontier::new(Time::default()),
-        priority: 1,
-    });
-    let replacement = store.lease(Demand {
-        consumer: 9,
-        work: work(14),
-        range: None,
-        freshness: Frontier::new(Time::default()),
-        priority: 1,
-    });
+    let old = store
+        .lease(Demand {
+            consumer: 9,
+            work: work(13),
+            range: None,
+            freshness: Frontier::new(Time::default()),
+            priority: 1,
+        })
+        .expect("old lease admission");
+    let replacement = store
+        .lease(Demand {
+            consumer: 9,
+            work: work(14),
+            range: None,
+            freshness: Frontier::new(Time::default()),
+            priority: 1,
+        })
+        .expect("replacement lease admission");
 
     assert!(!old.release());
     assert!(store.with(|graph| graph.is_demanded(work(14))));
@@ -104,24 +114,28 @@ fn an_old_lease_cannot_cancel_a_replacement_for_the_same_consumer() {
 #[test]
 fn lease_fence_rejects_stale_owner_and_expiry_reaps_roots() {
     let store = DemandStore::new();
-    let first = store.lease_for(
-        Demand {
+    let first = store
+        .lease_for(
+            Demand {
+                consumer: 15,
+                work: work(15),
+                range: None,
+                freshness: Frontier::new(Time::default()),
+                priority: 1,
+            },
+            Duration::ZERO,
+        )
+        .expect("bounded lease admission");
+    let stale = first.fence();
+    let replacement = store
+        .lease(Demand {
             consumer: 15,
-            work: work(15),
+            work: work(16),
             range: None,
             freshness: Frontier::new(Time::default()),
             priority: 1,
-        },
-        Duration::ZERO,
-    );
-    let stale = first.fence();
-    let replacement = store.lease(Demand {
-        consumer: 15,
-        work: work(16),
-        range: None,
-        freshness: Frontier::new(Time::default()),
-        priority: 1,
-    });
+        })
+        .expect("replacement lease admission");
     assert!(!store.release_fence(stale));
     assert!(store.with(|graph| graph.is_demanded(work(16))));
     assert_eq!(store.reap_expired(Instant::now()), 0);
@@ -133,16 +147,18 @@ fn lease_fence_rejects_stale_owner_and_expiry_reaps_roots() {
 #[test]
 fn expired_lease_is_reaped_when_its_generation_is_current() {
     let store = DemandStore::new();
-    let mut lease = store.lease_for(
-        Demand {
-            consumer: 17,
-            work: work(17),
-            range: None,
-            freshness: Frontier::new(Time::default()),
-            priority: 1,
-        },
-        Duration::ZERO,
-    );
+    let mut lease = store
+        .lease_for(
+            Demand {
+                consumer: 17,
+                work: work(17),
+                range: None,
+                freshness: Frontier::new(Time::default()),
+                priority: 1,
+            },
+            Duration::ZERO,
+        )
+        .expect("renewable lease admission");
     assert!(lease.is_expired(Instant::now()));
     assert_eq!(store.reap_expired(Instant::now()), 1);
     assert!(!lease.renew(Duration::from_secs(1)));
@@ -155,13 +171,15 @@ fn demand_gc_uses_live_roots_after_manual_owner_release() {
     let input = work(18);
     let output = work(19);
     graph.try_depends_on(output, input).expect("dependency");
-    graph.add_demand(Demand {
-        consumer: 19,
-        work: output,
-        range: None,
-        freshness: Frontier::new(Time::default()),
-        priority: 1,
-    });
+    graph
+        .add_demand(Demand {
+            consumer: 19,
+            work: output,
+            range: None,
+            freshness: Frontier::new(Time::default()),
+            priority: 1,
+        })
+        .expect("demand admission");
     assert_eq!(graph.gc_roots(), BTreeSet::from([output]));
     assert_eq!(graph.collect_unreachable(), 0);
     let _ = graph.remove_demand(19);

@@ -5,7 +5,34 @@ use super::{
     RecipeIdentity,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU64;
 use std::ops::RangeInclusive;
+
+/// Nonzero generation fencing one live demand lease.
+///
+/// A consumer identity may be reused after its prior lease is released. The
+/// generation makes a delayed cancellation harmless, and its checked
+/// allocator refuses exhaustion instead of allowing an old fence to become
+/// current again.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DemandToken(NonZeroU64);
+
+impl DemandToken {
+    const FIRST: Self = Self(NonZeroU64::MIN);
+
+    /// Returns the compact wire/debug representation.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+
+    fn successor(self) -> Option<Self> {
+        self.get()
+            .checked_add(1)
+            .and_then(NonZeroU64::new)
+            .map(Self)
+    }
+}
 
 /// Demand/control graph key.
 ///
@@ -63,14 +90,27 @@ pub struct Demand {
 }
 
 /// Incrementally maintained demand graph.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct DemandGraph {
     edges: BTreeMap<WorkKey, BTreeSet<WorkKey>>,
     demands: BTreeMap<u64, Demand>,
-    demand_tokens: BTreeMap<u64, u64>,
-    next_demand_token: u64,
+    demand_tokens: BTreeMap<u64, DemandToken>,
+    next_demand_token: Option<DemandToken>,
     dirty: BTreeSet<WorkKey>,
     suppressed: BTreeSet<WorkKey>,
+}
+
+impl Default for DemandGraph {
+    fn default() -> Self {
+        Self {
+            edges: BTreeMap::new(),
+            demands: BTreeMap::new(),
+            demand_tokens: BTreeMap::new(),
+            next_demand_token: Some(DemandToken::FIRST),
+            dirty: BTreeSet::new(),
+            suppressed: BTreeSet::new(),
+        }
+    }
 }
 
 impl DemandGraph {
@@ -80,24 +120,31 @@ impl DemandGraph {
     }
 
     /// Registers one ephemeral demand row.
-    pub fn add_demand(&mut self, demand: Demand) {
-        let _ = self.add_demand_with_token(demand);
+    pub fn add_demand(&mut self, demand: Demand) -> Result<DemandToken, FlowError> {
+        self.add_demand_with_token(demand)
     }
 
     /// Registers one demand and returns its lease-generation token.
-    pub(super) fn add_demand_with_token(&mut self, demand: Demand) -> u64 {
+    pub(super) fn add_demand_with_token(
+        &mut self,
+        demand: Demand,
+    ) -> Result<DemandToken, FlowError> {
+        // Preflight the complete identity transition before changing either
+        // the demand row or its fence. The final representable token is valid;
+        // only the following admission fails.
+        let token = self.next_demand_token.ok_or(FlowError::Overflow)?;
+        let successor = token.successor();
         let consumer = demand.consumer;
-        let token = self.next_demand_token;
-        self.next_demand_token = self.next_demand_token.wrapping_add(1);
         let replaced = self.demands.insert(consumer, demand).is_some();
         self.demand_tokens.insert(consumer, token);
+        self.next_demand_token = successor;
         if replaced {
             // A consumer ID identifies one live lease.  Replacing that row
             // releases the old root's reachability before the new row is
             // observed by later scheduler calls.
             self.prune_unreachable();
         }
-        token
+        Ok(token)
     }
 
     /// Removes a demand row and releases its scheduler interest.
@@ -127,14 +174,14 @@ impl DemandGraph {
     /// Reusing a consumer ID replaces its demand.  The token prevents an
     /// older lease's delayed cancellation from removing the replacement.
     #[must_use]
-    pub fn release_demand_token(&mut self, consumer: u64, token: u64) -> bool {
+    pub fn release_demand_token(&mut self, consumer: u64, token: DemandToken) -> bool {
         if self.demand_tokens.get(&consumer) != Some(&token) {
             return false;
         }
         self.release_demand(consumer).is_some()
     }
 
-    pub(super) fn owns_demand_token(&self, consumer: u64, token: u64) -> bool {
+    pub(super) fn owns_demand_token(&self, consumer: u64, token: DemandToken) -> bool {
         self.demand_tokens.get(&consumer) == Some(&token)
     }
 
@@ -325,5 +372,47 @@ impl DemandGraph {
         });
         self.dirty.retain(|key| reachable.contains(key));
         self.suppressed.retain(|key| reachable.contains(key));
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+    use crate::Time;
+    use backend_version::ObjectVersion;
+
+    fn work(seed: u8) -> WorkKey {
+        WorkKey::new(
+            ObjectVersion::from_value(&[seed; 32]),
+            ObjectVersion::from_value(&[seed; 32]),
+            ObjectVersion::from_value(&[seed; 32]),
+            ObjectVersion::from_value(&[seed; 32]),
+            ObjectVersion::from_value(&[seed; 32]),
+        )
+    }
+
+    fn demand(consumer: u64, seed: u8) -> Demand {
+        Demand {
+            consumer,
+            work: work(seed),
+            range: None,
+            freshness: Frontier::new(Time::default()),
+            priority: 1,
+        }
+    }
+
+    #[test]
+    fn final_token_is_admitted_once_and_exhaustion_is_atomic() {
+        let mut graph = DemandGraph::default();
+        graph.next_demand_token = NonZeroU64::new(u64::MAX).map(DemandToken);
+
+        let final_token = graph.add_demand(demand(1, 1)).expect("final token");
+        assert_eq!(final_token.get(), u64::MAX);
+        assert_eq!(graph.demands.len(), 1);
+
+        assert_eq!(graph.add_demand(demand(2, 2)), Err(FlowError::Overflow));
+        assert_eq!(graph.demands.len(), 1);
+        assert!(graph.is_demanded(work(1)));
+        assert!(!graph.is_demanded(work(2)));
     }
 }
