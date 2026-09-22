@@ -883,6 +883,7 @@ dependencies = [
  "gpui-ce",
  "gpui_ce_components",
  "gpui_ce_platform",
+ "image",
  "proptest",
  "serde",
  "serde_json",

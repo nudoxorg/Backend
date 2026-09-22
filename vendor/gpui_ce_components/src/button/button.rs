@@ -10,9 +10,9 @@ use crate::{
     tooltip::{ManagedTooltipExt as _, Tooltip},
 };
 use gpui::{
-    AnyElement, App, Background, ClickEvent, Corners, Edges, ElementId, Hsla, InteractiveElement,
-    Interactivity, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
+    AnyElement, App, Background, ClickEvent, Corners, Edges, ElementId, FocusHandle, Hsla,
+    InteractiveElement, Interactivity, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce,
+    Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
     prelude::FluentBuilder as _, relative, transparent_white,
 };
 
@@ -190,6 +190,8 @@ pub struct Button {
     label: Option<SharedString>,
     /// The announced name, when the visible content is not it.
     accessibility_label: Option<SharedString>,
+    /// Supplementary text announced after the name and role.
+    accessibility_description: Option<SharedString>,
     children: Vec<AnyElement>,
     disabled: bool,
     pub(crate) selected: bool,
@@ -210,6 +212,13 @@ pub struct Button {
     tooltip_builder: Option<Rc<dyn Fn(&mut Window, &mut App) -> gpui::AnyView>>,
     on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     on_hover: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
+    /// Reports the focus handle state observed while this concrete button is
+    /// rendering. Consumers use this to bind post-layout evidence to the
+    /// same stable action id that created the button; it is deliberately
+    /// separate from the app's declared semantic state.
+    on_focus_observed: Option<Rc<dyn Fn(FocusHandle, bool, &mut Window, &mut App)>>,
+    on_hover_observed: Option<Rc<dyn Fn(bool, &mut Window, &mut App)>>,
+    on_press_observed: Option<Rc<dyn Fn(bool, &mut Window, &mut App)>>,
     loading: bool,
     loading_icon: Option<Icon>,
     focus_ring_enabled: bool,
@@ -234,6 +243,7 @@ impl Button {
             icon: None,
             label: None,
             accessibility_label: None,
+            accessibility_description: None,
             children: Vec::new(),
             disabled: false,
             selected: false,
@@ -254,6 +264,9 @@ impl Button {
             on_click: None,
             focus_ring_enabled: true,
             on_hover: None,
+            on_focus_observed: None,
+            on_hover_observed: None,
+            on_press_observed: None,
             loading: false,
             compact: false,
             outline: false,
@@ -334,6 +347,12 @@ impl Button {
         self
     }
 
+    /// Set supplementary text announced after the button's name and role.
+    pub fn accessibility_description(mut self, description: impl Into<SharedString>) -> Self {
+        self.accessibility_description = Some(description.into());
+        self
+    }
+
     /// Set the icon of the button, if the Button have no label, the button well in Icon Button mode.
     pub fn icon(mut self, icon: impl Into<ButtonIcon>) -> Self {
         self.icon = Some(icon.into());
@@ -387,6 +406,38 @@ impl Button {
     /// Add hover handler, the bool parameter indicates whether the mouse is hovering.
     pub fn on_hover(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
         self.on_hover = Some(Rc::new(handler));
+        self
+    }
+
+    /// Observe the native GPUI focus handle for the rendered button.
+    ///
+    /// This is intended for accessibility and screenshot harnesses that need
+    /// to prove which stable semantic action owns keyboard focus after
+    /// prepaint. It does not alter focus traversal or presentation.
+    pub fn on_focus_observed(
+        mut self,
+        handler: impl Fn(FocusHandle, bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_focus_observed = Some(Rc::new(handler));
+        self
+    }
+
+    /// Observe the native hover state of the rendered button without
+    /// replacing an application's visual hover callback.
+    pub fn on_hover_observed(
+        mut self,
+        handler: impl Fn(bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_hover_observed = Some(Rc::new(handler));
+        self
+    }
+
+    /// Observe pointer press/release state for semantic evidence.
+    pub fn on_press_observed(
+        mut self,
+        handler: impl Fn(bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_press_observed = Some(Rc::new(handler));
         self
     }
 
@@ -531,6 +582,9 @@ impl RenderOnce for Button {
             .read(cx)
             .clone();
         let is_focused = focus_handle.is_focused(window);
+        if let Some(observer) = self.on_focus_observed.as_ref() {
+            observer(focus_handle.clone(), is_focused, window, cx);
+        }
 
         let rounding = match self.rounded {
             ButtonRounded::Small => cx.theme().radius * 0.5,
@@ -701,6 +755,9 @@ impl RenderOnce for Button {
         .when_some(accessibility_label, |this, label| {
             this.accessibility_label(label)
         })
+        .when_some(self.accessibility_description, |this, description| {
+            this.aria_description(description)
+        })
         .when_some(self.toggled, |this, toggled| {
             this.aria_toggled(if toggled {
                 gpui::accesskit::Toggled::True
@@ -745,6 +802,24 @@ impl RenderOnce for Button {
         .when_some(self.on_hover.filter(|_| hoverable), |this, on_hover| {
             this.on_hover(move |hovered, window, cx| {
                 on_hover(hovered, window, cx);
+            })
+        })
+        .when_some(self.on_hover_observed, |this, on_hover| {
+            this.on_hover(move |hovered, window, cx| {
+                on_hover(*hovered, window, cx);
+            })
+        })
+        .when_some(self.on_press_observed, |this, on_press| {
+            let on_press_down = on_press.clone();
+            let on_press_up = on_press.clone();
+            this.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                on_press_down(true, window, cx);
+            })
+            .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                on_press_up(false, window, cx);
+            })
+            .on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
+                on_press(false, window, cx);
             })
         })
         .map(|this| {

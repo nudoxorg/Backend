@@ -28,13 +28,14 @@ backend-replication = { path = "../../crates/replication" }
 backend-runtime = { path = "../../crates/runtime" }
 gpui.workspace = true
 gpui_component.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [features]
 # Direct GPUI CE capture against the same live host/bootstrap as the product.
-visual-harness = ["dep:backend-gui-harness", "gpui_component/headless"]
+visual-harness = ["dep:backend-gui-harness", "dep:image", "gpui_component/headless"]
 
 [dependencies.backend-gui-harness]
 path = "../../tools/gui-harness"

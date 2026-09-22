@@ -28,12 +28,24 @@ pub(crate) fn render_root(
     window: &mut Window,
     cx: &mut Context<UiRootEntity>,
 ) -> AnyElement {
-    let theme = crate::theme::theme(cx);
+    let mut theme = crate::theme::theme(cx);
     let snapshot = root.snapshot();
+    // Start a fresh semantic registration frame before any component is
+    // constructed.  The same token is passed through every shared builder,
+    // including overlays, so the accessibility tree cannot retain controls
+    // from a previous route or silently drift from the rendered shell.
+    theme.begin_action_frame_with_modal(
+        window,
+        primitives::route_label(&snapshot),
+        snapshot.overlay().is_some(),
+    );
+    let header = shell::header(root, &theme, &snapshot, cx).into_any_element();
     let shelf = shell::shelf_panel(root, &theme, &snapshot, cx).into_any_element();
     let body = content_panel(root, &theme, &snapshot, cx).into_any_element();
+    let status = primitives::status_bar(&theme, &snapshot).into_any_element();
+    // Register the modal after the document shell so finalisation can mark
+    // every underlying control inert and retain the launch focus for restore.
     let overlay = shell::overlay(root, &theme, &snapshot, cx);
-    let header = shell::header(root, &theme, &snapshot, cx).into_any_element();
     let shell = surface::ground(&theme)
         .size_full()
         .font_family(theme.ui_face())
@@ -46,8 +58,12 @@ pub(crate) fn render_root(
                 .child(shelf)
                 .child(body),
         )
-        .child(primitives::status_bar(&theme, &snapshot))
+        .child(status)
         .when_some(overlay, ParentElement::child);
+    theme.publish_action_frame(window);
+    // Keep the frame token and its per-window collector available to the next
+    // harness probe without making the action tree process-global.
+    cx.set_global(theme);
     let _ = window;
     shell.into_any_element()
 }

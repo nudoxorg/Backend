@@ -2,7 +2,7 @@
 
 use crate::{
     AnimationFrame, CaptureError, CaptureRecord, CaptureSet, GuiState, InputError, InputStep,
-    Viewport, preflight_viewport,
+    SemanticProbe, Viewport, preflight_viewport,
 };
 use gpui::{
     AnyWindowHandle, App, AssetSource, Capslock, ClipboardItem, Entity, HeadlessAppContext,
@@ -141,6 +141,47 @@ where
     H: FnMut(&AnimationFrame, &mut Window, &mut App) -> Result<(), CaptureError>,
     I: FnMut(&InputStep, &mut Window, &mut App),
 {
+    capture_gpui_state_with_adapters_result_and_semantics(
+        viewport,
+        state,
+        actions,
+        frames,
+        options,
+        frame_hook,
+        input_hook,
+        |_frame, _image, _viewport, _window, _cx| Ok(None),
+        build_root,
+    )
+}
+
+/// Result-returning capture boundary that also records one semantic probe per
+/// rendered frame. The probe callback runs after the pixels are drawn, so its
+/// screenshot hash can be tied to the exact image written by the artifact
+/// session.
+pub fn capture_gpui_state_with_adapters_result_and_semantics<V, F, H, I, S>(
+    viewport: Viewport,
+    state: GuiState,
+    actions: &[InputStep],
+    frames: &[AnimationFrame],
+    options: GpuiCaptureOptions,
+    mut frame_hook: H,
+    mut input_hook: I,
+    mut semantic_hook: S,
+    build_root: F,
+) -> Result<CaptureSet, CaptureError>
+where
+    V: Render + 'static,
+    F: FnOnce(&mut Window, &mut App) -> Entity<V>,
+    H: FnMut(&AnimationFrame, &mut Window, &mut App) -> Result<(), CaptureError>,
+    I: FnMut(&InputStep, &mut Window, &mut App),
+    S: FnMut(
+        &AnimationFrame,
+        &image::RgbaImage,
+        Viewport,
+        &mut Window,
+        &mut App,
+    ) -> Result<Option<SemanticProbe>, CaptureError>,
+{
     let viewport = preflight_viewport(viewport, actions, frames)?;
     let platform = gpui_platform::current_platform(true);
     let text_system: Arc<dyn PlatformTextSystem> = platform.text_system();
@@ -174,6 +215,14 @@ where
         .update_window(window, |_, _, _| {})
         .map_err(|error| CaptureError::Gpui(error.to_string()))?;
     context.run_until_parked();
+    // Give the first rendered tab stop a real GPUI focus handle before the
+    // initial screenshot. The semantic callback will reject a metadata-only
+    // owner, so the first frame must carry the same native owner as later
+    // keyboard-driven frames.
+    context
+        .update_window(window, |_, window, cx| window.focus_next(cx))
+        .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+    context.run_until_parked();
 
     // Wait steps advance the virtual schedule; other steps are dispatched at
     // their scheduled offset, between animation frames.  This keeps an input
@@ -193,6 +242,7 @@ where
     let mut current_viewport = viewport;
     let mut input_index = None;
     let mut records = Vec::with_capacity(frames.len());
+    let mut semantic_probes = Vec::with_capacity(frames.len());
     let mut elapsed = 0_u64;
     for frame in frames {
         let mut cursor = elapsed;
@@ -235,6 +285,14 @@ where
             .map_err(|error| CaptureError::Gpui(error.to_string()))??;
         let image =
             normalize_capture_image(draw_and_capture(&mut context, window)?, current_viewport)?;
+        let probe = context
+            .update_window(window, |_, window, cx| {
+                semantic_hook(frame, &image, current_viewport, window, cx)
+            })
+            .map_err(|error| CaptureError::Gpui(error.to_string()))??;
+        if let Some(probe) = probe {
+            semantic_probes.push(probe);
+        }
         records.push(CaptureRecord {
             label: frame.label.clone(),
             time_ms: frame.time_ms,
@@ -249,6 +307,7 @@ where
         state,
         viewport,
         frames: records,
+        semantic_probes,
     })
 }
 
@@ -431,7 +490,9 @@ fn apply_step(
                 .map_err(|error| CaptureError::Gpui(error.to_string()))?;
             *viewport = next_viewport;
         }
-        InputStep::Theme { .. } | InputStep::Locale { .. } => {}
+        InputStep::Theme { .. }
+        | InputStep::Locale { .. }
+        | InputStep::TextScale { percent: _ } => {}
     }
     context
         .update_window(window, |_, window, cx| input_hook(step, window, cx))

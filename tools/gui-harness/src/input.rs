@@ -157,6 +157,13 @@ pub enum InputStep {
         /// BCP-47 locale identifier owned by the product adapter.
         value: String,
     },
+    /// Change the product interface text scale through its real preference
+    /// path. The adapter owns the font/layout mutation; the harness records
+    /// the event in the same deterministic timeline as resize and theme.
+    TextScale {
+        /// Percentage of the default interface size, from 50 through 300.
+        percent: u16,
+    },
 }
 
 impl InputStep {
@@ -317,6 +324,15 @@ impl TransitionScript {
         if self.steps.len() > 10_000 {
             return Err(InputError::TooManySteps(self.id.clone()));
         }
+        if self
+            .steps
+            .iter()
+            .any(|step| {
+                matches!(step, InputStep::TextScale { percent } if !(50_u16..=300).contains(percent))
+            })
+        {
+            return Err(InputError::InvalidTextScale);
+        }
         Ok(())
     }
 
@@ -345,6 +361,10 @@ pub enum InputError {
     /// A pointer script named an unsupported mouse button.
     #[error("invalid mouse button: {0}")]
     MouseButton(String),
+    /// A text scale outside the stress matrix is unsafe for deterministic
+    /// layout comparison.
+    #[error("text scale must be between 50% and 300%")]
+    InvalidTextScale,
 }
 
 /// Converts a serialised modifier set to GPUI's modifier type.
@@ -412,5 +432,16 @@ mod tests {
             tree.find("focus-omnibar").map(|action| action.target),
             Some(ActionTarget::Omnibar)
         );
+    }
+
+    #[test]
+    fn text_scale_stress_steps_are_serialisable_and_bounded() {
+        let step = InputStep::TextScale { percent: 200 };
+        let encoded = serde_json::to_string(&step).expect("text scale json");
+        assert!(encoded.contains("text-scale"));
+        assert!(matches!(
+            serde_json::from_str::<InputStep>(&encoded),
+            Ok(InputStep::TextScale { percent: 200 })
+        ));
     }
 }

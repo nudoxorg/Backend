@@ -35,6 +35,8 @@ pub(crate) struct Theme {
     specimen: SharedString,
     action_frames: Rc<ActionFrames>,
     action_frame: Option<ActionFrameToken>,
+    action_parent: Option<SharedString>,
+    modal_active: bool,
 }
 
 impl Global for Theme {}
@@ -75,6 +77,8 @@ impl Theme {
             specimen: SharedString::new_static(fonts::SPECIMEN_FAMILY),
             action_frames: Rc::new(ActionFrames::default()),
             action_frame: None,
+            action_parent: None,
+            modal_active: false,
         }
     }
 
@@ -82,6 +86,34 @@ impl Theme {
     pub(crate) fn with_action_frames(mut self, frames: Rc<ActionFrames>) -> Self {
         self.action_frames = frames;
         self
+    }
+
+    /// Derives a builder theme whose controls are children of one semantic
+    /// composite, such as a dialog or listbox. The action frame itself stays
+    /// shared with the owning window.
+    pub(crate) fn with_action_parent(&self, parent: impl Into<SharedString>) -> Self {
+        let mut derived = self.clone();
+        derived.action_parent = Some(parent.into());
+        derived
+    }
+
+    /// Derives a builder theme for one control subtree while preserving the
+    /// window's modal state. Dialog descendants remain tab stops when the
+    /// document shell is inert.
+    pub(crate) fn with_modal_state(mut self, active: bool) -> Self {
+        self.modal_active = active;
+        self
+    }
+
+    pub(crate) const fn modal_active(&self) -> bool {
+        self.modal_active
+    }
+
+    /// Returns whether a control built by this theme belongs in native Tab
+    /// traversal. Underlying document controls are removed while a dialog is
+    /// open; dialog descendants retain their stops through `with_action_parent`.
+    pub(crate) const fn control_tab_stop(&self) -> bool {
+        !self.modal_active || self.action_parent.is_some()
     }
 
     /// Starts the semantic frame that receives all controls built from this
@@ -94,15 +126,80 @@ impl Theme {
         self.action_frame = Some(self.action_frames.begin(window, route));
     }
 
+    pub(crate) fn begin_action_frame_with_modal(
+        &mut self,
+        window: &gpui::Window,
+        route: impl Into<SharedString>,
+        modal_active: bool,
+    ) {
+        if modal_active && !self.modal_active {
+            self.action_frames.remember_modal_restore(window);
+        } else if !modal_active && self.modal_active {
+            self.action_frames.request_modal_restore(window);
+        }
+        self.modal_active = modal_active;
+        self.begin_action_frame(window, route);
+    }
+
     /// Leaves the published frame available to the harness. A later frame
     /// replaces it atomically for this window.
-    pub(crate) fn publish_action_frame(&self, _window: &gpui::Window) {}
+    pub(crate) fn publish_action_frame(&self, window: &gpui::Window) {
+        self.action_frames.finalize(window);
+    }
 
     /// Adds one action to the current explicit window frame.
     pub(crate) fn register_action(&self, action: ActionMetadata) {
+        let action = if action.parent_value().is_none() {
+            self.action_parent
+                .as_ref()
+                .map_or(action.clone(), |parent| action.parent(parent.clone()))
+        } else {
+            action
+        };
         if let Some(token) = self.action_frame {
             self.action_frames.register(token, action);
         }
+    }
+
+    /// Returns the current per-window frame token for post-layout observers.
+    pub(crate) const fn action_frame_token(&self) -> Option<ActionFrameToken> {
+        self.action_frame
+    }
+
+    /// Shares the frame collector with measurement boundaries attached to
+    /// concrete GPUI elements.
+    pub(crate) fn action_frames_handle(&self) -> Rc<ActionFrames> {
+        self.action_frames.clone()
+    }
+
+    /// Returns rectangles measured during the current prepaint pass.
+    pub(crate) fn action_bounds(
+        &self,
+        window: &gpui::Window,
+    ) -> std::collections::HashMap<String, crate::ui::components::SemanticBounds> {
+        self.action_frames.snapshot_bounds(window)
+    }
+
+    /// Returns the focus order measured from concrete GPUI controls in this
+    /// frame. Callers must use this alongside [`Self::action_bounds`] so a
+    /// metadata-only node cannot enter keyboard assertions.
+    pub(crate) fn action_focus_order(
+        &self,
+        window: &gpui::Window,
+    ) -> std::collections::HashMap<String, u32> {
+        self.action_frames.snapshot_focus_order(window)
+    }
+
+    /// Returns the stable action id whose rendered control owned focus when
+    /// the post-layout registry observed the frame.
+    pub(crate) fn action_focus_owner(&self, window: &gpui::Window) -> Option<String> {
+        self.action_frames.snapshot_focus_owner(window)
+    }
+
+    /// Returns the action id proven by a concrete GPUI focus handle during the
+    /// current render pass. This is separate from the app-declared owner.
+    pub(crate) fn action_native_focus_owner(&self, window: &gpui::Window) -> Option<String> {
+        self.action_frames.snapshot_native_focus_owner(window)
     }
 
     /// Returns the current frame for a screenshot or accessibility harness.

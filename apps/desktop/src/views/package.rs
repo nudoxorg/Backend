@@ -45,18 +45,16 @@ pub(super) fn package_page(
             lane,
             selected: Some(package.object),
         });
-        components::button_with_state(
+        let id = format!("package-tab-{label}");
+        components::measure(
             theme,
-            format!("package-tab-{label}"),
-            label,
-            components::Weight::Quiet,
-            false,
-            true,
+            id.clone(),
+            components::button_with_state(theme, id, label, components::Weight::Quiet, false, true)
+                .selected(route == *snapshot.route())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.queue(Intent::Navigate(route.clone()), cx);
+                })),
         )
-        .selected(route == *snapshot.route())
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.queue(Intent::Navigate(route.clone()), cx);
-        }))
         .into_any_element()
     })
     .collect::<Vec<_>>();
@@ -91,7 +89,9 @@ pub(super) fn package_page(
                             "Version-pinned package dossier from the live registry projection.",
                         )),
                 )
-                .child(
+                .child(components::measure(
+                    theme,
+                    "open-docs",
                     components::button_with_state(
                         theme,
                         "open-docs",
@@ -103,7 +103,7 @@ pub(super) fn package_page(
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.queue(Intent::Navigate(doc_route.clone()), cx);
                     })),
-                ),
+                )),
         )
         .child(div().flex().gap(space(Space::Tight)).children(tabs))
         .child(package_fact_rail(theme, package))

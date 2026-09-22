@@ -14,6 +14,7 @@ mod design_contract;
 mod diff;
 mod input;
 mod journey;
+mod semantics;
 mod state;
 
 mod gpui_driver;
@@ -40,11 +41,17 @@ pub use design_contract::{
 pub use diff::{DiffBounds, DiffError, DiffMetrics, DiffPolicy, compare, diff_image, write_diff};
 pub use gpui_driver::{
     GpuiCaptureOptions, capture_gpui_state, capture_gpui_state_with_adapters,
-    capture_gpui_state_with_adapters_result, capture_gpui_state_with_hooks,
+    capture_gpui_state_with_adapters_result, capture_gpui_state_with_adapters_result_and_semantics,
+    capture_gpui_state_with_hooks,
 };
 pub use input::{ActionDescriptor, ActionTarget, ActionTree};
 pub use input::{InputError, InputStep, TransitionScript, modifiers, position};
 pub use journey::{VisibleJourney, VisibleJourneyStep};
+pub use semantics::{
+    SEMANTIC_SCHEMA, SemanticAnnouncement, SemanticBounds, SemanticError, SemanticNode,
+    SemanticProbe, SemanticRelations, SemanticRole, SemanticSource, SemanticState, changed_pixels,
+    contrast_ratio, crop_focus_ring, hash_png_pixels, meets_wcag_aa, relative_luminance,
+};
 pub use state::{
     FocusState, GuiState, OverlayState, PageState, StateError, ThemeState, parse_state,
     validate_catalog,
@@ -464,6 +471,11 @@ pub struct CaptureSet {
     pub viewport: Viewport,
     /// Captured timeline frames.
     pub frames: Vec<CaptureRecord>,
+    /// Semantic probes captured at the same frame labels and timestamps.
+    ///
+    /// Keeping these beside the in-memory pixel sequence lets the artifact
+    /// writer hash and verify the exact screenshot each probe describes.
+    pub semantic_probes: Vec<SemanticProbe>,
 }
 
 /// A durable capture session with optional baseline comparison.
@@ -578,7 +590,42 @@ impl CaptureSession {
             keyframes: frames.iter().map(|frame| frame.label.clone()).collect(),
             filmstrip_path,
         };
-        let semantic_sha256 = semantic_artifact
+        let semantic_path = semantic_artifact.map(ToOwned::to_owned).or_else(|| {
+            (!capture.semantic_probes.is_empty())
+                .then(|| format!("semantics/{}.json", capture.state.id))
+        });
+        if !capture.semantic_probes.is_empty() {
+            if capture.semantic_probes.len() != capture.frames.len() {
+                return Err(CaptureError::InvalidConfig(format!(
+                    "semantic probe count {} does not match frame count {}",
+                    capture.semantic_probes.len(),
+                    capture.frames.len()
+                )));
+            }
+            for (probe, frame) in capture.semantic_probes.iter().zip(&capture.frames) {
+                if probe.frame != frame.label
+                    || probe.time_ms != frame.time_ms
+                    || probe.viewport != (capture.viewport.width, capture.viewport.height)
+                    || probe.screenshot_sha256 != hash_png_pixels(&frame.image)
+                {
+                    return Err(CaptureError::InvalidConfig(format!(
+                        "semantic probe {} is not paired with its rendered frame",
+                        probe.frame
+                    )));
+                }
+            }
+            for probe in &capture.semantic_probes {
+                probe
+                    .validate()
+                    .map_err(|error| CaptureError::InvalidConfig(error.to_string()))?;
+            }
+            self.writer.write_json(
+                semantic_path.as_deref().unwrap_or_default(),
+                &capture.semantic_probes,
+            )?;
+        }
+        let semantic_sha256 = semantic_path
+            .as_deref()
             .map(|relative| {
                 std::fs::read(self.writer.root().join(relative))
                     .map(|bytes| hash_bytes(&bytes))
@@ -596,7 +643,7 @@ impl CaptureSession {
             sequence,
             source_revision: Some(self.provenance.source_revision.clone()),
             provenance: self.provenance.clone(),
-            semantic_artifact: semantic_artifact.map(ToOwned::to_owned),
+            semantic_artifact: semantic_path,
             semantic_sha256,
             baseline_within_policy,
             reference: self.reference.clone(),
@@ -774,6 +821,7 @@ mod tests {
                 input_index: None,
                 diff: None,
             }],
+            semantic_probes: Vec::new(),
         };
         let result = session.write_set(&mut capture, None, Some("semantics/browse.json"));
         assert!(matches!(result, Err(CaptureError::BaselineMismatch(_))));
@@ -807,6 +855,7 @@ mod tests {
                 input_index: None,
                 diff: None,
             }],
+            semantic_probes: Vec::new(),
         };
         session
             .write_set(&mut capture, None, Some("semantics/edge.json"))

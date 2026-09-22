@@ -39,30 +39,38 @@ pub(super) fn document_page(
                 .flex()
                 .gap(space(Space::Tight))
                 .child(
-                    components::button_with_state(
+                    components::measure(
                         theme,
                         "docs-source",
-                        "View source",
-                        components::Weight::Regular,
-                        false,
-                        true,
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.queue(Intent::Navigate(source_route.clone()), cx);
-                    })),
+                        components::button_with_state(
+                            theme,
+                            "docs-source",
+                            "View source",
+                            components::Weight::Regular,
+                            false,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.queue(Intent::Navigate(source_route.clone()), cx);
+                        })),
+                    ),
                 )
                 .child(
-                    components::button_with_state(
+                    components::measure(
                         theme,
                         "docs-graph",
-                        "Graph",
-                        components::Weight::Quiet,
-                        false,
-                        true,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.queue(Intent::OpenCommandPalette, cx);
-                    })),
+                        components::button_with_state(
+                            theme,
+                            "docs-graph",
+                            "Graph",
+                            components::Weight::Quiet,
+                            false,
+                            true,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.queue(Intent::OpenCommandPalette, cx);
+                        })),
+                    ),
                 ),
         )
         .child(

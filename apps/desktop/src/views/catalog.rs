@@ -65,6 +65,10 @@ fn package_cards(
     snapshot: &AppSnapshot,
     cx: &mut Context<UiRootEntity>,
 ) -> AnyElement {
+    theme.register_action(
+        components::ActionMetadata::new("package-list", "Packages", components::ActionRole::List)
+            .description("Packages available from the live index"),
+    );
     let cards = snapshot
         .catalog()
         .loaded_value()
@@ -81,6 +85,10 @@ fn package_cards(
         return loading_card(theme, snapshot.catalog().terminal()).into_any_element();
     }
     div()
+        .id(ElementId::Name("package-list".into()))
+        .role(gpui::Role::List)
+        .aria_label("Packages")
+        .aria_description("Packages available from the live index")
         .grid_cols(2)
         .gap(space(Space::Snug))
         .children(cards)
@@ -96,44 +104,58 @@ fn package_card(
     let coordinate = package.coordinate.clone();
     let title = package.name.clone();
     let version = package.version.clone();
-    surface::panel(theme)
-        .id(ElementId::Name(
-            format!("package-card-{}", package.coordinate).into(),
+    let action_id = format!("package-card-{}", package.coordinate);
+    theme.register_action(
+        components::ActionMetadata::new(
+            action_id.clone(),
+            format!("{} {}", package.name, package.version),
+            components::ActionRole::ListItem,
+        )
+        .description(format!(
+            "{} package, {} downloads, {} standing",
+            package.ecosystem, package.downloads, package.standing
         ))
-        .p(px(20.0))
-        .border(px(1.0))
-        .border_color(theme.paint(Paint::Rule2))
-        .cursor_pointer()
-        .hover(|style| style.bg(theme.paint(Paint::Tint)))
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.queue(
-                Intent::Navigate(Route::Package(PackageRoute {
-                    project: None,
-                    package: coordinate.clone(),
-                    lane: PackageLane::Overview,
-                    selected: None,
-                })),
-                cx,
-            );
-        }))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(space(Space::Tight))
-                .child(
-                    text::single_line(text::heading(theme, TypeScale::Interface))
-                        .child(title.to_string()),
-                )
-                .child(text::single_line(text::faint(theme)).child(version.to_string())),
-        )
-        .child(text::single_line(text::faint(theme)).child(package.ecosystem.to_string()))
-        .child(
-            div()
-                .flex()
-                .gap(space(Space::Gutter))
-                .child(text::single_line(text::faint(theme)).child(package.downloads.to_string()))
-                .child(text::single_line(text::faint(theme)).child(package.standing.to_string())),
-        )
-        .into_any_element()
+        .parent("package-list")
+        .relation(components::ActionRelation::FlowTo, "package-list"),
+    );
+    let click_route = Route::Package(PackageRoute {
+        project: None,
+        package: coordinate.clone(),
+        lane: PackageLane::Overview,
+        selected: None,
+    });
+    let card = components::card_button(
+        theme,
+        action_id.clone(),
+        format!("{} {}", package.name, package.version),
+        format!(
+            "{} package, {} downloads, {} standing",
+            package.ecosystem, package.downloads, package.standing
+        ),
+    )
+    .border_color(theme.paint(Paint::Rule2))
+    .hover(|style| style.bg(theme.paint(Paint::Tint)))
+    .on_click(cx.listener(move |this, _, _, cx| {
+        this.queue(Intent::Navigate(click_route.clone()), cx);
+    }))
+    .child(
+        div()
+            .flex()
+            .items_center()
+            .gap(space(Space::Tight))
+            .child(
+                text::single_line(text::heading(theme, TypeScale::Interface))
+                    .child(title.to_string()),
+            )
+            .child(text::single_line(text::faint(theme)).child(version.to_string())),
+    )
+    .child(text::single_line(text::faint(theme)).child(package.ecosystem.to_string()))
+    .child(
+        div()
+            .flex()
+            .gap(space(Space::Gutter))
+            .child(text::single_line(text::faint(theme)).child(package.downloads.to_string()))
+            .child(text::single_line(text::faint(theme)).child(package.standing.to_string())),
+    );
+    components::measure(theme, action_id, card).into_any_element()
 }

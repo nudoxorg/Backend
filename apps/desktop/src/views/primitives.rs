@@ -7,10 +7,33 @@ use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Space, TypeScale, space, type_size};
 use crate::ui::{surface, text};
-use gpui::{FontWeight, IntoElement, ParentElement, Styled, div, px};
+use gpui::{
+    FontWeight, InteractiveElement as _, IntoElement, ParentElement,
+    StatefulInteractiveElement as _, Styled, div, px,
+};
 
 pub(super) fn status_bar(theme: &Theme, snapshot: &AppSnapshot) -> impl IntoElement {
+    theme.register_action(
+        crate::ui::components::ActionMetadata::new(
+            "status-bar",
+            "Workspace status",
+            crate::ui::components::ActionRole::Status,
+        )
+        .description(if snapshot.catalog().loaded_value().is_some() {
+            "Live index ready"
+        } else {
+            "Waiting for live index"
+        }),
+    );
     div()
+        .id(gpui::ElementId::Name("status-bar".into()))
+        .role(gpui::Role::Status)
+        .aria_label("Workspace status")
+        .aria_description(if snapshot.catalog().loaded_value().is_some() {
+            "Live index ready"
+        } else {
+            "Waiting for live index"
+        })
         .h(px(28.0))
         .w_full()
         .flex_none()

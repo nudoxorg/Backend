@@ -9,7 +9,7 @@
 
 use crate::{
     CaptureManifest, CaptureMatrix, DesignContract, DiffMetrics, GuiState, OverlayState, PageState,
-    ThemeState, Viewport, hash_bytes, scenario_hash,
+    ThemeState, Viewport, hash_bytes, hash_png_pixels, scenario_hash,
 };
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
@@ -322,7 +322,8 @@ pub fn verify_capture_run(
             }
         };
 
-        let semantic_matched;
+        let mut semantic_matched;
+        let mut semantic_value = None;
         if !manifest.baseline_within_policy {
             failures.push(failure(
                 "comparison",
@@ -373,6 +374,7 @@ pub fn verify_capture_run(
                             &mut failures,
                         );
                         semantic_matched = semantic_hash_matched && semantic_evidence.valid;
+                        semantic_value = Some(value);
                         observed_states.extend(semantic_evidence.states);
                         observed_keyboard.extend(semantic_evidence.keyboard);
                         if semantic_evidence.focus {
@@ -424,6 +426,7 @@ pub fn verify_capture_run(
         }
         let mut manifest_frames = Vec::new();
         let mut images = Vec::new();
+        let mut frame_pixel_hashes = HashMap::new();
         let mut previous: Option<RgbaImage> = None;
         let mut frame_paths = BTreeSet::new();
         if manifest.frames.is_empty() {
@@ -666,6 +669,7 @@ pub fn verify_capture_run(
                 .map(|previous| changed_pixels(previous, &image));
             frame_evidence.changed_from_previous = changed;
             previous = Some(image.clone());
+            frame_pixel_hashes.insert(frame.label.clone(), hash_png_pixels(&image));
             images.push(image);
             frame_evidence.passed = actual_hash == frame.sha256
                 && frame_evidence.actual_width == Some(expected.0)
@@ -695,6 +699,14 @@ pub fn verify_capture_run(
             &policy,
             &mut failures,
         );
+        if let Some(value) = semantic_value.as_ref() {
+            semantic_matched &= verify_semantic_screenshot_hashes(
+                value,
+                &frame_pixel_hashes,
+                &relative_manifest,
+                &mut failures,
+            );
+        }
         if manifest.script_id.is_some() && !manifest.state.reduced_motion {
             observed_keyboard.insert("animation-frame".to_owned());
         }
@@ -942,6 +954,10 @@ fn inspect_semantics(
             evidence.valid = false;
             continue;
         };
+        if object.get("nodes").is_some() {
+            inspect_modern_semantic_probe(object, index, path, transition, &mut evidence, failures);
+            continue;
+        }
         let route = nonempty_string(object, "route").or_else(|| nonempty_string(object, "page"));
         if route.is_none() {
             failures.push(failure(
@@ -1101,6 +1117,475 @@ fn inspect_semantics(
         evidence.states.insert("disabled".to_owned());
     }
     evidence
+}
+
+fn inspect_modern_semantic_probe(
+    object: &serde_json::Map<String, Value>,
+    index: usize,
+    path: &str,
+    transition: bool,
+    evidence: &mut SemanticEvidence,
+    failures: &mut Vec<ConformanceFailure>,
+) {
+    if object.get("schema").and_then(Value::as_u64) != Some(1) {
+        failures.push(failure(
+            "semantic",
+            path,
+            format!("probe {index} has unsupported semantic schema"),
+        ));
+        evidence.valid = false;
+    }
+    if nonempty_string(object, "route").is_none()
+        || nonempty_string(object, "frame").is_none()
+        || nonempty_string(object, "screenshot_sha256").is_none()
+        || !matches!(
+            nonempty_string(object, "source"),
+            Some("gpui-post-layout" | "native-access-kit")
+        )
+    {
+        failures.push(failure(
+            "semantic",
+            path,
+            format!("probe {index} is missing route, frame, or screenshot identity"),
+        ));
+        evidence.valid = false;
+    }
+    let Some(nodes) = object.get("nodes").and_then(Value::as_array) else {
+        failures.push(failure(
+            "focus",
+            path,
+            format!("probe {index} has no semantic nodes"),
+        ));
+        evidence.valid = false;
+        return;
+    };
+    if nodes.is_empty() {
+        failures.push(failure(
+            "focus",
+            path,
+            format!("probe {index} semantic node list is empty"),
+        ));
+        evidence.valid = false;
+        return;
+    }
+    let mut ids = BTreeSet::new();
+    let mut nodes_by_id = std::collections::BTreeMap::new();
+    let mut focus_orders = Vec::new();
+    let mut measured_targets = Vec::new();
+    let mut visible_enabled = false;
+    let mut focused_id = None;
+    let source = nonempty_string(object, "source");
+    let viewport = object
+        .get("viewport")
+        .and_then(Value::as_array)
+        .and_then(|viewport| match viewport.as_slice() {
+            [width, height] => Some((width.as_u64()?, height.as_u64()?)),
+            _ => None,
+        });
+    if viewport.is_none() {
+        failures.push(failure(
+            "geometry",
+            path,
+            format!("probe {index} has no logical viewport dimensions"),
+        ));
+        evidence.valid = false;
+    }
+    for node in nodes {
+        let Some(node) = node.as_object() else {
+            evidence.valid = false;
+            continue;
+        };
+        let id = nonempty_string(node, "id");
+        let name = nonempty_string(node, "name");
+        let role = nonempty_string(node, "role");
+        if id.is_none() || name.is_none() || role.is_none() {
+            failures.push(failure(
+                "focus",
+                path,
+                format!("probe {index} contains a nameless semantic node"),
+            ));
+            evidence.valid = false;
+            continue;
+        }
+        let id = id.unwrap_or_default();
+        if !ids.insert(id.to_owned()) {
+            failures.push(failure(
+                "focus",
+                path,
+                format!("probe {index} duplicates node {id:?}"),
+            ));
+            evidence.valid = false;
+        }
+        nodes_by_id.insert(id.to_owned(), node);
+        let visible = node.get("visible").and_then(Value::as_bool).unwrap_or(true);
+        let enabled = node.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+        let states = node
+            .get("states")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let inert = states.iter().any(|state| state.as_str() == Some("inert"));
+        let disabled_state = states
+            .iter()
+            .any(|state| state.as_str() == Some("disabled"));
+        if !enabled && !disabled_state {
+            failures.push(failure(
+                "focus",
+                path,
+                format!("disabled node {id:?} omits disabled state"),
+            ));
+            evidence.valid = false;
+        }
+        if !enabled
+            && node
+                .get("disabled_reason")
+                .and_then(Value::as_str)
+                .map_or(true, str::is_empty)
+        {
+            failures.push(failure(
+                "focus",
+                path,
+                format!("disabled node {id:?} omits disabled reason"),
+            ));
+            evidence.valid = false;
+        }
+        let focusable_role = matches!(
+            role,
+            Some("button" | "disclosure" | "text-input" | "search" | "tab" | "list-item")
+        );
+        if visible && !inert && focusable_role {
+            let measured = node.get("measured_bounds").and_then(semantic_rect);
+            let target = node.get("measured_hit_target").and_then(semantic_rect);
+            let Some((bounds, target)) = measured.zip(target) else {
+                failures.push(failure(
+                    "geometry",
+                    path,
+                    format!("focusable node {id:?} has no measured bounds and hit target"),
+                ));
+                evidence.valid = false;
+                continue;
+            };
+            if bounds.2 == 0
+                || bounds.3 == 0
+                || target.2 < 44
+                || target.3 < 44
+                || viewport.is_some_and(|(width, height)| {
+                    bounds.0.saturating_add(bounds.2) > width
+                        || bounds.1.saturating_add(bounds.3) > height
+                        || target.0.saturating_add(target.2) > width
+                        || target.1.saturating_add(target.3) > height
+                })
+            {
+                failures.push(failure(
+                    "geometry",
+                    path,
+                    format!(
+                        "measured target for node {id:?} is empty, too small, or outside viewport"
+                    ),
+                ));
+                evidence.valid = false;
+            }
+            measured_targets.push((id.to_owned(), target));
+        }
+        if visible && enabled && !inert && focusable_role {
+            visible_enabled = true;
+            if let Some(order) = node.get("focus_order").and_then(Value::as_u64) {
+                focus_orders.push(order);
+            } else {
+                failures.push(failure(
+                    "focus",
+                    path,
+                    format!("focusable node {id:?} has no focus order"),
+                ));
+                evidence.valid = false;
+            }
+        }
+        if states.iter().any(|state| state.as_str() == Some("focused")) {
+            if !visible || !enabled || inert || !focusable_role {
+                failures.push(failure(
+                    "focus",
+                    path,
+                    format!("probe {index} marks unavailable node {id:?} as focused"),
+                ));
+                evidence.valid = false;
+            }
+            evidence.focus = true;
+            focused_id = Some(id.to_owned());
+        }
+        if states.iter().any(|state| state.as_str() == Some("hovered")) {
+            evidence.hover = true;
+        }
+        if states.iter().any(|state| state.as_str() == Some("pressed")) {
+            evidence.pressed = true;
+        }
+        if states
+            .iter()
+            .any(|state| state.as_str() == Some("selected"))
+        {
+            evidence.states.insert("selected".to_owned());
+        }
+        if states
+            .iter()
+            .any(|state| state.as_str() == Some("expanded"))
+        {
+            evidence.states.insert("expanded".to_owned());
+        }
+        if states.iter().any(|state| state.as_str() == Some("busy")) {
+            evidence.states.insert("loading".to_owned());
+        }
+        if states.iter().any(|state| state.as_str() == Some("invalid")) {
+            evidence.states.insert("error".to_owned());
+        }
+        evidence.disabled |= !enabled;
+        if let Some(keyboard) = node.get("keyboard").and_then(Value::as_array) {
+            for key in keyboard.iter().filter_map(Value::as_str) {
+                add_keyboard_token(&mut evidence.keyboard, key);
+            }
+        }
+    }
+    for (index, (left_id, left)) in measured_targets.iter().enumerate() {
+        for (right_id, right) in measured_targets.iter().skip(index + 1) {
+            if semantic_rectangles_overlap(*left, *right) {
+                failures.push(failure(
+                    "geometry",
+                    path,
+                    format!("probe {index} focus targets {left_id:?} and {right_id:?} overlap"),
+                ));
+                evidence.valid = false;
+            }
+        }
+    }
+    focus_orders.sort_unstable();
+    if focus_orders
+        .iter()
+        .enumerate()
+        .any(|(expected, actual)| *actual != expected as u64)
+    {
+        failures.push(failure(
+            "focus",
+            path,
+            format!("probe {index} focus order is not contiguous"),
+        ));
+        evidence.valid = false;
+    }
+    if !visible_enabled {
+        failures.push(failure(
+            "focus",
+            path,
+            format!("probe {index} has no visible enabled action"),
+        ));
+        evidence.valid = false;
+    }
+    for node in nodes_by_id.values() {
+        let mut targets = Vec::new();
+        if let Some(parent) = node.get("parent").and_then(Value::as_str) {
+            targets.push(parent);
+        }
+        if let Some(relations) = node.get("relations").and_then(Value::as_object) {
+            for key in ["labelled_by", "described_by", "controls", "owns", "flow_to"] {
+                if let Some(values) = relations.get(key).and_then(Value::as_array) {
+                    targets.extend(values.iter().filter_map(Value::as_str));
+                }
+            }
+        }
+        for target in targets {
+            if !ids.contains(target) {
+                failures.push(failure(
+                    "focus",
+                    path,
+                    format!("probe {index} relationship points to unknown node {target:?}"),
+                ));
+                evidence.valid = false;
+            }
+        }
+    }
+    if let Some(focused) = object.get("focused").and_then(Value::as_str) {
+        if focused_id.as_deref() != Some(focused) {
+            failures.push(failure(
+                "focus",
+                path,
+                format!("probe {index} focused id disagrees with node state"),
+            ));
+            evidence.valid = false;
+        }
+    } else if focused_id.is_some() {
+        failures.push(failure(
+            "focus",
+            path,
+            format!("probe {index} has a focused node state but no focused owner"),
+        ));
+        evidence.valid = false;
+    }
+    let native_focus = object.get("native_focus_owner").and_then(Value::as_str);
+    if source == Some("gpui-post-layout") && focused_id.is_some() && native_focus.is_none() {
+        failures.push(failure(
+            "focus",
+            path,
+            format!("probe {index} has a focused node but no native GPUI focus owner"),
+        ));
+        evidence.valid = false;
+    }
+    if let Some(native_focus) = native_focus {
+        if focused_id.as_deref() != Some(native_focus) {
+            failures.push(failure(
+                "focus",
+                path,
+                format!("probe {index} native focus owner disagrees with node state"),
+            ));
+            evidence.valid = false;
+        }
+        if !nodes_by_id.contains_key(native_focus) {
+            failures.push(failure(
+                "focus",
+                path,
+                format!("probe {index} native focus owner points to unknown node"),
+            ));
+            evidence.valid = false;
+        }
+    }
+    if object
+        .get("focus_trap")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let modal = object.get("modal_root").and_then(Value::as_str);
+        let restore = object.get("restore_focus").and_then(Value::as_str);
+        if modal.is_none() || restore.is_none() {
+            failures.push(failure(
+                "focus",
+                path,
+                format!("probe {index} modal focus trap has no root or restore target"),
+            ));
+            evidence.valid = false;
+        } else if !ids.contains(modal.unwrap_or_default())
+            || !ids.contains(restore.unwrap_or_default())
+        {
+            failures.push(failure(
+                "focus",
+                path,
+                format!("probe {index} modal focus trap points to an unknown node"),
+            ));
+            evidence.valid = false;
+        }
+        if let Some(modal) = modal {
+            for node in nodes_by_id.values() {
+                let enabled = node.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                let visible = node.get("visible").and_then(Value::as_bool).unwrap_or(true);
+                let inert = node
+                    .get("states")
+                    .and_then(Value::as_array)
+                    .is_some_and(|states| {
+                        states.iter().any(|state| state.as_str() == Some("inert"))
+                    });
+                let role = node.get("role").and_then(Value::as_str).unwrap_or_default();
+                if enabled && visible && !inert && role != "dialog" {
+                    let mut parent = node.get("parent").and_then(Value::as_str);
+                    let mut inside = false;
+                    while let Some(id) = parent {
+                        if id == modal {
+                            inside = true;
+                            break;
+                        }
+                        parent = nodes_by_id
+                            .get(id)
+                            .and_then(|parent| parent.get("parent"))
+                            .and_then(Value::as_str);
+                    }
+                    if !inside
+                        && matches!(
+                            role,
+                            "button" | "disclosure" | "text-input" | "search" | "tab" | "list-item"
+                        )
+                    {
+                        failures.push(failure(
+                            "focus",
+                            path,
+                            format!("probe {index} focus escapes modal node"),
+                        ));
+                        evidence.valid = false;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    evidence.keyboard.insert("gpui-semantic-tree".to_owned());
+    if evidence.focus {
+        evidence.keyboard.insert("focus-visible".to_owned());
+    }
+    if transition {
+        evidence.keyboard.insert("tab".to_owned());
+    }
+}
+
+fn semantic_rect(value: &Value) -> Option<(u64, u64, u64, u64)> {
+    let object = value.as_object()?;
+    Some((
+        object.get("x")?.as_u64()?,
+        object.get("y")?.as_u64()?,
+        object.get("width")?.as_u64()?,
+        object.get("height")?.as_u64()?,
+    ))
+}
+
+fn semantic_rectangles_overlap(left: (u64, u64, u64, u64), right: (u64, u64, u64, u64)) -> bool {
+    left.0 < right.0.saturating_add(right.2)
+        && right.0 < left.0.saturating_add(left.2)
+        && left.1 < right.1.saturating_add(right.3)
+        && right.1 < left.1.saturating_add(left.3)
+}
+
+fn verify_semantic_screenshot_hashes(
+    value: &Value,
+    frame_pixel_hashes: &HashMap<String, String>,
+    path: &str,
+    failures: &mut Vec<ConformanceFailure>,
+) -> bool {
+    let Some(probes) = value.as_array() else {
+        return true;
+    };
+    let mut matched = true;
+    for (index, probe) in probes.iter().enumerate() {
+        let Some(object) = probe.as_object() else {
+            continue;
+        };
+        // The legacy action-tree artifact predates screenshot-bound probes.
+        // Modern probes always carry both the frame label and pixel hash.
+        if object.get("nodes").is_none() {
+            continue;
+        }
+        let Some(frame) = object.get("frame").and_then(Value::as_str) else {
+            matched = false;
+            continue;
+        };
+        let Some(expected) = object.get("screenshot_sha256").and_then(Value::as_str) else {
+            failures.push(failure(
+                "semantic",
+                path,
+                format!("probe {index} has no screenshot pixel hash"),
+            ));
+            matched = false;
+            continue;
+        };
+        let Some(actual) = frame_pixel_hashes.get(frame) else {
+            failures.push(failure(
+                "semantic",
+                path,
+                format!("probe {index} names an unknown frame {frame:?}"),
+            ));
+            matched = false;
+            continue;
+        };
+        if expected != actual {
+            failures.push(failure(
+                "semantic",
+                path,
+                format!("probe {index} screenshot hash does not match frame {frame:?}"),
+            ));
+            matched = false;
+        }
+    }
+    matched
 }
 
 fn inspect_journeys(

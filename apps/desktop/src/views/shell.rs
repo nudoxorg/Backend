@@ -11,7 +11,10 @@ use crate::theme::palette::Paint;
 use crate::theme::tokens::{Space, TypeScale, space, type_size};
 use crate::ui::{components, surface, text};
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, Context, FontWeight, IntoElement, ParentElement, Styled, Window, div, px};
+use gpui::{
+    AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement,
+    StatefulInteractiveElement as _, Styled, Window, div, px,
+};
 use gpui_component::Selectable as _;
 
 pub(super) fn header(
@@ -21,7 +24,19 @@ pub(super) fn header(
     cx: &mut Context<UiRootEntity>,
 ) -> impl IntoElement {
     let route_label = route_label(snapshot);
+    theme.register_action(
+        components::ActionMetadata::new(
+            "window-navigation",
+            "Window navigation",
+            components::ActionRole::Navigation,
+        )
+        .description("Route history, search, settings, and workspace navigation"),
+    );
     div()
+        .id(gpui::ElementId::Name("window-navigation".into()))
+        .role(gpui::Role::Navigation)
+        .aria_label("Window navigation")
+        .aria_description("Route history, search, settings, and workspace navigation")
         .h(px(64.0))
         .w_full()
         .flex_none()
@@ -47,9 +62,19 @@ pub(super) fn header(
                 .text_color(theme.paint(Paint::Silver3))
                 .child(route_label),
         )
-        .child(nav_button(theme, "back", "‹", Intent::Back, root, cx))
-        .child(nav_button(theme, "forward", "›", Intent::Forward, root, cx))
-        .child(
+        .child(components::measure(
+            theme,
+            "back",
+            nav_button(theme, "back", "‹", Intent::Back, root, cx),
+        ))
+        .child(components::measure(
+            theme,
+            "forward",
+            nav_button(theme, "forward", "›", Intent::Forward, root, cx),
+        ))
+        .child(components::measure(
+            theme,
+            "command-palette",
             components::button_with_state(
                 theme,
                 "command-palette",
@@ -61,8 +86,10 @@ pub(super) fn header(
             .on_click(cx.listener(|this, _, _, cx| {
                 this.queue(Intent::OpenCommandPalette, cx);
             })),
-        )
-        .child(
+        ))
+        .child(components::measure(
+            theme,
+            "settings",
             components::button_with_state(
                 theme,
                 "settings",
@@ -74,7 +101,7 @@ pub(super) fn header(
             .on_click(cx.listener(|this, _, _, cx| {
                 this.queue(Intent::OpenSettings(SettingsPage::Appearance), cx);
             })),
-        )
+        ))
 }
 
 fn nav_button(
@@ -115,32 +142,41 @@ pub(super) fn shelf_panel(
                     selected: Some(item.object),
                 }),
             };
-            components::button_with_state(
+            let id = format!("shelf-{index}");
+            components::measure(
                 theme,
-                format!("shelf-{index}"),
-                item.label.to_string(),
-                components::Weight::Quiet,
-                false,
-                true,
+                id.clone(),
+                components::button_with_state(
+                    theme,
+                    id,
+                    item.label.to_string(),
+                    components::Weight::Quiet,
+                    false,
+                    true,
+                )
+                .selected(snapshot.shelf().selected.as_ref() == Some(&identity))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.queue(Intent::Navigate(route.clone()), cx);
+                })),
             )
-            .selected(snapshot.shelf().selected.as_ref() == Some(&identity))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.queue(Intent::Navigate(route.clone()), cx);
-            }))
             .into_any_element()
         })
         .collect::<Vec<_>>();
-    let add = components::button_with_state(
+    let add = components::measure(
         theme,
         "add-project",
-        "+ Add project",
-        components::Weight::Primary,
-        false,
-        true,
-    )
-    .on_click(cx.listener(|this, _, _, cx| {
-        this.queue(Intent::OpenSettings(SettingsPage::Index), cx);
-    }));
+        components::button_with_state(
+            theme,
+            "add-project",
+            "+ Add project",
+            components::Weight::Primary,
+            false,
+            true,
+        )
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.queue(Intent::OpenSettings(SettingsPage::Index), cx);
+        })),
+    );
     let _ = root;
     div()
         .w(px(248.0))
@@ -171,92 +207,143 @@ pub(super) fn overlay(
     cx: &mut Context<UiRootEntity>,
 ) -> Option<AnyElement> {
     match snapshot.overlay()? {
-        Overlay::Settings(page) => Some(
-            surface::raised(theme)
-                .absolute()
-                .top(px(92.0))
-                .right(px(28.0))
-                .w(px(440.0))
-                .p(px(24.0))
-                .flex()
-                .flex_col()
-                .gap(space(Space::Base))
-                .child(heading(theme, "Settings"))
-                .child(text::single_line(text::faint(theme)).child(page.as_str()))
-                .child(
-                    components::button_with_state(
-                        theme,
+        Overlay::Settings(page) => {
+            theme.register_action(
+                components::ActionMetadata::new(
+                    "settings-dialog",
+                    "Settings",
+                    components::ActionRole::Dialog,
+                )
+                .description("Application settings overlay"),
+            );
+            let dialog_theme = theme.with_action_parent("settings-dialog");
+            Some(
+                surface::raised(theme)
+                    .id(gpui::ElementId::Name("settings-dialog".into()))
+                    .role(gpui::Role::Dialog)
+                    .aria_label("Settings")
+                    .aria_description("Application settings overlay")
+                    .absolute()
+                    .top(px(92.0))
+                    .bottom(px(24.0))
+                    .left(px(24.0))
+                    .right(px(24.0))
+                    .mx_auto()
+                    .max_w(px(440.0))
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .p(px(24.0))
+                    .flex()
+                    .flex_col()
+                    .gap(space(Space::Base))
+                    .child(heading(&dialog_theme, "Settings"))
+                    .child(text::single_line(text::faint(&dialog_theme)).child(page.as_str()))
+                    .child(components::measure(
+                        &dialog_theme,
                         "toggle-motion",
-                        if snapshot.settings().reduced_motion {
-                            "Enable motion"
-                        } else {
-                            "Reduce motion"
-                        },
-                        components::Weight::Regular,
-                        false,
-                        true,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.queue(Intent::ToggleReducedMotion, cx);
-                    })),
-                )
-                .child(
-                    components::button_with_state(
-                        theme,
+                        components::button_with_state(
+                            &dialog_theme,
+                            "toggle-motion",
+                            if snapshot.settings().reduced_motion {
+                                "Enable motion"
+                            } else {
+                                "Reduce motion"
+                            },
+                            components::Weight::Regular,
+                            false,
+                            true,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.queue(Intent::ToggleReducedMotion, cx);
+                        })),
+                    ))
+                    .child(components::measure(
+                        &dialog_theme,
                         "close-settings",
-                        "Done",
-                        components::Weight::Primary,
-                        false,
-                        true,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.queue(Intent::DismissOverlay, cx);
-                    })),
+                        components::button_with_state(
+                            &dialog_theme,
+                            "close-settings",
+                            "Done",
+                            components::Weight::Primary,
+                            false,
+                            true,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.queue(Intent::DismissOverlay, cx);
+                        })),
+                    ))
+                    .into_any_element(),
+            )
+        }
+        Overlay::CommandPalette => {
+            theme.register_action(
+                components::ActionMetadata::new(
+                    "command-palette-dialog",
+                    "Command palette",
+                    components::ActionRole::Dialog,
                 )
-                .into_any_element(),
-        ),
-        Overlay::CommandPalette => Some(
-            surface::raised(theme)
-                .absolute()
-                .top(px(84.0))
-                .left(px(320.0))
-                .w(px(620.0))
-                .p(px(24.0))
-                .flex()
-                .flex_col()
-                .gap(space(Space::Base))
-                .child(heading(theme, "Command palette"))
-                .children(crate::navigation::ActionId::ALL.into_iter().map(|action| {
-                    let intent = action.intent();
-                    components::button_with_state(
-                        theme,
-                        action.as_str(),
-                        action.spec().label,
-                        components::Weight::Quiet,
-                        intent.is_none(),
-                        true,
-                    )
-                    .when_some(intent, |button, intent| {
-                        button.on_click(cx.listener(move |this, _, _, cx| {
-                            this.queue(intent.clone(), cx);
-                        }))
-                    })
-                    .into_any_element()
-                }))
-                .child(
-                    components::button_with_state(
-                        theme,
+                .description("Search and run workspace commands"),
+            );
+            let dialog_theme = theme.with_action_parent("command-palette-dialog");
+            Some(
+                surface::raised(theme)
+                    .id(gpui::ElementId::Name("command-palette-dialog".into()))
+                    .role(gpui::Role::Dialog)
+                    .aria_label("Command palette")
+                    .aria_description("Search and run workspace commands")
+                    .absolute()
+                    .top(px(84.0))
+                    .bottom(px(24.0))
+                    .left(px(24.0))
+                    .right(px(24.0))
+                    .mx_auto()
+                    .max_w(px(620.0))
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .p(px(24.0))
+                    .flex()
+                    .flex_col()
+                    .gap(space(Space::Base))
+                    .child(heading(&dialog_theme, "Command palette"))
+                    .children(crate::navigation::ActionId::ALL.into_iter().map(|action| {
+                        let intent = action.intent();
+                        let id = format!("palette-action-{}", action.as_str());
+                        components::measure(
+                            &dialog_theme,
+                            id.clone(),
+                            components::button_with_state(
+                                &dialog_theme,
+                                id,
+                                action.spec().label,
+                                components::Weight::Quiet,
+                                intent.is_none(),
+                                true,
+                            )
+                            .when_some(intent, |button, intent| {
+                                button.on_click(cx.listener(move |this, _, _, cx| {
+                                    this.queue(intent.clone(), cx);
+                                }))
+                            }),
+                        )
+                        .into_any_element()
+                    }))
+                    .child(components::measure(
+                        &dialog_theme,
                         "close-palette",
-                        "Close",
-                        components::Weight::Quiet,
-                        false,
-                        true,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.queue(Intent::DismissOverlay, cx);
-                    })),
-                )
-                .into_any_element(),
-        ),
+                        components::button_with_state(
+                            &dialog_theme,
+                            "close-palette",
+                            "Close",
+                            components::Weight::Quiet,
+                            false,
+                            true,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.queue(Intent::DismissOverlay, cx);
+                        })),
+                    ))
+                    .into_any_element(),
+            )
+        }
     }
 }

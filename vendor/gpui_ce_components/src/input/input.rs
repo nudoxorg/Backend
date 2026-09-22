@@ -2,9 +2,10 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AccessibleAction, AnyElement, App, DefiniteLength, Edges, Entity, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Rems, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window, div, px, relative,
+    AccessibleAction, AnyElement, App, DefiniteLength, Edges, Entity, FocusHandle, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Rems, RenderOnce, Role,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window, div,
+    px, relative,
 };
 
 use crate::button::{Button, ButtonRounded, ButtonVariants as _};
@@ -121,11 +122,18 @@ pub struct Input {
     bordered: bool,
     focus_bordered: bool,
     tab_index: isize,
+    tab_stop: bool,
     selected: bool,
     content_type: Option<InputContentType>,
     role: RoleOverride,
     accessibility_id: Option<SharedString>,
     aria_label: Option<SharedString>,
+    aria_description: Option<SharedString>,
+    /// Reports the native GPUI focus state of this concrete input during
+    /// render so semantic capture can prove the stable action owner.
+    on_focus_observed: Option<Rc<dyn Fn(FocusHandle, bool, &mut Window, &mut App)>>,
+    on_hover_observed: Option<Rc<dyn Fn(bool, &mut Window, &mut App)>>,
+    on_press_observed: Option<Rc<dyn Fn(bool, &mut Window, &mut App)>>,
 
     /// An optional context menu builder to allow a custom context menu on the input.
     ///
@@ -192,11 +200,16 @@ impl Input {
             bordered: true,
             focus_bordered: true,
             tab_index: 0,
+            tab_stop: true,
             selected: false,
             content_type: None,
             role: RoleOverride::default(),
             accessibility_id: None,
             aria_label: None,
+            aria_description: None,
+            on_focus_observed: None,
+            on_hover_observed: None,
+            on_press_observed: None,
             context_menu_builder: None,
         }
     }
@@ -209,6 +222,39 @@ impl Input {
 
     pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
         self.aria_label = Some(label.into());
+        self
+    }
+
+    /// Set supplementary text announced after the input's name and role.
+    pub fn aria_description(mut self, description: impl Into<SharedString>) -> Self {
+        self.aria_description = Some(description.into());
+        self
+    }
+
+    /// Observe the native GPUI focus handle for this rendered input.
+    pub fn on_focus_observed(
+        mut self,
+        handler: impl Fn(FocusHandle, bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_focus_observed = Some(Rc::new(handler));
+        self
+    }
+
+    /// Observe the native hover state of the rendered input.
+    pub fn on_hover_observed(
+        mut self,
+        handler: impl Fn(bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_hover_observed = Some(Rc::new(handler));
+        self
+    }
+
+    /// Observe pointer press/release state for semantic evidence.
+    pub fn on_press_observed(
+        mut self,
+        handler: impl Fn(bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_press_observed = Some(Rc::new(handler));
         self
     }
 
@@ -300,6 +346,15 @@ impl Input {
     /// Set the tab index for the input, default is 0.
     pub fn tab_index(mut self, index: isize) -> Self {
         self.tab_index = index;
+        self
+    }
+
+    /// Set whether the input participates in native Tab traversal.
+    ///
+    /// Modal shells use this together with the dialog's semantic parent so
+    /// controls behind an open overlay cannot receive keyboard focus.
+    pub fn tab_stop(mut self, tab_stop: bool) -> Self {
+        self.tab_stop = tab_stop;
         self
     }
 
@@ -500,6 +555,14 @@ impl RenderOnce for Input {
             .clone();
         let focused = input_focused
             || (frame_focus_handle.contains_focused(window, cx) && !presentation.is_disabled());
+        if let Some(observer) = self.on_focus_observed.as_ref() {
+            let focus_handle = if input_focused {
+                presentation.focus_handle().clone()
+            } else {
+                frame_focus_handle.clone()
+            };
+            observer(focus_handle, focused, window, cx);
+        }
 
         let gap_x = match self.size {
             Size::Small => px(4.),
@@ -542,6 +605,8 @@ impl RenderOnce for Input {
             .focused(focused)
             .disabled(disabled)
             .track_focus(&frame_focus_handle)
+            .tab_index(self.tab_index)
+            .tab_stop(self.tab_stop)
             .styles(|styles| {
                 styles.focused(|style| {
                     style.when(
@@ -552,6 +617,27 @@ impl RenderOnce for Input {
             })
             .role(accessibility_role)
             .when_some(aria_label, |this, label| this.aria_label(label))
+            .when_some(self.aria_description, |this, description| {
+                this.aria_description(description)
+            })
+            .when_some(self.on_hover_observed, |this, on_hover| {
+                this.on_hover(move |hovered, window, cx| {
+                    on_hover(*hovered, window, cx);
+                })
+            })
+            .when_some(self.on_press_observed, |this, on_press| {
+                let on_press_down = on_press.clone();
+                let on_press_up = on_press.clone();
+                this.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    on_press_down(true, window, cx);
+                })
+                .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                    on_press_up(false, window, cx);
+                })
+                .on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
+                    on_press(false, window, cx);
+                })
+            })
             .when_some(placeholder, |this, placeholder| {
                 this.aria_placeholder(placeholder)
             })
@@ -887,10 +973,7 @@ mod tests {
             let _ = window.draw(cx);
         });
 
-        assert_eq!(
-            *captured.lock().unwrap(),
-            vec![None, None]
-        );
+        assert_eq!(*captured.lock().unwrap(), vec![None, None]);
     }
 
     #[test]
