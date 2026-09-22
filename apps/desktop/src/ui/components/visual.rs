@@ -89,6 +89,7 @@ pub(crate) fn button_with_state_and_accessible(
         .rounded(ButtonRounded::None)
         .px(theme.space(Space::Base))
         .py(px(4.0))
+        .min_w(px(44.0))
         .min_h(px(44.0))
         .border(hairline())
         .border_color(border)

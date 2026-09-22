@@ -12,7 +12,8 @@
 #[cfg(unix)]
 pub mod surface_matrix;
 
-use backend_desktop::{Model as DesktopModel, SubscriptionRequest};
+use backend_client::SubscriptionRequest;
+use backend_desktop::{core::VersionedRoot, model::AppSnapshot};
 use backend_engine::dispatch::{
     Blake3AuthorityVerifier, CompleteSemanticCoverage, DispatchCompletion, DispatchError,
     DispatchPlan, Dispatcher, ExpectedInput, LoopbackTransport, OutputAdmissionValidator,
@@ -1077,46 +1078,29 @@ fn bounded_subscription_returns_real_events_and_resets_on_a_gap() {
 }
 
 #[test]
-fn desktop_reduces_a_checked_delta_and_accepts_a_bounded_reset() {
+fn desktop_rekeys_one_snapshot_without_copying_unchanged_branches() {
     let (library, capability) = checked_library();
     let base = library.view().clone();
-    let mut desktop = DesktopModel::try_new(base.clone(), base.basis().root)
-        .unwrap_or_else(|error| panic!("desktop model: {error}"));
+    let desktop = AppSnapshot::empty(VersionedRoot::new(base.root(), 7));
+    let shelf = desktop.shelf() as *const _;
+    let documents = desktop.documents() as *const _;
     let row = Row::new(
         RowId::Symbol(symbol_key("journey::desktop")),
         base.basis(),
         "desktop",
     );
-    let (library, committed) = advance_library(library, ViewDelta::Upsert { row }, &capability);
-    desktop
-        .reduce_checked(CursorRead::Events {
-            cursor: library.cursor(),
-            events: vec![CursorEvent::View {
-                delta: Box::new(committed),
-            }]
-            .into_boxed_slice(),
-        })
-        .unwrap_or_else(|error| panic!("desktop reduce: {error}"));
-    assert_eq!(desktop.root(), library.view());
-    let credit = desktop.credit();
-    assert!(SubscriptionRequest::new(desktop.cursor(), credit).is_ok());
-
-    let reset_count = desktop.reset_count;
-    desktop
-        .reduce_checked(CursorRead::Reset {
-            cursor: Cursor::for_view_root_at(
-                library.view(),
-                library
-                    .cursor()
-                    .sequence()
-                    .checked_add(1)
-                    .unwrap_or_else(|| panic!("desktop reset cursor overflow")),
-            ),
-            root: Box::new(library.view().clone()),
-            reason: CursorResetReason::Gap,
-        })
-        .unwrap_or_else(|error| panic!("desktop reset: {error}"));
-    assert_eq!(desktop.reset_count, reset_count + 1);
+    let (library, _) = advance_library(library, ViewDelta::Upsert { row }, &capability);
+    let rekeyed = desktop.with_key(
+        VersionedRoot::new(library.view().root(), 7).with_generation(1),
+        None,
+    );
+    assert_eq!(rekeyed.root(), library.view().root());
+    assert!(core::ptr::eq(shelf, rekeyed.shelf()));
+    assert!(core::ptr::eq(documents, rekeyed.documents()));
+    assert!(
+        SubscriptionRequest::new(library.cursor(), backend_library::MAX_SUBSCRIPTION_EVENTS)
+            .is_ok()
+    );
 }
 
 fn store_coverage() -> CoverageWitness {

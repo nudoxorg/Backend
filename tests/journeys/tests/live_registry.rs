@@ -13,7 +13,11 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use backend_client::Session;
-use backend_desktop::Model as DesktopModel;
+use backend_desktop::{
+    core::VersionedRoot,
+    navigation::RequestId,
+    runtime::{CancellationToken, EngineClient, EngineDto, EngineRequest, LocalEngineClient},
+};
 use backend_library::{
     AcquisitionDecision, Command, CommandDto, CommandReply, DependencyFacts, PackageReference,
     ProductText, ProjectName, RegistryDownloadCount, RegistryMetadata, RowId, SurfaceCommand,
@@ -702,16 +706,20 @@ fn assert_desktop_root(endpoint: &Path) -> (backend_library::ViewRoot, String) {
         panic!("desktop package reply changed shape");
     };
     let root = snapshot.root;
-    let model = DesktopModel::try_new(root.clone(), root.basis().root)
-        .expect("desktop reducer admitted live root");
-    assert_eq!(model.root().root(), root.root());
-    assert!(
-        model
-            .root()
-            .rows()
-            .iter()
-            .any(|row| row.label.starts_with("pkg:"))
-    );
+    let basis = VersionedRoot::new(root.root(), 1);
+    let mut desktop = LocalEngineClient::new(endpoint, "live-registry");
+    let mapped = desktop
+        .execute(&EngineRequest::Root {
+            request: RequestId::new(1),
+            basis,
+            cancel: CancellationToken::new(),
+        })
+        .expect("desktop runtime adapter admitted live root");
+    let EngineDto::Root { key, .. } = mapped else {
+        panic!("desktop root request changed shape");
+    };
+    assert_eq!(key.root, root.root());
+    assert!(root.rows().iter().any(|row| row.label.starts_with("pkg:")));
 
     // Exercise the semantic-side desktop journey against the same root. A
     // package-only row is still a valid indexed package, while a symbol row

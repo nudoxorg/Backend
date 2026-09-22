@@ -8,7 +8,11 @@
 #![allow(unreachable_pub)]
 
 use backend_client::Session;
-use backend_desktop::Model as DesktopModel;
+use backend_desktop::{
+    core::VersionedRoot,
+    navigation::RequestId,
+    runtime::{CancellationToken, EngineClient, EngineDto, EngineRequest, LocalEngineClient},
+};
 use backend_library::{CommandReply, RowId, ViewStateRoot, view_state_root};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -393,9 +397,30 @@ pub fn desktop_probe(
         expected_root,
         "desktop package source basis drifted"
     );
-    let model = DesktopModel::try_new(packages.root.clone(), packages.root.basis().root)
-        .expect("desktop model admits production root");
-    assert_eq!(model.root().basis().root, expected_root);
+    let basis = VersionedRoot::new(expected_root, 1);
+    let request = RequestId::new(1);
+    let mut desktop = LocalEngineClient::new(endpoint, project.to_string_lossy().into_owned());
+    let mapped = desktop
+        .execute(&EngineRequest::Root {
+            request,
+            basis,
+            cancel: CancellationToken::new(),
+        })
+        .expect("desktop runtime adapter admits production root");
+    let EngineDto::Root {
+        key,
+        project: desktop_project,
+        ..
+    } = mapped
+    else {
+        panic!("desktop root request changed shape");
+    };
+    assert_eq!(key.root, expected_root);
+    assert_eq!(
+        desktop_project.as_ref().map(|value| value.label.as_ref()),
+        Some(project.to_string_lossy().as_ref()),
+        "desktop runtime lost the selected project identity"
+    );
 
     for (coordinate, identity) in expected {
         let search = session

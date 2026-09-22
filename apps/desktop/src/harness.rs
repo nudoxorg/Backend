@@ -7,16 +7,16 @@
 //! that graph offscreen. No fixture store or second UI state model is allowed
 //! here.
 
-use backend_client::Session;
+use backend_client::{LocalSubscriptionTransport, Session};
 use backend_gui_harness::{
     AnimationFrame, CaptureConfig, CaptureError, CaptureSet, GpuiCaptureOptions, GuiState,
     ImeObservation, ImeOperation, InputError, InputStep, OverlayState, PageState,
-    SemanticAnnouncement, SemanticBounds as HarnessBounds, SemanticNode, SemanticProbe,
-    SemanticRelations, SemanticRole, SemanticState, Viewport,
+    SemanticAnnouncement, SemanticBounds as HarnessBounds, SemanticError, SemanticNode,
+    SemanticProbe, SemanticRelations, SemanticRole, SemanticState, Viewport,
     capture_gpui_state_with_timed_adapters_and_ime_result,
 };
 use backend_library::{SurfaceCommand, SurfaceReply};
-use gpui::{App, AppContext as _, Entity, FocusHandle, Focusable as _, Window};
+use gpui::{App, AppContext as _, Entity, FocusHandle, Focusable as _, WeakEntity, Window};
 use gpui_component::{WindowExt as _, input::AnyInputState};
 use image::RgbaImage;
 use std::cell::RefCell;
@@ -44,8 +44,12 @@ pub fn capture_live(
 ) -> Result<CaptureSet, String> {
     config.validate().map_err(|error| error.to_string())?;
     let host = DesktopHost::start().map_err(|error| error.to_string())?;
+    let mut subscription =
+        LocalSubscriptionTransport::connect(host.endpoint()).map_err(|error| error.to_string())?;
+    let (view, _) = subscription
+        .bootstrap_root()
+        .map_err(|error| error.to_string())?;
     let mut session = Session::connect(host.endpoint()).map_err(|error| error.to_string())?;
-    let view = session.view().map_err(|error| error.to_string())?;
     let basis = VersionedRoot::new(view.root(), 1);
     let catalog = live_catalog(&mut session);
     let snapshot = snapshot_for_capture(&host, basis, catalog);
@@ -58,7 +62,7 @@ pub fn capture_live(
     let runtime = DesktopRuntime::new(snapshot, actor);
     let route = route_for_state(&state, runtime.snapshot());
     let overlay = state.overlay;
-    let capture_root: Rc<RefCell<Option<gpui::Entity<crate::runtime::UiRootEntity>>>> =
+    let capture_root: Rc<RefCell<Option<WeakEntity<crate::runtime::UiRootEntity>>>> =
         Rc::new(RefCell::new(None));
     let frame_root = capture_root.clone();
     let input_root = capture_root.clone();
@@ -72,7 +76,7 @@ pub fn capture_live(
         frames,
         GpuiCaptureOptions::default(),
         move |frame, _window, cx| {
-            if let Some(root) = frame_root.borrow().as_ref().cloned() {
+            if let Some(root) = frame_root.borrow().as_ref().and_then(WeakEntity::upgrade) {
                 root.update(cx, |root, _cx| {
                     root.set_capture_time(Duration::from_millis(frame.time_ms));
                 });
@@ -80,7 +84,7 @@ pub fn capture_live(
             Ok(())
         },
         move |time_ms, step, window, cx| {
-            if let Some(root) = input_root.borrow().as_ref().cloned() {
+            if let Some(root) = input_root.borrow().as_ref().and_then(WeakEntity::upgrade) {
                 root.update(cx, |root, _cx| {
                     root.set_capture_time(Duration::from_millis(time_ms));
                 });
@@ -137,7 +141,7 @@ pub fn capture_live(
                     _ => {}
                 }
             });
-            *capture_root.borrow_mut() = Some(root.clone());
+            *capture_root.borrow_mut() = Some(root.downgrade());
             cx.new(|cx| gpui_component::Root::new(root, window, cx).bordered(false))
         },
     )
@@ -446,9 +450,26 @@ pub fn capture_rendered_semantics(
         probe.nodes.push(node);
     }
     probe.focused = native_focus_owner;
-    probe
-        .validate()
-        .map_err(|error| CaptureError::InvalidConfig(error.to_string()))?;
+    probe.validate().map_err(|error| {
+        let detail = match &error {
+            SemanticError::OverlappingFocusTargets { left, right } => {
+                let target = |id: &str| {
+                    probe
+                        .nodes
+                        .iter()
+                        .find(|node| node.id == id)
+                        .and_then(|node| node.measured_hit_target)
+                };
+                format!(
+                    "; measured {left:?}={:?}, {right:?}={:?}",
+                    target(left),
+                    target(right)
+                )
+            }
+            _ => String::new(),
+        };
+        CaptureError::InvalidConfig(format!("{error}{detail}"))
+    })?;
     Ok(Some(probe))
 }
 

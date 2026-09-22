@@ -28,7 +28,12 @@ pub(super) fn status_bar(
             "Live index ready"
         } else {
             "Waiting for live index"
-        }),
+        })
+        .with_value(format!(
+            "revision={};shelf={}",
+            snapshot.key(),
+            snapshot.shelf().items.len()
+        )),
     );
     div()
         .id(gpui::ElementId::Name("status-bar".into()))

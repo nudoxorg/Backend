@@ -7,7 +7,7 @@
 #![deny(unsafe_code)]
 
 #[cfg(unix)]
-use backend_desktop::capture_live_workspace_journey;
+use backend_desktop::harness::capture_live;
 #[cfg(unix)]
 use backend_gui_harness::{
     CaptureConfig, GuiState, InputStep, PageState, Viewport, animation_frames_for_state,
@@ -56,61 +56,82 @@ fn run(args: Vec<String>) -> Result<(), String> {
         other => return Err(format!("unknown GUI journey {other:?}")),
     };
     let frames = animation_frames_for_state(&config, &state);
-    let capture = capture_live_workspace_journey(config, state, &actions, &frames)?;
+    let capture = capture_live(config, state, &actions, &frames)?;
     let probe = capture
-        .semantics
+        .semantic_probes
         .last()
         .ok_or_else(|| "live GUI capture emitted no semantic probes".to_owned())?;
-    if capture.capture.frames.is_empty() {
+    if capture.frames.is_empty() {
         return Err("live GUI capture emitted no frames".to_owned());
     }
-    if probe.onboarding != expected_onboarding {
+    let status = probe
+        .nodes
+        .iter()
+        .find(|node| node.id == "status-bar")
+        .and_then(|node| node.value.as_deref())
+        .ok_or_else(|| "live GUI semantics omitted the versioned workspace status".to_owned())?;
+    let (data_revision, shelf_count) = parse_status(status)?;
+    let onboarding = shelf_count == 0;
+    if onboarding != expected_onboarding {
         return Err(format!(
             "GUI journey ended with onboarding={}, expected {expected_onboarding}: {}",
-            probe.onboarding,
+            onboarding,
             serde_json::to_string(probe).unwrap_or_else(|_| "<unserializable>".to_owned())
         ));
     }
-    if probe.shelf_count < minimum_shelf {
+    if shelf_count < minimum_shelf {
         let trace = capture
-            .semantics
+            .semantic_probes
             .iter()
             .map(|probe| {
                 format!(
-                    "input={:?} overlay={} focus={} shelf={} route={}",
-                    probe.input_index, probe.overlay, probe.focus, probe.shelf_count, probe.route
+                    "frame={} time={} modal={:?} focus={:?} route={}",
+                    probe.frame, probe.time_ms, probe.modal_root, probe.focused, probe.route
                 )
             })
             .collect::<Vec<_>>()
             .join("; ");
         return Err(format!(
             "GUI journey admitted {} shelf projects, expected at least {minimum_shelf}; trace: {trace}",
-            probe.shelf_count,
+            shelf_count,
         ));
     }
-    if probe.data_revision.trim().is_empty() {
+    if data_revision.trim().is_empty() {
         return Err("GUI semantic probe omitted its admitted data revision".to_owned());
     }
-    if probe.route.trim().is_empty() || probe.action_tree_route.trim().is_empty() {
+    if probe.route.trim().is_empty() {
         return Err("GUI replacement shell omitted its route contract".to_owned());
     }
-    if probe.action_tree_revision == 0 || probe.actions.is_empty() {
+    if probe.nodes.is_empty() {
         return Err("GUI replacement shell omitted its published action tree".to_owned());
     }
     println!(
         "{}",
         json!({
             "journey": journey,
-            "frames": capture.capture.frames.len(),
-            "semantic_probes": capture.semantics.len(),
-            "onboarding": probe.onboarding,
-            "shelf_count": probe.shelf_count,
-            "data_revision": probe.data_revision,
-            "coordinate": probe.coordinate,
-            "coordinate_revision": probe.coordinate_revision,
+            "frames": capture.frames.len(),
+            "semantic_probes": capture.semantic_probes.len(),
+            "onboarding": onboarding,
+            "shelf_count": shelf_count,
+            "data_revision": data_revision,
+            "route": probe.route,
+            "screenshot_sha256": probe.screenshot_sha256,
         })
     );
     Ok(())
+}
+
+#[cfg(unix)]
+fn parse_status(value: &str) -> Result<(&str, u64), String> {
+    let revision = value
+        .strip_prefix("revision=")
+        .and_then(|value| value.split_once(";shelf="))
+        .ok_or_else(|| format!("invalid versioned workspace status {value:?}"))?;
+    let shelf = revision
+        .1
+        .parse::<u64>()
+        .map_err(|_| format!("invalid shelf count in workspace status {value:?}"))?;
+    Ok((revision.0, shelf))
 }
 
 #[cfg(unix)]

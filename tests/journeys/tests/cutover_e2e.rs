@@ -16,7 +16,6 @@ mod unix_journeys {
         SemanticBasisSchema, SessionKey, SourceExcerptExtent, SyntaxError, SyntaxFrontend,
         typed_of,
     };
-    use backend_desktop::Model as DesktopModel;
     use backend_engine::{
         AttemptId, AuthorityEpoch, AuthorityVersion, CancelAttempt, CancellationId,
         CapabilityManifest, ExecutionScopeId, Fence, ResourceEnvelope, TransportLimits,
@@ -32,6 +31,7 @@ mod unix_journeys {
         WireSchema,
     };
     use backend_replication::{RecipeCapability, SchemaDescriptor, VersionRange};
+    use backend_semantic::vocabulary::LanguageProfile;
     use backend_version::{
         AuthorityScopeClaim, CoverageWitness, ObjectClosure, ProducerObservationClaims,
         ProducerObservationVerifier, Relation, RelationBinding, RelationState,
@@ -39,7 +39,6 @@ mod unix_journeys {
         admit_producer_observation,
     };
     use backend_worker::{WorkerLimits, read_message, write_message};
-    use backend_semantic::vocabulary::LanguageProfile;
     use std::ffi::OsString;
     use std::io::{Read, Write};
     use std::net::Shutdown;
@@ -656,8 +655,9 @@ mod unix_journeys {
         let mut semantic_entries = entries
             .iter()
             .map(|(expected_package, record)| {
-                let coordinate = backend_semantic::vocabulary::PackageUrl::parse(record.label().to_owned())
-                    .unwrap_or_else(|error| panic!("semantic fixture coordinate: {error}"));
+                let coordinate =
+                    backend_semantic::vocabulary::PackageUrl::parse(record.label().to_owned())
+                        .unwrap_or_else(|error| panic!("semantic fixture coordinate: {error}"));
                 let package = backend_engine::PackageReference::parse(record.label().to_owned())
                     .unwrap_or_else(|error| {
                         panic!("semantic fixture package reference: {error:?}")
@@ -674,18 +674,18 @@ mod unix_journeys {
                     backend_semantic::vocabulary::PackageType::Npm => LanguageProfile::TypeScript(
                         backend_semantic::vocabulary::TypeScriptSource::TypeScript,
                     ),
-                    backend_semantic::vocabulary::PackageType::Pypi => {
-                        LanguageProfile::Python(backend_semantic::vocabulary::PythonVersion::Python314)
-                    }
+                    backend_semantic::vocabulary::PackageType::Pypi => LanguageProfile::Python(
+                        backend_semantic::vocabulary::PythonVersion::Python314,
+                    ),
                     backend_semantic::vocabulary::PackageType::Golang => {
                         LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125)
                     }
                     backend_semantic::vocabulary::PackageType::Maven => {
                         LanguageProfile::Java(backend_semantic::vocabulary::JavaRelease::Java25)
                     }
-                    backend_semantic::vocabulary::PackageType::Nuget => {
-                        LanguageProfile::CSharp(backend_semantic::vocabulary::CSharpVersion::CSharp14)
-                    }
+                    backend_semantic::vocabulary::PackageType::Nuget => LanguageProfile::CSharp(
+                        backend_semantic::vocabulary::CSharpVersion::CSharp14,
+                    ),
                     backend_semantic::vocabulary::PackageType::Generic => {
                         panic!("generic semantic fixture needs an explicit language profile")
                     }
@@ -1833,18 +1833,14 @@ mod unix_journeys {
                 .any(|record| record.generation == second.generation),
             "restart dropped the newer immutable history generation"
         );
-        let mut desktop_transport = backend_desktop::UnixSubscriptionTransport::connect(&endpoint)
+        let mut desktop_transport = backend_client::LocalSubscriptionTransport::connect(&endpoint)
             .unwrap_or_else(|error| panic!("connect desktop history transport: {error}"));
         let (desktop_root, desktop_cursor) =
             desktop_transport.bootstrap_root().unwrap_or_else(|error| {
                 panic!("hydrate selected semantic root after restart: {error}")
             });
-        let desktop_basis = desktop_root.basis().root;
-        let desktop = DesktopModel::try_new_at(desktop_root, desktop_cursor, desktop_basis)
-            .unwrap_or_else(|error| panic!("admit selected semantic root in desktop: {error}"));
         assert!(
-            desktop
-                .root()
+            desktop_root
                 .rows()
                 .iter()
                 .any(|row| row.label.contains("first_marker")),
@@ -2791,7 +2787,6 @@ mod unix_journeys {
             "the typed status must carry the whole revision: {cli_json}"
         );
 
-
         let request = CommandDto::new(1, Command::Health);
         let input = backend_mcp::encode_request(&request)
             .unwrap_or_else(|error| panic!("encode MCP request: {error}"));
@@ -2977,11 +2972,9 @@ mod unix_journeys {
             "the page did not retain complete source: {page:?}"
         );
         assert!(
-            page["source"]["lines"]
-                .as_array()
-                .is_some_and(|lines| lines.iter().any(|line| {
-                    line.as_str().is_some_and(|text| text.contains("ferris"))
-                })),
+            page["source"]["lines"].as_array().is_some_and(|lines| lines
+                .iter()
+                .any(|line| { line.as_str().is_some_and(|text| text.contains("ferris")) })),
             "document retrieval did not return bounded Rust source: {page:?}"
         );
         assert!(
@@ -3180,8 +3173,20 @@ mod unix_journeys {
             "MCP async Trustfall query did not return the live TypeScript declaration: {:?}",
             json_replies[2]
         );
-        let desktop_search = backend_desktop::search_endpoint(&endpoint, "turing function", 8)
+        let mut desktop_client = backend_client::Session::connect(&endpoint)
+            .unwrap_or_else(|error| panic!("connect desktop client: {error}"));
+        let desktop_search = desktop_client
+            .search("turing function", 8)
             .unwrap_or_else(|error| panic!("desktop owner search failed: {error}"));
+        let desktop_search = match desktop_search.reply {
+            CommandReply::Search(snapshot) => snapshot
+                .root
+                .rows()
+                .iter()
+                .map(|row| row.id)
+                .collect::<Vec<_>>(),
+            other => panic!("desktop search reply changed shape: {other:?}"),
+        };
         let turing_coordinate = format!("{}::src/main.ts:2::turing", project.display());
         assert!(
             desktop_search.contains(&backend_library::RowId::Symbol(
@@ -3203,19 +3208,23 @@ mod unix_journeys {
         };
         let seed_basis = desktop_seed.basis().root;
         assert_eq!(seed_basis, readiness.revision().root());
-        let mut desktop_transport = backend_desktop::UnixSubscriptionTransport::connect(&endpoint)
+        let mut desktop_transport = backend_client::LocalSubscriptionTransport::connect(&endpoint)
             .unwrap_or_else(|error| panic!("connect desktop transport: {error}"));
         let (desktop_root, desktop_cursor) = desktop_transport
             .bootstrap_root()
             .unwrap_or_else(|error| panic!("hydrate desktop owner generation: {error}"));
         assert_eq!(desktop_root.root(), readiness.revision().root());
-        let desktop_basis = desktop_root.basis().root;
-        let mut desktop = DesktopModel::try_new_at(desktop_root, desktop_cursor, desktop_basis)
-            .unwrap_or_else(|error| panic!("desktop checked owner generation: {error}"));
-        let read = desktop.poll_transport(&mut desktop_transport);
+        let read = desktop_transport.subscribe_with_certificate(
+            backend_client::SubscriptionRequest::new(
+                desktop_cursor,
+                backend_library::MAX_SUBSCRIPTION_EVENTS,
+            )
+            .unwrap_or_else(|error| panic!("desktop subscription request: {error}")),
+            None,
+        );
         assert!(read.is_ok(), "desktop subscription failed: {read:?}");
-        assert_eq!(desktop.root().root(), readiness.revision().root());
-        assert!(desktop.root().row_count() >= 15);
+        assert_eq!(desktop_root.root(), readiness.revision().root());
+        assert!(desktop_root.row_count() >= 15);
         // The CLI's own contribution to this claim is asserted where it is
         // observable: it read the same exact revision, through a session that
         // admits producer certificates, and its product JSON carried none of

@@ -13,8 +13,7 @@
 #[path = "../src/surface_matrix.rs"]
 mod surface_matrix;
 
-use backend_client::Session;
-use backend_desktop::{SubscriptionRequest, UnixSubscriptionTransport};
+use backend_client::{LocalSubscriptionTransport, Session, SubscriptionRequest};
 use backend_engine::capability::CapabilityArtifactId;
 use backend_engine::registry::{RegistryEcosystem, RegistryEndpoint, storage_root};
 use backend_library::{
@@ -1189,7 +1188,7 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
         Some(&daemon),
     );
 
-    let mut subscription = UnixSubscriptionTransport::connect(&endpoint)
+    let mut subscription = LocalSubscriptionTransport::connect(&endpoint)
         .expect("connect live subscription before SIGKILL");
     let (subscription_root, subscription_cursor) = subscription
         .bootstrap_root()
@@ -1330,7 +1329,7 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
     );
 
     let reconnect_started = Instant::now();
-    let mut reconnected_subscription = UnixSubscriptionTransport::connect(&endpoint)
+    let mut reconnected_subscription = LocalSubscriptionTransport::connect(&endpoint)
         .expect("connect subscription after daemon restart");
     let resumed = reconnected_subscription
         .subscribe_with_certificate(

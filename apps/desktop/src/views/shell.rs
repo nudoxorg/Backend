@@ -230,13 +230,13 @@ pub(super) fn orbit_rail(
     layout: ResponsiveLayout,
     cx: &mut Context<UiRootEntity>,
 ) -> impl IntoElement {
-    let compact = layout.collapse.is_compact();
     let home = Route::Orbit(OrbitRoute::Home);
     let shelf_sheet = (layout.shelf == PanelMode::Sheet).then(|| {
         responsive_sheet_trigger(
             theme,
             "orbit-shelf-sheet",
-            if compact { "▤" } else { "Shelf" },
+            "▤",
+            "Shelf",
             SheetKind::Shelf,
             layout.sheet_width(SheetKind::Shelf),
             cx.weak_entity(),
@@ -247,7 +247,8 @@ pub(super) fn orbit_rail(
         responsive_sheet_trigger(
             theme,
             "orbit-context-sheet",
-            if compact { "≡" } else { "Context" },
+            "≡",
+            "Context",
             SheetKind::Context,
             layout.sheet_width(SheetKind::Context),
             cx.weak_entity(),
@@ -272,10 +273,11 @@ pub(super) fn orbit_rail(
         .child(components::measure(
             theme,
             "orbit-home",
-            components::button_with_state(
+            components::button_with_state_and_accessible(
                 theme,
                 "orbit-home",
-                if compact { "⌂" } else { "Home" },
+                "⌂",
+                "Home",
                 components::Weight::Quiet,
                 snapshot.route() == &home,
                 true,
@@ -290,10 +292,11 @@ pub(super) fn orbit_rail(
         .child(components::measure(
             theme,
             "orbit-overflow",
-            components::button_with_state(
+            components::button_with_state_and_accessible(
                 theme,
                 "orbit-overflow",
-                if compact { "⋯" } else { "More" },
+                "⋯",
+                "More",
                 components::Weight::Quiet,
                 false,
                 true,
@@ -311,6 +314,7 @@ fn responsive_sheet_trigger(
     theme: &Theme,
     id: &'static str,
     label: &'static str,
+    accessible_label: &'static str,
     kind: SheetKind,
     width: crate::core::layout::LogicalPx,
     root: WeakEntity<UiRootEntity>,
@@ -319,36 +323,37 @@ fn responsive_sheet_trigger(
     components::measure(
         theme,
         id,
-        components::button_with_state(theme, id, label, components::Weight::Quiet, false, true)
-            .on_click(move |_, window, app| {
-                let sheet_theme = sheet_theme.clone();
-                let root = root.clone();
-                let placement = match kind {
-                    SheetKind::Shelf => Placement::Left,
-                    SheetKind::Context | SheetKind::Details => Placement::Right,
-                };
-                Root::update(window, app, move |ce_root, window, ce_cx| {
-                    ce_root.open_sheet_at(
-                        placement,
-                        move |sheet, _window, app| {
-                            let Some(root_entity) = root.upgrade() else {
-                                return sheet;
-                            };
-                            let snapshot = root_entity.read(app).snapshot();
-                            responsive_sheet(
-                                sheet,
-                                &sheet_theme,
-                                kind,
-                                width,
-                                root.clone(),
-                                snapshot,
-                            )
-                        },
-                        window,
-                        ce_cx,
-                    );
-                });
-            }),
+        components::button_with_state_and_accessible(
+            theme,
+            id,
+            label,
+            accessible_label,
+            components::Weight::Quiet,
+            false,
+            true,
+        )
+        .on_click(move |_, window, app| {
+            let sheet_theme = sheet_theme.clone();
+            let root = root.clone();
+            let placement = match kind {
+                SheetKind::Shelf => Placement::Left,
+                SheetKind::Context | SheetKind::Details => Placement::Right,
+            };
+            Root::update(window, app, move |ce_root, window, ce_cx| {
+                ce_root.open_sheet_at(
+                    placement,
+                    move |sheet, _window, app| {
+                        let Some(root_entity) = root.upgrade() else {
+                            return sheet;
+                        };
+                        let snapshot = root_entity.read(app).snapshot();
+                        responsive_sheet(sheet, &sheet_theme, kind, width, root.clone(), snapshot)
+                    },
+                    window,
+                    ce_cx,
+                );
+            });
+        }),
     )
 }
 
