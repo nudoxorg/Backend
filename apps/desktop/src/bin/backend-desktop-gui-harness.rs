@@ -5,7 +5,9 @@
 //! concern is asking the single-state desktop to render a live local index.
 
 #[cfg(feature = "visual-harness")]
-use backend_desktop::harness::capture_live;
+use backend_desktop::harness::{capture_journey, capture_journey_with_scale, capture_live};
+#[cfg(feature = "visual-harness")]
+use backend_desktop::navigation::journey_specs::JourneyId;
 #[cfg(feature = "visual-harness")]
 use backend_gui_harness::{
     CaptureConfig, CaptureSession, GuiState, Viewport, animation_frames_for_state, parse_state,
@@ -35,7 +37,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         .is_none_or(|arg| matches!(arg.as_str(), "help" | "--help" | "-h"))
     {
         println!(
-            "backend-desktop-gui-harness\n\n  capture [--output DIR] [--state ID] [--viewport WIDTHxHEIGHT@SCALE]\n\nCaptures live GPUI frames from the production single-state desktop."
+            "backend-desktop-gui-harness\n\n  capture [--output DIR] [--state ID] [--journey ID] [--viewport WIDTHxHEIGHT@SCALE] [--text-scale PERCENT]\n\nCaptures live GPUI frames from the production single-state desktop.\n\nJourneys: cold-empty, picker-cancelled, indexing, ready-multi-project, failure-retry, persisted-restart, mcp-setup."
         );
         return Ok(());
     }
@@ -44,6 +46,38 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
     let output =
         option(&args[1..], "--output").unwrap_or_else(|| ".artifacts/gui-harness".to_owned());
+    if let Some(id) = option(&args[1..], "--journey") {
+        let journey =
+            JourneyId::parse(&id).ok_or_else(|| format!("unknown onboarding journey {id:?}"))?;
+        let viewport = option(&args[1..], "--viewport")
+            .map(|value| parse_viewport(&value))
+            .transpose()?
+            .unwrap_or(Viewport::new(1280, 800, 1).map_err(|error| error.to_string())?);
+        let text_scale = option(&args[1..], "--text-scale")
+            .map(|value| {
+                value
+                    .parse::<u16>()
+                    .map_err(|_| "invalid text scale".to_owned())
+            })
+            .transpose()?
+            .unwrap_or(100);
+        let config = CaptureConfig::deterministic(viewport);
+        let mut capture = if text_scale == 100 {
+            capture_journey(config.clone(), journey)?
+        } else {
+            capture_journey_with_scale(config.clone(), journey, text_scale)?
+        };
+        let session = CaptureSession::new(config, output).map_err(|error| error.to_string())?;
+        let manifest = session
+            .write_set(&mut capture, None, None)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "captured {} frames for onboarding journey {}",
+            manifest.frames.len(),
+            journey.as_str()
+        );
+        return Ok(());
+    }
     let state = option(&args[1..], "--state")
         .map(|id| parse_state(&id).map_err(|error| error.to_string()))
         .transpose()?

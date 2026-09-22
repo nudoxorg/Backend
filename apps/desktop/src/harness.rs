@@ -20,16 +20,27 @@ use gpui::{App, AppContext as _, Entity, FocusHandle, Focusable as _, WeakEntity
 use gpui_component::{WindowExt as _, input::AnyInputState};
 use image::RgbaImage;
 use std::cell::RefCell;
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::DesktopHost;
 use crate::core::{LocalProjectId, ResourceIdentity, VersionedRoot};
-use crate::model::{AppSnapshot, CatalogState, ObjectId, ShelfItem, ShelfState};
-use crate::navigation::{Coordinate, Intent, OrbitRoute, PackageLane, PackageRoute, Route};
+use crate::model::{
+    AppSnapshot, CatalogState, ObjectId, PersistedDesktopState, PersistedProjectPhase,
+    PersistedShelfItem, PersistentState, ShelfItem, ShelfState, WorkspaceState,
+};
+use crate::navigation::journey_specs::{JourneyId, ScreenshotState};
+use crate::navigation::{
+    Coordinate, FolderPickerOutcome, Intent, OrbitRoute, PackageLane, PackageRoute, Route,
+    SettingsPage,
+};
 use crate::runtime::{DesktopRuntime, EngineActor, LocalEngineClient, UiEntityGraph};
 use crate::theme::Theme;
+use backend_runtime::WorkspacePaths;
 
 /// Captures a real product graph at deterministic animation frames.
 ///
@@ -42,11 +53,86 @@ pub fn capture_live(
     actions: &[InputStep],
     frames: &[AnimationFrame],
 ) -> Result<CaptureSet, String> {
+    capture_live_inner(config, state, actions, frames, None)
+}
+
+/// Captures one complete onboarding journey through the production GPUI root.
+///
+/// The journey driver emits the same typed picker, index, shelf, persistence,
+/// and settings intents as visible controls.  It does not replace the local
+/// service, clock, focus tree, or renderer; the generic harness still owns
+/// all animation frames, input delivery, semantic probes, and artifacts.
+pub fn capture_journey(config: CaptureConfig, journey: JourneyId) -> Result<CaptureSet, String> {
+    capture_journey_with_scale(config, journey, 100)
+}
+
+/// Captures one journey after applying the product's persisted text-scale
+/// preference through the same typed setting intent used by the Appearance
+/// sheet. The device scale remains owned by the generic GPUI viewport.
+pub fn capture_journey_with_scale(
+    config: CaptureConfig,
+    journey: JourneyId,
+    text_scale: u16,
+) -> Result<CaptureSet, String> {
+    let specification = crate::navigation::journey_specs::spec(journey)
+        .ok_or_else(|| format!("unknown onboarding journey {:?}", journey))?;
+    if specification.steps.is_empty() {
+        return Err(format!("onboarding journey {:?} has no steps", journey));
+    }
+    let terminal = specification
+        .terminal_state()
+        .ok_or_else(|| format!("onboarding journey {:?} has no terminal state", journey))?;
+    let state = gui_state_for_screenshot(journey, terminal);
+    let frames = journey_frames(journey, specification.steps);
+    let actions = (text_scale != 100)
+        .then_some(vec![InputStep::TextScale {
+            percent: text_scale,
+        }])
+        .unwrap_or_default();
+    capture_live_inner(config, state, &actions, &frames, Some(journey))
+}
+
+fn capture_live_inner(
+    config: CaptureConfig,
+    state: GuiState,
+    actions: &[InputStep],
+    frames: &[AnimationFrame],
+    journey: Option<JourneyId>,
+) -> Result<CaptureSet, String> {
     config.validate().map_err(|error| error.to_string())?;
-    let host = DesktopHost::start().map_err(|error| error.to_string())?;
+    let mut journey_driver = journey
+        .map(JourneyDriver::new)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    // Seed only the durable desktop file before the owner starts. The service
+    // and GPUI root therefore see the same ordering as a fresh process whose
+    // previous process published a shelf: persisted membership exists before
+    // host admission, while live index records are still hydrated through the
+    // service below.
+    let journey_persistence = journey_driver.as_ref().map(|driver| {
+        PersistentState::at(driver.workspace.paths.data().join("desktop-state.json"))
+    });
+    if let (Some(driver), Some(persistence)) =
+        (journey_driver.as_mut(), journey_persistence.as_ref())
+    {
+        driver.prepare_persistence(persistence)?;
+    }
+    let host = journey_driver.as_ref().map_or_else(
+        || DesktopHost::start().map_err(|error| error.to_string()),
+        |driver| {
+            DesktopHost::start_with_paths(driver.workspace.paths.clone())
+                .map_err(|error| error.to_string())
+        },
+    )?;
     let host_project = LocalProjectId::from_path(host.project()).map_err(|error| {
         format!("the discovered workspace path cannot be represented safely: {error}")
     })?;
+    let mut session = Session::connect(host.endpoint()).map_err(|error| error.to_string())?;
+    let persistence = journey_persistence
+        .unwrap_or_else(|| PersistentState::at(host.data().join("desktop-state.json")));
+    if let Some(driver) = journey_driver.as_mut() {
+        driver.prepare_service(&mut session)?;
+    }
     let mut subscription =
         LocalSubscriptionTransport::connect(host.endpoint()).map_err(|error| error.to_string())?;
     let (view, revision) = subscription
@@ -57,11 +143,22 @@ pub fn capture_live(
             "the live capture subscription returned mismatched startup identities".to_owned(),
         );
     }
-    let mut session = Session::connect(host.endpoint()).map_err(|error| error.to_string())?;
     let basis = VersionedRoot::from_revision(1, revision, 0);
     let catalog = live_catalog(&mut session);
-    let snapshot = snapshot_for_capture(&host_project, basis, catalog);
-    let persistence = crate::model::PersistentState::at(host.data().join("desktop-state.json"));
+    let snapshot = journey_driver
+        .as_ref()
+        .map(|driver| driver.initial_snapshot(&host_project, basis, catalog.clone(), &persistence))
+        .unwrap_or_else(|| {
+            snapshot_for_capture(
+                &host_project,
+                basis,
+                catalog,
+                !matches!(
+                    state.page,
+                    Some(PageState::Browse) | Some(PageState::Project) | None
+                ),
+            )
+        });
     let actor = EngineActor::start(
         LocalEngineClient::new(host.endpoint(), host_project.clone()),
         32,
@@ -76,8 +173,12 @@ pub fn capture_live(
     let input_root = capture_root.clone();
     let focus_restore: Rc<RefCell<Option<FocusHandle>>> = Rc::new(RefCell::new(None));
     let input_focus_restore = focus_restore.clone();
+    let journey_for_frames = journey_driver.map(|driver| Rc::new(RefCell::new(driver)));
+    let journey_for_semantics = journey_for_frames.clone();
+    let journey_root_for_semantics = capture_root.clone();
+    let journey_runtime = journey_for_frames.clone();
 
-    capture_gpui_state_with_timed_adapters_and_ime_result(
+    let capture = capture_gpui_state_with_timed_adapters_and_ime_result(
         config.viewport,
         state,
         actions,
@@ -88,6 +189,11 @@ pub fn capture_live(
                 root.update(cx, |root, _cx| {
                     root.set_capture_time(Duration::from_millis(frame.time_ms));
                 });
+                if let Some(driver) = journey_for_frames.as_ref() {
+                    root.update(cx, |root, cx| {
+                        driver.borrow_mut().drive(frame.time_ms, root, cx);
+                    });
+                }
             }
             Ok(())
         },
@@ -108,10 +214,22 @@ pub fn capture_live(
                         window.blur();
                     }
                 }
+                if let InputStep::TextScale { percent } = step {
+                    root.update(cx, |root, cx| {
+                        queue_text_scale(root, *percent, cx);
+                    });
+                }
             }
         },
         dispatch_ime,
-        |frame, image, viewport, window, cx| {
+        move |frame, image, viewport, window, cx| {
+            if let Some(driver) = journey_for_semantics.as_ref() {
+                if let Some(root) = journey_root_for_semantics.borrow().as_ref().cloned() {
+                    root.update(cx, |root, _cx| {
+                        driver.borrow_mut().observe(frame, root);
+                    });
+                }
+            }
             capture_rendered_semantics(frame, image, viewport, window, cx)
         },
         move |window, cx| {
@@ -141,10 +259,9 @@ pub fn capture_live(
                         | OverlayState::SettingsIndex
                         | OverlayState::SettingsRegistry,
                     ) => {
-                        root.queue(
-                            Intent::OpenSettings(crate::navigation::SettingsPage::Appearance),
-                            cx,
-                        );
+                        if let Some(page) = overlay.and_then(settings_page_for_overlay) {
+                            root.queue(Intent::OpenSettings(page), cx);
+                        }
                     }
                     _ => {}
                 }
@@ -153,7 +270,516 @@ pub fn capture_live(
             cx.new(|cx| gpui_component::Root::new(root, window, cx).bordered(false))
         },
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string());
+    let journey_result = journey_runtime
+        .as_ref()
+        .map(|driver| driver.borrow().finish())
+        .transpose();
+    drop(journey_runtime);
+    drop(host);
+    match capture {
+        Err(error) => Err(error),
+        Ok(capture) => {
+            journey_result?;
+            Ok(capture)
+        }
+    }
+}
+
+/// Maps a semantic onboarding terminal to the generic harness state without
+/// making the generic harness know about desktop-specific project identity.
+fn gui_state_for_screenshot(journey: JourneyId, screenshot: ScreenshotState) -> GuiState {
+    GuiState::new(
+        format!("onboarding--{}--{}", journey.as_str(), screenshot.as_str()),
+        Some(PageState::Browse),
+        None,
+    )
+}
+
+/// Produces one deterministic frame per semantic step. The gaps are long
+/// enough for a bounded service reply to reach the GPUI actor while retaining
+/// the exact step labels in the capture manifest.
+fn journey_frames(
+    journey: JourneyId,
+    steps: &[crate::navigation::journey_specs::JourneyStep],
+) -> Vec<AnimationFrame> {
+    steps
+        .iter()
+        .filter(|step| {
+            !matches!(
+                step.screenshot,
+                ScreenshotState::PickerOpen | ScreenshotState::RestartReattaching
+            )
+        })
+        .enumerate()
+        .map(|(index, step)| AnimationFrame {
+            label: format!(
+                "{}--{}--{}--{:02}",
+                journey.as_str(),
+                step.screenshot.as_str(),
+                step.event.as_str(),
+                index
+            ),
+            time_ms: (index as u64).saturating_mul(180),
+        })
+        .collect()
+}
+
+/// The only harness-owned fixture is a real temporary project tree used to
+/// drive the production service. Its path is never used as a UI identity; the
+/// desktop still admits [`LocalProjectId`] through the normal picker boundary.
+struct JourneyWorkspace {
+    root: PathBuf,
+    paths: WorkspacePaths,
+    first: PathBuf,
+    second: PathBuf,
+    recoverable: PathBuf,
+}
+
+impl JourneyWorkspace {
+    fn new() -> Result<Self, String> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("read capture clock: {error}"))?
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("nudox-capture-{}-{nonce}", std::process::id()));
+        // Keep the fixture names representative of the native picker boundary:
+        // spaces, apostrophes, and Unicode must remain path data all the way
+        // through admission and persistence. The platform contract owns the
+        // non-UTF-8 and Windows-wide-unit cases in its own matrix.
+        let host = root.join("host workspace");
+        let first = root.join("alpha project");
+        let second = root.join("beta's β project");
+        let recoverable = root.join("recoverable project");
+        create_fixture_project(&host, "nudox_capture_host")?;
+        create_fixture_project(&first, "nudox_capture_alpha")?;
+        create_fixture_project(&second, "nudox_capture_beta")?;
+        let paths = WorkspacePaths::discover(
+            Some(host),
+            Some(root.join("state")),
+            Some(root.join("service.sock")),
+        )
+        .map_err(|error| format!("admit isolated capture paths: {error}"))?;
+        Ok(Self {
+            root,
+            paths,
+            first,
+            second,
+            recoverable,
+        })
+    }
+}
+
+impl Drop for JourneyWorkspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn create_fixture_project(path: &Path, package: &str) -> Result<(), String> {
+    fs::create_dir_all(path.join("src"))
+        .map_err(|error| format!("create capture project {}: {error}", path.display()))?;
+    fs::write(
+        path.join("Cargo.toml"),
+        format!("[package]\nname = \"{package}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+    )
+    .map_err(|error| format!("write capture manifest {}: {error}", path.display()))?;
+    fs::write(
+        path.join("src/lib.rs"),
+        format!("pub struct {}Proof;\n", package.replace('-', "_")),
+    )
+    .map_err(|error| format!("write capture source {}: {error}", path.display()))?;
+    Ok(())
+}
+
+/// Drives the product's typed onboarding intents and records service-backed
+/// visual evidence for the final validation step.
+struct JourneyDriver {
+    id: JourneyId,
+    workspace: JourneyWorkspace,
+    expected: BTreeSet<ScreenshotState>,
+    persisted: Option<PersistedDesktopState>,
+    started: bool,
+    submitted: usize,
+    cancellation_requested: bool,
+    recovery_requested: bool,
+    failure_seen: bool,
+    second_activated: bool,
+    source_removed: bool,
+    settings_opened: bool,
+    connection_tested: bool,
+    observed: BTreeSet<ScreenshotState>,
+}
+
+impl JourneyDriver {
+    fn new(id: JourneyId) -> Result<Self, String> {
+        let workspace = JourneyWorkspace::new()?;
+        let expected = crate::navigation::journey_specs::spec(id)
+            .ok_or_else(|| format!("missing journey specification {}", id.as_str()))?
+            .steps
+            .iter()
+            .filter_map(|step| {
+                (!matches!(
+                    step.screenshot,
+                    ScreenshotState::PickerOpen | ScreenshotState::RestartReattaching
+                ))
+                .then_some(step.screenshot)
+            })
+            .collect();
+        Ok(Self {
+            id,
+            workspace,
+            expected,
+            persisted: None,
+            started: false,
+            submitted: 0,
+            cancellation_requested: false,
+            recovery_requested: false,
+            failure_seen: false,
+            second_activated: false,
+            source_removed: false,
+            settings_opened: false,
+            connection_tested: false,
+            observed: BTreeSet::new(),
+        })
+    }
+
+    fn selected_paths(&self) -> Vec<PathBuf> {
+        if self.id == JourneyId::McpSetup {
+            vec![self.workspace.first.clone(), self.workspace.second.clone()]
+        } else {
+            vec![self.workspace.first.clone()]
+        }
+    }
+
+    fn persisted_state(&self) -> Result<PersistedDesktopState, String> {
+        if !matches!(self.id, JourneyId::PersistedRestart | JourneyId::McpSetup) {
+            return Ok(PersistedDesktopState::default());
+        }
+        let selected_paths = self.selected_paths();
+        let mut persisted_projects = Vec::with_capacity(selected_paths.len());
+        for path in &selected_paths {
+            let project = LocalProjectId::from_path(path)
+                .map_err(|error| format!("admit persisted capture project: {error}"))?;
+            persisted_projects.push(PersistedShelfItem {
+                local_path: project.as_str().to_owned(),
+                display_path: Some(path.display().to_string()),
+                native_path: project.native_wire().ok(),
+                label: project
+                    .path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("workspace")
+                    .to_owned(),
+                phase: PersistedProjectPhase::Ready,
+                progress: None,
+                files_indexed: None,
+                error: None,
+            });
+        }
+        let active = persisted_projects
+            .last()
+            .ok_or_else(|| "persisted capture has no selected project".to_owned())?;
+        let active_project = active.local_path.clone();
+        let active_native_path = active.native_path.clone();
+        let mut state = PersistedDesktopState::default();
+        state.shelf = persisted_projects;
+        state.active_project = Some(active_project);
+        state.active_native_path = active_native_path;
+        Ok(state)
+    }
+
+    fn prepare_persistence(&mut self, persistence: &PersistentState) -> Result<(), String> {
+        if !matches!(self.id, JourneyId::PersistedRestart | JourneyId::McpSetup) {
+            return Ok(());
+        }
+        let state = self.persisted_state()?;
+        persistence
+            .save(&state)
+            .map_err(|error| format!("persist capture restart state: {error}"))?;
+        self.persisted = Some(state);
+        Ok(())
+    }
+
+    fn prepare_service(&self, session: &mut Session) -> Result<(), String> {
+        if !matches!(self.id, JourneyId::PersistedRestart | JourneyId::McpSetup) {
+            return Ok(());
+        }
+        for path in self.selected_paths() {
+            let project = LocalProjectId::from_path(&path)
+                .map_err(|error| format!("admit persisted capture project: {error}"))?;
+            session
+                .index_path(project.native_path())
+                .map_err(|error| format!("index persisted capture project: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn initial_snapshot(
+        &self,
+        _host_project: &LocalProjectId,
+        basis: VersionedRoot,
+        catalog: Option<CatalogState>,
+        persistence: &PersistentState,
+    ) -> AppSnapshot {
+        let mut snapshot = if let Some(state) = &self.persisted {
+            let (shelf, mut workspace) =
+                persistence.cold_shelf(state, Some(self.workspace.first.as_path()));
+            if let Some(active) = workspace.active.clone() {
+                workspace.host = Some(active);
+            }
+            AppSnapshot::empty(basis)
+                .with_shelf(shelf)
+                .with_workspace(workspace)
+        } else {
+            AppSnapshot::empty(basis)
+                .with_shelf(ShelfState::default())
+                .with_workspace(WorkspaceState::default())
+        };
+        if let Some(catalog) = catalog {
+            snapshot = snapshot.with_catalog(catalog, basis);
+        }
+        snapshot
+    }
+
+    fn drive(
+        &mut self,
+        time_ms: u64,
+        root: &mut crate::runtime::UiRootEntity,
+        cx: &mut gpui::Context<crate::runtime::UiRootEntity>,
+    ) {
+        // Leave the first frame untouched so the manifest's cold-start state
+        // is a real frame before any picker/index intent is admitted.
+        if time_ms == 0 {
+            return;
+        }
+        match self.id {
+            JourneyId::ColdEmpty => {}
+            JourneyId::PersistedRestart => {
+                // The first frame is the durable shelf before the simulated
+                // process boundary; every later frame represents reattach.
+                self.started = true;
+            }
+            JourneyId::PickerCancelled => {
+                if !self.started {
+                    self.started = true;
+                    root.queue(
+                        Intent::FolderPickerResult {
+                            outcome: FolderPickerOutcome::Cancelled,
+                        },
+                        cx,
+                    );
+                }
+            }
+            JourneyId::Indexing => {
+                if !self.started {
+                    self.started = true;
+                    self.submit_paths(root, cx, [self.workspace.first.clone()]);
+                } else if !self.cancellation_requested
+                    && self.has_phase(root, crate::model::ProjectPhase::Indexing)
+                {
+                    if let Some(project) = root.snapshot().workspace().active.clone() {
+                        self.cancellation_requested = true;
+                        root.queue(Intent::CancelIndex(project), cx);
+                    }
+                }
+            }
+            JourneyId::ReadyMultiProject => {
+                if !self.started {
+                    self.started = true;
+                    self.submit_paths(root, cx, [self.workspace.first.clone()]);
+                } else if self.submitted == 1 && self.project_is_ready(root, &self.workspace.first)
+                {
+                    self.submit_paths(root, cx, [self.workspace.second.clone()]);
+                } else if self.submitted == 2
+                    && !self.second_activated
+                    && self.project_is_ready(root, &self.workspace.second)
+                {
+                    if let Ok(project) = LocalProjectId::from_path(&self.workspace.second) {
+                        self.second_activated = true;
+                        root.queue(Intent::ActivateProject(project), cx);
+                    }
+                } else if self.second_activated
+                    && !self.source_removed
+                    && self.project_is_ready(root, &self.workspace.second)
+                {
+                    if let Ok(project) = LocalProjectId::from_path(&self.workspace.first) {
+                        self.source_removed = true;
+                        root.queue(Intent::RemoveProject(project), cx);
+                    }
+                }
+            }
+            JourneyId::FailureRetry => {
+                if !self.started {
+                    self.started = true;
+                    self.submit_paths(root, cx, [self.workspace.recoverable.clone()]);
+                } else if !self.recovery_requested && self.failure_seen {
+                    if let Err(error) = create_fixture_project(
+                        &self.workspace.recoverable,
+                        "nudox_capture_recoverable",
+                    ) {
+                        root.queue(
+                            Intent::FolderPickerResult {
+                                outcome: FolderPickerOutcome::Failed(Arc::from(error)),
+                            },
+                            cx,
+                        );
+                    } else if let Ok(project) =
+                        LocalProjectId::from_path(&self.workspace.recoverable)
+                    {
+                        self.recovery_requested = true;
+                        root.queue(Intent::RetryIndex(project), cx);
+                    }
+                }
+            }
+            JourneyId::McpSetup => {
+                if !self.settings_opened {
+                    self.settings_opened = true;
+                    root.queue(Intent::OpenSettings(SettingsPage::Agents), cx);
+                } else if self.settings_opened
+                    && !self.connection_tested
+                    && matches!(
+                        root.snapshot().overlay(),
+                        Some(crate::navigation::Overlay::Settings(SettingsPage::Agents))
+                    )
+                {
+                    self.connection_tested = true;
+                    root.queue(Intent::TestConnection, cx);
+                }
+            }
+        }
+    }
+
+    fn submit_paths<I>(
+        &mut self,
+        root: &mut crate::runtime::UiRootEntity,
+        cx: &mut gpui::Context<crate::runtime::UiRootEntity>,
+        paths: I,
+    ) where
+        I: IntoIterator<Item = PathBuf>,
+    {
+        let paths = paths.into_iter().collect::<Vec<_>>();
+        self.submitted = self.submitted.saturating_add(paths.len());
+        root.queue(
+            Intent::FolderPickerResult {
+                outcome: FolderPickerOutcome::Selected(paths.into()),
+            },
+            cx,
+        );
+    }
+
+    fn has_phase(
+        &self,
+        root: &crate::runtime::UiRootEntity,
+        phase: crate::model::ProjectPhase,
+    ) -> bool {
+        root.snapshot()
+            .workspace()
+            .projects
+            .iter()
+            .any(|project| project.phase == phase)
+    }
+
+    fn project_is_ready(&self, root: &crate::runtime::UiRootEntity, path: &Path) -> bool {
+        let Ok(project) = LocalProjectId::from_path(path) else {
+            return false;
+        };
+        root.snapshot()
+            .workspace()
+            .projects
+            .iter()
+            .any(|candidate| {
+                candidate.id == project && candidate.phase == crate::model::ProjectPhase::Ready
+            })
+    }
+
+    fn observe(&mut self, _frame: &AnimationFrame, root: &crate::runtime::UiRootEntity) {
+        let snapshot = root.snapshot();
+        let state = if matches!(
+            snapshot.overlay(),
+            Some(crate::navigation::Overlay::Settings(SettingsPage::Agents))
+        ) && snapshot.settings().connection
+            == crate::model::ConnectionStatus::Connected
+        {
+            ScreenshotState::McpConnected
+        } else if matches!(
+            snapshot.overlay(),
+            Some(crate::navigation::Overlay::Settings(SettingsPage::Agents))
+        ) {
+            ScreenshotState::McpSetup
+        } else if snapshot.workspace().projects.is_empty() {
+            if self.id == JourneyId::PickerCancelled && self.started {
+                ScreenshotState::PickerCancelled
+            } else {
+                ScreenshotState::ColdEmpty
+            }
+        } else if snapshot
+            .workspace()
+            .projects
+            .iter()
+            .any(|project| project.phase == crate::model::ProjectPhase::Failed)
+        {
+            self.failure_seen = true;
+            ScreenshotState::IndexFailure
+        } else if snapshot
+            .workspace()
+            .projects
+            .iter()
+            .any(|project| project.phase == crate::model::ProjectPhase::Cancelling)
+        {
+            ScreenshotState::IndexCancelling
+        } else if snapshot
+            .workspace()
+            .projects
+            .iter()
+            .any(|project| project.phase == crate::model::ProjectPhase::Indexing)
+        {
+            ScreenshotState::Indexing
+        } else if self.id == JourneyId::PersistedRestart && self.started {
+            ScreenshotState::RestartReady
+        } else if snapshot
+            .workspace()
+            .projects
+            .iter()
+            .filter(|project| project.phase == crate::model::ProjectPhase::Ready)
+            .count()
+            >= 2
+        {
+            ScreenshotState::ReadyMultiProject
+        } else if snapshot
+            .workspace()
+            .projects
+            .iter()
+            .any(|project| project.phase == crate::model::ProjectPhase::Ready)
+        {
+            ScreenshotState::ReadyProject
+        } else {
+            ScreenshotState::Indexing
+        };
+        self.observed.insert(state);
+    }
+
+    fn finish(&self) -> Result<(), String> {
+        let missing = self
+            .expected
+            .difference(&self.observed)
+            .map(|state| state.as_str())
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "journey {} missed live screenshot states {:?}; observed {:?}",
+                self.id.as_str(),
+                missing,
+                self.observed
+                    .iter()
+                    .map(|state| state.as_str())
+                    .collect::<Vec<_>>()
+            ))
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -524,28 +1150,35 @@ fn snapshot_for_capture(
     host_project: &LocalProjectId,
     basis: VersionedRoot,
     catalog: Option<CatalogState>,
+    seed_host: bool,
 ) -> AppSnapshot {
     let mut snapshot = AppSnapshot::empty(basis);
-    snapshot = snapshot.with_shelf(ShelfState {
-        selected: Some(ResourceIdentity::Local(host_project.clone())),
-        items: Arc::from([ShelfItem {
-            object: ObjectId::from_backend(host_project.key()),
-            identity: ResourceIdentity::Local(host_project.clone()),
-            label: host_project.as_str().into(),
-        }]),
-    });
+    if seed_host {
+        snapshot = snapshot.with_shelf(ShelfState {
+            selected: Some(ResourceIdentity::Local(host_project.clone())),
+            items: Arc::from([ShelfItem {
+                object: ObjectId::from_backend(host_project.key()),
+                identity: ResourceIdentity::Local(host_project.clone()),
+                label: host_project.as_str().into(),
+            }]),
+        });
+    }
     catalog.map_or(snapshot.clone(), |catalog| {
         snapshot.with_catalog(catalog, basis)
     })
 }
 
 fn route_for_state(state: &GuiState, snapshot: Arc<AppSnapshot>) -> Option<Route> {
+    if matches!(
+        state.page,
+        Some(PageState::Browse) | Some(PageState::Project) | None
+    ) {
+        return Some(Route::Orbit(OrbitRoute::Home));
+    }
     let package = snapshot.catalog().loaded_value()?.packages.first()?;
     let package = package.coordinate.clone();
     let selected = Some(snapshot.catalog().loaded_value()?.packages[0].object);
     match state.page {
-        Some(PageState::Browse) | None => Some(Route::Orbit(OrbitRoute::Home)),
-        Some(PageState::Project) => Some(Route::Orbit(OrbitRoute::Home)),
         Some(PageState::Package)
         | Some(PageState::Dependencies)
         | Some(PageState::Dependents)
@@ -579,6 +1212,51 @@ fn route_for_state(state: &GuiState, snapshot: Arc<AppSnapshot>) -> Option<Route
         })),
         Some(PageState::Graph) | Some(PageState::CodeSearch) => {
             Some(Route::Orbit(OrbitRoute::Home))
+        }
+    }
+}
+
+fn settings_page_for_overlay(overlay: OverlayState) -> Option<SettingsPage> {
+    Some(match overlay {
+        OverlayState::SettingsAppearance => SettingsPage::Appearance,
+        OverlayState::SettingsEditor => SettingsPage::Editor,
+        OverlayState::SettingsAgents => SettingsPage::Agents,
+        OverlayState::SettingsDiagnostics => SettingsPage::Diagnostics,
+        OverlayState::SettingsLegend => SettingsPage::Legend,
+        OverlayState::SettingsIndex => SettingsPage::Index,
+        OverlayState::SettingsRegistry => SettingsPage::Registry,
+        _ => return None,
+    })
+}
+
+fn queue_text_scale(
+    root: &mut crate::runtime::UiRootEntity,
+    percent: u16,
+    cx: &mut gpui::Context<crate::runtime::UiRootEntity>,
+) {
+    let target = match percent {
+        100 => 0_i8,
+        115 => 1,
+        135 => 2,
+        160 => 3,
+        200 => 4,
+        _ => return,
+    };
+    let current = match root.snapshot().settings().text_scale.percent() {
+        100 => 0_i8,
+        115 => 1,
+        135 => 2,
+        160 => 3,
+        200 => 4,
+        _ => 0,
+    };
+    if target > current {
+        for _ in 0..(target - current) {
+            root.queue(Intent::SetTextScale { up: true }, cx);
+        }
+    } else {
+        for _ in 0..(current - target) {
+            root.queue(Intent::SetTextScale { up: false }, cx);
         }
     }
 }

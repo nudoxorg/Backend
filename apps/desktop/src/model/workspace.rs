@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use crate::core::LocalProjectId;
+use crate::core::{IdentityError, LocalProjectId};
 use crate::navigation::RequestId;
 
 /// The lifecycle of a local project admitted to the shelf.
@@ -73,11 +73,10 @@ pub struct WorkspaceProject {
 impl WorkspaceProject {
     /// Creates an indeterminate indexing row from an admitted folder.
     #[must_use]
-    pub fn indexing(path: impl Into<Arc<str>>) -> Self {
+    pub fn indexing(path: impl Into<Arc<str>>) -> Result<Self, IdentityError> {
         let path = path.into();
-        let id = LocalProjectId::new(path.as_ref())
-            .expect("WorkspaceProject::indexing receives an admitted path");
-        Self::indexing_with_id(id)
+        let id = LocalProjectId::new(path.as_ref())?;
+        Ok(Self::indexing_with_display(id, path))
     }
 
     /// Creates an indeterminate row from a lossless admitted identity.

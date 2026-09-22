@@ -4,6 +4,7 @@ pub mod action;
 pub mod focus;
 pub mod history;
 pub mod intent;
+pub mod journey_specs;
 pub mod modal;
 pub mod reducer;
 pub mod route;

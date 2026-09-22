@@ -372,6 +372,13 @@ impl UiRootEntity {
         if self.first_catalog_route_admitted {
             return;
         }
+        // A service catalog can be live before the first folder has been
+        // admitted to the shelf. Keep cold first launch on the onboarding
+        // surface until the user chooses a source; otherwise a registry row
+        // silently replaces the empty-project affordance.
+        if snapshot.workspace().projects.is_empty() {
+            return;
+        }
         let Some(catalog) = snapshot.catalog().loaded_value() else {
             return;
         };

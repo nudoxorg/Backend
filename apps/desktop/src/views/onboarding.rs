@@ -135,8 +135,8 @@ fn workspace_mismatch(
         return div().into_any_element();
     };
     let host_project = host.clone();
-    let active_label = crate::ui::text::elide(active.as_str(), 54);
-    let host_label = crate::ui::text::elide(host.as_str(), 54);
+    let active_label = crate::ui::text::elide(&active.display_lossy(), 54);
+    let host_label = crate::ui::text::elide(&host.display_lossy(), 54);
     surface::sunken(theme)
         .p(px(12.0))
         .flex()

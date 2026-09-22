@@ -225,8 +225,8 @@ fn connections_page(
     let command = mcp_command(workspace);
     let config = mcp_config(workspace);
     let workspace_label = workspace
-        .map(crate::core::LocalProjectId::as_str)
-        .unwrap_or("Add a project first");
+        .map(crate::core::LocalProjectId::display_lossy)
+        .unwrap_or_else(|| "Add a project first".to_owned());
     let can_copy = workspace
         .and_then(|project| project.service_coordinate().ok())
         .is_some();
@@ -264,9 +264,18 @@ fn connections_page(
                     config,
                     components::Weight::Quiet,
                     !can_copy,
-                )),
+            )),
         ),
     ))
+    .child(setting_row(
+        theme,
+        "Configured checkout",
+        workspace
+            .map(crate::core::LocalProjectId::display_lossy)
+            .unwrap_or_else(|| "No project selected".to_owned()),
+        None::<gpui::Div>,
+    ))
+    .child(mcp_checkout_mismatch(theme, snapshot, owner.clone()))
     .child(setting_row(
         theme,
         "Connection",
@@ -305,6 +314,46 @@ fn connections_page(
     .into_any_element()
 }
 
+fn mcp_checkout_mismatch(
+    theme: &Theme,
+    snapshot: &AppSnapshot,
+    owner: Entity<UiRootEntity>,
+) -> AnyElement {
+    let Some(selected) = snapshot.workspace().active.as_ref() else {
+        return div().into_any_element();
+    };
+    let Some(served) = snapshot.workspace().host.as_ref() else {
+        return div().into_any_element();
+    };
+    if selected == served {
+        return div().into_any_element();
+    }
+    let served_for_action = served.clone();
+    surface::sunken(theme)
+        .p(px(12.0))
+        .flex()
+        .flex_col()
+        .gap(space(Space::Tight))
+        .child(
+            text::single_line(text::body(theme).text_color(theme.paint(Paint::Stopped)))
+                .child("Configured checkout differs from the live service."),
+        )
+        .child(text::body(theme).child(format!(
+            "Claude will be configured for {}, while the daemon currently serves {}. Switch the served workspace before querying.",
+            selected.display_lossy(),
+            served.display_lossy(),
+        )))
+        .child(queue_button(
+            theme,
+            owner,
+            "select-served-checkout",
+            "Use served checkout",
+            components::Weight::Quiet,
+            Intent::ActivateProject(served_for_action),
+        ))
+        .into_any_element()
+}
+
 fn privacy_page(theme: &Theme, snapshot: &AppSnapshot, owner: Entity<UiRootEntity>) -> AnyElement {
     section(
         theme,
@@ -335,14 +384,19 @@ fn diagnostics_page(theme: &Theme, snapshot: &AppSnapshot) -> AnyElement {
         .workspace()
         .host
         .as_ref()
-        .map(crate::core::LocalProjectId::as_str)
-        .unwrap_or("No local service host");
+        .map(crate::core::LocalProjectId::display_lossy)
+        .unwrap_or_else(|| "No local service host".to_owned());
     let active = snapshot
         .workspace()
         .active
         .as_ref()
-        .map(crate::core::LocalProjectId::as_str)
-        .unwrap_or("No project selected");
+        .map(crate::core::LocalProjectId::display_lossy)
+        .unwrap_or_else(|| "No project selected".to_owned());
+    let authority = format!(
+        "cursor {} · observation {}",
+        snapshot.key().generation(),
+        snapshot.key().observation()
+    );
     section(
         theme,
         "Diagnostics",
@@ -368,6 +422,12 @@ fn diagnostics_page(theme: &Theme, snapshot: &AppSnapshot) -> AnyElement {
         } else {
             "Current"
         },
+        None::<gpui::Div>,
+    ))
+    .child(setting_row(
+        theme,
+        "Indexed authority",
+        authority,
         None::<gpui::Div>,
     ))
     .into_any_element()
