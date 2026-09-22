@@ -191,7 +191,7 @@ impl Product for SessionProduct {
 /// has been idle for its read timeout, and an agent thinks for longer than
 /// that between tool calls. Remembering the endpoint is what lets the next
 /// call open a fresh connection instead of failing on a dead one.
-struct SessionEndpoint {
+pub(super) struct SessionEndpoint {
     /// The complete runtime selection, retained for reconnects that need to
     /// compose a daemon after its previous process exited.
     paths: backend_runtime::WorkspacePaths,
