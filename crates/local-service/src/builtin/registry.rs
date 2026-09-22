@@ -161,7 +161,10 @@ impl RegistryGateway {
                         }
                     },
                     facts_version: published.facts.version(),
-                    native_metadata_version: published.native_metadata.identity()?,
+                    native_metadata_version: published
+                        .native_metadata
+                        .identity()
+                        .map_err(|error| error.to_string())?,
                     native_metadata: published.native_metadata.clone(),
                     advisory: published.advisory.clone(),
                 });
