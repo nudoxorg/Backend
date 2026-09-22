@@ -96,7 +96,11 @@ impl Root {
 
     /// Create a new Root view.
     pub fn new(view: impl Into<AnyView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        #[cfg(all(target_os = "macos", not(test)))]
+        // Headless GPUI windows deliberately have no native NSView/raw
+        // window handle. The component's headless feature is the canonical
+        // signal used by the input content-type bridge as well, so keep the
+        // accessibility forwarder on real product windows only.
+        #[cfg(all(target_os = "macos", not(test), not(feature = "headless")))]
         gpui_base::install_window_hit_test_forwarder(window);
 
         Self {

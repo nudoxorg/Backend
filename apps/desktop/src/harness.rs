@@ -16,9 +16,7 @@ use backend_gui_harness::{
     capture_gpui_state_with_timed_adapters_and_ime_result,
 };
 use backend_library::{SurfaceCommand, SurfaceReply};
-use gpui::{
-    App, AppContext as _, Entity, EntityInputHandler as _, FocusHandle, Focusable as _, Window,
-};
+use gpui::{App, AppContext as _, Entity, FocusHandle, Focusable as _, Window};
 use gpui_component::{WindowExt as _, input::AnyInputState};
 use image::RgbaImage;
 use std::cell::RefCell;
@@ -574,8 +572,8 @@ pub fn capture_default(
 mod tests {
     use super::*;
     use gpui::{
-        Context, FocusHandle, Focusable as _, IntoElement, Render, TestAppContext,
-        VisualTestContext, div,
+        Context, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+        TestAppContext, VisualTestContext, div,
     };
     use gpui_component::{
         Root,
@@ -690,9 +688,12 @@ mod tests {
         let cancel = cx
             .update(|window, cx| dispatch_ime(4, &InputStep::ImeCancel, window, cx))
             .expect("composition cancel");
-        assert_eq!(cancel.text_before, before_cancel);
+        assert_eq!(cancel.text_before, format!("{before_cancel}候"));
         assert_eq!(cancel.text_after, before_cancel);
         assert_eq!(cancel.marked_range_after, None);
+        cancel
+            .validate_for(&InputStep::ImeCancel)
+            .expect("cancel removes only provisional marked text");
 
         cx.update(|window, cx| other_focus.focus(window, cx));
         cx.run_until_parked();

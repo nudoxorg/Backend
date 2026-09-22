@@ -324,19 +324,26 @@ impl ImeObservation {
                 }
             }
             (ImeOperation::Cancel, InputStep::ImeCancel) => {
-                if self.marked_range_before.is_none() {
+                let Some(marked) = self.marked_range_before.as_ref() else {
                     return Err(InputError::Ime(
                         "ime-cancel was dispatched without an active marked composition".to_owned(),
                     ));
-                }
+                };
                 if self.commit_count != 0 {
                     return Err(InputError::Ime(
                         "ime-cancel must not commit replacement text".to_owned(),
                     ));
                 }
-                if self.text_before != self.text_after {
+                let expected =
+                    remove_utf16_range(&self.text_before, marked.clone()).ok_or_else(|| {
+                        InputError::Ime(format!(
+                            "IME marked range {:?} is not on UTF-16 boundaries for {:?}",
+                            marked, self.text_before
+                        ))
+                    })?;
+                if expected != self.text_after {
                     return Err(InputError::Ime(
-                        "ime-cancel changed the editor value".to_owned(),
+                        "ime-cancel did not remove exactly the provisional marked text".to_owned(),
                     ));
                 }
                 if self.marked_range_after.is_some() || self.marked_text_after.is_some() {
@@ -349,6 +356,31 @@ impl ImeObservation {
         }
         Ok(())
     }
+}
+
+fn remove_utf16_range(text: &str, range: Range<usize>) -> Option<String> {
+    if range.start > range.end {
+        return None;
+    }
+    let to_byte = |target: usize| {
+        let mut utf16 = 0;
+        for (byte, character) in text.char_indices() {
+            if utf16 == target {
+                return Some(byte);
+            }
+            utf16 += character.len_utf16();
+            if utf16 > target {
+                return None;
+            }
+        }
+        (utf16 == target).then_some(text.len())
+    };
+    let start = to_byte(range.start)?;
+    let end = to_byte(range.end)?;
+    let mut result = String::with_capacity(text.len().saturating_sub(end.saturating_sub(start)));
+    result.push_str(&text[..start]);
+    result.push_str(&text[end..]);
+    Some(result)
 }
 
 /// One input event and its live evidence. Waits carry their deterministic
@@ -880,12 +912,12 @@ mod tests {
     }
 
     #[test]
-    fn ime_cancel_requires_unchanged_text_and_no_marked_range() {
+    fn ime_cancel_removes_only_the_provisional_marked_text() {
         let step = InputStep::ImeCancel;
         let observation = ImeObservation {
             operation: ImeOperation::Cancel,
             focused: true,
-            text_before: "seed".to_owned(),
+            text_before: "seed候".to_owned(),
             text_after: "seed".to_owned(),
             marked_range_before: Some(4..5),
             marked_range_after: None,
