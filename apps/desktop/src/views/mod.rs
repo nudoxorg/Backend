@@ -7,21 +7,23 @@
 
 mod catalog;
 mod keys;
+mod onboarding;
 mod package;
 mod primitives;
+mod project_shelf;
 mod reader;
 mod shell;
+mod workspace_settings;
 
 use crate::core::layout::{LayoutCache, PanelPreferences, ResponsiveLayout};
 use crate::model::AppSnapshot;
-use crate::navigation::{OrbitRoute, Route};
+use crate::navigation::{OrbitRoute, Overlay, Route};
 use crate::runtime::UiRootEntity;
 use crate::theme::Theme;
-use crate::theme::palette::Paint;
-use crate::theme::tokens::space;
 use crate::ui::surface;
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, Window, div, px};
+use gpui::{div, px, AnyElement, Context, IntoElement, ParentElement, Styled, Window};
+use gpui_component::WindowExt as _;
 
 /// Renders the complete production window from one root entity.
 pub(crate) fn render_root(
@@ -49,7 +51,12 @@ pub(crate) fn render_root(
         },
     );
     let layout = theme.responsive_layout(layout_input);
-    shell::sync_overlay(&theme, &snapshot, layout, window, cx);
+    // The CE Root owns the actual dialog/sheet lifetime, focus trap, scrim,
+    // resize handle, and animation. The product root keeps only a typed route
+    // marker so reducer state remains authoritative without a second overlay
+    // stack.
+    cx.set_global(theme.clone());
+    sync_component_overlay(root, window, cx, &snapshot);
     let header = shell::header(root, &theme, &snapshot, layout, cx).into_any_element();
     let orbit = shell::orbit_rail(&theme, &snapshot, layout, cx).into_any_element();
     let shelf = shell::shelf_panel(root, &theme, &snapshot, layout, cx).into_any_element();
@@ -71,12 +78,97 @@ pub(crate) fn render_root(
                 .child(context),
         )
         .child(status);
+    // Register the modal semantic roots after the document controls so the
+    // final action frame can mark the background inert and retain the actual
+    // launch control for close restoration.
+    register_overlay_actions(&theme, snapshot.overlay());
+    let sheet_layer = gpui_component::Root::render_sheet_layer(window, cx);
+    let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
     theme.publish_action_frame(window);
     // Keep the frame token and its per-window collector available to the next
     // harness probe without making the action tree process-global.
     cx.set_global(theme);
-    let _ = window;
-    shell.into_any_element()
+    shell
+        .children(sheet_layer)
+        .children(dialog_layer)
+        .into_any_element()
+}
+
+fn register_overlay_actions(theme: &Theme, overlay: Option<Overlay>) {
+    match overlay {
+        Some(Overlay::CommandPalette) => {
+            theme.register_action(
+                crate::ui::components::ActionMetadata::new(
+                    "command-palette-dialog",
+                    "Search workspace",
+                    crate::ui::components::ActionRole::Dialog,
+                )
+                .description("Search projects and workspace actions"),
+            );
+            theme.register_action(
+                crate::ui::components::ActionMetadata::new(
+                    "command-palette-search",
+                    "Search workspace",
+                    crate::ui::components::ActionRole::Search,
+                )
+                .description("Search projects and workspace actions")
+                .parent("command-palette-dialog"),
+            );
+        }
+        Some(Overlay::Settings(_)) => {
+            theme.register_action(
+                crate::ui::components::ActionMetadata::new(
+                    "settings-dialog",
+                    "Settings",
+                    crate::ui::components::ActionRole::Dialog,
+                )
+                .description("Workspace settings"),
+            );
+        }
+        None => {}
+    }
+}
+
+fn sync_component_overlay(
+    root: &mut UiRootEntity,
+    window: &mut Window,
+    cx: &mut Context<UiRootEntity>,
+    snapshot: &AppSnapshot,
+) {
+    let desired = snapshot.overlay();
+    if root.component_overlay() == desired {
+        return;
+    }
+    if root.component_overlay().is_some() {
+        window.close_all_dialogs(cx);
+        window.close_sheet(cx);
+    }
+    root.set_component_overlay(desired);
+    let Some(desired) = desired else {
+        return;
+    };
+    let owner = cx.entity();
+    match desired {
+        Overlay::CommandPalette => {
+            let palette_owner = owner.clone();
+            window.open_dialog(cx, move |dialog, window, _| {
+                let width = (window.viewport_size().width.as_f32() - 32.0).clamp(320.0, 680.0);
+                crate::ui::search_palette::dialog(dialog, palette_owner.clone(), width)
+            });
+        }
+        Overlay::Settings(page) => {
+            let settings_owner = owner.clone();
+            window.open_sheet_at(
+                gpui_component::Placement::Right,
+                cx,
+                move |sheet, window, app| {
+                    let theme = crate::theme::theme(app);
+                    let width = (window.viewport_size().width.as_f32() - 24.0).clamp(360.0, 820.0);
+                    workspace_settings::sheet(sheet, &theme, settings_owner.clone(), page, width)
+                },
+            );
+        }
+    }
 }
 
 fn content_panel(

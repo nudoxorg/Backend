@@ -4,20 +4,16 @@
 //! durable shelf/session state, and then hands one `UiRootEntity` to GPUI.
 //! No legacy model or transport entity is created on this path.
 
-use super::lease::{DesktopHost, HostError};
-use crate::core::{LocalProjectId, ResourceIdentity, VersionedRoot};
-use crate::model::{
-    AppSnapshot, PersistenceRecovery, PersistentState, SessionState, SettingsState, ShelfItem,
-    ShelfState,
-};
+use super::lease::{DesktopHost, HostError, HostMode};
+use crate::core::VersionedRoot;
+use crate::model::{AppSnapshot, PersistenceRecovery, PersistentState, SessionState};
 use crate::runtime::{DesktopRuntime, EngineActor, LocalEngineClient, UiEntityGraph};
 use crate::theme::Theme;
 use backend_client::LocalSubscriptionTransport;
-use backend_library::object_version;
 use gpui::{
-    App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
+    point, px, size, App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions,
 };
-use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 const ATTEMPTS: usize = 12;
@@ -164,41 +160,20 @@ fn attempt_once() -> Result<Opened, String> {
         );
     }
     let persisted = admitted.state;
-    let mut shelf = Vec::with_capacity(persisted.shelf.len().saturating_add(1));
-    for item in &persisted.shelf {
-        if let Ok(project) = LocalProjectId::new(&item.local_path) {
-            shelf.push(ShelfItem {
-                object: crate::model::ObjectId::from_backend(object_version(
-                    item.local_path.as_bytes(),
-                )),
-                identity: ResourceIdentity::Local(project),
-                label: item.label.clone().into(),
-            });
-        }
-    }
-    if let Ok(project) = LocalProjectId::from_path(host.project()) {
-        if !shelf
-            .iter()
-            .any(|item| item.identity == ResourceIdentity::Local(project.clone()))
-        {
-            shelf.push(ShelfItem {
-                object: crate::model::ObjectId::from_backend(object_version(
-                    host.project().to_string_lossy().as_bytes(),
-                )),
-                identity: ResourceIdentity::Local(project),
-                label: host.project().to_string_lossy().into_owned().into(),
-            });
-        }
-    }
-    let mut snapshot = AppSnapshot::empty(key).with_shelf(ShelfState {
-        selected: shelf.first().map(|item| item.identity.clone()),
-        items: shelf.into(),
-    });
-    snapshot = snapshot.with_settings(SettingsState {
-        reduced_motion: persisted.reduced_motion,
-        shelf_open: persisted.shelf_open,
-        context_open: persisted.context_open,
-    });
+    let host_project_admitted = super::paths::looks_like_project(host.project());
+    let (shelf, mut workspace) =
+        persistence.cold_shelf(&persisted, host_project_admitted.then_some(host.project()));
+    let host_path: Arc<str> = host.project().to_string_lossy().into_owned().into();
+    workspace.host = Some(host_path);
+    let mut settings = persistence.cold_settings(&persisted);
+    settings.service_mode = match host.mode() {
+        HostMode::Embedded => crate::model::ServiceMode::Embedded,
+        HostMode::Attached => crate::model::ServiceMode::Attached,
+    };
+    let mut snapshot = AppSnapshot::empty(key)
+        .with_shelf(shelf)
+        .with_workspace(workspace)
+        .with_settings(settings);
     let restored = persistence.cold_reload(&persisted);
     snapshot = snapshot.with_session(SessionState {
         route: restored.route,

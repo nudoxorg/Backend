@@ -5,6 +5,10 @@
 //! `Arc`s.  Replacing one branch copies only the small `SnapshotData` shell;
 //! untouched shelf, document, settings, and session branches remain shared.
 
+pub use super::workspace::{
+    AppearancePreference, ConnectionStatus, PrivacyPreference, ProjectPhase, ServiceMode,
+    SettingsState, TextScalePreference, WorkspaceProject, WorkspaceState,
+};
 use crate::core::ids::{DocumentId, PackageId, ProjectId, ResourceIdentity, VersionedRoot};
 use crate::core::state::Resource;
 use crate::navigation::{Overlay, Route, RouteHistory, Selection};
@@ -170,27 +174,6 @@ pub struct CatalogState {
     pub packages: Arc<[PackageSummary]>,
 }
 
-/// Persistent settings exposed through the snapshot.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SettingsState {
-    /// Whether reduced motion is requested.
-    pub reduced_motion: bool,
-    /// Whether the shelf is open.
-    pub shelf_open: bool,
-    /// Whether the context panel is open.
-    pub context_open: bool,
-}
-
-impl Default for SettingsState {
-    fn default() -> Self {
-        Self {
-            reduced_motion: false,
-            shelf_open: true,
-            context_open: true,
-        }
-    }
-}
-
 /// Session-local state restored on cold start.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionState {
@@ -221,6 +204,7 @@ impl Default for SessionState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SnapshotData {
     shelf: Arc<ShelfState>,
+    workspace: Arc<WorkspaceState>,
     documents: Arc<DocumentState>,
     project: Resource<ProjectState>,
     catalog: Resource<CatalogState>,
@@ -244,6 +228,7 @@ impl AppSnapshot {
             key,
             data: Arc::new(SnapshotData {
                 shelf: Arc::new(ShelfState::default()),
+                workspace: Arc::new(WorkspaceState::default()),
                 documents: Arc::new(DocumentState::default()),
                 project: Resource::not_yet(),
                 catalog: Resource::not_yet(),
@@ -276,6 +261,12 @@ impl AppSnapshot {
     #[must_use]
     pub fn shelf(&self) -> &ShelfState {
         &self.data.shelf
+    }
+
+    /// Returns local project lifecycle rows.
+    #[must_use]
+    pub fn workspace(&self) -> &WorkspaceState {
+        &self.data.workspace
     }
 
     /// Returns the documents branch.
@@ -333,6 +324,7 @@ impl AppSnapshot {
         next.key = key;
         next.data = Arc::new(SnapshotData {
             shelf: Arc::clone(&self.data.shelf),
+            workspace: Arc::clone(&self.data.workspace),
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
             catalog: self.data.catalog.clone(),
@@ -350,6 +342,7 @@ impl AppSnapshot {
         let mut next = self.clone();
         next.data = Arc::new(SnapshotData {
             shelf: Arc::clone(&self.data.shelf),
+            workspace: Arc::clone(&self.data.workspace),
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
             catalog: self.data.catalog.clone(),
@@ -366,6 +359,7 @@ impl AppSnapshot {
         let mut next = self.clone();
         next.data = Arc::new(SnapshotData {
             shelf: Arc::new(shelf),
+            workspace: Arc::clone(&self.data.workspace),
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
             catalog: self.data.catalog.clone(),
@@ -382,6 +376,7 @@ impl AppSnapshot {
         let mut next = self.clone();
         next.data = Arc::new(SnapshotData {
             shelf: Arc::clone(&self.data.shelf),
+            workspace: Arc::clone(&self.data.workspace),
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
             catalog: self.data.catalog.clone(),
@@ -398,6 +393,7 @@ impl AppSnapshot {
         let mut next = self.clone();
         next.data = Arc::new(SnapshotData {
             shelf: Arc::clone(&self.data.shelf),
+            workspace: Arc::clone(&self.data.workspace),
             documents: Arc::clone(&self.data.documents),
             project: Resource::loaded_at(project, key),
             catalog: self.data.catalog.clone(),
@@ -414,9 +410,27 @@ impl AppSnapshot {
         let mut next = self.clone();
         next.data = Arc::new(SnapshotData {
             shelf: Arc::clone(&self.data.shelf),
+            workspace: Arc::clone(&self.data.workspace),
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
             catalog: Resource::loaded_at(catalog, key),
+            settings: Arc::clone(&self.data.settings),
+            session: Arc::clone(&self.data.session),
+            delta: self.data.delta,
+        });
+        next
+    }
+
+    /// Returns a copy with changed project lifecycle rows.
+    #[must_use]
+    pub(crate) fn with_workspace(&self, workspace: WorkspaceState) -> Self {
+        let mut next = self.clone();
+        next.data = Arc::new(SnapshotData {
+            shelf: Arc::clone(&self.data.shelf),
+            workspace: Arc::new(workspace),
+            documents: Arc::clone(&self.data.documents),
+            project: self.data.project.clone(),
+            catalog: self.data.catalog.clone(),
             settings: Arc::clone(&self.data.settings),
             session: Arc::clone(&self.data.session),
             delta: self.data.delta,
@@ -428,6 +442,12 @@ impl AppSnapshot {
     #[must_use]
     pub fn shares_shelf_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.data.shelf, &other.data.shelf)
+    }
+
+    /// Returns whether project lifecycle state is structurally shared.
+    #[must_use]
+    pub fn shares_workspace_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.data.workspace, &other.data.workspace)
     }
 
     /// Returns whether the settings branch is structurally shared with `other`.

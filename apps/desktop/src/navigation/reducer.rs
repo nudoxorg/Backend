@@ -7,6 +7,9 @@ use crate::core::ProjectId;
 /// Applies one typed intent without touching GPUI, clocks, files, or sockets.
 #[must_use]
 pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction {
+    if let Some(reduction) = super::workspace_reducer::reduce(snapshot, &intent) {
+        return reduction;
+    }
     let mut effects = Vec::new();
     let mut next = snapshot.clone();
     match intent {

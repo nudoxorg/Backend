@@ -1,17 +1,18 @@
 //! Live package catalog and project landing projections.
 
+use super::onboarding;
 use super::primitives::{heading, loading_card};
 use crate::model::{AppSnapshot, PackageSummary};
 use crate::navigation::{Intent, PackageLane, PackageRoute, Route};
 use crate::runtime::UiRootEntity;
-use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Space, TypeScale, space};
+use crate::theme::tokens::{space, Space, TypeScale};
+use crate::theme::Theme;
 use crate::ui::{components, surface, text};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, Context, ElementId, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement as _, Styled, div, px,
+    div, px, AnyElement, Context, ElementId, InteractiveElement, IntoElement, ParentElement,
+    StatefulInteractiveElement as _, Styled,
 };
 
 pub(super) fn home_page(
@@ -20,23 +21,7 @@ pub(super) fn home_page(
     snapshot: &AppSnapshot,
     cx: &mut Context<UiRootEntity>,
 ) -> AnyElement {
-    let title = if snapshot.shelf().items.is_empty() {
-        "Add a project to start reading"
-    } else {
-        "Your documentation shelf"
-    };
-    let cards = package_cards(root, theme, snapshot, cx);
-    surface::cut(theme, Paint::MintLine)
-        .p(px(28.0))
-        .flex()
-        .flex_col()
-        .gap(space(Space::Gutter))
-        .child(heading(theme, title))
-        .child(text::single_line(text::body(theme)).child(
-            "Local-first documentation, declarations, source, graph, and registry facts from the live index.",
-        ))
-        .child(cards)
-        .into_any_element()
+    onboarding::home_page(root, theme, snapshot, cx)
 }
 
 pub(super) fn project_page(
@@ -59,7 +44,7 @@ pub(super) fn project_page(
         .into_any_element()
 }
 
-fn package_cards(
+pub(super) fn package_cards(
     root: &mut UiRootEntity,
     theme: &Theme,
     snapshot: &AppSnapshot,

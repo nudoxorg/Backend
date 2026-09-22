@@ -29,6 +29,9 @@ pub struct UiRootEntity {
     focus: FocusTree,
     modals: ModalStack,
     palette: CommandPaletteState,
+    /// Last app overlay handed to gpui_component::Root. This is only an
+    /// idempotence marker; Root owns the actual dialog/sheet lifetime.
+    component_overlay: Option<Overlay>,
     persistence: Option<PersistentState>,
     requested_surface: Option<(CommandId, String, VersionedRoot)>,
     first_catalog_route_admitted: bool,
@@ -52,6 +55,7 @@ impl UiRootEntity {
             focus: FocusTree::default(),
             modals: ModalStack::default(),
             palette: CommandPaletteState::default(),
+            component_overlay: None,
             persistence,
             requested_surface: None,
             first_catalog_route_admitted: false,
@@ -100,6 +104,17 @@ impl UiRootEntity {
     #[must_use]
     pub const fn palette(&self) -> &CommandPaletteState {
         &self.palette
+    }
+
+    /// Returns the overlay route most recently admitted to CE Root.
+    pub(crate) const fn component_overlay(&self) -> Option<Overlay> {
+        self.component_overlay
+    }
+
+    /// Records the route handed to CE Root without owning a second overlay
+    /// stack. The snapshot remains the source of truth for the desired route.
+    pub(crate) fn set_component_overlay(&mut self, overlay: Option<Overlay>) {
+        self.component_overlay = overlay;
     }
 
     /// Moves semantic focus to the next control in the active scope.

@@ -8,6 +8,9 @@
 //! "the hint says ⌘⇧A but nothing happens on Windows" a category of defect
 //! this module removes rather than one it asks a tester to find.
 
+use crate::navigation::ActionId;
+use gpui::KeyBinding;
+
 /// One keyboard chord: an optional primary modifier, shift, alt, and a key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Chord {
@@ -154,6 +157,14 @@ pub(crate) const ADD_PROJECT: Chord = Chord::primary("n");
 pub(crate) const TOGGLE_LIBRARY: Chord = Chord::primary("b");
 /// Show or hide the context panel.
 pub(crate) const TOGGLE_CONTEXT: Chord = Chord::primary("\\");
+/// Open keyboard and CLI help.
+pub(crate) const OPEN_HELP: Chord = Chord::primary("/").shift();
+/// Toggle the surface appearance.
+pub(crate) const TOGGLE_APPEARANCE: Chord = Chord::primary("a").shift();
+/// Toggle the local/registry metadata policy.
+pub(crate) const TOGGLE_PRIVACY: Chord = Chord::primary("y").shift();
+/// Toggle reduced motion.
+pub(crate) const TOGGLE_REDUCED_MOTION: Chord = Chord::primary("m").shift();
 /// Open settings.
 pub(crate) const OPEN_SETTINGS: Chord = Chord::primary(",");
 /// Open the host platform disclosure.
@@ -190,10 +201,6 @@ pub(crate) const GROW_INTERFACE: Chord = Chord::primary("=");
 pub(crate) const SHRINK_INTERFACE: Chord = Chord::primary("-");
 /// Reload the page.
 pub(crate) const RELOAD: Chord = Chord::primary("r");
-/// Toggle appearance.
-pub(crate) const TOGGLE_APPEARANCE: Chord = Chord::primary("d").shift();
-/// Toggle motion.
-pub(crate) const TOGGLE_MOTION: Chord = Chord::primary("m").shift();
 /// Show the source of the page being read, over the page.
 pub(crate) const OPEN_SOURCE: Chord = Chord::primary("e");
 /// Find text in the captured source sheet.
@@ -222,4 +229,39 @@ pub(crate) const fn tab_chord(ordinal: u8) -> Chord {
         8 => "8",
         _ => "9",
     })
+}
+/// GPUI action payload used by the single root action listener.
+///
+/// A numeric payload lets the stable navigation registry remain the source of
+/// truth while GPUI still receives a real typed action for every keyboard
+/// binding. `no_json` is intentional: these bindings are product defaults,
+/// not user supplied serialized actions.
+#[derive(Clone, Debug, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct ShellAction {
+    /// Stable [`ActionId`] representation.
+    pub(crate) id: u16,
+}
+
+/// Returns the product's default shell bindings.
+pub(crate) fn bindings() -> Vec<KeyBinding> {
+    [
+        (ADD_PROJECT, ActionId::AddProject),
+        (TOGGLE_LIBRARY, ActionId::ToggleShelf),
+        (TOGGLE_CONTEXT, ActionId::ToggleContext),
+        (OPEN_SETTINGS, ActionId::OpenSettings),
+        (OPEN_PALETTE, ActionId::OpenCommandPalette),
+        (GO_BACK, ActionId::Back),
+        (GO_FORWARD, ActionId::Forward),
+        (GO_HOME, ActionId::OpenHome),
+        (OPEN_HELP, ActionId::OpenHelp),
+        (TOGGLE_APPEARANCE, ActionId::ToggleAppearance),
+        (TOGGLE_PRIVACY, ActionId::TogglePrivacy),
+        (TOGGLE_REDUCED_MOTION, ActionId::ToggleReducedMotion),
+    ]
+    .into_iter()
+    .map(|(chord, action)| {
+        KeyBinding::new(chord.binding(), ShellAction { id: action as u16 }, None)
+    })
+    .collect()
 }

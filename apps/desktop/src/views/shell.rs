@@ -1,20 +1,19 @@
 //! Window chrome, shelf, and transient overlays.
 
 use super::primitives::{heading, route_label};
+use super::project_shelf;
 use crate::core::layout::{PanelMode, RegionId, ResponsiveLayout, SheetKind};
 use crate::model::AppSnapshot;
-use crate::navigation::{
-    Intent, OrbitRoute, Overlay, PackageLane, PackageRoute, Route, SettingsPage,
-};
+use crate::navigation::{Intent, OrbitRoute, PackageLane, PackageRoute, Route, SettingsPage};
 use crate::runtime::UiRootEntity;
-use crate::theme::Theme;
 use crate::theme::palette::Paint;
-use crate::theme::tokens::{Space, TypeScale, space, type_size};
-use crate::ui::{components, text};
+use crate::theme::tokens::{space, type_size, Space, TypeScale};
+use crate::theme::Theme;
+use crate::ui::components;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement,
-    StatefulInteractiveElement as _, Styled, WeakEntity, Window, div, px,
+    div, px, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement,
+    StatefulInteractiveElement as _, Styled, WeakEntity,
 };
 use gpui_component::{Placement, Root, Selectable as _, WindowExt as _};
 use std::sync::Arc;
@@ -81,21 +80,7 @@ pub(super) fn header(
         .child(components::measure(
             theme,
             "command-palette",
-            components::button_with_state(
-                theme,
-                "command-palette",
-                if compact {
-                    "⌘K"
-                } else {
-                    "Search all docs…  ⌘K"
-                },
-                components::Weight::Regular,
-                false,
-                true,
-            )
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.queue(Intent::OpenCommandPalette, cx);
-            })),
+            crate::ui::search_palette::header_trigger(theme, root, cx),
         ))
         .child(components::measure(
             theme,
@@ -141,60 +126,6 @@ pub(super) fn shelf_panel(
             .h_full()
             .flex_none();
     }
-    let rows = snapshot
-        .shelf()
-        .items
-        .iter()
-        .enumerate()
-        .map(|(index, item)| {
-            let identity = item.identity.clone();
-            let route = match identity.clone() {
-                crate::core::ResourceIdentity::Project(project) => {
-                    Route::Orbit(OrbitRoute::Project(project))
-                }
-                crate::core::ResourceIdentity::Local(_) => Route::Orbit(OrbitRoute::Home),
-                crate::core::ResourceIdentity::Package(package) => Route::Package(PackageRoute {
-                    project: None,
-                    package,
-                    lane: PackageLane::Overview,
-                    selected: Some(item.object),
-                }),
-            };
-            let id = format!("shelf-{index}");
-            components::measure(
-                theme,
-                id.clone(),
-                components::button_with_state(
-                    theme,
-                    id,
-                    item.label.to_string(),
-                    components::Weight::Quiet,
-                    false,
-                    true,
-                )
-                .selected(snapshot.shelf().selected.as_ref() == Some(&identity))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.queue(Intent::Navigate(route.clone()), cx);
-                })),
-            )
-            .into_any_element()
-        })
-        .collect::<Vec<_>>();
-    let add = components::measure(
-        theme,
-        "add-project",
-        components::button_with_state(
-            theme,
-            "add-project",
-            "+ Add project",
-            components::Weight::Primary,
-            false,
-            true,
-        )
-        .on_click(cx.listener(|this, _, _, cx| {
-            this.queue(Intent::OpenSettings(SettingsPage::Index), cx);
-        })),
-    );
     let _ = root;
     div()
         .id(gpui::ElementId::Name("project-shelf".into()))
@@ -202,24 +133,8 @@ pub(super) fn shelf_panel(
             layout.region(RegionId::ProjectShelf).bounds.width.get() as f32
         ))
         .flex_none()
-        .min_h(px(0.0))
-        .flex()
-        .flex_col()
-        .gap(space(Space::Base))
-        .p(space(Space::Gutter))
-        .border_r(px(1.0))
-        .border_color(theme.paint(Paint::Rule2))
-        .bg(theme.paint(Paint::Abyss1))
-        .child(
-            div()
-                .text_size(type_size(TypeScale::Small))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.paint(Paint::Silver2))
-                .child("SHELF"),
-        )
-        .children(rows)
-        .child(div().flex_1())
-        .child(add)
+        .h_full()
+        .child(project_shelf::panel(theme, snapshot, true, cx))
 }
 
 /// Renders the persistent orbit rail. The semantic identity remains stable
@@ -568,195 +483,4 @@ pub(super) fn context_panel(
                 .child("CONTEXT"),
         )
         .children(rows)
-}
-
-/// Synchronizes reducer-owned overlay intent with the CE Root overlay layer.
-/// Root owns dialog focus, backdrop dismissal, scrolling, and animation;
-/// this adapter only opens the requested typed surface and feeds button
-/// intents back to the product reducer.
-pub(super) fn sync_overlay(
-    theme: &Theme,
-    snapshot: &AppSnapshot,
-    layout: ResponsiveLayout,
-    window: &mut Window,
-    cx: &mut Context<UiRootEntity>,
-) {
-    let desired = snapshot.overlay();
-    if let Some(overlay) = desired {
-        if window.has_active_dialog(cx) {
-            return;
-        }
-        let (id, title, description) = overlay_metadata(overlay);
-        theme.register_action(
-            components::ActionMetadata::new(id, title, components::ActionRole::Dialog)
-                .description(description),
-        );
-        let root = cx.weak_entity();
-        let dialog_theme = theme.clone();
-        let reduced_motion = snapshot.settings().reduced_motion;
-        Root::update(window, cx, move |ce_root, window, ce_cx| {
-            ce_root.open_dialog(
-                move |dialog, _window, _app| {
-                    responsive_dialog(
-                        dialog,
-                        &dialog_theme,
-                        overlay,
-                        layout,
-                        reduced_motion,
-                        root.clone(),
-                    )
-                },
-                window,
-                ce_cx,
-            );
-        });
-    } else if window.has_active_dialog(cx) {
-        Root::update(window, cx, |ce_root, window, ce_cx| {
-            ce_root.close_all_dialogs(window, ce_cx);
-        });
-    }
-}
-
-const fn overlay_metadata(overlay: Overlay) -> (&'static str, &'static str, &'static str) {
-    match overlay {
-        Overlay::Settings(_) => (
-            "settings-dialog",
-            "Settings",
-            "Application settings overlay",
-        ),
-        Overlay::CommandPalette => (
-            "command-palette-dialog",
-            "Command palette",
-            "Search and run workspace commands",
-        ),
-    }
-}
-
-/// Projects one typed reducer overlay into a CE `Dialog`. The dialog's
-/// controls retain stable action IDs and dispatch product intents through the
-/// existing root entity; no view-local modal or focus state is introduced.
-fn responsive_dialog(
-    mut dialog: gpui_component::dialog::Dialog,
-    theme: &Theme,
-    overlay: Overlay,
-    layout: ResponsiveLayout,
-    reduced_motion: bool,
-    root: WeakEntity<UiRootEntity>,
-) -> gpui_component::dialog::Dialog {
-    let (id, title, _) = overlay_metadata(overlay);
-    let dialog_theme = theme.clone();
-    let close_root = root.clone();
-    let dialog_width = layout
-        .window
-        .width()
-        .get()
-        .saturating_sub(layout.content_padding.get().saturating_mul(2))
-        .max(1);
-    dialog = dialog
-        .title(heading(theme, title))
-        .width(px(dialog_width as f32))
-        .margin_top(px(layout.region(RegionId::Titlebar).bounds.height.get()
-            as f32
-            + layout.content_padding.get() as f32))
-        .overlay(true)
-        .overlay_closable(true)
-        .on_close(move |_, _, app| {
-            let _ = close_root.update(app, |this, cx| {
-                this.queue(Intent::DismissOverlay, cx);
-            });
-        })
-        .content(move |mut content, _window, app| {
-            let dialog_theme = dialog_theme.with_action_parent(id);
-            match overlay {
-                Overlay::Settings(page) => {
-                    let toggle_root = root.clone();
-                    let done_root = root.clone();
-                    let active_reduced_motion = root.upgrade().map_or(reduced_motion, |entity| {
-                        entity.read(app).snapshot().settings().reduced_motion
-                    });
-                    content = content
-                        .child(text::single_line(text::faint(&dialog_theme)).child(page.as_str()))
-                        .child(components::measure(
-                            &dialog_theme,
-                            "toggle-motion",
-                            components::button_with_state(
-                                &dialog_theme,
-                                "toggle-motion",
-                                if active_reduced_motion {
-                                    "Enable motion"
-                                } else {
-                                    "Reduce motion"
-                                },
-                                components::Weight::Regular,
-                                false,
-                                true,
-                            )
-                            .on_click(move |_, _, app| {
-                                let _ = toggle_root.update(app, |this, cx| {
-                                    this.queue(Intent::ToggleReducedMotion, cx);
-                                });
-                            }),
-                        ))
-                        .child(components::measure(
-                            &dialog_theme,
-                            "close-settings",
-                            components::button_with_state(
-                                &dialog_theme,
-                                "close-settings",
-                                "Done",
-                                components::Weight::Primary,
-                                false,
-                                true,
-                            )
-                            .on_click(move |_, window, app| {
-                                let _ = done_root.update(app, |this, cx| {
-                                    this.queue(Intent::DismissOverlay, cx);
-                                });
-                                window.close_dialog(app);
-                            }),
-                        ));
-                }
-                Overlay::CommandPalette => {
-                    let actions = crate::navigation::ActionId::ALL.into_iter().map(|action| {
-                        let intent = action.intent();
-                        let id = format!("palette-action-{}", action.as_str());
-                        let mut button = components::button_with_state(
-                            &dialog_theme,
-                            id.clone(),
-                            action.spec().label,
-                            components::Weight::Quiet,
-                            intent.is_none(),
-                            true,
-                        );
-                        if let Some(intent) = intent {
-                            let action_root = root.clone();
-                            let closes_dialog = matches!(
-                                &intent,
-                                Intent::Navigate(_)
-                                    | Intent::OpenSource { .. }
-                                    | Intent::ZoomOut
-                                    | Intent::Back
-                                    | Intent::Forward
-                                    | Intent::OpenSettings(_)
-                                    | Intent::DismissOverlay
-                            );
-                            button = button.on_click(move |_, window, app| {
-                                let _ = action_root.update(app, |this, cx| {
-                                    this.queue(intent.clone(), cx);
-                                });
-                                if closes_dialog {
-                                    window.close_dialog(app);
-                                }
-                            });
-                        }
-                        components::measure(&dialog_theme, id, button)
-                    });
-                    content = content.child(components::vertical_scroll(
-                        div().flex().flex_col().children(actions),
-                    ));
-                }
-            }
-            content
-        });
-    dialog
 }

@@ -9,7 +9,7 @@
 //! makes "attach to the live owner" reliable rather than lucky.
 
 use backend_runtime::{
-    AUTHORITY_SECRET_ENV, DATA_ENV, ENDPOINT_ENV, PROJECT_ENV, RuntimeError, WorkspacePaths,
+    RuntimeError, WorkspacePaths, AUTHORITY_SECRET_ENV, DATA_ENV, ENDPOINT_ENV, PROJECT_ENV,
 };
 use std::path::{Path, PathBuf};
 
@@ -71,7 +71,7 @@ fn ambient_gui_launch() -> bool {
 }
 
 /// Returns whether a directory is a plausible project boundary.
-fn looks_like_project(path: &Path) -> bool {
+pub(crate) fn looks_like_project(path: &Path) -> bool {
     path.join(".git").exists()
         || [
             "Cargo.toml",
@@ -115,10 +115,7 @@ fn application_data_root() -> Result<PathBuf, RuntimeError> {
             return Ok(data_home.join("nudox"));
         }
         if let Some(home) = absolute_env_path("HOME") {
-            return Ok(home
-                .join(".local")
-                .join("share")
-                .join("nudox"));
+            return Ok(home.join(".local").join("share").join("nudox"));
         }
     }
     Err(RuntimeError::InvalidPath(

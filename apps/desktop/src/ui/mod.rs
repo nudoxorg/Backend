@@ -9,5 +9,6 @@
 
 pub(crate) mod components;
 pub(crate) mod icon;
+pub(crate) mod search_palette;
 pub(crate) mod surface;
 pub(crate) mod text;

@@ -32,11 +32,23 @@ pub enum ActionId {
     Activate = 11,
     /// Stop a background request.
     Stop = 12,
+    /// Open the native project folder picker.
+    AddProject = 13,
+    /// Collapse or expand the project shelf.
+    ToggleShelf = 14,
+    /// Open keyboard and CLI help.
+    OpenHelp = 15,
+    /// Switch the surface appearance.
+    ToggleAppearance = 16,
+    /// Switch local-only and registry metadata policy.
+    TogglePrivacy = 17,
+    /// Collapse or expand the context panel.
+    ToggleContext = 18,
 }
 
 impl ActionId {
     /// All actions in stable registry order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 18] = [
         Self::OpenHome,
         Self::ZoomOut,
         Self::Back,
@@ -49,7 +61,39 @@ impl ActionId {
         Self::MoveDown,
         Self::Activate,
         Self::Stop,
+        Self::AddProject,
+        Self::ToggleShelf,
+        Self::OpenHelp,
+        Self::ToggleAppearance,
+        Self::TogglePrivacy,
+        Self::ToggleContext,
     ];
+
+    /// Rehydrates one action from the stable keyboard binding id.
+    #[must_use]
+    pub const fn from_u16(value: u16) -> Option<Self> {
+        Some(match value {
+            1 => Self::OpenHome,
+            2 => Self::ZoomOut,
+            3 => Self::Back,
+            4 => Self::Forward,
+            5 => Self::OpenCommandPalette,
+            6 => Self::DismissOverlay,
+            7 => Self::OpenSettings,
+            8 => Self::ToggleReducedMotion,
+            9 => Self::MoveUp,
+            10 => Self::MoveDown,
+            11 => Self::Activate,
+            12 => Self::Stop,
+            13 => Self::AddProject,
+            14 => Self::ToggleShelf,
+            15 => Self::OpenHelp,
+            16 => Self::ToggleAppearance,
+            17 => Self::TogglePrivacy,
+            18 => Self::ToggleContext,
+            _ => return None,
+        })
+    }
 
     /// Stable persisted spelling.
     #[must_use]
@@ -67,6 +111,12 @@ impl ActionId {
             Self::MoveDown => "move-down",
             Self::Activate => "activate",
             Self::Stop => "stop",
+            Self::AddProject => "add-project",
+            Self::ToggleShelf => "toggle-shelf",
+            Self::OpenHelp => "open-help",
+            Self::ToggleAppearance => "toggle-appearance",
+            Self::TogglePrivacy => "toggle-privacy",
+            Self::ToggleContext => "toggle-context",
         }
     }
 
@@ -77,8 +127,15 @@ impl ActionId {
             Self::OpenHome | Self::ZoomOut | Self::Back | Self::Forward => {
                 SemanticFamily::Navigation
             }
-            Self::OpenCommandPalette | Self::OpenSettings => SemanticFamily::Command,
-            Self::DismissOverlay | Self::ToggleReducedMotion => SemanticFamily::Shell,
+            Self::OpenCommandPalette | Self::OpenSettings | Self::AddProject | Self::OpenHelp => {
+                SemanticFamily::Command
+            }
+            Self::DismissOverlay
+            | Self::ToggleReducedMotion
+            | Self::ToggleShelf
+            | Self::ToggleAppearance
+            | Self::TogglePrivacy
+            | Self::ToggleContext => SemanticFamily::Shell,
             Self::MoveUp | Self::MoveDown | Self::Activate => SemanticFamily::Selection,
             Self::Stop => SemanticFamily::Engine,
         }
@@ -90,7 +147,15 @@ impl ActionId {
         match self {
             Self::Stop => VoiceChannel::Stop,
             Self::MoveUp | Self::MoveDown => VoiceChannel::Focus,
-            Self::Activate | Self::OpenCommandPalette | Self::OpenSettings => VoiceChannel::Action,
+            Self::Activate
+            | Self::OpenCommandPalette
+            | Self::OpenSettings
+            | Self::AddProject
+            | Self::OpenHelp
+            | Self::ToggleAppearance
+            | Self::TogglePrivacy
+            | Self::ToggleShelf
+            | Self::ToggleContext => VoiceChannel::Action,
             Self::OpenHome
             | Self::ZoomOut
             | Self::Back
@@ -127,6 +192,12 @@ impl ActionId {
             Self::MoveDown => "Move down",
             Self::Activate => "Activate",
             Self::Stop => "Stop request",
+            Self::AddProject => "Add project",
+            Self::ToggleShelf => "Toggle project shelf",
+            Self::OpenHelp => "Open keyboard and CLI help",
+            Self::ToggleAppearance => "Toggle appearance",
+            Self::TogglePrivacy => "Toggle privacy policy",
+            Self::ToggleContext => "Toggle context panel",
         }
     }
 
@@ -144,6 +215,12 @@ impl ActionId {
             Self::MoveDown => Some(KeyChord::new("down")),
             Self::Activate => Some(KeyChord::new("enter")),
             Self::Stop => Some(KeyChord::new("escape")),
+            Self::AddProject => Some(KeyChord::new("cmd-n")),
+            Self::ToggleShelf => Some(KeyChord::new("cmd-b")),
+            Self::OpenHelp => Some(KeyChord::new("cmd-shift-/")),
+            Self::ToggleAppearance => Some(KeyChord::new("cmd-shift-a")),
+            Self::TogglePrivacy => Some(KeyChord::new("cmd-shift-y")),
+            Self::ToggleContext => Some(KeyChord::new("cmd-backslash")),
         }
     }
 
@@ -161,6 +238,12 @@ impl ActionId {
             Self::DismissOverlay => Some(Intent::DismissOverlay),
             Self::OpenSettings => Some(Intent::OpenSettings(SettingsPage::Appearance)),
             Self::ToggleReducedMotion => Some(Intent::ToggleReducedMotion),
+            Self::AddProject => Some(Intent::OpenFolderPicker),
+            Self::ToggleShelf => Some(Intent::ToggleShelf),
+            Self::OpenHelp => Some(Intent::OpenHelp),
+            Self::ToggleAppearance => Some(Intent::ToggleAppearance),
+            Self::TogglePrivacy => Some(Intent::TogglePrivacy),
+            Self::ToggleContext => Some(Intent::ToggleContext),
             Self::MoveUp | Self::MoveDown | Self::Activate => None,
             Self::Stop => Some(Intent::Stop),
         }

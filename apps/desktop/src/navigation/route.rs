@@ -167,6 +167,10 @@ pub enum SettingsPage {
     Editor,
     /// Agent connections.
     Agents,
+    /// Connections and local/remote policy.
+    Connections,
+    /// Privacy and data residency policy.
+    Privacy,
     /// Diagnostics and transport health.
     Diagnostics,
     /// Index status.
@@ -175,18 +179,23 @@ pub enum SettingsPage {
     Registry,
     /// Semantic legend.
     Legend,
+    /// Keyboard and CLI help.
+    Help,
 }
 
 impl SettingsPage {
     /// Stable order used by the settings focus route.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 10] = [
         Self::Appearance,
         Self::Editor,
         Self::Agents,
+        Self::Connections,
+        Self::Privacy,
         Self::Diagnostics,
         Self::Index,
         Self::Registry,
         Self::Legend,
+        Self::Help,
     ];
 
     /// Returns a stable persistence spelling.
@@ -196,10 +205,13 @@ impl SettingsPage {
             Self::Appearance => "appearance",
             Self::Editor => "editor",
             Self::Agents => "agents",
+            Self::Connections => "connections",
+            Self::Privacy => "privacy",
             Self::Diagnostics => "diagnostics",
             Self::Index => "index",
             Self::Registry => "registry",
             Self::Legend => "legend",
+            Self::Help => "help",
         }
     }
 

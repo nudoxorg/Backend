@@ -1,10 +1,15 @@
 //! Durable shelf/settings/session schema with crash-safe publication.
 
-use super::snapshot::{AppSnapshot, SessionState, SettingsState};
+use super::snapshot::{AppSnapshot, SessionState, ShelfItem, ShelfState};
+use super::workspace::{
+    AppearancePreference, ConnectionStatus, PrivacyPreference, ProjectPhase, ServiceMode,
+    SettingsState, TextScalePreference, WorkspaceProject, WorkspaceState,
+};
 use crate::core::ids::LocalProjectId;
 use crate::navigation::{Coordinate, Overlay, PackageLane, Route, SettingsPage};
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -21,6 +26,88 @@ pub struct PersistedShelfItem {
     pub local_path: String,
     /// Stable user-facing label.
     pub label: String,
+    /// Last known index lifecycle.
+    #[serde(default)]
+    pub phase: PersistedProjectPhase,
+    /// Last backend-reported scan progress, when available.
+    #[serde(default)]
+    pub progress: Option<u8>,
+    /// Backend-reported file count, when available.
+    #[serde(default)]
+    pub files_indexed: Option<u64>,
+    /// Bounded error from the last index attempt.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// Serializable project lifecycle vocabulary.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PersistedProjectPhase {
+    /// Index is current.
+    #[default]
+    Ready,
+    /// Indexing is in progress.
+    Indexing,
+    /// Indexing was cancelled.
+    Cancelled,
+    /// Indexing failed.
+    Failed,
+    /// Folder is no longer available.
+    Missing,
+}
+
+impl From<ProjectPhase> for PersistedProjectPhase {
+    fn from(value: ProjectPhase) -> Self {
+        match value {
+            ProjectPhase::Ready => Self::Ready,
+            ProjectPhase::Indexing => Self::Indexing,
+            ProjectPhase::Cancelled => Self::Cancelled,
+            ProjectPhase::Failed => Self::Failed,
+            ProjectPhase::Missing => Self::Missing,
+        }
+    }
+}
+
+impl From<PersistedProjectPhase> for ProjectPhase {
+    fn from(value: PersistedProjectPhase) -> Self {
+        match value {
+            PersistedProjectPhase::Ready => Self::Ready,
+            PersistedProjectPhase::Indexing => Self::Indexing,
+            PersistedProjectPhase::Cancelled => Self::Cancelled,
+            PersistedProjectPhase::Failed => Self::Failed,
+            PersistedProjectPhase::Missing => Self::Missing,
+        }
+    }
+}
+
+/// Serializable appearance preference.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PersistedAppearance {
+    /// Dark abyss palette.
+    #[default]
+    Abyss,
+    /// Light glacier palette.
+    Glacier,
+}
+
+/// Serializable privacy preference.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PersistedPrivacy {
+    /// Keep all source/index traffic local.
+    #[default]
+    LocalOnly,
+    /// Allow registry metadata requests.
+    RegistryMetadata,
+}
+
+/// Serializable service-hosting preference.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PersistedServiceMode {
+    /// Start a local embedded daemon.
+    #[default]
+    Embedded,
+    /// Attach to an existing daemon.
+    Attached,
 }
 
 /// Versioned, forward-compatible desktop state file.
@@ -40,6 +127,38 @@ pub struct PersistedDesktopState {
     pub route: PersistedRoute,
     /// Last settings page.
     pub settings_page: Option<String>,
+    /// Active shelf project retained across a cold restart.
+    #[serde(default)]
+    pub active_project: Option<String>,
+    /// Surface appearance.
+    #[serde(default)]
+    pub appearance: PersistedAppearance,
+    /// Interface text scale percentage.
+    #[serde(default)]
+    pub text_scale: u16,
+    /// Local/remote registry policy.
+    #[serde(default)]
+    pub privacy: PersistedPrivacy,
+    /// Embedded or attached daemon.
+    #[serde(default)]
+    pub service_mode: PersistedServiceMode,
+    /// Whether advisory data is enabled.
+    #[serde(default = "default_true")]
+    pub advisories: bool,
+    /// Whether immutable responses may be cached.
+    #[serde(default = "default_true")]
+    pub cache_enabled: bool,
+    /// Cache retention in days.
+    #[serde(default = "default_cache_days")]
+    pub cache_days: u16,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_cache_days() -> u16 {
+    14
 }
 
 impl Default for PersistedDesktopState {
@@ -52,6 +171,14 @@ impl Default for PersistedDesktopState {
             context_open: true,
             route: PersistedRoute::Home,
             settings_page: None,
+            active_project: None,
+            appearance: PersistedAppearance::default(),
+            text_scale: 100,
+            privacy: PersistedPrivacy::default(),
+            service_mode: PersistedServiceMode::default(),
+            advisories: true,
+            cache_enabled: true,
+            cache_days: 14,
         }
     }
 }
@@ -376,10 +503,23 @@ impl PersistentState {
             .items
             .iter()
             .filter_map(|item| match &item.identity {
-                crate::core::ResourceIdentity::Local(id) => Some(PersistedShelfItem {
-                    local_path: id.as_str().to_owned(),
-                    label: item.label.to_string(),
-                }),
+                crate::core::ResourceIdentity::Local(id) => {
+                    let project = snapshot
+                        .workspace()
+                        .projects
+                        .iter()
+                        .find(|project| project.path.as_ref() == id.as_str());
+                    Some(PersistedShelfItem {
+                        local_path: id.as_str().to_owned(),
+                        label: item.label.to_string(),
+                        phase: project
+                            .map_or(PersistedProjectPhase::Ready, |project| project.phase.into()),
+                        progress: project.and_then(|project| project.progress),
+                        files_indexed: project.and_then(|project| project.files_indexed),
+                        error: project
+                            .and_then(|project| project.error.as_ref().map(ToString::to_string)),
+                    })
+                }
                 crate::core::ResourceIdentity::Package(_)
                 | crate::core::ResourceIdentity::Project(_) => None,
             })
@@ -397,6 +537,27 @@ impl PersistentState {
             reduced_motion: snapshot.settings().reduced_motion,
             shelf_open: snapshot.settings().shelf_open,
             context_open: snapshot.settings().context_open,
+            active_project: snapshot
+                .workspace()
+                .active
+                .as_deref()
+                .map(ToOwned::to_owned),
+            appearance: match snapshot.settings().appearance {
+                AppearancePreference::Abyss => PersistedAppearance::Abyss,
+                AppearancePreference::Glacier => PersistedAppearance::Glacier,
+            },
+            text_scale: snapshot.settings().text_scale.percent(),
+            privacy: match snapshot.settings().privacy {
+                PrivacyPreference::LocalOnly => PersistedPrivacy::LocalOnly,
+                PrivacyPreference::RegistryMetadata => PersistedPrivacy::RegistryMetadata,
+            },
+            service_mode: match snapshot.settings().service_mode {
+                ServiceMode::Embedded => PersistedServiceMode::Embedded,
+                ServiceMode::Attached => PersistedServiceMode::Attached,
+            },
+            advisories: snapshot.settings().advisories,
+            cache_enabled: snapshot.settings().cache_enabled,
+            cache_days: snapshot.settings().cache_days,
             route: match snapshot.overlay() {
                 Some(Overlay::Settings(_)) => PersistedRoute::Settings,
                 Some(Overlay::CommandPalette) | None => match snapshot.route() {
@@ -537,7 +698,186 @@ impl PersistentState {
             reduced_motion: state.reduced_motion,
             shelf_open: state.shelf_open,
             context_open: state.context_open,
+            appearance: match state.appearance {
+                PersistedAppearance::Abyss => AppearancePreference::Abyss,
+                PersistedAppearance::Glacier => AppearancePreference::Glacier,
+            },
+            text_scale: match state.text_scale {
+                0..=107 => TextScalePreference::Percent100,
+                108..=124 => TextScalePreference::Percent115,
+                125..=147 => TextScalePreference::Percent135,
+                148..=180 => TextScalePreference::Percent160,
+                _ => TextScalePreference::Percent200,
+            },
+            privacy: match state.privacy {
+                PersistedPrivacy::LocalOnly => PrivacyPreference::LocalOnly,
+                PersistedPrivacy::RegistryMetadata => PrivacyPreference::RegistryMetadata,
+            },
+            service_mode: match state.service_mode {
+                PersistedServiceMode::Embedded => ServiceMode::Embedded,
+                PersistedServiceMode::Attached => ServiceMode::Attached,
+            },
+            advisories: state.advisories,
+            cache_enabled: state.cache_enabled,
+            cache_days: state.cache_days,
+            connection: ConnectionStatus::Unknown,
         }
+    }
+
+    /// Restores durable project rows and marks folders that disappeared while
+    /// Nudox was closed. The path is retained so the user can repair it.
+    #[must_use]
+    pub fn cold_workspace(&self, state: &PersistedDesktopState) -> WorkspaceState {
+        let mut seen = BTreeSet::new();
+        let projects = state
+            .shelf
+            .iter()
+            .filter_map(|item| {
+                // Older state files could contain the same local path more
+                // than once. Keep the first durable row so the shelf and
+                // active workspace cannot diverge after a restart.
+                if !seen.insert(item.local_path.clone()) {
+                    return None;
+                }
+                let path = std::path::Path::new(&item.local_path);
+                let phase = if path.is_dir() {
+                    item.phase.into()
+                } else {
+                    ProjectPhase::Missing
+                };
+                Some(WorkspaceProject {
+                    path: item.local_path.clone().into(),
+                    label: item.label.clone().into(),
+                    phase,
+                    progress: item.progress.map(|progress| progress.min(100)),
+                    files_indexed: item.files_indexed,
+                    error: item.error.clone().map(Into::into),
+                    recent: true,
+                })
+            })
+            .collect::<Vec<_>>();
+        let active = state
+            .active_project
+            .as_deref()
+            .and_then(|active| {
+                projects
+                    .iter()
+                    .find(|project| project.path.as_ref() == active)
+            })
+            .map(|project| project.path.clone())
+            .or_else(|| projects.first().map(|project| project.path.clone()));
+        WorkspaceState {
+            active,
+            host: None,
+            projects: projects.into(),
+            path_error: None,
+        }
+    }
+
+    /// Restores one durable shelf and merges the service's selected workspace.
+    ///
+    /// The host path is optional because ambient startup can point at a
+    /// directory that is not a project boundary. A real project path is
+    /// admitted exactly once, while the persisted active path remains visible
+    /// when it differs so the UI can explain the workspace mismatch.
+    #[must_use]
+    pub fn cold_shelf(
+        &self,
+        state: &PersistedDesktopState,
+        host_project: Option<&Path>,
+    ) -> (ShelfState, WorkspaceState) {
+        let mut workspace = self.cold_workspace(state);
+        let mut shelf = Vec::with_capacity(state.shelf.len().saturating_add(1));
+        for item in &state.shelf {
+            let Some(project) = LocalProjectId::new(&item.local_path) else {
+                continue;
+            };
+            if shelf.iter().any(|existing: &ShelfItem| {
+                existing.identity == crate::core::ResourceIdentity::Local(project.clone())
+            }) {
+                continue;
+            }
+            shelf.push(ShelfItem {
+                object: crate::model::ObjectId::from_backend(backend_library::object_version(
+                    item.local_path.as_bytes(),
+                )),
+                identity: crate::core::ResourceIdentity::Local(project),
+                label: item.label.clone().into(),
+            });
+        }
+        if let Some(host) = host_project {
+            if let Ok(project) = LocalProjectId::from_path(host) {
+                if !shelf.iter().any(|item| {
+                    item.identity == crate::core::ResourceIdentity::Local(project.clone())
+                }) {
+                    shelf.push(ShelfItem {
+                        object: crate::model::ObjectId::from_backend(
+                            backend_library::object_version(host.to_string_lossy().as_bytes()),
+                        ),
+                        identity: crate::core::ResourceIdentity::Local(project.clone()),
+                        label: host
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("Workspace")
+                            .to_owned()
+                            .into(),
+                    });
+                }
+                let path = project.as_str().to_owned();
+                let mut projects = workspace.projects.to_vec();
+                if let Some(existing) = projects.iter_mut().find(|item| item.path.as_ref() == path)
+                {
+                    if existing.phase == ProjectPhase::Missing && host.is_dir() {
+                        existing.phase = ProjectPhase::Indexing;
+                        existing.progress = None;
+                        existing.files_indexed = None;
+                        existing.error = None;
+                    }
+                } else {
+                    projects.push(WorkspaceProject {
+                        path: path.clone().into(),
+                        label: host
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("Workspace")
+                            .to_owned()
+                            .into(),
+                        phase: if host.is_dir() {
+                            ProjectPhase::Indexing
+                        } else {
+                            ProjectPhase::Missing
+                        },
+                        progress: None,
+                        files_indexed: None,
+                        error: None,
+                        recent: true,
+                    });
+                }
+                workspace.projects = projects.into();
+                if workspace.active.is_none() {
+                    workspace.active = Some(path.into());
+                }
+            }
+        }
+        let selected = workspace
+            .active
+            .as_deref()
+            .and_then(|active| {
+                shelf.iter().find_map(|item| match &item.identity {
+                    crate::core::ResourceIdentity::Local(project) if project.as_str() == active => {
+                        Some(item.identity.clone())
+                    }
+                    _ => None,
+                })
+            })
+            .or_else(|| shelf.first().map(|item| item.identity.clone()));
+        (
+            ShelfState {
+                selected,
+                items: shelf.into(),
+            },
+            workspace,
+        )
     }
 
     /// Parses one local shelf identity at the persistence boundary.
@@ -641,6 +981,10 @@ mod tests {
             shelf: vec![PersistedShelfItem {
                 local_path: "/tmp/project".to_owned(),
                 label: "project".to_owned(),
+                phase: PersistedProjectPhase::Ready,
+                progress: None,
+                files_indexed: None,
+                error: None,
             }],
             route: PersistedRoute::Settings,
             settings_page: Some("appearance".to_owned()),
@@ -662,6 +1006,78 @@ mod tests {
         assert!(settings.context_open);
         assert!(PersistentState::local_identity(&value.shelf[0]).is_some());
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn cold_workspace_deduplicates_legacy_shelf_paths() {
+        let state = PersistedDesktopState {
+            shelf: vec![
+                PersistedShelfItem {
+                    local_path: "/tmp/nudox-duplicate-project".to_owned(),
+                    label: "first".to_owned(),
+                    phase: PersistedProjectPhase::Ready,
+                    progress: None,
+                    files_indexed: None,
+                    error: None,
+                },
+                PersistedShelfItem {
+                    local_path: "/tmp/nudox-duplicate-project".to_owned(),
+                    label: "second".to_owned(),
+                    phase: PersistedProjectPhase::Ready,
+                    progress: None,
+                    files_indexed: None,
+                    error: None,
+                },
+            ],
+            active_project: Some("/tmp/nudox-duplicate-project".to_owned()),
+            ..PersistedDesktopState::default()
+        };
+        let workspace = PersistentState::at("unused").cold_workspace(&state);
+
+        assert_eq!(workspace.projects.len(), 1);
+        assert_eq!(workspace.projects[0].label.as_ref(), "first");
+        assert_eq!(
+            workspace.active.as_deref(),
+            Some("/tmp/nudox-duplicate-project")
+        );
+    }
+
+    #[test]
+    fn cold_shelf_keeps_active_selection_visible_when_service_host_differs() {
+        let active = "/tmp/nudox-selected-project";
+        let host = "/tmp/nudox-served-project";
+        let state = PersistedDesktopState {
+            shelf: vec![PersistedShelfItem {
+                local_path: active.to_owned(),
+                label: "selected".to_owned(),
+                phase: PersistedProjectPhase::Ready,
+                progress: None,
+                files_indexed: None,
+                error: None,
+            }],
+            active_project: Some(active.to_owned()),
+            ..PersistedDesktopState::default()
+        };
+
+        let (shelf, workspace) =
+            PersistentState::at("unused").cold_shelf(&state, Some(Path::new(host)));
+
+        assert_eq!(workspace.active.as_deref(), Some(active));
+        assert_eq!(
+            shelf.selected.as_ref().and_then(|identity| match identity {
+                crate::core::ResourceIdentity::Local(project) => Some(project.as_str()),
+                _ => None,
+            }),
+            Some(active)
+        );
+        assert!(workspace
+            .projects
+            .iter()
+            .any(|project| project.path.as_ref() == host));
+        assert!(shelf.items.iter().any(|item| match &item.identity {
+            crate::core::ResourceIdentity::Local(project) => project.as_str() == host,
+            _ => false,
+        }));
     }
 
     #[test]
