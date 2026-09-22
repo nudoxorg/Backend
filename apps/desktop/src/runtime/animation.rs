@@ -438,11 +438,19 @@ impl<C: FrameClock> AnimationTimeline<C> {
         {
             return false;
         }
-        let now = self.last_frame.map_or(now, |previous| now.max(previous));
+        // Treat an explicit retarget timestamp as a virtual frame boundary.
+        // Sampling the old track before changing its target keeps a delayed
+        // capture event continuous and gives every track the same monotonic
+        // time basis. It also prevents the next advance from integrating the
+        // interval twice for spring tracks.
+        self.advance_at(now);
+        let now = self.last_frame.unwrap_or(now);
         let track = self.tracks.entry(id).or_insert(Track {
-            from: target,
-            to: target,
-            value: target,
+            // Every semantic channel starts from its hidden/closed baseline;
+            // the first admitted target is therefore a real transition too.
+            from: 0.0,
+            to: 0.0,
+            value: 0.0,
             velocity: 0.0,
             started: now,
             version,
@@ -708,6 +716,17 @@ mod tests {
     }
 
     #[test]
+    fn first_nonzero_retarget_starts_from_the_channel_baseline() {
+        let mut timeline = AnimationTimeline::new(CaptureFrameClock::default());
+        let id = AnimationId::new(3);
+        timeline.retarget_at(id, 1.0, TWEEN, Duration::ZERO);
+        assert_eq!(timeline.value(id), Some(0.0));
+        assert!(timeline.is_active());
+        timeline.advance_at(Duration::from_millis(50));
+        assert_eq!(timeline.value(id), Some(0.5));
+    }
+
+    #[test]
     fn earlier_capture_timestamps_are_ignored() {
         let mut clock = CaptureFrameClock::default();
         let mut timeline = AnimationTimeline::new(clock.clone());
@@ -757,6 +776,22 @@ mod tests {
     }
 
     #[test]
+    fn explicit_retarget_samples_the_old_track_before_anchor() {
+        let mut timeline = AnimationTimeline::new(LiveFrameClock::default());
+        let id = AnimationId::new(72);
+        let linear = |duration| Motion::TweenEased {
+            duration: Duration::from_millis(duration),
+            easing: Easing::Linear,
+        };
+        timeline.retarget_at(id, 1.0, linear(100), Duration::ZERO);
+        timeline.advance_at(Duration::from_millis(25));
+        timeline.retarget_at(id, 0.0, linear(100), Duration::from_millis(400));
+        assert_eq!(timeline.value(id), Some(1.0));
+        timeline.advance_at(Duration::from_millis(450));
+        assert_eq!(timeline.value(id), Some(0.5));
+    }
+
+    #[test]
     fn stale_retarget_timestamp_cannot_move_the_track_clock_backwards() {
         let mut timeline = AnimationTimeline::new(LiveFrameClock::default());
         let id = AnimationId::new(71);
@@ -779,8 +814,9 @@ mod tests {
             },
             Duration::from_millis(120),
         );
-        timeline.advance_at(Duration::from_millis(200));
         assert_eq!(timeline.value(id), Some(0.5));
+        timeline.advance_at(Duration::from_millis(200));
+        assert_eq!(timeline.value(id), Some(0.25));
     }
 
     #[test]

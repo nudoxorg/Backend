@@ -335,10 +335,12 @@ impl FocusTree {
         &self.tab_order
     }
 
-    /// Returns the top modal ancestor of the current native focus route.
+    /// Returns the overlay owner of the current native focus route.
     ///
     /// A rendered action is a child of its modal node, so checking only the
     /// active ID would miss the trap as soon as Tab enters the first control.
+    /// The first modal after the shell owns Escape; later modal IDs can be
+    /// nested focus containers within that overlay.
     /// Keeping this query on the one semantic focus owner also lets overlay
     /// transitions repair a stale stack without introducing a second modal
     /// authority in the view layer.
@@ -347,7 +349,6 @@ impl FocusTree {
         self.current
             .nodes
             .iter()
-            .rev()
             .find(|id| matches!(id, FocusId::Modal(_)))
             .copied()
     }
@@ -546,13 +547,7 @@ impl FocusTree {
     }
 
     fn scoped_tab_order(&self) -> Vec<FocusId> {
-        let scope = self
-            .current
-            .nodes
-            .iter()
-            .rev()
-            .find(|id| matches!(id, FocusId::Modal(_)))
-            .copied();
+        let scope = self.active_modal();
         self.tab_order
             .iter()
             .copied()
@@ -587,8 +582,6 @@ impl FocusTree {
         self.current = FocusRoute {
             nodes: vec![FocusId::Shell, modal],
         };
-        self.origin = FocusOrigin::Programmatic;
-        self.focus_visible = self.window_focused;
         true
     }
 
@@ -814,6 +807,7 @@ mod tests {
         tree.set_tab_order([FocusId::Shelf, FocusId::Modal(10)]);
         assert!(tree.focus(FocusRoute::new([FocusId::Shell, FocusId::Shelf]).unwrap()));
         assert!(tree.push_modal(FocusId::Modal(9)));
+        assert_eq!(tree.active_modal(), Some(FocusId::Modal(9)));
         assert_eq!(tree.focus_next(), Some(FocusId::Modal(10)));
         assert_eq!(tree.focus_next(), Some(FocusId::Modal(10)));
         assert_eq!(tree.escape(), EscapeResult::Dismissed(FocusId::Modal(9)));
