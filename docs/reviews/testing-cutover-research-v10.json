@@ -1,0 +1,93 @@
+{
+  "schema": "testing-cutover-research-v10",
+  "audit_date": "2026-09-22",
+  "repository": "/Users/mileswirht/Downloads/backend",
+  "inspected_revision": "127604a6728d5efc6230078cfba841c45f627d81",
+  "report_branch": "codex/testing-cutover-research-v10",
+  "method": {
+    "scope": "static repository, configuration, documentation, harness, and first-party web research",
+    "builds_run": false,
+    "tests_run": false,
+    "cargo_or_nix_run": false,
+    "governing_agents_file": null,
+    "validation_after_writing": ["git diff --check"]
+  },
+  "strongest_findings": [
+    {"id":"cache-authority-drift","severity":"release-blocker","evidence":[".config/scripts/cargo-shared-cache.sh:316-320","docs/operations/cargo-cache.md:11-23","docs/operations/agent-cutover.md:147",".config/nix/tools.nix:41-44"],"finding":"Executable cache policy has four warm slots and no overflow lane, while older prose still promises an overflow directory.","action":"Make the wrapper and cargo-cache.md authoritative; remove stale overflow wording before granting build lanes."},
+    {"id":"viewport-count-drift","severity":"release-blocker","evidence":["tools/gui-harness/src/lib.rs:60-72","docs/operations/gui-testing.md:111-115"],"finding":"Code declares ten required viewport sizes while the GUI document says nine.","action":"Version one matrix and validate it across manifest, planner, reports, and gates."},
+    {"id":"ime-noop","severity":"release-blocker","evidence":["tools/gui-harness/src/gpui_driver.rs:444-447","tools/gui-harness/src/input.rs:87-104"],"finding":"IME steps are accepted but dispatch no event.","action":"Implement native dispatch or fail explicitly and add platform coverage."},
+    {"id":"accesskit-unobserved","severity":"high","evidence":["tools/gui-harness/src/semantics.rs:90-98,312-336","apps/desktop/src/harness.rs:107-270"],"finding":"NativeAccessKit is declared but current evidence is GPUI post-layout metadata and measured rectangles.","action":"Add native tree readback or narrow the product claim."},
+    {"id":"persistence-fixture-gap","severity":"high","evidence":["apps/desktop/src/model/persistence.rs:176-483","tests/journeys/tests/restart_persistence.rs:1048-1582"],"finding":"Restart journeys are broad, but local persistence lacks explicit corrupt/future-version/interrupted-write cases.","action":"Add a versioned file compatibility and corruption matrix."},
+    {"id":"platform-matrix-gap","severity":"high","evidence":["crates/platform/local.rs:5-11","crates/platform/win32/tests.rs:33-176",".config/nix/lib.nix:8-9"],"finding":"Windows has native seam tests; Unix re-exports standard types and repository platform execution is not codified for Linux/macOS/Windows.","action":"Require actual OS lanes for process and GUI seams."},
+    {"id":"oracle-duplication","severity":"high","evidence":["crates/flow/src/tests.rs:432,486,1574","tests/performance/tests/structural.rs:241,348,461","tests/laws/tests/cutover_regressions.rs:149,207"],"finding":"Flow/store/version root models overlap across unit, law, and performance suites.","action":"Create one registrar-owned model/corpus and keep performance assertions separate."},
+    {"id":"surface-authority-duplication","severity":"medium","evidence":["tests/journeys/src/surface_matrix.rs:100-551","tests/journeys/tests/surface_matrix.rs:415-728","tests/journeys/tests/surface_interfaces.rs:551-809","tests/journeys/tests/surface_parity.rs:394-793"],"finding":"Multiple process matrix launchers and parity helpers define overlapping semantics.","action":"Centralize case vocabulary and assign parity/lifecycle owners."}
+  ],
+  "test_pyramid": [
+    {"tier":"T0","name":"pure reducers and versioned values","current":["apps/desktop/src/navigation/reducer.rs:9,206-318","apps/desktop/src/runtime/animation.rs:34-170","crates/version/src/tests.rs","crates/version/tests/identity_contract.rs"],"required":["unknown version/field fixtures","old/new wire compatibility","stable error classes","domain/key/order/authority identity"]},
+    {"tier":"T1","name":"property/model/state machine","current":["crates/flow/src/tests.rs:432,486,1062,1574","tests/laws/tests/cutover_regressions.rs:149-207","crates/store/src/tests.rs","tests/laws/proptest-regressions/lib.txt"],"required":["semantic edit generators","independent full model","mutation/falsification","retained shrunk seeds"]},
+    {"tier":"T2","name":"GPUI CE components and test_support","current":["vendor/gpui_ce_components/src/button/toggle.rs:401-494","vendor/gpui_ce_components/src/dock/panel.rs:317-613","vendor/gpui_ce_components/src/dock/test_support.rs:19-156","apps/desktop/src/ui/components/tests.rs"],"required":["real TestAppContext/VisualTestContext product tests","MeasuredProbe/SizedProbe/HideableProbe","focus/resize/disabled/overlay behavior"]},
+    {"tier":"T3","name":"PNG/crop/semantic oracle","current":["tools/gui-harness/src/artifact.rs","tools/gui-harness/src/conformance.rs","tools/gui-harness/src/gpui_driver.rs:643-758","apps/desktop/src/harness.rs:107-270"],"required":["scale/edge crop sentinels","root/revision/probe coupling","separate pixel/geometry/color/motion gates"]},
+    {"tier":"T4","name":"deterministic animation","current":["apps/desktop/src/runtime/animation.rs:34-170,192","tools/gui-harness/src/lib.rs animation planner"],"required":["retarget/reversal/settle/reduced-motion traces","monotonic timestamps","changed pixels for full motion"]},
+    {"tier":"T5","name":"live index and desktop E2E","current":["apps/desktop/src/harness.rs:34-105","apps/desktop/src/views/mod.rs:25-69",".config/gui/journeys.json"],"required":[">64 catalog","cold/warm/empty/partial/stale/offline/interrupted/corrupt/concurrent/oversized modes","live root and semantic identity"]},
+    {"tier":"T6","name":"CLI/MCP process","current":["apps/cli/src/tests.rs:59-586","apps/mcp/src/tests.rs:48-468","apps/mcp/src/jsonrpc/tests.rs:386-1191","tests/journeys/tests/surface_interfaces.rs:759-809"],"required":["shared case registry","cross-surface root/text/structured equality","protocol truncation/cancel/stale/fence cases"]},
+    {"tier":"T7","name":"persistence/restart/fresh start","current":["apps/desktop/src/model/persistence.rs:390-483","tests/journeys/tests/restart_persistence.rs:1048-1582","tests/journeys/tests/surface_matrix.rs:683-711"],"required":["corrupt/future/unknown/interrupted/permissions","old-or-new coherent root","fresh-workspace and offline durability"]},
+    {"tier":"T8","name":"network/offline/partial failure","current":["crates/replication/src/tests.rs","crates/execution/tests/adaptive_outage_recovery.rs","tests/journeys/tests/cutover_e2e.rs"],"required":["loss/duplication/reorder/corruption/timeout/revocation","idempotency/fence/coverage","local fallback and bounded remote waste"]},
+    {"tier":"T9","name":"Windows/Linux/macOS","current":["crates/platform/win32/tests.rs:33-176","apps/desktop/Cargo.toml:44-51","tools/gui-harness/src/gpui_driver.rs:682-692"],"required":["actual OS lanes","socket/security/IME/focus/clipboard/resize/scale/font/GPU evidence","toolchain and renderer provenance"]}
+  ],
+  "operations": {
+    "shell_bootstrap": ["direnv exec . backend doctor","direnv exec . backend catalog --json","direnv exec . backend agents verify","direnv exec . backend scope changed --json --base <train-head>"],
+    "fallback_shell": "nix shell 'git+file:///absolute/path/to/integration#luna-tools' --command ...",
+    "final_target": ".local/target per worktree",
+    "warm_build_slots_default": 4,
+    "slot_wait_default_ms": 300000,
+    "worktree_wait_default_ms": 300000,
+    "overflow_lane": false,
+    "incremental": false,
+    "sccache_default_limit": "8G",
+    "worktree_rule": "one canonical worktree and one mutable compile lease; reset mutable graph when custody changes",
+    "cross_worktree_reuse": "sccache only; never share Cargo intermediate graph",
+    "nextest": {"retries":0,"flaky_is_failure":true,"global_timeout":"10m","closure_timeout":"30m","scarce_groups":["allocator-global","concurrency-proof","display-global","live-qdrant","native-compiler","process-global","telemetry-global"]},
+    "contradictory_docs":["docs/operations/agent-cutover.md:147",".config/nix/tools.nix:41-44"]
+  },
+  "cutover": {
+    "order":["R0/K0 contracts and clean base","R1/K1 version/store","R2/K2 flow","R3/K3 local vertical","R4/K4 native authority","R5/K5 projections","R6/K6-K8 planner/replication/remote","R7/K9-K11 recursion/sessions/layout","R8/K12 shadow/atomic writer/deletion"],
+    "storage_policy":["version intent journal independently of storage layout","test old-reader/new-writer and new-reader/old-writer where promised","one writer per canonical head","isolate shadow results by schema/input root/recipe/run","separate code/read rollback from data-head rollback","replay acknowledged intents before data-head rollback","treat derived caches as discardable only when roots/recipes are retained"],
+    "deletion_gates":["final owner and deletion commit","versioned schema/export","shadow and dual-read coverage","single writer and intent compatibility","old/new fault matrix","seven-language cold/session matrix","local/offline capability","K0 work/RSS/latency budgets","GC/pin/reader/evidence reachability","rollback drill from last pre-deletion release"],
+    "production_exit":["zero unexplained shadow mismatches over representative soak","no affected matrix row unknown","zero acknowledged-intent loss","fresh/cold/restart/offline/partial-failure journeys","cross-surface identity equality","actual OS evidence where promised","resource and latency distributions in budget","alert/revert drill","retention/deletion deadline recorded"]
+  },
+  "delegation": {
+    "source_only": ["frozen contract/control digest","owned path lease","public fixtures and dependency facets","no Cargo/Nix/build/test artifact","diff/API/schema/affected rows/oracle/failure/rollback plan"],
+    "build_grant": ["independent reviewer admission","one of four global slots","one canonical worktree","one nextest resource group","isolated evidence root","toolchain/control/renderer/platform receipt","bounded wait and exit 75 on contention"],
+    "slice_rubric":["contract/version","ownership/dependency direction","valid and adversarial semantics","independent oracle and mutation","persistence/fault/rollback","resource and latency counters","product/API/platform evidence","narrow reproducible diff","complete evidence package"],
+    "evidence_fields":["schema","cell","candidate","integration_head","worktree","owned_paths","dependency_digests","commands","platform","seed/schedule","case_ids","oracle","baseline/result_roots","counters","artifact_hashes","failures/gaps","reviewers","rollback"],
+    "adversarial_cases":["delete/re-add","reorder","partial/stale authority","cancel/crash","wrong fence","malformed/oversized frame","concurrent schedule","GUI focus/resize/scale/reduced motion","out-of-scope edit"]
+  },
+  "dan_luu_sources": [
+    {"date":"2026-09-07","title":"How well do agents use test/verification techniques?","url":"https://danluu.com/agentic-testing/","principle":"Named techniques are often applied superficially; use structured generators, independent oracles, mutation, and holdouts; avoid strong ordering claims."},
+    {"date":"2026-07-03","title":"Agentic test processes, LLM benchmarks, and other notes on agentic coding from Galapagos Island","url":"https://danluu.com/ai-coding/","principle":"Risk-directed randomized testing, independent artifact review, and bounded review setup reduce false positives."},
+    {"date":"2026-07-23","title":"Bad benchmarks and evals: Senior SWE-Bench, napkin math, and winter tires","url":"https://danluu.com/exercise-7/","principle":"Representativeness and sample size affect benchmark conclusions."},
+    {"date":"2026-08-17","title":"The benchmarkpocalypse","url":"https://danluu.com/benchpocalypse/","principle":"Visible suites invite reward hacking; hidden holdouts expose overfit."},
+    {"date":"2026-08-09","title":"How does programming language affect token efficiency and correctness?","url":"https://danluu.com/pl-tokens/","principle":"Visible-test success can be brittle; holdout evaluation changes generalization."},
+    {"date":"2026-08-21","title":"There's no reason for software to be slow anymore","url":"https://danluu.com/perf-opt/","principle":"Bounded optimization can overfit; representative holdout workloads are required."},
+    {"date":"2026-08-30","title":"Bug blindness","url":"https://danluu.com/bug-blind/","principle":"Experts internalize workarounds; fresh-user journeys find hidden defects."},
+    {"date":"2015-03-10","title":"Given that we spend little effort on testing, how should we test software?","url":"https://danluu.com/testing/","principle":"Randomized and coverage-guided testing can find rare paths; line coverage is insufficient."},
+    {"date":"2015-08-20","title":"Reading postmortems","url":"https://danluu.com/postmortem-lessons/","principle":"Error handling and cascades need direct tests and analysis."},
+    {"date":"2021-08-27","title":"Measurement, benchmarking, and data analysis are underrated","url":"https://danluu.com/why-benchmark/","principle":"Measurement is engineering work when paired with a sound question and oracle."},
+    {"date":"2014-11-10","title":"How often is the build broken?","url":"https://danluu.com/broken-builds/","principle":"Clean-build reliability matters; samples and configuration affect comparability."}
+  ],
+  "untested_seams":[
+    {"symbol":"tools/gui-harness/src/gpui_driver.rs:444-447","reason":"IME variants are no-ops","action":"real native dispatch or explicit unsupported contract"},
+    {"symbol":"tools/gui-harness/src/semantics.rs:90-98; apps/desktop/src/harness.rs:107-270","reason":"NativeAccessKit is not produced","action":"native tree readback or narrow claim"},
+    {"symbol":"tools/gui-harness/src/main.rs:59","reason":"generic capture CLI cannot capture","action":"invoke live desktop adapter"},
+    {"symbol":"apps/desktop/src/harness.rs:292-308","reason":"live catalog is limited to 64","action":"large/partial/empty index cases"},
+    {"symbol":"crates/platform/local.rs:5-11","reason":"Unix re-export lacks crate-local parity tests","action":"Unix tests plus actual OS matrix"},
+    {"symbol":"apps/desktop/src/model/persistence.rs:390-483","reason":"no local corrupt/future/interrupted fixture found","action":"versioned file compatibility matrix"},
+    {"symbol":"tools/gui-harness/src/lib.rs:60-72; docs/operations/gui-testing.md:111-115","reason":"viewport count mismatch","action":"single versioned matrix"}
+  ],
+  "duplicated_authorities":[
+    {"authority":"flow full/weighted oracle","locations":["crates/flow/src/tests.rs:432,486,1574","tests/performance/tests/structural.rs:241,348,461","tests/laws/tests/cutover_regressions.rs:149,207"],"recommendation":"one model/corpus owner; consumers compare roots/counters"},
+    {"authority":"store/version canonical roots","locations":["crates/version/src/tests.rs:999,1570-1626","crates/store/src/tests.rs:255,519"],"recommendation":"one canonical root fixture/model; layer-specific work assertions"},
+    {"authority":"surface process matrix","locations":["tests/journeys/src/surface_matrix.rs:100-551","tests/journeys/tests/surface_matrix.rs:415-728","tests/journeys/tests/surface_interfaces.rs:551-809","tests/journeys/tests/surface_parity.rs:394-793"],"recommendation":"shared case registry; one parity and one lifecycle owner"},
+    {"authority":"CLI/MCP wire and certificate assertions","locations":["apps/cli/src/tests.rs:59-365","apps/mcp/src/tests.rs:48-468","apps/mcp/src/jsonrpc/tests.rs:386-1191"],"recommendation":"shared fixtures and one cross-process authority"}
+  ]
+}
