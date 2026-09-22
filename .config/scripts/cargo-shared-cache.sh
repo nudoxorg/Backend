@@ -15,7 +15,7 @@ if [ "$slot_count" -lt 1 ] || [ "$slot_count" -gt 32 ]; then
 fi
 
 wait_ms="${NUDOX_CARGO_WORKTREE_WAIT_MS:-300000}"
-slot_wait_ms="${NUDOX_CARGO_SLOT_WAIT_MS:-5000}"
+slot_wait_ms="${NUDOX_CARGO_SLOT_WAIT_MS:-300000}"
 for wait_value in "$wait_ms" "$slot_wait_ms"; do
   case "$wait_value" in
     ""|*[!0-9]*)
@@ -147,7 +147,6 @@ affinity_file="$cache_root/affinity/$worktree_key"
 selected=""
 selected_lock=""
 selected_slot=""
-selected_overflow_path=""
 selected_lock_acquired=false
 released=false
 worktree_lock_acquired=false
@@ -161,9 +160,6 @@ release_all() {
   if [ "$selected_lock_acquired" = true ] && [ -n "$selected_lock" ]; then
     rm -f "$selected_lock/pid" "$selected_lock/start" "$selected_lock/workspace"
     rmdir "$selected_lock" 2>/dev/null || true
-  fi
-  if [ -n "$selected_overflow_path" ] && [ -d "$selected_overflow_path" ]; then
-    find "$selected_overflow_path" -depth -delete 2>/dev/null || true
   fi
   if [ "$worktree_lock_acquired" = true ] && [ "$(cat "$worktree_lock/pid" 2>/dev/null || true)" = "$$" ]; then
     rm -f "$worktree_lock/pid" "$worktree_lock/start" "$worktree_lock/workspace"
@@ -317,40 +313,11 @@ if [ -n "$selected_slot" ]; then
   printf '%s\n' "$selected_slot" > "$affinity_tmp"
   mv -f "$affinity_tmp" "$affinity_file"
 elif [ -z "$selected" ]; then
-  # Every warm lane is leased. A deterministic per-worktree overflow keeps
-  # this invocation isolated from other worktrees; same-worktree invocations
-  # are already serialized by worktree_lock. The path is removed on exit.
-  lane_key="$worktree_key"
-  overflow_lock="$cache_root/locks/overflow-$lane_key.lock"
-  if mkdir "$overflow_lock" 2>/dev/null; then
-    selected="$cache_root/build/overflow-$lane_key"
-    selected_lock="$overflow_lock"
-    selected_overflow_path="$selected"
-    selected_lock_acquired=true
-    printf '%s\n' "$$" > "$overflow_lock/pid"
-    process_start_token "$$" > "$overflow_lock/start"
-    printf '%s\n' "$workspace_root" > "$overflow_lock/workspace"
-  else
-    recover_stale_lock "$overflow_lock" || true
-    if mkdir "$overflow_lock" 2>/dev/null; then
-      selected="$cache_root/build/overflow-$lane_key"
-      selected_lock="$overflow_lock"
-      selected_overflow_path="$selected"
-      selected_lock_acquired=true
-      printf '%s\n' "$$" > "$overflow_lock/pid"
-      process_start_token "$$" > "$overflow_lock/start"
-      printf '%s\n' "$workspace_root" > "$overflow_lock/workspace"
-    else
-      # A live owner can only be an invocation outside this wrapper's
-      # worktree lease. Never share its mutable path; use bounded scratch and
-      # remove it on exit.
-      selected="$cache_root/build/overflow-$lane_key-$$"
-      selected_overflow_path="$selected"
-    fi
-  fi
-  if [ "${NUDOX_CARGO_CACHE_VERBOSE:-0}" = 1 ]; then
-    echo "nudox cargo: warm slots busy; using isolated overflow $selected" >&2
-  fi
+  # The warm-lane count is also the host-wide compiler concurrency ceiling.
+  # Never manufacture an overflow lane: it defeats the memory bound precisely
+  # when contention is highest. A caller may retry after a lease is released.
+  echo "nudox cargo: all $slot_count build slots are busy; waited ${slot_wait_ms}ms" >&2
+  exit 75
 elif [ "${NUDOX_CARGO_CACHE_VERBOSE:-0}" = 1 ]; then
   echo "nudox cargo: using warm build slot $selected" >&2
 fi

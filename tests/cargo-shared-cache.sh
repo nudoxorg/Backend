@@ -96,7 +96,7 @@ run_wrapper() {
   NUDOX_BUILD_CACHE_ROOT="$test_root/cache" \
   NUDOX_CARGO_BUILD_SLOTS="${NUDOX_TEST_SLOTS:-2}" \
   NUDOX_CARGO_WORKTREE_WAIT_MS="${NUDOX_TEST_WORKTREE_WAIT_MS:-300000}" \
-  NUDOX_CARGO_SLOT_WAIT_MS="${NUDOX_TEST_SLOT_WAIT_MS:-5000}" \
+  NUDOX_CARGO_SLOT_WAIT_MS="${NUDOX_TEST_SLOT_WAIT_MS:-300000}" \
   SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
   "$test_root/wrapper" "$3"
 }
@@ -245,45 +245,35 @@ if find "$slot_wait_cache/locks" -type d -name 'worktree-*.lock' -print -quit 2>
 fi
 rm -rf "$slot_wait_cache/locks/slot-0.lock"
 
-# With one warm lane occupied, an independent worktree gets one isolated
-# overflow directory. It is removed as soon as that invocation exits.
-overflow_cache="$test_root/overflow-cache"
-overflow_log="$test_root/overflow.log"
-NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$overflow_log" \
-  NUDOX_BUILD_CACHE_ROOT="$overflow_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+# With one warm lane occupied, another worktree cannot create an overflow
+# compiler. It fails at the configured bound, then succeeds after release.
+ceiling_cache="$test_root/ceiling-cache"
+ceiling_log="$test_root/ceiling.log"
+NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$ceiling_log" \
+  NUDOX_BUILD_CACHE_ROOT="$ceiling_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
   NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=1 \
   SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build &
-overflow_owner="$!"
-overflow_waited=0
-while [ "$overflow_waited" -lt 40 ] && ! find "$overflow_cache/locks" -type d -name 'slot-*.lock' -print -quit 2>/dev/null | grep . >/dev/null; do
+ceiling_owner="$!"
+ceiling_waited=0
+while [ "$ceiling_waited" -lt 40 ] && ! find "$ceiling_cache/locks" -type d -name 'slot-*.lock' -print -quit 2>/dev/null | grep . >/dev/null; do
   sleep 0.05
-  overflow_waited="$((overflow_waited + 1))"
+  ceiling_waited="$((ceiling_waited + 1))"
 done
-NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$overflow_log" \
-  NUDOX_BUILD_CACHE_ROOT="$overflow_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
-  NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=1 \
-  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build &
-overflow_child="$!"
-overflow_dir=""
-overflow_waited=0
-while [ "$overflow_waited" -lt 40 ] && [ -z "$overflow_dir" ]; do
-  if [ -f "$overflow_log" ]; then
-    overflow_dir="$(tail -n 1 "$overflow_log" | cut -d '|' -f 2)"
-  fi
-  [ -n "$overflow_dir" ] || sleep 0.05
-  overflow_waited="$((overflow_waited + 1))"
-done
-case "$overflow_dir" in
-  *overflow-*) : ;;
-  *) fail "independent overflow did not get an isolated path: $overflow_dir" ;;
-esac
-if [ ! -d "$overflow_dir" ]; then
-  fail "overflow test did not create its scratch directory"
+if NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$ceiling_log" \
+  NUDOX_BUILD_CACHE_ROOT="$ceiling_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=0 \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" check; then
+  fail "busy build ceiling unexpectedly admitted another compiler"
 fi
-wait "$overflow_owner"
-wait "$overflow_child"
-if find "$overflow_cache/build" -maxdepth 1 -type d -name 'overflow-*' -print -quit 2>/dev/null | grep . >/dev/null; then
-  fail "overflow scratch survived process exit"
+assert_file_lines "$ceiling_log" 1
+wait "$ceiling_owner"
+NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$ceiling_log" \
+  NUDOX_BUILD_CACHE_ROOT="$ceiling_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=0 \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" check
+assert_file_lines "$ceiling_log" 2
+if find "$ceiling_cache/build" -maxdepth 1 -type d -name 'overflow-*' -print -quit 2>/dev/null | grep . >/dev/null; then
+  fail "hard build ceiling created an overflow directory"
 fi
 
-echo "cargo-shared-cache: PASS (same-worktree affinity, independent lanes, bypasses, override, stale recovery)"
+echo "cargo-shared-cache: PASS (affinity, independent lanes, hard ceiling, bypasses, override, stale recovery)"

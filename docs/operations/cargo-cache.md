@@ -8,6 +8,10 @@ parallel without mutating the same intermediate graph. A warm directory is
 reused without cleaning only by the same canonical worktree; handing it to a
 different worktree first resets the old Cargo graph. Cross-worktree compiler
 reuse comes from `sccache`, which avoids stale `rmeta` and public-API leakage.
+The pool size is also a hard host-wide compiler ceiling. When every lane is
+busy, another caller waits for `NUDOX_CARGO_SLOT_WAIT_MS` (five minutes by
+default) and exits with status 75 if no lane opens. It never creates an
+overflow compiler, so bursts of agent work cannot exceed the memory budget.
 
 Compiling commands also acquire a lease keyed by the canonical git worktree
 path. The first command records the warm lane it used in the cache affinity
@@ -16,10 +20,7 @@ reuses the remembered lane; it cannot silently create a second warm or
 overflow graph. Waiting is bounded by `NUDOX_CARGO_WORKTREE_WAIT_MS` (five
 minutes by default) and returns status 75 when the bound expires. If all warm
 lanes are occupied by other worktrees, the scheduler waits up to
-`NUDOX_CARGO_SLOT_WAIT_MS` (five seconds by default), then gives the current
-worktree an isolated overflow directory that is deleted on exit. The overflow
-path is never shared with a live owner and is cleaned after normal completion
-or cancellation.
+`NUDOX_CARGO_SLOT_WAIT_MS` and then returns status 75 without starting Cargo.
 
 The wrapper bypasses both the compiler cache daemon and build-dir leasing for
 read-only commands that do not compile: `metadata`, `tree`,
@@ -40,9 +41,8 @@ token still matches. Signal
 handlers forward cancellation to Cargo and release the slot and worktree
 leases through the single exit cleanup path. The affinity map is updated by a
 same-worktree lease and an atomic rename, so a killed process can leave only a
-harmless temporary file. Warm lanes are retained for reuse; overflow lanes are
-invocation-local, which bounds cache growth by the configured warm pool plus
-currently running overflow commands.
+harmless temporary file. Warm lanes are retained for reuse, which bounds both
+cache growth and active compiler memory by the configured pool.
 
 The protocol tests are intentionally shell-only and run without Nix or a
 workspace build:
@@ -54,4 +54,4 @@ workspace build:
 They use fake Cargo, git, and sccache processes to prove same-worktree
 serialization and reuse, independent-worktree parallelism, metadata bypass,
 explicit override preservation, dead-owner recovery, cancellation cleanup,
-and bounded overflow lifetime.
+and the hard concurrency ceiling.
