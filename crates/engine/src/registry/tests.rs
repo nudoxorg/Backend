@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     net::TcpListener,
     path::PathBuf,
     sync::{
@@ -499,6 +499,42 @@ fn temporary(label: &str) -> PathBuf {
     ))
 }
 
+const MAX_REQUEST_HEAD_BYTES: usize = 16 * 1024;
+
+fn read_request_head(stream: &mut std::net::TcpStream, context: &str) -> io::Result<Vec<u8>> {
+    let mut request = Vec::with_capacity(1024);
+    let mut buffer = [0_u8; 1024];
+    loop {
+        let remaining = MAX_REQUEST_HEAD_BYTES.saturating_sub(request.len());
+        if remaining == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{context}: request headers exceeded {MAX_REQUEST_HEAD_BYTES} bytes"),
+            ));
+        }
+        let chunk_len = remaining.min(buffer.len());
+        let read = stream.read(&mut buffer[..chunk_len]).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("{context}: reading request headers: {error}"),
+            )
+        })?;
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "{context}: EOF before CRLFCRLF after {} bytes",
+                    request.len()
+                ),
+            ));
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            return Ok(request);
+        }
+    }
+}
+
 fn feed(endpoint: &str, archive: &[u8], digest: [u8; 32]) -> Vec<u8> {
     let _ = archive;
     format!(
@@ -524,8 +560,8 @@ fn live_fixture(archive: &[u8], digest: [u8; 32]) -> (String, thread::JoinHandle
     let handle = thread::spawn(move || {
         for body in responses {
             let (mut stream, _) = listener.accept().expect("accept registry request");
-            let mut request = [0_u8; 8192];
-            let _ = stream.read(&mut request).expect("read request");
+            let _ = read_request_head(&mut stream, "registry fixture request")
+                .expect("read registry request headers");
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -557,8 +593,8 @@ fn response_with_length(
     let headers = extra_headers.to_owned();
     let handle = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept registry request");
-        let mut request = [0_u8; 8192];
-        let _ = stream.read(&mut request).expect("read request");
+        let _ = read_request_head(&mut stream, "single-response fixture request")
+            .expect("read single-response request headers");
         let content_length = declared_length.unwrap_or(body.len());
         write!(
             stream,
@@ -612,12 +648,12 @@ fn authenticated_metadata_request_uses_configured_authorization() {
     let captured = Arc::clone(&request);
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept auth request");
-        let mut bytes = [0_u8; 8192];
-        let length = stream.read(&mut bytes).expect("read auth request");
+        let bytes = read_request_head(&mut stream, "auth fixture request")
+            .expect("read auth request headers");
         captured
             .lock()
             .expect("capture auth request")
-            .extend_from_slice(&bytes[..length]);
+            .extend_from_slice(&bytes);
         let body = b"{\"schema\":1,\"next\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"items\":[]}";
         write!(
             stream,
@@ -968,15 +1004,8 @@ fn http_archive_resume_uses_authenticated_range_and_reopens_at_multiple_offsets(
     let server = thread::spawn(move || {
         for attempt in 0..2 {
             let (mut stream, _) = listener.accept().expect("accept range request");
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 1024];
-            loop {
-                let read = stream.read(&mut buffer).expect("read request");
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") || read == 0 {
-                    break;
-                }
-            }
+            let request = read_request_head(&mut stream, "range fixture request")
+                .expect("read range request headers");
             let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
             if attempt == 0 {
                 assert!(!request.contains("range:"));
@@ -1112,9 +1141,9 @@ fn http_archive_resume_reconciles_a_completed_prefix_from_416() {
     let server = thread::spawn(move || {
         for attempt in 0..2 {
             let (mut stream, _) = listener.accept().expect("accept 416 request");
-            let mut request = [0_u8; 8192];
-            let read = stream.read(&mut request).expect("read 416 request");
-            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            let request = read_request_head(&mut stream, "416 fixture request")
+                .expect("read 416 request headers");
+            let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
             if attempt == 0 {
                 write!(
                     stream,
@@ -1221,15 +1250,8 @@ fn http_archive_resume_restarts_when_origin_ignores_range() {
     let server = thread::spawn(move || {
         for attempt in 0..2 {
             let (mut stream, _) = listener.accept().expect("accept fallback request");
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 1024];
-            loop {
-                let read = stream.read(&mut buffer).expect("read fallback request");
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") || read == 0 {
-                    break;
-                }
-            }
+            let request = read_request_head(&mut stream, "fallback fixture request")
+                .expect("read fallback request headers");
             let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
             if attempt == 0 {
                 assert!(!request.contains("range:"));
@@ -1353,15 +1375,8 @@ fn http_archive_resume_quarantines_prefix_when_validator_changes() {
     let server = thread::spawn(move || {
         for attempt in 0..3 {
             let (mut stream, _) = listener.accept().expect("accept validator request");
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 1024];
-            loop {
-                let read = stream.read(&mut buffer).expect("read validator request");
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") || read == 0 {
-                    break;
-                }
-            }
+            let request = read_request_head(&mut stream, "validator fixture request")
+                .expect("read validator request headers");
             let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
             match attempt {
                 0 => {
@@ -1513,11 +1528,9 @@ fn http_archive_resume_rejects_sparse_or_malformed_206() {
     let endpoint_text = format!("http://{address}");
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept malformed range request");
-        let mut request = [0_u8; 4096];
-        let read = stream
-            .read(&mut request)
-            .expect("read malformed range request");
-        let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+        let request = read_request_head(&mut stream, "malformed range fixture request")
+            .expect("read malformed range request headers");
+        let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
         assert!(request.contains("range: bytes=5-"));
         assert!(request.contains("if-range: \"malformed-v1\""));
         write!(
@@ -2727,9 +2740,9 @@ fn maven_transport_fetches_checksum_signature_and_pom_dependencies() {
     let server = thread::spawn(move || {
         for _ in 0..4 {
             let (mut stream, _) = listener.accept().expect("accept maven request");
-            let mut request = [0_u8; 8192];
-            let length = stream.read(&mut request).expect("read maven request");
-            let request = String::from_utf8_lossy(&request[..length]);
+            let request = read_request_head(&mut stream, "Maven fixture request")
+                .expect("read Maven request headers");
+            let request = String::from_utf8_lossy(&request);
             let path = request
                 .lines()
                 .next()
@@ -2887,9 +2900,9 @@ fn nuget_v3_registration_pages_are_traversed_deterministically() {
     let server = thread::spawn(move || {
         for body in responses {
             let (mut stream, _) = listener.accept().expect("accept nuget request");
-            let mut request = [0_u8; 8192];
-            let length = stream.read(&mut request).expect("read nuget request");
-            assert!(length > 0);
+            let request = read_request_head(&mut stream, "NuGet registration request")
+                .expect("read NuGet request headers");
+            assert!(!request.is_empty());
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -2939,8 +2952,8 @@ fn native_cargo_adapter_runs_through_shared_owner_and_cursor() {
     let server = thread::spawn(move || {
         for body in responses {
             let (mut stream, _) = listener.accept().expect("accept native request");
-            let mut request = [0_u8; 8192];
-            let _ = stream.read(&mut request).expect("read native request");
+            let _ = read_request_head(&mut stream, "native registry request")
+                .expect("read native request headers");
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -3172,30 +3185,80 @@ fn unavailable_source_is_a_typed_terminal_for_every_ecosystem() {
 #[test]
 fn archive_extent_over_the_cap_is_a_measured_typed_overrun() {
     let archive = vec![0x5a_u8; 4096];
-    let (endpoint_text, server) = live_fixture(&archive, [0_u8; 32]);
+    let (endpoint_text, server) = one_response(200, "", archive);
     let endpoint =
-        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("endpoint");
-    let root = temporary("archive-overrun");
+        RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text.clone()).expect("endpoint");
     let mut constrained = limits();
     constrained.max_archive_bytes = 256;
     constrained.max_page_archive_bytes = 256;
-    let (mut owner, _) = RegistryOwner::open(
-        &root,
-        endpoint.clone(),
-        AcquisitionPolicy::Online,
-        constrained,
-    )
-    .expect("owner");
-    let mut transport = HttpRegistryTransport::new(endpoint, None, constrained).expect("transport");
-    match owner.poll(&mut transport) {
-        Err(AcquisitionError::Transport(TransportFailure::Overrun { measured, limit })) => {
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/oversized@1.0.0").expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical([0; 32]),
+        provenance: ProvenanceDigest::from_authenticated_feed([9; 32]),
+        facts: test_facts(),
+        native_metadata: test_native_metadata(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from(endpoint_text.as_str()),
+    };
+    let mut http = HttpRegistryTransport::new(endpoint, None, constrained).expect("transport");
+    match http.fetch_archive(&package) {
+        Err(TransportFailure::Overrun { measured, limit }) => {
             assert_eq!(limit, 256);
             assert!(measured > limit, "measured extent must exceed the cap");
         }
         other => panic!("expected measured typed overrun, got {other:?}"),
     }
-    assert_eq!(owner.cursor().sequence(), 0, "no cursor advance on overrun");
     server.join().expect("server");
+
+    struct OverrunTransport {
+        package: RemotePackage,
+    }
+    impl RegistryTransport for OverrunTransport {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [7; 32],
+                packages: vec![self.package.clone()],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            Err(TransportFailure::Overrun {
+                measured: 257,
+                limit: 256,
+            })
+        }
+    }
+
+    let durable_endpoint = RegistryEndpoint::new(
+        RegistryEcosystem::Cargo,
+        "https://registry.example.test/archive-overrun",
+    )
+    .expect("durable endpoint");
+    let root = temporary("archive-overrun");
+    let (mut owner, _) = RegistryOwner::open(
+        &root,
+        durable_endpoint,
+        AcquisitionPolicy::Online,
+        constrained,
+    )
+    .expect("owner");
+    let mut overrun = OverrunTransport { package };
+    assert!(matches!(
+        owner.poll(&mut overrun),
+        Err(AcquisitionError::Transport(TransportFailure::Overrun {
+            measured: 257,
+            limit: 256
+        }))
+    ));
+    assert_eq!(owner.cursor().sequence(), 0, "no cursor advance on overrun");
     fs::remove_dir_all(root).expect("cleanup");
 }
 
@@ -3475,18 +3538,16 @@ fn receipt_catalog_overrun_is_measured_and_durable() {
     let page =
         format!("{{\"schema\":1,\"next\":\"{next}\",\"items\":[{item_a},{item_b}]}}").into_bytes();
     let server = thread::spawn(move || {
-        for body in [page, archive_a.to_vec(), archive_b.to_vec()] {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut request = [0_u8; 8192];
-            let _ = stream.read(&mut request).expect("read");
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .expect("headers");
-            stream.write_all(&body).expect("body");
-        }
+        let (mut stream, _) = listener.accept().expect("accept");
+        let _ = read_request_head(&mut stream, "catalog overrun request")
+            .expect("read catalog overrun request headers");
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            page.len()
+        )
+        .expect("headers");
+        stream.write_all(&page).expect("body");
     });
     let endpoint =
         RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("endpoint");
@@ -3723,9 +3784,9 @@ fn nuget_metadata_and_archive_resolution_coalesce_one_content_fetch() {
     let server = thread::spawn(move || {
         for body in expected_bodies {
             let (mut stream, _) = listener.accept().expect("accept NuGet request");
-            let mut request = [0_u8; 8192];
-            let size = stream.read(&mut request).expect("read NuGet request");
-            assert!(size > 0);
+            let request = read_request_head(&mut stream, "NuGet archive fixture request")
+                .expect("read NuGet archive request headers");
+            assert!(!request.is_empty());
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -3777,8 +3838,9 @@ fn conan_v2_recipe_revision_and_export_archive_are_admitted() {
     let server = thread::spawn(move || {
         for body in expected_bodies {
             let (mut stream, _) = listener.accept().expect("accept Conan request");
-            let mut request = [0_u8; 8192];
-            assert!(stream.read(&mut request).expect("read Conan request") > 0);
+            let request = read_request_head(&mut stream, "Conan fixture request")
+                .expect("read Conan request headers");
+            assert!(!request.is_empty());
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -3820,17 +3882,56 @@ fn conan_v2_recipe_revision_and_export_archive_are_admitted() {
 
 #[test]
 fn read_artifact_unknown_is_none_and_tamper_is_corruption() {
+    struct BridgeTransport {
+        package: RemotePackage,
+        archive: Vec<u8>,
+    }
+
+    impl RegistryTransport for BridgeTransport {
+        fn fetch_page(
+            &mut self,
+            request: FeedRequest,
+        ) -> Result<TransportResult<FeedPage>, TransportFailure> {
+            Ok(TransportResult::Available(FeedPage {
+                base: request.cursor,
+                next_token: [7; 32],
+                packages: vec![self.package.clone()],
+            }))
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _package: &RemotePackage,
+        ) -> Result<TransportResult<ArchiveArtifact>, TransportFailure> {
+            Ok(TransportResult::Available(ArchiveArtifact::from_bytes(
+                self.archive.clone(),
+            )))
+        }
+    }
+
     let archive = b"bridged archive bytes";
     let digest = *CapabilityArtifactId::from_value(archive.as_slice()).as_bytes();
-    let (endpoint_text, server) = live_fixture(archive, digest);
+    let endpoint_text = "http://127.0.0.1:9/bridge";
     let endpoint =
         RegistryEndpoint::new(RegistryEcosystem::Cargo, endpoint_text).expect("endpoint");
     let root = temporary("bridge");
     let (mut owner, _) =
         RegistryOwner::open(&root, endpoint.clone(), AcquisitionPolicy::Online, limits())
             .expect("owner");
-    let mut transport =
-        HttpRegistryTransport::new(endpoint.clone(), None, limits()).expect("transport");
+    let package = RemotePackage {
+        coordinate: PackageCoordinate::parse("pkg:cargo/demo@1.2.3").expect("coordinate"),
+        integrity: transport::ArchiveIntegrity::Canonical(digest),
+        provenance: ProvenanceDigest::from_authenticated_feed([9; 32]),
+        facts: test_facts(),
+        native_metadata: test_native_metadata(),
+        advisory: None,
+        dependency_facts: unavailable_dependency_facts(),
+        archive_url: Arc::from("http://127.0.0.1:9/bridge/archive"),
+    };
+    let mut transport = BridgeTransport {
+        package,
+        archive: archive.to_vec(),
+    };
     let AcquisitionOutcome::Published(receipt) = owner.poll(&mut transport).expect("poll") else {
         panic!("expected publication")
     };
@@ -3840,7 +3941,6 @@ fn read_artifact_unknown_is_none_and_tamper_is_corruption() {
     assert!(owner.published(&unknown).is_none());
     assert!(owner.read_artifact(&unknown).expect("read").is_none());
     assert_eq!(owner.published_packages().len(), 1);
-    server.join().expect("server");
     // Tampering with the content-addressed object is corruption, not a new version.
     let raw = receipt.packages[0].raw_object.to_bytes();
     let encoded = transport::hex(&raw);

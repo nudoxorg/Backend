@@ -25,16 +25,16 @@ use backend_advisory::{
 };
 use blake3::Hasher;
 
+use super::frontier::{
+    FactsMerkleMap, apply_prepared_forge_link, apply_receipt_to_catalog, facts_store_error,
+    prepare_forge_link, prepare_receipt_facts, valid_forge_source_ids, validate_page_catalog,
+    validate_receipt_catalog,
+};
 use super::wire::{RegistryLog, RegistryRecord};
 use super::{
     AcquisitionLimits, AcquisitionPolicy, CanonicalFeedV1, FeedCursor, FeedRequest, FeedSchema,
     PackageCoordinate, PublishedArtifactClaim, RegistryEndpoint, RegistryTransport, RemoteRegistry,
     TransportFailure, TransportResult,
-};
-use super::frontier::{
-    apply_prepared_forge_link, apply_receipt_to_catalog, prepare_forge_link,
-    prepare_receipt_facts,
-    facts_store_error, validate_receipt_catalog, valid_forge_source_ids, FactsMerkleMap,
 };
 
 /// Durable external effect intent. The key covers every request field.
@@ -564,6 +564,15 @@ impl RegistryOwner {
         self.advisory_projection(package)
     }
 
+    /// Rejects an ordered feed page whose new coordinates would exceed the
+    /// durable catalog bound before callers stage any archive bytes.
+    pub(crate) fn validate_page_catalog_capacity(
+        &self,
+        packages: &[super::RemotePackage],
+    ) -> Result<(), AcquisitionError> {
+        validate_page_catalog(&self.catalog, packages, self.limits.max_catalog_items)
+    }
+
     /// Commits a page staged outside the owner mutex. Cursor and intent checks
     /// reject stale reservations before any journal mutation, preserving
     /// deterministic source order under concurrent callers.
@@ -579,6 +588,7 @@ impl RegistryOwner {
         if page.base != intent.cursor || page.packages.len() > self.limits.max_items {
             return Err(AcquisitionError::Transport(TransportFailure::Protocol));
         }
+        self.validate_page_catalog_capacity(&page.packages)?;
         let target = self.cursor.advance(page.next_token)?;
         let receipt = AcquisitionReceipt {
             effect: intent.key,
@@ -915,6 +925,7 @@ impl RegistryOwner {
         if page.base != intent.cursor || page.packages.len() > self.limits.max_items {
             return Err(AcquisitionError::Transport(TransportFailure::Protocol));
         }
+        self.validate_page_catalog_capacity(&page.packages)?;
         if page.packages.is_empty() && page.next_token == self.cursor.token() {
             self.journal.append(&RegistryRecord::Settled(intent))?;
             self.pending = None;
@@ -1347,7 +1358,6 @@ mod immutable_object_tests {
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 }
-
 
 fn coordinate_key(coordinate: &PackageCoordinate) -> Vec<u8> {
     coordinate.as_str().as_bytes().to_vec()

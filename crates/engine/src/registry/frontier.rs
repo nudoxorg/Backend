@@ -51,6 +51,39 @@ pub(super) fn validate_receipt_catalog(
     Ok(())
 }
 
+/// Checks the catalog capacity and ordering of a feed page before archive
+/// staging begins. This keeps a measured catalog overrun ahead of archive I/O,
+/// so an otherwise valid page cannot fail with an unrelated archive result.
+pub(super) fn validate_page_catalog(
+    catalog: &BTreeMap<PackageCoordinate, PublishedPackage>,
+    packages: &[super::RemotePackage],
+    maximum: usize,
+) -> Result<(), AcquisitionError> {
+    if packages
+        .windows(2)
+        .any(|pair| pair[0].coordinate >= pair[1].coordinate)
+    {
+        return Err(AcquisitionError::CorruptJournal);
+    }
+    let mut additional = 0usize;
+    for package in packages {
+        if !catalog.contains_key(&package.coordinate) {
+            additional = additional.checked_add(1).ok_or(AcquisitionError::Bounds)?;
+        }
+    }
+    let total = catalog
+        .len()
+        .checked_add(additional)
+        .ok_or(AcquisitionError::Bounds)?;
+    if total > maximum {
+        return Err(AcquisitionError::Overrun {
+            measured: u64::try_from(total).map_err(|_| AcquisitionError::Bounds)?,
+            limit: u64::try_from(maximum).map_err(|_| AcquisitionError::Bounds)?,
+        });
+    }
+    Ok(())
+}
+
 pub(super) fn prepare_receipt_facts(
     facts_map: &FactsMerkleMap,
     receipt: &AcquisitionReceipt,
@@ -499,6 +532,17 @@ mod forge_frontier_tests {
         let mut map = base.clone();
         prepared.apply(&mut map).expect("apply facts update");
         assert_eq!(map.map.len(), rows.len());
+        let page_count = map.map.leaf_cuts().len();
+        assert!(
+            page_count > 1,
+            "the batched workload must span persistent pages: rows={}, pages={page_count}",
+            rows.len()
+        );
+        assert!(
+            stats.copied_nodes <= page_count + height_bound,
+            "batch node growth must be pages plus tree height: rows={}, pages={page_count}, stats={stats:?}, bound={height_bound}",
+            rows.len()
+        );
 
         let same = map
             .prepare_rows(&[(rows[rows.len() / 2].0.clone(), rows[rows.len() / 2].1)])
@@ -510,14 +554,31 @@ mod forge_frontier_tests {
             .prepare_rows(&[(rows[rows.len() / 2].0.clone(), [7; 32])])
             .expect("single-row facts update");
         let edit_stats = edited.stats();
-        assert!(edit_stats.reused_nodes > edit_stats.copied_nodes);
-        assert!(edit_stats.copied_nodes <= height_bound);
+        // `reused_nodes` counts unchanged child handles retained by rebuilt
+        // branches, while `copied_nodes` counts the rebuilt path itself. They
+        // are different units, so structural reuse is proven by a retained
+        // child plus a path-sized copy bound rather than by comparing totals.
+        assert!(
+            edit_stats.reused_nodes > 0,
+            "single-row update must retain an untouched child: stats={edit_stats:?}"
+        );
+        assert!(
+            edit_stats.copied_nodes <= height_bound,
+            "single-row update rebuilt beyond derived height bound: stats={edit_stats:?}, bound={height_bound}"
+        );
         let mut edited_map = map.clone();
         edited
             .apply(&mut edited_map)
             .expect("apply single-row update");
         let diff = map.map.diff_stats(&edited_map.map);
-        assert!(diff.visited_nodes < rows.len());
+        assert_eq!(
+            diff.changed_leaves, 1,
+            "single-row edit should change exactly one leaf: diff={diff:?}"
+        );
+        assert!(
+            diff.visited_nodes <= height_bound.saturating_add(1),
+            "single-row diff should stay on a bounded path: diff={diff:?}, bound={height_bound}"
+        );
 
         let proof = map.proof(&rows[rows.len() / 2].0).expect("bounded proof");
         assert!(proof.path.len() <= 64);

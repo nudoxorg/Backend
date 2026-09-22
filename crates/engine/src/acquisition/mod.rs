@@ -2637,6 +2637,18 @@ impl AcquisitionService {
                 if page.base != intent.cursor || page.packages.len() > feed_request.max_items {
                     return AcquisitionOutcome::Rejected(RejectReason::Protocol);
                 }
+                {
+                    let owner_guard = owner
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let Err(error) = owner_guard.validate_page_catalog_capacity(&page.packages) {
+                        return promote_bytes_outcome(registry_error_outcome(
+                            error,
+                            request.source,
+                            &breaker,
+                        ));
+                    }
+                }
                 if page.packages.is_empty() && page.next_token == intent.cursor.token() {
                     let mut owner_guard = owner
                         .lock()
