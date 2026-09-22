@@ -9,16 +9,16 @@
 use crate::model::{AppSnapshot, ProjectPhase};
 use crate::navigation::{Intent, SettingsPage};
 use crate::runtime::UiRootEntity;
-use crate::theme::palette::Paint;
-use crate::theme::tokens::{space, Space, TypeScale};
 use crate::theme::Theme;
+use crate::theme::palette::Paint;
+use crate::theme::tokens::{Space, TypeScale, space};
 use crate::ui::{components, surface, text};
 use gpui::prelude::FluentBuilder as _;
-use gpui::{div, px, AnyElement, AppContext as _, Entity, IntoElement, ParentElement, Styled};
+use gpui::{AnyElement, AppContext as _, Entity, IntoElement, ParentElement, Styled, div, px};
+use gpui_component::Sizable as _;
 use gpui_component::progress::Progress;
 use gpui_component::setting::{SelectIndex, SettingGroup, SettingItem, SettingPage};
 use gpui_component::sheet::Sheet;
-use gpui_component::Sizable as _;
 
 /// Builds a CE sheet containing the settings adapter.
 ///
@@ -224,7 +224,12 @@ fn connections_page(
     let workspace = active_workspace(snapshot);
     let command = mcp_command(workspace);
     let config = mcp_config(workspace);
-    let can_copy = workspace.is_some();
+    let workspace_label = workspace
+        .map(crate::core::LocalProjectId::as_str)
+        .unwrap_or("Add a project first");
+    let can_copy = workspace
+        .and_then(|project| project.service_coordinate().ok())
+        .is_some();
     let connection = match snapshot.settings().connection {
         crate::model::ConnectionStatus::Unknown => "Not tested",
         crate::model::ConnectionStatus::Testing => "Testing local service…",
@@ -239,7 +244,7 @@ fn connections_page(
     .child(setting_row(
         theme,
         "Workspace",
-        workspace.unwrap_or("Add a project first"),
+        workspace_label,
         Some(
             div()
                 .flex()
@@ -329,12 +334,14 @@ fn diagnostics_page(theme: &Theme, snapshot: &AppSnapshot) -> AnyElement {
     let host = snapshot
         .workspace()
         .host
-        .as_deref()
+        .as_ref()
+        .map(crate::core::LocalProjectId::as_str)
         .unwrap_or("No local service host");
     let active = snapshot
         .workspace()
         .active
-        .as_deref()
+        .as_ref()
+        .map(crate::core::LocalProjectId::as_str)
         .unwrap_or("No project selected");
     section(
         theme,
@@ -394,9 +401,8 @@ fn index_page(theme: &Theme, snapshot: &AppSnapshot, owner: Entity<UiRootEntity>
             .iter()
             .enumerate()
             .map(|(index, project)| {
-                let selected =
-                    snapshot.workspace().active.as_deref() == Some(project.path.as_ref());
-                let path = project.path.clone();
+                let selected = snapshot.workspace().active.as_ref() == Some(&project.id);
+                let project_id = project.id.clone();
                 let owner = owner.clone();
                 components::list_item_with_state(
                     theme,
@@ -407,11 +413,9 @@ fn index_page(theme: &Theme, snapshot: &AppSnapshot, owner: Entity<UiRootEntity>
                     selected,
                 )
                 .on_click(move |_, _, app| {
-                    if let Ok(project) = crate::core::LocalProjectId::new(path.as_ref()) {
-                        owner.update(app, |root, cx| {
-                            root.queue(Intent::ActivateProject(project), cx)
-                        });
-                    }
+                    owner.update(app, |root, cx| {
+                        root.queue(Intent::ActivateProject(project_id.clone()), cx)
+                    });
                 })
                 .child(
                     div()
@@ -571,13 +575,13 @@ fn index_status(theme: &Theme, snapshot: &AppSnapshot) -> impl IntoElement {
     let status = snapshot
         .workspace()
         .active
-        .as_deref()
+        .as_ref()
         .and_then(|active| {
             snapshot
                 .workspace()
                 .projects
                 .iter()
-                .find(|p| p.path.as_ref() == active)
+                .find(|p| p.id == *active)
         })
         .map_or("No project selected".to_owned(), |project| {
             project
@@ -596,15 +600,20 @@ fn index_status(theme: &Theme, snapshot: &AppSnapshot) -> impl IntoElement {
             snapshot
                 .workspace()
                 .active
-                .as_deref()
+                .as_ref()
                 .and_then(|active| {
                     snapshot
                         .workspace()
                         .projects
                         .iter()
-                        .find(|p| p.path.as_ref() == active)
+                        .find(|p| p.id == *active)
                 })
-                .is_some_and(|project| project.phase == ProjectPhase::Indexing),
+                .is_some_and(|project| {
+                    matches!(
+                        project.phase,
+                        ProjectPhase::Indexing | ProjectPhase::Cancelling
+                    )
+                }),
             |this| {
                 this.child(
                     Progress::new("settings-index-progress")
@@ -648,26 +657,32 @@ fn clipboard_button(
     components::measure(theme, id, button)
 }
 
-fn active_workspace(snapshot: &AppSnapshot) -> Option<&str> {
-    let active = snapshot.workspace().active.as_deref()?;
+fn active_workspace(snapshot: &AppSnapshot) -> Option<&crate::core::LocalProjectId> {
+    let active = snapshot.workspace().active.as_ref()?;
     snapshot
         .workspace()
         .projects
         .iter()
-        .find(|project| project.path.as_ref() == active && project.phase != ProjectPhase::Missing)
-        .map(|project| project.path.as_ref())
+        .find(|project| project.id == *active && project.phase != ProjectPhase::Missing)
+        .map(|project| &project.id)
 }
 
-fn mcp_command(path: Option<&str>) -> String {
-    path.map_or_else(
-        || "Add a project before copying the Claude command.".to_owned(),
-        |path| format!("nudox mcp --workspace {}", shell_quote(path)),
-    )
+fn mcp_command(project: Option<&crate::core::LocalProjectId>) -> String {
+    let Some(project) = project else {
+        return "Add a project before copying the Claude command.".to_owned();
+    };
+    let Ok(path) = project.service_coordinate() else {
+        return "The selected folder cannot be represented by the CLI on this platform.".to_owned();
+    };
+    format!("nudox mcp --workspace {}", shell_quote(path))
 }
 
-fn mcp_config(path: Option<&str>) -> String {
-    let Some(path) = path else {
+fn mcp_config(project: Option<&crate::core::LocalProjectId>) -> String {
+    let Some(project) = project else {
         return "Add a project before copying the Claude config.".to_owned();
+    };
+    let Ok(path) = project.service_coordinate() else {
+        return "The selected folder cannot be represented by the CLI on this platform.".to_owned();
     };
     format!(
         "{{\n  \"mcpServers\": {{\n    \"nudox\": {{\n      \"command\": \"nudox\",\n      \"args\": [\"mcp\", \"--workspace\", {}]\n    }}\n  }}\n}}",

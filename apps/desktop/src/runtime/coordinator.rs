@@ -3,11 +3,18 @@
 use super::actor::{CancellationToken, EngineActor, EngineRequest};
 use super::mailbox::{CoalesceKey, Coalescible};
 use super::mapping::{MappingError, map_event};
-use crate::core::SnapshotReadModel;
+use crate::core::{LocalProjectId, SnapshotReadModel};
 use crate::model::AppSnapshot;
 use crate::navigation::{Effect, EngineCommand, Intent, RequestId, reduce};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+struct InflightRequest {
+    basis: crate::core::VersionedRoot,
+    cancel: CancellationToken,
+    lane: Option<CoalesceKey>,
+    index_project: Option<LocalProjectId>,
+}
 
 /// Runtime events observed by the UI entity graph.
 #[derive(Clone, Debug)]
@@ -18,6 +25,14 @@ pub enum RuntimeEvent {
     RejectedStale(MappingError),
     /// Persistence was requested by the reducer.
     PersistRequested(Arc<AppSnapshot>),
+    /// One actor request reached a terminal mapping outcome. The UI uses this
+    /// only for the connection probe; ordinary reads remain snapshot-driven.
+    RequestCompleted {
+        /// Request identity allocated by the runtime.
+        request: RequestId,
+        /// Whether the response was admitted as a typed snapshot update.
+        succeeded: bool,
+    },
 }
 
 /// The only state owner on the UI thread. Engine work is submitted and polled
@@ -25,14 +40,7 @@ pub enum RuntimeEvent {
 pub struct DesktopRuntime {
     snapshot: Arc<AppSnapshot>,
     actor: EngineActor,
-    inflight: BTreeMap<
-        RequestId,
-        (
-            crate::core::VersionedRoot,
-            CancellationToken,
-            Option<CoalesceKey>,
-        ),
-    >,
+    inflight: BTreeMap<RequestId, InflightRequest>,
     next_request: u64,
 }
 
@@ -65,7 +73,7 @@ impl DesktopRuntime {
 
     /// Returns the next request identity without touching the engine.
     pub fn allocate_request(&mut self) -> RequestId {
-        let request = RequestId::new(self.next_request);
+        let request = RequestId::from_authority(self.snapshot.key(), self.next_request);
         self.next_request = self.next_request.wrapping_add(1).max(1);
         request
     }
@@ -81,8 +89,8 @@ impl DesktopRuntime {
                 Effect::Persist => {
                     events.push(RuntimeEvent::PersistRequested(Arc::clone(&self.snapshot)))
                 }
-                Effect::Cancel(request) => self.cancel(request),
-                Effect::CancelAll => self.cancel_all(),
+                Effect::Cancel(request) => events.extend(self.cancel(request)),
+                Effect::CancelAll => events.extend(self.cancel_all()),
             }
         }
         events
@@ -96,6 +104,24 @@ impl DesktopRuntime {
                     request,
                     EngineRequest::Root {
                         request,
+                        basis,
+                        cancel: cancel.clone(),
+                    },
+                    basis,
+                    cancel,
+                )
+            }
+            EngineCommand::IndexProject {
+                project,
+                basis,
+                request,
+            } => {
+                let cancel = CancellationToken::new();
+                (
+                    request,
+                    EngineRequest::IndexProject {
+                        request,
+                        project,
                         basis,
                         cancel: cancel.clone(),
                     },
@@ -143,47 +169,69 @@ impl DesktopRuntime {
             }
         };
         let lane = engine_request.coalesce_key();
-        let older = self
+        let same_lane = self
             .inflight
             .iter()
-            .filter_map(|(id, (old_basis, token, _))| {
-                old_basis
-                    .is_older_authority(basis)
-                    .then_some((*id, token.clone()))
+            .filter_map(|(id, old)| {
+                (lane.is_some() && old.lane == lane && *id != request)
+                    .then_some((*id, old.cancel.clone()))
             })
             .collect::<Vec<_>>();
-        for (id, token) in older {
+        for (id, token) in same_lane {
             token.cancel();
             self.inflight.remove(&id);
         }
-        self.inflight.insert(request, (basis, cancel, lane));
+        self.inflight.insert(
+            request,
+            InflightRequest {
+                basis,
+                cancel,
+                lane,
+                index_project: match &engine_request {
+                    EngineRequest::IndexProject { project, .. } => Some(project.clone()),
+                    _ => None,
+                },
+            },
+        );
         match self.actor.try_submit_coalesced(engine_request) {
             super::mailbox::PushResult::Enqueued => {}
             super::mailbox::PushResult::Coalesced(old) => {
-                if let Some((_, token, _)) = self.inflight.remove(&old.request()) {
-                    token.cancel();
+                if let Some(old) = self.inflight.remove(&old.request()) {
+                    old.cancel.cancel();
                 }
             }
             super::mailbox::PushResult::Full(request)
             | super::mailbox::PushResult::Closed(request) => {
-                if let Some((_, token, _)) = self.inflight.remove(&request.request()) {
-                    token.cancel();
+                if let Some(old) = self.inflight.remove(&request.request()) {
+                    old.cancel.cancel();
                 }
             }
         }
     }
 
-    fn cancel(&mut self, request: RequestId) {
-        if let Some((_, token, _)) = self.inflight.remove(&request) {
-            token.cancel();
+    fn cancel(&mut self, request: RequestId) -> Vec<RuntimeEvent> {
+        if let Some((cancel, is_index)) = self
+            .inflight
+            .get(&request)
+            .map(|old| (old.cancel.clone(), old.index_project.is_some()))
+        {
+            cancel.cancel();
+            if !is_index {
+                self.inflight.remove(&request);
+            }
         }
+        Vec::new()
     }
 
-    fn cancel_all(&mut self) {
+    fn cancel_all(&mut self) -> Vec<RuntimeEvent> {
         let inflight = std::mem::take(&mut self.inflight);
-        for (_, (_, token, _)) in inflight {
-            token.cancel();
+        for (id, request) in inflight {
+            request.cancel.cancel();
+            if request.index_project.is_some() {
+                self.inflight.insert(id, request);
+            }
         }
+        Vec::new()
     }
 
     /// Polls actor events without waiting on the UI thread.
@@ -191,28 +239,43 @@ impl DesktopRuntime {
         let mut events = Vec::new();
         for event in self.actor.drain_events() {
             let request = event.request;
-            let Some((basis, _, lane)) = self.inflight.remove(&request) else {
+            let Some(inflight) = self.inflight.remove(&request) else {
                 events.push(RuntimeEvent::RejectedStale(MappingError::Engine(
                     super::actor::EngineFault::Superseded,
                 )));
                 continue;
             };
-            if !event.basis.same_authority(basis)
-                || !event.basis.same_authority(self.snapshot.key())
+            let index_request = inflight.index_project.is_some();
+            if !event.basis.same_authority(inflight.basis)
+                || (!index_request && !event.basis.same_authority(self.snapshot.key()))
             {
                 events.push(RuntimeEvent::RejectedStale(MappingError::StaleRoot {
                     expected: self.snapshot.key(),
                     observed: event.basis,
                 }));
+                events.push(RuntimeEvent::RequestCompleted {
+                    request,
+                    succeeded: false,
+                });
                 continue;
             }
-            self.retire_lane(request, lane);
+            self.retire_lane(request, inflight.lane);
             match map_event(&self.snapshot, event) {
                 Ok(snapshot) => {
                     self.snapshot = Arc::new(snapshot);
                     events.push(RuntimeEvent::SnapshotChanged(Arc::clone(&self.snapshot)));
+                    events.push(RuntimeEvent::RequestCompleted {
+                        request,
+                        succeeded: true,
+                    });
                 }
-                Err(error) => events.push(RuntimeEvent::RejectedStale(error)),
+                Err(error) => {
+                    events.push(RuntimeEvent::RejectedStale(error));
+                    events.push(RuntimeEvent::RequestCompleted {
+                        request,
+                        succeeded: false,
+                    });
+                }
             }
         }
         events
@@ -247,8 +310,9 @@ impl DesktopRuntime {
         let superseded = self
             .inflight
             .iter()
-            .filter_map(|(id, (_, token, candidate))| {
-                (*id != request && *candidate == Some(lane)).then_some((*id, token.clone()))
+            .filter_map(|(id, candidate)| {
+                (*id != request && candidate.lane == Some(lane))
+                    .then_some((*id, candidate.cancel.clone()))
             })
             .collect::<Vec<_>>();
         for (id, token) in superseded {

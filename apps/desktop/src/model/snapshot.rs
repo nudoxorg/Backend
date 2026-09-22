@@ -9,7 +9,7 @@ pub use super::workspace::{
     AppearancePreference, ConnectionStatus, PrivacyPreference, ProjectPhase, ServiceMode,
     SettingsState, TextScalePreference, WorkspaceProject, WorkspaceState,
 };
-use crate::core::ids::{DocumentId, PackageId, ProjectId, ResourceIdentity, VersionedRoot};
+use crate::core::ids::{DocumentId, LocalProjectId, PackageId, ResourceIdentity, VersionedRoot};
 use crate::core::state::Resource;
 use crate::navigation::{Overlay, Route, RouteHistory, Selection};
 use std::sync::Arc;
@@ -129,8 +129,10 @@ impl Default for DocumentState {
 /// The read-only project branch consumed by project and source views.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectState {
-    /// Producer project identity.
-    pub id: ProjectId,
+    /// Stable local project identity selected by the user and admitted by the
+    /// path boundary. The local service does not expose a project number for
+    /// this source folder.
+    pub id: LocalProjectId,
     /// Human-readable project name.
     pub label: Arc<str>,
     /// Package identities admitted under the project.
@@ -248,13 +250,13 @@ impl AppSnapshot {
     /// Returns the root digest used by engine requests.
     #[must_use]
     pub const fn root(&self) -> backend_library::ViewStateRoot {
-        self.key.root
+        self.key.root()
     }
 
     /// Returns the monotonic observation sequence.
     #[must_use]
     pub const fn sequence(&self) -> u64 {
-        self.key.observation
+        self.key.observation()
     }
 
     /// Returns the shelf branch.
@@ -462,7 +464,7 @@ mod tests {
     use super::*;
 
     fn root() -> VersionedRoot {
-        VersionedRoot::new(
+        VersionedRoot::synthetic(
             backend_library::view_state_root(&[("snapshot".to_owned(), "one".to_owned())]),
             1,
         )

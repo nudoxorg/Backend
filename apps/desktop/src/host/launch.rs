@@ -5,15 +5,14 @@
 //! No legacy model or transport entity is created on this path.
 
 use super::lease::{DesktopHost, HostError, HostMode};
-use crate::core::VersionedRoot;
+use crate::core::{LocalProjectId, VersionedRoot};
 use crate::model::{AppSnapshot, PersistenceRecovery, PersistentState, SessionState};
 use crate::runtime::{DesktopRuntime, EngineActor, LocalEngineClient, UiEntityGraph};
 use crate::theme::Theme;
 use backend_client::LocalSubscriptionTransport;
 use gpui::{
-    point, px, size, App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions,
+    App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
 };
-use std::sync::Arc;
 use std::time::Duration;
 
 const ATTEMPTS: usize = 12;
@@ -21,7 +20,7 @@ const RETRY: Duration = Duration::from_millis(120);
 const DEADLINE: Duration = Duration::from_secs(20);
 const EXIT_NO_SERVICE: u8 = 70;
 const WINDOW: (f32, f32) = (1380.0, 880.0);
-const MINIMUM: (f32, f32) = (640.0, 480.0);
+const MINIMUM: (f32, f32) = (320.0, 480.0);
 
 /// Starts the native application and its embedded local-first owner.
 #[must_use]
@@ -138,14 +137,18 @@ fn open() -> Result<Opened, String> {
 
 fn attempt_once() -> Result<Opened, String> {
     let host = DesktopHost::start().map_err(|error| describe(&error))?;
+    let host_project = LocalProjectId::from_path(host.project()).map_err(|error| {
+        format!("the discovered workspace path cannot be represented safely: {error}")
+    })?;
     let mut subscription = LocalSubscriptionTransport::connect(host.endpoint())
         .map_err(|error| format!("open the local subscription: {error}"))?;
-    let (view, _) = subscription
+    let (view, revision) = subscription
         .bootstrap_root()
         .map_err(|error| format!("hydrate the first snapshot: {error}"))?;
-    let key = VersionedRoot::new(view.root(), 1)
-        .with_generation(0)
-        .observed_at(0);
+    if revision.root() != view.root() {
+        return Err("the local service returned mismatched startup identities".to_owned());
+    }
+    let key = VersionedRoot::from_revision(1, revision, 0);
     let persistence = PersistentState::at(host.data().join("desktop-state.json"));
     let admitted = persistence.load_recovering().map_err(|error| {
         format!(
@@ -163,8 +166,7 @@ fn attempt_once() -> Result<Opened, String> {
     let host_project_admitted = super::paths::looks_like_project(host.project());
     let (shelf, mut workspace) =
         persistence.cold_shelf(&persisted, host_project_admitted.then_some(host.project()));
-    let host_path: Arc<str> = host.project().to_string_lossy().into_owned().into();
-    workspace.host = Some(host_path);
+    workspace.host = Some(host_project.clone());
     let mut settings = persistence.cold_settings(&persisted);
     settings.service_mode = match host.mode() {
         HostMode::Embedded => crate::model::ServiceMode::Embedded,
@@ -182,10 +184,7 @@ fn attempt_once() -> Result<Opened, String> {
         forward: restored.forward,
         selected: restored.selected,
     });
-    let client = LocalEngineClient::new(
-        host.endpoint(),
-        host.project().to_string_lossy().into_owned(),
-    );
+    let client = LocalEngineClient::new(host.endpoint(), host_project.clone());
     Ok(Opened {
         host,
         snapshot,

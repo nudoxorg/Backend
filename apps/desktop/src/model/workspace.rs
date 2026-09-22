@@ -7,6 +7,9 @@
 
 use std::sync::Arc;
 
+use crate::core::LocalProjectId;
+use crate::navigation::RequestId;
+
 /// The lifecycle of a local project admitted to the shelf.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProjectPhase {
@@ -14,6 +17,9 @@ pub enum ProjectPhase {
     Ready,
     /// The local service is indexing the project.
     Indexing,
+    /// Cancellation has been requested but the live producer has not
+    /// returned yet. The row must remain owned until that boundary answers.
+    Cancelling,
     /// Indexing was cancelled by the user.
     Cancelled,
     /// The last index attempt failed and can be retried.
@@ -29,6 +35,7 @@ impl ProjectPhase {
         match self {
             Self::Ready => "Ready",
             Self::Indexing => "Indexing",
+            Self::Cancelling => "Cancelling…",
             Self::Cancelled => "Paused",
             Self::Failed => "Needs attention",
             Self::Missing => "Folder missing",
@@ -39,7 +46,11 @@ impl ProjectPhase {
 /// One durable local project lifecycle row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceProject {
-    /// Canonical local folder path.
+    /// Lossless native identity used for reducer/runtime matching.
+    pub id: LocalProjectId,
+    /// Presentation spelling for the local folder. Matching and persistence
+    /// use [`Self::id`] so this field may be lossy on platforms with wide or
+    /// non-UTF-8 native path units.
     pub path: Arc<str>,
     /// Short display name shown in the shelf.
     pub label: Arc<str>,
@@ -49,6 +60,10 @@ pub struct WorkspaceProject {
     pub progress: Option<u8>,
     /// Backend-reported file count, when the service exposes it.
     pub files_indexed: Option<u64>,
+    /// Ephemeral compatibility request while the shared ProjectIngest receipt
+    /// surface is unavailable. This is cleared on terminal owner response and
+    /// is never used as durable identity.
+    pub request: Option<RequestId>,
     /// Bounded error text suitable for a diagnostic row.
     pub error: Option<Arc<str>>,
     /// Whether this row was opened recently.
@@ -60,17 +75,36 @@ impl WorkspaceProject {
     #[must_use]
     pub fn indexing(path: impl Into<Arc<str>>) -> Self {
         let path = path.into();
+        let id = LocalProjectId::new(path.as_ref())
+            .expect("WorkspaceProject::indexing receives an admitted path");
+        Self::indexing_with_id(id)
+    }
+
+    /// Creates an indeterminate row from a lossless admitted identity.
+    #[must_use]
+    pub fn indexing_with_id(id: LocalProjectId) -> Self {
+        let path: Arc<str> = id.as_str().into();
+        Self::indexing_with_display(id, path)
+    }
+
+    /// Creates an indeterminate row while retaining the user's selected
+    /// presentation spelling separately from the canonical native identity.
+    #[must_use]
+    pub fn indexing_with_display(id: LocalProjectId, path: impl Into<Arc<str>>) -> Self {
+        let path = path.into();
         let label = std::path::Path::new(path.as_ref())
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| !name.is_empty())
             .unwrap_or(path.as_ref());
         Self {
+            id,
             path,
             label: Arc::from(label),
             phase: ProjectPhase::Indexing,
             progress: None,
             files_indexed: None,
+            request: None,
             error: None,
             recent: true,
         }
@@ -96,10 +130,10 @@ impl WorkspaceProject {
 pub struct WorkspaceState {
     /// One row for every local folder in the shelf.
     pub projects: Arc<[WorkspaceProject]>,
-    /// Canonical path of the active shelf project.
-    pub active: Option<Arc<str>>,
-    /// Canonical path the local service currently serves.
-    pub host: Option<Arc<str>>,
+    /// Lossless identity of the active shelf project.
+    pub active: Option<LocalProjectId>,
+    /// Lossless identity of the project the local service currently serves.
+    pub host: Option<LocalProjectId>,
     /// Last path rejection shown by the add flow.
     pub path_error: Option<Arc<str>>,
 }
@@ -109,15 +143,15 @@ impl WorkspaceState {
     /// service before deep queries are admitted after startup.
     #[must_use]
     pub fn requires_rebind(&self) -> bool {
-        let Some(active) = self.active.as_deref() else {
+        let Some(active) = self.active.as_ref() else {
             return false;
         };
-        if self.host.as_deref() != Some(active) {
+        if self.host.as_ref() != Some(active) {
             return true;
         }
         self.projects
             .iter()
-            .find(|project| project.path.as_ref() == active)
+            .find(|project| project.id == *active)
             .map_or(true, |project| project.phase != ProjectPhase::Ready)
     }
 }

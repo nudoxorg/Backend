@@ -200,7 +200,7 @@ mod tests {
     use crate::navigation::route::{Coordinate, PackageLane, PackageRoute, PageRoute};
 
     fn snapshot() -> AppSnapshot {
-        AppSnapshot::empty(VersionedRoot::new(
+        AppSnapshot::empty(VersionedRoot::synthetic(
             backend_library::view_state_root(&[("root".to_owned(), "one".to_owned())]),
             1,
         ))

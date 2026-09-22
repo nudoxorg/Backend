@@ -20,6 +20,9 @@ pub enum CoalesceKey {
     Object(ObjectId),
     /// Only the newest request for one typed product surface matters.
     Surface(backend_library::CommandId),
+    /// Only the newest compatibility ingest request for one local project
+    /// matters while the shared ProjectIngest surface is being integrated.
+    Index(crate::core::LocalProjectId),
     /// Persistence writes can be collapsed into the newest state.
     Persistence,
 }

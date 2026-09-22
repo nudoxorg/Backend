@@ -10,12 +10,12 @@ use super::primitives::heading;
 use crate::model::{AppSnapshot, ProjectPhase};
 use crate::navigation::{Intent, SettingsPage};
 use crate::runtime::UiRootEntity;
-use crate::theme::palette::Paint;
-use crate::theme::tokens::{space, Space, TypeScale};
 use crate::theme::Theme;
+use crate::theme::palette::Paint;
+use crate::theme::tokens::{Space, TypeScale, space};
 use crate::ui::{components, surface, text};
 use gpui::prelude::FluentBuilder as _;
-use gpui::{div, px, AnyElement, Context, IntoElement, ParentElement, Styled};
+use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div, px};
 use gpui_component::progress::Progress;
 
 /// Renders the home projection for both the empty shelf and an admitted shelf.
@@ -128,15 +128,15 @@ fn workspace_mismatch(
     let Some((active, host)) = snapshot
         .workspace()
         .active
-        .as_deref()
-        .zip(snapshot.workspace().host.as_deref())
+        .as_ref()
+        .zip(snapshot.workspace().host.as_ref())
         .filter(|(active, host)| active != host)
     else {
         return div().into_any_element();
     };
-    let host_project = crate::core::LocalProjectId::new(host).ok();
-    let active_label = crate::ui::text::elide(active, 54);
-    let host_label = crate::ui::text::elide(host, 54);
+    let host_project = host.clone();
+    let active_label = crate::ui::text::elide(active.as_str(), 54);
+    let host_label = crate::ui::text::elide(host.as_str(), 54);
     surface::sunken(theme)
         .p(px(12.0))
         .flex()
@@ -173,22 +173,26 @@ fn active_project_status(
     snapshot: &AppSnapshot,
     cx: &mut Context<UiRootEntity>,
 ) -> Option<AnyElement> {
-    let project = snapshot.workspace().active.as_deref().and_then(|active| {
+    let project = snapshot.workspace().active.as_ref().and_then(|active| {
         snapshot
             .workspace()
             .projects
             .iter()
-            .find(|project| project.path.as_ref() == active)
+            .find(|project| project.id == *active)
     })?;
     if project.phase == ProjectPhase::Ready {
         return None;
     }
-    let path = crate::core::LocalProjectId::new(project.path.as_ref()).ok()?;
+    let path = project.id.clone();
     let path_label = crate::ui::text::elide(project.path.as_ref(), 64);
     let (headline, detail) = match project.phase {
         ProjectPhase::Indexing => (
             "Indexing this project",
             "The local service is reading the folder. This view becomes ready after the service confirms the index.",
+        ),
+        ProjectPhase::Cancelling => (
+            "Finishing cancellation",
+            "The local service is finishing the active ingest. This row will settle when the producer replies.",
         ),
         ProjectPhase::Cancelled => (
             "Indexing paused",
@@ -241,6 +245,14 @@ fn active_project_status(
                         this.queue(Intent::CancelIndex(cancel.clone()), cx);
                     })),
                 );
+        }
+        ProjectPhase::Cancelling => {
+            card = card.child(
+                Progress::new("cancelling-index-progress")
+                    .loading(true)
+                    .color(theme.paint(Paint::Waiting))
+                    .accessibility_label("Finishing project cancellation"),
+            );
         }
         ProjectPhase::Cancelled | ProjectPhase::Failed => {
             let retry = path.clone();

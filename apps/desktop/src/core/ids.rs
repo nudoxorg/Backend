@@ -6,14 +6,18 @@
 //! string through the UI.
 
 use std::fmt;
-use std::path::Path;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use backend_platform::NativePath;
+
 /// A non-empty, validated local workspace identity.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug)]
 pub struct LocalProjectId {
+    native: NativePath,
     coordinate: Arc<str>,
-    key: backend_library::PackageKey,
+    key: backend_library::SemanticObject,
 }
 
 /// A non-empty, validated package coordinate.
@@ -52,6 +56,9 @@ pub enum IdentityError {
     ControlCharacter,
     /// The spelling did not satisfy the backend package admission grammar.
     Invalid,
+    /// The native path cannot be represented by the persisted UTF-8 identity
+    /// contract without lossy conversion.
+    UnsupportedPlatformEncoding,
 }
 
 impl fmt::Display for IdentityError {
@@ -60,6 +67,9 @@ impl fmt::Display for IdentityError {
             Self::Empty => f.write_str("identity must not be empty"),
             Self::ControlCharacter => f.write_str("identity contains a control character"),
             Self::Invalid => f.write_str("identity is not a valid package reference"),
+            Self::UnsupportedPlatformEncoding => {
+                f.write_str("the selected path uses an unsupported platform encoding")
+            }
         }
     }
 }
@@ -78,17 +88,35 @@ fn validate(value: &str) -> Result<Arc<str>, IdentityError> {
 }
 
 impl LocalProjectId {
-    /// Creates a local identity from a path spelling.
+    /// Creates a local identity from native path units.
     pub fn from_path(path: &Path) -> Result<Self, IdentityError> {
-        Self::new(path.to_string_lossy().as_ref())
+        let native = NativePath::from_path(path).map_err(map_native_path_error)?;
+        Ok(Self::from_native(native))
     }
 
     /// Creates a local identity from an already selected spelling.
     pub fn new(value: &str) -> Result<Self, IdentityError> {
-        validate(value).map(|coordinate| Self {
-            key: backend_library::package_key(&coordinate),
+        let coordinate = validate(value)?;
+        let native =
+            NativePath::from_path(Path::new(coordinate.as_ref())).map_err(map_native_path_error)?;
+        Ok(Self::from_native_with_coordinate(native, coordinate))
+    }
+
+    fn from_native(native: NativePath) -> Self {
+        let coordinate = native
+            .to_str()
+            .map(Arc::<str>::from)
+            .unwrap_or_else(|_| Arc::from("<native path>"));
+        Self::from_native_with_coordinate(native, coordinate)
+    }
+
+    fn from_native_with_coordinate(native: NativePath, coordinate: Arc<str>) -> Self {
+        let key = backend_library::object_version(&native.key().as_bytes());
+        Self {
+            key,
+            native,
             coordinate,
-        })
+        }
     }
 
     /// Returns the persisted spelling.
@@ -97,10 +125,94 @@ impl LocalProjectId {
         &self.coordinate
     }
 
-    /// Returns the producer-compatible canonical package key.
+    /// Returns the exact native path.
     #[must_use]
-    pub const fn key(&self) -> backend_library::PackageKey {
+    pub fn path(&self) -> PathBuf {
+        self.native.as_path().to_path_buf()
+    }
+
+    /// Returns the exact shared native path value for typed owner/client
+    /// boundaries. Callers must not lower this to UTF-8 for indexing.
+    #[must_use]
+    pub fn native_path(&self) -> &NativePath {
+        &self.native
+    }
+
+    /// Returns a presentation-only spelling for labels and diagnostics.
+    /// Identity and service admission continue to use [`Self::native_path`].
+    #[must_use]
+    pub fn display_lossy(&self) -> String {
+        self.native.display_lossy()
+    }
+
+    /// Returns the reversible native identity used by durable state.
+    #[must_use]
+    pub fn native_wire(&self) -> Result<backend_platform::NativePathWire, IdentityError> {
+        self.native.to_wire().map_err(map_native_path_error)
+    }
+
+    /// Returns whether the identity has display text that is also a lossless
+    /// UTF-8 service argument.
+    #[must_use]
+    pub fn has_utf8_spelling(&self) -> bool {
+        self.native.to_str().is_ok()
+    }
+
+    /// Returns the exact UTF-8 coordinate accepted by the legacy service
+    /// index command. The native path remains the authority; callers must
+    /// handle this error instead of substituting the display spelling.
+    pub fn service_coordinate(&self) -> Result<&str, IdentityError> {
+        self.native
+            .to_str()
+            .map_err(|_| IdentityError::UnsupportedPlatformEncoding)
+    }
+
+    /// Returns the stable native-unit key.
+    #[must_use]
+    pub const fn key(&self) -> backend_library::SemanticObject {
         self.key
+    }
+
+    /// Restores a local identity from the shared native persistence value.
+    pub fn from_native_wire(
+        value: &backend_platform::NativePathWire,
+    ) -> Result<Self, IdentityError> {
+        let native = NativePath::from_wire(value).map_err(map_native_path_error)?;
+        Ok(Self::from_native(native))
+    }
+}
+
+fn map_native_path_error(error: backend_platform::NativePathError) -> IdentityError {
+    match error {
+        backend_platform::NativePathError::Empty => IdentityError::Empty,
+        backend_platform::NativePathError::Nul => IdentityError::ControlCharacter,
+        _ => IdentityError::UnsupportedPlatformEncoding,
+    }
+}
+
+impl PartialEq for LocalProjectId {
+    fn eq(&self, other: &Self) -> bool {
+        self.native.key() == other.native.key()
+    }
+}
+
+impl Eq for LocalProjectId {}
+
+impl Hash for LocalProjectId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.native.key().hash(state);
+    }
+}
+
+impl PartialOrd for LocalProjectId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for LocalProjectId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.native.key().cmp(&other.native.key())
     }
 }
 
@@ -275,43 +387,141 @@ pub enum ResourceIdentity {
     Project(ProjectId),
 }
 
-/// A versioned state root. The producer root digest plus epoch/generation bind
-/// authority; the observation is UI metadata and is never used to admit a
-/// result.
+/// The producer-issued authority for one immutable view root.
+///
+/// The fields are private so the desktop cannot pair a root with a fabricated
+/// cursor or advance producer order locally. A value enters the shell only
+/// through [`VersionedRoot::from_revision`] at the service adapter boundary.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ProducerAuthority {
+    root: backend_library::ViewStateRoot,
+    producer_epoch: u64,
+    cursor: backend_library::Cursor,
+}
+
+impl ProducerAuthority {
+    /// Returns the certified immutable view root.
+    #[must_use]
+    pub const fn root(self) -> backend_library::ViewStateRoot {
+        self.root
+    }
+
+    /// Returns the producer epoch that issued this cursor.
+    #[must_use]
+    pub const fn producer_epoch(self) -> u64 {
+        self.producer_epoch
+    }
+
+    /// Returns the complete producer-issued cursor.
+    #[must_use]
+    pub const fn cursor(self) -> backend_library::Cursor {
+        self.cursor
+    }
+
+    /// Returns the producer sequence carried by the cursor.
+    #[must_use]
+    pub const fn generation(self) -> u64 {
+        self.cursor.sequence()
+    }
+}
+
+/// A versioned state root. The producer root, epoch, and cursor are one
+/// admitted authority; observation is UI metadata and is never used to admit
+/// a result.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct VersionedRoot {
-    /// The certified immutable view root.
-    pub root: backend_library::ViewStateRoot,
-    /// Producer epoch that issued this root.
-    pub producer_epoch: u64,
-    /// Producer generation within the epoch.
-    pub generation: u64,
+    authority: ProducerAuthority,
     /// UI observation sequence. This is diagnostic metadata only.
-    pub observation: u64,
+    observation: u64,
 }
 
 impl VersionedRoot {
-    /// Creates a root key at a producer epoch. Generation and observation are
-    /// initially zero and can only be advanced by a runtime adapter.
+    /// Creates a root key from the producer's exact revision cursor.
+    ///
+    /// The cursor sequence is the daemon-issued producer order. The desktop
+    /// never increments it or turns a wall-clock observation into authority.
     #[must_use]
-    pub const fn new(root: backend_library::ViewStateRoot, producer_epoch: u64) -> Self {
+    pub const fn from_revision(
+        producer_epoch: u64,
+        cursor: backend_library::Cursor,
+        observation: u64,
+    ) -> Self {
         Self {
-            root,
-            producer_epoch,
-            generation: 0,
+            authority: ProducerAuthority {
+                root: cursor.root(),
+                producer_epoch,
+                cursor,
+            },
+            observation,
+        }
+    }
+
+    /// Creates a synthetic authority for reducer/model fixtures.
+    ///
+    /// Production code must use [`Self::from_revision`]. Keeping this
+    /// constructor test-only prevents a fixture generation from becoming a
+    /// served workspace authority.
+    #[must_use]
+    #[cfg(test)]
+    pub fn synthetic(root: backend_library::ViewStateRoot, producer_epoch: u64) -> Self {
+        Self {
+            authority: ProducerAuthority {
+                root,
+                producer_epoch,
+                cursor: backend_library::Cursor::at(root, 0),
+            },
             observation: 0,
         }
     }
 
-    /// Binds a producer generation to this root.
+    /// Binds a synthetic fixture generation. Production code cannot call this
+    /// constructor because it is compiled only for the test support surface.
     #[must_use]
-    pub const fn with_generation(mut self, generation: u64) -> Self {
-        self.generation = generation;
+    #[cfg(test)]
+    pub fn with_generation(mut self, generation: u64) -> Self {
+        self.authority.cursor = backend_library::Cursor::at(self.root(), generation);
         self
+    }
+
+    /// Returns the complete producer authority.
+    #[must_use]
+    pub const fn authority(self) -> ProducerAuthority {
+        self.authority
+    }
+
+    /// Returns the certified immutable view root.
+    #[must_use]
+    pub const fn root(self) -> backend_library::ViewStateRoot {
+        self.authority.root()
+    }
+
+    /// Returns the producer epoch that issued this root.
+    #[must_use]
+    pub const fn producer_epoch(self) -> u64 {
+        self.authority.producer_epoch()
+    }
+
+    /// Returns the producer generation carried by the admitted cursor.
+    #[must_use]
+    pub const fn generation(self) -> u64 {
+        self.authority.generation()
+    }
+
+    /// Returns the UI observation sequence carried alongside the authority.
+    #[must_use]
+    pub const fn observation(self) -> u64 {
+        self.observation
+    }
+
+    /// Returns the exact producer cursor that issued this root.
+    #[must_use]
+    pub const fn revision(self) -> backend_library::Cursor {
+        self.authority.cursor()
     }
 
     /// Adds a UI observation sequence without changing producer authority.
     #[must_use]
+    #[cfg(test)]
     pub const fn observed_at(mut self, observation: u64) -> Self {
         self.observation = observation;
         self
@@ -320,22 +530,24 @@ impl VersionedRoot {
     /// Returns whether two keys name the same producer epoch/generation.
     #[must_use]
     pub const fn same_producer_generation(self, other: Self) -> bool {
-        self.producer_epoch == other.producer_epoch && self.generation == other.generation
+        self.producer_epoch() == other.producer_epoch() && self.revision() == other.revision()
     }
 
     /// Returns whether two keys describe the same producer authority. The UI
     /// observation counter is intentionally ignored.
     #[must_use]
     pub fn same_authority(self, other: Self) -> bool {
-        self.root == other.root && self.same_producer_generation(other)
+        self.authority == other.authority
     }
 
     /// Returns whether this key is older in producer order. Observation order
     /// is never consulted for admission.
     #[must_use]
     pub const fn is_older_authority(self, other: Self) -> bool {
-        self.producer_epoch < other.producer_epoch
-            || (self.producer_epoch == other.producer_epoch && self.generation < other.generation)
+        if self.producer_epoch() == other.producer_epoch() {
+            return self.revision() < other.revision();
+        }
+        self.producer_epoch() < other.producer_epoch()
     }
 }
 
@@ -344,9 +556,9 @@ impl fmt::Display for VersionedRoot {
         write!(
             f,
             "{}@{}:{}:{}",
-            hex_digest(self.root.as_bytes()),
-            self.producer_epoch,
-            self.generation,
+            hex_digest(self.root().as_bytes()),
+            self.producer_epoch(),
+            self.generation(),
             self.observation
         )
     }
@@ -397,6 +609,31 @@ mod tests {
         assert_eq!(
             PackageId::try_from_backend(key, "serde"),
             Err(IdentityError::Invalid)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_project_identity_retains_non_utf8_native_units() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+
+        let os = OsString::from_vec(b"/tmp/nudox-\xff".to_vec());
+        let path = Path::new(&os);
+        let identity = LocalProjectId::from_path(path).expect("native path identity");
+        assert!(!identity.has_utf8_spelling());
+        assert_eq!(
+            identity.path().as_os_str().as_bytes(),
+            path.as_os_str().as_bytes()
+        );
+        assert_eq!(
+            identity,
+            LocalProjectId::from_path(&identity.path()).expect("round trip")
+        );
+        assert_eq!(
+            identity,
+            LocalProjectId::from_native_wire(&identity.native_wire().expect("wire"))
+                .expect("wire round trip")
         );
     }
 }

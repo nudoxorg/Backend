@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const SCHEMA: u32 = 1;
@@ -24,6 +25,14 @@ static RECOVERY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct PersistedShelfItem {
     /// Local project path retained for cold reload.
     pub local_path: String,
+    /// User-selected presentation spelling, kept separate from the canonical
+    /// native identity so lexical normalization never changes what the user
+    /// sees in the shelf.
+    #[serde(default)]
+    pub display_path: Option<String>,
+    /// Reversible native path identity. Older UTF-8 state files may omit it.
+    #[serde(default)]
+    pub native_path: Option<backend_platform::NativePathWire>,
     /// Stable user-facing label.
     pub label: String,
     /// Last known index lifecycle.
@@ -48,6 +57,8 @@ pub enum PersistedProjectPhase {
     Ready,
     /// Indexing is in progress.
     Indexing,
+    /// Cancellation was requested and is waiting for the producer boundary.
+    Cancelling,
     /// Indexing was cancelled.
     Cancelled,
     /// Indexing failed.
@@ -61,6 +72,7 @@ impl From<ProjectPhase> for PersistedProjectPhase {
         match value {
             ProjectPhase::Ready => Self::Ready,
             ProjectPhase::Indexing => Self::Indexing,
+            ProjectPhase::Cancelling => Self::Cancelling,
             ProjectPhase::Cancelled => Self::Cancelled,
             ProjectPhase::Failed => Self::Failed,
             ProjectPhase::Missing => Self::Missing,
@@ -73,6 +85,7 @@ impl From<PersistedProjectPhase> for ProjectPhase {
         match value {
             PersistedProjectPhase::Ready => Self::Ready,
             PersistedProjectPhase::Indexing => Self::Indexing,
+            PersistedProjectPhase::Cancelling => Self::Cancelling,
             PersistedProjectPhase::Cancelled => Self::Cancelled,
             PersistedProjectPhase::Failed => Self::Failed,
             PersistedProjectPhase::Missing => Self::Missing,
@@ -130,6 +143,9 @@ pub struct PersistedDesktopState {
     /// Active shelf project retained across a cold restart.
     #[serde(default)]
     pub active_project: Option<String>,
+    /// Reversible native identity for the active shelf project.
+    #[serde(default)]
+    pub active_native_path: Option<backend_platform::NativePathWire>,
     /// Surface appearance.
     #[serde(default)]
     pub appearance: PersistedAppearance,
@@ -172,6 +188,7 @@ impl Default for PersistedDesktopState {
             route: PersistedRoute::Home,
             settings_page: None,
             active_project: None,
+            active_native_path: None,
             appearance: PersistedAppearance::default(),
             text_scale: 100,
             privacy: PersistedPrivacy::default(),
@@ -508,9 +525,11 @@ impl PersistentState {
                         .workspace()
                         .projects
                         .iter()
-                        .find(|project| project.path.as_ref() == id.as_str());
+                        .find(|project| project.id == *id);
                     Some(PersistedShelfItem {
                         local_path: id.as_str().to_owned(),
+                        display_path: project.map(|project| project.path.to_string()),
+                        native_path: id.native_wire().ok(),
                         label: item.label.to_string(),
                         phase: project
                             .map_or(PersistedProjectPhase::Ready, |project| project.phase.into()),
@@ -540,8 +559,13 @@ impl PersistentState {
             active_project: snapshot
                 .workspace()
                 .active
-                .as_deref()
-                .map(ToOwned::to_owned),
+                .as_ref()
+                .map(|project| project.as_str().to_owned()),
+            active_native_path: snapshot
+                .workspace()
+                .active
+                .as_ref()
+                .and_then(|project| project.native_wire().ok()),
             appearance: match snapshot.settings().appearance {
                 AppearancePreference::Abyss => PersistedAppearance::Abyss,
                 AppearancePreference::Glacier => PersistedAppearance::Glacier,
@@ -733,39 +757,58 @@ impl PersistentState {
             .shelf
             .iter()
             .filter_map(|item| {
+                let id = Self::local_identity(item)?;
                 // Older state files could contain the same local path more
                 // than once. Keep the first durable row so the shelf and
-                // active workspace cannot diverge after a restart.
-                if !seen.insert(item.local_path.clone()) {
+                // active workspace cannot diverge after a restart. The
+                // identity is native-unit based when the newer wire field is
+                // present, so non-UTF-8 folders remain distinct.
+                if !seen.insert(id.clone()) {
                     return None;
                 }
-                let path = std::path::Path::new(&item.local_path);
+                let path = id.path();
                 let phase = if path.is_dir() {
-                    item.phase.into()
+                    match item.phase {
+                        // There is no live request to observe after restart;
+                        // re-admit the folder as a fresh authoritative index.
+                        PersistedProjectPhase::Cancelling => ProjectPhase::Indexing,
+                        phase => phase.into(),
+                    }
                 } else {
                     ProjectPhase::Missing
                 };
+                let display_path: Arc<str> = item
+                    .display_path
+                    .as_deref()
+                    .unwrap_or_else(|| id.as_str())
+                    .into();
                 Some(WorkspaceProject {
-                    path: item.local_path.clone().into(),
+                    id,
+                    path: display_path,
                     label: item.label.clone().into(),
                     phase,
                     progress: item.progress.map(|progress| progress.min(100)),
                     files_indexed: item.files_indexed,
+                    request: None,
                     error: item.error.clone().map(Into::into),
                     recent: true,
                 })
             })
             .collect::<Vec<_>>();
         let active = state
-            .active_project
-            .as_deref()
-            .and_then(|active| {
-                projects
-                    .iter()
-                    .find(|project| project.path.as_ref() == active)
+            .active_native_path
+            .as_ref()
+            .and_then(|wire| LocalProjectId::from_native_wire(wire).ok())
+            .and_then(|active| projects.iter().find(|project| project.id == active))
+            .or_else(|| {
+                state
+                    .active_project
+                    .as_deref()
+                    .and_then(|active| LocalProjectId::new(active).ok())
+                    .and_then(|active| projects.iter().find(|project| project.id == active))
             })
-            .map(|project| project.path.clone())
-            .or_else(|| projects.first().map(|project| project.path.clone()));
+            .map(|project| project.id.clone())
+            .or_else(|| projects.first().map(|project| project.id.clone()));
         WorkspaceState {
             active,
             host: None,
@@ -789,7 +832,7 @@ impl PersistentState {
         let mut workspace = self.cold_workspace(state);
         let mut shelf = Vec::with_capacity(state.shelf.len().saturating_add(1));
         for item in &state.shelf {
-            let Some(project) = LocalProjectId::new(&item.local_path) else {
+            let Some(project) = Self::local_identity(item) else {
                 continue;
             };
             if shelf.iter().any(|existing: &ShelfItem| {
@@ -798,9 +841,7 @@ impl PersistentState {
                 continue;
             }
             shelf.push(ShelfItem {
-                object: crate::model::ObjectId::from_backend(backend_library::object_version(
-                    item.local_path.as_bytes(),
-                )),
+                object: crate::model::ObjectId::from_backend(project.key()),
                 identity: crate::core::ResourceIdentity::Local(project),
                 label: item.label.clone().into(),
             });
@@ -811,9 +852,7 @@ impl PersistentState {
                     item.identity == crate::core::ResourceIdentity::Local(project.clone())
                 }) {
                     shelf.push(ShelfItem {
-                        object: crate::model::ObjectId::from_backend(
-                            backend_library::object_version(host.to_string_lossy().as_bytes()),
-                        ),
+                        object: crate::model::ObjectId::from_backend(project.key()),
                         identity: crate::core::ResourceIdentity::Local(project.clone()),
                         label: host
                             .file_name()
@@ -823,10 +862,8 @@ impl PersistentState {
                             .into(),
                     });
                 }
-                let path = project.as_str().to_owned();
                 let mut projects = workspace.projects.to_vec();
-                if let Some(existing) = projects.iter_mut().find(|item| item.path.as_ref() == path)
-                {
+                if let Some(existing) = projects.iter_mut().find(|item| item.id == project) {
                     if existing.phase == ProjectPhase::Missing && host.is_dir() {
                         existing.phase = ProjectPhase::Indexing;
                         existing.progress = None;
@@ -835,7 +872,10 @@ impl PersistentState {
                     }
                 } else {
                     projects.push(WorkspaceProject {
-                        path: path.clone().into(),
+                        id: project.clone(),
+                        // The host path is shown as a label only; persisted
+                        // identity is carried by `NativePathWire` above.
+                        path: host.display().to_string().into(),
                         label: host
                             .file_name()
                             .and_then(|name| name.to_str())
@@ -849,22 +889,23 @@ impl PersistentState {
                         },
                         progress: None,
                         files_indexed: None,
+                        request: None,
                         error: None,
                         recent: true,
                     });
                 }
                 workspace.projects = projects.into();
                 if workspace.active.is_none() {
-                    workspace.active = Some(path.into());
+                    workspace.active = Some(project.clone());
                 }
             }
         }
         let selected = workspace
             .active
-            .as_deref()
+            .as_ref()
             .and_then(|active| {
                 shelf.iter().find_map(|item| match &item.identity {
-                    crate::core::ResourceIdentity::Local(project) if project.as_str() == active => {
+                    crate::core::ResourceIdentity::Local(project) if project == active => {
                         Some(item.identity.clone())
                     }
                     _ => None,
@@ -882,7 +923,10 @@ impl PersistentState {
 
     /// Parses one local shelf identity at the persistence boundary.
     pub fn local_identity(item: &PersistedShelfItem) -> Option<LocalProjectId> {
-        LocalProjectId::new(&item.local_path).ok()
+        item.native_path
+            .as_ref()
+            .and_then(|wire| LocalProjectId::from_native_wire(wire).ok())
+            .or_else(|| LocalProjectId::new(&item.local_path).ok())
     }
 }
 
@@ -950,7 +994,9 @@ fn cleanup_interrupted_temporaries(path: &Path) -> io::Result<()> {
     for entry in entries {
         let entry = entry?;
         let candidate = entry.file_name();
-        let candidate = candidate.to_string_lossy();
+        let Some(candidate) = candidate.to_str() else {
+            continue;
+        };
         if candidate.starts_with(&prefix) && candidate.ends_with(".tmp") {
             match fs::remove_file(entry.path()) {
                 Ok(()) => {}
@@ -980,6 +1026,8 @@ mod tests {
         let value = PersistedDesktopState {
             shelf: vec![PersistedShelfItem {
                 local_path: "/tmp/project".to_owned(),
+                display_path: None,
+                native_path: None,
                 label: "project".to_owned(),
                 phase: PersistedProjectPhase::Ready,
                 progress: None,
@@ -1014,6 +1062,8 @@ mod tests {
             shelf: vec![
                 PersistedShelfItem {
                     local_path: "/tmp/nudox-duplicate-project".to_owned(),
+                    display_path: None,
+                    native_path: None,
                     label: "first".to_owned(),
                     phase: PersistedProjectPhase::Ready,
                     progress: None,
@@ -1022,6 +1072,8 @@ mod tests {
                 },
                 PersistedShelfItem {
                     local_path: "/tmp/nudox-duplicate-project".to_owned(),
+                    display_path: None,
+                    native_path: None,
                     label: "second".to_owned(),
                     phase: PersistedProjectPhase::Ready,
                     progress: None,
@@ -1037,7 +1089,7 @@ mod tests {
         assert_eq!(workspace.projects.len(), 1);
         assert_eq!(workspace.projects[0].label.as_ref(), "first");
         assert_eq!(
-            workspace.active.as_deref(),
+            workspace.active.as_ref().map(LocalProjectId::as_str),
             Some("/tmp/nudox-duplicate-project")
         );
     }
@@ -1049,6 +1101,8 @@ mod tests {
         let state = PersistedDesktopState {
             shelf: vec![PersistedShelfItem {
                 local_path: active.to_owned(),
+                display_path: None,
+                native_path: None,
                 label: "selected".to_owned(),
                 phase: PersistedProjectPhase::Ready,
                 progress: None,
@@ -1062,7 +1116,10 @@ mod tests {
         let (shelf, workspace) =
             PersistentState::at("unused").cold_shelf(&state, Some(Path::new(host)));
 
-        assert_eq!(workspace.active.as_deref(), Some(active));
+        assert_eq!(
+            workspace.active.as_ref().map(LocalProjectId::as_str),
+            Some(active)
+        );
         assert_eq!(
             shelf.selected.as_ref().and_then(|identity| match identity {
                 crate::core::ResourceIdentity::Local(project) => Some(project.as_str()),
@@ -1070,10 +1127,12 @@ mod tests {
             }),
             Some(active)
         );
-        assert!(workspace
-            .projects
-            .iter()
-            .any(|project| project.path.as_ref() == host));
+        assert!(
+            workspace
+                .projects
+                .iter()
+                .any(|project| project.path.as_ref() == host)
+        );
         assert!(shelf.items.iter().any(|item| match &item.identity {
             crate::core::ResourceIdentity::Local(project) => project.as_str() == host,
             _ => false,
@@ -1082,7 +1141,7 @@ mod tests {
 
     #[test]
     fn command_palette_persists_the_content_route_without_overlay_history() {
-        let snapshot = AppSnapshot::empty(crate::core::VersionedRoot::new(
+        let snapshot = AppSnapshot::empty(crate::core::VersionedRoot::synthetic(
             backend_library::view_state_root(&[("persistence".to_owned(), "route".to_owned())]),
             1,
         ));

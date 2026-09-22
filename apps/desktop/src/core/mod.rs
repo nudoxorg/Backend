@@ -6,9 +6,10 @@ pub mod ports;
 pub mod state;
 pub mod tokens;
 
+pub use backend_platform::NativePath;
 pub use ids::{
-    DocumentId, IdentityError, LocalProjectId, PackageId, ProjectId, ResourceIdentity, RowId,
-    VersionedRoot,
+    DocumentId, IdentityError, LocalProjectId, PackageId, ProducerAuthority, ProjectId,
+    ResourceIdentity, RowId, VersionedRoot,
 };
 pub use layout::{
     CollapseStage, HorizontalOverflow, LayoutCache, LayoutInput, LayoutTransitionKind, LogicalPx,

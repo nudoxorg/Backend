@@ -8,15 +8,15 @@
 use crate::model::AppSnapshot;
 use crate::navigation::{ActionId, Intent};
 use crate::runtime::UiRootEntity;
-use crate::theme::palette::Paint;
-use crate::theme::tokens::{space, Space};
 use crate::theme::Theme;
+use crate::theme::palette::Paint;
+use crate::theme::tokens::{Space, space};
 use crate::ui::{components, text};
 use gpui::prelude::FluentBuilder as _;
-use gpui::{div, px, AnyElement, App, Context, ElementId, IntoElement, ParentElement, Styled};
+use gpui::{AnyElement, App, Context, ElementId, IntoElement, ParentElement, Styled, div, px};
+use gpui_component::IndexPath;
 use gpui_component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_component::dialog::Dialog;
-use gpui_component::IndexPath;
 
 /// Builds the compact search trigger in the shell header.
 pub(crate) fn header_trigger(
@@ -113,11 +113,7 @@ fn targets(snapshot: &AppSnapshot) -> Vec<Vec<Target>> {
         .workspace()
         .projects
         .iter()
-        .filter_map(|project| {
-            crate::core::LocalProjectId::new(project.path.as_ref())
-                .ok()
-                .map(Target::Project)
-        })
+        .map(|project| Target::Project(project.id.clone()))
         .collect::<Vec<_>>();
     let actions = ActionId::ALL
         .into_iter()
@@ -132,15 +128,11 @@ fn command_groups(snapshot: &AppSnapshot) -> Vec<CommandGroup> {
         .workspace()
         .projects
         .iter()
-        .filter_map(|project| {
-            crate::core::LocalProjectId::new(project.path.as_ref())
-                .ok()
-                .map(|_| {
-                    CommandItem::new()
-                        .label(project.label.clone())
-                        .keywords([project.path.clone()])
-                        .disabled(project.phase == crate::model::ProjectPhase::Missing)
-                })
+        .map(|project| {
+            CommandItem::new()
+                .label(project.label.clone())
+                .keywords([project.path.clone()])
+                .disabled(project.phase == crate::model::ProjectPhase::Missing)
         })
         .collect::<Vec<_>>();
     let actions = ActionId::ALL

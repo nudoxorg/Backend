@@ -1,7 +1,7 @@
 //! Background engine/client actor.
 
 use super::mailbox::{CoalesceKey, Coalescible, CoalescingMailbox, PushResult};
-use crate::core::{ErrorValue, VersionedRoot};
+use crate::core::{ErrorValue, LocalProjectId, VersionedRoot};
 use crate::model::snapshot::{DeltaId, ObjectId, PackageSummary, ProjectState};
 use crate::navigation::RequestId;
 use std::sync::Arc;
@@ -73,14 +73,27 @@ pub enum EngineRequest {
         /// Cancellation state.
         cancel: CancellationToken,
     },
+    /// Submit one project to the canonical service index command while the
+    /// shared ProjectIngest receipt transport is unavailable.
+    IndexProject {
+        /// Request identity retained until the owner replies.
+        request: RequestId,
+        /// Native project identity admitted by the picker boundary.
+        project: LocalProjectId,
+        /// Producer root basis captured before submission.
+        basis: VersionedRoot,
+        /// Cancellation request; terminal state is still owner-driven.
+        cancel: CancellationToken,
+    },
 }
 
 impl EngineRequest {
     fn basis(&self) -> VersionedRoot {
         match self {
-            Self::Root { basis, .. } | Self::Object { basis, .. } | Self::Surface { basis, .. } => {
-                *basis
-            }
+            Self::Root { basis, .. }
+            | Self::Object { basis, .. }
+            | Self::Surface { basis, .. }
+            | Self::IndexProject { basis, .. } => *basis,
         }
     }
 
@@ -88,7 +101,8 @@ impl EngineRequest {
         match self {
             Self::Root { request, .. }
             | Self::Object { request, .. }
-            | Self::Surface { request, .. } => *request,
+            | Self::Surface { request, .. }
+            | Self::IndexProject { request, .. } => *request,
         }
     }
 
@@ -96,7 +110,8 @@ impl EngineRequest {
         match self {
             Self::Root { cancel, .. }
             | Self::Object { cancel, .. }
-            | Self::Surface { cancel, .. } => cancel.is_cancelled(),
+            | Self::Surface { cancel, .. }
+            | Self::IndexProject { cancel, .. } => cancel.is_cancelled(),
         }
     }
 }
@@ -107,6 +122,7 @@ impl Coalescible for EngineRequest {
             Self::Root { .. } => Some(CoalesceKey::Root),
             Self::Object { object, .. } => Some(CoalesceKey::Object(*object)),
             Self::Surface { command, .. } => Some(CoalesceKey::Surface(command.id())),
+            Self::IndexProject { project, .. } => Some(CoalesceKey::Index(project.clone())),
         }
     }
 }
@@ -123,6 +139,9 @@ pub enum EngineDto {
         basis: VersionedRoot,
         /// New root key.
         key: VersionedRoot,
+        /// Exact service cursor that issued `key`. UI code never advances
+        /// this identity locally.
+        revision: backend_library::Cursor,
         /// Optional transition identity.
         delta: Option<DeltaId>,
         /// Optional mapped project read model.
@@ -152,13 +171,35 @@ pub enum EngineDto {
         /// Producer reply.
         reply: backend_library::SurfaceReply,
     },
+    /// A committed project index and the exact post-commit root returned by
+    /// the canonical service command.
+    Index {
+        /// Request identity.
+        request: RequestId,
+        /// Root authority used to submit the command.
+        basis: VersionedRoot,
+        /// New root key from the service revision.
+        key: VersionedRoot,
+        /// Exact service cursor that issued `key`.
+        revision: backend_library::Cursor,
+        /// Optional transition identity.
+        delta: Option<DeltaId>,
+        /// Local project whose served workspace changed.
+        project: LocalProjectId,
+        /// Project read model from the committed root.
+        project_state: Option<ProjectDto>,
+        /// Registry catalog from the same service session.
+        catalog: Option<Arc<[PackageSummary]>>,
+        /// Per-project file count when the service exposes one.
+        files_indexed: Option<u64>,
+    },
 }
 
 /// Engine-owned project DTO. It is deliberately not imported by widgets.
 #[derive(Clone, Debug)]
 pub struct ProjectDto {
     /// Canonical project identity.
-    pub id: crate::core::ProjectId,
+    pub id: LocalProjectId,
     /// Display label.
     pub label: Arc<str>,
     /// Canonical package identities.
@@ -186,6 +227,20 @@ pub enum EngineFault {
     Superseded,
     /// Client/transport failure with a typed, bounded diagnostic.
     Failed(ErrorValue),
+    /// The compatibility ingest request failed before a committed root was
+    /// admitted.
+    IndexFailed {
+        /// Project whose attempt failed.
+        project: LocalProjectId,
+        /// Bounded service/transport diagnostic.
+        error: ErrorValue,
+    },
+    /// The compatibility ingest producer returned after a cancellation
+    /// request; this is terminal owner observation, not a local paint event.
+    IndexCancelled {
+        /// Project whose attempt reached its terminal cancellation boundary.
+        project: LocalProjectId,
+    },
 }
 
 /// Worker event consumed by the UI coordinator.
@@ -207,6 +262,7 @@ impl Coalescible for EngineEvent {
             Ok(EngineDto::Root { .. }) => Some(CoalesceKey::Root),
             Ok(EngineDto::Object { object, .. }) => Some(CoalesceKey::Object(*object)),
             Ok(EngineDto::Surface { command, .. }) => Some(CoalesceKey::Surface(command.id())),
+            Ok(EngineDto::Index { project, .. }) => Some(CoalesceKey::Index(project.clone())),
             Err(_) => None,
         })
     }
@@ -301,7 +357,8 @@ impl EngineActor {
             match old {
                 EngineRequest::Root { cancel, .. }
                 | EngineRequest::Object { cancel, .. }
-                | EngineRequest::Surface { cancel, .. } => cancel.cancel(),
+                | EngineRequest::Surface { cancel, .. }
+                | EngineRequest::IndexProject { cancel, .. } => cancel.cancel(),
             }
         }
         result
@@ -322,12 +379,17 @@ impl EngineActor {
         self.events.len()
     }
 
-    /// Requests worker shutdown and joins it from an owning shutdown phase.
+    /// Requests worker shutdown and joins it from the owning shutdown phase.
     ///
-    /// Call this from a non-UI owner. UI entity teardown uses `Drop`, which
-    /// closes both bounded channels and releases the handle without waiting
-    /// for a client implementation that may be inside a blocking call.
+    /// Closing the bounded request and event lanes is the actor's one
+    /// shutdown signal. The join is retained by the owner so an entity drop
+    /// cannot leave a worker, client session, or socket closure alive after
+    /// the UI state has gone away.
     pub fn shutdown(mut self) {
+        self.close_and_join();
+    }
+
+    fn close_and_join(&mut self) {
         self.mailbox.close();
         self.events.close();
         if let Some(join) = self.join.take() {
@@ -338,12 +400,7 @@ impl EngineActor {
 
 impl Drop for EngineActor {
     fn drop(&mut self) {
-        self.mailbox.close();
-        self.events.close();
-        // Dropping a join handle detaches the worker. A UI entity may be
-        // released during teardown, so it must never wait for a client call;
-        // callers that own a background shutdown phase can use `shutdown`.
-        let _ = self.join.take();
+        self.close_and_join();
     }
 }
 
@@ -357,13 +414,14 @@ fn run_actor(
         let basis = request.basis();
         let id = request.request();
         let lane = request.coalesce_key();
+        let index_lane = matches!(&request, EngineRequest::IndexProject { .. });
         if request.cancelled() {
             if !events.push_wait(
                 EngineEvent {
                     basis,
                     request: id,
                     lane,
-                    result: Err(EngineFault::Cancelled),
+                    result: Err(cancelled_fault(&request)),
                 },
                 lane,
             ) {
@@ -371,7 +429,7 @@ fn run_actor(
             }
             continue;
         }
-        if newest.is_some_and(|known| basis.is_older_authority(known)) {
+        if !index_lane && newest.is_some_and(|known| basis.is_older_authority(known)) {
             if !events.push_wait(
                 EngineEvent {
                     basis,
@@ -385,14 +443,16 @@ fn run_actor(
             }
             continue;
         }
-        if newest.is_none_or(|known| known.is_older_authority(basis)) {
+        if !index_lane && newest.is_none_or(|known| known.is_older_authority(basis)) {
             newest = Some(basis);
         }
-        let result = client.execute(&request);
-        let result = if request.cancelled() {
-            Err(EngineFault::Cancelled)
-        } else {
-            result
+        let result = match client.execute(&request) {
+            // A cancellation request cannot revoke a synchronous producer
+            // commit after it has returned. Admit that committed result; a
+            // producer error after cancellation is terminal cancellation.
+            Ok(dto) => Ok(dto),
+            Err(_error) if request.cancelled() => Err(cancelled_fault(&request)),
+            Err(error) => Err(error),
         };
         let event = EngineEvent {
             basis,
@@ -405,6 +465,15 @@ fn run_actor(
             break;
         }
     }
+}
+
+fn cancelled_fault(request: &EngineRequest) -> EngineFault {
+    if let EngineRequest::IndexProject { project, .. } = request {
+        return EngineFault::IndexCancelled {
+            project: project.clone(),
+        };
+    }
+    EngineFault::Cancelled
 }
 
 #[cfg(test)]

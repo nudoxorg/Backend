@@ -8,17 +8,29 @@ use crate::navigation::{Intent, RequestId};
 
 struct EchoClient;
 
+fn next_key(basis: VersionedRoot) -> (VersionedRoot, backend_library::Cursor) {
+    let revision = backend_library::Cursor::at(basis.root(), basis.generation().saturating_add(1));
+    (
+        VersionedRoot::from_revision(basis.producer_epoch(), revision, basis.observation()),
+        revision,
+    )
+}
+
 impl EngineClient for EchoClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         match request {
-            EngineRequest::Root { request, basis, .. } => Ok(EngineDto::Root {
-                request: *request,
-                basis: *basis,
-                key: basis.with_generation(basis.generation.saturating_add(1)),
-                delta: None,
-                project: None,
-                catalog: None,
-            }),
+            EngineRequest::Root { request, basis, .. } => {
+                let (key, revision) = next_key(*basis);
+                Ok(EngineDto::Root {
+                    request: *request,
+                    basis: *basis,
+                    key,
+                    revision,
+                    delta: None,
+                    project: None,
+                    catalog: None,
+                })
+            }
             EngineRequest::Object {
                 request,
                 basis,
@@ -31,13 +43,42 @@ impl EngineClient for EchoClient {
                 object: *object,
                 delta: *delta,
             }),
-            EngineRequest::Surface { .. } => Err(EngineFault::Cancelled),
+            EngineRequest::Surface {
+                request,
+                basis,
+                command,
+                ..
+            } => Ok(EngineDto::Surface {
+                request: *request,
+                basis: *basis,
+                command: command.clone(),
+                reply: backend_library::SurfaceReply::Explored(Box::new([])),
+            }),
+            EngineRequest::IndexProject {
+                request,
+                project,
+                basis,
+                ..
+            } => {
+                let (key, revision) = next_key(*basis);
+                Ok(EngineDto::Index {
+                    request: *request,
+                    basis: *basis,
+                    key,
+                    revision,
+                    delta: None,
+                    project: project.clone(),
+                    project_state: None,
+                    catalog: None,
+                    files_indexed: None,
+                })
+            }
         }
     }
 }
 
 fn snapshot() -> AppSnapshot {
-    AppSnapshot::empty(VersionedRoot::new(
+    AppSnapshot::empty(VersionedRoot::synthetic(
         backend_library::view_state_root(&[("root".to_owned(), "runtime".to_owned())]),
         7,
     ))

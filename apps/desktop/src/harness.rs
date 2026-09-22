@@ -44,18 +44,26 @@ pub fn capture_live(
 ) -> Result<CaptureSet, String> {
     config.validate().map_err(|error| error.to_string())?;
     let host = DesktopHost::start().map_err(|error| error.to_string())?;
+    let host_project = LocalProjectId::from_path(host.project()).map_err(|error| {
+        format!("the discovered workspace path cannot be represented safely: {error}")
+    })?;
     let mut subscription =
         LocalSubscriptionTransport::connect(host.endpoint()).map_err(|error| error.to_string())?;
-    let (view, _) = subscription
+    let (view, revision) = subscription
         .bootstrap_root()
         .map_err(|error| error.to_string())?;
+    if revision.root() != view.root() {
+        return Err(
+            "the live capture subscription returned mismatched startup identities".to_owned(),
+        );
+    }
     let mut session = Session::connect(host.endpoint()).map_err(|error| error.to_string())?;
-    let basis = VersionedRoot::new(view.root(), 1);
+    let basis = VersionedRoot::from_revision(1, revision, 0);
     let catalog = live_catalog(&mut session);
-    let snapshot = snapshot_for_capture(&host, basis, catalog);
+    let snapshot = snapshot_for_capture(&host_project, basis, catalog);
     let persistence = crate::model::PersistentState::at(host.data().join("desktop-state.json"));
     let actor = EngineActor::start(
-        LocalEngineClient::new(host.endpoint(), host.project().to_string_lossy()),
+        LocalEngineClient::new(host.endpoint(), host_project.clone()),
         32,
     )
     .map_err(|error| error.to_string())?;
@@ -513,23 +521,19 @@ fn live_catalog(session: &mut Session) -> Option<CatalogState> {
 }
 
 fn snapshot_for_capture(
-    host: &DesktopHost,
+    host_project: &LocalProjectId,
     basis: VersionedRoot,
     catalog: Option<CatalogState>,
 ) -> AppSnapshot {
     let mut snapshot = AppSnapshot::empty(basis);
-    if let Ok(project) = LocalProjectId::from_path(host.project()) {
-        snapshot = snapshot.with_shelf(ShelfState {
-            selected: Some(ResourceIdentity::Local(project.clone())),
-            items: Arc::from([ShelfItem {
-                object: ObjectId::from_backend(backend_library::object_version(
-                    host.project().to_string_lossy().as_bytes(),
-                )),
-                identity: ResourceIdentity::Local(project),
-                label: host.project().to_string_lossy().into_owned().into(),
-            }]),
-        });
-    }
+    snapshot = snapshot.with_shelf(ShelfState {
+        selected: Some(ResourceIdentity::Local(host_project.clone())),
+        items: Arc::from([ShelfItem {
+            object: ObjectId::from_backend(host_project.key()),
+            identity: ResourceIdentity::Local(host_project.clone()),
+            label: host_project.as_str().into(),
+        }]),
+    });
     catalog.map_or(snapshot.clone(), |catalog| {
         snapshot.with_catalog(catalog, basis)
     })

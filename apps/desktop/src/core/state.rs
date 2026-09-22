@@ -36,6 +36,8 @@ pub enum FaultCode {
     Missing,
     /// Persistence failed.
     Persistence,
+    /// The selected native identity cannot cross an available boundary.
+    Unsupported,
     /// The operation was cancelled or superseded.
     Cancelled,
 }
@@ -241,7 +243,7 @@ mod tests {
     use super::*;
 
     fn root() -> VersionedRoot {
-        VersionedRoot::new(
+        VersionedRoot::synthetic(
             backend_library::view_state_root(&[("state".to_owned(), "one".to_owned())]),
             1,
         )

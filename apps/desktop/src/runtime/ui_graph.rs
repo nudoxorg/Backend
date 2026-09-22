@@ -11,13 +11,17 @@ use super::{AnimationTimeline, LiveFrameClock};
 use crate::core::{IntentDispatcher, SnapshotReadModel, VersionedRoot};
 use crate::model::{AppSnapshot, PersistentState};
 use crate::navigation::{
-    ActionId, CommandPaletteState, EscapeResult, FocusId, FocusTree, Intent, ModalId, ModalStack,
-    OrbitRoute, Overlay, PackageLane, PackageRoute, Route,
+    ActionId, CommandPaletteState, EscapeResult, FocusId, FocusTree, FolderPickerOutcome, Intent,
+    ModalId, ModalStack, OrbitRoute, Overlay, PackageLane, PackageRoute, Route,
 };
 use crate::ui::components::ActionTree;
 use backend_library::{CommandId, SurfaceCommand};
-use gpui::{App, AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
-use std::collections::HashMap;
+use gpui::{
+    App, AppContext as _, Context, Entity, IntoElement, PathPromptOptions, Render, Subscription,
+    Task, Window,
+};
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,6 +41,8 @@ pub struct UiRootEntity {
     first_catalog_route_admitted: bool,
     window_activation_subscription: Option<Subscription>,
     capture_time: Option<Duration>,
+    folder_picker_task: Option<Task<()>>,
+    connection_probe: Option<crate::navigation::RequestId>,
 }
 
 impl UiRootEntity {
@@ -61,6 +67,8 @@ impl UiRootEntity {
             first_catalog_route_admitted: false,
             window_activation_subscription: None,
             capture_time: None,
+            folder_picker_task: None,
+            connection_probe: None,
         }
     }
 
@@ -185,8 +193,125 @@ impl UiRootEntity {
 
     /// Applies a typed intent immediately from a harness or startup phase.
     pub fn dispatch(&mut self, intent: Intent, cx: &mut Context<Self>) {
+        match intent {
+            Intent::OpenFolderPicker => self.start_folder_picker(cx),
+            Intent::RevealProject(project) => cx.reveal_path(&project.path()),
+            Intent::TestConnection => {
+                self.dispatch_runtime(Intent::TestConnection, cx);
+                if self.connection_probe.is_none() {
+                    let request = self.runtime.allocate_request();
+                    self.connection_probe = Some(request);
+                    self.dispatch_runtime(
+                        Intent::RefreshRoot {
+                            basis: self.snapshot().key(),
+                            request,
+                        },
+                        cx,
+                    );
+                }
+            }
+            Intent::FolderPickerResult { outcome } => {
+                let selected = match &outcome {
+                    FolderPickerOutcome::Selected(paths) => Some(Arc::clone(paths)),
+                    FolderPickerOutcome::Cancelled
+                    | FolderPickerOutcome::Unavailable(_)
+                    | FolderPickerOutcome::Failed(_) => None,
+                };
+                self.dispatch_runtime(Intent::FolderPickerResult { outcome }, cx);
+                if let Some(paths) = selected {
+                    for path in paths.iter() {
+                        if let Ok(project) = crate::core::LocalProjectId::from_path(path) {
+                            self.schedule_index(project, cx);
+                        }
+                    }
+                }
+            }
+            Intent::AddProject { path } => {
+                self.dispatch_runtime(Intent::AddProject { path }, cx);
+                self.schedule_pending_indexes(cx);
+            }
+            Intent::ActivateProject(project) => {
+                self.dispatch_runtime(Intent::ActivateProject(project), cx);
+                self.schedule_pending_indexes(cx);
+            }
+            Intent::RetryIndex(project) => {
+                self.dispatch_runtime(Intent::RetryIndex(project), cx);
+                self.schedule_pending_indexes(cx);
+            }
+            other => self.dispatch_runtime(other, cx),
+        }
+    }
+
+    fn dispatch_runtime(&mut self, intent: Intent, cx: &mut Context<Self>) {
         let events = self.runtime.dispatch(intent);
         self.apply_events(events, cx);
+    }
+
+    fn start_folder_picker(&mut self, cx: &mut Context<Self>) {
+        if self.folder_picker_task.is_some() {
+            return;
+        }
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: true,
+            prompt: Some("Choose local project folders".into()),
+        });
+        let task = cx.spawn(move |weak, cx| async move {
+            let outcome = match receiver.await {
+                Ok(Ok(Some(paths))) => folder_picker_outcome(paths),
+                Ok(Ok(None)) => FolderPickerOutcome::Cancelled,
+                Err(_) => FolderPickerOutcome::Failed(Arc::from(
+                    "The native folder picker closed without returning a result.",
+                )),
+                Ok(Err(error)) => FolderPickerOutcome::Unavailable(bound_picker_error(error)),
+            };
+            let _ = weak.update(cx, |this, cx| {
+                this.folder_picker_task = None;
+                this.queue(Intent::FolderPickerResult { outcome }, cx);
+            });
+        });
+        self.folder_picker_task = Some(task);
+    }
+
+    fn schedule_pending_indexes(&mut self, cx: &mut Context<Self>) {
+        let projects = self
+            .snapshot()
+            .workspace()
+            .projects
+            .iter()
+            .filter(|project| {
+                project.phase == crate::model::ProjectPhase::Indexing
+                    && project.request.is_none()
+                    && !self.index_intent_pending(&project.id)
+            })
+            .map(|project| project.id.clone())
+            .collect::<Vec<_>>();
+        for project in projects {
+            self.schedule_index(project, cx);
+        }
+    }
+
+    fn schedule_index(&mut self, project: crate::core::LocalProjectId, cx: &mut Context<Self>) {
+        if self.index_intent_pending(project) {
+            return;
+        }
+        let basis = self.snapshot().key();
+        let request = self.runtime.allocate_request();
+        self.queue(
+            Intent::IndexProject {
+                project,
+                basis,
+                request,
+            },
+            cx,
+        );
+    }
+
+    fn index_intent_pending(&self, project: &crate::core::LocalProjectId) -> bool {
+        self.pending.iter().any(|intent| {
+            matches!(intent, Intent::IndexProject { project: candidate, .. } if candidate == project)
+        })
     }
 
     /// Ensures one typed product surface is admitted for the current root.
@@ -225,6 +350,18 @@ impl UiRootEntity {
                         let _ = persistence.save(&PersistentState::project(&snapshot));
                     }
                 }
+                RuntimeEvent::RequestCompleted { request, succeeded }
+                    if self.connection_probe == Some(request) =>
+                {
+                    self.connection_probe = None;
+                    self.dispatch_runtime(
+                        Intent::ConnectionResult {
+                            connected: succeeded,
+                        },
+                        cx,
+                    );
+                }
+                RuntimeEvent::RequestCompleted { .. } => {}
                 RuntimeEvent::RejectedStale(_) => {}
             }
         }
@@ -297,6 +434,10 @@ impl UiRootEntity {
         }
         let events = self.runtime.poll();
         self.apply_events(events, cx);
+        // Cold restart restores durable Indexing rows without an ephemeral
+        // request. Reattach them through the same typed intent path once per
+        // row; an admitted request is recorded before the next frame.
+        self.schedule_pending_indexes(cx);
         self.timeline
             .set_reduced_motion(self.snapshot().settings().reduced_motion);
         if let Some(now) = self.capture_time {
@@ -315,6 +456,42 @@ impl UiRootEntity {
         }
         rendered
     }
+}
+
+fn folder_picker_outcome(paths: Vec<PathBuf>) -> FolderPickerOutcome {
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+    for path in paths {
+        if !path.is_dir() {
+            return FolderPickerOutcome::Failed(Arc::from(format!(
+                "The selected path is not a folder: {}",
+                path.display()
+            )));
+        }
+        if path.as_os_str().is_empty() {
+            return FolderPickerOutcome::Failed(Arc::from("The selected folder path is empty."));
+        }
+        if seen.insert(path.clone()) {
+            selected.push(path);
+        }
+    }
+    if selected.is_empty() {
+        FolderPickerOutcome::Cancelled
+    } else {
+        FolderPickerOutcome::Selected(selected.into())
+    }
+}
+
+fn bound_picker_error(error: impl std::fmt::Display) -> Arc<str> {
+    let message = error
+        .to_string()
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(240)
+        .collect::<String>();
+    Arc::from(format!(
+        "The native folder picker is unavailable: {message}"
+    ))
 }
 
 fn action_descends_from(

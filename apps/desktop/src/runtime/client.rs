@@ -6,7 +6,7 @@
 //! and never touches a socket, a reply codec, or a registry record.
 
 use super::actor::{EngineClient, EngineDto, EngineFault, EngineRequest, ProjectDto};
-use crate::core::{FaultCode, ProjectId, VersionedRoot};
+use crate::core::{FaultCode, LocalProjectId, VersionedRoot};
 use crate::model::{ObjectId, PackageSummary};
 use backend_client::{ClientError, LocalSubscriptionTransport, Session};
 use backend_library::{RegistryDownloadCount, RowId, SurfaceCommand, SurfaceReply};
@@ -16,7 +16,7 @@ use std::sync::Arc;
 /// A worker-owned, reconnecting local service session.
 pub struct LocalEngineClient {
     endpoint: PathBuf,
-    project_label: Arc<str>,
+    project: LocalProjectId,
     session: Option<Session>,
     subscription: Option<LocalSubscriptionTransport>,
 }
@@ -24,10 +24,10 @@ pub struct LocalEngineClient {
 impl LocalEngineClient {
     /// Creates a client without opening a socket on the caller's thread.
     #[must_use]
-    pub fn new(endpoint: impl AsRef<Path>, project_label: impl Into<Arc<str>>) -> Self {
+    pub fn new(endpoint: impl AsRef<Path>, project: LocalProjectId) -> Self {
         Self {
             endpoint: endpoint.as_ref().to_path_buf(),
-            project_label: project_label.into(),
+            project,
             session: None,
             subscription: None,
         }
@@ -48,15 +48,14 @@ impl LocalEngineClient {
         Ok(self.subscription.as_mut().expect("subscription installed"))
     }
 
-    fn bootstrap_root(&mut self) -> Result<backend_library::ViewRoot, EngineFault> {
+    fn bootstrap_root(
+        &mut self,
+    ) -> Result<(backend_library::ViewRoot, backend_library::Cursor), EngineFault> {
         match self.subscription()?.bootstrap_root() {
-            Ok((root, _)) => Ok(root),
+            Ok(root) => Ok(root),
             Err(ClientError::Disconnected(_) | ClientError::Io(_)) => {
                 self.subscription = None;
-                self.subscription()?
-                    .bootstrap_root()
-                    .map(|(root, _)| root)
-                    .map_err(fault)
+                self.subscription()?.bootstrap_root().map_err(fault)
             }
             Err(error) => Err(fault(error)),
         }
@@ -71,10 +70,15 @@ impl LocalEngineClient {
         else {
             unreachable!("root adapter called with a non-root request")
         };
-        let view = self.bootstrap_root()?;
-        let key = VersionedRoot::new(view.root(), basis.producer_epoch)
-            .with_generation(basis.generation.saturating_add(1))
-            .observed_at(basis.observation.saturating_add(1));
+        let (view, revision) = self.bootstrap_root()?;
+        if revision.root() != view.root() {
+            return Err(EngineFault::Failed(crate::core::ErrorValue::new(
+                FaultCode::Protocol,
+                "the local service returned mismatched root and revision identities",
+            )));
+        }
+        let key =
+            VersionedRoot::from_revision(basis.producer_epoch(), revision, basis.observation());
         let packages = view
             .rows()
             .iter()
@@ -85,21 +89,19 @@ impl LocalEngineClient {
                 RowId::Symbol(_) | RowId::Object(_) => None,
             })
             .collect::<Vec<_>>();
-        let Some(one) = std::num::NonZeroU64::new(1) else {
-            unreachable!("literal one is non-zero")
-        };
-        let project = ProjectDto {
-            id: ProjectId::from_backend(backend_library::ProjectId::new(one)),
-            label: Arc::clone(&self.project_label),
+        let project = Some(ProjectDto {
+            id: self.project.clone(),
+            label: Arc::from(self.project.as_str()),
             packages: packages.into(),
-        };
+        });
         let catalog = self.catalog();
         Ok(EngineDto::Root {
             request: *request_id,
             basis: *basis,
             key,
+            revision,
             delta: None,
-            project: Some(project),
+            project,
             catalog,
         })
     }
@@ -144,6 +146,60 @@ impl LocalEngineClient {
         })
     }
 
+    fn request_index(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        let EngineRequest::IndexProject {
+            request: request_id,
+            project,
+            basis,
+            ..
+        } = request
+        else {
+            unreachable!("index adapter called with a non-index request")
+        };
+        let mut session = Session::connect(&self.endpoint)
+            .map_err(fault)
+            .map_err(|error| index_fault(project.clone(), error))?;
+        session
+            .index_path(project.native_path())
+            .map_err(fault)
+            .map_err(|error| index_fault(project.clone(), error))?;
+        self.session = Some(session);
+        let (view, revision) = self
+            .bootstrap_root()
+            .map_err(|error| index_fault(project.clone(), error))?;
+        if revision.root() != view.root() {
+            return Err(EngineFault::IndexFailed {
+                project: project.clone(),
+                error: crate::core::ErrorValue::new(
+                    FaultCode::Protocol,
+                    "the local service returned mismatched index and health revisions",
+                ),
+            });
+        }
+        // The owner has now admitted the selected project and published its
+        // post-index revision. Switch subsequent root/read projections to
+        // this local workspace only at that authoritative boundary; a failed
+        // or cancelled attempt leaves the last served workspace untouched.
+        self.project = project.clone();
+        let key =
+            VersionedRoot::from_revision(basis.producer_epoch(), revision, basis.observation());
+        let project_state = Some(project_dto(project.clone(), project_label(project), &view));
+        let catalog = self.catalog();
+        Ok(EngineDto::Index {
+            request: *request_id,
+            basis: *basis,
+            key,
+            revision,
+            delta: None,
+            project: project.clone(),
+            project_state,
+            catalog,
+            // The current service health report is owner-global. Do not lower
+            // it into a per-project count until the owner publishes one.
+            files_indexed: None,
+        })
+    }
+
     fn with_reconnect<T>(
         &mut self,
         operation: impl FnOnce(&mut Session) -> Result<T, ClientError>,
@@ -172,6 +228,7 @@ impl EngineClient for LocalEngineClient {
         match request {
             EngineRequest::Root { .. } => self.request_root(request),
             EngineRequest::Surface { .. } => self.request_surface(request),
+            EngineRequest::IndexProject { .. } => self.request_index(request),
             EngineRequest::Object {
                 request,
                 basis,
@@ -185,6 +242,43 @@ impl EngineClient for LocalEngineClient {
                 delta: *delta,
             }),
         }
+    }
+}
+
+fn project_dto(
+    id: LocalProjectId,
+    label: Arc<str>,
+    view: &backend_library::ViewRoot,
+) -> ProjectDto {
+    let packages = view
+        .rows()
+        .iter()
+        .filter_map(|row| match row.id {
+            RowId::Package(key) => crate::core::PackageId::try_from_backend(key, &row.label).ok(),
+            RowId::Symbol(_) | RowId::Object(_) => None,
+        })
+        .collect::<Vec<_>>();
+    ProjectDto {
+        id,
+        label,
+        packages: packages.into(),
+    }
+}
+
+fn project_label(project: &LocalProjectId) -> Arc<str> {
+    project
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(Arc::<str>::from)
+        .unwrap_or_else(|| Arc::from(project.as_str()))
+}
+
+fn index_fault(project: LocalProjectId, fault: EngineFault) -> EngineFault {
+    match fault {
+        EngineFault::Failed(error) => EngineFault::IndexFailed { project, error },
+        other => other,
     }
 }
 

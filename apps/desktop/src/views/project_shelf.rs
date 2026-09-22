@@ -9,12 +9,12 @@
 use crate::model::{AppSnapshot, ProjectPhase};
 use crate::navigation::{Intent, OrbitRoute, PackageLane, PackageRoute, Route};
 use crate::runtime::UiRootEntity;
-use crate::theme::palette::Paint;
-use crate::theme::tokens::{space, type_size, Space, TypeScale};
 use crate::theme::Theme;
+use crate::theme::palette::Paint;
+use crate::theme::tokens::{Space, TypeScale, space, type_size};
 use crate::ui::{components, surface, text};
 use gpui::prelude::FluentBuilder as _;
-use gpui::{div, px, AnyElement, Context, IntoElement, ParentElement, Styled};
+use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div, px};
 use gpui_component::Selectable as _;
 
 /// Builds shelf contents for either the expanded shelf or the narrow rail.
@@ -98,24 +98,26 @@ fn row(
         crate::core::ResourceIdentity::Local(project) => Some(project.clone()),
         _ => None,
     };
-    let path = local.as_ref().map(|project| project.as_str().to_owned());
-    let status = path
-        .as_deref()
-        .and_then(|path| {
+    let status = local
+        .as_ref()
+        .and_then(|project| {
             snapshot
                 .workspace()
                 .projects
                 .iter()
-                .find(|project| project.path.as_ref() == path)
+                .find(|candidate| candidate.id == *project)
         })
         .map(status)
         .unwrap_or_else(|| "Registry".to_owned());
-    let indexing =
-        path.as_deref().is_some_and(|path| {
-            snapshot.workspace().projects.iter().any(|project| {
-                project.path.as_ref() == path && project.phase == ProjectPhase::Indexing
-            })
-        });
+    let indexing = local.as_ref().is_some_and(|project| {
+        snapshot.workspace().projects.iter().any(|candidate| {
+            candidate.id == *project
+                && matches!(
+                    candidate.phase,
+                    ProjectPhase::Indexing | ProjectPhase::Cancelling
+                )
+        })
+    });
     let selected = snapshot.shelf().selected.as_ref() == Some(&identity);
     let activate = local.clone();
     let reveal = local.clone();
@@ -240,6 +242,11 @@ fn status(project: &crate::model::WorkspaceProject) -> String {
         ProjectPhase::Indexing => project.progress.map_or_else(
             || "Indexing…".to_owned(),
             |value| format!("Indexing {value}%"),
+        ),
+        ProjectPhase::Cancelling => "Cancelling…".to_owned(),
+        ProjectPhase::Ready => project.files_indexed.map_or_else(
+            || "Ready".to_owned(),
+            |files| format!("Ready · {files} files"),
         ),
         _ if project.error.is_some() => format!(
             "{} · {}",

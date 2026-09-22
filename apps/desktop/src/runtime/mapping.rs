@@ -3,7 +3,7 @@
 use super::actor::{EngineDto, EngineEvent, EngineFault};
 use super::client::package_summary;
 use crate::core::VersionedRoot;
-use crate::model::{AppSnapshot, CatalogState};
+use crate::model::{AppSnapshot, CatalogState, ProjectPhase};
 use crate::navigation::RequestId;
 use std::sync::Arc;
 
@@ -43,12 +43,27 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
         result,
         ..
     } = event;
-    let dto = result.map_err(MappingError::Engine)?;
+    let dto = match result {
+        Ok(dto) => dto,
+        Err(EngineFault::IndexFailed { project, error }) => {
+            return Ok(mark_index_failed(
+                current,
+                event_request,
+                &project,
+                error.message(),
+            ));
+        }
+        Err(EngineFault::IndexCancelled { project }) => {
+            return Ok(mark_index_cancelled(current, event_request, &project));
+        }
+        Err(error) => return Err(MappingError::Engine(error)),
+    };
     match dto {
         EngineDto::Root {
             request,
             basis: dto_basis,
             key,
+            revision,
             delta,
             project,
             catalog,
@@ -64,6 +79,14 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
                     expected: basis,
                     observed: dto_basis,
                 });
+            }
+            if key.revision() != revision {
+                return Err(MappingError::Engine(EngineFault::Failed(
+                    crate::core::ErrorValue::new(
+                        crate::core::FaultCode::Protocol,
+                        "root DTO generation did not match its service cursor",
+                    ),
+                )));
             }
             if key.is_older_authority(current.key())
                 || (key.same_producer_generation(current.key())
@@ -146,7 +169,141 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
             );
             Ok(snapshot)
         }
+        EngineDto::Index {
+            request,
+            basis: dto_basis,
+            key,
+            revision,
+            delta,
+            project,
+            project_state,
+            catalog,
+            files_indexed,
+        } => {
+            if request != event_request {
+                return Err(MappingError::RequestMismatch {
+                    expected: event_request,
+                    observed: request,
+                });
+            }
+            if !dto_basis.same_authority(basis) {
+                return Err(MappingError::BasisMismatch {
+                    expected: basis,
+                    observed: dto_basis,
+                });
+            }
+            if key.revision() != revision {
+                return Err(MappingError::Engine(EngineFault::Failed(
+                    crate::core::ErrorValue::new(
+                        crate::core::FaultCode::Protocol,
+                        "index DTO generation did not match its service cursor",
+                    ),
+                )));
+            }
+            // A project result may arrive after a newer project has published.
+            // Keep its row terminal evidence, while admitting the root only
+            // when its producer authority is current.
+            let admit_projection = !key.is_older_authority(current.key());
+            let snapshot = if admit_projection {
+                let snapshot = current.with_key(key, delta);
+                let snapshot = project_state.map_or(snapshot.clone(), |project_state| {
+                    snapshot.with_project(project_state.into_model(), key)
+                });
+                catalog.map_or(snapshot.clone(), |packages| {
+                    snapshot.with_catalog(CatalogState { packages }, key)
+                })
+            } else {
+                current.clone()
+            };
+            Ok(mark_index_ready(
+                &snapshot,
+                request,
+                &project,
+                files_indexed,
+            ))
+        }
     }
+}
+
+fn mark_index_ready(
+    snapshot: &AppSnapshot,
+    request: RequestId,
+    project: &crate::core::LocalProjectId,
+    files: Option<u64>,
+) -> AppSnapshot {
+    let mut workspace = snapshot.workspace().clone();
+    if workspace.active.as_ref() == Some(project) {
+        workspace.host = Some(project.clone());
+    }
+    workspace.path_error = None;
+    workspace.projects = workspace
+        .projects
+        .iter()
+        .cloned()
+        .map(|mut item| {
+            if item.id == *project && item.request == Some(request) {
+                item.phase = ProjectPhase::Ready;
+                item.progress = None;
+                item.files_indexed = files;
+                item.request = None;
+                item.error = None;
+                item.recent = true;
+            }
+            item
+        })
+        .collect::<Vec<_>>()
+        .into();
+    snapshot.with_workspace(workspace)
+}
+
+fn mark_index_cancelled(
+    snapshot: &AppSnapshot,
+    request: RequestId,
+    project: &crate::core::LocalProjectId,
+) -> AppSnapshot {
+    let mut workspace = snapshot.workspace().clone();
+    workspace.projects = workspace
+        .projects
+        .iter()
+        .cloned()
+        .map(|mut item| {
+            if item.id == *project && item.request == Some(request) {
+                item.phase = ProjectPhase::Cancelled;
+                item.progress = None;
+                item.request = None;
+                item.error = None;
+            }
+            item
+        })
+        .collect::<Vec<_>>()
+        .into();
+    snapshot.with_workspace(workspace)
+}
+
+fn mark_index_failed(
+    snapshot: &AppSnapshot,
+    request: RequestId,
+    project: &crate::core::LocalProjectId,
+    message: &str,
+) -> AppSnapshot {
+    let mut workspace = snapshot.workspace().clone();
+    workspace.projects = workspace
+        .projects
+        .iter()
+        .cloned()
+        .map(|mut item| {
+            if item.id == *project && item.request == Some(request) {
+                item.phase = ProjectPhase::Failed;
+                item.progress = None;
+                item.files_indexed = None;
+                item.request = None;
+                item.error = Some(Arc::from(message));
+            }
+            item
+        })
+        .collect::<Vec<_>>()
+        .into();
+    snapshot.with_workspace(workspace)
 }
 
 #[cfg(test)]
@@ -155,7 +312,7 @@ mod tests {
     use crate::navigation::RequestId;
 
     fn root() -> VersionedRoot {
-        VersionedRoot::new(
+        VersionedRoot::synthetic(
             backend_library::view_state_root(&[("mapping".to_owned(), "one".to_owned())]),
             4,
         )
@@ -176,6 +333,7 @@ mod tests {
                     request: RequestId::new(1),
                     basis,
                     key: basis.with_generation(3).observed_at(100),
+                    revision: basis.with_generation(3).revision(),
                     delta: None,
                     project: None,
                     catalog: None,
@@ -183,8 +341,8 @@ mod tests {
             },
         )
         .expect("same producer authority");
-        assert_eq!(accepted.key().generation, 3);
-        assert_eq!(accepted.key().observation, 100);
+        assert_eq!(accepted.key().generation(), 3);
+        assert_eq!(accepted.key().observation(), 100);
     }
 
     #[test]
@@ -202,6 +360,7 @@ mod tests {
                     request: RequestId::new(1),
                     basis,
                     key: basis.with_generation(1).observed_at(1000),
+                    revision: basis.with_generation(1).revision(),
                     delta: None,
                     project: None,
                     catalog: None,
@@ -228,6 +387,7 @@ mod tests {
                     request: observed,
                     basis: current_key,
                     key: current_key.with_generation(3),
+                    revision: current_key.with_generation(3).revision(),
                     delta: None,
                     project: None,
                     catalog: None,

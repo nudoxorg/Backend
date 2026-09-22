@@ -2,27 +2,70 @@
 
 use super::action::ActionId;
 use super::route::{Route, SettingsPage};
-use crate::core::ids::{DocumentId, VersionedRoot};
 use crate::core::LocalProjectId;
+use crate::core::ids::{DocumentId, VersionedRoot};
 use crate::model::snapshot::{DeltaId, ObjectId};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Stable identity for a background effect.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct RequestId(u64);
+pub struct RequestId {
+    epoch: u64,
+    sequence: u64,
+}
 
 impl RequestId {
     /// Creates a request identity.
     #[must_use]
     pub const fn new(value: u64) -> Self {
-        Self(value)
+        Self {
+            epoch: 0,
+            sequence: value,
+        }
+    }
+
+    /// Binds a request sequence to the producer authority that admitted its
+    /// basis. Runtime-created requests use this constructor; [`Self::new`]
+    /// remains for deterministic reducer fixtures.
+    #[must_use]
+    pub const fn from_authority(basis: VersionedRoot, sequence: u64) -> Self {
+        Self {
+            epoch: basis.producer_epoch(),
+            sequence,
+        }
+    }
+
+    /// Returns the producer epoch carried by this request.
+    #[must_use]
+    pub const fn epoch(self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the monotonic sequence within the producer epoch.
+    #[must_use]
+    pub const fn sequence(self) -> u64 {
+        self.sequence
     }
 
     /// Returns the stable value.
     #[must_use]
     pub const fn get(self) -> u64 {
-        self.0
+        self.sequence
     }
+}
+
+/// Typed result returned by GPUI's native path prompt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FolderPickerOutcome {
+    /// One or more existing folders were selected.
+    Selected(Arc<[PathBuf]>),
+    /// The user dismissed the native prompt without a selection.
+    Cancelled,
+    /// The platform exposes no usable native folder prompt for this window.
+    Unavailable(Arc<str>),
+    /// The prompt opened but returned an explicit platform error.
+    Failed(Arc<str>),
 }
 
 /// Typed navigation and shell intents.  Widgets dispatch this enum; they do
@@ -84,13 +127,18 @@ pub enum Intent {
     },
     /// Open the native folder picker.
     OpenFolderPicker,
+    /// Deliver one typed native picker result back to the root reducer.
+    FolderPickerResult {
+        /// Native selection, cancellation, or platform failure.
+        outcome: FolderPickerOutcome,
+    },
     /// Request one canonical project index through the root-owned actor.
     IndexProject {
         /// Local project identity admitted by the path boundary.
         project: LocalProjectId,
         /// Root authority captured before the request was queued.
         basis: VersionedRoot,
-        /// Request identity owned by the UI coordinator.
+        /// Compatibility request retained until the service owner replies.
         request: RequestId,
     },
     /// Admit one canonical local folder to the durable shelf.
@@ -162,13 +210,13 @@ pub enum EngineCommand {
         /// Request identity used for stale result rejection.
         request: RequestId,
     },
-    /// Ask the canonical local service seam to ingest or refresh one project.
+    /// Submit one local project through the canonical service index command.
     IndexProject {
-        /// Canonical local identity sent to the service.
+        /// Local identity admitted by the native path boundary.
         project: LocalProjectId,
-        /// Root authority used to reject obsolete completion events.
+        /// Root basis captured before submission.
         basis: VersionedRoot,
-        /// Request identity used by the actor.
+        /// Request identity used for terminal projection matching.
         request: RequestId,
     },
     /// Ask for one object/delta projection.

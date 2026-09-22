@@ -14,8 +14,8 @@ pub use action::{
     SemanticFamily, SemanticState, VoiceChannel,
 };
 pub use focus::{ActionKey, EscapeResult, FocusId, FocusNode, FocusOrigin, FocusRoute, FocusTree};
-pub use history::{RouteHistory, MAX_ROUTE_HISTORY};
-pub use intent::{Effect, EngineCommand, Intent, Reduction, RequestId};
+pub use history::{MAX_ROUTE_HISTORY, RouteHistory};
+pub use intent::{Effect, EngineCommand, FolderPickerOutcome, Intent, Reduction, RequestId};
 pub use modal::{ModalFrame, ModalId, ModalStack};
 pub use reducer::reduce;
 pub use route::{

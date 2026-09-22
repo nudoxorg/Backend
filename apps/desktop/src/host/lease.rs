@@ -9,6 +9,7 @@
 //! endpoint rather than by reporting a failure the reader cannot act on.
 
 use backend_local_service::{EmbeddedLocalService, ProcessConfig, ProcessError};
+use backend_platform::NativePath;
 use backend_runtime::{RuntimeError, WorkspacePaths};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -68,7 +69,8 @@ impl DesktopHost {
                 embedded: None,
             });
         }
-        let config = ProcessConfig::parse(Self::owner_arguments(&paths)).map_err(HostError::Service)?;
+        let config =
+            ProcessConfig::parse(Self::owner_arguments(&paths)?).map_err(HostError::Service)?;
         match EmbeddedLocalService::start(config) {
             Ok(embedded) => Ok(Self {
                 paths,
@@ -78,17 +80,17 @@ impl DesktopHost {
         }
     }
 
-    fn owner_arguments(paths: &WorkspacePaths) -> [String; 8] {
-        [
+    fn owner_arguments(paths: &WorkspacePaths) -> Result<[String; 8], HostError> {
+        Ok([
             "--endpoint".to_owned(),
-            paths.endpoint().to_string_lossy().into_owned(),
+            native_argument(paths.endpoint())?,
             "--workspace".to_owned(),
-            paths.data().to_string_lossy().into_owned(),
+            native_argument(paths.data())?,
             "--authority-secret-file".to_owned(),
-            paths.authority_secret().to_string_lossy().into_owned(),
+            native_argument(paths.authority_secret())?,
             "--profile".to_owned(),
             "builtin".to_owned(),
-        ]
+        ])
     }
 
     /// Returns whether a live owner is answering on the workspace endpoint.
@@ -175,6 +177,13 @@ pub enum HostError {
     Runtime(RuntimeError),
     /// The compiled service could not start.
     Service(ProcessError),
+    /// The service argument boundary currently accepts UTF-8 strings only.
+    /// Keep this explicit instead of replacing native bytes with a lossy
+    /// display spelling.
+    UnsupportedPathEncoding {
+        /// Native path that could not cross the current service boundary.
+        path: PathBuf,
+    },
     /// This process could not become the owner, and no owner ever answered.
     ///
     /// Two different situations reach here and the message must not claim to
@@ -198,7 +207,8 @@ impl HostError {
     pub fn operand(&self) -> String {
         match self {
             Self::Runtime(_) | Self::Service(_) => "local workspace".to_owned(),
-            Self::Contended { endpoint, .. } => endpoint.to_string_lossy().into_owned(),
+            Self::UnsupportedPathEncoding { path } => path.display().to_string(),
+            Self::Contended { endpoint, .. } => endpoint.display().to_string(),
         }
     }
 }
@@ -208,6 +218,11 @@ impl fmt::Display for HostError {
         match self {
             Self::Runtime(error) => error.fmt(formatter),
             Self::Service(error) => error.fmt(formatter),
+            Self::UnsupportedPathEncoding { path } => write!(
+                formatter,
+                "native path cannot cross the UTF-8 service boundary: {}",
+                path.display()
+            ),
             Self::Contended {
                 endpoint,
                 data,
@@ -220,6 +235,18 @@ impl fmt::Display for HostError {
             ),
         }
     }
+}
+
+fn native_argument(path: &Path) -> Result<String, HostError> {
+    NativePath::from_path(path)
+        .map_err(|_| HostError::UnsupportedPathEncoding {
+            path: path.to_path_buf(),
+        })?
+        .to_str()
+        .map(ToOwned::to_owned)
+        .map_err(|_| HostError::UnsupportedPathEncoding {
+            path: path.to_path_buf(),
+        })
 }
 
 impl std::error::Error for HostError {}
@@ -240,15 +267,10 @@ mod tests {
             .as_nanos();
         // `/tmp`, not `temp_dir()`: under nix the latter is long enough that
         // the socket path exceeds `sockaddr_un` and the owner refuses to bind.
-        let project = PathBuf::from("/tmp").join(format!(
-            "nudox-h-{}-{nonce}",
-            std::process::id()
-        ));
+        let project = PathBuf::from("/tmp").join(format!("nudox-h-{}-{nonce}", std::process::id()));
         let data = project.join("state");
-        let endpoint = PathBuf::from("/tmp").join(format!(
-            "nudox-h-{}-{nonce}.sock",
-            std::process::id()
-        ));
+        let endpoint =
+            PathBuf::from("/tmp").join(format!("nudox-h-{}-{nonce}.sock", std::process::id()));
         fs::create_dir_all(project.join("src")).expect("create project");
         fs::write(
             project.join("Cargo.toml"),
@@ -257,13 +279,12 @@ mod tests {
         .expect("write manifest");
         fs::write(project.join("src/lib.rs"), b"pub struct EmbeddedProof;\n")
             .expect("write source");
-        let paths =
-            WorkspacePaths::discover(
-                Some(project.clone()),
-                Some(data.clone()),
-                Some(endpoint.clone()),
-            )
-                .expect("explicit paths");
+        let paths = WorkspacePaths::discover(
+            Some(project.clone()),
+            Some(data.clone()),
+            Some(endpoint.clone()),
+        )
+        .expect("explicit paths");
 
         let owner = DesktopHost::start_with_paths(paths.clone()).expect("embedded owner");
         assert_eq!(owner.mode(), HostMode::Embedded);
@@ -272,7 +293,7 @@ mod tests {
 
         let mut session = Session::connect(&endpoint).expect("shared client session");
         session
-            .index(&project.to_string_lossy())
+            .index(project.to_str().expect("fixture path is UTF-8"))
             .expect("index through embedded owner");
         let revision = session.revision().expect("read embedded revision");
         let revision_root = revision.root.clone();
