@@ -444,7 +444,7 @@ fn index_page(theme: &Theme, snapshot: &AppSnapshot, owner: Entity<UiRootEntity>
         "choose-project",
         "Choose local project…",
         components::Weight::Primary,
-        Intent::OpenFolderPicker,
+        Intent::OpenAddProject,
     ));
     if snapshot.workspace().projects.is_empty() {
         content = content.child(

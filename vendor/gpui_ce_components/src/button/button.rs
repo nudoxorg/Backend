@@ -10,11 +10,12 @@ use crate::{
     tooltip::{ManagedTooltipExt as _, Tooltip},
 };
 use gpui::{
-    AnyElement, App, Background, ClickEvent, Corners, Edges, ElementId, FocusHandle, Hsla,
+    AnyElement, App, Background, Bounds, ClickEvent, Corners, Edges, ElementId, FocusHandle, Hsla,
     InteractiveElement, Interactivity, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce,
     Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
-    prelude::FluentBuilder as _, relative, transparent_white,
+    point, prelude::FluentBuilder as _, relative, size, transparent_white,
 };
+use gpui_base::ElementExt as _;
 
 #[derive(Default, Clone, Copy)]
 pub enum ButtonRounded {
@@ -217,6 +218,8 @@ pub struct Button {
     /// same stable action id that created the button; it is deliberately
     /// separate from the app's declared semantic state.
     on_focus_observed: Option<Rc<dyn Fn(FocusHandle, bool, &mut Window, &mut App)>>,
+    /// Reports the concrete rendered button rectangle after GPUI prepaint.
+    on_bounds_observed: Option<Rc<dyn Fn(Bounds<Pixels>, &mut Window, &mut App)>>,
     on_hover_observed: Option<Rc<dyn Fn(bool, &mut Window, &mut App)>>,
     on_press_observed: Option<Rc<dyn Fn(bool, &mut Window, &mut App)>>,
     loading: bool,
@@ -265,6 +268,7 @@ impl Button {
             focus_ring_enabled: true,
             on_hover: None,
             on_focus_observed: None,
+            on_bounds_observed: None,
             on_hover_observed: None,
             on_press_observed: None,
             loading: false,
@@ -422,6 +426,19 @@ impl Button {
         self
     }
 
+    /// Observe the concrete button rectangle after layout and prepaint.
+    ///
+    /// This keeps accessibility and screenshot geometry attached to the same
+    /// CE control that owns hit testing, including callbacks added after the
+    /// observer is configured.
+    pub fn on_bounds_observed(
+        mut self,
+        handler: impl Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_bounds_observed = Some(Rc::new(handler));
+        self
+    }
+
     /// Observe the native hover state of the rendered button without
     /// replacing an application's visual hover callback.
     pub fn on_hover_observed(
@@ -565,9 +582,33 @@ impl RenderOnce for Button {
         let hoverable = self.hoverable();
         let disabled = self.disabled;
         let loading = self.loading;
+        let on_bounds_observed = self.on_bounds_observed;
         let mut base = self.base;
         let children = self.children;
         let instance_style = base.style().clone();
+        let rem_size = window.rem_size();
+        let observed_border = Edges::<Pixels> {
+            top: instance_style
+                .border_widths
+                .top
+                .map(|value| value.to_pixels(rem_size))
+                .unwrap_or_default(),
+            right: instance_style
+                .border_widths
+                .right
+                .map(|value| value.to_pixels(rem_size))
+                .unwrap_or_default(),
+            bottom: instance_style
+                .border_widths
+                .bottom
+                .map(|value| value.to_pixels(rem_size))
+                .unwrap_or_default(),
+            left: instance_style
+                .border_widths
+                .left
+                .map(|value| value.to_pixels(rem_size))
+                .unwrap_or_default(),
+        };
         let normal_style = style.normal(self.outline, cx);
         let selected_style = style.selected(self.outline, cx);
         let disabled_style = style.disabled(self.outline, cx);
@@ -842,6 +883,25 @@ impl RenderOnce for Button {
         })
         .when(is_focused && self.focus_ring_enabled, |this| {
             this.focus_ring_style(window, cx)
+        })
+        .when_some(on_bounds_observed, |this, observer| {
+            this.on_prepaint(move |bounds, window, cx| {
+                // `ElementExt::on_prepaint` uses an absolute child canvas,
+                // whose `size_full` rectangle is GPUI's padding box. Pointer
+                // activation belongs to the bordered root, so restore the
+                // resolved border insets before publishing hit-test evidence.
+                let bounds = Bounds::new(
+                    point(
+                        bounds.origin.x - observed_border.left,
+                        bounds.origin.y - observed_border.top,
+                    ),
+                    size(
+                        bounds.size.width + observed_border.left + observed_border.right,
+                        bounds.size.height + observed_border.top + observed_border.bottom,
+                    ),
+                );
+                observer(bounds, window, cx);
+            })
         })
     }
 }

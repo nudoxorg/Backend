@@ -57,7 +57,7 @@ pub(super) fn home_page(
                     true,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.queue(Intent::OpenFolderPicker, cx);
+                    this.queue(Intent::OpenAddProject, cx);
                 })),
             )
             .child(
@@ -279,7 +279,7 @@ fn active_project_status(
                     true,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.queue(Intent::OpenFolderPicker, cx);
+                    this.queue(Intent::OpenAddProject, cx);
                 })),
             );
         }

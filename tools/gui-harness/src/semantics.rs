@@ -445,11 +445,13 @@ impl SemanticProbe {
             })
             .collect::<Result<Vec<_>, _>>()?;
         orders.sort_by_key(|(order, _)| *order);
-        for (expected, (actual, _)) in orders.iter().enumerate() {
+        for (expected, (actual, id)) in orders.iter().enumerate() {
             if *actual != expected as u32 {
                 return Err(SemanticError::NonContiguousFocusOrder {
                     expected: expected as u32,
                     actual: *actual,
+                    id: id.clone(),
+                    measured: orders.clone(),
                 });
             }
         }
@@ -662,8 +664,15 @@ pub enum SemanticError {
     #[error("focusable node {0:?} has no focus order")]
     MissingFocusOrder(String),
     /// Focus order is contiguous and deterministic.
-    #[error("focus order expected {expected}, found {actual}")]
-    NonContiguousFocusOrder { expected: u32, actual: u32 },
+    #[error(
+        "focus order expected {expected}, found {actual} at node {id:?}; measured order {measured:?}"
+    )]
+    NonContiguousFocusOrder {
+        expected: u32,
+        actual: u32,
+        id: String,
+        measured: Vec<(u32, String)>,
+    },
     /// A focused node must be present.
     #[error("focused node {0:?} is unavailable")]
     FocusedNodeUnavailable(String),

@@ -6,27 +6,55 @@ use crate::core::layout::{PanelMode, RegionId, ResponsiveLayout, SheetKind};
 use crate::model::AppSnapshot;
 use crate::navigation::{Intent, OrbitRoute, PackageLane, PackageRoute, Route, SettingsPage};
 use crate::runtime::UiRootEntity;
-use crate::theme::palette::Paint;
-use crate::theme::tokens::{space, type_size, Space, TypeScale};
 use crate::theme::Theme;
+use crate::theme::palette::Paint;
+use crate::theme::tokens::{Space, TypeScale, space, type_size};
 use crate::ui::components;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    div, px, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement,
-    StatefulInteractiveElement as _, Styled, WeakEntity,
+    Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement,
+    StatefulInteractiveElement as _, Styled, WeakEntity, div, px,
 };
 use gpui_component::{Placement, Root, Selectable as _, WindowExt as _};
 use std::sync::Arc;
 
 pub(super) fn header(
-    root: &mut UiRootEntity,
     theme: &Theme,
     snapshot: &AppSnapshot,
     layout: ResponsiveLayout,
     cx: &mut Context<UiRootEntity>,
 ) -> impl IntoElement {
     let route_label = route_label(snapshot);
-    let compact = layout.collapse.is_compact();
+    let density = layout.titlebar_density;
+    let expanded = density.is_expanded();
+    let mut actions = div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(space(Space::Snug));
+    if density.shows_history() {
+        actions = actions
+            .child(nav_button(theme, "back", "‹", Intent::Back, cx))
+            .child(nav_button(theme, "forward", "›", Intent::Forward, cx));
+    }
+    actions = actions.child(crate::ui::search_palette::header_trigger(
+        theme, cx, !expanded,
+    ));
+    if density.shows_settings() {
+        actions = actions.child(
+            components::button_with_state(
+                theme,
+                "settings",
+                if expanded { "Settings" } else { "⚙" },
+                components::Weight::Quiet,
+                false,
+                true,
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.queue(Intent::OpenSettings(SettingsPage::Appearance), cx);
+            })),
+        );
+    }
     theme.register_action(
         components::ActionMetadata::new(
             "window-navigation",
@@ -47,8 +75,8 @@ pub(super) fn header(
         .flex_none()
         .flex()
         .items_center()
-        .gap(space(Space::Gutter))
-        .px(space(Space::Gutter))
+        .gap(space(if expanded { Space::Gutter } else { Space::Snug }))
+        .px(space(if expanded { Space::Gutter } else { Space::Snug }))
         .border_b(px(1.0))
         .border_color(theme.paint(Paint::Rule2))
         .bg(theme.paint(Paint::Abyss1))
@@ -57,46 +85,19 @@ pub(super) fn header(
                 .text_size(type_size(TypeScale::Title))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.paint(Paint::Silver0))
-                .child(if compact { "N" } else { "Nudox" }),
+                .child(if expanded { "Nudox" } else { "N" }),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .text_size(type_size(TypeScale::Small))
-                .text_color(theme.paint(Paint::Silver3))
-                .child(route_label),
-        )
-        .child(components::measure(
-            theme,
-            "back",
-            nav_button(theme, "back", "‹", Intent::Back, root, cx),
-        ))
-        .child(components::measure(
-            theme,
-            "forward",
-            nav_button(theme, "forward", "›", Intent::Forward, root, cx),
-        ))
-        .child(components::measure(
-            theme,
-            "command-palette",
-            crate::ui::search_palette::header_trigger(theme, root, cx),
-        ))
-        .child(components::measure(
-            theme,
-            "settings",
-            components::button_with_state(
-                theme,
-                "settings",
-                if compact { "⚙" } else { "Settings" },
-                components::Weight::Quiet,
-                false,
-                true,
+        .when(expanded, |header| {
+            header.child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .text_size(type_size(TypeScale::Small))
+                    .text_color(theme.paint(Paint::Silver3))
+                    .child(route_label),
             )
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.queue(Intent::OpenSettings(SettingsPage::Appearance), cx);
-            })),
-        ))
+        })
+        .child(actions.ml_auto())
 }
 
 fn nav_button(
@@ -104,10 +105,8 @@ fn nav_button(
     id: &'static str,
     label: &'static str,
     intent: Intent,
-    root: &mut UiRootEntity,
     cx: &mut Context<UiRootEntity>,
 ) -> impl IntoElement {
-    let _ = root;
     components::button_with_state(theme, id, label, components::Weight::Quiet, false, true)
         .on_click(cx.listener(move |this, _, _, cx| this.queue(intent.clone(), cx)))
 }

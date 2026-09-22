@@ -10,6 +10,7 @@ mod keys;
 mod onboarding;
 mod package;
 mod primitives;
+mod project_admission;
 mod project_shelf;
 mod reader;
 mod shell;
@@ -22,7 +23,10 @@ use crate::runtime::UiRootEntity;
 use crate::theme::Theme;
 use crate::ui::surface;
 use gpui::prelude::FluentBuilder as _;
-use gpui::{div, px, AnyElement, Context, IntoElement, ParentElement, Styled, Window};
+use gpui::{
+    AnyElement, AppContext as _, Context, Focusable as _, IntoElement, ParentElement, Styled,
+    Window, div, px,
+};
 use gpui_component::WindowExt as _;
 
 /// Renders the complete production window from one root entity.
@@ -57,7 +61,7 @@ pub(crate) fn render_root(
     // stack.
     cx.set_global(theme.clone());
     sync_component_overlay(root, window, cx, &snapshot);
-    let header = shell::header(root, &theme, &snapshot, layout, cx).into_any_element();
+    let header = shell::header(&theme, &snapshot, layout, cx).into_any_element();
     let orbit = shell::orbit_rail(&theme, &snapshot, layout, cx).into_any_element();
     let shelf = shell::shelf_panel(root, &theme, &snapshot, layout, cx).into_any_element();
     let body = content_panel(root, &theme, &snapshot, layout, cx).into_any_element();
@@ -96,6 +100,16 @@ pub(crate) fn render_root(
 
 fn register_overlay_actions(theme: &Theme, overlay: Option<Overlay>) {
     match overlay {
+        Some(Overlay::AddProject) => {
+            theme.register_action(
+                crate::ui::components::ActionMetadata::new(
+                    "add-project-dialog",
+                    "Add a local project",
+                    crate::ui::components::ActionRole::Dialog,
+                )
+                .description("Choose a local source folder to index"),
+            );
+        }
         Some(Overlay::CommandPalette) => {
             theme.register_action(
                 crate::ui::components::ActionMetadata::new(
@@ -149,6 +163,26 @@ fn sync_component_overlay(
     };
     let owner = cx.entity();
     match desired {
+        Overlay::AddProject => {
+            let input = cx.new(|cx| {
+                gpui_component::input::InputState::new(window, cx).placeholder("/path/to/project")
+            });
+            let focus = input.read(cx).focus_handle(cx);
+            let dialog_owner = owner.clone();
+            let dialog_input = input.clone();
+            window.open_dialog(cx, move |dialog, window, app| {
+                let theme = crate::theme::theme(app);
+                let width = (window.viewport_size().width.as_f32() - 32.0).clamp(320.0, 560.0);
+                project_admission::dialog(
+                    dialog,
+                    &theme,
+                    dialog_owner.clone(),
+                    dialog_input.clone(),
+                    width,
+                )
+            });
+            window.defer(cx, move |window, app| focus.focus(window, app));
+        }
         Overlay::CommandPalette => {
             let palette_owner = owner.clone();
             window.open_dialog(cx, move |dialog, window, _| {

@@ -134,6 +134,8 @@ pub(crate) fn observe_button_focus(
     let hover_id = id.clone();
     let press_frames = frames.clone();
     let press_id = id.clone();
+    let bounds_frames = frames.clone();
+    let bounds_id = id.clone();
     button
         .on_focus_observed(move |handle, focused, window, cx| {
             focus_frames.record_native_focus(token, focus_id.clone(), handle, focused, window, cx);
@@ -153,6 +155,9 @@ pub(crate) fn observe_button_focus(
                 ActionState::Pressed,
                 pressed,
             );
+        })
+        .on_bounds_observed(move |bounds, _window, _cx| {
+            bounds_frames.record_bounds(token, bounds_id.clone(), bounds);
         })
 }
 

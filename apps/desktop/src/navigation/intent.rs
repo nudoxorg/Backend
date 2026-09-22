@@ -125,6 +125,8 @@ pub enum Intent {
         /// Move toward a longer or shorter retention window.
         up: bool,
     },
+    /// Open the keyboard-first local project admission dialog.
+    OpenAddProject,
     /// Open the native folder picker.
     OpenFolderPicker,
     /// Deliver one typed native picker result back to the root reducer.
@@ -141,10 +143,15 @@ pub enum Intent {
         /// Compatibility request retained until the service owner replies.
         request: RequestId,
     },
-    /// Admit one canonical local folder to the durable shelf.
+    /// Admit one validated native local folder to the durable shelf.
     AddProject {
-        /// Canonical folder spelling selected by the native picker.
-        path: Arc<str>,
+        /// Exact native identity admitted by the dialog or platform picker.
+        project: LocalProjectId,
+    },
+    /// Retain an admission failure in the open project dialog.
+    RejectProjectPath {
+        /// Bounded product-facing validation message.
+        message: Arc<str>,
     },
     /// Mark a persisted project as the active workspace.
     ActivateProject(LocalProjectId),

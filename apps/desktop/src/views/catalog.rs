@@ -5,14 +5,14 @@ use super::primitives::{heading, loading_card};
 use crate::model::{AppSnapshot, PackageSummary};
 use crate::navigation::{Intent, PackageLane, PackageRoute, Route};
 use crate::runtime::UiRootEntity;
-use crate::theme::palette::Paint;
-use crate::theme::tokens::{space, Space, TypeScale};
 use crate::theme::Theme;
+use crate::theme::palette::Paint;
+use crate::theme::tokens::{Space, TypeScale, space};
 use crate::ui::{components, surface, text};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    div, px, AnyElement, Context, ElementId, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement as _, Styled,
+    AnyElement, Context, ElementId, InteractiveElement, IntoElement, ParentElement,
+    StatefulInteractiveElement as _, Styled, div, px,
 };
 
 pub(super) fn home_page(

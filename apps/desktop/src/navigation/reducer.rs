@@ -148,10 +148,12 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         | Intent::ToggleAdvisories
         | Intent::ToggleCache
         | Intent::SetCacheDays { .. }
+        | Intent::OpenAddProject
         | Intent::OpenFolderPicker
         | Intent::FolderPickerResult { .. }
         | Intent::IndexProject { .. }
         | Intent::AddProject { .. }
+        | Intent::RejectProjectPath { .. }
         | Intent::ActivateProject(_)
         | Intent::RemoveProject(_)
         | Intent::RevealProject(_)

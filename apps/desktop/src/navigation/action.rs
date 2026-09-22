@@ -238,7 +238,7 @@ impl ActionId {
             Self::DismissOverlay => Some(Intent::DismissOverlay),
             Self::OpenSettings => Some(Intent::OpenSettings(SettingsPage::Appearance)),
             Self::ToggleReducedMotion => Some(Intent::ToggleReducedMotion),
-            Self::AddProject => Some(Intent::OpenFolderPicker),
+            Self::AddProject => Some(Intent::OpenAddProject),
             Self::ToggleShelf => Some(Intent::ToggleShelf),
             Self::OpenHelp => Some(Intent::OpenHelp),
             Self::ToggleAppearance => Some(Intent::ToggleAppearance),

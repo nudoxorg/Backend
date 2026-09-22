@@ -23,10 +23,9 @@ use gpui_component::{Disableable as _, IndexPath};
 /// Builds the compact search trigger in the shell header.
 pub(crate) fn header_trigger(
     theme: &Theme,
-    root: &mut UiRootEntity,
     cx: &mut Context<UiRootEntity>,
+    compact: bool,
 ) -> impl IntoElement {
-    let _ = root;
     let shortcut = ActionId::OpenCommandPalette
         .spec()
         .shortcut
@@ -35,7 +34,11 @@ pub(crate) fn header_trigger(
     components::button_with_state_and_accessible(
         theme,
         "command-palette",
-        format!("Search all docs…  {shortcut}"),
+        if compact {
+            "⌕".to_owned()
+        } else {
+            format!("Search all docs…  {shortcut}")
+        },
         "Search all documentation and workspace actions",
         components::Weight::Regular,
         false,

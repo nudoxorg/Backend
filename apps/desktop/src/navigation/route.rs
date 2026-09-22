@@ -151,6 +151,8 @@ pub enum Route {
 /// A transient shell surface layered over a content route.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Overlay {
+    /// Keyboard-first local project admission surface.
+    AddProject,
     /// Settings surface at a typed page.
     Settings(SettingsPage),
     /// Command palette surface.

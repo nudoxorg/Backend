@@ -226,8 +226,14 @@ impl UiRootEntity {
                     }
                 }
             }
-            Intent::AddProject { path } => {
-                self.dispatch_runtime(Intent::AddProject { path }, cx);
+            Intent::AddProject { project } => {
+                self.dispatch_runtime(
+                    Intent::AddProject {
+                        project: project.clone(),
+                    },
+                    cx,
+                );
+                self.schedule_index(project, cx);
                 self.schedule_pending_indexes(cx);
             }
             Intent::ActivateProject(project) => {

@@ -19,5 +19,5 @@ pub use regions::{
     HorizontalOverflow, PanelMode, RegionBounds, RegionId, RegionPresentation, RegionSlot,
     SafeContentBounds, SheetKind, ShellRegions,
 };
-pub use resolver::{CollapseStage, ResponsiveLayout, WidthClass, resolve};
+pub use resolver::{CollapseStage, ResponsiveLayout, TitlebarDensity, WidthClass, resolve};
 pub use transition::{LayoutTransitionKind, TransitionPlan, transition_plan};

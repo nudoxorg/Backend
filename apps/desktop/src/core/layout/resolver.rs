@@ -40,6 +40,43 @@ pub enum CollapseStage {
     IconStatus,
 }
 
+/// Capacity class for persistent titlebar actions.
+///
+/// This is intentionally independent from pane collapse: a window can keep a
+/// single-column reader while its titlebar has already switched to icon
+/// labels. The resolver therefore remains the sole authority for both layout
+/// and which controls may enter the focus order.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum TitlebarDensity {
+    /// Full product name, route identity, and labelled commands.
+    Expanded,
+    /// Icon-labelled commands with history preserved.
+    Compact,
+    /// Only the brand and global search fit; other commands remain available
+    /// through the global palette and keyboard bindings.
+    Essential,
+}
+
+impl TitlebarDensity {
+    /// Returns whether back and forward controls fit in the titlebar.
+    #[must_use]
+    pub const fn shows_history(self) -> bool {
+        !matches!(self, Self::Essential)
+    }
+
+    /// Returns whether the dedicated settings control fits in the titlebar.
+    #[must_use]
+    pub const fn shows_settings(self) -> bool {
+        !matches!(self, Self::Essential)
+    }
+
+    /// Returns whether labels may use their expanded text form.
+    #[must_use]
+    pub const fn is_expanded(self) -> bool {
+        matches!(self, Self::Expanded)
+    }
+}
+
 impl CollapseStage {
     /// Returns whether this stage is compact enough for the 90ms switch beat.
     #[must_use]
@@ -59,6 +96,8 @@ pub struct ResponsiveLayout {
     pub width: WidthClass,
     /// Progressive collapse stage.
     pub collapse: CollapseStage,
+    /// Capacity-derived titlebar presentation and action admission policy.
+    pub titlebar_density: TitlebarDensity,
     /// Canonical semantic regions.
     pub regions: ShellRegions,
     /// Primary navigation mode.
@@ -124,6 +163,18 @@ pub fn resolve(input: LayoutInput) -> ResponsiveLayout {
     let tokens = LayoutTokens::at(input.text_scale);
     let width = input.window.width().get();
     let height = input.window.height().get();
+
+    // The expanded budget includes route identity and labelled search and
+    // settings actions. The compact budget retains four 44px focus targets,
+    // a brand mark, tight gaps, and edge padding. Both scale with interface
+    // text so larger type collapses before controls overlap.
+    let titlebar_density = if width >= scaled_threshold(620, input.text_scale) {
+        TitlebarDensity::Expanded
+    } else if width >= scaled_threshold(264, input.text_scale) {
+        TitlebarDensity::Compact
+    } else {
+        TitlebarDensity::Essential
+    };
 
     // Titlebar/rail compaction is itself content-driven. The thresholds are
     // budgets, not device names, and are intentionally stable at +/-1 px.
@@ -261,6 +312,7 @@ pub fn resolve(input: LayoutInput) -> ResponsiveLayout {
         text_scale: input.text_scale,
         width: width_class,
         collapse,
+        titlebar_density,
         regions: ShellRegions {
             titlebar,
             orbit_rail: orbit,
@@ -287,7 +339,7 @@ fn scaled_threshold(base: u32, scale: TextScale) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{CollapseStage, PanelMode, WidthClass, resolve};
+    use super::{CollapseStage, PanelMode, TitlebarDensity, WidthClass, resolve};
     use crate::core::layout::{
         LayoutInput, LogicalPx, PanelPreferences, RegionBounds, RegionId, RegionPresentation,
         SheetKind, TextScale,
@@ -357,6 +409,34 @@ mod tests {
         assert_eq!(
             resolve(input(120, 800, 100)).collapse,
             CollapseStage::IconStatus
+        );
+    }
+
+    #[test]
+    fn titlebar_capacity_has_exact_scale_aware_boundaries() {
+        assert_eq!(
+            resolve(input(620, 800, 100)).titlebar_density,
+            TitlebarDensity::Expanded
+        );
+        assert_eq!(
+            resolve(input(619, 800, 100)).titlebar_density,
+            TitlebarDensity::Compact
+        );
+        assert_eq!(
+            resolve(input(264, 800, 100)).titlebar_density,
+            TitlebarDensity::Compact
+        );
+        assert_eq!(
+            resolve(input(263, 800, 100)).titlebar_density,
+            TitlebarDensity::Essential
+        );
+        assert_eq!(
+            resolve(input(1_239, 800, 200)).titlebar_density,
+            TitlebarDensity::Compact
+        );
+        assert_eq!(
+            resolve(input(527, 800, 200)).titlebar_density,
+            TitlebarDensity::Essential
         );
     }
 

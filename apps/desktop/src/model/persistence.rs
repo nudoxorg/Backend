@@ -584,34 +584,36 @@ impl PersistentState {
             cache_days: snapshot.settings().cache_days,
             route: match snapshot.overlay() {
                 Some(Overlay::Settings(_)) => PersistedRoute::Settings,
-                Some(Overlay::CommandPalette) | None => match snapshot.route() {
-                    Route::Orbit(crate::navigation::OrbitRoute::Home) => PersistedRoute::Home,
-                    Route::Orbit(crate::navigation::OrbitRoute::Project(project)) => {
-                        PersistedRoute::Project {
-                            project: project.get().get(),
+                Some(Overlay::AddProject | Overlay::CommandPalette) | None => {
+                    match snapshot.route() {
+                        Route::Orbit(crate::navigation::OrbitRoute::Home) => PersistedRoute::Home,
+                        Route::Orbit(crate::navigation::OrbitRoute::Project(project)) => {
+                            PersistedRoute::Project {
+                                project: project.get().get(),
+                            }
                         }
+                        Route::Package(route) => PersistedRoute::Package {
+                            project: route.project.as_ref().map(|project| project.get().get()),
+                            package: route.package.as_str().to_owned(),
+                            lane: route.lane.into(),
+                        },
+                        Route::Page(route) => PersistedRoute::Page {
+                            project: route.project.as_ref().map(|project| project.get().get()),
+                            package: route.package.as_str().to_owned(),
+                            coordinate: route.coordinate.as_str().to_owned(),
+                        },
+                        Route::Source(route) => PersistedRoute::Source {
+                            project: route.project.as_ref().map(|project| project.get().get()),
+                            package: route.package.as_str().to_owned(),
+                            page: route.page.as_str().to_owned(),
+                            line: route.line,
+                        },
                     }
-                    Route::Package(route) => PersistedRoute::Package {
-                        project: route.project.as_ref().map(|project| project.get().get()),
-                        package: route.package.as_str().to_owned(),
-                        lane: route.lane.into(),
-                    },
-                    Route::Page(route) => PersistedRoute::Page {
-                        project: route.project.as_ref().map(|project| project.get().get()),
-                        package: route.package.as_str().to_owned(),
-                        coordinate: route.coordinate.as_str().to_owned(),
-                    },
-                    Route::Source(route) => PersistedRoute::Source {
-                        project: route.project.as_ref().map(|project| project.get().get()),
-                        package: route.package.as_str().to_owned(),
-                        page: route.page.as_str().to_owned(),
-                        line: route.line,
-                    },
-                },
+                }
             },
             settings_page: match snapshot.overlay() {
                 Some(Overlay::Settings(page)) => Some(page.as_str().to_owned()),
-                Some(Overlay::CommandPalette) | None => None,
+                Some(Overlay::AddProject | Overlay::CommandPalette) | None => None,
             },
         }
     }

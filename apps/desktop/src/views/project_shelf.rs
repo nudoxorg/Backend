@@ -47,7 +47,7 @@ pub(super) fn panel(
             true,
         )
         .on_click(cx.listener(|this, _, _, cx| {
-            this.queue(Intent::OpenFolderPicker, cx);
+            this.queue(Intent::OpenAddProject, cx);
         })),
     );
 

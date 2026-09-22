@@ -11,7 +11,6 @@ use crate::model::{
     AppSnapshot, AppearancePreference, ConnectionStatus, PrivacyPreference, ProjectPhase,
     WorkspaceProject,
 };
-use std::path::Path;
 use std::sync::Arc;
 
 /// Reduces one workspace-owned intent, returning `None` for route-owned work.
@@ -73,6 +72,14 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             next = next.with_settings(settings);
             effects.push(Effect::Persist);
         }
+        Intent::OpenAddProject => {
+            let mut session = next.session().clone();
+            session.overlay = Some(Overlay::AddProject);
+            next = next.with_session(session);
+            let mut workspace = next.workspace().clone();
+            workspace.path_error = None;
+            next = next.with_workspace(workspace);
+        }
         Intent::OpenFolderPicker => {}
         Intent::FolderPickerResult { outcome } => match outcome {
             FolderPickerOutcome::Selected(paths) => {
@@ -122,9 +129,14 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 effects.push(Effect::Persist);
             }
         }
-        Intent::AddProject { path } => {
-            next = admit_project(&next, Arc::clone(path));
+        Intent::AddProject { project } => {
+            next = admit_project(&next, project.clone());
             effects.push(Effect::Persist);
+        }
+        Intent::RejectProjectPath { message } => {
+            let mut workspace = next.workspace().clone();
+            workspace.path_error = Some(Arc::clone(message));
+            next = next.with_workspace(workspace);
         }
         Intent::ActivateProject(project) => {
             let previous_request = next
@@ -270,8 +282,9 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
     })
 }
 
-fn admit_project(snapshot: &AppSnapshot, path: Arc<str>) -> AppSnapshot {
-    admit_project_path(snapshot, Path::new(path.trim()))
+fn admit_project(snapshot: &AppSnapshot, project: LocalProjectId) -> AppSnapshot {
+    let display = project.display_lossy();
+    admit_project_identity(snapshot, project, display)
 }
 
 fn admit_project_path(snapshot: &AppSnapshot, path: &std::path::Path) -> AppSnapshot {
@@ -280,9 +293,14 @@ fn admit_project_path(snapshot: &AppSnapshot, path: &std::path::Path) -> AppSnap
         workspace.path_error = Some(Arc::from("That folder path is not valid."));
         return snapshot.with_workspace(workspace);
     };
-    // This is presentation text only. Native identity and owner admission use
-    // the lossless `NativePath` retained by `project`.
-    let selected_path = path.display().to_string();
+    admit_project_identity(snapshot, project, path.display().to_string())
+}
+
+fn admit_project_identity(
+    snapshot: &AppSnapshot,
+    project: LocalProjectId,
+    selected_path: String,
+) -> AppSnapshot {
     let canonical_path = project.as_str();
     if canonical_path.is_empty() {
         let mut workspace = snapshot.workspace().clone();
@@ -395,16 +413,16 @@ mod tests {
 
     #[test]
     fn adding_the_same_project_reuses_one_typed_shelf_row() {
-        let path: Arc<str> = "/tmp/nudox-reducer-project".into();
+        let project = LocalProjectId::new("/tmp/nudox-reducer-project").expect("identity");
         let first = reduce(
             &snapshot(),
             &Intent::AddProject {
-                path: Arc::clone(&path),
+                project: project.clone(),
             },
         )
         .expect("workspace intent")
         .snapshot;
-        let second = reduce(&first, &Intent::AddProject { path }).expect("workspace intent");
+        let second = reduce(&first, &Intent::AddProject { project }).expect("workspace intent");
 
         assert_eq!(second.snapshot.workspace().projects.len(), 1);
         assert_eq!(second.snapshot.shelf().items.len(), 1);
@@ -420,11 +438,42 @@ mod tests {
     }
 
     #[test]
+    fn add_project_overlay_clears_stale_validation_without_persisting_a_draft() {
+        let mut workspace = snapshot().workspace().clone();
+        workspace.path_error = Some("stale path failure".into());
+        let snapshot = snapshot().with_workspace(workspace);
+        let opened = reduce(&snapshot, &Intent::OpenAddProject).expect("workspace intent");
+
+        assert_eq!(opened.snapshot.overlay(), Some(Overlay::AddProject));
+        assert_eq!(opened.snapshot.workspace().path_error, None);
+        assert!(opened.effects.is_empty());
+
+        let rejected = reduce(
+            &opened.snapshot,
+            &Intent::RejectProjectPath {
+                message: "Enter a project folder path.".into(),
+            },
+        )
+        .expect("workspace intent");
+        assert_eq!(rejected.snapshot.overlay(), Some(Overlay::AddProject));
+        assert_eq!(
+            rejected.snapshot.workspace().path_error.as_deref(),
+            Some("Enter a project folder path.")
+        );
+        assert!(rejected.effects.is_empty());
+    }
+
+    #[test]
     fn index_intent_submits_the_canonical_project_to_the_service_adapter() {
-        let path: Arc<str> = "/tmp/nudox-reducer-project".into();
-        let admitted = reduce(&snapshot(), &Intent::AddProject { path }).expect("workspace");
-        let basis = admitted.snapshot.key();
         let project = LocalProjectId::new("/tmp/nudox-reducer-project").expect("identity");
+        let admitted = reduce(
+            &snapshot(),
+            &Intent::AddProject {
+                project: project.clone(),
+            },
+        )
+        .expect("workspace");
+        let basis = admitted.snapshot.key();
         let request = RequestId::new(41);
         let reduction = reduce(
             &admitted.snapshot,
@@ -485,9 +534,14 @@ mod tests {
 
     #[test]
     fn cancellation_keeps_a_project_in_flight_until_the_owner_replies() {
-        let path: Arc<str> = "/tmp/nudox-cancellable-project".into();
-        let admitted = reduce(&snapshot(), &Intent::AddProject { path }).expect("workspace");
         let project = LocalProjectId::new("/tmp/nudox-cancellable-project").expect("identity");
+        let admitted = reduce(
+            &snapshot(),
+            &Intent::AddProject {
+                project: project.clone(),
+            },
+        )
+        .expect("workspace");
         let indexing = reduce(
             &admitted.snapshot,
             &Intent::IndexProject {
