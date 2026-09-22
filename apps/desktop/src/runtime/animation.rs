@@ -719,7 +719,15 @@ mod tests {
     fn first_nonzero_retarget_starts_from_the_channel_baseline() {
         let mut timeline = AnimationTimeline::new(CaptureFrameClock::default());
         let id = AnimationId::new(3);
-        timeline.retarget_at(id, 1.0, TWEEN, Duration::ZERO);
+        timeline.retarget_at(
+            id,
+            1.0,
+            Motion::TweenEased {
+                duration: Duration::from_millis(100),
+                easing: Easing::Linear,
+            },
+            Duration::ZERO,
+        );
         assert_eq!(timeline.value(id), Some(0.0));
         assert!(timeline.is_active());
         timeline.advance_at(Duration::from_millis(50));
