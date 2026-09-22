@@ -805,7 +805,7 @@ mod tests {
 
     #[test]
     fn validates_complete_focus_order_and_modal_relationships() {
-        let mut open = button("open", 0);
+        let mut open = button("open", 1);
         open.states.insert(SemanticState::Inert);
         let mut dialog = SemanticNode {
             id: "dialog".to_owned(),
@@ -846,7 +846,6 @@ mod tests {
 
         // Underlying action cannot remain a focusable stop in a modal trap.
         probe.nodes[2].states.remove(&SemanticState::Inert);
-        probe.nodes[2].states.insert(SemanticState::Focused);
         assert!(matches!(
             probe.validate(),
             Err(SemanticError::FocusEscapesModal(_))
