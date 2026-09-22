@@ -253,7 +253,6 @@ pub fn verify_capture_run(
             .and_then(Path::parent)
             .ok_or_else(|| ConformanceError::Contract(relative_manifest.clone()))?;
         let viewport = manifest.config.viewport;
-        let expected = viewport.physical_size();
         let band = viewport_band(viewport);
         let theme = theme_name(manifest.state.theme).to_owned();
         let motion = if manifest.state.reduced_motion {
@@ -500,11 +499,29 @@ pub fn verify_capture_run(
         }
 
         for frame in &manifest.frames {
+            let frame_viewport = frame.viewport.unwrap_or(viewport);
+            let expected = frame_viewport.physical_size();
+            observed_viewports.insert(viewport_band(frame_viewport).to_owned());
+            observed_viewport_sizes.insert(format!(
+                "{}x{}",
+                frame_viewport.width, frame_viewport.height
+            ));
+            observed_scales.insert(frame_viewport.scale);
+            if !matches!(frame_viewport.scale, 1 | 2) {
+                failures.push(failure(
+                    "geometry",
+                    &relative_manifest,
+                    format!(
+                        "frame {} records unsupported device scale {}",
+                        frame.path, frame_viewport.scale
+                    ),
+                ));
+            }
             let mut frame_evidence = FrameEvidence {
                 path: frame.path.clone(),
-                logical_width: viewport.width,
-                logical_height: viewport.height,
-                scale: viewport.scale,
+                logical_width: frame_viewport.width,
+                logical_height: frame_viewport.height,
+                scale: frame_viewport.scale,
                 expected_width: expected.0,
                 expected_height: expected.1,
                 actual_width: None,
@@ -606,9 +623,9 @@ pub fn verify_capture_run(
                         frame.path,
                         image.width(),
                         image.height(),
-                        viewport.width,
-                        viewport.height,
-                        viewport.scale,
+                        frame_viewport.width,
+                        frame_viewport.height,
+                        frame_viewport.scale,
                         expected.0,
                         expected.1
                     ),
@@ -822,7 +839,9 @@ fn inspect_animation(
         return;
     };
     if manifest.state.reduced_motion {
-        if images.windows(2).any(|frames| frames[0] != frames[1]) {
+        if images.windows(2).any(|frames| {
+            frames[0].dimensions() == frames[1].dimensions() && frames[0] != frames[1]
+        }) {
             failures.push(failure(
                 "animation",
                 path,
@@ -1552,6 +1571,7 @@ mod tests {
         let frames = vec![FrameArtifact {
             label: "start".to_owned(),
             time_ms: 0,
+            viewport: None,
             path: frame_path,
             sha256: frame_hash,
             width: 2880,
@@ -1630,6 +1650,7 @@ mod tests {
             frames.push(FrameArtifact {
                 label: label.to_owned(),
                 time_ms,
+                viewport: None,
                 path,
                 sha256: hash,
                 width: 16,

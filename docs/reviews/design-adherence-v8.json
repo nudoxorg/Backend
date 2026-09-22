@@ -1,0 +1,335 @@
+{
+  "schema": 1,
+  "audit": {
+    "id": "design-adherence-review-v8",
+    "base_revision": "174b5db8ac782d4fc3bdbbcf404d655a889c5928",
+    "worktree": "/Users/mileswirht/Documents/ChatGPT/backend-design-adherence-review-v8",
+    "source_root": "/Users/mileswirht/Downloads/backend/Nudox-Design-System",
+    "source_sha256": "dc75eeb63abeae491e55c1a81991221c325fac4b74ee818ea637834f88169f64",
+    "method": [
+      "Read the repository README and all four per-artifact READMEs, plus every HTML artifact and preserved archive name.",
+      "Inspected reference artboards at their natural 1440px CSS width and opened full images and focused crops.",
+      "Compared authoritative CSS selectors and pixel measurements with static GPUI/harness source inspection.",
+      "No Cargo, compiler, Nix build, or native application run was performed under the host resource ceiling."
+    ],
+    "native_pixel_status": "blocked_by_build_lane",
+    "native_pixel_reason": "The parent task explicitly withheld a build lane. Existing reference pixels were available; no new native GPUI pixels were accepted as evidence.",
+    "report_commit_scope": "harness per-frame viewport provenance and resize/scale conformance support, plus this ledger"
+  },
+  "authority": {
+    "reference_css": "/Users/mileswirht/Downloads/backend/Nudox-Design-System/artifacts/colour-with-a-job/Color.dc.html:30-459",
+    "reference_artboard_markup": "/Users/mileswirht/Downloads/backend/Nudox-Design-System/artifacts/colour-with-a-job/Color.dc.html:885-917",
+    "contract_extractor": "tools/gui-harness/src/design_contract.rs:299-360",
+    "capture_matrix": "tools/gui-harness/src/design_contract.rs:220-280",
+    "product_root": "apps/desktop/src/views/mod.rs:25-74",
+    "product_shell": "apps/desktop/src/views/shell.rs:17-262",
+    "product_tokens": "apps/desktop/src/theme/palette.rs:76-326 and apps/desktop/src/theme/tokens.rs:156-452",
+    "harness_driver": "tools/gui-harness/src/gpui_driver.rs:144-435",
+    "harness_artifacts": "tools/gui-harness/src/artifact.rs:12-31 and 178-373",
+    "harness_conformance": "tools/gui-harness/src/conformance.rs:223-876"
+  },
+  "artifacts": [
+    {
+      "id": "colour-with-a-job",
+      "title": "Colour with a job",
+      "source": "/Users/mileswirht/Downloads/backend/Nudox-Design-System/artifacts/colour-with-a-job/Color.dc.html",
+      "sha256": "aea27a1d2cdb8f4182879868376e887af1a21802cf07129a3f95216dc8d2bc21",
+      "bytes": 112054,
+      "artboard": {"width": 1440, "height": 1340},
+      "full_capture": "/tmp/nudox-design-audit-v8/color-full.png",
+      "crops": [
+        {"path": "/tmp/nudox-design-audit-v8/color-full-header.png", "pixels": "900x340", "purpose": "title, token strips, abyss ground"},
+        {"path": "/tmp/nudox-design-audit-v8/color-full-voices.png", "pixels": "1440x320", "purpose": "four voice plates and control states"},
+        {"path": "/tmp/nudox-design-audit-v8/color-full-families.png", "pixels": "1440x300", "purpose": "family hue and kind shape language"},
+        {"path": "/tmp/nudox-design-audit-v8/color-full-daylight.png", "pixels": "840x230", "purpose": "Glacier/daylight parity"}
+      ],
+      "pixel_notes": ["voice row begins at y=570 in the 1440px artboard", "exact dark ground #060d1b is the dominant field", "exact voice fills are #6cebad, #93a2fa, #f4bb6a, #ff7a8a"]
+    },
+    {
+      "id": "descent",
+      "title": "Descent",
+      "source": "/Users/mileswirht/Downloads/backend/Nudox-Design-System/artifacts/descent/Descent.dc.html",
+      "sha256": "ed20ae6d351f9aa401705f63e6cee381af5371e7ba207ef05a8a3111ba8dc740",
+      "bytes": 484649,
+      "artboard": {"width": 1440, "height": 1160},
+      "full_capture": "/tmp/nudox-design-audit-v8/descent-full.png",
+      "crops": [
+        {"path": "/tmp/nudox-design-audit-v8/descent-full-hero.png", "pixels": "1440x260", "purpose": "FACET header and route premise"},
+        {"path": "/tmp/nudox-design-audit-v8/descent-full-steps.png", "pixels": "1440x740", "purpose": "Orbit -> Package -> Page -> Source descent"},
+        {"path": "/tmp/nudox-design-audit-v8/descent-full-footer.png", "pixels": "1440x220", "purpose": "closing rule and explanatory footer"}
+      ],
+      "pixel_notes": ["four offset desktop scenes are linked by thin mint diagonals", "depth labels are mono/mint and sit at each transition edge", "the composition is an explicit visual route model, not a generic two-column shell"]
+    },
+    {
+      "id": "one-mark-one-language",
+      "title": "One mark, one language",
+      "source": "/Users/mileswirht/Downloads/backend/Nudox-Design-System/artifacts/one-mark-one-language/Brand.dc.html",
+      "sha256": "6db8497548d073fc36d07c899f1ec5f4a04433a1c0cbaf8465ab1228c409462b",
+      "bytes": 112751,
+      "artboard": {"width": 1440, "height": 1420},
+      "full_capture": "/tmp/nudox-design-audit-v8/brand-full.png",
+      "crops": [
+        {"path": "/tmp/nudox-design-audit-v8/brand-full-hero.png", "pixels": "1440x300", "purpose": "Nudox mark lockup and voice"},
+        {"path": "/tmp/nudox-design-audit-v8/brand-full-marks.png", "pixels": "1440x600", "purpose": "six jobs derived from the mark"},
+        {"path": "/tmp/nudox-design-audit-v8/brand-full-motion.png", "pixels": "1440x450", "purpose": "states and motion principles"}
+      ],
+      "pixel_notes": ["hero has a large faceted mark at left and a high contrast wordmark at center", "the six jobs include stone, stripes, chevron, bevel, comb, and cut corner", "state plates use edge treatment as the state channel"]
+    },
+    {
+      "id": "the-information-language",
+      "title": "The information language",
+      "source": "/Users/mileswirht/Downloads/backend/Nudox-Design-System/artifacts/the-information-language/Language.dc.html",
+      "sha256": "803654307f626ca74eb12eb7ebd0f0ecb6842f1ddb56bb1ba257c6067da4ed4a",
+      "bytes": 137093,
+      "artboard": {"width": 1440, "height": 1760},
+      "full_capture": "/tmp/nudox-design-audit-v8/language-full.png",
+      "crops": [
+        {"path": "/tmp/nudox-design-audit-v8/language-full-hero.png", "pixels": "1440x300", "purpose": "information language premise"},
+        {"path": "/tmp/nudox-design-audit-v8/language-full-kinds.png", "pixels": "1440x640", "purpose": "five family rows and declaration shapes"},
+        {"path": "/tmp/nudox-design-audit-v8/language-full-states.png", "pixels": "1440x570", "purpose": "Rest/Focus/Yours/Working/Waiting/Stopped/Not yet edges"},
+        {"path": "/tmp/nudox-design-audit-v8/language-full-comb.png", "pixels": "1440x410", "purpose": "comb, mosaic, and stone examples"}
+      ],
+      "pixel_notes": ["family semantics are repeated as hue plus shape across the board", "state samples use seven distinct edge/plate treatments", "the page contains a dense icon atlas and visual grammar examples absent from the current shell"]
+    }
+  ],
+  "token_ledger": {
+    "palette": {
+      "abyss": {"g0":"#030814","g1":"#060d1b","g2":"#0a1424","g3":"#0f1b2f","g4":"#15243c","g5":"#1c304f","g6":"#25406a","ink0":"#f5f7fb","ink1":"#d2d9e5","ink2":"#9aa6ba","ink3":"#74819a","ink4":"#4c5870"},
+      "glacier": {"g0":"#dfe5ee","g1":"#eef2f7","g2":"#f6f8fb","g3":"#ffffff","g4":"#eef2f8","g5":"#e2e9f3","g6":"#cfdaea","ink0":"#0a1222","ink1":"#1d2940","ink2":"#4b5a75","ink3":"#66758f","ink4":"#a3aec2"},
+      "voices": {"mint":"#6cebad","teal":"#3fcdc6","leaf":"#2fb96c","peri":"#93a2fa","peri_hi":"#bcc6ff","amber":"#f4bb6a","coral":"#ff7a8a"},
+      "families": {"namespace":"#a9b6cc","type":"#5fe0b4","contract":"#d59cf5","callable":"#8fa6ff","value":"#f3c06e"}
+    },
+    "typography": {
+      "display_xl": {"font":"Archivo","size_px":46,"line_px":50,"weight":750,"stretch":"118%","tracking":"-.02em"},
+      "display": {"font":"Archivo","size_px":30,"line_px":36,"weight":700,"stretch":"114%","tracking":"-.015em"},
+      "title": {"font":"Archivo","size_px":20,"line_px":26,"weight":650,"stretch":"110%","tracking":"-.01em"},
+      "head": {"font":"Instrument Sans","size_px":15,"line_px":22,"weight":600},
+      "body": {"font":"Instrument Sans","size_px":13.5,"line_px":21},
+      "prose": {"font":"Newsreader","size_px":14.5,"line_px":23},
+      "micro": {"font":"Archivo","size_px":10.5,"line_px":14,"weight":650,"tracking":".09em","transform":"uppercase"},
+      "icons": {"default_px":16,"stroke":1.7,"sizes_px":[12,14,18,20,24,32]}
+    },
+    "geometry": {
+      "radii_px": {"r1":5,"r2":8,"r3":12,"r4":16,"r5":22,"pill":999},
+      "titlebar_px": 46,
+      "rail_px": 54,
+      "rail_button_px": 38,
+      "input_px": 32,
+      "omni_px": 30,
+      "omni_min_px": 160,
+      "omni_max_px": 560,
+      "omni_large_px": 60,
+      "cut_px": 14,
+      "button_px": {"sm":24,"default":30,"lg":38,"xl":46},
+      "focus": {"outline_px":2,"offset_px":2,"halo_px":5}
+    },
+    "motion": {
+      "durations_ms": {"micro":90,"quick":160,"standard":240,"emphasis":380,"scene":620},
+      "easing": {"glide":"cubic-bezier(.22,1,.36,1)","snap":"cubic-bezier(.3,0,0,1)","spring":"cubic-bezier(.2,.9,.25,1.18)"},
+      "reduced_motion": {"animation_duration_ms":1,"transition_duration_ms":1,"iterations":1}
+    },
+    "responsive": {
+      "capture_matrix_viewports": {"wide":"1440x900","compact":"1024x768","narrow":"640x480"},
+      "required_scales":[1,2],
+      "required_themes":["ink","glacier"],
+      "required_motion":["reduced","full"],
+      "product_layout_source":"apps/desktop/src/core/layout.rs:17-107",
+      "product_layout_integration":"missing from apps/desktop/src/views/mod.rs:31-49; render_root does not resolve width or panel mode"
+    }
+  },
+  "requirements": [
+    {
+      "id":"REF-001",
+      "category":"reference-identity",
+      "selectors":["<title>",".nx[style*='width']","data-props.$preview"],
+      "expected":"Exactly four named artifacts with matching preview/.nx artboards and stable source hashes.",
+      "evidence":{"type":"static+pixels","paths":["tools/gui-harness/src/design_contract.rs:299-360","/tmp/nudox-design-audit-v8/color-full.png","/tmp/nudox-design-audit-v8/descent-full.png","/tmp/nudox-design-audit-v8/brand-full.png","/tmp/nudox-design-audit-v8/language-full.png"]},
+      "implementation":{"status":"pass_static","detail":"The contract extractor enumerates the same four required artifacts; hashes and dimensions are recorded above."},
+      "gap":null
+    },
+    {
+      "id":"TOK-001",
+      "category":"palette",
+      "selectors":[".nx",".nx.glacier"],
+      "expected":"Abyss and Glacier board values, signal voices, family hues, line opacities, and semantic state roles match the CSS tokens.",
+      "evidence":{"type":"static+pixel","paths":["Color.dc.html:30-92","apps/desktop/src/theme/palette.rs:76-326","/tmp/nudox-design-audit-v8/color-full-header.png","/tmp/nudox-design-audit-v8/color-full-daylight.png"]},
+      "implementation":{"status":"pass_static","detail":"Palette.rs contains the exact hex roles for both appearances and the five family hues."},
+      "gap":null
+    },
+    {
+      "id":"TOK-002",
+      "category":"fonts-and-type",
+      "selectors":[".t-display-xl",".t-display",".t-title",".t-head",".t-body",".t-prose",".t-micro"],
+      "expected":"Archivo/Instrument Sans/Newsreader/Geist Mono with exact size, line-height, weight, stretch, and tracking metrics.",
+      "evidence":{"type":"static","paths":["Color.dc.html:50-68","Color.dc.html:104-113","apps/desktop/src/theme/fonts.rs:12-79","tools/gui-harness/src/lib.rs:68-75"]},
+      "implementation":{"status":"partial","detail":"Font families and embedded byte hashes match. TypeScale uses a different ladder: Section=20px/24px vs reference title=20px/26px, Title=30px/32px vs reference display=30px/36px, Body=14px/24px vs reference body=13.5px/21px, and Micro=10px/14px vs reference micro=10.5px/14px."},
+      "gap":"Reconcile TypeScale names and line metrics before accepting native pixel parity, especially at increased interface sizes."
+    },
+    {
+      "id":"GEO-001",
+      "category":"chrome-geometry",
+      "selectors":[".titlebar",".rail",".rail-btn",".input",".omni",".btn"],
+      "expected":"46px titlebar, 54px rail, 38px rail buttons, 32px inputs, 30px omnibar, 30/24/38/46px button ladder.",
+      "evidence":{"type":"static+pixel","paths":["Color.dc.html:271-284","Color.dc.html:123-140","apps/desktop/src/views/shell.rs:24-78","apps/desktop/src/views/shell.rs:145-166","apps/desktop/src/views/primitives.rs:12-31","/tmp/nudox-design-audit-v8/descent-full-hero.png"]},
+      "implementation":{"status":"gap","detail":"Current header is hardcoded 64px, shelf is hardcoded 248px, content padding is 40px, and status bar is 28px. Chrome::TITLEBAR=44px exists but is not used by render_root/header."},
+      "gap":"Use canonical Chrome tokens and the Facet titlebar/rail composition; native pixels are unobserved until the build lane is available.",
+      "measurements":{"header_delta_px":18,"header_relative_error":0.3913,"content_padding_delta_vs_reference_panel_22px":18}
+    },
+    {
+      "id":"GEO-002",
+      "category":"responsive-panels",
+      "selectors":[".body",".rail",".split",".pane"],
+      "expected":"Width-aware panel transformations; compact rail at narrow widths, context rail/full on wider widths, no clipped content.",
+      "evidence":{"type":"static+pixel","paths":["Color.dc.html:283-310 (shared .body/.rail/.side/.ctx rules)","tools/gui-harness/src/design_contract.rs:220-280","apps/desktop/src/core/layout.rs:17-107","apps/desktop/src/views/mod.rs:31-74","/tmp/nudox-design-audit-v8/descent-full-steps.png"]},
+      "implementation":{"status":"gap","detail":"ResponsiveLayout::resolve is implemented but render_root never calls it; current render tree always appends one fixed shelf and one padded body. Settings flags shelf_open/context_open are stored but not projected into view geometry."},
+      "gap":"Wire width class and panel modes through render_root and test at 640/800/1024/1280/1440/1920/2560 widths, plus 80%-150% interface size."
+    },
+    {
+      "id":"SUR-001",
+      "category":"cuts-and-bevels",
+      "selectors":[".cut",".cut::before",".nx :focus-visible",".card"],
+      "expected":"14px chamfer polygon, weave/high-low edge treatment, state encoded by bevel, and periwinkle focus halo.",
+      "evidence":{"type":"static+pixel","paths":["Color.dc.html:118-120","Color.dc.html:537-552","Color.dc.html:705-725","/tmp/nudox-design-audit-v8/color-full-voices.png","/tmp/nudox-design-audit-v8/brand-full-marks.png","/tmp/nudox-design-audit-v8/language-full-states.png"]},
+      "implementation":{"status":"gap","detail":"surface::cut only draws a rectangular GPUI Div with two 18px accent hairlines; it does not clip/chamfer or apply weave/bevel gradients. surface::raised uses a generic shadow_lg."},
+      "gap":"Implement cut plates as GPUI layout primitives with clip geometry/edge children, keeping canvas out of the path; validate crop corners at 1x and 2x."
+    },
+    {
+      "id":"BRAND-001",
+      "category":"mark-and-identity",
+      "selectors":[".logo-lockup",".facet",".sig",".comb",".cut"],
+      "expected":"One mark establishes stone, stripes, chevron, bevel, comb, and cut-corner jobs across the product.",
+      "evidence":{"type":"pixel+static","paths":["Brand.dc.html (shared CSS selectors)","/tmp/nudox-design-audit-v8/brand-full-hero.png","/tmp/nudox-design-audit-v8/brand-full-marks.png","/tmp/nudox-design-audit-v8/brand-full-motion.png","apps/desktop/src/ui/icon.rs:162-216"]},
+      "implementation":{"status":"gap","detail":"Current shell renders text 'Nudox' and embedded facet/facets SVG assets but has no mark lockup or composable stone/stripe/chevron/comb primitives in the views."},
+      "gap":"Compose the shell identity from GPUI primitives and the existing semantic family/kind system; current SVG path is a declared user constraint risk."
+    },
+    {
+      "id":"LANG-001",
+      "category":"family-and-kind-language",
+      "selectors":[".k",".facet",".gem",".bead",".comb",".mosaic"],
+      "expected":"Hue identifies family; shape identifies kind; family rows and icon atlas remain legible at large text and narrow widths.",
+      "evidence":{"type":"pixel+static","paths":["Color.dc.html:201-215","Language.dc.html (family rows and atlas)","/tmp/nudox-design-audit-v8/language-full-kinds.png","/tmp/nudox-design-audit-v8/language-full-comb.png","apps/desktop/src/theme/palette.rs:117-122","apps/desktop/src/theme/kind.rs:1-150"]},
+      "implementation":{"status":"partial","detail":"Palette and closed kind asset map exist, and product routes use kind marks. The full family/kind atlas, comb/mosaic examples, and dense family semantics are not present in the shell views."},
+      "gap":"Audit every route card/row for family hue plus kind shape, then stress the mapping with 150% interface size and a 640px viewport."
+    },
+    {
+      "id":"STATE-001",
+      "category":"state-voice",
+      "selectors":[".btn.primary",".btn.edge",".btn.danger",".input.is-focus",".dot.live",".eq",".state plates"],
+      "expected":"Mint acts, periwinkle focuses, amber waits, coral stops; edge/bevel communicates Rest/Focus/Yours/Working/Waiting/Stopped/Not yet.",
+      "evidence":{"type":"pixel+static","paths":["Color.dc.html:22-23","Color.dc.html:123-171","Language.dc.html (state plates)","/tmp/nudox-design-audit-v8/color-full-voices.png","/tmp/nudox-design-audit-v8/language-full-states.png","apps/desktop/src/theme/tokens.rs:12-121"]},
+      "implementation":{"status":"partial","detail":"ControlState has eight explicit values and maps colors/motion, but current product controls remain generic CE buttons and rectangular panels. The seven edge-coded state plates are not composed in route views."},
+      "gap":"Expose state edge treatments consistently on cards, loading, stale, offline, error, selected, and disabled surfaces."
+    },
+    {
+      "id":"MOTION-001",
+      "category":"motion-tokens",
+      "selectors":["--t-micro","--t-quick","--t-std","--t-emph","--t-scene","--glide","--snap","--spring","@media (prefers-reduced-motion:reduce)"],
+      "expected":"90/160/240/380/620ms tokens, matching easings, and 1ms reduced-motion collapse.",
+      "evidence":{"type":"static","paths":["Color.dc.html:60-62","Color.dc.html:459","apps/desktop/src/theme/tokens.rs:156-184","apps/desktop/src/theme/mod.rs:173-180","apps/desktop/src/runtime/animation.rs:89-184"]},
+      "implementation":{"status":"pass_static","detail":"Motion enum values and reduced-motion snap behavior match the token durations. The harness has deterministic virtual time and frame sampling."},
+      "gap":null
+    },
+    {
+      "id":"MOTION-002",
+      "category":"motion-integration",
+      "selectors":[".door:hover",".cut.lift:hover",".mi",".toast",".overlay",".node",".bead"],
+      "expected":"Hover/press/route/overlay motion explains state and remains retargetable; full motion changes pixels and reduced motion settles.",
+      "evidence":{"type":"static","paths":["Color.dc.html:415-459","apps/desktop/src/runtime/ui_graph.rs:173-183","apps/desktop/src/runtime/animation.rs:119-184","tools/gui-harness/src/conformance.rs:814-876"]},
+      "implementation":{"status":"gap","detail":"UiRootEntity advances a timeline, but no view property reads a track or emits route/overlay transforms; most product surfaces are static Div trees. Native transition pixels were not available."},
+      "gap":"Bind route descent, panel collapse, overlay rise, hover lift, and working indicators to motion tokens and prove both full/reduced captures."
+    },
+    {
+      "id":"HARNESS-001",
+      "category":"resize-and-scale-capture",
+      "selectors":["InputStep::Resize","InputStep::Scale","CaptureRecord.viewport","FrameArtifact.viewport"],
+      "expected":"Resize/scale after the first frame changes the actual GPUI window, crops to the current physical size, and records per-frame viewport provenance.",
+      "evidence":{"type":"source-change+static","paths":["tools/gui-harness/src/gpui_driver.rs:190-247","tools/gui-harness/src/gpui_driver.rs:401-435","tools/gui-harness/src/lib.rs:166-204","tools/gui-harness/src/artifact.rs:12-31","tools/gui-harness/src/conformance.rs:501-676","git diff --check" ]},
+      "implementation":{"status":"patched_unverified","detail":"The driver now tracks current_viewport, mutates it on Resize/Scale, normalizes each frame against it, and FrameArtifact/Conformance/verify_run use per-frame geometry. A headless resize regression test is added but cannot be executed under the withheld build lane."},
+      "gap":"Run the new regression and a real production capture once the parent supplies a build lane; verify window.resize and scale-factor updates are reflected in GPUI pixels."
+    },
+    {
+      "id":"HARNESS-002",
+      "category":"animation-gate",
+      "selectors":["inspect_animation","changed_pixels","reduced_motion"],
+      "expected":"Full-motion transitions require elapsed frames and changed pixels; reduced motion ignores dimension-only resize transitions and rejects same-size visual churn.",
+      "evidence":{"type":"source-change+static","paths":["tools/gui-harness/src/conformance.rs:814-876","tools/gui-harness/src/conformance.rs:1404-1412" ]},
+      "implementation":{"status":"patched_unverified","detail":"Reduced-motion inspection now compares only same-dimension frames, while mixed-dimension full-motion transitions remain measurable through changed_pixels returning u64::MAX. No runtime verification was possible."},
+      "gap":"Exercise resize plus reduced/full motion combinations in the build lane and inspect filmstrips/crops, not only manifests."
+    },
+    {
+      "id":"HARNESS-003",
+      "category":"capture-matrix",
+      "selectors":["CaptureMatrix::default","backend-desktop-gui-harness::run"],
+      "expected":"Every route/state/overlay/keyboard requirement is rendered across wide/compact/narrow, 1x/2x, Ink/Glacier, and reduced/full motion.",
+      "evidence":{"type":"static","paths":["tools/gui-harness/src/design_contract.rs:220-280","apps/desktop/src/bin/backend-desktop-gui-harness.rs:31-69","tools/gui-harness/src/journey.rs:30-78"]},
+      "implementation":{"status":"gap","detail":"The contract describes the full matrix, but the production CLI accepts one state and one viewport per invocation and does not enumerate routes/themes/states/overlays. No current native matrix artifact was available."},
+      "gap":"Add a matrix runner or scripted expansion and require actual PNG evidence for each cell."
+    },
+    {
+      "id":"A11Y-001",
+      "category":"accessibility-and-focus",
+      "selectors":[".nx :focus-visible","Button::accessibility_label","Input::aria_label","ActionTree","focus_order"],
+      "expected":"2px periwinkle visible focus with 2px offset/5px halo, explicit labels/roles, deterministic focus order, and action state evidence.",
+      "evidence":{"type":"static","paths":["Color.dc.html:118-120","apps/desktop/src/ui/components.rs:70-110","apps/desktop/src/ui/components.rs:118-163","apps/desktop/src/ui/components.rs:384-746","apps/desktop/src/theme/mod.rs:87-115","tools/gui-harness/src/conformance.rs:889-1109"]},
+      "implementation":{"status":"pass_static_partial_pixels","detail":"GPUI CE focus rings, labels, tab indexes, roles, and an explicit action tree are present. Focus pixels and native accessibility tree remain unobserved without a build lane."},
+      "gap":"Verify focus crops at each viewport and increased text size, including collapsed panel controls and overlay restoration."
+    },
+    {
+      "id":"RENDER-001",
+      "category":"rendering-constraints",
+      "selectors":["canvas","Canvas","Svg","svg()","include_bytes!(...svg)"],
+      "expected":"All visual work stays in GPUI layout/elements; avoid canvas and generally avoid SVG unless the design asset is explicitly required.",
+      "evidence":{"type":"static","paths":["apps/desktop/src (no canvas matches)","apps/desktop/src/ui/icon.rs:16-236","apps/desktop/src/ui/icon.rs:310-378","apps/desktop/src/ui/surface.rs:14-84"]},
+      "implementation":{"status":"partial","detail":"No canvas API was found in the inspected desktop source. The icon system is SVG-backed for all chrome, logos, kinds, facet, and faceted ground assets, so the user's no-SVG preference is not met for the current implementation."},
+      "gap":"Replace routine chrome/kind geometry with GPUI primitives where practical; retain only explicitly approved identity artwork and prove raster output."
+    },
+    {
+      "id":"STRESS-001",
+      "category":"stress-matrix",
+      "selectors":["ResponsiveLayout::resolve","InterfaceSize","Density","CaptureMatrix"],
+      "expected":"Components remain legible and structurally valid at 80%-150% interface size, compact/comfortable/spacious density, narrow widths, collapsed panels, long labels, loading/error states, and all themes/motion modes.",
+      "evidence":{"type":"static","paths":["apps/desktop/src/theme/tokens.rs:188-224","apps/desktop/src/theme/tokens.rs:359-433","apps/desktop/src/core/layout.rs:57-107","tools/gui-harness/src/design_contract.rs:220-280"]},
+      "implementation":{"status":"partial","detail":"The token and layout models expose the stress dimensions, but render_root does not consume ResponsiveLayout and no native screenshot set exists to prove text wrapping/collapse behavior."},
+      "gap":"Make each component independently capturable, then compose the shell only after component crops pass this stress matrix."
+    }
+  ],
+  "worst_discrepancies": [
+    {"id":"D-01","severity":"blocker","finding":"Native resize/scale capture previously rejected any post-first-frame viewport change; this audit patched the artifact/driver/conformance path but could not execute it.","measurement":"preflight rejection removed; per-frame viewport now serializes as FrameArtifact.viewport"},
+    {"id":"D-02","severity":"high","finding":"Shell geometry does not use the authoritative Facet titlebar/rail grammar.","measurement":"reference titlebar 46px vs current hardcoded header 64px (+18px, +39.13%); reference rail 54px vs current fixed shelf 248px"},
+    {"id":"D-03","severity":"high","finding":"Responsive layout resolver is dead at the render boundary.","measurement":"resolver has four width classes and panel modes, but render_root always emits one shelf and 40px content padding"},
+    {"id":"D-04","severity":"high","finding":"Cut/bevel state language is absent from the main surfaces.","measurement":"reference chamfer is 14px polygon plus edge/weave; current surface::cut has only two 18px hairline children and no clipping"},
+    {"id":"D-05","severity":"high","finding":"Reference motion is not connected to visible product properties.","measurement":"token durations match exactly, but timeline advance has no observed view track/property binding in the inspected views"},
+    {"id":"D-06","severity":"medium","finding":"Typography has exact families but several metric mismatches.","measurement":"reference display 30/36 vs current Title 30/32; reference body 13.5/21 vs current Body 14/24"},
+    {"id":"D-07","severity":"medium","finding":"Routine visual assets remain SVG-backed despite the no-SVG preference.","measurement":"icon.rs enumerates 26+ SVG chrome/kind/logo paths plus facet/facets ground assets"}
+  ],
+  "capture_plan": {
+    "native_required_when_lane_opens": [
+      "Each listed reference crop plus matching native crop at 1440x900, 1024x768, 640x480, 1x and 2x.",
+      "A resize sequence 1440x900@1x -> 1024x768@1x -> 640x480@2x with frames before/after each change.",
+      "A scale sequence 1x -> 2x at fixed logical size, checking far-edge landmarks and crop dimensions.",
+      "Full/reduced motion filmstrips for route descent, panel collapse, overlays, hover/pressed/focus, loading and state plates.",
+      "A 150% interface-size and spacious-density run with long labels and collapsed shelf/context panels.",
+      "Ink and Glacier runs with accessibility tree, tab/shift-tab, enter/escape, focus-visible and overlay restoration evidence."
+    ],
+    "pixel_acceptance": [
+      "Inspect full PNGs and targeted crops; do not accept manifest-only claims.",
+      "Compare exact physical dimensions per frame, including mixed-size sequences.",
+      "Measure content coverage and reject transparent/uniform remainder bands.",
+      "Review chamfer corners, edge/bevel state, text wrap, and far-edge controls at 1x and 2x."
+    ]
+  },
+  "changed_files": [
+    "tools/gui-harness/src/lib.rs",
+    "tools/gui-harness/src/gpui_driver.rs",
+    "tools/gui-harness/src/artifact.rs",
+    "tools/gui-harness/src/conformance.rs",
+    "docs/reviews/design-adherence-v8.json",
+    "docs/reviews/design-adherence-v8.md"
+  ],
+  "validation_without_build_lane": [
+    "git diff --check passed",
+    "Reference full PNGs and focused crops were opened and inspected",
+    "Reference dimensions, source hashes, token values, and pixel color fields were measured with static scripts",
+    "No Cargo/Nix/compiler command was run after the parent build-lane prohibition"
+  ]
+}

@@ -168,9 +168,10 @@ pub struct Viewport {
 /// Input journeys can resize a window or change its device scale at time zero.
 /// GPUI applies those changes before the first screenshot, so the capture
 /// contract must use the resulting logical size and backing scale when it
-/// crops, writes PNGs, and records a manifest. Changes after the first frame
-/// would produce a sequence with mixed physical dimensions; those are
-/// rejected until the artifact format can represent per-frame viewports.
+/// crops, writes PNGs, and records a manifest. Later viewport changes are
+/// dispatched by the driver and recorded on the individual frame; keeping the
+/// preflight pass limited to the initial viewport avoids pretending that one
+/// manifest-level size describes a mixed-size sequence.
 pub fn preflight_viewport(
     viewport: Viewport,
     actions: &[InputStep],
@@ -190,11 +191,7 @@ pub fn preflight_viewport(
             InputStep::Scale { factor } if elapsed <= first_frame => {
                 effective = Viewport::new(effective.width, effective.height, *factor)?;
             }
-            InputStep::Resize { .. } | InputStep::Scale { .. } => {
-                return Err(CaptureError::InvalidConfig(
-                    "resize and scale must happen before the first capture frame".to_owned(),
-                ));
-            }
+            InputStep::Resize { .. } | InputStep::Scale { .. } => {}
             _ => {}
         }
     }
@@ -448,6 +445,8 @@ pub struct CaptureRecord {
     pub label: String,
     /// Virtual capture time.
     pub time_ms: u64,
+    /// Logical viewport and device scale used for this frame.
+    pub viewport: Viewport,
     /// Image bytes.
     pub image: RgbaImage,
     /// Input step that produced it.
@@ -520,10 +519,10 @@ impl CaptureSession {
         semantic_artifact: Option<&str>,
     ) -> Result<CaptureManifest, CaptureError> {
         let mut frames = Vec::with_capacity(capture.frames.len());
-        let expected_size = capture.viewport.physical_size();
         let mut baseline_within_policy = true;
         let mut missing_baseline = false;
         for record in &mut capture.frames {
+            let expected_size = record.viewport.physical_size();
             if (record.image.width(), record.image.height()) != expected_size {
                 return Err(CaptureError::InvalidConfig(format!(
                     "capture frame {} has physical size {}x{}, expected {}x{} for {}",
@@ -532,7 +531,7 @@ impl CaptureSession {
                     record.image.height(),
                     expected_size.0,
                     expected_size.1,
-                    capture.viewport.suffix(),
+                    record.viewport.suffix(),
                 )));
             }
             let baseline = self.baseline_path(&capture.state.id, &record.label);
@@ -770,6 +769,7 @@ mod tests {
             frames: vec![CaptureRecord {
                 label: "start".to_owned(),
                 time_ms: 0,
+                viewport: Viewport::new(640, 480, 1).expect("viewport"),
                 image: actual,
                 input_index: None,
                 diff: None,
@@ -802,6 +802,7 @@ mod tests {
             frames: vec![CaptureRecord {
                 label: "start".to_owned(),
                 time_ms: 0,
+                viewport: Viewport::new(4, 3, 2).expect("effective viewport"),
                 image,
                 input_index: None,
                 diff: None,

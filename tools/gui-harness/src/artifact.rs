@@ -16,6 +16,10 @@ pub struct FrameArtifact {
     pub label: String,
     /// Virtual time at which the frame was captured.
     pub time_ms: u64,
+    /// Logical viewport and device scale used for this frame. Older manifests
+    /// may omit this and fall back to the manifest-level viewport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<crate::Viewport>,
     /// Relative PNG path from the run root.
     pub path: String,
     /// SHA-256 of the encoded PNG bytes.
@@ -318,7 +322,6 @@ fn verify_run_inner(
             ));
             report.failed_manifests += 1;
         }
-        let expected_size = manifest.config.viewport.physical_size();
         // Frame paths in a manifest are relative to the capture/session root,
         // while manifests live in its `manifests/` directory.
         let base = manifest_path
@@ -327,6 +330,10 @@ fn verify_run_inner(
             .ok_or_else(|| ArtifactError::Verification(manifest_path.display().to_string()))?;
         let mut manifest_frame_paths = std::collections::BTreeSet::new();
         for frame in manifest.frames {
+            let expected_size = frame
+                .viewport
+                .unwrap_or(manifest.config.viewport)
+                .physical_size();
             let frame_relative = safe_relative_path(&frame.path)?;
             let path = base.join(&frame_relative);
             if !manifest_frame_paths.insert(frame.path.clone())
@@ -787,6 +794,7 @@ pub fn frame_artifact(record: &CaptureRecord, relative: String, sha256: String) 
     FrameArtifact {
         label: record.label.clone(),
         time_ms: record.time_ms,
+        viewport: Some(record.viewport),
         path: relative,
         sha256,
         width: record.image.width(),

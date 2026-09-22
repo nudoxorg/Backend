@@ -190,6 +190,7 @@ where
     }
     let mut next_action = 0_usize;
     let mut driver_state = DriverState::default();
+    let mut current_viewport = viewport;
     let mut input_index = None;
     let mut records = Vec::with_capacity(frames.len());
     let mut elapsed = 0_u64;
@@ -213,6 +214,7 @@ where
                 window,
                 step,
                 &mut driver_state,
+                &mut current_viewport,
                 &mut input_hook,
             )?;
             // GPUI dispatch can enqueue action/context work behind the
@@ -231,10 +233,14 @@ where
         context
             .update_window(window, |_, window, cx| frame_hook(frame, window, cx))
             .map_err(|error| CaptureError::Gpui(error.to_string()))??;
-        let image = normalize_capture_image(draw_and_capture(&mut context, window)?, viewport)?;
+        let image = normalize_capture_image(
+            draw_and_capture(&mut context, window)?,
+            current_viewport,
+        )?;
         records.push(CaptureRecord {
             label: frame.label.clone(),
             time_ms: frame.time_ms,
+            viewport: current_viewport,
             image,
             input_index,
             diff: None,
@@ -253,6 +259,7 @@ fn apply_step(
     window: AnyWindowHandle,
     step: &InputStep,
     driver_state: &mut DriverState,
+    viewport: &mut Viewport,
     input_hook: &mut impl FnMut(&InputStep, &mut Window, &mut App),
 ) -> Result<(), CaptureError> {
     match step {
@@ -404,11 +411,13 @@ fn apply_step(
                     "resize dimensions must be nonzero".to_owned(),
                 ));
             }
+            let next_viewport = Viewport::new(*width, *height, viewport.scale)?;
             context
                 .update_window(window, |_, window, _| {
                     window.resize(size(px(*width as f32), px(*height as f32)))
                 })
                 .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+            *viewport = next_viewport;
         }
         InputStep::Scale { factor } => {
             if !matches!(factor, 1 | 2) {
@@ -416,11 +425,13 @@ fn apply_step(
                     "unsupported GPUI scale factor {factor}; expected 1 or 2"
                 )));
             }
+            let next_viewport = Viewport::new(viewport.width, viewport.height, *factor)?;
             context
                 .update_window(window, |_, window, _| {
                     window.set_scale_factor(f32::from(*factor))
                 })
                 .map_err(|error| CaptureError::Gpui(error.to_string()))?;
+            *viewport = next_viewport;
         }
         InputStep::Theme { .. } | InputStep::Locale { .. } => {}
     }
@@ -678,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn viewport_changes_after_first_frame_are_rejected() {
+    fn viewport_changes_after_first_frame_are_preflighted_at_the_initial_size() {
         let viewport = Viewport::new(4, 3, 1).expect("viewport");
         let actions = [
             InputStep::Wait { milliseconds: 1 },
@@ -688,7 +699,10 @@ mod tests {
             label: "start".to_owned(),
             time_ms: 0,
         }];
-        assert!(preflight_viewport(viewport, &actions, &frames).is_err());
+        assert_eq!(
+            preflight_viewport(viewport, &actions, &frames).expect("preflight"),
+            viewport
+        );
     }
 
     struct EdgeLandmark;
@@ -741,5 +755,45 @@ mod tests {
             edge[0] > 180 && edge[1] < 120,
             "right edge control was cropped"
         );
+    }
+
+    #[test]
+    fn headless_resize_after_first_frame_records_per_frame_geometry() {
+        let viewport = Viewport::new(64, 32, 1).expect("viewport");
+        let frames = [
+            AnimationFrame {
+                label: "start".to_owned(),
+                time_ms: 0,
+            },
+            AnimationFrame {
+                label: "resized".to_owned(),
+                time_ms: 16,
+            },
+        ];
+        let capture = capture_gpui_state(
+            viewport,
+            GuiState::new("edge-landmark-resize", None, None),
+            &[
+                InputStep::Wait { milliseconds: 16 },
+                InputStep::Resize {
+                    width: 32,
+                    height: 16,
+                },
+            ],
+            &frames,
+            GpuiCaptureOptions::default(),
+            |_, cx| cx.new(|_| EdgeLandmark),
+        )
+        .expect("headless capture");
+        assert_eq!(
+            capture.frames[0].viewport,
+            Viewport::new(64, 32, 1).expect("viewport")
+        );
+        assert_eq!(
+            capture.frames[1].viewport,
+            Viewport::new(32, 16, 1).expect("viewport")
+        );
+        assert_eq!(capture.frames[0].image.dimensions(), (64, 32));
+        assert_eq!(capture.frames[1].image.dimensions(), (32, 16));
     }
 }
