@@ -112,6 +112,24 @@ impl PackageId {
         Self { reference, key }
     }
 
+    /// Admits a producer package coordinate only when its complete spelling
+    /// hashes to the separately transported stable key.
+    ///
+    /// # Errors
+    /// Returns [`IdentityError::Invalid`] when the coordinate is malformed or
+    /// when a display label is presented as the preimage for another package.
+    pub fn try_from_backend(
+        key: backend_library::PackageKey,
+        coordinate: &str,
+    ) -> Result<Self, IdentityError> {
+        let reference = backend_library::PackageReference::parse(coordinate)
+            .map_err(|_| IdentityError::Invalid)?;
+        if backend_library::package_key(reference.as_str()) != key {
+            return Err(IdentityError::Invalid);
+        }
+        Ok(Self { reference, key })
+    }
+
     /// Creates a package identity from a canonical coordinate.
     pub fn new(value: &str) -> Result<Self, IdentityError> {
         let coordinate = validate(value)?;
@@ -368,5 +386,17 @@ mod tests {
         assert!(LocalProjectId::new("workspace").is_ok());
         assert_eq!(ProjectId::test(0), None);
         assert!(ProjectId::test(1).is_some());
+    }
+
+    #[test]
+    fn package_identity_rejects_a_display_label_for_another_key() {
+        let key = backend_library::package_key("pkg:cargo/serde@1.0.228");
+        let admitted = PackageId::try_from_backend(key, "pkg:cargo/serde@1.0.228")
+            .expect("matching package preimage");
+        assert_eq!(admitted.key(), key);
+        assert_eq!(
+            PackageId::try_from_backend(key, "serde"),
+            Err(IdentityError::Invalid)
+        );
     }
 }

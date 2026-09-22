@@ -12,7 +12,7 @@ use crate::model::{
 };
 use crate::runtime::{DesktopRuntime, EngineActor, LocalEngineClient, UiEntityGraph};
 use crate::theme::Theme;
-use backend_client::Session;
+use backend_client::LocalSubscriptionTransport;
 use backend_library::object_version;
 use gpui::{
     App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
@@ -142,10 +142,10 @@ fn open() -> Result<Opened, String> {
 
 fn attempt_once() -> Result<Opened, String> {
     let host = DesktopHost::start().map_err(|error| describe(&error))?;
-    let mut session = Session::connect(host.endpoint())
-        .map_err(|error| format!("open the local session: {error}"))?;
-    let view = session
-        .view()
+    let mut subscription = LocalSubscriptionTransport::connect(host.endpoint())
+        .map_err(|error| format!("open the local subscription: {error}"))?;
+    let (view, _) = subscription
+        .bootstrap_root()
         .map_err(|error| format!("hydrate the first snapshot: {error}"))?;
     let key = VersionedRoot::new(view.root(), 1)
         .with_generation(0)

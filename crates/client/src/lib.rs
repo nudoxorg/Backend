@@ -5,14 +5,25 @@
 //! bounds, and reply admission path.
 #![forbid(unsafe_code)]
 
+mod subscription;
+#[cfg(any(unix, windows))]
+mod subscription_local;
+
+pub use subscription::{
+    CertifiedSubscriptionTransport, SubscriptionRequest, SubscriptionTransport,
+    snapshot_page_from_bytes, snapshot_page_from_value,
+};
+#[cfg(any(unix, windows))]
+pub use subscription_local::LocalSubscriptionTransport;
+
 use backend_library::{
     AdmittedGraphQueryInput, Command, CommandDto, CommandFailure, CommandMutation, CommandReply,
     CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery, GraphQueryPage,
     GraphQueryRequest, GraphValue, HealthReport, NameQuery, OutlineQuery, PackageReference,
     PageContinuation, PageRequest, PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto,
     RequestAdmissionError, SemanticGenerationId, SemanticLanguageProfile, SemanticVersionRecord,
-    SurfaceCommand, SurfaceReply, SymbolAddress, SymbolKey, ViewProjectionError, ViewRoot,
-    ViewStateRoot, WireCertificate, WireClaim, WireSchema, encode_id, package_key, symbol_key,
+    SurfaceCommand, SurfaceReply, SymbolAddress, SymbolKey, ViewProjectionError, ViewStateRoot,
+    WireCertificate, WireClaim, WireSchema, encode_id, package_key, symbol_key,
 };
 use backend_replication::{
     LocalControlError, LocalControlLimits, ReplicationError, read_frame, write_frame,
@@ -25,6 +36,8 @@ use std::time::Duration;
 
 /// Maximum admitted local command/reply body.
 pub const MAX_FRAME: usize = backend_replication::LOCAL_CONTROL_MAX_FRAME;
+/// Maximum events admitted in one interactive subscription batch.
+pub const MAX_EVENTS: usize = backend_library::MAX_SUBSCRIPTION_EVENTS;
 
 /// One closed failure type shared by all command clients.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -447,20 +460,6 @@ impl Session {
     /// Returns an error when the health reply fails admission or changes shape.
     pub fn health(&mut self) -> Result<HealthReport, ClientError> {
         health_from_reply(self.send_success(Command::Health, None)?)
-    }
-
-    /// Hydrates a legacy peer's complete health view.
-    ///
-    /// # Errors
-    /// Returns an error when the complete compatibility view fails admission.
-    pub fn view(&mut self) -> Result<ViewRoot, ClientError> {
-        let reply = self.send_success(Command::Health, None)?;
-        let CommandReply::Health(view) = reply.reply else {
-            return Err(ClientError::Protocol(
-                "legacy health reply changed shape".to_owned(),
-            ));
-        };
-        Ok(view)
     }
 
     /// Lists indexed projects.

@@ -8,7 +8,7 @@
 use super::actor::{EngineClient, EngineDto, EngineFault, EngineRequest, ProjectDto};
 use crate::core::{FaultCode, ProjectId, VersionedRoot};
 use crate::model::{ObjectId, PackageSummary};
-use backend_client::{ClientError, Session};
+use backend_client::{ClientError, LocalSubscriptionTransport, Session};
 use backend_library::{RegistryDownloadCount, RowId, SurfaceCommand, SurfaceReply};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,6 +18,7 @@ pub struct LocalEngineClient {
     endpoint: PathBuf,
     project_label: Arc<str>,
     session: Option<Session>,
+    subscription: Option<LocalSubscriptionTransport>,
 }
 
 impl LocalEngineClient {
@@ -28,6 +29,7 @@ impl LocalEngineClient {
             endpoint: endpoint.as_ref().to_path_buf(),
             project_label: project_label.into(),
             session: None,
+            subscription: None,
         }
     }
 
@@ -36,6 +38,28 @@ impl LocalEngineClient {
             self.session = Some(Session::connect(&self.endpoint).map_err(fault)?);
         }
         Ok(self.session.as_mut().expect("session installed"))
+    }
+
+    fn subscription(&mut self) -> Result<&mut LocalSubscriptionTransport, EngineFault> {
+        if self.subscription.is_none() {
+            self.subscription =
+                Some(LocalSubscriptionTransport::connect(&self.endpoint).map_err(fault)?);
+        }
+        Ok(self.subscription.as_mut().expect("subscription installed"))
+    }
+
+    fn bootstrap_root(&mut self) -> Result<backend_library::ViewRoot, EngineFault> {
+        match self.subscription()?.bootstrap_root() {
+            Ok((root, _)) => Ok(root),
+            Err(ClientError::Disconnected(_) | ClientError::Io(_)) => {
+                self.subscription = None;
+                self.subscription()?
+                    .bootstrap_root()
+                    .map(|(root, _)| root)
+                    .map_err(fault)
+            }
+            Err(error) => Err(fault(error)),
+        }
     }
 
     fn request_root(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
@@ -47,7 +71,7 @@ impl LocalEngineClient {
         else {
             unreachable!("root adapter called with a non-root request")
         };
-        let view = self.with_reconnect(|session| session.view())?;
+        let view = self.bootstrap_root()?;
         let key = VersionedRoot::new(view.root(), basis.producer_epoch)
             .with_generation(basis.generation.saturating_add(1))
             .observed_at(basis.observation.saturating_add(1));
@@ -55,7 +79,9 @@ impl LocalEngineClient {
             .rows()
             .iter()
             .filter_map(|row| match row.id {
-                RowId::Package(_) => crate::core::PackageId::new(&row.label).ok(),
+                RowId::Package(key) => {
+                    crate::core::PackageId::try_from_backend(key, &row.label).ok()
+                }
                 RowId::Symbol(_) | RowId::Object(_) => None,
             })
             .collect::<Vec<_>>();
