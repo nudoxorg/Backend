@@ -40,7 +40,8 @@ let
       null;
   # A bounded pool of Cargo 1.97 build directories shares intermediate
   # artifacts without making parallel worktrees wait on one build lock.
-  # sccache also shares compiler results with overflow lanes.
+  # sccache shares compiler results across the four isolated lanes; callers
+  # wait or fail with status 75 when every lane is occupied.
   parallelCargo = pkgs.writeShellApplication {
     name = "cargo";
     runtimeInputs = [ pkgs.coreutils pkgs.git pkgs.sccache pkgs.gawk pkgs.procps ];
