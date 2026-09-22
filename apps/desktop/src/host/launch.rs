@@ -72,7 +72,16 @@ fn run(opened: Opened) {
             let graph = UiEntityGraph::install(cx, runtime, Some(persistence));
             let root = graph.root.clone();
             let options = window_options(cx);
-            if let Err(error) = cx.open_window(options, move |_window, _cx| root) {
+            if let Err(error) = cx.open_window(options, move |window, cx| {
+                root.update(cx, |root, cx| {
+                    root.observe_window_activation(window, cx);
+                });
+                // gpui_component::Root is the native key/focus boundary. It
+                // installs Tab/Shift-Tab dispatch and lets FocusTrapElement
+                // contain modal traversal while UiRootEntity remains the
+                // product state owner below it.
+                cx.new(|cx| gpui_component::Root::new(root, window, cx).bordered(false))
+            }) {
                 eprintln!("backend-desktop: open window: {error}");
             }
             cx.activate(true);

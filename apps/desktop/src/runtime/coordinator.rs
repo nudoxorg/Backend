@@ -230,6 +230,16 @@ impl DesktopRuntime {
         self.actor.queued_events()
     }
 
+    /// Returns whether the UI should keep a frame budget alive.
+    ///
+    /// Engine responses are delivered through the same GPUI event loop as
+    /// animation frames. The shell requests frames while a request is
+    /// in-flight, then stops as soon as the queue and request set are empty.
+    #[must_use]
+    pub fn needs_frame(&self) -> bool {
+        !self.inflight.is_empty() || self.actor.queued_events() != 0
+    }
+
     fn retire_lane(&mut self, request: RequestId, lane: Option<CoalesceKey>) {
         let Some(lane) = lane else {
             return;

@@ -12,12 +12,15 @@ use backend_gui_harness::{
     AnimationFrame, CaptureConfig, CaptureError, CaptureSet, GpuiCaptureOptions, GuiState,
     InputStep, OverlayState, PageState, SemanticAnnouncement, SemanticBounds as HarnessBounds,
     SemanticNode, SemanticProbe, SemanticRelations, SemanticRole, SemanticState, Viewport,
-    capture_gpui_state_with_adapters_result_and_semantics,
+    capture_gpui_state_with_timed_adapters_result,
 };
 use backend_library::{SurfaceCommand, SurfaceReply};
 use gpui::{App, AppContext as _, Window};
 use image::RgbaImage;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::DesktopHost;
 use crate::core::{LocalProjectId, ResourceIdentity, VersionedRoot};
@@ -53,19 +56,39 @@ pub fn capture_live(
     let runtime = DesktopRuntime::new(snapshot, actor);
     let route = route_for_state(&state, runtime.snapshot());
     let overlay = state.overlay;
+    let capture_root: Rc<RefCell<Option<gpui::Entity<crate::runtime::UiRootEntity>>>> =
+        Rc::new(RefCell::new(None));
+    let frame_root = capture_root.clone();
+    let input_root = capture_root.clone();
 
-    capture_gpui_state_with_adapters_result_and_semantics(
+    capture_gpui_state_with_timed_adapters_result(
         config.viewport,
         state,
         actions,
         frames,
         GpuiCaptureOptions::default(),
-        |_frame, _window, _cx| Ok(()),
-        |_step, _window, _cx| {},
+        move |frame, _window, cx| {
+            if let Some(root) = frame_root.borrow().as_ref().cloned() {
+                root.update(cx, |root, _cx| {
+                    root.set_capture_time(Duration::from_millis(frame.time_ms));
+                });
+            }
+            Ok(())
+        },
+        move |time_ms, step, _window, cx| {
+            if let Some(root) = input_root.borrow().as_ref().cloned() {
+                root.update(cx, |root, _cx| {
+                    root.set_capture_time(Duration::from_millis(time_ms));
+                });
+                if let InputStep::WindowFocus { focused } = step {
+                    root.update(cx, |root, cx| root.set_window_focused(*focused, cx));
+                }
+            }
+        },
         |frame, image, viewport, window, cx| {
             capture_rendered_semantics(frame, image, viewport, window, cx)
         },
-        move |_window, cx| {
+        move |window, cx| {
             gpui_component::init(cx);
             crate::theme::fonts::install(cx).expect("bundled capture fonts install");
             let theme = Theme::default();
@@ -73,6 +96,8 @@ pub fn capture_live(
             cx.set_global(theme);
             let graph = UiEntityGraph::install(cx, runtime, Some(persistence));
             let root = graph.root.clone();
+            root.update(cx, |root, _cx| root.set_capture_time(Duration::ZERO));
+            root.update(cx, |root, cx| root.observe_window_activation(window, cx));
             root.update(cx, |root, cx| {
                 if let Some(route) = route.clone() {
                     root.queue(Intent::Navigate(route), cx);
@@ -98,7 +123,8 @@ pub fn capture_live(
                     _ => {}
                 }
             });
-            root
+            *capture_root.borrow_mut() = Some(root.clone());
+            cx.new(|cx| gpui_component::Root::new(root, window, cx).bordered(false))
         },
     )
     .map_err(|error| error.to_string())
@@ -141,7 +167,6 @@ pub fn capture_rendered_semantics(
     probe.focus_trap = tree.focus_trap();
     probe.restore_focus = tree.restore_focus().map(ToString::to_string);
     probe.native_focus_owner = native_focus_owner.clone();
-    let mut rendered_focus_order = 0_u32;
     for action in tree.iter() {
         let role = match action.role() {
             crate::ui::components::ActionRole::Window => SemanticRole::Window,
@@ -200,14 +225,15 @@ pub fn capture_rendered_semantics(
         let rendered_visible =
             action.is_visible() && (!action.is_focusable() || measured_inside_viewport);
         let focus_order = if action.is_focusable() && rendered_visible {
-            let order = rendered_focus_order;
-            rendered_focus_order = rendered_focus_order.saturating_add(1);
-            if !measured_focus_order.contains_key(action_id.as_str()) {
-                return Err(CaptureError::InvalidConfig(format!(
-                    "focusable action {action_id:?} has no measured tab order"
-                )));
-            }
-            Some(order)
+            Some(
+                *measured_focus_order
+                    .get(action_id.as_str())
+                    .ok_or_else(|| {
+                        CaptureError::InvalidConfig(format!(
+                            "focusable action {action_id:?} has no measured tab order"
+                        ))
+                    })?,
+            )
         } else {
             None
         };

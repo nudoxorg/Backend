@@ -7,7 +7,11 @@ use std::collections::HashMap;
 /// understand why a capability is unavailable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ActionTree {
+    /// Ordered render sequence; this remains the only traversal/focus-order
+    /// authority. The index below is lookup-only.
     actions: Vec<ActionMetadata>,
+    /// Stable ID lookup for duplicate admission and native/pointer mutation.
+    index: HashMap<SharedString, usize>,
     route: SharedString,
     revision: u64,
     modal_root: Option<SharedString>,
@@ -19,6 +23,7 @@ impl Default for ActionTree {
     fn default() -> Self {
         Self {
             actions: Vec::new(),
+            index: HashMap::new(),
             route: SharedString::new_static("unbound"),
             revision: 0,
             modal_root: None,
@@ -32,6 +37,7 @@ impl ActionTree {
     pub(super) fn new(route: SharedString, revision: u64) -> Self {
         Self {
             actions: Vec::new(),
+            index: HashMap::new(),
             route,
             revision,
             modal_root: None,
@@ -44,11 +50,13 @@ impl ActionTree {
         if action.id.is_empty() || action.label.is_empty() {
             return false;
         }
-        if self.actions.iter().any(|current| current.id == action.id) {
+        if self.index.contains_key(&action.id) {
             return false;
         }
         let mut action = action;
-        action.focus_order = self.actions.len();
+        let index = self.actions.len();
+        action.focus_order = index;
+        self.index.insert(action.id.clone(), index);
         self.actions.push(action);
         true
     }
@@ -65,6 +73,15 @@ impl ActionTree {
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = &ActionMetadata> {
         self.actions.iter()
+    }
+
+    /// Looks up one registered action without changing the ordered traversal
+    /// sequence. Callers use this for post-layout evidence and native focus
+    /// reconciliation; iteration remains the sole focus-order authority.
+    pub(crate) fn get(&self, id: &str) -> Option<&ActionMetadata> {
+        self.index
+            .get(id)
+            .and_then(|&index| self.actions.get(index))
     }
 
     pub(crate) fn focusable(&self) -> impl Iterator<Item = &ActionMetadata> {
@@ -167,13 +184,12 @@ impl ActionTree {
     /// Reconciles the declared owner with the focus handle observed during the
     /// current frame. Native GPUI focus is authoritative once it exists.
     pub(super) fn set_focus_owner(&mut self, id: &str) -> bool {
-        let Some(index) = self
-            .actions
-            .iter()
-            .position(|action| action.id().as_ref() == id && action.is_focusable())
-        else {
+        let Some(&index) = self.index.get(id) else {
             return false;
         };
+        if !self.actions[index].is_focusable() {
+            return false;
+        }
         for (current_index, action) in self.actions.iter_mut().enumerate() {
             *action = action.clone().focused(current_index == index);
         }
@@ -181,13 +197,10 @@ impl ActionTree {
     }
 
     pub(super) fn set_pointer_state(&mut self, id: &str, state: ActionState, active: bool) -> bool {
-        let Some(action) = self
-            .actions
-            .iter_mut()
-            .find(|action| action.id().as_ref() == id)
-        else {
+        let Some(&index) = self.index.get(id) else {
             return false;
         };
+        let action = &mut self.actions[index];
         *action = match state {
             ActionState::Hovered => action.clone().hovered(active),
             ActionState::Pressed => action.clone().pressed(active),

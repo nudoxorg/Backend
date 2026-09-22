@@ -34,6 +34,60 @@ pub struct FrameArtifact {
     pub diff: Option<DiffMetrics>,
 }
 
+/// A physical-pixel crop used for close visual inspection of a frame.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CropRect {
+    /// Left edge in physical pixels.
+    pub left: u32,
+    /// Top edge in physical pixels.
+    pub top: u32,
+    /// Crop width in physical pixels.
+    pub width: u32,
+    /// Crop height in physical pixels.
+    pub height: u32,
+}
+
+impl CropRect {
+    /// Creates a crop and rejects zero-sized rectangles.
+    pub const fn new(left: u32, top: u32, width: u32, height: u32) -> Option<Self> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        Some(Self {
+            left,
+            top,
+            width,
+            height,
+        })
+    }
+
+    fn fit(self, image: &RgbaImage) -> Option<Self> {
+        let right = self.left.checked_add(self.width)?.min(image.width());
+        let bottom = self.top.checked_add(self.height)?.min(image.height());
+        (self.left < right && self.top < bottom).then_some(Self {
+            left: self.left,
+            top: self.top,
+            width: right - self.left,
+            height: bottom - self.top,
+        })
+    }
+}
+
+/// Durable metadata for one visual-inspection crop.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CropArtifact {
+    /// Stable crop label.
+    pub label: String,
+    /// Source frame label.
+    pub frame: String,
+    /// Physical crop bounds.
+    pub rect: CropRect,
+    /// Relative PNG path from the run root.
+    pub path: String,
+    /// SHA-256 of the encoded crop PNG bytes.
+    pub sha256: String,
+}
+
 /// Manifest for a complete state capture.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CaptureManifest {
@@ -190,6 +244,41 @@ pub fn verify_run_for_baseline_update(root: &Path) -> Result<VerificationReport,
     verify_run_inner(root, false)
 }
 
+/// Validates the ordered frame portion of a manifest before it is encoded as
+/// an animation sequence. Equal timestamps are allowed because a retarget or
+/// reversal can be sampled at the same virtual instant; labels still must be
+/// unique so an FFmpeg-ready frame list cannot silently overwrite a PNG.
+pub fn validate_frame_sequence(frames: &[FrameArtifact]) -> Result<(), ArtifactError> {
+    if frames.is_empty() {
+        return Err(ArtifactError::Verification(
+            "frame sequence is empty".to_owned(),
+        ));
+    }
+    if frames[0].time_ms != 0 {
+        return Err(ArtifactError::Verification(
+            "frame sequence must begin at virtual time zero".to_owned(),
+        ));
+    }
+    let mut labels = std::collections::BTreeSet::new();
+    for frame in frames {
+        if frame.label.trim().is_empty() || !labels.insert(frame.label.as_str()) {
+            return Err(ArtifactError::Verification(format!(
+                "frame sequence has an empty or duplicate label {:?}",
+                frame.label
+            )));
+        }
+    }
+    if frames
+        .windows(2)
+        .any(|pair| pair[0].time_ms > pair[1].time_ms)
+    {
+        return Err(ArtifactError::Verification(
+            "frame sequence timestamps are not monotonic".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn verify_run_inner(
     root: &Path,
     enforce_baseline_policy: bool,
@@ -225,6 +314,27 @@ fn verify_run_inner(
         if manifest.frames.is_empty() || manifest.sequence.frame_count != manifest.frames.len() {
             report.failures.push(format!(
                 "{}: manifest frame count is zero or inconsistent",
+                manifest_path.display()
+            ));
+            report.failed_manifests += 1;
+        }
+        if let Err(error) = validate_frame_sequence(&manifest.frames) {
+            report
+                .failures
+                .push(format!("{}: {error}", manifest_path.display()));
+            report.failed_manifests += 1;
+        }
+        let expected_keyframes = manifest
+            .frames
+            .iter()
+            .map(|frame| frame.label.clone())
+            .collect::<Vec<_>>();
+        if manifest.sequence.encoding != "png-sequence"
+            || manifest.sequence.frame_interval_ms != manifest.config.frame_interval_ms
+            || manifest.sequence.keyframes != expected_keyframes
+        {
+            report.failures.push(format!(
+                "{}: ordered sequence metadata is stale",
                 manifest_path.display()
             ));
             report.failed_manifests += 1;
@@ -354,6 +464,10 @@ fn verify_run_inner(
                 .display()
                 .to_string();
             let image = image::load_from_memory(&encoded)?.into_rgba8();
+            let expected_size = frame
+                .viewport
+                .unwrap_or(manifest.config.viewport)
+                .physical_size();
             report.frames += 1;
             if hash_bytes(&encoded) != frame.sha256
                 || image.dimensions() != (frame.width, frame.height)
@@ -660,6 +774,45 @@ impl ArtifactWriter {
         Ok((relative.to_string_lossy().into_owned(), hash_bytes(&bytes)))
     }
 
+    /// Writes a physical-pixel crop for close inspection of a captured frame.
+    ///
+    /// Crops are deliberately independent PNGs: a reviewer can open a small
+    /// header, focus ring, or disclosure edge without scaling the full frame,
+    /// and a malformed crop fails before it becomes an artifact.
+    pub fn write_crop(
+        &self,
+        state_id: &str,
+        frame_label: &str,
+        crop_label: &str,
+        image: &RgbaImage,
+        rect: CropRect,
+    ) -> Result<CropArtifact, ArtifactError> {
+        let rect = rect
+            .fit(image)
+            .ok_or_else(|| ArtifactError::UnsafePath("crop is outside frame".to_owned()))?;
+        let state = safe_component(state_id)?;
+        let frame = safe_component(frame_label)?;
+        let label = safe_component(crop_label)?;
+        let relative = PathBuf::from("crops")
+            .join(state)
+            .join(format!("{frame}--{label}.png"));
+        let path = self.root.join(&relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let crop = image::imageops::crop_imm(image, rect.left, rect.top, rect.width, rect.height)
+            .to_image();
+        let bytes = encode_png(&crop)?;
+        std::fs::write(&path, &bytes)?;
+        Ok(CropArtifact {
+            label,
+            frame: frame_label.to_owned(),
+            rect,
+            path: relative.to_string_lossy().into_owned(),
+            sha256: hash_bytes(&bytes),
+        })
+    }
+
     /// Writes a deterministic contact-sheet filmstrip for an animation. Each
     /// frame stays independently inspectable as a PNG; the strip is a review
     /// aid and never participates in pixel baselines.
@@ -826,5 +979,70 @@ mod tests {
             Err(ArtifactError::UnsafePath(_))
         ));
         std::fs::remove_dir_all(root).expect("test artifact cleanup");
+    }
+
+    #[test]
+    fn writer_emits_bounded_inspection_crops_with_exact_geometry() {
+        let root = std::env::temp_dir().join(format!(
+            "backend-gui-harness-crop-test-{}",
+            std::process::id()
+        ));
+        let writer = ArtifactWriter::new(&root).expect("writer");
+        let image = RgbaImage::from_pixel(8, 6, Rgba([8, 16, 24, 255]));
+        let crop = writer
+            .write_crop(
+                "browse",
+                "midpoint",
+                "header",
+                &image,
+                CropRect::new(6, 4, 8, 8).expect("crop"),
+            )
+            .expect("crop");
+        assert_eq!(crop.rect, CropRect::new(6, 4, 2, 2).expect("fit"));
+        assert_eq!(
+            image::open(root.join(&crop.path))
+                .expect("encoded")
+                .into_rgba8()
+                .dimensions(),
+            (2, 2)
+        );
+        assert!(matches!(
+            writer.write_crop(
+                "browse",
+                "midpoint",
+                "outside",
+                &image,
+                CropRect::new(8, 0, 1, 1).expect("crop")
+            ),
+            Err(ArtifactError::UnsafePath(_))
+        ));
+        std::fs::remove_dir_all(root).expect("test artifact cleanup");
+    }
+
+    #[test]
+    fn frame_sequence_rejects_duplicate_labels_and_time_regressions() {
+        let frame = |label: &str, time_ms: u64| FrameArtifact {
+            label: label.to_owned(),
+            time_ms,
+            path: format!("frames/browse/{label}.png"),
+            sha256: String::new(),
+            width: 1,
+            height: 1,
+            viewport: None,
+            input_index: None,
+            diff: None,
+        };
+        assert!(validate_frame_sequence(&[frame("start", 0), frame("start", 1)]).is_err());
+        assert!(validate_frame_sequence(&[frame("start", 10), frame("settled", 20)]).is_err());
+        assert!(
+            validate_frame_sequence(&[
+                frame("start", 0),
+                frame("settled", 2),
+                frame("midpoint", 1),
+            ])
+            .is_err()
+        );
+        validate_frame_sequence(&[frame("start", 0), frame("retarget", 1), frame("settled", 1)])
+            .expect("equal timestamp retarget is valid");
     }
 }

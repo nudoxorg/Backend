@@ -27,7 +27,7 @@ use thiserror::Error;
 pub use artifact::{
     ArtifactError, ArtifactWriter, CaptureManifest, CaptureProvenance, FrameArtifact,
     FrameSequenceMetadata, RunManifest, VerificationReport, frame_artifact, hash_bytes,
-    scenario_hash, verify_run, verify_run_for_baseline_update,
+    scenario_hash, validate_frame_sequence, verify_run, verify_run_for_baseline_update,
 };
 pub use conformance::{
     CONFORMANCE_SCHEMA, ConformanceError, ConformanceFailure, ConformancePolicy, ConformanceReport,
@@ -42,7 +42,7 @@ pub use diff::{DiffBounds, DiffError, DiffMetrics, DiffPolicy, compare, diff_ima
 pub use gpui_driver::{
     GpuiCaptureOptions, capture_gpui_state, capture_gpui_state_with_adapters,
     capture_gpui_state_with_adapters_result, capture_gpui_state_with_adapters_result_and_semantics,
-    capture_gpui_state_with_hooks,
+    capture_gpui_state_with_hooks, capture_gpui_state_with_timed_adapters_result,
 };
 pub use input::{ActionDescriptor, ActionTarget, ActionTree};
 pub use input::{InputError, InputStep, TransitionScript, modifiers, position};
@@ -373,10 +373,138 @@ pub struct AnimationFrame {
     pub time_ms: u64,
 }
 
+/// Named design-system beats used by the deterministic capture schedule.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AnimationBeat {
+    /// Hover, press, and selection response.
+    Touch90,
+    /// Quiet reveal or pane transition.
+    Reveal160,
+    /// Disclosure or sheet transition.
+    Unfold240,
+    /// Toast/status emphasis.
+    Emphasis380,
+    /// Route-scale scene choreography.
+    Scene620,
+}
+
+impl AnimationBeat {
+    /// Returns the canonical duration in milliseconds.
+    #[must_use]
+    pub const fn duration_ms(self) -> u64 {
+        match self {
+            Self::Touch90 => 90,
+            Self::Reveal160 => 160,
+            Self::Unfold240 => 240,
+            Self::Emphasis380 => 380,
+            Self::Scene620 => 620,
+        }
+    }
+}
+
 /// Builds the mandated motion phases, including reversal and reduced motion.
 #[must_use]
 pub fn animation_frames(config: &CaptureConfig, reduced_motion: bool) -> Vec<AnimationFrame> {
     animation_frames_for_duration(config, reduced_motion, config.animation_duration_ms)
+}
+
+/// Returns the canonical 0/25/50/75/100% frame sequence for one beat.
+#[must_use]
+pub fn canonical_motion_frames(
+    config: &CaptureConfig,
+    reduced_motion: bool,
+    beat: AnimationBeat,
+) -> Vec<AnimationFrame> {
+    if reduced_motion {
+        return vec![AnimationFrame {
+            label: "reduced-motion".to_owned(),
+            time_ms: 0,
+        }];
+    }
+    let duration = beat.duration_ms().max(config.animation_duration_ms);
+    vec![
+        AnimationFrame {
+            label: "start".to_owned(),
+            time_ms: 0,
+        },
+        AnimationFrame {
+            label: "quarter".to_owned(),
+            time_ms: duration / 4,
+        },
+        AnimationFrame {
+            label: "midpoint".to_owned(),
+            time_ms: duration / 2,
+        },
+        AnimationFrame {
+            label: "three-quarter".to_owned(),
+            time_ms: duration.saturating_mul(3) / 4,
+        },
+        AnimationFrame {
+            label: "settled".to_owned(),
+            time_ms: duration,
+        },
+    ]
+}
+
+/// Returns an interruption/reversal sequence for stress captures.
+#[must_use]
+pub fn stress_motion_frames(
+    config: &CaptureConfig,
+    reduced_motion: bool,
+    beat: AnimationBeat,
+) -> Vec<AnimationFrame> {
+    if reduced_motion {
+        return canonical_motion_frames(config, true, beat);
+    }
+    let duration = beat.duration_ms().max(config.animation_duration_ms);
+    let quarter = duration / 4;
+    vec![
+        AnimationFrame {
+            label: "start".to_owned(),
+            time_ms: 0,
+        },
+        AnimationFrame {
+            label: "quarter".to_owned(),
+            time_ms: quarter,
+        },
+        AnimationFrame {
+            label: "interrupt".to_owned(),
+            time_ms: duration / 2,
+        },
+        AnimationFrame {
+            label: "reverse".to_owned(),
+            time_ms: duration / 2,
+        },
+        AnimationFrame {
+            label: "three-quarter".to_owned(),
+            time_ms: duration.saturating_mul(3) / 4,
+        },
+        AnimationFrame {
+            label: "settled".to_owned(),
+            time_ms: duration,
+        },
+    ]
+}
+
+/// Checks that an ordered frame schedule is deterministic and monotonic.
+pub fn validate_animation_frames(frames: &[AnimationFrame]) -> Result<(), CaptureError> {
+    if frames.is_empty() || frames.first().is_some_and(|frame| frame.time_ms != 0) {
+        return Err(CaptureError::InvalidConfig(
+            "animation sequence must start at virtual time zero".to_owned(),
+        ));
+    }
+    let mut labels = std::collections::HashSet::new();
+    if frames.iter().any(|frame| {
+        !labels.insert(frame.label.as_str())
+            || frames
+                .windows(2)
+                .any(|pair| pair[0].time_ms > pair[1].time_ms)
+    }) {
+        return Err(CaptureError::InvalidConfig(
+            "animation sequence labels and timestamps must be ordered and unique".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// Builds a route-aware timeline using the same duration family as the
@@ -384,7 +512,7 @@ pub fn animation_frames(config: &CaptureConfig, reduced_motion: bool) -> Vec<Ani
 /// emphasis duration while ordinary navigation uses the standard duration.
 #[must_use]
 pub fn animation_frames_for_state(config: &CaptureConfig, state: &GuiState) -> Vec<AnimationFrame> {
-    let duration = match state.overlay {
+    let beat = match state.overlay {
         Some(OverlayState::SettingsAppearance)
         | Some(OverlayState::SettingsEditor)
         | Some(OverlayState::SettingsAgents)
@@ -393,10 +521,12 @@ pub fn animation_frames_for_state(config: &CaptureConfig, state: &GuiState) -> V
         | Some(OverlayState::Fault)
         | Some(OverlayState::Vulnerable)
         | Some(OverlayState::Yanked)
-        | Some(OverlayState::Indexing) => config.animation_duration_ms.max(240),
-        _ => config.animation_duration_ms.min(160),
+        | Some(OverlayState::Indexing) => AnimationBeat::Unfold240,
+        _ => AnimationBeat::Reveal160,
     };
-    animation_frames_for_duration(config, state.reduced_motion, duration)
+    let frames = canonical_motion_frames(config, state.reduced_motion, beat);
+    validate_animation_frames(&frames).expect("canonical animation schedule is valid");
+    frames
 }
 
 fn animation_frames_for_duration(
@@ -411,8 +541,10 @@ fn animation_frames_for_duration(
         }];
     }
     let midpoint = duration / 2;
-    let first = config.frame_interval_ms.min(duration);
-    let near_settled = duration.saturating_sub(config.frame_interval_ms.max(1));
+    let cadence = config.frame_interval_ms.max(1);
+    let first = config.frame_interval_ms.min(duration / 2);
+    let reversal = duration / 2 + cadence;
+    let near_settled = duration.saturating_sub(cadence).max(reversal.min(duration));
     vec![
         AnimationFrame {
             label: "start".to_owned(),
@@ -432,7 +564,7 @@ fn animation_frames_for_duration(
         },
         AnimationFrame {
             label: "reversal".to_owned(),
-            time_ms: midpoint + first,
+            time_ms: reversal.min(duration),
         },
         AnimationFrame {
             label: "near-settled".to_owned(),
@@ -573,6 +705,7 @@ impl CaptureSession {
                     .write_frame(&capture.state.id, &record.label, &record.image)?;
             frames.push(frame_artifact(record, path, hash));
         }
+        validate_frame_sequence(&frames)?;
         let filmstrip_path = self
             .writer
             .write_filmstrip(&capture.state.id, &capture.frames)
@@ -605,7 +738,7 @@ impl CaptureSession {
             for (probe, frame) in capture.semantic_probes.iter().zip(&capture.frames) {
                 if probe.frame != frame.label
                     || probe.time_ms != frame.time_ms
-                    || probe.viewport != (capture.viewport.width, capture.viewport.height)
+                    || probe.viewport != (frame.viewport.width, frame.viewport.height)
                     || probe.screenshot_sha256 != hash_png_pixels(&frame.image)
                 {
                     return Err(CaptureError::InvalidConfig(format!(
@@ -764,6 +897,27 @@ mod tests {
             ]
         );
         assert_eq!(animation_frames(&config, true).len(), 1);
+    }
+
+    #[test]
+    fn named_motion_beats_produce_ordered_keyframes_and_reduced_snap() {
+        let config = CaptureConfig::deterministic(Viewport::new(1280, 800, 1).expect("viewport"));
+        let frames = canonical_motion_frames(&config, false, AnimationBeat::Unfold240);
+        assert_eq!(frames.last().map(|frame| frame.time_ms), Some(240));
+        validate_animation_frames(&frames).expect("canonical schedule");
+        assert_eq!(
+            canonical_motion_frames(&config, true, AnimationBeat::Scene620).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn stress_motion_schedule_keeps_equal_time_retarget_and_reversal_ordered() {
+        let config = CaptureConfig::deterministic(Viewport::new(1280, 800, 1).expect("viewport"));
+        let frames = stress_motion_frames(&config, false, AnimationBeat::Reveal160);
+        validate_animation_frames(&frames).expect("stress schedule");
+        assert_eq!(frames[2].time_ms, frames[3].time_ms);
+        assert_eq!(frames.last().map(|frame| frame.time_ms), Some(220));
     }
 
     #[test]

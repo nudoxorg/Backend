@@ -1,4 +1,4 @@
-use super::{ActionMetadata, ActionRole, ActionTree, SemanticBounds, Weight};
+use super::{ActionMetadata, ActionRole, ActionState, ActionTree, SemanticBounds, Weight};
 use gpui::{Bounds, point, px, size};
 
 #[test]
@@ -161,6 +161,43 @@ fn native_owner_reconciliation_updates_the_single_action_tree() {
         Some("second")
     );
     assert!(!tree.set_focus_owner("missing"));
+}
+
+#[test]
+fn indexed_action_lookup_keeps_ordered_focus_mutation_consistent() {
+    let mut tree = ActionTree::default();
+    tree.registrar()
+        .record(ActionMetadata::new("first", "First", ActionRole::Button));
+    tree.registrar()
+        .record(ActionMetadata::new("second", "Second", ActionRole::Button));
+    tree.registrar()
+        .record(ActionMetadata::new("third", "Third", ActionRole::Button));
+
+    assert!(!tree.registrar().record(ActionMetadata::new(
+        "second",
+        "Duplicate second",
+        ActionRole::Button,
+    )));
+    assert_eq!(
+        tree.iter()
+            .map(|action| action.id().as_ref())
+            .collect::<Vec<_>>(),
+        ["first", "second", "third"]
+    );
+    assert_eq!(
+        tree.get("second").map(|action| action.label().as_ref()),
+        Some("Second")
+    );
+    assert!(tree.get("missing").is_none());
+    assert!(tree.set_focus_owner("third"));
+    assert_eq!(
+        tree.focusable()
+            .find(|action| action.is_focused())
+            .map(|action| action.id().as_ref()),
+        Some("third")
+    );
+    assert!(tree.set_pointer_state("first", ActionState::Hovered, true));
+    assert!(tree.iter().next().is_some_and(|action| action.is_hovered()));
 }
 
 #[test]

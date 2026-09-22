@@ -17,7 +17,8 @@ pub use actor::{
     EngineFault, EngineRequest, ProjectDto,
 };
 pub use animation::{
-    AnimationId, AnimationTimeline, CaptureFrameClock, FrameClock, LiveFrameClock, Motion,
+    AnimationChannel, AnimationId, AnimationTimeline, Beat, CaptureFrameClock, Easing, FrameClock,
+    LiveFrameClock, Motion, TimelineVersion, TrackSnapshot,
 };
 pub use client::LocalEngineClient;
 pub use coordinator::{DesktopRuntime, RuntimeEvent};

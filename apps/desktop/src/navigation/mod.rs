@@ -12,7 +12,7 @@ pub use action::{
     AccessibilityRole, ActionId, ActionNode, ActionSpec, CommandPaletteState, KeyChord,
     SemanticFamily, SemanticState, VoiceChannel,
 };
-pub use focus::{FocusId, FocusNode, FocusRoute, FocusTree};
+pub use focus::{ActionKey, EscapeResult, FocusId, FocusNode, FocusOrigin, FocusRoute, FocusTree};
 pub use history::{MAX_ROUTE_HISTORY, RouteHistory};
 pub use intent::{Effect, EngineCommand, Intent, Reduction, RequestId};
 pub use modal::{ModalFrame, ModalId, ModalStack};

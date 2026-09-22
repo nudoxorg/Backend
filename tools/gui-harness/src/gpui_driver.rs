@@ -131,7 +131,7 @@ pub fn capture_gpui_state_with_adapters_result<V, F, H, I>(
     actions: &[InputStep],
     frames: &[AnimationFrame],
     options: GpuiCaptureOptions,
-    mut frame_hook: H,
+    frame_hook: H,
     mut input_hook: I,
     build_root: F,
 ) -> Result<CaptureSet, CaptureError>
@@ -141,24 +141,62 @@ where
     H: FnMut(&AnimationFrame, &mut Window, &mut App) -> Result<(), CaptureError>,
     I: FnMut(&InputStep, &mut Window, &mut App),
 {
-    capture_gpui_state_with_adapters_result_and_semantics(
+    capture_gpui_state_with_timed_adapters_result(
         viewport,
         state,
         actions,
         frames,
         options,
         frame_hook,
-        input_hook,
+        move |_time_ms, step, window, cx| input_hook(step, window, cx),
         |_frame, _image, _viewport, _window, _cx| Ok(None),
         build_root,
     )
 }
 
-/// Result-returning capture boundary that also records one semantic probe per
-/// rendered frame. The probe callback runs after the pixels are drawn, so its
-/// screenshot hash can be tied to the exact image written by the artifact
-/// session.
+/// Compatibility wrapper for adapters that do not need the virtual input time.
 pub fn capture_gpui_state_with_adapters_result_and_semantics<V, F, H, I, S>(
+    viewport: Viewport,
+    state: GuiState,
+    actions: &[InputStep],
+    frames: &[AnimationFrame],
+    options: GpuiCaptureOptions,
+    frame_hook: H,
+    mut input_hook: I,
+    semantic_hook: S,
+    build_root: F,
+) -> Result<CaptureSet, CaptureError>
+where
+    V: Render + 'static,
+    F: FnOnce(&mut Window, &mut App) -> Entity<V>,
+    H: FnMut(&AnimationFrame, &mut Window, &mut App) -> Result<(), CaptureError>,
+    I: FnMut(&InputStep, &mut Window, &mut App),
+    S: FnMut(
+        &AnimationFrame,
+        &image::RgbaImage,
+        Viewport,
+        &mut Window,
+        &mut App,
+    ) -> Result<Option<SemanticProbe>, CaptureError>,
+{
+    capture_gpui_state_with_timed_adapters_result(
+        viewport,
+        state,
+        actions,
+        frames,
+        options,
+        frame_hook,
+        move |_time_ms, step, window, cx| input_hook(step, window, cx),
+        semantic_hook,
+        build_root,
+    )
+}
+
+/// Result-returning capture boundary with the virtual input timestamp attached
+/// to every input callback. The probe callback still runs after the pixels are
+/// drawn, so its screenshot hash remains tied to the exact image written by
+/// the artifact session.
+pub fn capture_gpui_state_with_timed_adapters_result<V, F, H, I, S>(
     viewport: Viewport,
     state: GuiState,
     actions: &[InputStep],
@@ -173,7 +211,7 @@ where
     V: Render + 'static,
     F: FnOnce(&mut Window, &mut App) -> Entity<V>,
     H: FnMut(&AnimationFrame, &mut Window, &mut App) -> Result<(), CaptureError>,
-    I: FnMut(&InputStep, &mut Window, &mut App),
+    I: FnMut(u64, &InputStep, &mut Window, &mut App),
     S: FnMut(
         &AnimationFrame,
         &image::RgbaImage,
@@ -262,6 +300,7 @@ where
             apply_step(
                 &mut context,
                 window,
+                *at,
                 step,
                 &mut driver_state,
                 &mut current_viewport,
@@ -314,10 +353,11 @@ where
 fn apply_step(
     context: &mut HeadlessAppContext,
     window: AnyWindowHandle,
+    virtual_time_ms: u64,
     step: &InputStep,
     driver_state: &mut DriverState,
     viewport: &mut Viewport,
-    input_hook: &mut impl FnMut(&InputStep, &mut Window, &mut App),
+    input_hook: &mut impl FnMut(u64, &InputStep, &mut Window, &mut App),
 ) -> Result<(), CaptureError> {
     match step {
         InputStep::Key { value } => {
@@ -342,6 +382,7 @@ fn apply_step(
                 .update_window(window, |_, window, cx| window.focus_prev(cx))
                 .map_err(|error| CaptureError::Gpui(error.to_string()))?;
         }
+        InputStep::WindowFocus { .. } => {}
         InputStep::Wait { milliseconds } => {
             context.advance_clock(std::time::Duration::from_millis(*milliseconds));
         }
@@ -495,7 +536,9 @@ fn apply_step(
         | InputStep::TextScale { percent: _ } => {}
     }
     context
-        .update_window(window, |_, window, cx| input_hook(step, window, cx))
+        .update_window(window, |_, window, cx| {
+            input_hook(virtual_time_ms, step, window, cx)
+        })
         .map_err(|error| CaptureError::Gpui(error.to_string()))?;
     context.run_until_parked();
     // A real desktop presents a new frame after a state changing action

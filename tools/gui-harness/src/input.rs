@@ -164,6 +164,14 @@ pub enum InputStep {
         /// Percentage of the default interface size, from 50 through 300.
         percent: u16,
     },
+    /// Deliver a native window focus transition to the product adapter.
+    ///
+    /// GPUI's headless platform cannot activate another native application,
+    /// so the driver records this as an explicit adapter event.
+    WindowFocus {
+        /// Whether the window is receiving platform focus.
+        focused: bool,
+    },
 }
 
 impl InputStep {
@@ -313,6 +321,66 @@ impl TransitionScript {
         ]
     }
 
+    /// Stress scripts for motion interruption, responsive resize, and focus loss.
+    #[must_use]
+    pub fn stress() -> Vec<Self> {
+        vec![
+            Self::new(
+                "resize-during-animation",
+                "browse",
+                "browse",
+                vec![
+                    InputStep::key("cmd-p"),
+                    InputStep::Wait { milliseconds: 50 },
+                    InputStep::Resize {
+                        width: 640,
+                        height: 480,
+                    },
+                    InputStep::Wait { milliseconds: 50 },
+                    InputStep::Resize {
+                        width: 1_440,
+                        height: 900,
+                    },
+                    InputStep::key("escape"),
+                ],
+            ),
+            Self::new(
+                "rapid-input-reversal",
+                "browse",
+                "browse",
+                vec![
+                    InputStep::key("cmd-p"),
+                    InputStep::key("escape"),
+                    InputStep::key("cmd-p"),
+                    InputStep::key("escape"),
+                    InputStep::key("cmd-p"),
+                    InputStep::key("escape"),
+                ],
+            ),
+            Self::new(
+                "lost-focus-restoration",
+                "browse",
+                "browse",
+                vec![
+                    InputStep::key("cmd-p"),
+                    InputStep::WindowFocus { focused: false },
+                    InputStep::WindowFocus { focused: true },
+                    InputStep::key("escape"),
+                ],
+            ),
+            Self::new(
+                "reduced-motion",
+                "browse",
+                "browse",
+                vec![
+                    InputStep::key("cmd-shift-m"),
+                    InputStep::key("cmd-p"),
+                    InputStep::key("escape"),
+                ],
+            ),
+        ]
+    }
+
     /// Validates that the script has a meaningful identity and finite timing.
     pub fn validate(&self) -> Result<(), InputError> {
         if self.id.trim().is_empty() {
@@ -332,6 +400,9 @@ impl TransitionScript {
             })
         {
             return Err(InputError::InvalidTextScale);
+        }
+        if self.elapsed() > Duration::from_secs(10 * 60) {
+            return Err(InputError::TooLong(self.id.clone()));
         }
         Ok(())
     }
@@ -355,6 +426,9 @@ pub enum InputError {
     /// Protects the harness from accidental unbounded input generation.
     #[error("input script {0:?} has too many steps")]
     TooManySteps(String),
+    /// Protects capture runs from an accidental multi-hour virtual wait.
+    #[error("input script {0:?} advances the virtual clock for too long")]
+    TooLong(String),
     /// GPUI rejected a keystroke spelling.
     #[error("invalid GPUI keystroke: {0}")]
     Keystroke(String),
@@ -395,6 +469,27 @@ mod tests {
             script.validate().expect("baseline script should validate");
             assert!(script.steps.len() < 10);
         }
+    }
+
+    #[test]
+    fn stress_scripts_cover_resize_reversal_focus_loss_and_reduced_motion() {
+        let scripts = TransitionScript::stress();
+        for script in &scripts {
+            script.validate().expect("stress script should validate");
+        }
+        assert_eq!(scripts.len(), 4);
+        assert!(scripts.iter().any(|script| {
+            script
+                .steps
+                .iter()
+                .any(|step| matches!(step, InputStep::Resize { .. }))
+        }));
+        assert!(scripts.iter().any(|script| {
+            script
+                .steps
+                .iter()
+                .any(|step| matches!(step, InputStep::WindowFocus { focused: false }))
+        }));
     }
 
     #[test]
