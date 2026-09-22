@@ -1,0 +1,438 @@
+{
+  "schema": "nudox.gpui-component-reuse-audit",
+  "version": 9,
+  "audited_at": "2026-09-22",
+  "repository_root": "/Users/mileswirht/Downloads/backend",
+  "policy": {
+    "builds_tests_and_compilers_run": false,
+    "ownership_rule": "CE owns interaction mechanics; Nudox owns producer truth, identity, routes, query admission, responsive tokens, and app timelines.",
+    "new_vendor_api_implemented": true,
+    "vendor_extension_commit": "80d4c6221d4bcc7d06f08890cfc850ed787255f8"
+  },
+  "packages": {
+    "vendor_facade": {
+      "name": "gpui_ce_components",
+      "crate_import_name": "gpui_component",
+      "version": "0.2.0",
+      "source": "vendor/gpui_ce_components"
+    },
+    "gpui_ce": {
+      "version": "0.2.2",
+      "source": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-ce-0.2.2"
+    },
+    "gpui_ce_components_base": {
+      "version": "0.2.0",
+      "source": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui_ce_components_base-0.2.0"
+    }
+  },
+  "worktrees": [
+    {"name": "design-components", "path": "/Users/mileswirht/Downloads/nudox-components-v8"},
+    {"name": "onboarding-shelf", "path": "/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8"},
+    {"name": "search-palette", "path": "/Users/mileswirht/Downloads/backend-search-palette-component-v8"},
+    {"name": "settings-connections", "path": "/Users/mileswirht/Downloads/backend-settings-connections-component-v8"},
+    {"name": "virtual-collection", "path": "/Users/mileswirht/Downloads/backend-virtual-collection-component-v8"},
+    {"name": "package-overview-v9", "path": "/Users/mileswirht/Downloads/backend-package-overview-v9"},
+    {"name": "docs-chrome-v9", "path": "/Users/mileswirht/Downloads/backend-docs-chrome-v9"},
+    {"name": "feedback-overlay-v9", "path": "/Users/mileswirht/Downloads/backend-feedback-overlay-v9"},
+    {"name": "source-browser-v9", "path": "/Users/mileswirht/Downloads/backend-source-browser-v9"}
+  ],
+  "vendor_extension_decisions": [
+    {
+      "candidate": "Notification::with_id<T>(key)",
+      "decision": "reject-as-duplicate",
+      "source_path": "vendor/gpui_ce_components/src/notification.rs:166-239",
+      "reason": "The published API already provides Notification::new().id1::<T>(key). Use that builder from feedback/view.rs instead of adding a constructor convenience method."
+    },
+    {
+      "candidate": "BreadcrumbItem::focusable(bool)",
+      "decision": "defer-and-coalesce",
+      "source_path": "vendor/gpui_ce_components/src/breadcrumb.rs:20-147",
+      "reason": "The docs-chrome worktree has a pending keyboard-accessibility patch. It should be reviewed with the existing local Button/Input A11y additions rather than copied into a separate vendor commit."
+    },
+    {
+      "candidate": "VirtualList per-item post-layout measurement callback",
+      "decision": "specify-do-not-implement",
+      "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui_ce_components_base-0.2.0/src/virtual_list.rs:314-336,418-433",
+      "reason": "CE accepts an Rc<Vec<Size<Pixels>>> item-size vector and measures a representative item for the cross-axis, while the virtual-collection slice keeps variable row heights in an app LayoutMemory. A future general extension could report measured item bounds by index, but this audit has no safe contract or implementation to add; keep the current app adapter and do not create a second culling loop."
+    },
+    {
+      "candidate": "gpui_component::text text-selection façade re-exports",
+      "decision": "implement-separate-commit",
+      "source_path": "vendor/gpui_ce_components/src/text/mod.rs:18-25",
+      "reason": "gpui_base already publishes TextSelection, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun, and the related scope/content types, but gpui_component::text did not expose them. Commit 80d4c6221 adds only those general re-exports, with no overlap with the A11y Button/Input changes."
+    }
+  ],
+  "highest_risk_reinventions": [
+    {
+      "risk": "high",
+      "path": "/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/shell.rs:339-380",
+      "symbol": "overlay command palette",
+      "existing_owner": "gpui_component::command::{Command,CommandState,CommandGroup,CommandItem}",
+      "action": "Replace the raw action-button list with the CE command renderer; retain ActionId-to-Intent mapping in an app adapter."
+    },
+    {
+      "risk": "high",
+      "path": "/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/shell.rs:385-468",
+      "symbol": "settings_sheet",
+      "existing_owner": "gpui_component::setting::{Settings,SettingPage,SettingGroup} plus Root::open_sheet_at",
+      "action": "Use CE for page navigation, focus, reset semantics, and sheet ownership; keep page bodies and route reduction in the app."
+    },
+    {
+      "risk": "high",
+      "path": "/Users/mileswirht/Downloads/backend-settings-connections-component-v8/apps/desktop/src/views/settings.rs:26-121",
+      "symbol": "surface",
+      "existing_owner": "gpui_component::setting::{Settings,SettingPage} plus Root sheet lifecycle",
+      "action": "Consolidate this second settings shell onto the existing ui/components.rs Settings adapter."
+    },
+    {
+      "risk": "high",
+      "path": "/Users/mileswirht/Downloads/nudox-components-v8/apps/desktop/src/ui/foundation/feedback.rs:83-91,163-174",
+      "symbol": "Foundation::skeleton and loading_hatch",
+      "existing_owner": "gpui_component::skeleton::Skeleton and gpui_component::progress::Progress",
+      "action": "Use CE for generic loading geometry and animation; keep only a deliberately product-specific facet mark."
+    },
+    {
+      "risk": "high",
+      "path": "/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/source_browser/view.rs:322-517",
+      "symbol": "SourceBrowserView::{render_line,render_code}",
+      "existing_owner": "VirtualList, Tree, InputState, producer-backed InputHighlighter bridge, and base text-selection APIs",
+      "action": "Keep the pending CE composition and producer token spans, wire visible line/chunk runs into CE text selection, and preserve v_virtual_list as the only viewport culler; do not grow a parallel editor/parser."
+    },
+    {
+      "risk": "high",
+      "path": "/Users/mileswirht/Downloads/backend-virtual-collection-component-v8/apps/desktop/src/ui/virtual_collection/layout.rs:354-367,440-570",
+      "symbol": "CollectionLayout::visible_range and CollectionFrame::visible_range at 61b071096",
+      "existing_owner": "gpui_component::v_virtual_list callback range and VirtualList::track_scroll",
+      "action": "Retain keyed geometry, item_sizes, anchor preservation, and selection in the app adapter, but remove the dormant paint range and legacy model/viewport culler. register_visible_row_actions must consume only the CE callback range."
+    },
+    {
+      "risk": "medium",
+      "path": "/Users/mileswirht/Downloads/backend-onboarding-shelf-v8/apps/desktop/src/views/catalog.rs:304-352",
+      "symbol": "package_card",
+      "existing_owner": "Button, Link, or ListItem semantics",
+      "action": "Keep card styling but put activation on a CE control or equivalent app adapter with keyboard and A11y behavior."
+    }
+  ],
+  "capabilities": [
+    {
+      "capability": "buttons",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/button/button.rs:186-480", "symbols": ["Button", "ButtonVariants", "Button::new", "Button::on_click", "Button::loading", "Button::toggled", "Button::tab_stop", "Button::accessibility_description", "Button::on_focus_observed", "Button::on_hover_observed", "Button::on_press_observed"]}
+      ],
+      "required_styling_hook": "Button accessibility_label, a variant method, focus_visible, font_family, border_color, bg, disabled, and loading modifiers.",
+      "gap": "Standard controls are covered by ui::components and design-components Foundation adapters. Raw pointer-only package cards still bypass CE semantics.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/catalog.rs:304-352 package_card", "/Users/mileswirht/Downloads/backend-docs-chrome-v9/apps/desktop/src/views/package.rs legacy tab/action surfaces"]
+    },
+    {
+      "capability": "links",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/link.rs:11-54", "symbols": ["Link", "Link::new", "Link::href", "Link::on_click", "Link::disabled"]}
+      ],
+      "required_styling_hook": "Link style refinement plus text_color, text_decoration, hover/active colors, and cursor semantics.",
+      "gap": "Use Link for route or external-link semantics. Keep text::navigable only as a typography helper around a real CE action.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/ui/text.rs:70-95 navigable", "/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/views/reader.rs:90 crumb", "/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/catalog.rs:304-352 package_card"]
+    },
+    {
+      "capability": "tabs",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/tab/tab.rs:15-554", "symbols": ["Tab", "TabVariant", "Tab::underline", "Tab::segmented", "Tab::disabled", "Tab::on_click"]},
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/tab/tab_bar.rs:50-185", "symbols": ["TabBar", "TabBar::selected_index", "TabBar::on_click", "TabBar::track_scroll"]}
+      ],
+      "required_styling_hook": "TabBar variant, selected_index, tab font/size, and Nudox theme tokens.",
+      "gap": "Reuse is complete in design-components, package-overview, and docs-chrome. Route selection remains an app adapter.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-docs-chrome-v9/apps/desktop/src/views/package.rs:70-108 legacy tab-like layout"]
+    },
+    {
+      "capability": "breadcrumbs",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/breadcrumb.rs:13-150", "symbols": ["Breadcrumb", "BreadcrumbItem", "BreadcrumbItem::new", "BreadcrumbItem::disabled", "BreadcrumbItem::on_click", "Breadcrumb::child", "Breadcrumb::children"]}
+      ],
+      "required_styling_hook": "Breadcrumb style refinement and item text colors; keyboard activation requires the pending focusable seam.",
+      "gap": "The current clickable item is a div with Link role, not a keyboard button. Coordinate BreadcrumbItem::focusable with the A11y worktree; do not add a second extension.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/views/reader.rs:90 crumb", "/Users/mileswirht/Downloads/backend-docs-chrome-v9/apps/desktop/src/ui/docs_chrome/state.rs:255-270 BreadcrumbCrumb data without a renderer"]
+    },
+    {
+      "capability": "tree",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/tree.rs:15-55", "symbols": ["tree", "Tree", "Tree::new", "Tree::context_menu", "TreeState", "TreeEntry", "TreeItem"]},
+        {"package": "gpui_ce_components_base", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui_ce_components_base-0.2.0/src/tree.rs:39-278", "symbols": ["TreeItem", "TreeEntry", "TreeState", "TreeState::set_items", "TreeState::set_selected_item", "TreeState::focus"]}
+      ],
+      "required_styling_hook": "TreeState item renderer returning CE ListItem, list style, selection colors, and app theme.",
+      "gap": "Design-components wraps CE tree correctly. Source-browser directory state must adapt to TreeState rather than implement expansion/focus painting.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/source_browser/navigation.rs:246-324 DirectoryProjection and DirectoryState"]
+    },
+    {
+      "capability": "list",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/list/list.rs:38-261,706-732", "symbols": ["ListEvent", "ListState", "ListState::searchable", "ListState::selectable", "ListState::set_query", "ListState::scroll_to_selected_item", "List"]},
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/list/list_item.rs:25-120", "symbols": ["ListItem", "ListItem::selected", "ListItem::disabled", "ListItem::on_click", "ListItem::suffix"]},
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/list/delegate.rs:11-30", "symbols": ["ListDelegate"]}
+      ],
+      "required_styling_hook": "ListDelegate renderer, searchable/selectable state, and ListItem selected/disabled/on_click/suffix styling.",
+      "gap": "Use ListState for searchable/selectable collections and ListItem for finite rows. Current capability rows are acceptable as ListItem children, but shelf/settings navigation should not grow a second list state machine.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/shell.rs:145-330 shelf row assembly", "/Users/mileswirht/Downloads/backend-settings-connections-component-v8/apps/desktop/src/views/connections.rs:292-317 capability_card", "/Users/mileswirht/Downloads/backend-settings-connections-component-v8/apps/desktop/src/views/settings.rs:41-61 settings navigation"]
+    },
+    {
+      "capability": "virtual_list",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/virtual_list.rs:2", "symbols": ["VirtualList", "VirtualListScrollHandle", "v_virtual_list", "h_virtual_list"]},
+        {"package": "gpui_ce_components_base", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui_ce_components_base-0.2.0/src/virtual_list.rs:43-259", "symbols": ["VirtualList", "VirtualListScrollHandle", "VirtualList::track_scroll", "v_virtual_list"]}
+      ],
+      "required_styling_hook": "Stable Rc<Vec<Size<Pixels>>> item sizes, track_scroll, CE callback range, and an app row renderer.",
+      "gap": "At virtual-collection commit 61b071096, render.rs:125-163 already passes layout.item_sizes() to v_virtual_list and consumes its callback range. Keep LayoutMemory::{frame,record_measurement}, build_layout, keyed deltas, and preserve_anchor as app adapters; remove the dormant CollectionLayout::visible_range/CollectionFrame.visible_range paint plan and model/viewport.rs::{visible_range,visible_rows}. If true post-layout row measurement becomes necessary, specify a general CE item-measurement callback before extending the vendor; no extension is implemented here.",
+      "ownership": "app-adapter",
+      "vendor_extension": "none-now; specify a general per-item post-layout measurement callback only if app-side row measurements cannot be supplied",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-virtual-collection-component-v8/apps/desktop/src/ui/virtual_collection/layout.rs:354-367,440-570 CollectionLayout::visible_range and CollectionFrame.visible_range", "/Users/mileswirht/Downloads/backend-virtual-collection-component-v8/apps/desktop/src/model/viewport.rs:45-110 ViewportState::visible_range and VirtualCollection::visible_rows", "/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/model/viewport.rs:45-110 ViewportState::visible_range and VirtualCollection::visible_rows", "/Users/mileswirht/Downloads/backend-package-overview-v9/apps/desktop/src/views/package_overview.rs:1089-1113 virtual_rows", "/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/source_browser/view.rs:501-517 already uses v_virtual_list"]
+    },
+    {
+      "capability": "table",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/table/{column.rs,state.rs,data_table.rs,table.rs,delegate.rs}", "symbols": ["Column", "ColumnSort", "TableDelegate", "TableState", "DataTable", "Table", "TableHeader", "TableBody", "TableRow", "TableCell"]}
+      ],
+      "required_styling_hook": "Column width/fixed/resizable/movable/sortable flags, DataTable stripe/border/scrollbar, and row/cell theme styles.",
+      "gap": "No current view requires sortable table state. Use DataTable when registry facts become tabular and interactive; current cards and description lists are content-specific.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-package-overview-v9/apps/desktop/src/views/package_overview.rs:400-950 raw fact/metadata cards and rows", "/Users/mileswirht/Downloads/backend-settings-connections-component-v8/apps/desktop/src/views/connections.rs:292-317 capability_card"]
+    },
+    {
+      "capability": "text_selection",
+      "existing_api": [
+        {"package": "gpui_ce_components_base", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui_ce_components_base-0.2.0/src/text_selection.rs:20-1710", "symbols": ["TextSelectionHandle", "TextSelectionRegistration", "TextSelectionRun", "TextSelection::selected_text", "TextSelection::clear", "TextSelectionLayer"]},
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/text/mod.rs:18-25", "symbols": ["TextSelection", "TextSelectionContentKey", "TextSelectionCoverage", "TextSelectionEndpoint", "TextSelectionEvent", "TextSelectionHandle", "TextSelectionLayer", "TextSelectionProjection", "TextSelectionRegistration", "TextSelectionRun", "TextSelectionScopeId", "TextSelectionSnapshot", "TextSelectionWindowPoints"]}
+      ],
+      "required_styling_hook": "Register visible runs with stable scope/content keys and use TextView::selectable(true); app supplies text and selection colors.",
+      "gap": "Keep byte identity and producer ranges in the app, but use CE for actual pointer/keyboard selection. The pending source_browser/view.rs creates a TextSelectionHandle for copy but does not yet register visible runs; add that CE registration before pointer/keyboard selection. The current highlighted helper is only match emphasis.",
+      "ownership": "app-adapter",
+      "vendor_extension": "implemented in separate commit 80d4c6221; use the existing TextSelectionRegistration/TextSelectionRun protocol",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/source_browser/view.rs:107-128,322-517 handle/line renderer without visible-run registration", "/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/ui/text.rs:128-155 highlighted", "Any future hand-built source selection renderer"]
+    },
+    {
+      "capability": "document",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/text/mod.rs:17-42", "symbols": ["markdown", "html", "Text"]},
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/text/text_view.rs:67-321", "symbols": ["TextView", "TextView::new", "TextView::markdown", "TextView::html", "TextView::selectable", "TextView::scrollable", "TextView::on_link_click", "TextView::plugin"]}
+      ],
+      "required_styling_hook": "TextViewStyle plus selectable, selection_format, scrollable, code/table/link callbacks, and Nudox typography.",
+      "gap": "README/docs rendering currently falls back to raw text. Adapt markdown/HTML into TextView while keeping provenance and route callbacks in the app.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-package-overview-v9/apps/desktop/src/views/package_overview.rs:605-649 readme_section", "/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/views/reader.rs:14-76 document_page"]
+    },
+    {
+      "capability": "highlighter",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/highlighter/highlighter.rs:35-1068", "symbols": ["SyntaxHighlighter", "SyntaxHighlighter::new", "SyntaxHighlighter::update", "SyntaxHighlighter::styles"]},
+        {"package": "gpui_ce_components_base", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui_ce_components_base-0.2.0/src/input/editor/highlighting.rs:30-58", "symbols": ["InputHighlighter", "InputHighlighterFactory", "HighlightStyleResolver"]}
+      ],
+      "required_styling_hook": "Producer language identity, HighlightStyle resolver, token ranges, monospace font, and app palette.",
+      "gap": "Source-browser models retain producer token spans and the pending view resolves them directly into token colors; source_browser/highlighter.rs::IndexedHighlighter also bridges them into InputHighlighter. Keep either producer spans or this adapter, never a local parser or guessed language.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/source_browser/document.rs:178-205 TokenSpan data", "/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/source_browser/view.rs:322-430 render_line consumes producer spans", "/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/source_browser/highlighter.rs:1-96 IndexedHighlighter bridge", "/Users/mileswirht/Downloads/backend-source-browser-v9/apps/desktop/src/ui/text.rs:128-155 highlighted is not syntax highlighting"]
+    },
+    {
+      "capability": "input",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/input/{mod.rs,input.rs,state.rs}", "symbols": ["Input", "InputState", "AnyInputState", "Input::new", "Input::aria_label", "Input::appearance", "Input::bordered", "Input::focus_bordered", "Input::cleanable", "Input::tab_stop", "Input::context_menu"]}
+      ],
+      "required_styling_hook": "InputState owns IME, selection, clipboard and focus; app supplies aria_label, theme border/focus colors, and prefix/suffix.",
+      "gap": "Reuse is complete through ui::components input/search adapters. Do not add a second input state machine. Local vendor A11y hooks are an existing collision boundary.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["Any future raw text field in a view", "/Users/mileswirht/Downloads/backend-search-palette-component-v8/apps/desktop/src/ui/search_palette/render.rs:50-180 must continue using CommandState input"]
+    },
+    {
+      "capability": "search",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/searchable_list.rs:8-13", "symbols": ["SearchableListState", "SearchableListDelegate", "SearchableListItem", "SearchableVec", "SearchableGroup"]},
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/command/command.rs:58-222", "symbols": ["Command::searchable", "Command::filterable", "Command::on_query"]}
+      ],
+      "required_styling_hook": "CE query/focus/list styling plus app status, coverage, empty, and footer projections.",
+      "gap": "Backend query admission, debounce, coverage, and stable IDs belong to SearchPaletteProjection/QueryDebouncer; CE owns the visible query field and keyboard list.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-search-palette-component-v8/apps/desktop/src/ui/search_palette/query.rs:49-120 QueryDebouncer is correct app state", "/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/shell.rs:339-380 old palette has no CE query/input"]
+    },
+    {
+      "capability": "command",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/command/command.rs:58-222", "symbols": ["Command", "Command::new", "Command::group", "Command::on_query", "Command::on_confirm", "Command::on_cancel", "Command::header", "Command::empty", "Command::footer", "Command::max_h", "Command::bordered"]},
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/command/state.rs:116-298", "symbols": ["CommandState", "CommandState::new", "CommandState::set_query", "CommandState::selected_index", "CommandState::focus", "CommandState::set_loading"]},
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/command/item.rs:9-201", "symbols": ["CommandItem", "CommandGroup", "CommandItem::new", "CommandGroup::new"]}
+      ],
+      "required_styling_hook": "CommandState focus/loading/query, Command placeholder/max_h/bordered, and an app surface around the CE element.",
+      "gap": "Search-palette reuses the API correctly; onboarding still paints every action manually and must share the adapter.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/shell.rs:339-380 overlay", "/Users/mileswirht/Downloads/backend-search-palette-component-v8/apps/desktop/src/ui/search_palette/render.rs:50-180 overlay is the reference implementation"]
+    },
+    {
+      "capability": "menu",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/menu/{popup_menu.rs,menu_item.rs,context_menu.rs,dropdown_menu.rs}", "symbols": ["PopupMenu", "PopupMenuItem", "PopupMenuItem::submenu", "PopupMenuItem::separator", "PopupMenuItem::disabled", "PopupMenuItem::checked", "ContextMenuExt", "DropdownMenu"]}
+      ],
+      "required_styling_hook": "PopupMenu min/max dimensions, scrollability, check side, item disabled/checked/link/submenu state, and app surface tokens.",
+      "gap": "Use CE for true menu semantics; docs feature selection may remain an app adapter only if multi-select semantics are intentional.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-docs-chrome-v9/apps/desktop/src/ui/docs_chrome/selectors.rs:141-190 feature_menu", "/Users/mileswirht/Downloads/backend-feedback-overlay-v9/apps/desktop/src/feedback/view.rs:46-47 menu_item only projects one item"]
+    },
+    {
+      "capability": "popover",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/popover.rs:106-255", "symbols": ["Popover", "PopoverState", "Popover::trigger", "Popover::content", "Popover::on_open_change", "Popover::overlay_closable", "Popover::track_focus"]}
+      ],
+      "required_styling_hook": "CE Selectable trigger, stable ElementId, app appearance/surface tokens, and content renderer.",
+      "gap": "Reuse is complete in design-components, docs-chrome, and feedback. Domain overlay records and route effects stay app-owned.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/shell.rs:331-468 absolute overlay shells", "/Users/mileswirht/Downloads/backend-settings-connections-component-v8/apps/desktop/src/views/settings.rs:100-121 absolute settings shell"]
+    },
+    {
+      "capability": "tooltip",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/tooltip.rs:34-81", "symbols": ["Tooltip", "Tooltip::new", "Tooltip::element", "Tooltip::action", "Tooltip::key_binding", "Tooltip::build"]}
+      ],
+      "required_styling_hook": "Canonical app tooltip adapter supplies font, colors, border, padding; CE owns delay and placement.",
+      "gap": "Reuse is complete. Keep tooltip text and status in app data and do not build hover timers.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["Any raw hover-delay or title-only custom tooltip"]
+    },
+    {
+      "capability": "dialog",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/dialog/{dialog.rs,alert_dialog.rs,footer.rs,header.rs,title.rs,content.rs,description.rs}", "symbols": ["Dialog", "AlertDialog", "DialogButtonProps", "DialogFooter", "DialogHeader", "DialogTitle", "Dialog::overlay_closable", "Dialog::keyboard"]},
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/root.rs:98-478", "symbols": ["Root::open_dialog", "Root::close_dialog", "Root::open_sheet_at", "Root::close_sheet"]}
+      ],
+      "required_styling_hook": "Dialog content/footer/button variants, overlay_closable, keyboard handling, and Root ownership with app surface tokens.",
+      "gap": "Settings, command palette, and future confirmations need CE Root/Dialog/Sheet ownership. Routes and reducer state remain app-owned.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/shell.rs:331-468 overlay and settings_sheet", "/Users/mileswirht/Downloads/backend-settings-connections-component-v8/apps/desktop/src/views/settings.rs:26-121 surface", "/Users/mileswirht/Downloads/backend-search-palette-component-v8/apps/desktop/src/ui/search_palette/render.rs:166-180 absolute container"]
+    },
+    {
+      "capability": "notification",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/notification.rs:106-376,692-945", "symbols": ["Notification", "Notification::new", "Notification::success", "Notification::error", "Notification::with_type", "Notification::id", "Notification::id1", "Notification::autohide", "NotificationList", "Root::push_notification", "Root::remove_notification1"]}
+      ],
+      "required_styling_hook": "Notification type/delivery/placement, deterministic id1, autohide policy, and app theme/global settings.",
+      "gap": "Connections and feedback correctly project notifications. Feedback's queue/coalescing/expiry are app state; use existing id1 and do not add with_id.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-feedback-overlay-v9/vendor/gpui_ce_components/src/notification.rs:165-190 proposed with_id", "/Users/mileswirht/Downloads/backend-feedback-overlay-v9/apps/desktop/src/feedback/view.rs:54-75 notification projection", "/Users/mileswirht/Downloads/backend-settings-connections-component-v8/apps/desktop/src/views/connections.rs:211-220 success notification is correct"]
+    },
+    {
+      "capability": "progress",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/progress/{progress.rs,progress_circle.rs}", "symbols": ["Progress", "ProgressCircle", "Progress::new", "Progress::loading", "Progress::value", "Progress::color", "Progress::accessibility_label"]}
+      ],
+      "required_styling_hook": "App palette color/size and accessible label; CE owns indeterminate animation and reduced motion.",
+      "gap": "Settings and feedback correctly project progress. Use Progress for progress state instead of generic raw loading marks.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/nudox-components-v8/apps/desktop/src/ui/foundation/feedback.rs:163-174 loading_hatch"]
+    },
+    {
+      "capability": "skeleton",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/skeleton.rs:11-40", "symbols": ["Skeleton", "Skeleton::new", "Skeleton::secondary"]}
+      ],
+      "required_styling_hook": "Style refinement for width/height and app theme; CE supplies reduced-motion skeleton animation.",
+      "gap": "Feedback uses CE. Design-components' raw rectangle plus four-bar hatch is a duplicate generic loading primitive; keep a facet mark only when semantically distinct.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/nudox-components-v8/apps/desktop/src/ui/foundation/feedback.rs:83-91 skeleton", "/Users/mileswirht/Downloads/nudox-components-v8/apps/desktop/src/ui/foundation/feedback.rs:163-174 loading_hatch"]
+    },
+    {
+      "capability": "sidebar",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/sidebar/{mod.rs,menu.rs,group.rs,header.rs,footer.rs}", "symbols": ["Sidebar", "SidebarItem", "SidebarMenuItem", "SidebarGroup", "SidebarToggleButton", "Sidebar::collapsible", "Sidebar::collapsed", "SidebarMenuItem::active", "SidebarMenuItem::on_click"]}
+      ],
+      "required_styling_hook": "Sidebar collapse/side/header/footer, item active/disabled/click state, and app surface tokens.",
+      "gap": "Docs chrome reuses CE. Shelf and settings navigation may retain product content but should use CE shell semantics or an explicit adapter.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/shell.rs:145-330 shelf", "/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/shell.rs:385-468 settings_sheet", "/Users/mileswirht/Downloads/backend-settings-connections-component-v8/apps/desktop/src/views/settings.rs:73-98 navigation_panel"]
+    },
+    {
+      "capability": "dock",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/dock/mod.rs:35-60", "symbols": ["DockArea", "DockPlacement", "PanelRegistry", "Panel", "PanelView", "DockSkin"]},
+        {"package": "gpui_ce_components_base", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui_ce_components_base-0.2.0/src/dock", "symbols": ["DockArea", "DockState", "PanelRegistry", "Panel", "PanelView", "DockContext"]}
+      ],
+      "required_styling_hook": "Panel registration, DockSkin/panel styles, and app panel identities/routes.",
+      "gap": "No active Nudox view needs movable dock semantics. Responsive shelves and rails are app layout, not a missing dock API.",
+      "ownership": "none",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/shell.rs:145-330 fixed shelf", "/Users/mileswirht/Downloads/backend-docs-chrome-v9/apps/desktop/src/ui/docs_chrome/rail.rs:45-99 fixed docs rail"]
+    },
+    {
+      "capability": "resizable",
+      "existing_api": [
+        {"package": "gpui_ce_components_base", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui_ce_components_base-0.2.0/src/resizable/{mod.rs,panel.rs,resize_handle.rs}", "symbols": ["ResizablePanelGroup", "ResizablePanel", "ResizableState", "ResizablePanelEvent", "h_resizable", "v_resizable", "resize_handle"]},
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/lib.rs:60-65,95-102", "symbols": ["ResizablePanelGroup", "ResizablePanel", "ResizablePanelEvent", "ResizableState", "h_resizable", "v_resizable"]}
+      ],
+      "required_styling_hook": "Panel size ranges, handle appearance, and app tokens; route state remains outside the element.",
+      "gap": "No active resizable split exists. ResponsiveLayout breakpoints and fixed rail widths are product layout; use CE only when user-resizable panes are introduced.",
+      "ownership": "none",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-settings-connections-component-v8/apps/desktop/src/views/settings.rs:73-80 fixed 184 px navigation", "/Users/mileswirht/Downloads/backend-docs-chrome-v9/apps/desktop/src/ui/docs_chrome/spec.rs:24-42 fixed rail widths"]
+    },
+    {
+      "capability": "focus",
+      "existing_api": [
+        {"package": "gpui-ce", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-ce-0.2.2/src/window.rs:468-642", "symbols": ["FocusHandle", "FocusHandle::tab_index", "FocusHandle::tab_stop", "FocusHandle::focus", "Focusable"]},
+        {"package": "gpui_ce_components_base", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui_ce_components_base-0.2.0/src/focus_trap.rs:113-190", "symbols": ["FocusTrapElement", "active_focus_trap"]}
+      ],
+      "required_styling_hook": "FocusHandle tab_index/tab_stop/focus, CE track_focus, FocusTrapElement, and Root dialog/sheet lifecycle.",
+      "gap": "FocusTree, ModalStack, and ActionTree are valid route/semantic adapters, but concrete focus must stay on CE/GPUI handles. Raw overlays need FocusTrap/Root migration.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend-search-palette-component-v8/apps/desktop/src/navigation/focus.rs:66-205 FocusTree", "/Users/mileswirht/Downloads/backend-search-palette-component-v8/apps/desktop/src/navigation/modal.rs:39-80 ModalStack", "/Users/mileswirht/Downloads/nudox-components-v8/apps/desktop/src/ui/components.rs:627-805 ActionTree"]
+    },
+    {
+      "capability": "root",
+      "existing_api": [
+        {"package": "gpui_ce_components", "source_path": "vendor/gpui_ce_components/src/root.rs:36-478", "symbols": ["Root", "Root::new", "Root::update", "Root::read", "Root::open_dialog", "Root::open_sheet_at", "Root::push_notification", "Root::remove_notification1", "Root::view"]}
+      ],
+      "required_styling_hook": "Root owns overlay layers, text-selection scope, dialogs/sheets, notifications and tooltip integration; app supplies the shell view and theme.",
+      "gap": "The route snapshot may remain the source of truth, but presentation should hand overlay lifetime and focus to Root instead of absolute children.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Documents/ChatGPT/backend-onboarding-shelf-v8/apps/desktop/src/views/shell.rs:331-468 overlay", "/Users/mileswirht/Downloads/backend-search-palette-component-v8/apps/desktop/src/ui/search_palette/render.rs:166-180 absolute palette container", "/Users/mileswirht/Downloads/backend-settings-connections-component-v8/apps/desktop/src/views/settings.rs:100-121 absolute settings surface"]
+    },
+    {
+      "capability": "test_support",
+      "existing_api": [
+        {"package": "gpui-ce", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-ce-0.2.2/src/gpui.rs:54-60", "symbols": ["gpui::test"]},
+        {"package": "gpui-ce", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-ce-0.2.2/src/app/test_context.rs:21-738", "symbols": ["TestAppContext", "VisualTestContext"]},
+        {"package": "gpui-ce", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-ce-0.2.2/src/app/headless_app_context.rs:38-180", "symbols": ["HeadlessAppContext"]},
+        {"package": "gpui-ce", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-ce-0.2.2/src/platform/test/dispatcher.rs:17-61", "symbols": ["TestDispatcher"]}
+      ],
+      "required_styling_hook": "Mount real CE elements/states with the test theme and assets; inspect focus/selection/action frames instead of simulating a parallel widget.",
+      "gap": "Search-palette and virtual-collection support mount CE state. App semantic capture is useful as a bridge, but pure reducer tests do not prove component behavior.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend/apps/desktop/src/harness.rs:1-190 capture_gpui_state_with_adapters_result", "Pure navigation/reducer tests that never mount CE components"]
+    },
+    {
+      "capability": "render_to_image",
+      "existing_api": [
+        {"package": "gpui-ce", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-ce-0.2.2/src/window.rs:2435-2439", "symbols": ["Window::render_to_image"]},
+        {"package": "gpui-ce", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-ce-0.2.2/src/app/headless_app_context.rs:168-171", "symbols": ["HeadlessAppContext::capture_screenshot"]},
+        {"package": "gpui-ce", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-ce-0.2.2/src/app/visual_test_context.rs:384-386", "symbols": ["VisualTestAppContext::capture_screenshot"]}
+      ],
+      "required_styling_hook": "Real theme/assets and a CE-mounted window; capture after layout and clock advancement.",
+      "gap": "Use the native render path for component evidence. Do not add a parallel bitmap renderer in Nudox.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend/apps/desktop/src/harness.rs:1-190 custom capture bridge, which must call the native path"]
+    },
+    {
+      "capability": "clock",
+      "existing_api": [
+        {"package": "gpui-ce", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-ce-0.2.2/src/platform/test/dispatcher.rs:56-61", "symbols": ["TestDispatcher::advance_clock", "TestDispatcher::advance_clock_to_next_timer"]},
+        {"package": "gpui-ce", "source_path": "/Users/mileswirht/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-ce-0.2.2/src/executor.rs:152-178", "symbols": ["BackgroundExecutor::now", "BackgroundExecutor::advance_clock"]},
+        {"package": "nudox", "source_path": "apps/desktop/src/runtime/animation.rs:9-101", "symbols": ["FrameClock", "AnimationTimeline"]}
+      ],
+      "required_styling_hook": "Inject FrameClock for app transitions, advance GPUI dispatcher clock for CE timers, and honor reduce_motion.",
+      "gap": "The app timeline is legitimate and should not move into CE. Use GPUI dispatcher/executor time for CE timers and the app FrameClock for product motion.",
+      "ownership": "app-adapter",
+      "conflicting_duplicate_code_paths": ["/Users/mileswirht/Downloads/backend/apps/desktop/src/runtime/animation.rs:9-101 app animation clock", "/Users/mileswirht/Downloads/backend-feedback-overlay-v9/apps/desktop/src/feedback/model.rs:1015-1540 FeedbackModel frame-clock state"]
+    }
+  ],
+  "validation": {
+    "git_diff_check": "required after documentation edit",
+    "cargo_nix_rustc_tests_builds": "not run by instruction",
+    "audit_commit_scope": ["docs/reviews/gpui-component-reuse-v9.md", "docs/reviews/gpui-component-reuse-v9.json"],
+    "vendor_extension_commit": "80d4c6221d4bcc7d06f08890cfc850ed787255f8"
+  }
+}
