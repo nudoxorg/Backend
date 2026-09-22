@@ -307,7 +307,7 @@ fn admit_project_path(snapshot: &AppSnapshot, path: &std::path::Path) -> AppSnap
         ));
     }
     workspace.projects = projects.into();
-    let mut next = snapshot.with_workspace(workspace);
+    let next = snapshot.with_workspace(workspace);
     let mut shelf = next.shelf().clone();
     if !shelf
         .items

@@ -529,7 +529,7 @@ impl VersionedRoot {
 
     /// Returns whether two keys name the same producer epoch/generation.
     #[must_use]
-    pub const fn same_producer_generation(self, other: Self) -> bool {
+    pub fn same_producer_generation(self, other: Self) -> bool {
         self.producer_epoch() == other.producer_epoch() && self.revision() == other.revision()
     }
 
@@ -543,7 +543,7 @@ impl VersionedRoot {
     /// Returns whether this key is older in producer order. Observation order
     /// is never consulted for admission.
     #[must_use]
-    pub const fn is_older_authority(self, other: Self) -> bool {
+    pub fn is_older_authority(self, other: Self) -> bool {
         if self.producer_epoch() == other.producer_epoch() {
             return self.revision() < other.revision();
         }

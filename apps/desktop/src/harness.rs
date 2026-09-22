@@ -16,7 +16,7 @@ use backend_gui_harness::{
     capture_gpui_state_with_timed_adapters_and_ime_result,
 };
 use backend_library::{SurfaceCommand, SurfaceReply};
-use gpui::{App, AppContext as _, Entity, FocusHandle, Focusable as _, WeakEntity, Window};
+use gpui::{App, AppContext as _, Entity, FocusHandle, WeakEntity, Window};
 use gpui_component::{WindowExt as _, input::AnyInputState};
 use image::RgbaImage;
 use std::cell::RefCell;
@@ -225,7 +225,7 @@ fn capture_live_inner(
         move |frame, image, viewport, window, cx| {
             if let Some(driver) = journey_for_semantics.as_ref() {
                 if let Some(root) = journey_root_for_semantics.borrow().as_ref().cloned() {
-                    root.update(cx, |root, _cx| {
+                    let _ = root.update(cx, |root, _cx| {
                         driver.borrow_mut().observe(frame, root);
                     });
                 }
@@ -509,8 +509,11 @@ impl JourneyDriver {
         for path in self.selected_paths() {
             let project = LocalProjectId::from_path(&path)
                 .map_err(|error| format!("admit persisted capture project: {error}"))?;
+            let coordinate = project
+                .service_coordinate()
+                .map_err(|error| format!("encode persisted capture project: {error}"))?;
             session
-                .index_path(project.native_path())
+                .index(coordinate)
                 .map_err(|error| format!("index persisted capture project: {error}"))?;
         }
         Ok(())
@@ -1211,6 +1214,9 @@ fn route_for_state(state: &GuiState, snapshot: Arc<AppSnapshot>) -> Option<Route
             selected,
         })),
         Some(PageState::Graph) | Some(PageState::CodeSearch) => {
+            Some(Route::Orbit(OrbitRoute::Home))
+        }
+        Some(PageState::Browse) | Some(PageState::Project) | None => {
             Some(Route::Orbit(OrbitRoute::Home))
         }
     }

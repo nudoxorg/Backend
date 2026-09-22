@@ -159,8 +159,15 @@ impl LocalEngineClient {
         let mut session = Session::connect(&self.endpoint)
             .map_err(fault)
             .map_err(|error| index_fault(project.clone(), error))?;
+        let coordinate =
+            project
+                .service_coordinate()
+                .map_err(|error| EngineFault::IndexFailed {
+                    project: project.clone(),
+                    error: crate::core::ErrorValue::new(FaultCode::Protocol, error.to_string()),
+                })?;
         session
-            .index_path(project.native_path())
+            .index(coordinate)
             .map_err(fault)
             .map_err(|error| index_fault(project.clone(), error))?;
         self.session = Some(session);

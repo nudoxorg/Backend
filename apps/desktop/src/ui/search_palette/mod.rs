@@ -12,11 +12,13 @@ use crate::theme::Theme;
 use crate::theme::palette::Paint;
 use crate::theme::tokens::{Space, space};
 use crate::ui::{components, text};
-use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, App, Context, ElementId, IntoElement, ParentElement, Styled, div, px};
-use gpui_component::IndexPath;
+use gpui::{
+    AnyElement, App, Context, ElementId, InteractiveElement, IntoElement, ParentElement, Styled,
+    div, px,
+};
 use gpui_component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_component::dialog::Dialog;
+use gpui_component::{Disableable as _, IndexPath};
 
 /// Builds the compact search trigger in the shell header.
 pub(crate) fn header_trigger(
@@ -92,10 +94,11 @@ pub(crate) fn dialog(dialog: Dialog, owner: gpui::Entity<UiRootEntity>, width: f
                 })
                 .bordered(false)
                 .max_h(px(520.0));
-            content
-                .id(ElementId::Name("search-palette-content".into()))
-                .p_0()
-                .child(command)
+            content.p_0().child(
+                div()
+                    .id(ElementId::Name("search-palette-content".into()))
+                    .child(command),
+            )
         })
         .on_close(move |_, _, app| {
             owner.update(app, |root, cx| root.queue(Intent::DismissOverlay, cx));

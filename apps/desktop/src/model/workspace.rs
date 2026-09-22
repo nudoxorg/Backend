@@ -91,15 +91,16 @@ impl WorkspaceProject {
     #[must_use]
     pub fn indexing_with_display(id: LocalProjectId, path: impl Into<Arc<str>>) -> Self {
         let path = path.into();
-        let label = std::path::Path::new(path.as_ref())
+        let label: Arc<str> = std::path::Path::new(path.as_ref())
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| !name.is_empty())
-            .unwrap_or(path.as_ref());
+            .map(Arc::from)
+            .unwrap_or_else(|| Arc::clone(&path));
         Self {
             id,
             path,
-            label: Arc::from(label),
+            label,
             phase: ProjectPhase::Indexing,
             progress: None,
             files_indexed: None,

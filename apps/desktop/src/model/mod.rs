@@ -4,6 +4,7 @@ pub mod persistence;
 pub mod selectors;
 pub mod snapshot;
 pub mod viewport;
+pub mod workspace;
 
 pub use persistence::{
     PersistedAppearance, PersistedDesktopState, PersistedPackageLane, PersistedPrivacy,
@@ -12,8 +13,10 @@ pub use persistence::{
 };
 pub use selectors::{KeyedSelectorCache, LayoutKey, RowHeightCache, SelectorKey};
 pub use snapshot::{
-    AppSnapshot, CatalogState, DeltaId, DocumentState, DocumentTab, ObjectId, PackageSummary,
-    ProjectState, SessionState, SettingsState, ShelfItem, ShelfState,
+    AppSnapshot, AppearancePreference, CatalogState, ConnectionStatus, DeltaId, DocumentState,
+    DocumentTab, ObjectId, PackageSummary, PrivacyPreference, ProjectPhase, ProjectState,
+    ServiceMode, SessionState, SettingsState, ShelfItem, ShelfState, TextScalePreference,
+    WorkspaceProject, WorkspaceState,
 };
 pub use viewport::{
     DocumentViewportState, SourceViewportState, ViewportId, ViewportState, VirtualCollection,

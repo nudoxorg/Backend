@@ -20,7 +20,7 @@ pub const CURSOR_CONTROL_BYTES: usize = 2 + 32 * 5 + 2 + 8;
 pub const CURSOR_QUERY_BYTES: usize = CURSOR_CONTROL_BYTES + 8;
 
 /// Bounded position in one branch/log/view/schema stream.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Cursor {
     recipe: ViewRecipeId,
     version: ViewVersion,

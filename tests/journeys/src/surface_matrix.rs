@@ -9,11 +9,11 @@
 
 use backend_client::Session;
 use backend_desktop::{
-    core::VersionedRoot,
+    core::{LocalProjectId, VersionedRoot},
     navigation::RequestId,
     runtime::{CancellationToken, EngineClient, EngineDto, EngineRequest, LocalEngineClient},
 };
-use backend_library::{CommandReply, RowId, ViewStateRoot, view_state_root};
+use backend_library::{CommandReply, Cursor, RowId, ViewStateRoot, view_state_root};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -397,9 +397,10 @@ pub fn desktop_probe(
         expected_root,
         "desktop package source basis drifted"
     );
-    let basis = VersionedRoot::new(expected_root, 1);
+    let basis = VersionedRoot::from_revision(1, Cursor::at(expected_root, 0), 0);
     let request = RequestId::new(1);
-    let mut desktop = LocalEngineClient::new(endpoint, project.to_string_lossy().into_owned());
+    let project_id = LocalProjectId::from_path(project).expect("desktop project identity");
+    let mut desktop = LocalEngineClient::new(endpoint, project_id);
     let mapped = desktop
         .execute(&EngineRequest::Root {
             request,
@@ -415,7 +416,7 @@ pub fn desktop_probe(
     else {
         panic!("desktop root request changed shape");
     };
-    assert_eq!(key.root, expected_root);
+    assert_eq!(key.root(), expected_root);
     assert_eq!(
         desktop_project.as_ref().map(|value| value.label.as_ref()),
         Some(project.to_string_lossy().as_ref()),

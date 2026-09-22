@@ -140,6 +140,28 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
                 return reduce(&next, intent);
             }
         }
+        Intent::ToggleShelf
+        | Intent::ToggleContext
+        | Intent::ToggleAppearance
+        | Intent::SetTextScale { .. }
+        | Intent::TogglePrivacy
+        | Intent::ToggleAdvisories
+        | Intent::ToggleCache
+        | Intent::SetCacheDays { .. }
+        | Intent::OpenFolderPicker
+        | Intent::FolderPickerResult { .. }
+        | Intent::IndexProject { .. }
+        | Intent::AddProject { .. }
+        | Intent::ActivateProject(_)
+        | Intent::RemoveProject(_)
+        | Intent::RevealProject(_)
+        | Intent::RetryIndex(_)
+        | Intent::CancelIndex(_)
+        | Intent::TestConnection
+        | Intent::ConnectionResult { .. }
+        | Intent::OpenHelp => {
+            unreachable!("workspace reducer owns workspace intents")
+        }
     }
     Reduction {
         snapshot: next,

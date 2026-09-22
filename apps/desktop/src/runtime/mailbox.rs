@@ -22,7 +22,7 @@ pub enum CoalesceKey {
     Surface(backend_library::CommandId),
     /// Only the newest compatibility ingest request for one local project
     /// matters while the shared ProjectIngest surface is being integrated.
-    Index(crate::core::LocalProjectId),
+    Index(backend_library::SemanticObject),
     /// Persistence writes can be collapsed into the newest state.
     Persistence,
 }
@@ -137,11 +137,11 @@ impl<T> CoalescingMailbox<T> {
         if state.closed {
             return PushResult::Closed(value);
         }
-        if let Some(key) = key {
+        if let Some(key) = key.as_ref() {
             if let Some(position) = state
                 .queue
                 .iter()
-                .position(|(existing, _)| *existing == Some(key))
+                .position(|(existing, _)| existing.as_ref() == Some(key))
             {
                 let old = std::mem::replace(&mut state.queue[position].1, value);
                 wake.notify_one();
@@ -168,11 +168,11 @@ impl<T> CoalescingMailbox<T> {
             if state.closed {
                 return false;
             }
-            if let Some(key) = key {
+            if let Some(key) = key.as_ref() {
                 if let Some(position) = state
                     .queue
                     .iter()
-                    .position(|(existing, _)| *existing == Some(key))
+                    .position(|(existing, _)| existing.as_ref() == Some(key))
                 {
                     let old = std::mem::replace(&mut state.queue[position].1, value);
                     drop(old);

@@ -150,21 +150,19 @@ fn workspace_mismatch(
         .child(text::body(theme).child(format!(
             "Selected: {active_label} · live service: {host_label}. Select the live row before reading results."
         )))
-        .when_some(host_project, |banner, project| {
-            banner.child(
-                components::button_with_state(
-                    theme,
-                    "select-live-workspace",
-                    "Select live workspace",
-                    components::Weight::Quiet,
-                    false,
-                    true,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.queue(Intent::ActivateProject(project.clone()), cx);
-                })),
+        .child(
+            components::button_with_state(
+                theme,
+                "select-live-workspace",
+                "Select live workspace",
+                components::Weight::Quiet,
+                false,
+                true,
             )
-        })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.queue(Intent::ActivateProject(host_project.clone()), cx);
+            })),
+        )
         .into_any_element()
 }
 
@@ -184,7 +182,7 @@ fn active_project_status(
         return None;
     }
     let path = project.id.clone();
-    let path_label = crate::ui::text::elide(project.path.as_ref(), 64);
+    let path_label = text::elide(project.path.as_ref(), 64);
     let (headline, detail) = match project.phase {
         ProjectPhase::Indexing => (
             "Indexing this project",

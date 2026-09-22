@@ -53,7 +53,7 @@ impl JourneyId {
 
     /// Parses one stable journey spelling.
     #[must_use]
-    pub const fn parse(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "cold-empty" => Self::ColdEmpty,
             "picker-cancelled" => Self::PickerCancelled,

@@ -261,7 +261,8 @@ pub(crate) fn bindings() -> Vec<KeyBinding> {
     ]
     .into_iter()
     .map(|(chord, action)| {
-        KeyBinding::new(chord.binding(), ShellAction { id: action as u16 }, None)
+        let binding = chord.binding();
+        KeyBinding::new(&binding, ShellAction { id: action as u16 }, None)
     })
     .collect()
 }

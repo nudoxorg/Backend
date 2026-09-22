@@ -15,5 +15,8 @@
 
 pub mod durable;
 pub mod local;
+mod native_path;
 #[cfg(windows)]
 pub mod win32;
+
+pub use native_path::{NativePath, NativePathError, NativePathKey, NativePathWire};

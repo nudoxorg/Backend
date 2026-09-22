@@ -14,7 +14,7 @@ use crate::theme::palette::Paint;
 use crate::theme::tokens::{Space, TypeScale, space};
 use crate::ui::{components, surface, text};
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, AppContext as _, Entity, IntoElement, ParentElement, Styled, div, px};
+use gpui::{AnyElement, Entity, IntoElement, ParentElement, Styled, div, px};
 use gpui_component::Sizable as _;
 use gpui_component::progress::Progress;
 use gpui_component::setting::{SelectIndex, SettingGroup, SettingItem, SettingPage};
@@ -51,8 +51,7 @@ pub(super) fn sheet(
         page_ix: selected_index,
         group_ix: None,
     })
-    .with_size(gpui_component::Size::Large)
-    .size_full();
+    .with_size(gpui_component::Size::Large);
     let close_owner = owner.clone();
     sheet
         .title(text::heading(theme, TypeScale::Section).child("Settings"))
@@ -467,7 +466,7 @@ fn index_page(theme: &Theme, snapshot: &AppSnapshot, owner: Entity<UiRootEntity>
                 components::list_item_with_state(
                     theme,
                     format!("settings-project-{index}"),
-                    project.label.clone(),
+                    project.label.to_string(),
                     project.phase != ProjectPhase::Missing,
                     true,
                     selected,
@@ -482,8 +481,8 @@ fn index_page(theme: &Theme, snapshot: &AppSnapshot, owner: Entity<UiRootEntity>
                         .flex()
                         .flex_col()
                         .gap(space(Space::Tight))
-                        .child(text::label(theme).child(project.label.clone()))
-                        .child(text::faint(theme).child(project.path.clone())),
+                        .child(text::label(theme).child(project.label.to_string()))
+                        .child(text::faint(theme).child(project.path.to_string())),
                 )
                 .into_any_element()
             });
@@ -492,13 +491,14 @@ fn index_page(theme: &Theme, snapshot: &AppSnapshot, owner: Entity<UiRootEntity>
     let active = snapshot
         .workspace()
         .active
-        .as_deref()
-        .unwrap_or("No active workspace");
+        .as_ref()
+        .map(crate::core::LocalProjectId::display_lossy)
+        .unwrap_or_else(|| "No active workspace".to_owned());
     content
         .child(setting_row(
             theme,
             "Active workspace",
-            active,
+            &active,
             None::<gpui::Div>,
         ))
         .child(index_status(theme, snapshot))

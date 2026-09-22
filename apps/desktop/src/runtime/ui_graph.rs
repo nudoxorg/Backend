@@ -257,7 +257,7 @@ impl UiRootEntity {
             multiple: true,
             prompt: Some("Choose local project folders".into()),
         });
-        let task = cx.spawn(move |weak, cx| async move {
+        let task = cx.spawn(async move |weak: gpui::WeakEntity<Self>, cx| {
             let outcome = match receiver.await {
                 Ok(Ok(Some(paths))) => folder_picker_outcome(paths),
                 Ok(Ok(None)) => FolderPickerOutcome::Cancelled,
@@ -293,7 +293,7 @@ impl UiRootEntity {
     }
 
     fn schedule_index(&mut self, project: crate::core::LocalProjectId, cx: &mut Context<Self>) {
-        if self.index_intent_pending(project) {
+        if self.index_intent_pending(&project) {
             return;
         }
         let basis = self.snapshot().key();

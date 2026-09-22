@@ -122,7 +122,7 @@ impl Coalescible for EngineRequest {
             Self::Root { .. } => Some(CoalesceKey::Root),
             Self::Object { object, .. } => Some(CoalesceKey::Object(*object)),
             Self::Surface { command, .. } => Some(CoalesceKey::Surface(command.id())),
-            Self::IndexProject { project, .. } => Some(CoalesceKey::Index(project.clone())),
+            Self::IndexProject { project, .. } => Some(CoalesceKey::Index(project.key())),
         }
     }
 }
@@ -262,7 +262,7 @@ impl Coalescible for EngineEvent {
             Ok(EngineDto::Root { .. }) => Some(CoalesceKey::Root),
             Ok(EngineDto::Object { object, .. }) => Some(CoalesceKey::Object(*object)),
             Ok(EngineDto::Surface { command, .. }) => Some(CoalesceKey::Surface(command.id())),
-            Ok(EngineDto::Index { project, .. }) => Some(CoalesceKey::Index(project.clone())),
+            Ok(EngineDto::Index { project, .. }) => Some(CoalesceKey::Index(project.key())),
             Err(_) => None,
         })
     }
