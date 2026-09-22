@@ -233,10 +233,8 @@ where
         context
             .update_window(window, |_, window, cx| frame_hook(frame, window, cx))
             .map_err(|error| CaptureError::Gpui(error.to_string()))??;
-        let image = normalize_capture_image(
-            draw_and_capture(&mut context, window)?,
-            current_viewport,
-        )?;
+        let image =
+            normalize_capture_image(draw_and_capture(&mut context, window)?, current_viewport)?;
         records.push(CaptureRecord {
             label: frame.label.clone(),
             time_ms: frame.time_ms,
@@ -620,6 +618,18 @@ mod tests {
     };
     use image::Rgba;
 
+    // GPUI's headless macOS platform owns process-global native state. Keep
+    // independent Rust tests from constructing two platforms concurrently;
+    // capture journeys still exercise multiple windows and frames inside one
+    // context where their lifecycle is deterministic.
+    static GPUI_HEADLESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn gpui_headless_guard() -> std::sync::MutexGuard<'static, ()> {
+        GPUI_HEADLESS_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn one_x_capture_crops_the_fixed_retina_backing_gutter() {
         let viewport = Viewport::new(4, 3, 1).expect("viewport");
@@ -731,6 +741,7 @@ mod tests {
 
     #[test]
     fn headless_scale_preflight_renders_the_right_edge_landmark() {
+        let _guard = gpui_headless_guard();
         let viewport = Viewport::new(64, 32, 1).expect("viewport");
         let frames = [AnimationFrame {
             label: "start".to_owned(),
@@ -759,6 +770,7 @@ mod tests {
 
     #[test]
     fn headless_resize_after_first_frame_records_per_frame_geometry() {
+        let _guard = gpui_headless_guard();
         let viewport = Viewport::new(64, 32, 1).expect("viewport");
         let frames = [
             AnimationFrame {
