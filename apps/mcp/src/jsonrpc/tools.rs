@@ -167,7 +167,7 @@ fn detail_property(tool: &str) -> Value {
         "type": "string",
         "enum": ["summary", "standard", "full"],
         "default": default_detail,
-        "description": "Response projection; summary is context-efficient, standard returns the tool's useful working set, and full opts into every available field."
+        "description": "Response fields: summary, standard, or full."
     })
 }
 
