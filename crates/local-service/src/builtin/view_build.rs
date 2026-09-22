@@ -14,7 +14,9 @@ use super::{
 use backend_engine::builtin::{
     ProductSemanticPublicationRecord, SemanticUnavailableReason,
 };
-use backend_engine::{DeclarationKind, Fragment, Row, RowId, ViewRoot, product_source_file_key};
+use backend_engine::{
+    DeclarationKind, Fragment, Row, RowId, RowIdentityPreimage, ViewRoot, product_source_file_key,
+};
 use backend_engine::application::{DocumentationFragment, DocumentationSession, LocalCompilerClient};
 use backend_semantic::ir::{
     DeclarationIdentity, ExternalTargetIdentity, ItemKind, LinkTarget, SemanticCoreReader as _,
@@ -176,8 +178,34 @@ impl ProjectTypeIndex {
     }
 }
 
-/// The structural rows emitted for a project, indexed by their exact
-/// containment coordinate.
+/// One structural declaration retained for an emitting source file.
+///
+/// The coordinate, parent coordinate, occurrence-disambiguated identity, and
+/// identity preimage are prepared once. Both the product-row and Trustfall
+/// producers borrow this exact entry, so they cannot disagree about which
+/// duplicate declaration owns an edge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StructuralDeclaration {
+    coordinate: String,
+    parent: Option<String>,
+    id: RowId,
+    identity_preimage: Option<RowIdentityPreimage>,
+    is_file_module: bool,
+}
+
+/// Structural declarations retained for one file that remains in the
+/// structural lane. Semantic-complete files intentionally have no entry: a
+/// structural parent may never resolve to an identity that will be
+/// suppressed from the product or query corpus.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StructuralFilePlan {
+    project: [u8; 32],
+    package: backend_engine::PackageKey,
+    module_coordinate: String,
+    declarations: Box<[StructuralDeclaration]>,
+}
+
+/// The emitted structural graph for one projection.
 ///
 /// A tags query can select two declarations at one coordinate (for example a
 /// C `struct` and its `typedef`, or two frontend tags for the same namespace).
@@ -187,27 +215,45 @@ impl ProjectTypeIndex {
 /// every disambiguated row and resolves a parent to one of those retained
 /// identities, preferring a declaration kind that can own members and then a
 /// stable kind/id order. No declaration is discarded.
+#[derive(Default)]
+struct StructuralProjectionPlan {
+    files: BTreeMap<[u8; 32], StructuralFilePlan>,
+    by_coordinate: BTreeMap<([u8; 32], String), Vec<StructuralSymbol>>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct StructuralSymbol {
     id: RowId,
     kind: DeclarationKind,
 }
 
-#[derive(Default)]
-struct StructuralSymbolPlan {
-    by_coordinate: BTreeMap<([u8; 32], String), Vec<StructuralSymbol>>,
+/// A parent target is either a retained declaration or the package row. The
+/// latter is the final bounded fallback for a malformed/incomplete file
+/// module; product rows represent it through their package relation field,
+/// while Trustfall facts can point at the already-emitted package fact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StructuralParent {
+    Symbol(RowId),
+    Package(backend_engine::PackageKey),
 }
 
-impl StructuralSymbolPlan {
-    fn of(sources: &IndexedSources) -> Result<Self, BuiltinModelError> {
+impl StructuralProjectionPlan {
+    fn of(
+        sources: &IndexedSources,
+        complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
+    ) -> Result<Self, BuiltinModelError> {
+        let types = ProjectTypeIndex::of(sources);
         let mut plan = Self::default();
-        for (_, record) in &sources.files {
+        for (file_key, record) in &sources.files {
             let Some(file) = record.file_fields() else {
                 continue;
             };
             let project = sources.projects.get(&file.project).ok_or_else(|| {
                 BuiltinModelError("structural source refers to a missing project".to_owned())
             })?;
+            if semantic_profile_is_complete(complete, Some(project.package), file.path)? {
+                continue;
+            }
             let containment = FileContainment::new(
                 &project.label,
                 file.path,
@@ -217,23 +263,47 @@ impl StructuralSymbolPlan {
             let duplicate_coordinates =
                 duplicate_declaration_coordinates(&containment, file.declarations);
             let mut occurrences = BTreeMap::new();
+            let mut declarations = Vec::with_capacity(file.declarations.len());
             for declaration in file.declarations.iter() {
                 let coordinate = containment.coordinate(declaration);
-                let (id, _) = declaration_symbol(
+                let (id, identity_preimage) = declaration_symbol(
                     &coordinate,
                     declaration.kind(),
                     declaration.signature(),
                     duplicate_coordinates.contains(&coordinate),
                     &mut occurrences,
                 );
+                let identity_preimage = identity_preimage
+                    .map(RowIdentityPreimage::try_from)
+                    .transpose()
+                    .map_err(|error| {
+                        BuiltinModelError(format!("structural row identity preimage: {error}"))
+                    })?;
+                let parent = containment.parent_coordinate(declaration, &types);
                 plan.by_coordinate
-                    .entry((file.project, coordinate))
+                    .entry((file.project, coordinate.clone()))
                     .or_default()
                     .push(StructuralSymbol {
                         id,
                         kind: declaration.kind(),
                     });
+                declarations.push(StructuralDeclaration {
+                    coordinate,
+                    parent,
+                    id,
+                    identity_preimage,
+                    is_file_module: is_file_module(declaration, file.path),
+                });
             }
+            plan.files.insert(
+                *file_key,
+                StructuralFilePlan {
+                    project: file.project,
+                    package: project.package,
+                    module_coordinate: containment.module_coordinate,
+                    declarations: declarations.into_boxed_slice(),
+                },
+            );
         }
         for symbols in plan.by_coordinate.values_mut() {
             symbols.sort_unstable_by_key(|symbol| {
@@ -247,20 +317,45 @@ impl StructuralSymbolPlan {
         Ok(plan)
     }
 
+    fn file(&self, file_key: [u8; 32]) -> Option<&StructuralFilePlan> {
+        self.files.get(&file_key)
+    }
+
+    fn declaration(
+        &self,
+        file_key: [u8; 32],
+        index: usize,
+    ) -> Result<&StructuralDeclaration, BuiltinModelError> {
+        self.file(file_key)
+            .and_then(|file| file.declarations.get(index))
+            .ok_or_else(|| {
+                BuiltinModelError("structural declaration plan is out of sync with source".to_owned())
+            })
+    }
+
     fn parent_id(
         &self,
-        project: [u8; 32],
+        file_key: [u8; 32],
         coordinate: &str,
-    ) -> Result<RowId, BuiltinModelError> {
-        self.by_coordinate
-            .get(&(project, coordinate.to_owned()))
+    ) -> Result<StructuralParent, BuiltinModelError> {
+        let file = self.file(file_key).ok_or_else(|| {
+            BuiltinModelError("structural parent requested for a suppressed source file".to_owned())
+        })?;
+        if let Some(symbol) = self
+            .by_coordinate
+            .get(&(file.project, coordinate.to_owned()))
             .and_then(|symbols| symbols.first())
-            .map(|symbol| symbol.id)
-            .ok_or_else(|| {
-                BuiltinModelError(format!(
-                    "structural parent coordinate has no declaration target: {coordinate}"
-                ))
-            })
+        {
+            return Ok(StructuralParent::Symbol(symbol.id));
+        }
+        if let Some(symbol) = self
+            .by_coordinate
+            .get(&(file.project, file.module_coordinate.clone()))
+            .and_then(|symbols| symbols.first())
+        {
+            return Ok(StructuralParent::Symbol(symbol.id));
+        }
+        Ok(StructuralParent::Package(file.package))
     }
 }
 
@@ -522,14 +617,13 @@ pub(super) fn rows_for_indexed_sources(
                 "workspace semantic declarations exceed the rebuild row bound".to_owned(),
             )
         })?;
-    let types = ProjectTypeIndex::of(sources);
-    let structural_symbols = StructuralSymbolPlan::of(sources)?;
+    let structural_plan = StructuralProjectionPlan::of(sources, &semantics.complete)?;
     let mut projection = SourceRowProjection::new(
         initial,
         &sources.projects,
         total_capacity,
         &semantics.targets,
-        &structural_symbols,
+        &structural_plan,
     )?;
     for (file_key, record) in &sources.files {
         projection.append_file(
@@ -537,7 +631,6 @@ pub(super) fn rows_for_indexed_sources(
             record,
             &semantics.complete,
             &semantics.stale_paths,
-            &types,
         )?;
     }
     let mut ledger = semantics.ledger;
@@ -557,7 +650,7 @@ struct SourceRowProjection<'a> {
     selected_files: BTreeSet<([u8; 32], [u8; 32])>,
     ledger: ProjectionLedger,
     targets: &'a SemanticTargets,
-    structural_symbols: &'a StructuralSymbolPlan,
+    structural_plan: &'a StructuralProjectionPlan,
 }
 
 impl<'a> SourceRowProjection<'a> {
@@ -566,7 +659,7 @@ impl<'a> SourceRowProjection<'a> {
         projects: &'a BTreeMap<[u8; 32], super::IndexedProject>,
         capacity: usize,
         targets: &'a SemanticTargets,
-        structural_symbols: &'a StructuralSymbolPlan,
+        structural_plan: &'a StructuralProjectionPlan,
     ) -> Result<Self, BuiltinModelError> {
         let mut rows = Vec::with_capacity(capacity);
         let mut selected_files = BTreeSet::new();
@@ -591,7 +684,7 @@ impl<'a> SourceRowProjection<'a> {
             selected_files,
             ledger: ProjectionLedger::default(),
             targets,
-            structural_symbols,
+            structural_plan,
         })
     }
 
@@ -606,7 +699,6 @@ impl<'a> SourceRowProjection<'a> {
         record: &super::ProductSourceRecord,
         complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
         stale_paths: &ProfileStalePaths,
-        types: &ProjectTypeIndex,
     ) -> Result<(), BuiltinModelError> {
         let file = record
             .file_fields()
@@ -661,19 +753,21 @@ impl<'a> SourceRowProjection<'a> {
                 },
             },
         );
-        let containment = FileContainment::new(&project.label, path, project_key, declarations);
         let package = project.package;
-        let duplicate_coordinates = duplicate_declaration_coordinates(&containment, declarations);
-        let mut occurrences = BTreeMap::new();
-        for declaration in declarations.iter() {
+        if self.structural_plan.file(file_key).is_none() {
+            return Err(BuiltinModelError(
+                "structural source is missing its emitted declaration plan".to_owned(),
+            ));
+        }
+        for (index, declaration) in declarations.iter().enumerate() {
+            let prepared = self.structural_plan.declaration(file_key, index)?;
             let row = self.declaration_row(
                 declaration,
-                &containment,
-                types,
+                path,
+                file_key,
                 package,
                 language,
-                &duplicate_coordinates,
-                &mut occurrences,
+                prepared,
             )?;
             self.rows.push(row);
         }
@@ -682,25 +776,17 @@ impl<'a> SourceRowProjection<'a> {
 
     /// Builds one declaration's row, including the parent it hangs under.
     fn declaration_row(
-        &mut self,
+        &self,
         declaration: &backend_compile::SourceDeclaration,
-        containment: &FileContainment<'_>,
-        types: &ProjectTypeIndex,
+        path: &str,
+        file_key: [u8; 32],
         package: backend_engine::PackageKey,
         language: backend_engine::SourceLanguage,
-        duplicate_coordinates: &BTreeSet<String>,
-        occurrences: &mut BTreeMap<DeclarationOccurrenceKey, u32>,
+        prepared: &StructuralDeclaration,
     ) -> Result<Row, BuiltinModelError> {
-        let path = containment.path;
-        let coordinate = containment.coordinate(declaration);
-        let (symbol, identity_preimage) = declaration_symbol(
-            &coordinate,
-            declaration.kind(),
-            declaration.signature(),
-            duplicate_coordinates.contains(&coordinate),
-            occurrences,
-        );
-        let prose = if is_file_module(declaration, path) {
+        let coordinate = &prepared.coordinate;
+        let symbol = prepared.id;
+        let prose = if prepared.is_file_module {
             format!("{} source · {path}", language.name())
         } else if declaration.documentation().is_empty() {
             format!(
@@ -711,29 +797,22 @@ impl<'a> SourceRowProjection<'a> {
         } else {
             declaration.documentation().to_owned()
         };
-        let row = Row::in_package(symbol, self.initial.basis(), package, coordinate)
+        let row = Row::in_package(symbol, self.initial.basis(), package, coordinate.as_str())
             .with_document(vec![Fragment::Text(prose)])
             .with_signature(declaration.signature())
             .with_kind(declaration.kind())
             .with_source(declaration.location().clone())
             .with_excerpt(declaration.source_excerpt().clone());
-        let row = match identity_preimage {
-            Some(preimage) => row.with_identity_preimage(
-                backend_engine::RowIdentityPreimage::try_from(preimage).map_err(|error| {
-                    BuiltinModelError(format!("structural row identity preimage: {error}"))
-                })?,
-            ),
+        let row = match prepared.identity_preimage.clone() {
+            Some(preimage) => row.with_identity_preimage(preimage),
             None => row,
         };
-        Ok(match containment.parent_coordinate(declaration, types) {
-            Some(parent) => {
-                let parent = self.structural_symbols.parent_id(containment.project, &parent)?;
-                let RowId::Symbol(parent) = parent else {
-                    return Err(BuiltinModelError(
-                        "structural parent target is not a symbol identity".to_owned(),
-                    ));
-                };
-                row.with_parent(parent)
+        Ok(match prepared.parent.as_deref() {
+            Some(parent) => match self.structural_plan.parent_id(file_key, parent)? {
+                StructuralParent::Symbol(RowId::Symbol(parent)) => row.with_parent(parent),
+                StructuralParent::Symbol(RowId::Package(_))
+                | StructuralParent::Symbol(RowId::Object(_))
+                | StructuralParent::Package(_) => row,
             }
             None => row,
         })
@@ -1449,7 +1528,8 @@ pub(super) fn semantic_query_corpus(
     }
 
     let complete = append_compiler_query_facts(snapshot, compiler, sources, &mut facts)?;
-    append_structural_query_facts(sources, &complete, &mut facts)?;
+    let structural_plan = StructuralProjectionPlan::of(sources, &complete)?;
+    append_structural_query_facts(sources, &structural_plan, &mut facts)?;
     if facts.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
             "workspace semantic query facts exceed their row bound".to_owned(),
@@ -1672,12 +1752,10 @@ fn append_compiler_query_facts(
 
 fn append_structural_query_facts(
     sources: &IndexedSources,
-    complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
+    structural_plan: &StructuralProjectionPlan,
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
 ) -> Result<(), BuiltinModelError> {
-    let types = ProjectTypeIndex::of(sources);
-    let structural_symbols = StructuralSymbolPlan::of(sources)?;
-    for (_, record) in &sources.files {
+    for (file_key, record) in &sources.files {
         let file = record
             .file_fields()
             .ok_or_else(|| BuiltinModelError("expected structural source file".to_owned()))?;
@@ -1693,29 +1771,14 @@ fn append_structural_query_facts(
         else {
             continue;
         };
-        if complete.contains(&(project.package.to_bytes(), profile)) {
+        if structural_plan.file(*file_key).is_none() {
             continue;
         }
-        let containment = FileContainment::new(
-            &project.label,
-            file.path,
-            file.project,
-            file.declarations,
-        );
-        let duplicate_coordinates =
-            duplicate_declaration_coordinates(&containment, file.declarations);
-        let mut occurrences = BTreeMap::new();
-        for declaration in file.declarations.iter() {
-            let coordinate = containment.coordinate(declaration);
-            let (id, _) = declaration_symbol(
-                &coordinate,
-                declaration.kind(),
-                declaration.signature(),
-                duplicate_coordinates.contains(&coordinate),
-                &mut occurrences,
-            );
-            let id = id.stable_key();
-            let documentation = if is_file_module(declaration, file.path) {
+        for (index, declaration) in file.declarations.iter().enumerate() {
+            let prepared = structural_plan.declaration(*file_key, index)?;
+            let id = prepared.id.stable_key();
+            let coordinate = prepared.coordinate.clone();
+            let documentation = if prepared.is_file_module {
                 format!("{} source · {}", file.language.name(), file.path)
             } else if declaration.documentation().is_empty() {
                 format!(
@@ -1727,19 +1790,15 @@ fn append_structural_query_facts(
             } else {
                 declaration.documentation().to_owned()
             };
-            let parent = containment
-                .parent_coordinate(declaration, &types)
-                .map(|coordinate| {
-                    structural_symbols
-                        .parent_id(file.project, &coordinate)
-                        .and_then(|parent| match parent {
-                            RowId::Symbol(_) => Ok(parent.stable_key()),
-                            RowId::Package(_) | RowId::Object(_) => Err(BuiltinModelError(
-                                "structural parent target is not a symbol identity".to_owned(),
-                            )),
-                        })
-                })
-                .transpose()?;
+            let parent = prepared
+                .parent
+                .as_deref()
+                .map(|coordinate| structural_plan.parent_id(*file_key, coordinate))
+                .transpose()?
+                .map(|parent| match parent {
+                    StructuralParent::Symbol(id) => id.stable_key(),
+                    StructuralParent::Package(package) => RowId::Package(package).stable_key(),
+                });
             facts.push(backend_extension_trustfall::SemanticQueryFact::new(
                 backend_extension_trustfall::SemanticQueryEvidence::StructuralFallback(
                     backend_extension_trustfall::StructuralFallbackEvidence::new(
@@ -1799,7 +1858,8 @@ fn fragment_text(fragments: &[Fragment]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ProjectTypeIndex, SourceRowProjection, StructuralSymbolPlan, STALE_NOTE,
+        append_structural_query_facts, SourceRowProjection, StructuralParent,
+        StructuralProjectionPlan, STALE_NOTE,
         semantic_profile_is_complete,
     };
     use super::super::{
@@ -1984,8 +2044,8 @@ pub fn execute() {}
             files: vec![(file_key, record)],
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
-        let types = ProjectTypeIndex::of(&sources);
-        let structural_symbols = StructuralSymbolPlan::of(&sources).map_err(|e| e.to_string())?;
+        let structural_plan =
+            StructuralProjectionPlan::of(&sources, &BTreeSet::new()).map_err(|e| e.to_string())?;
         let targets = super::SemanticTargets::default();
         let mut projection =
             SourceRowProjection::new(
@@ -1993,12 +2053,12 @@ pub fn execute() {}
                 &sources.projects,
                 64,
                 &targets,
-                &structural_symbols,
+                &structural_plan,
             )
                 .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
             projection
-                .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new(), &types)
+                .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
                 .map_err(|e| e.to_string())?;
         }
         let ledger = projection.take_ledger();
@@ -2124,24 +2184,60 @@ pub fn execute() {}
                 std::num::NonZeroU32::new(2).expect("nonzero fixture line"),
             )),
         ];
+        let reversed_declarations = declarations.iter().cloned().rev().collect::<Vec<_>>();
         let sources = structural_sources(
             project_key,
             "src/main.c",
             backend_engine::SourceLanguage::Clang,
             Arc::from(declarations),
         )?;
-        let plan = StructuralSymbolPlan::of(&sources).map_err(|error| error.to_string())?;
+        let reversed_sources = structural_sources(
+            project_key,
+            "src/main.c",
+            backend_engine::SourceLanguage::Clang,
+            Arc::from(reversed_declarations),
+        )?;
+        let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
+        let reversed_plan = StructuralProjectionPlan::of(&reversed_sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
         let coordinate = "fixture::src/main.c:2::Beacon";
         let symbols = plan
             .by_coordinate
             .get(&(project_key, coordinate.to_owned()))
             .ok_or("duplicate coordinate was not indexed")?;
+        let reversed_symbols = reversed_plan
+            .by_coordinate
+            .get(&(project_key, coordinate.to_owned()))
+            .ok_or("reversed duplicate coordinate was not indexed")?;
+        if symbols != reversed_symbols {
+            return Err(format!(
+                "declaration order changed duplicate identities: {symbols:?} vs {reversed_symbols:?}"
+            ));
+        }
         if symbols.len() != 2 || symbols[0].id == symbols[1].id {
             return Err(format!("duplicate structural identities are {symbols:?}"));
         }
+        let file_plan = plan
+            .file(product_source_file_key(project_key, "src/main.c"))
+            .ok_or("C structural file plan was not retained")?;
+        for declaration in file_plan.declarations.iter().filter(|declaration| {
+            declaration.coordinate == coordinate
+        }) {
+            let preimage = declaration
+                .identity_preimage
+                .as_ref()
+                .ok_or("duplicate C row lost its identity preimage")?;
+            if declaration.id != RowId::Symbol(symbol_key(preimage.as_str())) {
+                return Err(format!("C row identity did not admit {preimage:?}"));
+            }
+        }
         let parent = plan
-            .parent_id(project_key, coordinate)
+            .parent_id(product_source_file_key(project_key, "src/main.c"), coordinate)
             .map_err(|error| error.to_string())?;
+        let StructuralParent::Symbol(parent) = parent else {
+            return Err(format!("parent fell back to package: {parent:?}"));
+        };
         if !symbols.iter().any(|symbol| symbol.id == parent)
             || super::structural_parent_rank(symbols[0].kind) != 0
         {
@@ -2164,7 +2260,8 @@ pub fn execute() {}
             backend_engine::SourceLanguage::CSharp,
             analysis.declarations().clone(),
         )?;
-        let plan = StructuralSymbolPlan::of(&sources).map_err(|error| error.to_string())?;
+        let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
         let duplicate = plan
             .by_coordinate
             .values()
@@ -2172,6 +2269,20 @@ pub fn execute() {}
             .ok_or("C# namespace fixture did not retain duplicate captures")?;
         if duplicate.windows(2).any(|pair| pair[0].id == pair[1].id) {
             return Err(format!("C# duplicate identities collided: {duplicate:?}"));
+        }
+        let file_plan = plan
+            .file(product_source_file_key(project_key, "src/A.cs"))
+            .ok_or("C# structural file plan was not retained")?;
+        for declaration in file_plan.declarations.iter().filter(|declaration| {
+            declaration.coordinate == "fixture::src/A.cs"
+        }) {
+            let preimage = declaration
+                .identity_preimage
+                .as_ref()
+                .ok_or("C# duplicate namespace row lost its identity preimage")?;
+            if declaration.id != RowId::Symbol(symbol_key(preimage.as_str())) {
+                return Err(format!("C# row identity did not admit {preimage:?}"));
+            }
         }
         Ok(())
     }
@@ -2222,43 +2333,210 @@ pub fn execute() {}
                 std::num::NonZeroU32::new(3).expect("nonzero fixture line"),
             )),
         ];
+        let reversed_declarations = declarations.iter().cloned().rev().collect::<Vec<_>>();
         let sources = structural_sources(
             project_key,
             "src/lib.rs",
             backend_engine::SourceLanguage::Rust,
             Arc::from(declarations),
         )?;
-        let plan = StructuralSymbolPlan::of(&sources).map_err(|error| error.to_string())?;
+        let reversed_sources = structural_sources(
+            project_key,
+            "src/lib.rs",
+            backend_engine::SourceLanguage::Rust,
+            Arc::from(reversed_declarations),
+        )?;
+        let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
+        let reversed_plan = StructuralProjectionPlan::of(&reversed_sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
         let coordinate = "fixture::src/lib.rs:4::run";
         let symbols = plan
             .by_coordinate
             .get(&(project_key, coordinate.to_owned()))
             .ok_or("Rust duplicate method coordinate was not indexed")?;
+        let reversed_symbols = reversed_plan
+            .by_coordinate
+            .get(&(project_key, coordinate.to_owned()))
+            .ok_or("reversed Rust duplicate coordinate was not indexed")?;
+        if symbols != reversed_symbols {
+            return Err(format!(
+                "Rust declaration order changed duplicate identities: {symbols:?} vs {reversed_symbols:?}"
+            ));
+        }
         if symbols.len() != 2 || symbols[0].id == symbols[1].id {
             return Err(format!("Rust duplicate identities are {symbols:?}"));
         }
-        let mut occurrences = BTreeMap::new();
-        for kind in [
-            backend_engine::DeclarationKind::Method,
-            backend_engine::DeclarationKind::Function,
-        ] {
-            let (id, preimage) = super::declaration_symbol(
-                coordinate,
-                kind,
-                "fn run(&self)",
-                true,
-                &mut occurrences,
-            );
-            let preimage = preimage.ok_or("duplicate Rust row lost its identity preimage")?;
-            if id != RowId::Symbol(symbol_key(&preimage)) {
-                return Err(format!("Rust row {id:?} has preimage {preimage}"));
+        let file_plan = plan
+            .file(product_source_file_key(project_key, "src/lib.rs"))
+            .ok_or("Rust structural file plan was not retained")?;
+        for declaration in file_plan.declarations.iter().filter(|declaration| {
+            declaration.coordinate == coordinate
+        }) {
+            let preimage = declaration
+                .identity_preimage
+                .as_ref()
+                .ok_or("duplicate Rust row lost its identity preimage")?;
+            if declaration.id != RowId::Symbol(symbol_key(preimage.as_str())) {
+                return Err(format!("Rust row identity did not admit {preimage:?}"));
             }
         }
         let parent = plan
-            .parent_id(project_key, "fixture::src/lib.rs:3::Worker")
+            .parent_id(product_source_file_key(project_key, "src/lib.rs"), "fixture::src/lib.rs:3::Worker")
             .map_err(|error| error.to_string())?;
-        if !matches!(parent, RowId::Symbol(_)) {
+        if !matches!(parent, StructuralParent::Symbol(RowId::Symbol(_))) {
             return Err(format!("Rust parent is not a symbol: {parent:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cross_profile_attached_parent_falls_back_to_an_emitted_module() -> Result<(), String> {
+        let project_key = [11; 32];
+        let package = package_key("mixed");
+        let child_path = "src/main.c";
+        let semantic_path = "src/lib.rs";
+        let child_key = product_source_file_key(project_key, child_path);
+        let semantic_key = product_source_file_key(project_key, semantic_path);
+        let child_declarations: Arc<[backend_compile::SourceDeclaration]> = Arc::from(vec![
+            backend_compile::SourceDeclaration::at_path(
+                child_path,
+                "main",
+                "module",
+                1,
+                "C module main",
+                "",
+            )?,
+            backend_compile::SourceDeclaration::at_path(
+                child_path,
+                "run",
+                "method",
+                3,
+                "unsigned run(Worker)",
+                "",
+            )?
+            .with_container(backend_compile::Container::attached("Worker")),
+        ]);
+        let semantic_declarations: Arc<[backend_compile::SourceDeclaration]> = Arc::from(vec![
+            backend_compile::SourceDeclaration::at_path(
+                semantic_path,
+                "lib",
+                "module",
+                1,
+                "Rust module lib",
+                "",
+            )?,
+            backend_compile::SourceDeclaration::at_path(
+                semantic_path,
+                "Worker",
+                "struct",
+                2,
+                "struct Worker",
+                "",
+            )?,
+        ]);
+        let child_record = super::super::ProductSourceRecord::file(
+            project_key,
+            child_path,
+            backend_engine::SourceLanguage::Clang,
+            [1; 32],
+            [2; 32],
+            child_declarations,
+        )?;
+        let semantic_record = super::super::ProductSourceRecord::file(
+            project_key,
+            semantic_path,
+            backend_engine::SourceLanguage::Rust,
+            [3; 32],
+            [4; 32],
+            semantic_declarations,
+        )?;
+        let mut project_files = vec![child_key, semantic_key];
+        project_files.sort_unstable();
+        let sources = super::super::IndexedSources {
+            projects: BTreeMap::from([(
+                project_key,
+                IndexedProject {
+                    package,
+                    label: "mixed".to_owned(),
+                    files: Arc::from(project_files.into_boxed_slice()),
+                },
+            )]),
+            files: vec![(child_key, child_record), (semantic_key, semantic_record)],
+        };
+        let complete = BTreeSet::from([(
+            package.to_bytes(),
+            LanguageProfile::Rust(RustEdition::Rust2024),
+        )]);
+        let plan = StructuralProjectionPlan::of(&sources, &complete)
+            .map_err(|error| error.to_string())?;
+        if plan.file(child_key).is_none() || plan.file(semantic_key).is_some() {
+            return Err("lane decisions retained the wrong structural files".to_owned());
+        }
+        let child_plan = plan
+            .file(child_key)
+            .ok_or("missing emitting child structural plan")?;
+        let module = child_plan
+            .declarations
+            .iter()
+            .find(|declaration| declaration.is_file_module)
+            .ok_or("emitting child has no file module")?;
+        let target_coordinate = "mixed::src/lib.rs:2::Worker";
+        let fallback = plan
+            .parent_id(child_key, target_coordinate)
+            .map_err(|error| error.to_string())?;
+        if fallback != StructuralParent::Symbol(module.id) {
+            return Err("suppressed cross-file target did not fall back to child module".to_owned());
+        }
+
+        let (initial, _) = initial_view().map_err(|e| e.to_string())?;
+        let targets = super::SemanticTargets::default();
+        let mut projection = SourceRowProjection::new(
+            &initial,
+            &sources.projects,
+            64,
+            &targets,
+            &plan,
+        )
+        .map_err(|e| e.to_string())?;
+        for (key, file) in &sources.files {
+            projection
+                .append_file(*key, file, &complete, &ProfileStalePaths::new())
+                .map_err(|e| e.to_string())?;
+        }
+        let rows = projection.finish(Vec::new()).map_err(|e| e.to_string())?;
+        let row_ids = rows.iter().map(|row| row.id).collect::<BTreeSet<_>>();
+        for row in &rows {
+            if let Some(parent) = row.parent
+                && !row_ids.contains(&RowId::Symbol(parent))
+            {
+                return Err(format!("row {} has a missing parent", row.label));
+            }
+        }
+        let run = rows
+            .iter()
+            .find(|row| row.label == "mixed::src/main.c:3::run")
+            .ok_or("cross-profile attached declaration was not emitted")?;
+        let RowId::Symbol(module_id) = module.id else {
+            return Err("emitted module is not a symbol".to_owned());
+        };
+        if run.parent != Some(module_id) {
+            return Err(format!("cross-profile parent was {:?}, expected {module:?}", run.parent));
+        }
+
+        let mut facts = Vec::new();
+        append_structural_query_facts(&sources, &plan, &mut facts)
+            .map_err(|error| error.to_string())?;
+        let fact_ids = facts
+            .iter()
+            .map(|fact| fact.presentation().id.as_str())
+            .collect::<BTreeSet<_>>();
+        for fact in &facts {
+            if let Some(parent) = fact.presentation().parent.as_deref()
+                && !fact_ids.contains(parent)
+            {
+                return Err(format!("fact {} has a missing parent", fact.presentation().id));
+            }
         }
         Ok(())
     }
@@ -2512,25 +2790,25 @@ pub fn execute() {}
             files: vec![(file_key, record)],
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
-        let types = ProjectTypeIndex::of(&sources);
         let complete = BTreeSet::from([(package.to_bytes(), LanguageProfile::Rust(RustEdition::Rust2024))]);
         let stale = ProfileStalePaths::from([(
             (package.to_bytes(), LanguageProfile::Rust(RustEdition::Rust2024)),
             BTreeSet::from([FIXTURE_PATH.to_owned()]),
         )]);
-        let structural_symbols = StructuralSymbolPlan::of(&sources).map_err(|e| e.to_string())?;
+        let structural_plan =
+            StructuralProjectionPlan::of(&sources, &complete).map_err(|e| e.to_string())?;
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
             &sources.projects,
             64,
             &targets,
-            &structural_symbols,
+            &structural_plan,
         )
         .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
             projection
-                .append_file(*key, file, &complete, &stale, &types)
+                .append_file(*key, file, &complete, &stale)
                 .map_err(|e| e.to_string())?;
         }
         let ledger = projection.take_ledger();
@@ -2599,26 +2877,26 @@ pub fn execute() {}
             files,
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
-        let types = ProjectTypeIndex::of(&sources);
         let rust = LanguageProfile::Rust(RustEdition::Rust2024);
         let complete = BTreeSet::from([(package.to_bytes(), rust)]);
         let stale = ProfileStalePaths::from([(
             (package.to_bytes(), rust),
             BTreeSet::from([EDITED.to_owned()]),
         )]);
-        let structural_symbols = StructuralSymbolPlan::of(&sources).map_err(|e| e.to_string())?;
+        let structural_plan =
+            StructuralProjectionPlan::of(&sources, &complete).map_err(|e| e.to_string())?;
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
             &sources.projects,
             64,
             &targets,
-            &structural_symbols,
+            &structural_plan,
         )
         .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
             projection
-                .append_file(*key, file, &complete, &stale, &types)
+                .append_file(*key, file, &complete, &stale)
                 .map_err(|e| e.to_string())?;
         }
         let ledger = projection.take_ledger();
@@ -2683,24 +2961,24 @@ pub fn execute() {}
             files: vec![(file_key, record)],
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
-        let types = ProjectTypeIndex::of(&sources);
         let mut targets = super::SemanticTargets::default();
         targets.unavailable.insert(
             (package.to_bytes(), LanguageProfile::Rust(RustEdition::Rust2024)),
             backend_engine::builtin::SemanticUnavailableReason::Toolchain,
         );
-        let structural_symbols = StructuralSymbolPlan::of(&sources).map_err(|e| e.to_string())?;
+        let structural_plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|e| e.to_string())?;
         let mut projection = SourceRowProjection::new(
             &initial,
             &sources.projects,
             64,
             &targets,
-            &structural_symbols,
+            &structural_plan,
         )
         .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
             projection
-                .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new(), &types)
+                .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
                 .map_err(|e| e.to_string())?;
         }
         let ledger = projection.take_ledger();
