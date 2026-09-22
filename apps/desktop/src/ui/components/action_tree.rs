@@ -158,7 +158,7 @@ impl ActionTree {
     /// owner makes Tab traversal and screen-reader output useful from that
     /// frame while preserving the actual GPUI focus handle for subsequent
     /// events.
-    fn ensure_focus_owner(&mut self) {
+    pub(super) fn ensure_focus_owner(&mut self) {
         let mut owner_seen = false;
         for action in &mut self.actions {
             if !action.is_focusable() {
