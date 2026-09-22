@@ -23,6 +23,7 @@ anyhow.workspace = true
 backend-client = { path = "../../crates/client" }
 backend-library = { path = "../../crates/library" }
 backend-local-service = { path = "../../crates/local-service" }
+backend-platform = { path = "../../crates/platform" }
 backend-present = { path = "../../crates/present" }
 backend-replication = { path = "../../crates/replication" }
 backend-runtime = { path = "../../crates/runtime" }
@@ -49,7 +50,6 @@ gpui_platform = { workspace = true, features = ["x11", "wayland"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 gpui_platform = { workspace = true, features = ["wgpu"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 blake3.workspace = true

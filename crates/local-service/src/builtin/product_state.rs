@@ -3,12 +3,13 @@
 use backend_engine::{
     DeclarationRecord, DependencyFacts, ForgeManifestRecord, ForgePackageFact, ForgePackageRecord,
     ForgeRepositoryMetadataRecord, PackageDependencyRecord, PackageDependencySourceFacts,
-    PackageReference, ProductText,
-    ProductTreeNodeId as TreeNodeId, ProjectId,
-    ProjectName, ProjectRecord, ProjectSelector, RegistryMetadata, RegistryPackageRecord,
-    ReleaseRecord, RowId, SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeRecord,
-    TreeOpener, TreeSubject, ViewRoot,
+    PackageReference, ProductText, ProductTreeNodeId as TreeNodeId, ProjectId, ProjectName,
+    ProjectRecord, ProjectSelector, RegistryMetadata, RegistryPackageRecord, ReleaseRecord, RowId,
+    SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeRecord, TreeOpener, TreeSubject,
+    ViewRoot,
 };
+use backend_library::{CommandMutation, command_spec};
+use backend_platform::durable;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
@@ -80,6 +81,40 @@ impl ProductState {
         dependency_facts: &[PackageDependencySourceFacts],
     ) -> Result<SurfaceReply, String> {
         command.admit().map_err(|error| error.to_string())?;
+        match command_spec(command.id()).mutation {
+            CommandMutation::Read => {
+                let (reply, changed) =
+                    self.execute_admitted(command, view, catalog, dependency_facts)?;
+                if changed {
+                    return Err("read command attempted to mutate product state".to_owned());
+                }
+                reply.admit(reply.id()).map_err(|error| error.to_string())?;
+                Ok(reply)
+            }
+            CommandMutation::Write => {
+                let mut pending = Self {
+                    path: self.path.clone(),
+                    state: self.state.clone(),
+                };
+                let (reply, changed) =
+                    pending.execute_admitted(command, view, catalog, dependency_facts)?;
+                reply.admit(reply.id()).map_err(|error| error.to_string())?;
+                if changed {
+                    pending.commit()?;
+                    self.state = pending.state;
+                }
+                Ok(reply)
+            }
+        }
+    }
+
+    fn execute_admitted(
+        &mut self,
+        command: SurfaceCommand,
+        view: &ViewRoot,
+        catalog: &[RegistryPackageRecord],
+        dependency_facts: &[PackageDependencySourceFacts],
+    ) -> Result<(SurfaceReply, bool), String> {
         let (reply, changed) = match command {
             SurfaceCommand::Advisory {
                 package,
@@ -207,11 +242,7 @@ impl ProductState {
                 true,
             ),
         };
-        reply.admit(reply.id()).map_err(|error| error.to_string())?;
-        if changed {
-            self.commit()?;
-        }
-        Ok(reply)
+        Ok((reply, changed))
     }
 
     fn commit(&mut self) -> Result<(), String> {
@@ -220,18 +251,8 @@ impl ProductState {
             .epoch
             .checked_add(1)
             .ok_or("product epoch overflow")?;
-        let parent = self
-            .path
-            .parent()
-            .ok_or("product state path has no parent")?;
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        let temporary = self.path.with_extension("json.tmp");
-        fs::write(
-            &temporary,
-            serde_json::to_vec(&self.state).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        fs::rename(temporary, &self.path).map_err(|error| error.to_string())
+        let bytes = serde_json::to_vec(&self.state).map_err(|error| error.to_string())?;
+        durable::write_atomic(&self.path, &bytes).map_err(|error| error.to_string())
     }
 
     fn project_index(&self, selector: &ProjectSelector) -> Option<usize> {
@@ -480,8 +501,7 @@ fn forge_unavailable(coordinate: &ProductText) -> ForgePackageRecord {
     let reason =
         ProductText::from_static("forge acquisition authority is not configured in this owner");
     let unavailable_text = || ForgePackageFact::<ProductText>::Unavailable(reason.clone());
-    let unavailable_topics =
-        || ForgePackageFact::<Box<[ProductText]>>::Unavailable(reason.clone());
+    let unavailable_topics = || ForgePackageFact::<Box<[ProductText]>>::Unavailable(reason.clone());
     let unavailable_number = || ForgePackageFact::<u64>::Unavailable(reason.clone());
     let owner = ProductText::from_static("unknown");
     let repository = ProductText::from_static("unknown");
@@ -625,7 +645,7 @@ fn dependents(
         ));
     };
     let ecosystem = target.package_type().registry();
-    let mut sources = std::collections::BTreeSet::new();
+    let mut sources = BTreeSet::new();
     let mut saw_unknown = None;
     for (source, value) in facts {
         match value {
@@ -633,9 +653,11 @@ fn dependents(
                 if rows.iter().any(|row| {
                     Some(row.target.ecosystem) == ecosystem
                         && row.target.name.as_str() == target.lineage_name()
-                        && row.target.resolved.as_ref().is_none_or(|resolved| {
-                            resolved.as_str() == target.as_str()
-                        })
+                        && row
+                            .target
+                            .resolved
+                            .as_ref()
+                            .is_none_or(|resolved| resolved.as_str() == target.as_str())
                 }) {
                     sources.insert(source.clone());
                 }
@@ -716,4 +738,109 @@ fn parse_lockfile(path: &Path) -> Result<Box<[PackageReference]>, String> {
         .collect::<Result<Vec<_>, _>>()
         .map(Vec::into_boxed_slice)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    fn fixture(name: &str) -> PathBuf {
+        let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "nudox-product-state-{name}-{}-{sequence}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).expect("fixture directory");
+        path
+    }
+
+    fn view() -> ViewRoot {
+        let root = backend_engine::view_state_root(&[]);
+        let basis = backend_engine::Basis::new(root, backend_engine::object_version(b"source"));
+        ViewRoot::new_incomplete(
+            backend_engine::view_key(b"product-state-test"),
+            basis,
+            backend_engine::Frontier::new(basis.branch, basis.log, basis.schema, root, 0),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("empty view")
+    }
+
+    fn create(name: &str) -> SurfaceCommand {
+        SurfaceCommand::ProjectCreate {
+            name: ProjectName::new(name).expect("project name"),
+            lockfile: None,
+        }
+    }
+
+    #[test]
+    fn committed_state_reopens_at_the_exact_epoch() {
+        let root = fixture("reopen");
+        let path = root.join("product-state.json");
+        let mut state = ProductState::open(path.clone()).expect("open empty state");
+        let reply = state
+            .execute(create("Nudox"), &view(), &[], &[])
+            .expect("create project");
+        assert!(matches!(reply, SurfaceReply::ProjectCreated(_)));
+        assert_eq!(state.state.epoch, 1);
+        drop(state);
+
+        let reopened = ProductState::open(path).expect("reopen committed state");
+        assert_eq!(reopened.state.epoch, 1);
+        assert_eq!(reopened.state.projects.len(), 1);
+        assert_eq!(reopened.state.projects[0].name.as_str(), "Nudox");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn interrupted_sibling_never_supersedes_the_canonical_state() {
+        let root = fixture("interrupted");
+        let path = root.join("product-state.json");
+        let mut state = ProductState::open(path.clone()).expect("open empty state");
+        state
+            .execute(create("Canonical"), &view(), &[], &[])
+            .expect("create project");
+        fs::write(root.join(".product-state.json.9.9.tmp"), b"partial")
+            .expect("interrupted sibling");
+
+        let reopened = ProductState::open(path).expect("reopen canonical state");
+        assert_eq!(reopened.state.epoch, 1);
+        assert_eq!(reopened.state.projects[0].name.as_str(), "Canonical");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejected_bytes_remain_untouched_for_diagnosis() {
+        let root = fixture("rejected");
+        let path = root.join("product-state.json");
+        let bytes = br#"{"version":99,"epoch":0}"#;
+        fs::write(&path, bytes).expect("write incompatible state");
+        assert!(ProductState::open(path.clone()).is_err());
+        assert_eq!(fs::read(path).expect("read rejected bytes"), bytes);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_publication_cannot_advance_memory() {
+        let root = fixture("rollback");
+        let destination = root.join("occupied");
+        fs::create_dir(&destination).expect("occupied destination");
+        let mut state = ProductState {
+            path: destination,
+            state: StoredState::default(),
+        };
+        let before = state.state.clone();
+        assert!(
+            state
+                .execute(create("Unpublished"), &view(), &[], &[])
+                .is_err()
+        );
+        assert_eq!(state.state, before);
+        let _ = fs::remove_dir_all(root);
+    }
 }

@@ -3,15 +3,16 @@
 use super::snapshot::{AppSnapshot, SessionState, SettingsState};
 use crate::core::ids::LocalProjectId;
 use crate::navigation::{Coordinate, Overlay, PackageLane, Route, SettingsPage};
+use backend_platform::durable;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const SCHEMA: u32 = 1;
 const MAX_STATE_BYTES: u64 = 1024 * 1024;
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static RECOVERY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Persistent shelf entry.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -325,11 +326,11 @@ impl PersistentState {
         reason: PersistenceRecoveryReason,
     ) -> Result<PersistenceLoad, PersistenceError> {
         let backup = recovery_path(&self.path, &reason);
-        replace_atomic(&self.path, &backup).map_err(|source| PersistenceError {
+        durable::replace_file(&self.path, &backup).map_err(|source| PersistenceError {
             path: self.path.clone(),
             source,
         })?;
-        sync_parent(&self.path).map_err(|source| PersistenceError {
+        durable::sync_parent(&self.path).map_err(|source| PersistenceError {
             path: self.path.clone(),
             source,
         })?;
@@ -361,7 +362,7 @@ impl PersistentState {
             path: self.path.clone(),
             source: io::Error::new(io::ErrorKind::InvalidData, error),
         })?;
-        atomic_write(&self.path, &bytes).map_err(|source| PersistenceError {
+        durable::write_atomic(&self.path, &bytes).map_err(|source| PersistenceError {
             path: self.path.clone(),
             source,
         })
@@ -580,7 +581,7 @@ fn recovery_path(path: &Path, reason: &PersistenceRecoveryReason) -> PathBuf {
         }
     };
     loop {
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let sequence = RECOVERY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let candidate = parent.join(format!(
             ".{name}.{label}.{}.{}.preserved",
             std::process::id(),
@@ -618,89 +619,6 @@ fn cleanup_interrupted_temporaries(path: &Path) -> io::Result<()> {
             }
         }
     }
-    Ok(())
-}
-
-fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .filter(|value| !value.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)?;
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("desktop-state");
-    let (temporary, mut file) = loop {
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let temporary = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), sequence));
-        match OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-        {
-            Ok(file) => break (temporary, file),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        }
-    };
-    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error);
-    }
-    drop(file);
-    if let Err(error) = replace_atomic(&temporary, path) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error);
-    }
-    sync_parent(path)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn replace_atomic(source: &Path, destination: &Path) -> io::Result<()> {
-    fs::rename(source, destination)
-}
-
-#[cfg(target_os = "windows")]
-fn replace_atomic(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
-
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let moved = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(unix)]
-fn sync_parent(path: &Path) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .filter(|value| !value.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    File::open(parent)?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_parent(_path: &Path) -> io::Result<()> {
-    // `MOVEFILE_WRITE_THROUGH` supplies the Windows publication fence; opening
-    // a directory through `std::fs::File` is not portable on that platform.
     Ok(())
 }
 

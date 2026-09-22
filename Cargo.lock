@@ -876,6 +876,7 @@ dependencies = [
  "backend-gui-harness",
  "backend-library",
  "backend-local-service",
+ "backend-platform",
  "backend-present",
  "backend-replication",
  "backend-runtime",
@@ -888,7 +889,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
