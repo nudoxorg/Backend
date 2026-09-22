@@ -1,7 +1,8 @@
 use super::cursor_wire::cursor_from_wire_against_owner;
 use super::page_wire::{PageRequestWire, page_request_from_wire, page_request_to_wire};
 use crate::{
-    Cursor, GraphQueryControl, GraphQueryRequest, GraphValue, PageContinuation, WireCertificate,
+    AdmittedGraphQueryInput, Cursor, GraphQueryControl, GraphQueryRequest, GraphValue,
+    PageContinuation, WireCertificate,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -25,10 +26,11 @@ pub(crate) fn request_from_wire_against_owner(
         .into_iter()
         .map(|(name, value)| value_from_wire(value).map(|value| (name, value)))
         .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let input =
+        AdmittedGraphQueryInput::new(value.query, variables).map_err(|error| error.to_string())?;
     let continuation = value.page.continuation.take();
     let page = page_request_from_wire(value.page, certificate)?;
-    let mut request = GraphQueryRequest::new(value.query, variables, page.basis(), page.limit())
-        .map_err(|error| error.to_string())?;
+    let mut request = GraphQueryRequest::bind(input, page.basis(), page.limit());
     if let Some(value) = continuation {
         let cursor = cursor_from_wire_against_owner(&value, certificate, owner)?;
         if cursor.recipe() != request.recipe() {
@@ -81,9 +83,10 @@ pub(crate) fn request_from_wire(
         .into_iter()
         .map(|(name, value)| value_from_wire(value).map(|value| (name, value)))
         .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let input =
+        AdmittedGraphQueryInput::new(value.query, variables).map_err(|error| error.to_string())?;
     let page = page_request_from_wire(value.page, certificate)?;
-    let mut request = GraphQueryRequest::new(value.query, variables, page.basis(), page.limit())
-        .map_err(|error| error.to_string())?;
+    let mut request = GraphQueryRequest::bind(input, page.basis(), page.limit());
     if let Some(continuation) = page.continuation() {
         request = request.with_continuation(continuation);
     }

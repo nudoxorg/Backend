@@ -13,6 +13,10 @@ path = "src/main.rs"
 [lib]
 path = "src/lib.rs"
 
+[features]
+default = []
+token-budget = []
+
 [dependencies]
 axum.workspace = true
 backend-client = { path = "../../crates/client" }

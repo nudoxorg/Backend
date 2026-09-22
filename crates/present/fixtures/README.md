@@ -23,6 +23,9 @@ Set `TOKEN_BUDGET_TIKTOKEN_ROOT` to the pinned Python environment and run:
 ```sh
 TOKEN_BUDGET_TIKTOKEN_ROOT=/path/to/tiktoken/site-packages \
   /opt/homebrew/bin/python3 tools/token-budget/measure.py
+
+TOKEN_BUDGET_TIKTOKEN_ROOT=/path/to/pinned/tiktoken/site-packages \
+  /opt/homebrew/bin/python3 tools/token-budget/mcp_matrix.py --write
 ```
 
 The gate fails on tokenizer version/hash drift, canonical DTO byte drift,
@@ -31,3 +34,10 @@ fixture has no payload and asserts `partial_bytes: 0`, proving oversized
 responses are admitted atomically. `payload-budgets.json` is the compact
 machine-readable report: it records bytes, the repository's estimate, exact
 tokens, allocation observations, fixture hashes, and default/hard caps.
+
+`mcp-tool-budgets.json` is the per-tool companion report. The canonical
+generator derives each tool's accepted detail modes from `tools/list`, routes
+its fixture through the production MCP response serializer, and records exact
+wire bytes and pinned model-token counts for every compact/default/full mode
+that exists. The `estimated_tokens_upper_bound` value is retained separately
+as the runtime's provider-independent estimate.

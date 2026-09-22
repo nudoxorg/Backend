@@ -4,17 +4,19 @@
 
 use allocation_counter::measure;
 use backend_library::{
-    object_version, symbol_key, view_state_root, Basis, Coverage, DeclarationKind, Row, RowId,
+    Basis, Coverage, DeclarationKind, Row, RowId, object_version, symbol_key, view_state_root,
 };
 use backend_library::{HealthReport, Library, OutlineExtent, OutlineNode};
 use backend_present::{
-    encode_answer, encode_serializable, fault_value, oversized_fault, Answer, Cause, CauseSlug,
-    CoverageLine, Detail, Fault, FaultSlug, Identity, Operand, OutlineEntry, OutlineTree,
-    PackagePath, Page, ProductView, ProjectRef, Prose, Readiness, Record, RecordList, Shelf,
-    ShelfEntry, Signature, Source, SourceSite, Status, Truncation,
+    Answer, Cause, CauseSlug, CoverageLine, Detail, Fault, FaultSlug, Identity, Operand,
+    OutlineEntry, OutlineTree, PackagePath, Page, ProductRecord, ProductView, ProjectRef, Prose,
+    Readiness, Record, RecordList, RowCount, Shelf, ShelfEntry, Signature, Source, SourceSite,
+    Status, Truncation, bounded_text, encode_answer, encode_serializable, fault_value, markdown,
+    oversized_fault,
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::env;
 
 const DEFAULT_BUDGET: usize = backend_present::DEFAULT_RESPONSE_BUDGET_BYTES;
@@ -49,7 +51,22 @@ struct QueryRowFixture {
     fields: Vec<(String, String)>,
 }
 
+#[derive(Serialize)]
+struct GraphQueryFixture {
+    revision: String,
+    rows: Vec<BTreeMap<String, String>>,
+    terminal: String,
+    emitted: usize,
+}
+
 fn main() {
+    if env::args().any(|argument| argument == "--tools") {
+        println!(
+            "{}",
+            serde_json::to_string(&tool_matrix()).expect("tool matrix is serializable")
+        );
+        return;
+    }
     let write = env::args().any(|argument| argument == "--write");
     let output = fixtures();
     if write {
@@ -59,6 +76,254 @@ fn main() {
         "{}",
         serde_json::to_string(&output).expect("fixture output is serializable")
     );
+}
+
+/// Build the complete MCP call matrix from the same registry projection that
+/// `tools/list` serves. Each row is a real JSON-RPC success envelope, so the
+/// byte count includes both the readable text block and structured content.
+/// The matrix intentionally uses bounded worst-case fixtures: 200 records,
+/// long source/document pages, and 200 graph rows. An oversized projection is
+/// represented by the same typed fault the server returns, with no partial
+/// payload retained.
+fn tool_matrix() -> Value {
+    let tools = backend_mcp::token_budget_tools()["tools"]
+        .as_array()
+        .expect("canonical MCP tool table is an array")
+        .clone();
+    let rows = tools
+        .into_iter()
+        .flat_map(|tool| {
+            let tool_name = tool["name"]
+                .as_str()
+                .expect("every MCP tool has a name")
+                .to_owned();
+            let details = detail_modes(&tool);
+            details.into_iter().map(move |name| {
+                let detail = matrix_detail(&tool, &name);
+                tool_matrix_row(&tool_name, &name, detail)
+            })
+        })
+        .collect::<Vec<_>>();
+    Value::Array(rows)
+}
+
+fn detail_modes(tool: &Value) -> Vec<String> {
+    let Some(values) = tool["inputSchema"]["properties"]["detail"]["enum"].as_array() else {
+        return vec!["default".to_owned()];
+    };
+    let mut modes = Vec::new();
+    if values.iter().any(|value| value.as_str() == Some("summary")) {
+        modes.push("compact".to_owned());
+    }
+    if values
+        .iter()
+        .any(|value| value.as_str() == Some("standard"))
+    {
+        modes.push("default".to_owned());
+    }
+    if values.iter().any(|value| value.as_str() == Some("full")) {
+        modes.push("full".to_owned());
+    }
+    if !modes.iter().any(|mode| mode == "default") {
+        modes.insert(0, "default".to_owned());
+    }
+    modes
+}
+
+fn matrix_detail(tool: &Value, name: &str) -> Detail {
+    match name {
+        "full" => Detail::Full,
+        "default" => match tool["inputSchema"]["properties"]["detail"]["default"].as_str() {
+            Some("standard") => Detail::Standard,
+            _ => Detail::Summary,
+        },
+        _ => Detail::Summary,
+    }
+}
+
+#[derive(Serialize)]
+struct ToolMatrixMeasurement {
+    tool: String,
+    detail: String,
+    fixture: String,
+    admitted: bool,
+    structured_bytes: usize,
+    tool_result_bytes: usize,
+    rpc_bytes: usize,
+    estimated_tokens_upper_bound: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refusal_bytes: Option<usize>,
+    payload: String,
+}
+
+fn tool_matrix_row(tool: &str, detail_name: &str, detail: Detail) -> Value {
+    if tool == "backend.query" {
+        return query_matrix_row(tool, detail_name, detail);
+    }
+
+    let fixture = answer_fixture_name(tool);
+    let answer = answer_fixture(tool);
+    match encode_answer(&answer, detail, None, DEFAULT_BUDGET) {
+        Ok(encoded) => {
+            let structured: Value =
+                serde_json::from_slice(&encoded.bytes).expect("typed answer is JSON");
+            matrix_success(
+                tool,
+                detail_name,
+                fixture,
+                bounded_text(&markdown::answer(&answer)),
+                structured,
+            )
+        }
+        Err(error) => matrix_refusal(tool, detail_name, fixture, error.bytes),
+    }
+}
+
+fn query_matrix_row(tool: &str, detail_name: &str, detail: Detail) -> Value {
+    let body = worst_graph_page();
+    let fixture = "graph";
+    match encode_serializable("query", detail, None, &body, DEFAULT_BUDGET) {
+        Ok(encoded) => {
+            let structured: Value =
+                serde_json::from_slice(&encoded.bytes).expect("typed query answer is JSON");
+            let text = bounded_text(&query_page_text(&body));
+            matrix_success(tool, detail_name, fixture, text, structured)
+        }
+        Err(error) => matrix_refusal(tool, detail_name, fixture, error.bytes),
+    }
+}
+
+fn query_page_text(body: &GraphQueryFixture) -> String {
+    let mut text = format!(
+        "~query {} row(s) · complete · revision {}\n",
+        body.rows.len(),
+        &body.revision[..12]
+    );
+    for row in &body.rows {
+        let fields = row
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>();
+        text.push_str(&fields.join("  "));
+        text.push('\n');
+    }
+    text
+}
+
+fn matrix_success(
+    tool: &str,
+    detail_name: &str,
+    fixture: &str,
+    text: String,
+    structured: Value,
+) -> Value {
+    let (rpc, observed_bytes) = backend_mcp::token_budget_rpc_response_with_observed(
+        serde_json::json!(1),
+        &text,
+        structured,
+        false,
+    );
+    let rpc_bytes = serde_json::to_vec(&rpc).expect("MCP success envelope is JSON");
+    let admitted = rpc.get("error").is_none()
+        && rpc
+            .get("result")
+            .and_then(|result| result.get("isError"))
+            .and_then(Value::as_bool)
+            != Some(true);
+    let tool_result_bytes = rpc
+        .get("result")
+        .map(|result| {
+            serde_json::to_vec(result)
+                .expect("MCP tool result is JSON")
+                .len()
+        })
+        .unwrap_or(0);
+    serde_json::to_value(ToolMatrixMeasurement {
+        tool: tool.to_owned(),
+        detail: detail_name.to_owned(),
+        fixture: fixture.to_owned(),
+        admitted,
+        structured_bytes: rpc
+            .get("result")
+            .and_then(|result| result.get("structuredContent"))
+            .map(|structured| {
+                serde_json::to_vec(structured)
+                    .expect("structured content is JSON")
+                    .len()
+            })
+            .unwrap_or(0),
+        tool_result_bytes,
+        rpc_bytes: rpc_bytes.len(),
+        estimated_tokens_upper_bound: backend_present::estimate_tokens(rpc_bytes.len()),
+        refusal_bytes: (!admitted).then_some(observed_bytes),
+        payload: String::from_utf8(rpc_bytes).expect("MCP JSON is UTF-8"),
+    })
+    .expect("tool matrix row is serializable")
+}
+
+fn matrix_refusal(tool: &str, detail_name: &str, fixture: &str, observed_bytes: usize) -> Value {
+    let fault = oversized_fault(backend_present::BudgetExceeded {
+        bytes: observed_bytes,
+        budget: DEFAULT_BUDGET,
+    });
+    let rpc = backend_mcp::token_budget_rpc_response(
+        serde_json::json!(1),
+        &bounded_text(&markdown::fault(&fault)),
+        fault_value(&fault),
+        true,
+    );
+    let rpc_bytes = serde_json::to_vec(&rpc).expect("MCP refusal envelope is JSON");
+    let tool_result_bytes = rpc
+        .get("result")
+        .map(|result| {
+            serde_json::to_vec(result)
+                .expect("MCP tool refusal is JSON")
+                .len()
+        })
+        .unwrap_or(0);
+    serde_json::to_value(ToolMatrixMeasurement {
+        tool: tool.to_owned(),
+        detail: detail_name.to_owned(),
+        fixture: fixture.to_owned(),
+        admitted: false,
+        structured_bytes: rpc
+            .get("result")
+            .and_then(|result| result.get("structuredContent"))
+            .map(|structured| {
+                serde_json::to_vec(structured)
+                    .expect("fault content is JSON")
+                    .len()
+            })
+            .unwrap_or(0),
+        tool_result_bytes,
+        rpc_bytes: rpc_bytes.len(),
+        estimated_tokens_upper_bound: backend_present::estimate_tokens(rpc_bytes.len()),
+        refusal_bytes: Some(observed_bytes),
+        payload: String::from_utf8(rpc_bytes).expect("MCP JSON is UTF-8"),
+    })
+    .expect("tool matrix refusal is serializable")
+}
+
+fn answer_fixture_name(tool: &str) -> &'static str {
+    match tool {
+        "backend.document" | "backend.source" => "document",
+        "backend.search" | "backend.resolve" | "backend.related" | "backend.graph" => "records",
+        "backend.outline" => "outline",
+        "backend.status" => "status",
+        "backend.packages" => "shelf",
+        _ => "product",
+    }
+}
+
+fn answer_fixture(tool: &str) -> Answer {
+    match answer_fixture_name(tool) {
+        "document" => long_page(),
+        "records" => worst_records(),
+        "outline" => worst_outline_answer(),
+        "status" => status_answer(),
+        "shelf" => worst_shelf_answer(),
+        _ => worst_product_answer(),
+    }
 }
 
 fn fixtures() -> Value {
@@ -358,6 +623,38 @@ fn encode_query_measured() -> (
     )
 }
 
+fn worst_graph_page() -> GraphQueryFixture {
+    GraphQueryFixture {
+        revision: backend_library::encode_id(&[0; 32]),
+        rows: (0..200)
+            .map(|index| {
+                BTreeMap::from([
+                    (
+                        "coordinate".to_owned(),
+                        format!(
+                            "/workspace/مرحبا/project::src/module_{index}/declaration_{index}:2147483647::declaration_{index}_東京"
+                        ),
+                    ),
+                    (
+                        "documentation".to_owned(),
+                        "bounded graph documentation ".repeat(24),
+                    ),
+                    (
+                        "language".to_owned(),
+                        "rust".to_owned(),
+                    ),
+                    (
+                        "signature".to_owned(),
+                        "pub fn declaration(value: &str) -> Result<(), Error>".to_owned(),
+                    ),
+                ])
+            })
+            .collect(),
+        terminal: "complete".to_owned(),
+        emitted: 200,
+    }
+}
+
 fn basis() -> Basis {
     Basis::new(view_state_root(&[]), object_version(&[]))
 }
@@ -460,6 +757,23 @@ fn shelf_answer() -> Answer {
     )))
 }
 
+fn worst_shelf_answer() -> Answer {
+    let entries = (0..200)
+        .map(|index| {
+            ShelfEntry::new(
+                Identity::parse(&format!("/workspace/مرحبا/project_{index}/src/東京")),
+                Readiness::Indexing {
+                    rows: RowCount::new(index as u64 * 17),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    Answer::Shelf(Box::new(Shelf::new(
+        backend_present::KeyTag::from_key(&[0xcd; 32]),
+        entries,
+    )))
+}
+
 fn outline_answer() -> Answer {
     let node = OutlineNode {
         symbol: symbol_key("/workspace/project::src/lib.rs"),
@@ -470,6 +784,33 @@ fn outline_answer() -> Answer {
     Answer::Outline(Box::new(OutlineTree::new(
         Identity::parse("/workspace/project"),
         vec![entry],
+        OutlineExtent::Truncated,
+    )))
+}
+
+fn worst_outline_answer() -> Answer {
+    let roots = (0..200)
+        .map(|index| {
+            let node = OutlineNode {
+                symbol: symbol_key(&format!(
+                    "/workspace/project::src/module_{index}/declaration_{index}"
+                )),
+                children: Box::new([]),
+            };
+            let mut resolver = |_symbol| {
+                Some((
+                    Identity::parse(&format!(
+                        "/workspace/project::src/module_{index}/declaration_{index}"
+                    )),
+                    Some(DeclarationKind::Function),
+                ))
+            };
+            OutlineEntry::resolve(&node, &mut resolver)
+        })
+        .collect::<Vec<_>>();
+    Answer::Outline(Box::new(OutlineTree::new(
+        Identity::parse("/workspace/project"),
+        roots,
         OutlineExtent::Truncated,
     )))
 }
@@ -485,4 +826,23 @@ fn status_answer() -> Answer {
 
 fn product_answer() -> Answer {
     Answer::Product(Box::new(ProductView::stated("tree", "no node is open")))
+}
+
+fn worst_product_answer() -> Answer {
+    let records = (0..200)
+        .map(|index| {
+            ProductRecord::new(
+                format!("package {index} — مرحبا 東京 declaration"),
+                Some(format!(
+                    "pkg:cargo/example-{index}@1.0.0::src/module_{index}"
+                )),
+                vec![
+                    "registry".to_owned(),
+                    "compiler".to_owned(),
+                    "bounded product fixture".to_owned(),
+                ],
+            )
+        })
+        .collect();
+    Answer::Product(Box::new(ProductView::assembled("surface", records)))
 }

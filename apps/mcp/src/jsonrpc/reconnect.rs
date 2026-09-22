@@ -27,10 +27,9 @@
 use super::{Engine, Probe, Product};
 use backend_client::ClientError;
 use backend_library::{
-    GraphQueryPage, GraphValue, HealthReport, PageContinuation, ReplyDto, SurfaceCommand,
-    SurfaceReply, ViewStateRoot,
+    AdmittedGraphQueryInput, GraphQueryPage, HealthReport, PageContinuation, ReplyDto,
+    SurfaceCommand, SurfaceReply, ViewStateRoot,
 };
-use std::collections::BTreeMap;
 
 /// Something that can open a fresh product connection on demand.
 ///
@@ -245,13 +244,12 @@ impl<E: Endpoint> Product for Reconnecting<E> {
 
     fn graph_query(
         &mut self,
-        query: String,
-        variables: BTreeMap<String, GraphValue>,
+        input: AdmittedGraphQueryInput,
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<GraphQueryPage, ClientError> {
         self.attempt(Repeatable::Yes, |product| {
-            product.graph_query(query.clone(), variables.clone(), limit, continuation)
+            product.graph_query(input.clone(), limit, continuation)
         })
     }
 }
@@ -278,6 +276,7 @@ mod tests {
         ProjectionPage, Reason, ViewRoot, ViewSnapshot, object_version, package_key, view_key,
         view_state_root,
     };
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
     /// Every call any connection of one fixture endpoint received.
@@ -409,8 +408,7 @@ mod tests {
 
         fn graph_query(
             &mut self,
-            _: String,
-            _: BTreeMap<String, GraphValue>,
+            _: AdmittedGraphQueryInput,
             _: u16,
             _: Option<PageContinuation>,
         ) -> Result<GraphQueryPage, ClientError> {
@@ -420,6 +418,143 @@ mod tests {
                 source: object_version(b"source"),
                 rows: Box::new([]),
                 terminal: PageTerminal::Complete,
+            })
+        }
+    }
+
+    /// A deterministic stand-in for the daemon's idle read timeout. Advancing
+    /// the shared clock models a long thinking gap without sleeping in a
+    /// test, and the replacement connection starts its lease at the exact
+    /// reconnect instant.
+    struct TimedConnection {
+        inner: Connection,
+        clock: Arc<AtomicU64>,
+        last_activity: u64,
+        timeout: u64,
+    }
+
+    impl TimedConnection {
+        fn record_idle(&mut self, call: &str) -> Result<(), ClientError> {
+            let now = self.clock.load(Ordering::Relaxed);
+            if now.saturating_sub(self.last_activity) > self.timeout {
+                self.inner
+                    .log
+                    .lock()
+                    .expect("fixture log")
+                    .push(format!("expired:{call}"));
+                return Err(ClientError::Disconnected(
+                    std::io::ErrorKind::ConnectionReset,
+                ));
+            }
+            self.last_activity = now;
+            self.inner.record(call)
+        }
+    }
+
+    impl Engine for TimedConnection {
+        fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+            self.record_idle("revision")?;
+            Ok(view_state_root(&[]))
+        }
+
+        fn health(&mut self) -> Result<HealthReport, ClientError> {
+            self.record_idle("health")?;
+            let library = backend_library::Library::new();
+            Ok(HealthReport::from_root(library.view(), library.cursor()))
+        }
+
+        fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+            match probe {
+                Probe::Packages => {
+                    self.record_idle("packages")?;
+                    Ok(ReplyDto::new(1, CommandReply::Packages(empty_snapshot())))
+                }
+                Probe::Index(path) => {
+                    self.record_idle("index")?;
+                    Ok(ReplyDto::new(
+                        1,
+                        CommandReply::Added(Intent::request_package(package_key(path)).id()),
+                    ))
+                }
+                other => {
+                    self.record_idle("other")?;
+                    Err(ClientError::Protocol(format!(
+                        "timed fixture has no reply for {other:?}"
+                    )))
+                }
+            }
+        }
+
+        fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+            match command {
+                SurfaceCommand::Subscriptions => {
+                    self.record_idle("subscriptions")?;
+                    Ok(SurfaceReply::Subscriptions(Box::new([])))
+                }
+                SurfaceCommand::Subscribe { .. } => {
+                    self.record_idle("subscribe")?;
+                    Ok(SurfaceReply::Subscriptions(Box::new([])))
+                }
+                other => {
+                    self.record_idle("other-surface")?;
+                    Err(ClientError::Protocol(format!(
+                        "timed fixture has no reply for {:?}",
+                        other.id()
+                    )))
+                }
+            }
+        }
+    }
+
+    impl Product for TimedConnection {
+        fn encode_continuation(&mut self, _: PageContinuation) -> Result<String, ClientError> {
+            Err(ClientError::Protocol(
+                "timed fixture has no portable cursor".to_owned(),
+            ))
+        }
+
+        fn decode_continuation(&mut self, _: &str) -> Result<PageContinuation, ClientError> {
+            Err(ClientError::Protocol(
+                "timed fixture has no portable cursor".to_owned(),
+            ))
+        }
+
+        fn graph_query(
+            &mut self,
+            _: AdmittedGraphQueryInput,
+            _: u16,
+            _: Option<PageContinuation>,
+        ) -> Result<GraphQueryPage, ClientError> {
+            self.record_idle("graph-query")?;
+            Ok(GraphQueryPage {
+                revision: view_state_root(&[]).into(),
+                source: object_version(b"source"),
+                rows: Box::new([]),
+                terminal: PageTerminal::Complete,
+            })
+        }
+    }
+
+    struct TimedFixture {
+        log: Log,
+        clock: Arc<AtomicU64>,
+        timeout: u64,
+        connects: usize,
+    }
+
+    impl Endpoint for TimedFixture {
+        type Product = TimedConnection;
+
+        fn connect(&mut self) -> Result<Self::Product, ClientError> {
+            self.connects = self.connects.checked_add(1).expect("connect count");
+            Ok(TimedConnection {
+                inner: Connection {
+                    log: Arc::clone(&self.log),
+                    alive: true,
+                },
+                clock: Arc::clone(&self.clock),
+                last_activity: self.clock.load(Ordering::Relaxed),
+                timeout: self.timeout,
             })
         }
     }
@@ -489,6 +624,85 @@ mod tests {
         );
     }
 
+    #[test]
+    fn deterministic_idle_gap_matrix_reconnects_only_after_the_timeout() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let clock = Arc::new(AtomicU64::new(0));
+        let initial = TimedConnection {
+            inner: Connection {
+                log: Arc::clone(&log),
+                alive: true,
+            },
+            clock: Arc::clone(&clock),
+            last_activity: 0,
+            timeout: 30,
+        };
+        let endpoint = TimedFixture {
+            log: Arc::clone(&log),
+            clock: Arc::clone(&clock),
+            timeout: 30,
+            connects: 0,
+        };
+        let mut handle = Reconnecting::new(endpoint, initial);
+
+        handle
+            .probe(Probe::Packages)
+            .expect("the initial call at t=0 is live");
+        clock.store(30, Ordering::Relaxed);
+        handle
+            .probe(Probe::Packages)
+            .expect("the timeout boundary is still usable");
+        clock.store(70, Ordering::Relaxed);
+        handle
+            .probe(Probe::Packages)
+            .expect("a read after the long idle gap reconnects and retries");
+
+        assert_eq!(
+            calls(&log),
+            vec![
+                "live:packages".to_owned(),
+                "live:packages".to_owned(),
+                "expired:packages".to_owned(),
+                "live:packages".to_owned(),
+            ],
+            "the 0/30/70 second matrix must show one retry on a fresh lease"
+        );
+        assert_eq!(
+            handle.endpoint.connects, 1,
+            "the long idle gap opens exactly one replacement session"
+        );
+    }
+
+    #[test]
+    fn daemon_restart_io_kinds_are_reconnectable_but_configuration_errors_are_not() {
+        for kind in [
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::ConnectionRefused,
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::NotConnected,
+            std::io::ErrorKind::UnexpectedEof,
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::NotFound,
+        ] {
+            let mapped = super::super::map_runtime_connect_error(
+                backend_runtime::RuntimeError::Io(std::io::Error::from(kind)),
+            );
+            assert!(
+                matches!(mapped, ClientError::Disconnected(_)),
+                "{kind:?} must reopen the endpoint: {mapped}"
+            );
+        }
+        let mapped = super::super::map_runtime_connect_error(backend_runtime::RuntimeError::Io(
+            std::io::Error::from(std::io::ErrorKind::InvalidData),
+        ));
+        assert!(
+            matches!(mapped, ClientError::Io(_)),
+            "a configuration/data error must be surfaced, not retried: {mapped}"
+        );
+    }
+
     /// Every read-shaped call on the surface recovers, not only `probe`.
     #[test]
     fn revision_health_and_graph_query_all_recover() {
@@ -512,7 +726,12 @@ mod tests {
                 "dead:health" => drop(handle.health().expect("health recovers")),
                 "dead:graph-query" => drop(
                     handle
-                        .graph_query(String::new(), BTreeMap::new(), 1, None)
+                        .graph_query(
+                            AdmittedGraphQueryInput::new("fixture", Default::default())
+                                .expect("fixture query is admitted"),
+                            1,
+                            None,
+                        )
                         .expect("graph query recovers"),
                 ),
                 "dead:subscriptions" => drop(

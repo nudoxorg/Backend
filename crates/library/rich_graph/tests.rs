@@ -6,6 +6,8 @@ use crate::{
     SemanticConfidence, SemanticGenerationId, SemanticLinkKind, ViewRoot, symbol_key,
     view_state_root,
 };
+use std::collections::BTreeSet;
+use std::sync::Arc;
 
 fn revision(seed: u8) -> RichGraphRevision {
     RichGraphRevision::new(

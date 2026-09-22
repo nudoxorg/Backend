@@ -127,53 +127,37 @@ pub enum GraphQueryControl {
     Cancel,
 }
 
-/// A bounded, root-pinned structured graph query.
+/// A canonical, transport-neutral graph-query input admitted independently of
+/// any owner revision or page budget.
+///
+/// Keeping this value separate from [`GraphQueryRequest`] gives every caller
+/// one admission boundary. A client can admit an input before it performs a
+/// revision lookup, and then bind that exact value to a page without parsing
+/// or validating it again.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GraphQueryRequest {
+pub struct AdmittedGraphQueryInput {
     query: String,
     variables: Box<[(String, GraphValue)]>,
-    page: PageRequest,
-    control: GraphQueryControl,
 }
 
-impl GraphQueryRequest {
-    /// Admits a first-page query and its canonical variable map.
+impl AdmittedGraphQueryInput {
+    /// Admits query text and canonicalizes its variable map.
     ///
     /// # Errors
     ///
-    /// Returns [`GraphQueryError`] when text, field, nesting, or byte bounds fail.
+    /// Returns [`GraphQueryError`] when text, field, nesting, or byte bounds
+    /// fail.
     pub fn new(
         query: impl Into<String>,
         variables: BTreeMap<String, GraphValue>,
-        basis: impl Into<ViewRevision>,
-        limit: QueryLimit,
     ) -> Result<Self, GraphQueryError> {
         let query = query.into();
         admit_query_text(&query)?;
         let variables = admit_fields(variables)?;
-        Ok(Self {
-            query,
-            variables,
-            page: PageRequest::new(basis, limit),
-            control: GraphQueryControl::Continue,
-        })
+        Ok(Self { query, variables })
     }
 
-    /// Resumes from the preceding page's opaque continuation.
-    #[must_use]
-    pub const fn with_continuation(mut self, continuation: PageContinuation) -> Self {
-        self.page = self.page.with_continuation(continuation);
-        self
-    }
-
-    /// Requests cancellation for this exact root and query identity.
-    #[must_use]
-    pub const fn cancelled(mut self) -> Self {
-        self.control = GraphQueryControl::Cancel;
-        self
-    }
-
-    /// Returns the exact query text.
+    /// Returns the exact admitted query text.
     #[must_use]
     pub fn query(&self) -> &str {
         &self.query
@@ -183,18 +167,6 @@ impl GraphQueryRequest {
     #[must_use]
     pub fn variables(&self) -> &[(String, GraphValue)] {
         &self.variables
-    }
-
-    /// Returns the shared revision, limit, and continuation page contract.
-    #[must_use]
-    pub const fn page(&self) -> PageRequest {
-        self.page
-    }
-
-    /// Returns the cooperative execution disposition.
-    #[must_use]
-    pub const fn control(&self) -> GraphQueryControl {
-        self.control
     }
 
     /// Returns the identity of the exact query text and canonical variables.
@@ -225,6 +197,109 @@ impl GraphQueryRequest {
             append_value(&mut bytes, value);
         }
         bytes
+    }
+}
+
+/// A bounded, root-pinned structured graph query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GraphQueryRequest {
+    input: AdmittedGraphQueryInput,
+    page: PageRequest,
+    control: GraphQueryControl,
+}
+
+impl GraphQueryRequest {
+    /// Admits a first-page query and its canonical variable map.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphQueryError`] when text, field, nesting, or byte bounds fail.
+    pub fn new(
+        query: impl Into<String>,
+        variables: BTreeMap<String, GraphValue>,
+        basis: impl Into<ViewRevision>,
+        limit: QueryLimit,
+    ) -> Result<Self, GraphQueryError> {
+        let input = AdmittedGraphQueryInput::new(query, variables)?;
+        Ok(Self::bind(input, basis, limit))
+    }
+
+    /// Binds an already admitted input to an owner revision and page budget.
+    ///
+    /// This method performs no query admission. Callers that receive an
+    /// [`AdmittedGraphQueryInput`] from another boundary can therefore bind it
+    /// after a revision lookup without repeating validation or canonicalizing
+    /// a second copy.
+    #[must_use]
+    pub fn bind(
+        input: AdmittedGraphQueryInput,
+        basis: impl Into<ViewRevision>,
+        limit: QueryLimit,
+    ) -> Self {
+        Self {
+            input,
+            page: PageRequest::new(basis, limit),
+            control: GraphQueryControl::Continue,
+        }
+    }
+
+    /// Resumes from the preceding page's opaque continuation.
+    #[must_use]
+    pub const fn with_continuation(mut self, continuation: PageContinuation) -> Self {
+        self.page = self.page.with_continuation(continuation);
+        self
+    }
+
+    /// Requests cancellation for this exact root and query identity.
+    #[must_use]
+    pub const fn cancelled(mut self) -> Self {
+        self.control = GraphQueryControl::Cancel;
+        self
+    }
+
+    /// Returns the exact query text.
+    #[must_use]
+    pub fn query(&self) -> &str {
+        self.input.query()
+    }
+
+    /// Returns canonical, name-sorted variables.
+    #[must_use]
+    pub fn variables(&self) -> &[(String, GraphValue)] {
+        self.input.variables()
+    }
+
+    /// Returns the admitted query input this page is bound to.
+    #[must_use]
+    pub const fn input(&self) -> &AdmittedGraphQueryInput {
+        &self.input
+    }
+
+    /// Returns the shared revision, limit, and continuation page contract.
+    #[must_use]
+    pub const fn page(&self) -> PageRequest {
+        self.page
+    }
+
+    /// Returns the cooperative execution disposition.
+    #[must_use]
+    pub const fn control(&self) -> GraphQueryControl {
+        self.control
+    }
+
+    /// Returns the identity of the exact query text and canonical variables.
+    #[must_use]
+    pub fn recipe(&self) -> ViewRecipeId {
+        self.input.recipe()
+    }
+
+    /// Returns the canonical key preimage for the query recipe.
+    ///
+    /// Proof-producing owners include this bounded value when a continuation
+    /// cursor changes the ordinary view recipe slot to the graph-query recipe.
+    #[must_use]
+    pub fn recipe_preimage(&self) -> Box<[u8]> {
+        self.input.recipe_preimage()
     }
 
     /// Admits this page's continuation against the selected owner cursor.

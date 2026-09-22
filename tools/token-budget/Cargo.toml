@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 allocation-counter.workspace = true
 backend-library = { path = "../../crates/library" }
-backend-mcp = { path = "../../apps/mcp" }
+backend-mcp = { path = "../../apps/mcp", features = ["token-budget"] }
 backend-present = { path = "../../crates/present" }
 serde.workspace = true
 serde_json.workspace = true

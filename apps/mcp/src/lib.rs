@@ -55,7 +55,36 @@ pub use transport::{CertifiedCommandTransport, CommandTransport, InProcessTransp
 
 /// Exposes the canonical tools/list projection to the dev-only payload
 /// budget generator without putting tokenizer code in MCP request handling.
+#[cfg(feature = "token-budget")]
 #[doc(hidden)]
 pub fn token_budget_tools() -> serde_json::Value {
     jsonrpc::token_budget_tools_projection()
+}
+
+/// Exposes the production-bounded JSON-RPC response serializer to the
+/// dev-only budget generator. The generator supplies canonical typed fixture
+/// values; this function owns the same `tools/call` result and whole-reply
+/// admission gates used by a live MCP session.
+#[cfg(feature = "token-budget")]
+#[doc(hidden)]
+pub fn token_budget_rpc_response(
+    id: serde_json::Value,
+    text: &str,
+    structured: serde_json::Value,
+    is_error: bool,
+) -> serde_json::Value {
+    jsonrpc::token_budget_rpc_response(id, text, structured, is_error)
+}
+
+/// Returns the bounded response together with the candidate size measured by
+/// the production whole-reply admission gate.
+#[cfg(feature = "token-budget")]
+#[doc(hidden)]
+pub fn token_budget_rpc_response_with_observed(
+    id: serde_json::Value,
+    text: &str,
+    structured: serde_json::Value,
+    is_error: bool,
+) -> (serde_json::Value, usize) {
+    jsonrpc::token_budget_rpc_response_with_observed(id, text, structured, is_error)
 }

@@ -37,8 +37,12 @@ struct Fake {
     graph_continue: bool,
     /// Owner-issued continuation retained by the fixture encoder.
     next_continuation: Option<PageContinuation>,
+    /// Make an otherwise valid owner cursor stale at decode time.
+    stale_cursor: bool,
     /// Optional product reply used by the high-fanout surface budget case.
     surface_reply: Option<SurfaceReply>,
+    /// Number of graph requests that reached the product boundary.
+    graph_query_calls: usize,
 }
 
 fn basis() -> Basis {
@@ -262,6 +266,9 @@ impl Product for Fake {
         token: &str,
     ) -> Result<backend_library::PageContinuation, ClientError> {
         if token == "fixture-page-1" {
+            if self.stale_cursor {
+                return Err(ClientError::StaleCursor);
+            }
             self.next_continuation
                 .ok_or_else(|| ClientError::Protocol("fixture has no cursor".to_owned()))
         } else {
@@ -271,11 +278,11 @@ impl Product for Fake {
 
     fn graph_query(
         &mut self,
-        _: String,
-        _: std::collections::BTreeMap<String, GraphValue>,
+        _: AdmittedGraphQueryInput,
         _: u16,
         continuation: Option<backend_library::PageContinuation>,
     ) -> Result<GraphQueryPage, ClientError> {
+        self.graph_query_calls += 1;
         if let Some(rows) = &self.graph_rows {
             return Ok(GraphQueryPage {
                 revision: view_state_root(&[]).into(),
@@ -586,6 +593,24 @@ fn a_search_call_leads_with_honest_coverage_then_two_lines_per_record() {
 }
 
 #[test]
+fn mcp_text_is_the_same_shared_markdown_the_cli_renders() {
+    let mut direct = Fake::default();
+    let answer = backend_present::answer(
+        &mut direct,
+        &Request::Search {
+            text: "ferris".to_owned(),
+            limit: 25,
+        },
+    )
+    .expect("fixture search answer");
+    let expected = bounded_text(&backend_present::markdown::answer(&answer));
+
+    let mut server = ready(Fake::default());
+    let result = call(&mut server, "backend.search", &json!({ "query": "ferris" }));
+    assert_eq!(text_of(&result), expected);
+}
+
+#[test]
 fn an_outline_call_is_a_tree_of_names_never_bare_digests() {
     let mut server = ready(Fake::default());
     let result = call(&mut server, "backend.outline", &json!({}));
@@ -834,6 +859,93 @@ fn the_typed_query_lane_reports_its_terminal_and_revision() {
     assert_eq!(result["structuredContent"]["terminal"], "complete");
 }
 
+#[test]
+fn graph_query_limits_are_rejected_before_the_product_boundary() {
+    let mut server = ready(Fake::default());
+    let oversized_query = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": QUERY_TOOL,
+            "arguments": {
+                "query": "x".repeat(backend_library::MAX_GRAPH_QUERY_BYTES + 1)
+            }
+        }),
+    );
+    assert_eq!(oversized_query["error"]["code"], -32602);
+    assert!(
+        oversized_query["error"]["data"]["detail"]
+            .as_str()
+            .is_some_and(|message| message.contains("query exceeds"))
+    );
+    assert_eq!(server.product.graph_query_calls, 0);
+
+    let mut variables = Map::new();
+    for index in 0..=backend_library::MAX_GRAPH_QUERY_FIELDS {
+        variables.insert(format!("v{index}"), json!(index));
+    }
+    let too_many_variables = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": QUERY_TOOL,
+            "arguments": {
+                "query": "{ Declaration { coordinate @output } }",
+                "variables": Value::Object(variables)
+            }
+        }),
+    );
+    assert_eq!(too_many_variables["error"]["code"], -32602);
+    assert!(
+        too_many_variables["error"]["data"]["detail"]
+            .as_str()
+            .is_some_and(|message| message.contains("field-count bound"))
+    );
+    assert_eq!(server.product.graph_query_calls, 0);
+
+    let mut nested = Value::String("x".to_owned());
+    for _ in 0..=backend_library::MAX_GRAPH_VALUE_DEPTH {
+        nested = Value::Array(vec![nested]);
+    }
+    let too_deep = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": QUERY_TOOL,
+            "arguments": {
+                "query": "{ Declaration { coordinate @output } }",
+                "variables": {"nested": nested}
+            }
+        }),
+    );
+    assert_eq!(too_deep["error"]["code"], -32602);
+    assert!(
+        too_deep["error"]["data"]["detail"]
+            .as_str()
+            .is_some_and(|message| message.contains("nesting bound"))
+    );
+    assert_eq!(server.product.graph_query_calls, 0);
+
+    let too_large = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": QUERY_TOOL,
+            "arguments": {
+                "query": "{ Declaration { coordinate @output } }",
+                "variables": {"text": "x".repeat(backend_library::MAX_GRAPH_VALUE_BYTES + 1)}
+            }
+        }),
+    );
+    assert_eq!(too_large["error"]["code"], -32602);
+    assert!(
+        too_large["error"]["data"]["detail"]
+            .as_str()
+            .is_some_and(|message| message.contains("byte bound"))
+    );
+    assert_eq!(server.product.graph_query_calls, 0);
+}
+
 // ---------------------------------------------------------------------------
 // resources
 // ---------------------------------------------------------------------------
@@ -939,6 +1051,16 @@ fn initialized_notification_cannot_bypass_initialize() {
 }
 
 #[test]
+fn cancellation_notifications_are_silent_and_do_not_poison_the_session() {
+    let mut server = ready(Fake::default());
+    assert!(server
+        .handle(br#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":9,"reason":"client stopped waiting"}}"#)
+        .is_none());
+    let result = call(&mut server, "backend.search", &json!({ "query": "ferris" }));
+    assert_eq!(result["isError"], false);
+}
+
+#[test]
 fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
     let mut server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
     let initialized = server
@@ -1019,6 +1141,15 @@ fn newline_codec_rejects_malformed_and_oversized_jsonrpc_frames() {
         "result": "x".repeat(crate::MAX_MCP_RESPONSE_FRAME + 1)
     });
     assert!(write_message(&mut output, &oversized_result).is_err());
+}
+
+#[test]
+#[cfg(feature = "token-budget")]
+fn bounded_response_serialization_preserves_the_calling_request_id() {
+    let id = json!("request-λ-42");
+    let response = token_budget_rpc_response(id.clone(), "ok", json!({"answer":"product"}), false);
+    assert_eq!(response["id"], id);
+    assert_eq!(response["result"]["isError"], false);
 }
 
 #[test]
@@ -1195,6 +1326,38 @@ fn graph_continuation_round_trip_is_bounded_and_authorized() {
     assert_context_bounded(&second);
     assert_eq!(second["isError"], false);
     assert_eq!(second["structuredContent"]["terminal"], "complete");
+}
+
+#[test]
+fn stale_graph_roots_are_reported_as_a_restartable_cursor_error() {
+    let mut server = ready(Fake {
+        graph_continue: true,
+        ..Fake::default()
+    });
+    let first = call(
+        &mut server,
+        QUERY_TOOL,
+        &json!({"query":"{ Declaration { coordinate @output } }","limit":1}),
+    );
+    let cursor = first["structuredContent"]["nextCursor"]
+        .as_str()
+        .expect("first page carries a cursor")
+        .to_owned();
+    server.product.stale_cursor = true;
+    let response = request(
+        &mut server,
+        "tools/call",
+        &json!({
+            "name": QUERY_TOOL,
+            "arguments": {
+                "query":"{ Declaration { coordinate @output } }",
+                "limit":1,
+                "cursor":cursor
+            }
+        }),
+    );
+    assert_eq!(response["error"]["code"], -32010);
+    assert_eq!(response["error"]["data"]["kind"], "stale_cursor");
 }
 
 #[test]

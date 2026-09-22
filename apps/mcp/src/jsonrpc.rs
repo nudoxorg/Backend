@@ -20,8 +20,9 @@
 
 use backend_client::{ClientError, Session};
 use backend_library::{
-    GraphQueryPage, GraphQueryRow, GraphValue, HealthReport, PageContinuation, PageTerminal,
-    ReplyDto, SurfaceCommand, SurfaceReply, ViewStateRoot, encode_id,
+    AdmittedGraphQueryInput, GraphQueryPage, GraphQueryRow, GraphValue, HealthReport,
+    PageContinuation, PageTerminal, ReplyDto, SurfaceCommand, SurfaceReply, ViewStateRoot,
+    encode_id,
 };
 use backend_present::{
     Answer, BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Engine, Fault, Invocation,
@@ -46,6 +47,7 @@ use codec::{
 };
 use tools::{QUERY_TOOL, SURFACE_TOOL, list_tools};
 
+#[cfg(feature = "token-budget")]
 pub(crate) use tools::token_budget_tools as token_budget_tools_projection;
 
 const STABLE_PROTOCOL: &str = "2025-11-25";
@@ -82,8 +84,7 @@ pub(super) trait Product: Engine {
 
     fn graph_query(
         &mut self,
-        query: String,
-        variables: std::collections::BTreeMap<String, GraphValue>,
+        input: AdmittedGraphQueryInput,
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<GraphQueryPage, ClientError>;
@@ -171,13 +172,12 @@ impl Product for SessionProduct {
 
     fn graph_query(
         &mut self,
-        query: String,
-        variables: std::collections::BTreeMap<String, GraphValue>,
+        input: AdmittedGraphQueryInput,
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<GraphQueryPage, ClientError> {
         self.0
-            .graph_query(query, variables, limit, continuation, false)
+            .graph_query_admitted(input, limit, continuation, false)
     }
 }
 
@@ -553,11 +553,15 @@ impl<P: Product> Server<P> {
             arguments,
             &["query", "variables", "limit", "cursor", "detail"],
         )?;
-        let query = string(arguments, "query")?.to_owned();
-        let variables = query_variables(arguments)?;
+        let input = AdmittedGraphQueryInput::new(
+            string(arguments, "query")?.to_owned(),
+            query_variables(arguments)?,
+        )
+        .map_err(|error| RpcError::invalid(error.to_string()))?;
+        let query = input.query().to_owned();
         match self
             .product
-            .graph_query(query.clone(), variables, limit(arguments)?, continuation)
+            .graph_query(input, limit(arguments)?, continuation)
         {
             Ok(page) => self.graph_page_result(&page, detail, context),
             Err(error) => Ok(refused(&Fault::from_client_error(
@@ -637,10 +641,7 @@ impl<P: Product> Server<P> {
             .and_then(Value::as_object)
             .and_then(|arguments| arguments.get("query"))
             .and_then(Value::as_str)
-            .map_or_else(
-                || "the relevant implementation".to_owned(),
-                bounded_text,
-            );
+            .map_or_else(|| "the relevant implementation".to_owned(), bounded_text);
         let view = Engine::revision(&mut self.product)
             .map_err(|error| RpcError::tool(error.to_string()))?;
         Ok(json!({
@@ -938,6 +939,43 @@ fn bound_rpc_reply(value: Value) -> Value {
             None,
         )
     }
+}
+
+/// Serialize the exact bounded response envelope used by `tools/call`.
+///
+/// This narrow dev hook lets the checked-in budget generator exercise the
+/// production `tool_result` and `bound_rpc_reply` paths without making the
+/// fixture generator depend on a live daemon or a test-only product. It is
+/// deliberately hidden from normal API documentation.
+#[cfg(feature = "token-budget")]
+pub(super) fn token_budget_rpc_response(
+    id: Value,
+    text: &str,
+    structured: Value,
+    is_error: bool,
+) -> Value {
+    token_budget_rpc_response_with_observed(id, text, structured, is_error).0
+}
+
+/// As [`token_budget_rpc_response`], also returning the candidate response
+/// size measured immediately before the production whole-reply admission
+/// gate. A fallback fault is still a valid bounded response, but the matrix
+/// needs the rejected candidate size to explain why it was reduced.
+#[cfg(feature = "token-budget")]
+pub(super) fn token_budget_rpc_response_with_observed(
+    id: Value,
+    text: &str,
+    structured: Value,
+    is_error: bool,
+) -> (Value, usize) {
+    let result = tool_result(text, structured, is_error);
+    let response = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result
+    });
+    let observed = serialized_bytes(&response);
+    (bound_rpc_reply(response), observed)
 }
 
 fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {

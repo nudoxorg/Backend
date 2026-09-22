@@ -6,10 +6,10 @@
 #![forbid(unsafe_code)]
 
 use backend_library::{
-    Command, CommandDto, CommandFailure, CommandMutation, CommandReply, CoverageCapability, Cursor,
-    DiffRecord, DocumentQuery, GraphNeighborhoodQuery, GraphQueryPage, GraphQueryRequest,
-    GraphValue, HealthReport, NameQuery, OutlineQuery, PackageReference, PageContinuation,
-    PageRequest, PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto,
+    AdmittedGraphQueryInput, Command, CommandDto, CommandFailure, CommandMutation, CommandReply,
+    CoverageCapability, Cursor, DiffRecord, DocumentQuery, GraphNeighborhoodQuery, GraphQueryPage,
+    GraphQueryRequest, GraphValue, HealthReport, NameQuery, OutlineQuery, PackageReference,
+    PageContinuation, PageRequest, PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto,
     RequestAdmissionError, SemanticGenerationId, SemanticLanguageProfile, SemanticVersionRecord,
     SurfaceCommand, SurfaceReply, SymbolAddress, SymbolKey, ViewProjectionError, ViewRoot,
     ViewStateRoot, WireCertificate, WireClaim, WireSchema, encode_id, package_key, symbol_key,
@@ -774,11 +774,32 @@ impl Session {
         continuation: Option<PageContinuation>,
         cancel: bool,
     ) -> Result<GraphQueryPage, ClientError> {
+        let input = AdmittedGraphQueryInput::new(query, variables)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        self.graph_query_admitted(input, limit, continuation, cancel)
+    }
+
+    /// Executes or resumes a graph query from an already admitted input.
+    ///
+    /// The input is expected to have been admitted before this method is
+    /// called. In particular, this lets a caller validate once before looking
+    /// up a revision and then bind the same canonical value to that revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the revision, page limit, transport, proof, or
+    /// reply-shape validation fails.
+    pub fn graph_query_admitted(
+        &mut self,
+        input: AdmittedGraphQueryInput,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+        cancel: bool,
+    ) -> Result<GraphQueryPage, ClientError> {
         let revision = self.revision()?;
         let limit = QueryLimit::new(limit)
             .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
-        let mut request = GraphQueryRequest::new(query, variables, revision.root, limit)
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let mut request = GraphQueryRequest::bind(input, revision.root, limit);
         if let Some(continuation) = continuation {
             request = request.with_continuation(continuation);
         }

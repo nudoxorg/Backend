@@ -93,9 +93,9 @@ pub use cursor::{
 pub use delta::{Delta, Intent, IntentError, IntentLog, IntentReceipt, Settings};
 pub use error::LibraryError;
 pub use graph_query::{
-    GraphQueryControl, GraphQueryError, GraphQueryPage, GraphQueryRequest, GraphQueryRow,
-    GraphValue, MAX_GRAPH_QUERY_BYTES, MAX_GRAPH_QUERY_FIELDS, MAX_GRAPH_VALUE_BYTES,
-    MAX_GRAPH_VALUE_DEPTH,
+    AdmittedGraphQueryInput, GraphQueryControl, GraphQueryError, GraphQueryPage, GraphQueryRequest,
+    GraphQueryRow, GraphValue, MAX_GRAPH_QUERY_BYTES, MAX_GRAPH_QUERY_FIELDS,
+    MAX_GRAPH_VALUE_BYTES, MAX_GRAPH_VALUE_DEPTH,
 };
 pub use rich_graph::{
     GraphAuthority, GraphAvailability, GraphControl, GraphEdgeId, GraphEdgeKind,
