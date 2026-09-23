@@ -707,24 +707,26 @@ static TYPESCRIPT_SYMBOLS: &[Snap] = &[
     },
     // PIN WITHDRAWN: hono-4.6.12::param (field), `git bisect run` pinned
     // exactly to 3e2eadda2 ("fix(engine): stop anonymous callable
-    // parameters inheriting type-spelling labels"). That commit narrows
-    // `live_type`'s type-child label fallback in
-    // `crates/engine/src/driver/lower.rs` to fire only when a labeled
-    // child's target row is a real `Parameter` carrier fact, fixing a
-    // real, documented, tested rendering bug (an anonymous callable's
-    // parameter inheriting its target type's spelling as a bogus name —
-    // `rgb: (red: number, ...) => this` was rendering as `rgb: fn(number:
-    // f64, ...)`). After that commit no entity named `param` under any
-    // role is reachable in hono's extraction at all (verified against the
-    // full symbol dump, not just this row's zero counts); `types.d.ts`'s
-    // several literal `param: ...` object-type-literal members are
-    // themselves unaffected by this fallback (`TSTypeLiteral` members
-    // already carry an explicit written name via
-    // `push_type_literal_member`), so the declaration this pin measured
-    // was some other, less direct path through the same shared
-    // `live_type` label reconstruction — not independently re-derived
-    // here. Every other hono row (the `outputFormat` field pin included)
-    // is unchanged and still measures.
+    // parameters inheriting type-spelling labels"). Verified this is a
+    // sampling artifact, not a lost or damaged declaration: reverting and
+    // reapplying 3e2eadda2's two-file diff (`crates/engine/src/driver/lower.rs`,
+    // `crates/engine/src/driver/lower/typescript.rs`) and dumping every
+    // hono entity literally named `param` from `sample_symbols`'s own
+    // input (`ir.canonical_entities()`) at both states shows the same six
+    // `param` fields, at the same six `(id, parent, span)` triples, with
+    // the same 6 in-file matches, present and unchanged on both sides of
+    // the commit — e.g. `id=Id(1746) parent=Id(1747) span=(53455, 53587)`
+    // exists identically before and after. `sample_symbols` deterministic
+    // ranking (`crates/engine/tests/references_coverage_snapshot.rs`) picks
+    // the *first* field-kind entity in `ir.canonical_entities()`'s own
+    // iteration order with >=2 in-file matches; 3e2eadda2's real,
+    // documented, tested fix (an anonymous callable's parameter no longer
+    // inheriting its target type's spelling as a bogus name — `rgb: (red:
+    // number, ...) => this` was rendering as `rgb: fn(number: f64, ...)`)
+    // shifted hono's overall entity registration order enough that a
+    // *different* field (`outputFormat`) now sorts before `param`, so the
+    // sampler picks it instead. `param` itself never moved, lost its name,
+    // or changed shape. Every other hono row is unaffected.
     Snap {
         package: "hono-4.6.12",
         role: "record",
