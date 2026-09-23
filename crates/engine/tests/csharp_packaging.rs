@@ -122,7 +122,15 @@ fn locked_roslyn_packaging_round_trips_fixture_and_rejects_tracked_outputs() -> 
     run_dotnet_with(
         &dotnet,
         &helper,
-        &["build", "-c", "Release", "--nologo"],
+        // `UseSharedCompilation=false` forces this build's own isolated
+        // `csc` process instead of the ambient VBCSCompiler node MSBuild
+        // shares across every concurrent `dotnet build`/`publish` on this
+        // machine: under full-suite load, many test binaries build this
+        // same checked-in helper project at once, and a shared compiler
+        // server is exactly the kind of ambient, cross-process state that
+        // isolated `obj/`/`bin/` directories alone cannot rule out as a
+        // source of the "authority image changed" drift this test guards.
+        &["build", "-c", "Release", "--nologo", "-p:UseSharedCompilation=false"],
         &[intermediate_arg, output_arg],
         "build",
     )?;

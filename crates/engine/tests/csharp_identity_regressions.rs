@@ -159,8 +159,19 @@ fn published_oracle(dotnet: &Path) -> Option<&'static PathBuf> {
             let mut output_arg = std::ffi::OsString::from("-p:BaseOutputPath=");
             output_arg.push(&output_base);
             output_arg.push(std::path::MAIN_SEPARATOR.to_string());
+            // `UseSharedCompilation=false`: see csharp_packaging.rs's build
+            // invocation for why every concurrent build of this shared
+            // checked-in project must not share MSBuild's ambient
+            // VBCSCompiler node.
             let status = Command::new(dotnet)
-                .args(["publish", "oracle.csproj", "-c", "Release", "--nologo"])
+                .args([
+                    "publish",
+                    "oracle.csproj",
+                    "-c",
+                    "Release",
+                    "--nologo",
+                    "-p:UseSharedCompilation=false",
+                ])
                 .arg(&intermediate_arg)
                 .arg(&output_arg)
                 .arg("-o")

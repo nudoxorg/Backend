@@ -3531,6 +3531,10 @@ fn csharp_oracle(dotnet: &Path) -> Result<PathBuf, String> {
                 Ok(status) => return Err(format!("oracle locked restore failed: {status}")),
                 Err(error) => return Err(error.to_string()),
             }
+            // `UseSharedCompilation=false`: see csharp_packaging.rs's build
+            // invocation for why every concurrent build of this shared
+            // checked-in project must not share MSBuild's ambient
+            // VBCSCompiler node.
             let status = Command::new(dotnet)
                 .args([
                     "publish",
@@ -3539,6 +3543,7 @@ fn csharp_oracle(dotnet: &Path) -> Result<PathBuf, String> {
                     "Release",
                     "--nologo",
                     "--no-restore",
+                    "-p:UseSharedCompilation=false",
                 ])
                 .arg(&intermediate_arg)
                 .arg(&output_base_arg)
