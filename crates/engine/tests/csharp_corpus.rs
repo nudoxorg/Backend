@@ -150,19 +150,26 @@ struct CorpusRow {
 /// nullable 1.3.1 — primary pinned after live confirmation: the largest
 /// `.cs` (4541 bytes) ships in three TFM folders of equal depth; the
 /// lexicographic winner is the net40 copy. Declaration 1 carries 23 applied
-/// attribute spellings, one above the shared 16-slot attribute list, so the
-/// row's terminal is the lane's exact typed capacity rejection.
+/// attribute spellings; the shared reference-list bound was raised from 16
+/// to 128 and then to 255 in `crates/engine/src/driver/lower.rs`
+/// (`MAX_REF_LIST_ELEMENTS`, commit ce74f843e "enjoy"), so 23 spellings no
+/// longer breach it and the row completes the full journey. The 23
+/// attribute applications are a separate, symbol-level plane
+/// (`AuthorityImage.cs`'s `info.Symbol.GetAttributes()`, unioned across
+/// every duplicate TFM copy of this file the package root ships) and are
+/// never counted as occurrences: `occurrences: 3` covers only the syntax
+/// this row's own bound file writes — one `using global::System;` and the
+/// two `AttributeTargets.Method`/`.Property` member accesses inside its
+/// lone `[AttributeUsage(...)]` application — verified directly against a
+/// live oracle run over the real fetched package.
 const NULLABLE_ROW: CorpusRow = CorpusRow {
     label: "nullable 1.3.1",
     purl: "nuget:nullable@1.3.1",
     primary: "contentFiles/cs/net40/Nullable/MemberNotNullWhenAttribute.cs",
     symbols: &[],
-    occurrences: 1170,
+    occurrences: 3,
     doc_links: false,
-    expectation: Expectation::AttributeCapacity {
-        declaration: 1,
-        spellings: 23,
-    },
+    expectation: Expectation::Full,
 };
 
 /// xunit.assert.source 2.9.3 — largest `.cs` by decoded length. Symbols read
@@ -195,7 +202,7 @@ const ISEXTERNALINIT_ROW: CorpusRow = CorpusRow {
     purl: "nuget:isexternalinit@1.0.3",
     primary: "content/net40/IsExternalInit/IsExternalInit.cs",
     symbols: &[
-        (b"System.Runtime.CompilerServices", EntityKind::Module),
+        (b"System.Runtime.CompilerServices", EntityKind::Namespace),
         (b"IsExternalInit", EntityKind::Record),
     ],
     occurrences: 2,
@@ -226,6 +233,15 @@ const POLYFILL_ROW: CorpusRow = CorpusRow {
 /// devlooped.tablestorage.source 5.5.0 — the largest `.cs` ships in two TFM
 /// folders of equal depth; the lexicographic winner is netstandard2.0.
 /// Symbols read from `contentFiles/cs/netstandard2.0/TableRepositoryQuery\`1.cs`.
+/// `occurrences` rose by exactly one `InterfaceImplementation` row (this
+/// row's type implements a BCL/out-of-assembly interface member). Commit
+/// ce74f843e's `AuthorityImage.cs` replaced an early `continue` that
+/// silently dropped an implementation binding whose interface member has
+/// no local declaration row with a retained row carrying an absent target
+/// and the foreign member name; verified by rebuilding the pre-ce74f843e
+/// oracle from git history and re-running it over the same real file,
+/// which produced 293 (no `InterfaceImplementation` row at all) against
+/// today's 294.
 const DEVLOOPED_ROW: CorpusRow = CorpusRow {
     label: "devlooped.tablestorage.source 5.5.0",
     purl: "nuget:devlooped.tablestorage.source@5.5.0",
@@ -236,7 +252,7 @@ const DEVLOOPED_ROW: CorpusRow = CorpusRow {
         (b"JsonElementToDictionary", EntityKind::Function),
         (b"PartitionKey", EntityKind::Field),
     ],
-    occurrences: 293,
+    occurrences: 294,
     doc_links: true,
     expectation: Expectation::Full,
 };
@@ -258,6 +274,11 @@ const TINYIOC_RC1_ROW: CorpusRow = CorpusRow {
 
 /// ramltoopenapiconverter.sourceonly 0.21.0 — largest `.cs`. Symbols read
 /// from `contentFiles/cs/any/RamlToOpenApiConverter/RamlConverter.Components.cs`.
+/// `occurrences` rose by exactly 6, all `FieldWrite`: commit ce74f843e
+/// added the bare-identifier `FieldRead`/`FieldWrite` reference kinds
+/// (`AuthorityImage.cs`'s `IdentifierNameSyntax` sweep), which v3 never
+/// emitted at all. Verified directly: a live probe over this file counts
+/// 6 `FieldWrite` rows and 0 `FieldRead`, matching 192 -> 198 exactly.
 const RAML_0210_ROW: CorpusRow = CorpusRow {
     label: "ramltoopenapiconverter.sourceonly 0.21.0",
     purl: "nuget:ramltoopenapiconverter.sourceonly@0.21.0",
@@ -268,7 +289,7 @@ const RAML_0210_ROW: CorpusRow = CorpusRow {
         (b"MapComponents", EntityKind::Function),
         (b"ReplaceUses", EntityKind::Function),
     ],
-    occurrences: 192,
+    occurrences: 198,
     doc_links: false,
     expectation: Expectation::Full,
 };
@@ -294,7 +315,11 @@ const RAML_080_ROW: CorpusRow = CorpusRow {
 /// parameterless `void` executables (`Router` ctor, `PurgeEventQueues`)
 /// were the zero-children function-pointer panic at `lower.rs:1595`; the
 /// typed `Dangling` rejection and legal zero-arity path landed, and the
-/// row now completes the full journey.
+/// row now completes the full journey. `occurrences` also rose by
+/// exactly 15 (10 `FieldRead` + 5 `FieldWrite`) — the new bare-identifier
+/// reference kinds `ce74f843e` added; v3 emitted none of them. Verified
+/// by a live probe over this file: 218 -> 233 matches the field-kind
+/// count exactly.
 const ESP_NET_064_ROW: CorpusRow = CorpusRow {
     label: "esp-net-source 0.6.4",
     purl: "nuget:esp-net-source@0.6.4",
@@ -304,7 +329,7 @@ const ESP_NET_064_ROW: CorpusRow = CorpusRow {
         (b"ModelChangedEventPublisher", EntityKind::Record),
         (b"CreateModelRouter", EntityKind::Function),
     ],
-    occurrences: 218,
+    occurrences: 233,
     doc_links: false,
     expectation: Expectation::Full,
 };
@@ -313,6 +338,9 @@ const ESP_NET_064_ROW: CorpusRow = CorpusRow {
 /// `content/App_Packages/Esp.Net.0.2.3/Router.cs` (`PurgeEventQueue`,
 /// `ThrowIfHalted`, `ThrowIfInvalidThread`, …). Was red on the same
 /// parameterless-`void` lane panic as `ESP_NET_064_ROW`; fixed with it.
+/// `occurrences` also rose by exactly 15 (11 `FieldRead` + 4
+/// `FieldWrite`) for the same reason as `ESP_NET_064_ROW`: 116 -> 131
+/// verified by a live probe.
 const ESP_NET_023_ROW: CorpusRow = CorpusRow {
     label: "esp-net-source 0.2.3",
     purl: "nuget:esp-net-source@0.2.3",
@@ -324,7 +352,7 @@ const ESP_NET_023_ROW: CorpusRow = CorpusRow {
         (b"Status", EntityKind::Enum),
         (b"Idle", EntityKind::Variant),
     ],
-    occurrences: 116,
+    occurrences: 131,
     doc_links: false,
     expectation: Expectation::Full,
 };
@@ -332,7 +360,10 @@ const ESP_NET_023_ROW: CorpusRow = CorpusRow {
 /// nullability.source 2.3.0 — largest `.cs`. Symbols read from
 /// `contentFiles/cs/netstandard2.0/Nullability.Source/NullabilityInfoContext.cs`.
 /// Was red on the same parameterless-`void` lane panic as `ESP_NET_064_ROW`
-/// (`EnsureIsSupported`); fixed with it.
+/// (`EnsureIsSupported`); fixed with it. `occurrences` also rose by
+/// exactly 4 `FieldRead` rows (0 `FieldWrite`) for the same
+/// bare-identifier reason as `ESP_NET_064_ROW`: 346 -> 350 verified by a
+/// live probe.
 const NULLABILITY_230_ROW: CorpusRow = CorpusRow {
     label: "nullability.source 2.3.0",
     purl: "nuget:nullability.source@2.3.0",
@@ -343,7 +374,7 @@ const NULLABILITY_230_ROW: CorpusRow = CorpusRow {
         (b"None", EntityKind::Variant),
         (b"NullableAttributeStateParser", EntityKind::Record),
     ],
-    occurrences: 346,
+    occurrences: 350,
     doc_links: true,
     expectation: Expectation::Full,
 };
@@ -351,7 +382,10 @@ const NULLABILITY_230_ROW: CorpusRow = CorpusRow {
 /// nullability.source 2.1.0 — largest `.cs`. Symbols read from
 /// `contentFiles/cs/netstandard2.0/Nullability.Source/NullabilityInfoContext.cs`.
 /// Was red on the same parameterless-`void` lane panic as `ESP_NET_064_ROW`
-/// (`EnsureIsSupported`); fixed with it.
+/// (`EnsureIsSupported`); fixed with it. `occurrences` also rose by
+/// exactly 4 `FieldRead` rows (0 `FieldWrite`) for the same
+/// bare-identifier reason as `ESP_NET_064_ROW`: 343 -> 347 verified by a
+/// live probe.
 const NULLABILITY_210_ROW: CorpusRow = CorpusRow {
     label: "nullability.source 2.1.0",
     purl: "nuget:nullability.source@2.1.0",
@@ -362,7 +396,7 @@ const NULLABILITY_210_ROW: CorpusRow = CorpusRow {
         (b"None", EntityKind::Variant),
         (b"NullableAttributeStateParser", EntityKind::Record),
     ],
-    occurrences: 343,
+    occurrences: 347,
     doc_links: true,
     expectation: Expectation::Full,
 };
@@ -374,7 +408,7 @@ const MORELINQ_DISTINCTBY_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.distinctby@1.0.2",
     primary: "content/net35/MoreLinq/MoreEnumerable.DistinctBy.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"DistinctBy", EntityKind::Function),
         (b"DistinctByImpl", EntityKind::Function),
@@ -391,7 +425,7 @@ const MORELINQ_PAIRWISE_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.pairwise@1.0.2",
     primary: "content/net20/MoreLinq/MoreEnumerable.Pairwise.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"Pairwise", EntityKind::Function),
         (b"PairwiseImpl", EntityKind::Function),
@@ -408,7 +442,7 @@ const MORELINQ_ACQUIRE_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.acquire@1.0.2",
     primary: "content/net20/MoreLinq/MoreEnumerable.Acquire.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"Acquire", EntityKind::Function),
     ],
@@ -424,7 +458,7 @@ const MORELINQ_ASSERTCOUNT_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.assertcount@1.0.2",
     primary: "content/net20/MoreLinq/MoreEnumerable.AssertCount.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"AssertCountImpl", EntityKind::Function),
         (b"ExpectingCountYieldingImpl", EntityKind::Function),
@@ -441,7 +475,7 @@ const MORELINQ_BATCH_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.batch@1.0.2",
     primary: "content/net20/MoreLinq/MoreEnumerable.Batch.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"Batch", EntityKind::Function),
         (b"BatchImpl", EntityKind::Function),
@@ -458,7 +492,7 @@ const MORELINQ_GENERATE_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.generate@1.0.2",
     primary: "content/net20/MoreLinq/MoreEnumerable.Generate.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"Generate", EntityKind::Function),
         (b"GenerateImpl", EntityKind::Function),
@@ -476,7 +510,7 @@ const MORELINQ_GENERATEBYINDEX_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.generatebyindex@1.0.2",
     primary: "content/net20/MoreLinq/MoreEnumerable.GenerateByIndex.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"GenerateByIndex", EntityKind::Function),
         (b"GenerateByIndexImpl", EntityKind::Function),
@@ -487,15 +521,18 @@ const MORELINQ_GENERATEBYINDEX_ROW: CorpusRow = CorpusRow {
 };
 
 /// tinyioc 1.3.0 — the package's single source file (`Content/TinyIoC.cs`)
-/// resolves 1170 references and now completes under the authorized 8192-row
+/// resolves 1252 references and now completes under the authorized 8192-row
 /// occurrence scratch bound; its 876 reopened entities stop the index build
-/// at the shared 256-entity exact/lexical segment bound.
+/// at the shared 256-entity exact/lexical segment bound. `occurrences` rose
+/// by exactly 82 (59 `FieldRead` + 23 `FieldWrite`) for the same
+/// bare-identifier reason as `ESP_NET_064_ROW` (commit ce74f843e added the
+/// two kinds; v3 emitted neither): 1170 -> 1252 verified by a live probe.
 const TINYIOC_130_ROW: CorpusRow = CorpusRow {
     label: "tinyioc 1.3.0",
     purl: "nuget:tinyioc@1.3.0",
     primary: "Content/TinyIoC.cs",
     symbols: &[],
-    occurrences: 1170,
+    occurrences: 1252,
     doc_links: false,
     expectation: Expectation::IndexEntityLimit { observed: 876 },
 };
