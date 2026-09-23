@@ -436,6 +436,37 @@ fn foreign_generic_reference_is_unknown_without_checker_module_authority() {
     assert_eq!(f.record.text, Some(&b"Map"[..]));
 }
 
+/// Syntactic type lowering recurses once per object-literal nesting level,
+/// and the compiler owner thread runs it on a default 2 MiB stack. The
+/// `typescript` package's own `.d.ts` nests literals deeply enough that an
+/// inline 64-wide `TypeCells` child array (about 2 KiB per value, dozens live
+/// per frame) overflowed that stack; twelve levels overflowed it before the
+/// child lane moved to the heap.
+#[test]
+fn nested_object_literal_types_lower_on_a_small_stack() {
+    const LEVELS: usize = 12;
+    let mut source = String::from("export type Deep = ");
+    for level in 0..LEVELS {
+        source.push_str(&format!("{{ f{level}: "));
+    }
+    source.push_str("number");
+    for _ in 0..LEVELS {
+        source.push_str(" }");
+    }
+    source.push_str(";\n");
+    let source: &'static [u8] = Box::leak(source.into_bytes().into_boxed_slice());
+    let lowered = thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            let authority = report(source);
+            try_lower(source, Some(&authority)).is_ok()
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(lowered, "nested object literal type must lower");
+}
+
 #[test]
 fn self_referential_alias_is_bounded_on_a_small_stack() {
     const SOURCE: &[u8] = b"export type A = A | false; export const x: A = false;";

@@ -324,24 +324,32 @@ type MemberLink<'source> = (u32, &'source [u8], u8);
 
 /// One lowered type expression: the lattice record plus its bounded,
 /// strictly-backward child links into already-pushed facts.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// The child lane stays bounded by the type-child law, but it lives on the
+/// heap: at the 64-wide lane (d40260a45) an inline array made every
+/// `TypeCells` about 2 KiB, and the recursive type lowering keeps dozens of
+/// them live per frame, so `MAX_TYPE_DEPTH`-bounded recursion over real
+/// declaration files overflowed a default 2 MiB worker stack.
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct TypeCells<'source> {
     record: SemanticTypeRecord<'source>,
-    children: [FactTypeChild<'source>; MAX_TYPE_CHILDREN],
+    children: Box<[FactTypeChild<'source>; MAX_TYPE_CHILDREN]>,
     len: usize,
     truncated: bool,
 }
 
 impl<'source> TypeCells<'source> {
     /// A leaf record with no children and no cells.
-    const fn leaf(tag: SemanticTypeTag) -> Self {
+    fn leaf(tag: SemanticTypeTag) -> Self {
         Self {
             record: SemanticTypeRecord::leaf(tag),
-            children: [FactTypeChild {
-                target: 0,
-                name: None,
-                flags: 0,
-            }; MAX_TYPE_CHILDREN],
+            children: Box::new(
+                [FactTypeChild {
+                    target: 0,
+                    name: None,
+                    flags: 0,
+                }; MAX_TYPE_CHILDREN],
+            ),
             len: 0,
             truncated: false,
         }
@@ -384,10 +392,6 @@ impl<'source> TypeCells<'source> {
 /// by an already-pushed fact (a declared entity or a type parameter), or it
 /// carries cells the caller applies to its own fact or to a new synthetic
 /// type-expression fact.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "TypeCells is a fixed stack record bounded by the lane's type-child law; boxing every lowered type expression would trade a bounded stack value for a heap allocation"
-)]
 enum TypeOutcome<'source> {
     Existing(u32),
     Cells(TypeCells<'source>),
