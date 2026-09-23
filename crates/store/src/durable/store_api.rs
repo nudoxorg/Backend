@@ -256,7 +256,23 @@ impl FileStore {
     /// Returns an admission, bounds, corruption, or filesystem error.
     pub fn write_closure(&self, manifest: &ClosureManifest) -> Result<ClosureId, StoreError> {
         manifest.admit_with_registry(&self.relation_registry)?;
-        self.write_closure_after_admission(manifest, &[])
+        // A complete closure lists every relation node it needs as a member,
+        // but its path-copy `changed` set is relative to whichever manifest
+        // it was derived from, and that base need not have been physically
+        // written. A model-built workspace closure extended with transition
+        // payloads is exactly that case: only the payloads are "changed", so
+        // the selected relation root would never reach the node index that
+        // restart recovery reopens it through. Persist every member relation
+        // node the index does not already hold.
+        let mut unwritten = Vec::new();
+        for object in manifest.objects() {
+            if self.relation_registry.contains_schema(object.schema())
+                && !self.relation_ref_matches(object.schema(), object.version())?
+            {
+                unwritten.push(object.clone());
+            }
+        }
+        self.write_closure_after_admission(manifest, &unwritten)
     }
 
     fn write_closure_after_admission(
