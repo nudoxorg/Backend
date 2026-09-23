@@ -46,8 +46,21 @@ fn run_dotnet(
     args: &[&str],
     label: &'static str,
 ) -> Result<(), TestError> {
+    run_dotnet_with(dotnet, helper, args, &[], label)
+}
+
+/// Same as [`run_dotnet`], but with extra trailing MSBuild properties (e.g. an
+/// isolated intermediate/output directory) appended to the invocation.
+fn run_dotnet_with(
+    dotnet: &PathBuf,
+    helper: &PathBuf,
+    args: &[&str],
+    extra: &[std::ffi::OsString],
+    label: &'static str,
+) -> Result<(), TestError> {
     let output = Command::new(dotnet)
         .args(args)
+        .args(extra)
         .current_dir(helper)
         .output()
         .map_err(io)?;
@@ -80,16 +93,37 @@ fn locked_roslyn_packaging_round_trips_fixture_and_rejects_tracked_outputs() -> 
 {
     let helper = helper()?;
     let dotnet = csharp_support::dotnet_executable()?;
-    run_dotnet(
+    // Every concurrently running C# test builds the same checked-in helper
+    // project. `dotnet restore`/`build` write both intermediate build state
+    // (`obj/`) and final output (`bin/`) under the project directory by
+    // default, so without explicit, per-process `BaseIntermediateOutputPath`
+    // and `BaseOutputPath` overrides, all concurrent processes race on the
+    // same files and either fail outright or produce a subtly corrupted
+    // `oracle.dll` (observed as spurious `OraclePublish`/"authority image
+    // changed" failures under full-suite load). The restore and build steps
+    // share the same isolated directories so the build sees what its own
+    // restore produced.
+    let build_root = csharp_support::fresh_dir("packaging-build")?;
+    let intermediate = build_root.join("obj");
+    let output_base = build_root.join("bin");
+    let mut intermediate_arg = std::ffi::OsString::from("-p:BaseIntermediateOutputPath=");
+    intermediate_arg.push(&intermediate);
+    intermediate_arg.push(std::path::MAIN_SEPARATOR.to_string());
+    let mut output_arg = std::ffi::OsString::from("-p:BaseOutputPath=");
+    output_arg.push(&output_base);
+    output_arg.push(std::path::MAIN_SEPARATOR.to_string());
+    run_dotnet_with(
         &dotnet,
         &helper,
         &["restore", "--locked-mode", "--nologo"],
+        &[intermediate_arg.clone()],
         "restore",
     )?;
-    run_dotnet(
+    run_dotnet_with(
         &dotnet,
         &helper,
         &["build", "-c", "Release", "--nologo"],
+        &[intermediate_arg, output_arg],
         "build",
     )?;
 
@@ -119,7 +153,7 @@ fn locked_roslyn_packaging_round_trips_fixture_and_rejects_tracked_outputs() -> 
         .map_err(io)?;
     let output_root = csharp_support::fresh_dir("packaging-image")?;
     let output = output_root.join("fidelity.ncaimg");
-    let oracle = helper.join("bin/Release/net8.0/oracle.dll");
+    let oracle = output_base.join("Release/net8.0/oracle.dll");
     let produced = Command::new(&dotnet)
         .arg(&oracle)
         .args([
@@ -144,6 +178,7 @@ fn locked_roslyn_packaging_round_trips_fixture_and_rejects_tracked_outputs() -> 
     }
     let produced = fs::read(&output).map_err(io)?;
     fs::remove_dir_all(output_root).map_err(io)?;
+    let _ = fs::remove_dir_all(&build_root);
     if produced != FIDELITY_IMAGE {
         return Err(TestError::Fact(
             "Roslyn authority image changed in documented round-trip".into(),

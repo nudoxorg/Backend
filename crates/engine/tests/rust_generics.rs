@@ -37,7 +37,10 @@ fn fixture_root(body: &str) -> Result<PathBuf, TestError> {
         .map_err(TestError::Clock)?
         .as_nanos();
     let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!("nudox-rust-generics-{nonce}-{sequence}"));
+    let root = std::env::temp_dir().join(format!(
+        "nudox-rust-generics-{nonce}-{}-{sequence}",
+        std::process::id()
+    ));
     fs::create_dir_all(root.join("src")).map_err(|source| TestError::Io {
         operation: "create fixture",
         source,

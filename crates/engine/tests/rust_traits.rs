@@ -55,7 +55,8 @@ fn root(body: &str) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())?
         .as_nanos();
     let root = std::env::temp_dir().join(format!(
-        "nudox-rust-traits-{nonce}-{}",
+        "nudox-rust-traits-{nonce}-{}-{}",
+        std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(root.join("src")).map_err(|error| error.to_string())?;

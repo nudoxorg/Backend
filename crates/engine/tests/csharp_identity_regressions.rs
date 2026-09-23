@@ -137,16 +137,33 @@ fn published_oracle(dotnet: &Path) -> Option<&'static PathBuf> {
             let root = fresh_dir("publish");
             let publish = root.join("publish");
             fs::create_dir_all(&publish).ok()?;
+            // Isolate this process's intermediate AND build-output state:
+            // every concurrently running C# test builds the same checked-in
+            // helper project. `dotnet publish` writes `obj/` under the
+            // project directory by default (`BaseIntermediateOutputPath`),
+            // and it also builds into the default `bin/`
+            // (`BaseOutputPath`) before copying the publish output to `-o`
+            // — `-o` alone does not redirect that intermediate build step,
+            // so two concurrent publishes still raced on
+            // `bin/Release/net8.0/oracle.runtimeconfig.json` even with an
+            // isolated `obj/`. This isolated `obj/` starts empty, so
+            // `--no-restore` (which assumed a shared, already restored
+            // `obj/`) is dropped; the project's own
+            // `RestorePackagesWithLockFile` still pins the restore to
+            // `packages.lock.json`.
+            let intermediate = publish.join("obj");
+            let mut intermediate_arg = std::ffi::OsString::from("-p:BaseIntermediateOutputPath=");
+            intermediate_arg.push(&intermediate);
+            intermediate_arg.push(std::path::MAIN_SEPARATOR.to_string());
+            let output_base = publish.join("bin");
+            let mut output_arg = std::ffi::OsString::from("-p:BaseOutputPath=");
+            output_arg.push(&output_base);
+            output_arg.push(std::path::MAIN_SEPARATOR.to_string());
             let status = Command::new(dotnet)
-                .args([
-                    "publish",
-                    "oracle.csproj",
-                    "-c",
-                    "Release",
-                    "--nologo",
-                    "--no-restore",
-                    "-o",
-                ])
+                .args(["publish", "oracle.csproj", "-c", "Release", "--nologo"])
+                .arg(&intermediate_arg)
+                .arg(&output_arg)
+                .arg("-o")
                 .arg(&publish)
                 .current_dir(&helper)
                 .status()

@@ -641,6 +641,24 @@ fn publish_oracle() -> Result<PathBuf, SetupFault> {
     let dotnet = dotnet_executable().map_err(|_| SetupFault::Toolchain)?;
     let helper = helper_dir().map_err(|error| fault(error.to_string()))?;
     let out = fresh_dir("oracle-publish").map_err(|error| fault(error.to_string()))?;
+    // Every concurrently running test process publishes the same checked-in
+    // helper project. `dotnet publish` writes its intermediate build state
+    // (`obj/`, `BaseIntermediateOutputPath`) AND its own build output
+    // (`bin/`, `BaseOutputPath`) under the project directory by default —
+    // `-o` only redirects the final publish copy, not that intermediate
+    // build step — so without explicit, per-process overrides for both, all
+    // processes race on the same `obj/`/`bin/` files and MSBuild fails
+    // nondeterministically. Give each publish its own intermediate and
+    // build-output directories alongside its own publish directory so
+    // concurrent runs never touch the same files.
+    let intermediate = out.join("obj");
+    let mut intermediate_arg = std::ffi::OsString::from("-p:BaseIntermediateOutputPath=");
+    intermediate_arg.push(&intermediate);
+    intermediate_arg.push(std::path::MAIN_SEPARATOR.to_string());
+    let output_base = out.join("bin");
+    let mut output_base_arg = std::ffi::OsString::from("-p:BaseOutputPath=");
+    output_base_arg.push(&output_base);
+    output_base_arg.push(std::path::MAIN_SEPARATOR.to_string());
     let output = std::process::Command::new(dotnet)
         .args([
             "publish",
@@ -648,15 +666,22 @@ fn publish_oracle() -> Result<PathBuf, SetupFault> {
             "-c",
             "Release",
             "--nologo",
-            "-o",
         ])
+        .arg(&intermediate_arg)
+        .arg(&output_base_arg)
+        .arg("-o")
         .arg(&out)
         .current_dir(&helper)
         .output()
         .map_err(|source| fault(format!("dotnet publish spawn failed: {source}")))?;
     if !output.status.success() {
+        // `dotnet publish` writes build/compile errors to stdout, not
+        // stderr (stderr is reserved for host/CLI-level failures). Reading
+        // only `stderr` silently discarded the real cause and reported an
+        // empty string. Surface both streams so the failure is diagnosable.
         return Err(fault(format!(
-            "dotnet publish failed: {}",
+            "dotnet publish failed: stdout: {} stderr: {}",
+            excerpt(&output.stdout),
             excerpt(&output.stderr)
         )));
     }

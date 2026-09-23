@@ -127,7 +127,8 @@ fn compile_source(source: &[u8]) -> Result<Ir, TestError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| TestError::Resolve)?
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("nudox-go-render-{nonce}"));
+    let root =
+        std::env::temp_dir().join(format!("nudox-go-render-{nonce}-{}", std::process::id()));
     fs::create_dir_all(&root).map_err(TestError::Io)?;
     fs::write(
         root.join("go.mod"),

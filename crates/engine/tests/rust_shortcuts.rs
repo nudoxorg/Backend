@@ -19,7 +19,8 @@ use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
 fn fixture(source: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let root = std::env::temp_dir().join(format!(
-        "nudox-shortcuts-{}",
+        "nudox-shortcuts-{}-{}",
+        std::process::id(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir_all(root.join("src"))?;

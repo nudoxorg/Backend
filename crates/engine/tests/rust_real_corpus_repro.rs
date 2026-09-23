@@ -117,7 +117,10 @@ fn compile_corpus_file(body: &[u8]) -> String {
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!("nudox-rust-real-{nonce}-{sequence}"));
+    let root = std::env::temp_dir().join(format!(
+        "nudox-rust-real-{nonce}-{}-{sequence}",
+        std::process::id()
+    ));
     if fs::create_dir_all(root.join("src")).is_err() {
         return "fixture-io".to_owned();
     }

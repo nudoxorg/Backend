@@ -997,8 +997,24 @@ fn published_oracle(dotnet: &Path) -> Option<PathBuf> {
                 .join("../../frontends/csharp/src/legacy/helper");
             let publish = scratch_dir("csharp-publish").join("publish");
             fs::create_dir_all(&publish).ok()?;
+            // Isolate this process's intermediate AND build-output state:
+            // every concurrently running C# test builds the same checked-in
+            // helper project, and `dotnet restore`/`publish` write `obj/`
+            // (`BaseIntermediateOutputPath`) and build into `bin/`
+            // (`BaseOutputPath`) under the project directory by default —
+            // `-o` only redirects the final publish copy, not that
+            // intermediate build step.
+            let intermediate = publish.join("obj");
+            let mut intermediate_arg = std::ffi::OsString::from("-p:BaseIntermediateOutputPath=");
+            intermediate_arg.push(&intermediate);
+            intermediate_arg.push(std::path::MAIN_SEPARATOR.to_string());
+            let output_base = publish.join("bin");
+            let mut output_base_arg = std::ffi::OsString::from("-p:BaseOutputPath=");
+            output_base_arg.push(&output_base);
+            output_base_arg.push(std::path::MAIN_SEPARATOR.to_string());
             let restored = std::process::Command::new(dotnet)
                 .args(["restore", "oracle.csproj", "--locked-mode", "--nologo"])
+                .arg(&intermediate_arg)
                 .current_dir(&helper)
                 .status()
                 .ok()?;
@@ -1013,8 +1029,10 @@ fn published_oracle(dotnet: &Path) -> Option<PathBuf> {
                     "Release",
                     "--nologo",
                     "--no-restore",
-                    "-o",
                 ])
+                .arg(&intermediate_arg)
+                .arg(&output_base_arg)
+                .arg("-o")
                 .arg(&publish)
                 .current_dir(&helper)
                 .status()
@@ -2105,10 +2123,19 @@ summary entities=4 signature rendered=4 unavailable=0 placeholder=2 malformed=0 
 // #   snapshot pins the current head-only state.
 // # - Macros render `?unannotated`, extern globals `?external`, and
 // #   template/macro-dependent pointees `?oracle-gap` (upstream rows).
-// # - Shell-sensitive: pinned under `.#development`, where brotli's
-// #   `uint8_t` does not resolve and clang recovers it as `int`
-// #   (`const i32[]`). Under `.#complete` the typedef resolves and the same
-// #   rows render `[const unsigned-char[8]; 122784]`.
+// # - Shell-sensitive: under `.#development` brotli's `uint8_t` does not
+// #   resolve and clang recovers it as `int` (`const i32[]`); under
+// #   `.#complete` the typedef resolves and the same row renders
+// #   `[const unsigned-char[8]; 122784]`. Both shells hand libclang the same
+// #   pinned `NUDOX_CLANG_DRIVER` and the same `SDKROOT`, and that driver
+// #   resolves `<stdint.h>` fine when run directly in either shell (verified
+// #   2026-09-23), so the gap is inside the corpus lane's own libclang
+// #   invocation, not a missing system header. This snapshot pins the
+// #   `.#complete` rendering: the recorded full-suite gate run
+// #   (clusters/full-run-796f.log) was produced under `.#complete`, so that
+// #   is the shell whose output this gate actually checks in.
+// #   `.#development`'s `int`-recovered rendering is a known, narrower
+// #   capability gap in that shell only.
 #[rustfmt::skip]
 const EXPECTED_CLANG: &str = r"# clang render snapshot
 package cJSON file=cJSON/tests/unity/test/tests/testunity.c bytes=123592
@@ -2193,12 +2220,12 @@ package STC file=STC/include/stc/priv/cregex_prv.c bytes=41971
 	Macro _BIGLISTSIZE :: macro _BIGLISTSIZE: ?unannotated [placeholder:?unannotated]
 summary entities=25 signature rendered=25 unavailable=0 placeholder=6 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 package brotli file=brotli/c/common/dictionary.c bytes=472009
-	Static kBrotliDictionaryData :: static kBrotliDictionaryData: const i32[]
+	Static kBrotliDictionaryData :: static kBrotliDictionaryData: [const unsigned-char[8]; 122784]
 	Static kBrotliDictionary :: static kBrotliDictionary: const ?external [placeholder:?external]
 	Parameter BrotliGetDictionary :: BrotliGetDictionary: const ?external* [placeholder:?external]
 	Function BrotliGetDictionary :: fn BrotliGetDictionary() -> const ?external* [placeholder:?external]
-	Parameter data :: data: const i32*
-	Function BrotliSetDictionaryData :: fn BrotliSetDictionaryData(data: const i32*)
+	Parameter data :: data: const unsigned-char[8]*
+	Function BrotliSetDictionaryData :: fn BrotliSetDictionaryData(data: const unsigned-char[8]*)
 	Module dictionary.h :: mod dictionary.h
 	Module platform.h :: mod platform.h
 summary entities=8 signature rendered=8 unavailable=0 placeholder=3 malformed=0 canonical ok=8 err=0 document ok=8 err=0

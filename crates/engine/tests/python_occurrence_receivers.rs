@@ -103,7 +103,10 @@ fn python_receiver_occurrences_resolve_honestly() -> Result<(), TestError> {
         .duration_since(UNIX_EPOCH)
         .map_err(TestError::Clock)?
         .as_nanos();
-    let work = std::env::temp_dir().join(format!("nudox-python-receiver-{nonce}"));
+    let work = std::env::temp_dir().join(format!(
+        "nudox-python-receiver-{nonce}-{}",
+        std::process::id()
+    ));
     fs::create_dir_all(&work).map_err(|source| TestError::Io("create scratch", source))?;
     let cancelled = AtomicBool::new(false);
     // Two-run byte stability: the widened occurrence rows must not make the

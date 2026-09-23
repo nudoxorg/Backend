@@ -3657,7 +3657,9 @@ mod tests {
             })?
             .as_nanos();
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("nudox-rust-lane-{nonce}-{sequence}"));
+        let pid = std::process::id();
+        let root =
+            std::env::temp_dir().join(format!("nudox-rust-lane-{nonce}-{pid}-{sequence}"));
         fs::create_dir_all(root.join("src")).map_err(|source| TestError::Io {
             operation: "create fixture",
             source,
