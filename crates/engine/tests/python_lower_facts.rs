@@ -40,18 +40,24 @@ const NESTED_TYPEVAR: &[u8] =
 const TEN_PARAMETERS: &[u8] = b"def h(a, b, c, d, e, f, g, h2, i, j) -> None: ...\n";
 /// Exactly at the raised per-fact child bound, with no result annotation so
 /// the children are exactly the parameters: every one admits.
-const THIRTY_TWO_PARAMETERS: &[u8] = b"def k32(
+const SIXTY_FOUR_PARAMETERS: &[u8] = b"def k64(
     a01, a02, a03, a04, a05, a06, a07, a08, a09, a10,
     a11, a12, a13, a14, a15, a16, a17, a18, a19, a20,
     a21, a22, a23, a24, a25, a26, a27, a28, a29, a30,
-    a31, a32,
+    a31, a32, a33, a34, a35, a36, a37, a38, a39, a40,
+    a41, a42, a43, a44, a45, a46, a47, a48, a49, a50,
+    a51, a52, a53, a54, a55, a56, a57, a58, a59, a60,
+    a61, a62, a63, a64,
 ): ...\n";
 /// One parameter past the raised bound: the exact typed ChildCapacity terminal.
-const THIRTY_THREE_PARAMETERS: &[u8] = b"def k33(
+const SIXTY_FIVE_PARAMETERS: &[u8] = b"def k65(
     a01, a02, a03, a04, a05, a06, a07, a08, a09, a10,
     a11, a12, a13, a14, a15, a16, a17, a18, a19, a20,
     a21, a22, a23, a24, a25, a26, a27, a28, a29, a30,
-    a31, a32, a33,
+    a31, a32, a33, a34, a35, a36, a37, a38, a39, a40,
+    a41, a42, a43, a44, a45, a46, a47, a48, a49, a50,
+    a51, a52, a53, a54, a55, a56, a57, a58, a59, a60,
+    a61, a62, a63, a64, a65,
 ): ...\n";
 
 #[derive(Debug, Error)]
@@ -525,7 +531,7 @@ fn tuple_result_slot_carries_exactly_two_element_children() -> Result<(), TestEr
         ));
     }
     let children = type_child_targets(&lane, row)?;
-    expect_primitive(&lane, children[0], PrimitiveShape::Integer, None)?;
+    expect_primitive(&lane, children[0], PrimitiveShape::ArbitraryInteger, None)?;
     expect_primitive(&lane, children[1], PrimitiveShape::Str, None)?;
     Ok(())
 }
@@ -551,7 +557,7 @@ fn dict_result_slot_applies_base_and_arguments_in_order() -> Result<(), TestErro
     let children = type_child_targets(&lane, row)?;
     expect_primitive(&lane, children[0], PrimitiveShape::Builtin, Some(b"dict"))?;
     expect_primitive(&lane, children[1], PrimitiveShape::Str, None)?;
-    expect_primitive(&lane, children[2], PrimitiveShape::Integer, None)?;
+    expect_primitive(&lane, children[2], PrimitiveShape::ArbitraryInteger, None)?;
     Ok(())
 }
 
@@ -595,31 +601,31 @@ fn ten_parameter_function_keeps_every_parameter_child() -> Result<(), TestError>
 }
 
 /// The raised bound stays honest on both sides of the boundary: a function
-/// at exactly 32 parameters admits completely, and one parameter past it
+/// at exactly 64 parameters admits completely, and one parameter past it
 /// rejects with the exact typed ChildCapacity terminal, never a panic or a
 /// silent truncation.
 #[test]
-fn thirty_two_parameter_function_admits_at_the_bound() -> Result<(), TestError> {
-    let outcome = attempt_fragment(THIRTY_TWO_PARAMETERS, "thirty-two")?;
+fn sixty_four_parameter_function_admits_at_the_bound() -> Result<(), TestError> {
+    let outcome = attempt_fragment(SIXTY_FOUR_PARAMETERS, "sixty-four")?;
     let bytes = outcome.map_err(TestError::Rejected)?;
     let lane = lane_of(&bytes)?;
-    let function = entity_ordinal(&lane, b"k32", EntityKind::Function)?;
+    let function = entity_ordinal(&lane, b"k64", EntityKind::Function)?;
     let row = owned_row(&lane, function)?;
-    if lane.types[row].record.children.length != 32 {
+    if lane.types[row].record.children.length != 64 {
         return Err(TestError::Falsified(
-            "the at-bound function does not carry all 32 parameter children",
+            "the at-bound function does not carry all 64 parameter children",
         ));
     }
     Ok(())
 }
 
 #[test]
-fn thirty_three_parameter_function_rejects_with_child_capacity() -> Result<(), TestError> {
-    match attempt_fragment(THIRTY_THREE_PARAMETERS, "thirty-three")? {
+fn sixty_five_parameter_function_rejects_with_child_capacity() -> Result<(), TestError> {
+    match attempt_fragment(SIXTY_FIVE_PARAMETERS, "sixty-five")? {
         Err(ProjectionAdmissionFault::ChildCapacity) => Ok(()),
         Err(rejection) => Err(TestError::Rejected(rejection)),
         Ok(_) => Err(TestError::Falsified(
-            "a 33-parameter function was admitted past the bound",
+            "a 65-parameter function was admitted past the bound",
         )),
     }
 }
@@ -642,7 +648,7 @@ fn union_result_slot_carries_exactly_two_member_children() -> Result<(), TestErr
         ));
     }
     let children = type_child_targets(&lane, row)?;
-    expect_primitive(&lane, children[0], PrimitiveShape::Integer, None)?;
+    expect_primitive(&lane, children[0], PrimitiveShape::ArbitraryInteger, None)?;
     expect_primitive(&lane, children[1], PrimitiveShape::Str, None)?;
     Ok(())
 }
@@ -654,7 +660,7 @@ fn union_result_slot_carries_exactly_two_member_children() -> Result<(), TestErr
 fn nested_typevar_argument_keeps_its_leaf_spelling() -> Result<(), TestError> {
     let bytes = attempt_fragment(NESTED_TYPEVAR, "nested-typevar")?.map_err(TestError::Rejected)?;
     let lane = lane_of(&bytes)?;
-    let value = entity_ordinal(&lane, b"value", EntityKind::Constant)?;
+    let value = entity_ordinal(&lane, b"value", EntityKind::Static)?;
     let root = owned_row(&lane, value)?;
     if lane.types[root].record.tag != SemanticTypeTag::Apply {
         return Err(TestError::Falsified("list[T] root is not an Apply"));
