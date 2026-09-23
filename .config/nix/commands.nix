@@ -64,7 +64,7 @@ let
       text = source;
       runtimeInputs =
         tools.qualityTools
-        ++ tools.serviceTools
+        ++ tools.coreServiceTools
         ++ tools.nativeCompilers
         ++ tools.authorityHelpers
         ++ gui.allPackages

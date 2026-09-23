@@ -89,7 +89,7 @@ let
     builtins.attrNames resolvedSourceHashes
   );
   strictComponentContract =
-    if builtins.length (builtins.attrNames resolvedSourceHashes) > 0 then
+    if workspaceAvailable && builtins.length (builtins.attrNames resolvedSourceHashes) > 0 then
       assert builtins.length componentBlocks == 1;
       assert componentSourceIdentity != null;
       true

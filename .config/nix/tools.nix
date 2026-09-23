@@ -470,6 +470,9 @@ let
     uv = pkgs.uv;
   };
   nativeLibraries = [
+    # Real corpus packages include <brotli/types.h> across translation units;
+    # this must come from the compiler closure, not an incidental service tool.
+    pkgs.brotli
     pkgs.cmake
     pkgs.openssl
     pkgs.pkg-config
@@ -560,10 +563,11 @@ let
   ]
   ++ pkgs.lib.optional (backendControl != null) backendControl
   ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.valgrind ];
-  serviceTools = [
-    pkgs.curl
-    pkgs.qdrant
-  ];
+  # The general backend command and compiler gate need HTTP diagnostics, not
+  # a local Qdrant server. Keep the server in the explicit services/complete
+  # shells so a normal test run does not compile it just to enter its shell.
+  coreServiceTools = [ pkgs.curl ];
+  serviceTools = coreServiceTools ++ [ pkgs.qdrant ];
   observabilityTools = [
     pkgs.otel-cli
     pkgs.otel-desktop-viewer
@@ -580,6 +584,7 @@ in
   inherit
     authorityHelpers
     backendControl
+    coreServiceTools
     gpuiOutputHashes
     guiRuntime
     lunaTools

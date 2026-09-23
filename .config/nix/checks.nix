@@ -165,6 +165,8 @@ in
         pkgs.libiconv
         pkgs.zlib
       ];
+    }
+    // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
       SDKROOT = pkgs.apple-sdk.sdkroot;
     };
     build = ''
