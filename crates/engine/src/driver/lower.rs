@@ -4016,11 +4016,20 @@ fn live_type<'source>(
             .erase(),
         SemanticTypeTag::Mapped if matches!(child_count, 2 | 3) => {
             let parameter = tree.intern_atom(record.text.unwrap_or(b"K"))?;
-            let modifier = |value: u32| match value {
-                0 => backend_semantic::ir::MappedModifier::Preserve,
-                1 => backend_semantic::ir::MappedModifier::Add,
-                2 => backend_semantic::ir::MappedModifier::Remove,
-                _ => backend_semantic::ir::MappedModifier::Preserve,
+            // The staged cell carries the lattice's frozen discriminant
+            // (`Add = 0`, `Remove = 1`, `Absent = 2`), not the owned IR's.
+            let modifier = |value: u32| match backend_semantic::ir::LatticeMappedModifier::try_from(
+                value,
+            ) {
+                Ok(backend_semantic::ir::LatticeMappedModifier::Add) => {
+                    backend_semantic::ir::MappedModifier::Add
+                }
+                Ok(backend_semantic::ir::LatticeMappedModifier::Remove) => {
+                    backend_semantic::ir::MappedModifier::Remove
+                }
+                Ok(backend_semantic::ir::LatticeMappedModifier::Absent) | Err(_) => {
+                    backend_semantic::ir::MappedModifier::Preserve
+                }
             };
             tree.intern_computed(ComputedType::Mapped {
                 parameter,
