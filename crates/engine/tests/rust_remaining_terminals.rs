@@ -39,6 +39,7 @@ use backend_engine::driver::{
 use backend_frontend_rust::legacy::{
     RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
 };
+use backend_semantic::ir::{EntityKind, Ir};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -242,6 +243,85 @@ fn format_terminal(failure: &CompileFailure<'_>) -> String {
         CompileFailure::Build { cause, .. } => format!("Build: {cause:?}"),
         other => format!("other: {other:?}"),
     }
+}
+
+/// Drives the same full direct-HIR compile as [`compile_staged_fixture`] but
+/// keeps the owned `Ir` on success instead of collapsing it to `"OK"`, so a
+/// caller can count admitted entities by kind — the only way to prove an
+/// impl-block same-name gate change neither drops a legal sibling nor lets a
+/// genuine cfg twin double-admit.
+fn compile_corpus_ir(body: &[u8]) -> Result<Ir, String> {
+    let Some(root) = stage_fixture(body, 0) else {
+        return Err("fixture-io".to_owned());
+    };
+    let outcome = (|| -> Result<Ir, String> {
+        let tool = resolve_tool().ok_or_else(|| "missing-rustc".to_owned())?;
+        let toolchain =
+            RustToolchain::discover(&tool).map_err(|_| "missing-rustc".to_owned())?;
+        let source_path = root.join("src/lib.rs");
+        let project =
+            RustProject::open_with_source(&root, &source_path, &toolchain, RustEdition::Rust2024)
+                .map_err(|error| format!("project-error: {error:?}"))?;
+        let resolved = ResolvedToolchain::from_version(
+            backend_engine::driver::NativeTool::Rustc,
+            &tool,
+            b"compiler-driver-rust-remaining-ir",
+        )
+        .map_err(|_| "toolchain-resolve".to_owned())?;
+        let cancelled = AtomicBool::new(false);
+        let mut diagnostic = [0_u8; 4096];
+        let mut fragment_output = vec![0_u8; 16 * 1024 * 1024];
+        let request = CompileRequest {
+            profile: LanguageProfile::Rust(RustEdition::Rust2024),
+            stage: Stage::LowerIr,
+            source: body,
+            declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
+            toolchain: ToolchainSelection::ResolvedNative(resolved),
+            authority: SemanticAuthorityInput::Rust {
+                project: &project,
+                maximum_source_bytes: SourceByteLimit(
+                    u32::try_from(body.len()).unwrap_or(u32::MAX),
+                ),
+                features: RustFeatureControl::default(),
+            },
+            control: CompileControl {
+                deadline: Instant::now() + Duration::from_secs(240),
+                cancelled: &cancelled,
+            },
+        };
+        match compile_semantic(
+            request,
+            CompileScratch {
+                diagnostic_output: &mut diagnostic,
+                native_work: &root,
+            },
+            CompileOutput {
+                fragment_output: &mut fragment_output,
+            },
+        ) {
+            Ok(compiled) => Ok(compiled.ir),
+            Err(failure) => Err(format_terminal(&failure)),
+        }
+    })();
+    let _ = fs::remove_dir_all(&root);
+    outcome
+}
+
+/// Counts admitted `Implementation` entities whose name bytes equal
+/// `self_type`. Implementations name by their whole written self type (see
+/// `declaration_name`), so this counts distinct written impl blocks for one
+/// self type without needing to know their trait or members.
+fn count_implementations(ir: &Ir, self_type: &[u8]) -> usize {
+    let columns = ir.entity_columns();
+    columns
+        .kinds
+        .iter()
+        .zip(columns.names)
+        .filter(|(kind, name)| {
+            **kind == EntityKind::Implementation
+                && ir.atom(**name).is_some_and(|bytes| bytes == self_type)
+        })
+        .count()
 }
 
 fn corpus_root() -> Option<PathBuf> {
@@ -708,6 +788,47 @@ fn rust_impl_self_type_names_discriminate_generic_argument_variants() {
         bytes.len()
     );
     assert_eq!(outcome, "OK", "generic-array's lib.rs must lower");
+}
+
+/// The written-syntax same-name gate that guards against an unevaluated
+/// tool-attribute cfg twin (`#[rustversion::since]`/`#[rustversion::before]`,
+/// used by `anyhow`, `thiserror`, `serde`, `proc-macro2`, and `semver`) keys
+/// an implementation on its full written signature — trait spelling, self
+/// type, generics/where text, and ordered member names — rather than its
+/// bare self-type name. This proves all three shapes that signature must
+/// tell apart: a genuine twin (identical trait and members on both cfg
+/// branches) still dedups to exactly one admitted impl, while inherent
+/// blocks with distinct members and distinct traits on one self type both
+/// admit every written block. `count_implementations` counts by written
+/// self-type name, matching `declaration_name`'s own narrowing.
+#[test]
+fn rust_impl_signature_key_dedups_twins_and_keeps_siblings() {
+    let twin = "trait Show {\n    fn show(&self) -> u8;\n}\nstruct S;\n#[rustversion::since(1.61)]\nimpl Show for S {\n    fn show(&self) -> u8 { 1 }\n}\n#[rustversion::before(1.61)]\nimpl Show for S {\n    fn show(&self) -> u8 { 1 }\n}\n";
+    let ir = compile_corpus_ir(twin.as_bytes())
+        .unwrap_or_else(|outcome| panic!("rustversion twin impl pair must lower: {outcome}"));
+    let count = count_implementations(&ir, b"S");
+    assert_eq!(
+        count, 1,
+        "a byte-identical tool-attribute cfg twin must still dedup to one impl"
+    );
+
+    let inherent = "struct U;\nimpl U {\n    fn a(&self) -> u8 { 1 }\n}\nimpl U {\n    fn b(&self) -> u8 { 2 }\n}\nimpl U {\n    fn c(&self) -> u8 { 3 }\n}\n";
+    let ir = compile_corpus_ir(inherent.as_bytes())
+        .unwrap_or_else(|outcome| panic!("three inherent blocks must lower: {outcome}"));
+    let count = count_implementations(&ir, b"U");
+    assert_eq!(
+        count, 3,
+        "three inherent blocks with distinct members must all be admitted"
+    );
+
+    let distinct_traits = "trait A {\n    fn a(&self) -> u8;\n}\ntrait B {\n    fn b(&self) -> u8;\n}\nstruct V;\nimpl A for V {\n    fn a(&self) -> u8 { 1 }\n}\nimpl B for V {\n    fn b(&self) -> u8 { 2 }\n}\n";
+    let ir = compile_corpus_ir(distinct_traits.as_bytes())
+        .unwrap_or_else(|outcome| panic!("distinct traits on one self type must lower: {outcome}"));
+    let count = count_implementations(&ir, b"V");
+    assert_eq!(
+        count, 2,
+        "two distinct traits impl'd for one self type must both be admitted"
+    );
 }
 
 /// The anonymous foreign-row dedup table is a bounded lane sized for measured

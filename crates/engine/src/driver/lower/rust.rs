@@ -560,28 +560,46 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             // keep each later twin out rather than minting byte-identical
             // declaration identities the image build must reject.
             //
-            // An implementation is exempt: E0428 never governs impl blocks,
-            // so a source legally carries many written impls whose self
-            // type spells the same bytes — several inherent blocks for one
-            // type, or several traits impl'd for one self type (`IntoIterator`
-            // and `TryFrom<&[T]>` both written `for &'a GenericArray<T, N>`).
+            // An implementation is keyed on its full written signature
+            // instead of its bare name. E0428 never governs impl blocks, so
+            // a source legally carries many written impls whose self type
+            // spells the same bytes — several inherent blocks for one type,
+            // or several traits impl'd for one self type (`IntoIterator` and
+            // `TryFrom<&[T]>` both written `for &'a GenericArray<T, N>`).
             // `declaration_name` deliberately narrows an impl's name to its
-            // self type alone (see its doc comment), so keying this same-name
-            // gate on that name would silently drop every later sibling here,
-            // orphaning its members to a fabricated root scope instead of
-            // reaching the trait/generics/member-aware declaration identity
-            // built to discriminate real impl siblings. A genuine cfg-twin
-            // impl (identical trait, generics, and members) still reaches
-            // that identity pass unfiltered and is rejected there as the
-            // honest `DuplicateDeclarationIdentity` terminal.
-            if declaration.kind != SemanticKind::Implementation {
-                let scope = self.enclosing_item_span(&declaration.syntax)?;
-                if !self
-                    .scoped_names
-                    .insert((scope, declaration.kind as u8, name.to_vec()))
-                {
-                    continue;
+            // self type alone (see its doc comment), so keying this gate on
+            // that name alone would treat every one of those legal siblings
+            // as the same cfg twin and silently drop all but the first,
+            // orphaning its members to a fabricated root scope. The richer
+            // signature key (trait spelling, self type, generics/where
+            // text, and ordered member names) mirrors what the
+            // trait/generics/member-aware declaration identity already
+            // discriminates real siblings on, so distinct siblings pass
+            // this gate untouched while a genuine tool-attribute twin
+            // (identical trait, self type, generics, and members) still
+            // dedups here exactly as every other declaration kind does.
+            let scope = self.enclosing_item_span(&declaration.syntax)?;
+            let key = if declaration.kind == SemanticKind::Implementation {
+                self.impl_signature_key(&declaration, name)?
+            } else {
+                name.to_vec()
+            };
+            let admitted = self
+                .scoped_names
+                .insert((scope, declaration.kind as u8, key));
+            if !admitted {
+                // A written implementation the HIR module-scope walk below
+                // can independently rediscover (unlike an ordinary named
+                // item, which that walk never re-enumerates once the
+                // written-syntax pass has cast it) must still be marked
+                // covered here, or the twin this gate just dropped comes
+                // back as a second, byte-identical admission and the image
+                // build honestly — but wrongly — rejects it as a
+                // `DuplicateDeclarationIdentity` collision with itself.
+                if let RustDefinition::Implementation(implementation) = &declaration.definition {
+                    self.covered_impls.push(*implementation);
                 }
+                continue;
             }
             match &declaration.definition {
                 RustDefinition::Field(field) => self.covered_fields.push(*field),
@@ -718,6 +736,100 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     /// Borrows one declaration's exact name bytes from the caller source.
     fn name_of(&self, declaration: &Decl<'source>) -> Result<&'source [u8], RustAuthorityError> {
         Ok(declaration.name)
+    }
+
+    /// Builds the written-syntax same-name gate's key for one implementation:
+    /// its exact written signature rather than its bare self-type name.
+    /// E0428 never governs impl blocks, so the gate must not collapse two
+    /// distinct legal siblings — different traits impl'd for one self type,
+    /// or several inherent blocks with different members — that merely
+    /// spell the same self type. It must still collapse two byte-identical
+    /// written twins straddling an unevaluated tool-attribute cfg such as
+    /// `#[rustversion::since]`/`#[rustversion::before]` (a pattern `anyhow`,
+    /// `thiserror`, `serde`, `proc-macro2`, and `semver` all use), so every
+    /// axis the declaration identity itself later discriminates on enters
+    /// this key too: the trait spelling (or its absence, for an inherent
+    /// block), the self type spelling, the written generic parameter and
+    /// where-clause text, and the ordered list of associated item names.
+    /// A twin pair writes byte-identical text on both branches by
+    /// definition, so it produces one key and collapses exactly as before;
+    /// two siblings that differ on any of these axes produce distinct keys
+    /// and both survive to reach the trait/generics/member-aware identity
+    /// pass.
+    fn impl_signature_key(
+        &self,
+        declaration: &RustDeclaration,
+        self_type: &[u8],
+    ) -> Result<Vec<u8>, RustAuthorityError> {
+        fn push_optional(out: &mut Vec<u8>, spelling: Option<&[u8]>) {
+            match spelling {
+                Some(spelling) => {
+                    out.push(1);
+                    out.extend_from_slice(&(spelling.len() as u64).to_le_bytes());
+                    out.extend_from_slice(spelling);
+                }
+                None => out.push(0),
+            }
+        }
+
+        let mut key = Vec::with_capacity(64 + self_type.len());
+        let Some(item) = ast::Impl::cast(declaration.syntax.clone()) else {
+            // No borrowable written syntax (a macro-expansion projection):
+            // the self type spelling is the only honest signature left.
+            key.extend_from_slice(self_type);
+            return Ok(key);
+        };
+        match item.trait_() {
+            Some(trait_ty) => push_optional(&mut key, Some(self.bytes_of_node(trait_ty.syntax())?)),
+            None => push_optional(&mut key, None),
+        }
+        push_optional(&mut key, Some(self_type));
+        match item.generic_param_list() {
+            Some(generics) => push_optional(&mut key, Some(self.bytes_of_node(generics.syntax())?)),
+            None => push_optional(&mut key, None),
+        }
+        match item.where_clause() {
+            Some(where_clause) => {
+                push_optional(&mut key, Some(self.bytes_of_node(where_clause.syntax())?));
+            }
+            None => push_optional(&mut key, None),
+        }
+        let members: Vec<ast::AssocItem> = item
+            .assoc_item_list()
+            .map(|list| list.assoc_items().collect())
+            .unwrap_or_default();
+        key.extend_from_slice(&(members.len() as u64).to_le_bytes());
+        for member in &members {
+            let (tag, spelling) = match member {
+                ast::AssocItem::Const(item) => (
+                    0u8,
+                    item.name()
+                        .map(|name| self.bytes_of_node(name.syntax()))
+                        .transpose()?,
+                ),
+                ast::AssocItem::Fn(item) => (
+                    1,
+                    item.name()
+                        .map(|name| self.bytes_of_node(name.syntax()))
+                        .transpose()?,
+                ),
+                ast::AssocItem::TypeAlias(item) => (
+                    2,
+                    item.name()
+                        .map(|name| self.bytes_of_node(name.syntax()))
+                        .transpose()?,
+                ),
+                ast::AssocItem::MacroCall(item) => (
+                    3,
+                    item.path()
+                        .map(|path| self.bytes_of_node(path.syntax()))
+                        .transpose()?,
+                ),
+            };
+            key.push(tag);
+            push_optional(&mut key, spelling);
+        }
+        Ok(key)
     }
 
     /// Borrows the written leaf name of one type position, when the position
