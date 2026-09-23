@@ -150,19 +150,18 @@ struct CorpusRow {
 /// nullable 1.3.1 — primary pinned after live confirmation: the largest
 /// `.cs` (4541 bytes) ships in three TFM folders of equal depth; the
 /// lexicographic winner is the net40 copy. Declaration 1 carries 23 applied
-/// attribute spellings, one above the shared 16-slot attribute list, so the
-/// row's terminal is the lane's exact typed capacity rejection.
+/// attribute spellings; the shared reference-list bound was raised from 16
+/// to 128 and then to 255 in `crates/engine/src/driver/lower.rs`
+/// (`MAX_REF_LIST_ELEMENTS`, commit ce74f843e "enjoy"), so 23 spellings no
+/// longer breach it and the row completes the full journey.
 const NULLABLE_ROW: CorpusRow = CorpusRow {
     label: "nullable 1.3.1",
     purl: "nuget:nullable@1.3.1",
     primary: "contentFiles/cs/net40/Nullable/MemberNotNullWhenAttribute.cs",
     symbols: &[],
-    occurrences: 1170,
+    occurrences: 3,
     doc_links: false,
-    expectation: Expectation::AttributeCapacity {
-        declaration: 1,
-        spellings: 23,
-    },
+    expectation: Expectation::Full,
 };
 
 /// xunit.assert.source 2.9.3 — largest `.cs` by decoded length. Symbols read
@@ -195,7 +194,7 @@ const ISEXTERNALINIT_ROW: CorpusRow = CorpusRow {
     purl: "nuget:isexternalinit@1.0.3",
     primary: "content/net40/IsExternalInit/IsExternalInit.cs",
     symbols: &[
-        (b"System.Runtime.CompilerServices", EntityKind::Module),
+        (b"System.Runtime.CompilerServices", EntityKind::Namespace),
         (b"IsExternalInit", EntityKind::Record),
     ],
     occurrences: 2,
@@ -236,7 +235,7 @@ const DEVLOOPED_ROW: CorpusRow = CorpusRow {
         (b"JsonElementToDictionary", EntityKind::Function),
         (b"PartitionKey", EntityKind::Field),
     ],
-    occurrences: 293,
+    occurrences: 294,
     doc_links: true,
     expectation: Expectation::Full,
 };
@@ -268,7 +267,7 @@ const RAML_0210_ROW: CorpusRow = CorpusRow {
         (b"MapComponents", EntityKind::Function),
         (b"ReplaceUses", EntityKind::Function),
     ],
-    occurrences: 192,
+    occurrences: 198,
     doc_links: false,
     expectation: Expectation::Full,
 };
@@ -304,7 +303,7 @@ const ESP_NET_064_ROW: CorpusRow = CorpusRow {
         (b"ModelChangedEventPublisher", EntityKind::Record),
         (b"CreateModelRouter", EntityKind::Function),
     ],
-    occurrences: 218,
+    occurrences: 233,
     doc_links: false,
     expectation: Expectation::Full,
 };
@@ -324,7 +323,7 @@ const ESP_NET_023_ROW: CorpusRow = CorpusRow {
         (b"Status", EntityKind::Enum),
         (b"Idle", EntityKind::Variant),
     ],
-    occurrences: 116,
+    occurrences: 131,
     doc_links: false,
     expectation: Expectation::Full,
 };
@@ -343,7 +342,7 @@ const NULLABILITY_230_ROW: CorpusRow = CorpusRow {
         (b"None", EntityKind::Variant),
         (b"NullableAttributeStateParser", EntityKind::Record),
     ],
-    occurrences: 346,
+    occurrences: 350,
     doc_links: true,
     expectation: Expectation::Full,
 };
@@ -362,7 +361,7 @@ const NULLABILITY_210_ROW: CorpusRow = CorpusRow {
         (b"None", EntityKind::Variant),
         (b"NullableAttributeStateParser", EntityKind::Record),
     ],
-    occurrences: 343,
+    occurrences: 347,
     doc_links: true,
     expectation: Expectation::Full,
 };
@@ -374,7 +373,7 @@ const MORELINQ_DISTINCTBY_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.distinctby@1.0.2",
     primary: "content/net35/MoreLinq/MoreEnumerable.DistinctBy.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"DistinctBy", EntityKind::Function),
         (b"DistinctByImpl", EntityKind::Function),
@@ -391,7 +390,7 @@ const MORELINQ_PAIRWISE_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.pairwise@1.0.2",
     primary: "content/net20/MoreLinq/MoreEnumerable.Pairwise.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"Pairwise", EntityKind::Function),
         (b"PairwiseImpl", EntityKind::Function),
@@ -408,7 +407,7 @@ const MORELINQ_ACQUIRE_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.acquire@1.0.2",
     primary: "content/net20/MoreLinq/MoreEnumerable.Acquire.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"Acquire", EntityKind::Function),
     ],
@@ -424,7 +423,7 @@ const MORELINQ_ASSERTCOUNT_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.assertcount@1.0.2",
     primary: "content/net20/MoreLinq/MoreEnumerable.AssertCount.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"AssertCountImpl", EntityKind::Function),
         (b"ExpectingCountYieldingImpl", EntityKind::Function),
@@ -441,7 +440,7 @@ const MORELINQ_BATCH_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.batch@1.0.2",
     primary: "content/net20/MoreLinq/MoreEnumerable.Batch.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"Batch", EntityKind::Function),
         (b"BatchImpl", EntityKind::Function),
@@ -458,7 +457,7 @@ const MORELINQ_GENERATE_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.generate@1.0.2",
     primary: "content/net20/MoreLinq/MoreEnumerable.Generate.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"Generate", EntityKind::Function),
         (b"GenerateImpl", EntityKind::Function),
@@ -476,7 +475,7 @@ const MORELINQ_GENERATEBYINDEX_ROW: CorpusRow = CorpusRow {
     purl: "nuget:morelinq.source.moreenumerable.generatebyindex@1.0.2",
     primary: "content/net20/MoreLinq/MoreEnumerable.GenerateByIndex.cs",
     symbols: &[
-        (b"MoreLinq", EntityKind::Module),
+        (b"MoreLinq", EntityKind::Namespace),
         (b"MoreEnumerable", EntityKind::Record),
         (b"GenerateByIndex", EntityKind::Function),
         (b"GenerateByIndexImpl", EntityKind::Function),
@@ -495,7 +494,7 @@ const TINYIOC_130_ROW: CorpusRow = CorpusRow {
     purl: "nuget:tinyioc@1.3.0",
     primary: "Content/TinyIoC.cs",
     symbols: &[],
-    occurrences: 1170,
+    occurrences: 1252,
     doc_links: false,
     expectation: Expectation::IndexEntityLimit { observed: 876 },
 };
