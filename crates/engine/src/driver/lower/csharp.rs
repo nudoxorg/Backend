@@ -1402,7 +1402,7 @@ fn project_fact_type<'source>(
         &node,
         depth,
     )?;
-    if let Some(kind) = reference_nullability(projection.nullable) {
+    if let Some(kind) = reference_nullability(&projection) {
         let spelling = projection.spelling;
         let nullable = projection.nullable;
         let void = projection.void;
@@ -1468,9 +1468,9 @@ fn child_target<'source>(
         &node,
         depth,
     )?;
-    let nullable = projection.nullable;
+    let annotation = reference_nullability(&projection);
     let target = projection_target(facts, anchor, projection)?;
-    match reference_nullability(nullable) {
+    match annotation {
         Some(kind) => {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Annotated);
             record.payload0 = kind as u32;
@@ -1496,9 +1496,16 @@ fn projection_target<'source>(
 
 /// Maps a meaningful Roslyn reference-nullability cell into a structural
 /// annotation. Oblivious (`None`) is intentionally absence, not a fabricated
-/// assertion about the reference type.
-const fn reference_nullability(cell: NullabilityCell) -> Option<AnnotationKind> {
-    match cell {
+/// assertion about the reference type. Roslyn also marks a nullable value
+/// type (`int?`, `(int, string)?`) `Annotated`; that node already is the
+/// `NullableValue` annotation, so wrapping it again would claim `T??`.
+fn reference_nullability(projection: &OwnedNode<'_>) -> Option<AnnotationKind> {
+    if projection.record.tag == SemanticTypeTag::Annotated
+        && projection.record.payload0 == AnnotationKind::NullableValue as u32
+    {
+        return None;
+    }
+    match projection.nullable {
         NullabilityCell::None => None,
         NullabilityCell::Annotated => Some(AnnotationKind::NullableReference),
         NullabilityCell::NotAnnotated => Some(AnnotationKind::NonNullableReference),
