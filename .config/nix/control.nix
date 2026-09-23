@@ -689,7 +689,11 @@ in
       closure = {
         inherits = "affected";
         fail-fast = false;
-        global-timeout = "30m";
+        # The closure run is the whole-workspace gate with every native
+        # toolchain and corpus provisioned (`corpus-env.nix`); it no longer
+        # fits in 30m, and hitting this wall stops the run with tests never
+        # executed, which is not a verdict. Per-test budgets stay unchanged.
+        global-timeout = "60m";
         slow-timeout = {
           period = "60s";
           terminate-after = 3;
