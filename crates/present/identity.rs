@@ -380,6 +380,27 @@ impl Identity {
         identity
     }
 
+    /// Fills in a source path and line for a coordinate whose own closed
+    /// spelling carries none, such as `polyglot::semantic::<hash>::<name>`.
+    ///
+    /// A semantic or external coordinate is content-addressed, not
+    /// file-addressed, so [`parse_tail`] never has a path to parse out of
+    /// it. The row that produced this identity still knows the exact file
+    /// its declaration came from (`Row::source`); this carries that captured
+    /// location into the identity so `path()` and [`Self::language`] read it
+    /// too, instead of leaving every semantic-shaped row `language: unknown`.
+    /// A coordinate that already parsed its own path keeps it unchanged.
+    #[must_use]
+    pub fn with_captured_source(mut self, path: Option<&str>, line: Option<u32>) -> Self {
+        if self.path.is_none()
+            && let Some(path) = path
+        {
+            self.path = Some(PackagePath::new(path));
+            self.line = line.and_then(LineNumber::new);
+        }
+        self
+    }
+
     /// Returns the exact coordinate the engine accepts for this row.
     #[must_use]
     pub const fn coordinate(&self) -> &Coordinate {

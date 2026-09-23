@@ -10,7 +10,7 @@ use crate::coverage::CoverageLine;
 use crate::identity::Identity;
 use crate::language::Language;
 use crate::signature::Signature;
-use backend_library::{DeclarationKind, PageContinuation, Row, RowState};
+use backend_library::{DeclarationKind, PageContinuation, Row, RowState, SourceLocation};
 
 /// The lifecycle of one result row.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -89,7 +89,11 @@ impl Record {
     /// Lowers one engine row into a result record.
     #[must_use]
     pub fn from_row(row: &Row) -> Self {
-        let identity = Identity::parse_with_key(&row.label, row.id.into());
+        let captured = row.source.captured();
+        let identity = Identity::parse_with_key(&row.label, row.id.into()).with_captured_source(
+            captured.map(SourceLocation::path),
+            captured.map(SourceLocation::start_line),
+        );
         let language = identity.language();
         let signature = row
             .signature
