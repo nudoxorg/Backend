@@ -389,8 +389,12 @@ fn type_children(lane: &Lane<'_>, row: usize) -> Result<Vec<u32>, TestError> {
         type_name_cell(payload, &mut cursor)?;
         match payload.get(cursor).copied() {
             Some(0) => cursor = cursor.checked_add(1).ok_or(TestError::Coordinate)?,
+            // type_facts.rs nominal cells: local = tag + u32; external = tag
+            // + 32-byte fragment + u32 ordinal; stable = tag + fragment + two
+            // 16-byte compact declaration halves.
             Some(1) => cursor = cursor.checked_add(5).ok_or(TestError::Coordinate)?,
-            Some(2) => cursor = cursor.checked_add(21).ok_or(TestError::Coordinate)?,
+            Some(2) => cursor = cursor.checked_add(1 + 32 + 4).ok_or(TestError::Coordinate)?,
+            Some(3) => cursor = cursor.checked_add(1 + 32 + 16 * 2).ok_or(TestError::Coordinate)?,
             _ => return Err(TestError::Falsified("truncated nominal cell")),
         }
         cursor = cursor.checked_add(8).ok_or(TestError::Coordinate)?;
@@ -538,12 +542,20 @@ fn recursive_field_closes_on_the_self_nominal_through_option_box() -> Result<(),
     if children.len() != 2 {
         return Err(TestError::Falsified("Option apply lacks base and argument"));
     }
-    // The base is the deduplicated foreign `Option` unknown row.
+    // The base is the deduplicated foreign `Option` row: rust-analyzer
+    // resolves it, so it is an external nominal over `core::option`,
+    // displayed by its written spelling.
     let base = &lane
         .types
         .get(usize::try_from(children[0]).map_err(|_| TestError::Coordinate)?)
         .ok_or(TestError::Falsified("base row absent"))?;
-    if base.record.tag != SemanticTypeTag::Unknown || base.record.text != Some(&b"Option"[..]) {
+    if base.record.tag != SemanticTypeTag::Nominal
+        || !matches!(
+            base.record.nominal,
+            Some(backend_semantic::ir::NominalRef::External(_))
+        )
+        || base.record.text != Some(&b"Option"[..])
+    {
         return Err(TestError::Falsified("foreign base is not the Option leaf"));
     }
     // The argument is the inner `Box<Node>` Apply.

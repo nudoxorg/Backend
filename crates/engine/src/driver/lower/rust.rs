@@ -3728,8 +3728,8 @@ mod tests {
     }
 
     /// A recursive local nominal rides its own fact ordinal and an applied
-    /// foreign type commits its application structure over unresolved leaf
-    /// rows, with nested compounds hosted by backward carrier facts.
+    /// foreign type commits its application structure over external nominal
+    /// leaf rows, with nested compounds hosted by backward carrier facts.
     #[test]
     fn recursive_nominal_and_foreign_application_commit_their_structures() -> Result<(), TestError>
     {
@@ -3749,10 +3749,13 @@ mod tests {
         }
         let name_ordinal = fact_of(&view, b"name", EntityKind::Field)?;
         let name_row = row_for_entity(&view, name_ordinal)?;
-        if name_row.record.tag != SemanticTypeTag::Unknown
+        // rust-analyzer resolves `String`, so it is an external nominal over
+        // its defining crate module, displayed by its written spelling.
+        if name_row.record.tag != SemanticTypeTag::Nominal
+            || !matches!(name_row.record.nominal, Some(NominalRef::External(_)))
             || name_row.record.text != Some(b"String".as_slice())
         {
-            return Err(TestError::Missing("foreign String unresolved leaf"));
+            return Err(TestError::Missing("foreign String external nominal"));
         }
         let next_ordinal = fact_of(&view, b"next", EntityKind::Field)?;
         let next_row = row_for_entity(&view, next_ordinal)?;
