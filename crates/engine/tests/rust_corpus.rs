@@ -267,6 +267,14 @@ fn failure_label(failure: &CompileFailure<'_>) -> String {
 }
 
 fn locate_root() -> PathBuf {
+    // The frozen 20-crate sample below is pinned by coordinate in
+    // `.config/nix/corpus-pins.json` and built into a flat offline root
+    // (`<root>/<name>-<version>`) as `NUDOX_RUST_CORPUS_DIR`. Prefer that
+    // reproducible corpus; fall back to the live Cargo registry cache so this
+    // test keeps working outside the Nix corpus shell.
+    if let Some(corpus) = std::env::var_os("NUDOX_RUST_CORPUS_DIR") {
+        return PathBuf::from(corpus);
+    }
     let cargo_home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))

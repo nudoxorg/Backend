@@ -127,14 +127,26 @@ impl<'url> RustPackageUrl<'url> {
         let root = locate_root
             .map(PathBuf::from)
             .unwrap_or_else(|| default_cargo_home().join("registry/src"));
-        let mut matches = fs::read_dir(&root)
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path().join(format!("{}-{}", self.name, self.version)))
-            .filter(|path| path.is_dir());
-        let Some(package_root) = matches.find(|_| true) else {
+        // Two registry-src layouts are admitted: the real Cargo cache nests
+        // packages one level under a per-index directory
+        // (`registry/src/<index-hash>/<name>-<version>`), while a flattened
+        // offline corpus root places `<name>-<version>` directly under the
+        // given root. Try the flat layout first since it is a direct lookup;
+        // fall back to scanning one level of subdirectories for the nested
+        // cache layout.
+        let flat_candidate = root.join(format!("{}-{}", self.name, self.version));
+        let package_root = if flat_candidate.is_dir() {
+            Some(flat_candidate)
+        } else {
+            fs::read_dir(&root)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path().join(format!("{}-{}", self.name, self.version)))
+                .find(|path| path.is_dir())
+        };
+        let Some(package_root) = package_root else {
             return Err(RustPurlError::RegistryAbsent {
                 searched_root: root,
             });
