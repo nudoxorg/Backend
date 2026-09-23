@@ -25,8 +25,9 @@
 //! application can be carried only as a fact's own root record.
 //!
 //! Positions the lane cannot host fold to typed `Unknown` rows that keep
-//! their reason cell: universe and foreign nominals (`error`, `comparable`,
-//! other packages), unconstrained inline interfaces, and depth-limit
+//! their reason cell: universe builtins without a lattice row (`error`,
+//! `comparable`) as `NoIrRepresentation`, foreign nominals (other packages)
+//! as `UnresolvedExternal`, unconstrained inline interfaces, and depth-limit
 //! truncation. Parameter and result carriers borrow exact names from the
 //! v5 signature-parameter plane; an absent name and an explicit Go blank
 //! (`_`) both project to the canonical blank `_` at signature position zero
@@ -959,6 +960,8 @@ const SHAPE_STR: u32 = 4;
 const SHAPE_MUT_POINTER: u32 = 5;
 /// `PrimitiveShape::Builtin` wire cell.
 const SHAPE_BUILTIN: u32 = 8;
+/// `PrimitiveShape::ArbitraryInteger` wire cell.
+const SHAPE_ARBITRARY_INTEGER: u32 = 13;
 /// `PrimitiveShape::NativeSignedInteger` wire cell.
 const SHAPE_NATIVE_SIGNED_INTEGER: u32 = 14;
 /// `PrimitiveShape::NativeUnsignedInteger` wire cell.
@@ -2623,7 +2626,9 @@ impl<'x, 'source> Projector<'x, 'source> {
                     SemanticTypeTag::Any,
                 )));
             }
-            TypeReason::UnresolvedExternal
+            // A universe named type (`error`, `comparable`) is a builtin
+            // with no lattice row, never an unresolved external reference.
+            TypeReason::NoIrRepresentation
         } else {
             TypeReason::UnresolvedExternal
         };
@@ -2969,8 +2974,12 @@ impl<'x, 'source> Projector<'x, 'source> {
 
     /// The exact lattice cells of one basic row: exact integer and float
     /// widths, `byte`/`rune` aliases folded to their underlying widths,
-    /// complex spellings on the builtin shape, and every other universe
-    /// name — `error` among them — on the typed unknown that retains it.
+    /// complex spellings on the builtin shape, and the untyped constant
+    /// kinds with an exact lattice equivalent (Go's untyped integer and rune
+    /// constants are exact arbitrary-precision integers). Every other
+    /// universe basic (`untyped float`, `untyped nil`, `unsafe.Pointer`) is
+    /// a builtin the lattice cannot represent, never an unresolved external,
+    /// so it keeps its spelling under `NoIrRepresentation`.
     fn basic_leaf(
         &self,
         row: &backend_frontend_go::legacy::TypeRow<'source>,
@@ -2988,8 +2997,14 @@ impl<'x, 'source> Projector<'x, 'source> {
             record
         };
         match row.name {
-            b"bool" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive).with_shape(SHAPE_BOOL),
-            b"string" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive).with_shape(SHAPE_STR),
+            b"bool" | b"untyped bool" => {
+                SemanticTypeRecord::leaf(SemanticTypeTag::Primitive).with_shape(SHAPE_BOOL)
+            }
+            b"string" | b"untyped string" => {
+                SemanticTypeRecord::leaf(SemanticTypeTag::Primitive).with_shape(SHAPE_STR)
+            }
+            b"untyped int" | b"untyped rune" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive)
+                .with_shape(SHAPE_ARBITRARY_INTEGER),
             b"int" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive)
                 .with_shape(SHAPE_NATIVE_SIGNED_INTEGER),
             b"uint" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive)
@@ -3022,7 +3037,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 record.text = Some(row.name);
                 record
             }
-            _ => unknown_record(TypeReason::UnresolvedExternal, Some(row.name)),
+            _ => unknown_record(TypeReason::NoIrRepresentation, Some(row.name)),
         }
     }
 
