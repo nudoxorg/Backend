@@ -557,6 +557,7 @@ fn layout_error(package: &Path) -> io::Error {
 #[cfg(test)]
 mod sourcepath_tests {
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -715,6 +716,8 @@ mod sourcepath_tests {
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 
+    // Creating a symlink needs developer mode or elevation on Windows.
+    #[cfg(unix)]
     #[test]
     fn rejects_symlinked_package_root_that_resolves_outside_repository() {
         let temp = TempDir::new("symlink-escape");
@@ -730,6 +733,8 @@ mod sourcepath_tests {
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 
+    // Creating a symlink needs developer mode or elevation on Windows.
+    #[cfg(unix)]
     #[test]
     fn skips_sibling_symlinks_that_escape_the_repository() {
         let temp = TempDir::new("sibling-escape");

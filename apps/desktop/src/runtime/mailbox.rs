@@ -23,6 +23,8 @@ pub enum CoalesceKey {
     /// Only the newest compatibility ingest request for one local project
     /// matters while the shared ProjectIngest surface is being integrated.
     Index(backend_library::SemanticObject),
+    /// Only the newest local package-facts read for one project matters.
+    LocalPackage(backend_library::SemanticObject),
     /// Persistence writes can be collapsed into the newest state.
     Persistence,
 }

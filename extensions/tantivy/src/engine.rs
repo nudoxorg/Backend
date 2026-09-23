@@ -238,6 +238,9 @@ impl TantivySource {
             }
         }
         writer.commit()?;
+        // Join background merges so no thread is still rewriting the index
+        // directory once the source is handed out.
+        writer.wait_merging_threads()?;
         let reader = index.reader()?;
         Ok(Self {
             binding: state.binding(),

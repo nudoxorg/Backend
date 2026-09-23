@@ -2,6 +2,7 @@
 
 use super::mailbox::{CoalesceKey, Coalescible, CoalescingMailbox, PushResult};
 use crate::core::{ErrorValue, LocalProjectId, VersionedRoot};
+use crate::model::local_package::{LocalPackage, LocalPackageLoader};
 use crate::model::snapshot::{DeltaId, ObjectId, PackageSummary, ProjectState};
 use crate::navigation::RequestId;
 use std::sync::Arc;
@@ -127,6 +128,29 @@ impl Coalescible for EngineRequest {
     }
 }
 
+/// Filesystem-only work executed on the actor's local-read lane.
+///
+/// A local read never reaches the [`EngineClient`]: it is not producer work,
+/// and running a bounded `cargo metadata` subprocess on the producer lane
+/// would stall root and surface reads behind it.
+#[derive(Clone, Debug)]
+pub struct LocalRead {
+    /// Request identity.
+    pub request: RequestId,
+    /// Local project whose manifests are read.
+    pub project: LocalProjectId,
+    /// Root current when the read was requested.
+    pub basis: VersionedRoot,
+    /// Cancellation state.
+    pub cancel: CancellationToken,
+}
+
+impl Coalescible for LocalRead {
+    fn coalesce_key(&self) -> Option<CoalesceKey> {
+        Some(CoalesceKey::LocalPackage(self.project.key()))
+    }
+}
+
 /// DTO returned by an engine client. Mapping into [`AppSnapshot`](crate::model::AppSnapshot)
 /// happens in `runtime::mapping`, outside widgets.
 #[derive(Clone, Debug)]
@@ -192,6 +216,15 @@ pub enum EngineDto {
         catalog: Option<Arc<[PackageSummary]>>,
         /// Per-project file count when the service exposes one.
         files_indexed: Option<u64>,
+    },
+    /// Package facts read from a local project's own manifests.
+    LocalPackage {
+        /// Request identity.
+        request: RequestId,
+        /// Basis that was requested.
+        basis: VersionedRoot,
+        /// Loaded facts, keyed by their project.
+        package: Arc<LocalPackage>,
     },
 }
 
@@ -263,6 +296,9 @@ impl Coalescible for EngineEvent {
             Ok(EngineDto::Object { object, .. }) => Some(CoalesceKey::Object(*object)),
             Ok(EngineDto::Surface { command, .. }) => Some(CoalesceKey::Surface(command.id())),
             Ok(EngineDto::Index { project, .. }) => Some(CoalesceKey::Index(project.key())),
+            Ok(EngineDto::LocalPackage { package, .. }) => {
+                Some(CoalesceKey::LocalPackage(package.project.key()))
+            }
             Err(_) => None,
         })
     }
@@ -277,8 +313,10 @@ pub trait EngineClient: Send + 'static {
 /// Handle for a dedicated background engine actor.
 pub struct EngineActor {
     mailbox: CoalescingMailbox<EngineRequest>,
+    local: CoalescingMailbox<LocalRead>,
     events: CoalescingMailbox<EngineEvent>,
     join: Option<JoinHandle<()>>,
+    local_join: Option<JoinHandle<()>>,
 }
 
 /// Failure to create the dedicated worker thread.
@@ -329,7 +367,23 @@ impl std::fmt::Debug for EngineActor {
 impl EngineActor {
     /// Starts a worker with bounded request and result mailboxes.
     pub fn start(client: impl EngineClient, capacity: usize) -> Result<Self, ActorStartError> {
+        Self::start_with_loader(client, capacity, LocalPackageLoader::default())
+    }
+
+    /// Starts the producer lane and the local-read lane.
+    ///
+    /// Both lanes have their own bounded request mailbox and deliver into one
+    /// bounded result mailbox, so the UI polls a single event stream.
+    ///
+    /// # Errors
+    /// Returns [`ActorStartError`] when either worker thread cannot start.
+    pub fn start_with_loader(
+        client: impl EngineClient,
+        capacity: usize,
+        loader: LocalPackageLoader,
+    ) -> Result<Self, ActorStartError> {
         let mailbox = CoalescingMailbox::new(capacity);
+        let local = CoalescingMailbox::new(capacity);
         let events = CoalescingMailbox::new(capacity);
         let worker_mailbox = mailbox.clone();
         let worker_events = events.clone();
@@ -337,11 +391,35 @@ impl EngineActor {
             .name("nudox-engine-actor".to_owned())
             .spawn(move || run_actor(Box::new(client), worker_mailbox, worker_events))
             .map_err(ActorStartError::from_spawn)?;
-        Ok(Self {
+        let local_mailbox = local.clone();
+        let local_events = events.clone();
+        let local_join = thread::Builder::new()
+            .name("nudox-local-reads".to_owned())
+            .spawn(move || run_local_reads(&loader, &local_mailbox, &local_events));
+        let mut actor = Self {
             mailbox,
+            local,
             events,
             join: Some(join),
-        })
+            local_join: None,
+        };
+        match local_join {
+            Ok(join) => actor.local_join = Some(join),
+            // Dropping the actor closes and joins the producer lane.
+            Err(error) => return Err(ActorStartError::from_spawn(error)),
+        }
+        Ok(actor)
+    }
+
+    /// Submits one local read without waiting for lane capacity.
+    #[must_use]
+    pub fn try_submit_local(&self, read: LocalRead) -> PushResult<LocalRead> {
+        let key = read.coalesce_key();
+        let result = self.local.try_push(read, key);
+        if let PushResult::Coalesced(old) = &result {
+            old.cancel.cancel();
+        }
+        result
     }
 
     /// Submits without waiting for worker capacity.
@@ -391,8 +469,12 @@ impl EngineActor {
 
     fn close_and_join(&mut self) {
         self.mailbox.close();
+        self.local.close();
         self.events.close();
         if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+        if let Some(join) = self.local_join.take() {
             let _ = join.join();
         }
     }
@@ -462,6 +544,43 @@ fn run_actor(
         };
         let key = event.coalesce_key().or(lane);
         if !events.push_wait(event, key) {
+            break;
+        }
+    }
+}
+
+/// Serves local reads until the lane closes.
+///
+/// Local facts are not producer-root state, so this lane applies no root
+/// supersession; the coordinator still discards results it no longer owns.
+fn run_local_reads(
+    loader: &LocalPackageLoader,
+    mailbox: &CoalescingMailbox<LocalRead>,
+    events: &CoalescingMailbox<EngineEvent>,
+) {
+    while let Some(read) = mailbox.recv() {
+        let lane = read.coalesce_key();
+        let result = if read.cancel.is_cancelled() {
+            Err(EngineFault::Cancelled)
+        } else {
+            let package = loader.load(&read.project);
+            if read.cancel.is_cancelled() {
+                Err(EngineFault::Cancelled)
+            } else {
+                Ok(EngineDto::LocalPackage {
+                    request: read.request,
+                    basis: read.basis,
+                    package: Arc::new(package),
+                })
+            }
+        };
+        let event = EngineEvent {
+            basis: read.basis,
+            request: read.request,
+            lane,
+            result,
+        };
+        if !events.push_wait(event, lane) {
             break;
         }
     }

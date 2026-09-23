@@ -38,6 +38,7 @@ pub struct UiRootEntity {
     component_overlay: Option<Overlay>,
     persistence: Option<PersistentState>,
     requested_surface: Option<(CommandId, String, VersionedRoot)>,
+    requested_local_package: Option<(crate::core::LocalProjectId, VersionedRoot)>,
     first_catalog_route_admitted: bool,
     window_activation_subscription: Option<Subscription>,
     capture_time: Option<Duration>,
@@ -64,6 +65,7 @@ impl UiRootEntity {
             component_overlay: None,
             persistence,
             requested_surface: None,
+            requested_local_package: None,
             first_catalog_route_admitted: false,
             window_activation_subscription: None,
             capture_time: None,
@@ -337,6 +339,42 @@ impl UiRootEntity {
         self.queue(
             Intent::RefreshSurface {
                 command,
+                basis,
+                request,
+            },
+            cx,
+        );
+    }
+
+    /// Ensures one local project's offline package facts are admitted.
+    ///
+    /// Like [`Self::ensure_surface`], a render boundary calls this instead of
+    /// reading files: the read runs on the actor's local lane and its result
+    /// arrives as a snapshot. Facts already admitted for `project` are kept;
+    /// otherwise one read is issued per project and root.
+    pub(crate) fn ensure_local_package(
+        &mut self,
+        project: &crate::core::LocalProjectId,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.snapshot();
+        if snapshot
+            .local_package()
+            .loaded_value()
+            .is_some_and(|package| package.project == *project)
+        {
+            return;
+        }
+        let basis = snapshot.key();
+        let identity = (project.clone(), basis);
+        if self.requested_local_package.as_ref() == Some(&identity) {
+            return;
+        }
+        self.requested_local_package = Some(identity);
+        let request = self.runtime.allocate_request();
+        self.queue(
+            Intent::RefreshLocalPackage {
+                project: project.clone(),
                 basis,
                 request,
             },

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 #[path = "listener/transport.rs"]
 mod transport;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use transport::{clear_active_stream, configure_stream, set_active_stream};
 use transport::{
     clear_active_tcp_stream, configure_tcp_stream, prepare_socket_path, set_active_tcp_stream,
@@ -121,7 +121,7 @@ pub trait PeerPolicy: Send + Sync + 'static {
     ///
     /// # Errors
     /// Returns an error when the peer is not authorized.
-    fn authorize(&self, stream: &std::os::unix::net::UnixStream) -> Result<(), PeerPolicyError>;
+    fn authorize(&self, stream: &backend_engine::LocalStream) -> Result<(), PeerPolicyError>;
 }
 
 /// Portable worker peer policy.
@@ -129,7 +129,7 @@ pub trait PeerPolicy: Send + Sync + 'static {
 pub struct FilesystemPeerPolicy;
 
 impl PeerPolicy for FilesystemPeerPolicy {
-    fn authorize(&self, stream: &std::os::unix::net::UnixStream) -> Result<(), PeerPolicyError> {
+    fn authorize(&self, stream: &backend_engine::LocalStream) -> Result<(), PeerPolicyError> {
         let address = stream
             .peer_addr()
             .map_err(|error| PeerPolicyError::Io(error.kind()))?;
@@ -185,7 +185,7 @@ impl std::error::Error for PeerPolicyError {}
 /// A bounded worker Unix listener. It admits one stream at a time so a pure
 /// recipe cannot exceed the configured process/resource envelope through
 /// accidental concurrent calls.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub struct UnixWorkerListener<E, S, R, A>
 where
     E: PureRecipeExecutor,
@@ -193,14 +193,14 @@ where
     R: Relation + Send,
     A: JobAdmission<R>,
 {
-    listener: std::os::unix::net::UnixListener,
+    listener: backend_engine::LocalListener,
     worker: Option<WorkerService<E, S>>,
     admission: A,
     config: WorkerListenerConfig,
     path: PathBuf,
     stop: AtomicBool,
     peer_policy: Arc<dyn PeerPolicy>,
-    active_stream: Arc<Mutex<Option<std::os::unix::net::UnixStream>>>,
+    active_stream: Arc<Mutex<Option<backend_engine::LocalStream>>>,
     report: WorkerRunReport,
     telemetry: backend_engine::Telemetry,
     relation: PhantomData<fn() -> R>,
@@ -446,7 +446,7 @@ where
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl<E, S, R, A> fmt::Debug for UnixWorkerListener<E, S, R, A>
 where
     E: PureRecipeExecutor,
@@ -465,7 +465,7 @@ where
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl<E, S, R, A> UnixWorkerListener<E, S, R, A>
 where
     E: PureRecipeExecutor,
@@ -495,7 +495,7 @@ where
     ) -> Result<Self, WorkerListenerError> {
         config.validate()?;
         prepare_socket_path(&config.path)?;
-        let listener = std::os::unix::net::UnixListener::bind(&config.path)
+        let listener = backend_engine::LocalListener::bind(&config.path)
             .map_err(|error| WorkerListenerError::Io(error.kind()))?;
         set_private_socket_permissions(&config.path)?;
         listener
@@ -672,7 +672,7 @@ fn record_transport<E>(
     });
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl<E, S, R, A> Drop for UnixWorkerListener<E, S, R, A>
 where
     E: PureRecipeExecutor,
@@ -749,6 +749,6 @@ impl std::error::Error for WorkerListenerError {}
 #[path = "listener/tests.rs"]
 mod tests;
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 /// Worker Unix listeners are unavailable on non-Unix targets.
 pub struct UnixWorkerListener<E, S, R, A>(std::marker::PhantomData<(E, S, R, A)>);

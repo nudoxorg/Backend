@@ -1,7 +1,10 @@
 //! SQL schema and stable statement text for the projection.
 
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 pub(crate) const MAX_AUDIT_ROOTS: i64 = 128;
+/// Rows per multi-row rebuild statement. Each statement becomes one immutable
+/// FTS segment, so batching bounds both statement size and segment count.
+pub(crate) const REBUILD_BATCH_ROWS: usize = 512;
 
 pub(crate) const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS backend_projection_meta (
@@ -27,6 +30,8 @@ CREATE INDEX IF NOT EXISTS backend_projection_rows_label
     ON backend_projection_rows(label);
 CREATE INDEX IF NOT EXISTS backend_projection_rows_package
     ON backend_projection_rows(package_id, parent_id, row_id);
+CREATE INDEX IF NOT EXISTS backend_projection_rows_fts
+    ON backend_projection_rows USING fts (label, signature, document);
 CREATE TABLE IF NOT EXISTS backend_projection_commits (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     root BLOB NOT NULL UNIQUE,
@@ -87,6 +92,17 @@ ON CONFLICT(row_id) DO UPDATE SET
 WHERE backend_projection_rows.content_hash != excluded.content_hash
 ";
 
+pub(crate) const UPSERT_COLUMNS: &str = "INSERT INTO backend_projection_rows (\
+    row_id, row_kind, content_hash, state, label, score, \
+    package_id, parent_id, signature, document) VALUES ";
+pub(crate) const UPSERT_CONFLICT: &str = " ON CONFLICT(row_id) DO UPDATE SET \
+    row_kind=excluded.row_kind, content_hash=excluded.content_hash, \
+    state=excluded.state, label=excluded.label, score=excluded.score, \
+    package_id=excluded.package_id, parent_id=excluded.parent_id, \
+    signature=excluded.signature, document=excluded.document \
+    WHERE backend_projection_rows.content_hash != excluded.content_hash";
+
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct Metadata {
     pub(crate) schema_version: i64,
     pub(crate) root: Vec<u8>,

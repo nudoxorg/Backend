@@ -1281,8 +1281,8 @@ pub fn capture_default(
 mod tests {
     use super::*;
     use gpui::{
-        Context, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-        TestAppContext, VisualTestContext, div,
+        Context, FocusHandle, Focusable as _, InteractiveElement as _, IntoElement,
+        ParentElement as _, Render, TestAppContext, VisualTestContext, div,
     };
     use gpui_component::{
         Root,

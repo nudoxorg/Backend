@@ -81,6 +81,39 @@ identity_schema!(WorkKeySchema, 0x000e);
 identity_schema!(EvaluationReceiptSchema, 0x0011);
 identity_schema!(ReviewReceiptSchema, 0x0012);
 identity_schema!(DecisionReceiptSchema, 0x0013);
+identity_schema!(CandidateTreeSchema, 0x0015);
+identity_schema!(ContractSchema, 0x0016);
+identity_schema!(EvaluationKeySchema, 0x0017);
+identity_schema!(IntegrationHeadSchema, 0x0018);
+
+/// Schema for a typed evidence receipt whose canonical preimage is bounded by
+/// [`crate::evidence::MAX_TYPED_RECEIPT_BYTES`] rather than by
+/// [`MAX_ID_PREIMAGE_BYTES`]. The receipt constructor owns that bound; the
+/// value is framed exactly like an [`IdentityBytes`] value.
+macro_rules! receipt_schema {
+    ($name:ident, $ty:expr) => {
+        #[doc = "Schema marker for one domain-separated typed evidence receipt."]
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct $name;
+
+        impl Schema for $name {
+            const DOMAIN: u8 = 0x40;
+            const TYPE: u16 = $ty;
+            type Value = [u8];
+
+            fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+                append_field_unchecked(output, value);
+            }
+        }
+    };
+}
+
+receipt_schema!(CandidateReceiptSchema, 0x0014);
+// Typed evidence receipts use their own schemas. Their preimage grammar
+// differs from the custody-stage receipts above, so sharing a schema would
+// make an evidence id type-check wherever a custody id is expected.
+receipt_schema!(EvidenceEvaluationReceiptSchema, 0x0019);
+receipt_schema!(EvidenceDecisionReceiptSchema, 0x001a);
 
 /// Schema marker for the compact scheduler projection summary retained next
 /// to a control relation root.  The summary is a versioned value object, so a
@@ -193,6 +226,20 @@ pub type FenceId = ObjectVersion<FenceSchema>;
 pub type EvaluationRoot = ObjectVersion<EvaluationSchema>;
 /// Identity of a complete immutable unit of agent work.
 pub type AgentWorkKey = ObjectVersion<WorkKeySchema>;
+/// Identity of a typed candidate receipt (output, parent head, checks).
+pub type CandidateReceiptId = ObjectVersion<CandidateReceiptSchema>;
+/// Identity of an exact candidate tree.
+pub type CandidateTreeRoot = ObjectVersion<CandidateTreeSchema>;
+/// Identity of one controller contract bound by a candidate.
+pub type ContractRoot = ObjectVersion<ContractSchema>;
+/// Identity of one evaluator assignment over a frozen candidate.
+pub type EvaluationKeyId = ObjectVersion<EvaluationKeySchema>;
+/// Identity of a protected integration head.
+pub type IntegrationHead = ObjectVersion<IntegrationHeadSchema>;
+/// Identity of a typed evaluator/reviewer evidence receipt.
+pub type EvidenceEvaluationReceiptId = ObjectVersion<EvidenceEvaluationReceiptSchema>;
+/// Identity of a typed Sol integration decision receipt.
+pub type EvidenceDecisionReceiptId = ObjectVersion<EvidenceDecisionReceiptSchema>;
 
 /// A typed identity together with the exact canonical value that produced it.
 ///

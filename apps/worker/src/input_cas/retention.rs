@@ -1,7 +1,7 @@
 //! Root leases, retention budgets, and durable mark-and-sweep for the input CAS.
 
 use super::{
-    Arc, BTreeSet, BoundedFileImage, CasGcBudget, File, InputCas, MAX_GC_BYTES_PER_CALL,
+    Arc, BTreeSet, BoundedFileImage, CasGcBudget, InputCas, MAX_GC_BYTES_PER_CALL,
     MAX_GC_FILES_PER_CALL, MAX_RETAINED_OBJECTS, MAX_RETAINED_SIDECAR_BYTES, MAX_RETAINED_SIDECARS,
     ObjectVersion, OpenOptions, Path, ReplicationError, Schema, WireIdentity, Write, decode_hex,
     digest_file, fs, hex, is_object_name,
@@ -337,7 +337,7 @@ impl<T: Schema> InputCas<T> {
                     .ok_or(ReplicationError::Overflow)?;
             }
         }
-        File::open(directory)
+        backend_platform::durability::open_directory(directory)
             .and_then(|directory| directory.sync_all())
             .map_err(|_| ReplicationError::Disconnected)?;
         Ok((removed_objects, removed_bytes))
@@ -402,7 +402,7 @@ impl<T: Schema> InputCas<T> {
             .and_then(|()| file.sync_all())
             .map_err(|_| ReplicationError::Disconnected)?;
         fs::rename(temporary, target).map_err(|_| ReplicationError::Disconnected)?;
-        File::open(directory)
+        backend_platform::durability::open_directory(directory)
             .and_then(|directory| directory.sync_all())
             .map_err(|_| ReplicationError::Disconnected)
     }

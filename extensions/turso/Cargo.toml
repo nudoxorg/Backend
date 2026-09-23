@@ -9,7 +9,10 @@ publish = false
 [dependencies]
 backend-library = { path = "../../crates/library" }
 blake3.workspace = true
-turso.workspace = true
+# Full-text search (a Tantivy index) is this projection's alone; enabling it
+# workspace-wide would pull Tantivy into the portable `backend-library` closure
+# through `backend-semantic`.
+turso = { workspace = true, features = ["fts"] }
 
 [dev-dependencies]
 futures-executor.workspace = true

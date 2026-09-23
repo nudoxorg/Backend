@@ -81,10 +81,28 @@ fn tar_one(path: &str, bytes: &[u8]) -> Vec<u8> {
 }
 
 fn serve_loopback_request(mut stream: TcpStream, root: &Path) {
-    let mut request = [0_u8; 4096];
-    let Ok(bytes) = stream.read(&mut request) else {
+    // On macOS and the BSDs an accepted socket inherits the listener's
+    // non-blocking mode, so a first read can fail with `WouldBlock` before the
+    // request arrives. Serve each connection in blocking mode under a bound
+    // and read through the end of the request headers.
+    if stream.set_nonblocking(false).is_err()
+        || stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .is_err()
+    {
         return;
-    };
+    }
+    let mut request = [0_u8; 4096];
+    let mut bytes = 0;
+    while !request[..bytes].windows(4).any(|window| window == b"\r\n\r\n") {
+        match stream.read(&mut request[bytes..]) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => bytes += read,
+        }
+        if bytes == request.len() {
+            break;
+        }
+    }
     if bytes == 0 {
         return;
     }

@@ -155,7 +155,7 @@ pub(super) fn dialog(
 }
 
 fn admit_typed_path(value: &str) -> Result<LocalProjectId, std::sync::Arc<str>> {
-    let value = value.trim();
+    let value = unquoted(value.trim());
     if value.is_empty() {
         return Err("Enter a project folder path.".into());
     }
@@ -163,9 +163,45 @@ fn admit_typed_path(value: &str) -> Result<LocalProjectId, std::sync::Arc<str>> 
         .map_err(|_| "That folder path cannot be represented on this platform.".into())
 }
 
+/// Strips one pair of matching quotes around a pasted path.
+///
+/// Windows Explorer's "Copy as path" wraps every path in double quotes, and a
+/// shell-quoted path pasted from a terminal arrives in single quotes; neither
+/// quote is part of the folder's name.
+fn unquoted(value: &str) -> &str {
+    let mut inner = value.chars();
+    match (inner.next(), inner.next_back()) {
+        (Some(open), Some(close)) if open == close && matches!(open, '"' | '\'') => {
+            inner.as_str().trim()
+        }
+        _ => value,
+    }
+}
+
+/// Returns an example absolute project path in this platform's spelling.
+pub(crate) const fn example_path() -> &'static str {
+    if cfg!(target_os = "windows") {
+        r"C:\path\to\project"
+    } else {
+        "/path/to/project"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pasted_quoted_paths_admit_the_folder_inside_the_quotes() {
+        for pasted in ["\"/tmp/nudox-project\"", "'/tmp/nudox-project'", " \" /tmp/nudox-project \" "] {
+            let admitted = admit_typed_path(pasted).expect("quoted path");
+            assert_eq!(admitted.path(), std::path::PathBuf::from("/tmp/nudox-project"));
+        }
+        assert_eq!(
+            admit_typed_path("\"\"").expect_err("empty quotes"),
+            std::sync::Arc::<str>::from("Enter a project folder path.")
+        );
+    }
 
     #[test]
     fn typed_admission_trims_presentation_without_losing_native_identity() {

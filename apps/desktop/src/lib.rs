@@ -20,15 +20,15 @@ pub mod runtime;
 #[cfg(feature = "visual-harness")]
 pub mod harness;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) mod host;
 pub(crate) mod theme;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod ui;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod views;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use host::lease::{DesktopHost, HostError, HostMode};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use host::launch::main_entry;

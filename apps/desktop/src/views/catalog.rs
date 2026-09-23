@@ -54,18 +54,21 @@ pub(super) fn package_cards(
         components::ActionMetadata::new("package-list", "Packages", components::ActionRole::List)
             .description("Packages available from the live index"),
     );
-    let cards = snapshot
-        .catalog()
-        .loaded_value()
-        .map(|catalog| {
-            catalog
-                .packages
-                .iter()
-                .take(24)
-                .map(|package| package_card(theme, package, root, cx))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let mut cards = local_package_cards(theme, snapshot, cx);
+    cards.extend(
+        snapshot
+            .catalog()
+            .loaded_value()
+            .map(|catalog| {
+                catalog
+                    .packages
+                    .iter()
+                    .take(24)
+                    .map(|package| package_card(theme, package, root, cx))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    );
     if cards.is_empty() {
         return loading_card(theme, snapshot.catalog().terminal()).into_any_element();
     }
@@ -78,6 +81,65 @@ pub(super) fn package_cards(
         .gap(space(Space::Snug))
         .children(cards)
         .into_any_element()
+}
+
+/// Cards for the served local project's own packages that the registry
+/// catalog does not list; their dossier is read from the local manifest.
+fn local_package_cards(
+    theme: &Theme,
+    snapshot: &AppSnapshot,
+    cx: &mut Context<UiRootEntity>,
+) -> Vec<AnyElement> {
+    let Some(project) = snapshot.project().loaded_value() else {
+        return Vec::new();
+    };
+    let registry = snapshot.catalog().loaded_value();
+    project
+        .packages
+        .iter()
+        .filter(|package| {
+            registry.is_none_or(|catalog| {
+                catalog
+                    .packages
+                    .iter()
+                    .all(|row| row.coordinate != **package)
+            })
+        })
+        .take(24)
+        .map(|package| {
+            let action_id = format!("package-card-{package}");
+            let description = format!("Local project {}, facts from its manifest", project.label);
+            theme.register_action(
+                components::ActionMetadata::new(
+                    action_id.clone(),
+                    package.to_string(),
+                    components::ActionRole::ListItem,
+                )
+                .description(description.clone())
+                .parent("package-list")
+                .relation(components::ActionRelation::FlowTo, "package-list"),
+            );
+            let route = Route::Package(PackageRoute {
+                project: None,
+                package: package.clone(),
+                lane: PackageLane::Overview,
+                selected: None,
+            });
+            let card =
+                components::card_button(theme, action_id.clone(), package.to_string(), description)
+                    .border_color(theme.paint(Paint::Rule2))
+                    .hover(|style| style.bg(theme.paint(Paint::Tint)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.queue(Intent::Navigate(route.clone()), cx);
+                    }))
+                    .child(
+                        text::single_line(text::heading(theme, TypeScale::Interface))
+                            .child(package.to_string()),
+                    )
+                    .child(text::single_line(text::faint(theme)).child("Local project"));
+            components::measure(theme, action_id, card).into_any_element()
+        })
+        .collect()
 }
 
 fn package_card(

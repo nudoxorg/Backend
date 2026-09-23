@@ -1,6 +1,15 @@
 //! Bounded command dispatch for the typed control-plane adapter.
 
 mod commands;
+// Typed evidence adapters ported from the remote branch. The remote never
+// assigned them command names, and `candidate`/`evaluation`/`decision` are
+// already the ledger lifecycle commands, so they compile here unexposed until
+// a dispatch grammar is chosen.
+#[expect(
+    dead_code,
+    reason = "evidence adapters have no dispatch grammar yet; wiring them lifts this"
+)]
+mod evidence;
 mod input;
 mod output;
 

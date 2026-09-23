@@ -56,6 +56,14 @@ pub enum ControlError {
     /// A custody authority duplicated an earlier actor in the receipt chain.
     #[error("evaluation, review, and decision authorities must be independent")]
     AuthorityNotIndependent,
+    /// A typed evidence receipt cited missing, duplicate, or mismatched
+    /// references.
+    #[error("evidence receipt references are missing or inconsistent")]
+    EvidenceBinding,
+    /// A typed evidence receipt was authored by an authority that does not
+    /// own that receipt kind.
+    #[error("evidence receipt authority does not own this receipt kind")]
+    EvidenceAuthority,
     /// A mutation was based on an earlier relation root.
     #[error("versioned control relation base root is stale")]
     StaleRoot,

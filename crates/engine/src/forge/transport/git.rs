@@ -66,7 +66,7 @@ impl ForgeTransport for GitCommandTransport {
             return Err(ForgeTransportError::Protocol);
         }
         let revision_token = coordinate_revision_token(coordinate.revision());
-        let status = Command::new("git")
+        let fetched = Command::new("git")
             .args([
                 "-C",
                 &target,
@@ -76,11 +76,16 @@ impl ForgeTransport for GitCommandTransport {
                 &repo_url_arg,
                 &revision_token,
             ])
+            // Classification reads git's diagnostics, so pin their language.
+            .env("LC_ALL", "C")
+            .env("LANGUAGE", "C")
             .stdin(Stdio::null())
-            .status()
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
             .map_err(|_| ForgeTransportError::Unavailable)?;
-        if !status.success() {
-            return Err(ForgeTransportError::NotFound);
+        if !fetched.status.success() {
+            return Err(classify_fetch_failure(&fetched.stderr));
         }
         let commit = self.git_output(&target, &["rev-parse", "FETCH_HEAD"])?;
         let tree = self.git_output(&target, &["show", "-s", "--format=%T", "FETCH_HEAD"])?;
@@ -142,5 +147,63 @@ fn coordinate_revision_token(revision: &ForgeRevision) -> String {
         ForgeRevision::Commit(commit) => commit.as_hex(),
         ForgeRevision::Tag(tag) => tag.as_str().to_owned(),
         ForgeRevision::Branch(branch) => branch.as_str().to_owned(),
+    }
+}
+
+/// Classifies a failed `git fetch` from its C-locale diagnostics.
+///
+/// Only an answer from the forge that the repository or revision does not
+/// exist is `NotFound`; the service records that as a permanent tombstone.
+/// Every other failure (a dropped connection, DNS, TLS, authentication, a
+/// server error) is transient and must stay retryable.
+fn classify_fetch_failure(stderr: &[u8]) -> ForgeTransportError {
+    let diagnostics = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    let missing = [
+        "couldn't find remote ref",
+        "repository not found",
+        "does not appear to be a git repository",
+        "remote ref does not exist",
+    ];
+    if missing.iter().any(|marker| diagnostics.contains(marker)) {
+        ForgeTransportError::NotFound
+    } else {
+        ForgeTransportError::Unavailable
+    }
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::{ForgeTransportError, classify_fetch_failure};
+
+    #[test]
+    fn a_missing_revision_or_repository_is_not_found() {
+        for stderr in [
+            "fatal: couldn't find remote ref refs/heads/nope\n",
+            "remote: Repository not found.\nfatal: repository 'https://x/y/' not found\n",
+            "fatal: '/tmp/x' does not appear to be a git repository\n",
+        ] {
+            assert_eq!(
+                classify_fetch_failure(stderr.as_bytes()),
+                ForgeTransportError::NotFound,
+                "{stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_transport_failure_stays_retryable() {
+        for stderr in [
+            "error: Empty reply from server (curl_result = 52, http_code = 0)\n",
+            "fatal: unable to access 'https://x/': Could not resolve host: x\n",
+            "fatal: unable to access 'https://x/': Failed to connect to x port 443\n",
+            "error: RPC failed; HTTP 503 curl 22\n",
+            "",
+        ] {
+            assert_eq!(
+                classify_fetch_failure(stderr.as_bytes()),
+                ForgeTransportError::Unavailable,
+                "{stderr}"
+            );
+        }
     }
 }

@@ -7,7 +7,7 @@ use backend_library::{
     AuthorityScopeClaim, ProducerObservationClaims, ProducerObservationVerifier,
 };
 use backend_library::{
-    Basis, Coverage, CoverageCapability, Frontier, Row, RowId, ViewDelta, ViewRoot,
+    Basis, Coverage, CoverageCapability, Fragment, Frontier, Row, RowId, ViewDelta, ViewRoot,
     admit_complete_scope, admit_producer_observation, branch_key, log_key, object_version,
     package_key, view_key, view_state_root,
 };
@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
+use std::time::Instant;
 
 static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
@@ -122,8 +123,18 @@ fn exact_root_reuses_database_and_hot_delta_changes_one_row() {
                 .unwrap_or_else(|error| panic!("apply: {error}")),
             ProjectionUpdate::Advanced { changed_rows: 1 }
         );
+        // A retried transport receipt is safe to replay after the target
+        // fence has committed. The projection must not re-run its row
+        // mutation or force a rebuild just because the base is now old.
+        assert_eq!(
+            projection
+                .apply(&committed)
+                .await
+                .unwrap_or_else(|error| panic!("replay apply: {error}")),
+            ProjectionUpdate::Reused { rows: 1 }
+        );
         let found = projection
-            .search("work", 10)
+            .search("workspace", 10)
             .await
             .unwrap_or_else(|error| panic!("search: {error}"));
         assert_eq!(found.root.as_ref(), next.root().as_bytes());
@@ -140,6 +151,69 @@ fn exact_root_reuses_database_and_hot_delta_changes_one_row() {
                 .unwrap_or_else(|error| panic!("reopen synchronize: {error}")),
             ProjectionUpdate::Reused { rows: 1 }
         );
+        std::fs::remove_file(&path).unwrap_or_else(|error| panic!("remove projection: {error}"));
+    });
+}
+
+#[test]
+fn an_older_schema_is_rebuilt_and_a_newer_schema_is_refused() {
+    futures_executor::block_on(async {
+        let path = path();
+        let package = package_key("workspace");
+        let view = root(vec![Row::new(
+            RowId::Package(package),
+            root(Vec::new()).basis(),
+            "workspace",
+        )]);
+        let stamp = |version: i64| {
+            let path = path.clone();
+            async move {
+                let projection = TursoProjection::open_or_rebuild(&path)
+                    .await
+                    .unwrap_or_else(|error| panic!("open: {error}"));
+                projection
+                    .connection
+                    .execute(
+                        "UPDATE backend_projection_meta SET schema_version = ?1 WHERE singleton=1",
+                        [version],
+                    )
+                    .await
+                    .unwrap_or_else(|error| panic!("stamp schema: {error}"));
+            }
+        };
+
+        let mut projection = TursoProjection::open(&path)
+            .await
+            .unwrap_or_else(|error| panic!("open: {error}"));
+        projection
+            .synchronize(&view)
+            .await
+            .unwrap_or_else(|error| panic!("synchronize: {error}"));
+        drop(projection);
+
+        stamp(schema::SCHEMA_VERSION - 1).await;
+        assert!(matches!(
+            TursoProjection::open(&path).await,
+            Err(ProjectionError::Schema { .. })
+        ));
+        let mut rebuilt = TursoProjection::open_or_rebuild(&path)
+            .await
+            .unwrap_or_else(|error| panic!("rebuild older schema: {error}"));
+        assert_eq!(
+            rebuilt
+                .synchronize(&view)
+                .await
+                .unwrap_or_else(|error| panic!("repopulate: {error}")),
+            ProjectionUpdate::Rebuilt { rows: 1 }
+        );
+        drop(rebuilt);
+
+        stamp(schema::SCHEMA_VERSION + 1).await;
+        assert!(matches!(
+            TursoProjection::open_or_rebuild(&path).await,
+            Err(ProjectionError::Schema { .. })
+        ));
+        assert!(path.exists(), "a newer projection must never be discarded");
         std::fs::remove_file(&path).unwrap_or_else(|error| panic!("remove projection: {error}"));
     });
 }
@@ -265,6 +339,7 @@ fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
 
         let mut advanced = 0;
         let mut stale = 0;
+        let mut replayed = 0;
         for _ in 0..WRITERS {
             match writer_receiver
                 .recv()
@@ -275,11 +350,18 @@ fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
                     advanced += 1;
                 }
                 Err(ProjectionError::StaleTransition) => stale += 1,
+                // A writer that reads the fence after the winner committed
+                // sees its own target already published: a replay, not a race.
+                Ok(ProjectionUpdate::Reused { rows: 1 }) => replayed += 1,
                 other => panic!("unexpected overlapping writer outcome: {other:?}"),
             }
         }
         assert_eq!(advanced, 1, "exactly one writer may publish the base delta");
-        assert_eq!(stale, WRITERS - 1, "losers must be typed stale transitions");
+        assert_eq!(
+            stale + replayed,
+            WRITERS - 1,
+            "losers must be typed stale transitions or replay no-ops"
+        );
 
         let mut restarted = TursoProjection::open(&path)
             .await
@@ -392,5 +474,100 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             .expect("state row");
         assert_eq!(state.kind, 2);
         std::fs::remove_file(&path).expect("remove projection");
+    });
+}
+
+#[test]
+#[ignore = "bounded Turso FTS projection stress probe"]
+fn stress_fts_projection_reports_build_query_and_delta_costs() {
+    futures_executor::block_on(async {
+        const ROWS: usize = 20_000;
+        let path = path();
+        let empty = root(Vec::new());
+        let package = package_key("stress");
+        let rows = (0..ROWS)
+            .map(|index| {
+                let marker = if index == ROWS - 1 {
+                    " singular-needle"
+                } else {
+                    ""
+                };
+                Row::in_package(
+                    RowId::Symbol(backend_library::symbol_key(&format!(
+                        "stress::symbol_{index:05}"
+                    ))),
+                    empty.basis(),
+                    package,
+                    format!("symbol_{index:05}"),
+                )
+                .with_signature(format!("fn symbol_{index:05}()"))
+                .with_document(vec![Fragment::Text(format!(
+                    "indexed package documentation common-token{marker}"
+                ))])
+            })
+            .collect::<Vec<_>>();
+        let view = root(rows);
+        let mut projection = TursoProjection::open(&path)
+            .await
+            .unwrap_or_else(|error| panic!("open: {error}"));
+        let started = Instant::now();
+        let update = projection
+            .synchronize(&view)
+            .await
+            .unwrap_or_else(|error| panic!("synchronize: {error}"));
+        let build_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        assert_eq!(update, ProjectionUpdate::Rebuilt { rows: ROWS as u64 });
+
+        let started = Instant::now();
+        let rare = projection
+            .search("singular needle", 10)
+            .await
+            .unwrap_or_else(|error| panic!("rare search: {error}"));
+        let rare_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        assert_eq!(rare.ids.len(), 1);
+
+        let started = Instant::now();
+        let common = projection
+            .search("common token", 25)
+            .await
+            .unwrap_or_else(|error| panic!("common search: {error}"));
+        let common_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        assert_eq!(common.ids.len(), 25);
+
+        let replacement = Row::in_package(
+            RowId::Symbol(backend_library::symbol_key("stress::symbol_10000")),
+            view.basis(),
+            package,
+            "symbol_10000",
+        )
+        .with_document(vec![Fragment::Text("changed edge".to_owned())]);
+        let prepared = view
+            .prepare(
+                ViewDelta::Upsert { row: replacement },
+                capability(view.basis().object),
+            )
+            .unwrap_or_else(|error| panic!("prepare: {error:?}"));
+        let (_, committed) = view
+            .commit(prepared)
+            .unwrap_or_else(|error| panic!("commit: {error:?}"));
+        let started = Instant::now();
+        let update = projection
+            .apply(&committed)
+            .await
+            .unwrap_or_else(|error| panic!("apply: {error}"));
+        let delta_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        assert_eq!(update, ProjectionUpdate::Advanced { changed_rows: 1 });
+
+        let bytes = std::fs::metadata(&path)
+            .unwrap_or_else(|error| panic!("metadata: {error}"))
+            .len();
+        eprintln!(
+            "turso_fts_stress rows={ROWS} build_ms={build_ms:.2} rare_ms={rare_ms:.3} common_ms={common_ms:.3} one_row_delta_ms={delta_ms:.3} database_bytes={bytes}"
+        );
+        drop(projection);
+        for suffix in ["", "-wal", "-shm"] {
+            let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
+            let _ = std::fs::remove_file(sidecar);
+        }
     });
 }

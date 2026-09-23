@@ -12,7 +12,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 /// Atomically replaces `destination` and requests write-through publication.
-pub(super) fn replace(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn replace(source: &Path, destination: &Path) -> io::Result<()> {
     let source = wide_path(source)?;
     let destination = wide_path(destination)?;
     // SAFETY: both vectors are owned, NUL-terminated UTF-16 buffers that stay

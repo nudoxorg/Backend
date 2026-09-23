@@ -23,7 +23,7 @@ fn write_root_lease(
     // ROOT marker is attempted. A crash in the gap then leaves either the
     // old marker with the complete new lease or the old pair, never a marker
     // that claims a root whose lease rename was only in cache.
-    File::open(directory)
+    backend_platform::durability::open_directory(directory)
         .and_then(|directory| directory.sync_all())
         .map_err(|_| ReplicationError::Disconnected)
 }
@@ -90,7 +90,7 @@ impl<T: Schema> InputCas<T> {
             .and_then(|()| file.sync_all())
             .map_err(|_| ReplicationError::Disconnected)?;
         fs::rename(&temporary, &target).map_err(|_| ReplicationError::Disconnected)?;
-        File::open(directory)
+        backend_platform::durability::open_directory(directory)
             .and_then(|directory| directory.sync_all())
             .map_err(|_| ReplicationError::Disconnected)?;
         self.admitted_root = Some(root);

@@ -122,7 +122,7 @@ pub(super) fn read_file_into<EncodingTag: Encoding, DomainTag: Domain>(
 }
 
 pub(super) fn sync_directory(directory: &Path) -> Result<(), (ImmutableIoPhase, io::Error)> {
-    let file = File::open(directory)
+    let file = backend_platform::durability::open_directory(directory)
         .map_err(|source| (ImmutableIoPhase::OpenArtifactDirectory, source))?;
     file.sync_all()
         .map_err(|source| (ImmutableIoPhase::SyncArtifactDirectory, source))

@@ -1,4 +1,8 @@
 //! Public TypeScript authority boundary proofs.
+//!
+//! The fixtures stand in for the checker with an executable shell script and
+//! probe non-UTF-8 native paths, both of which are Unix-specific.
+#![cfg(unix)]
 
 use std::{
     ffi::{OsStr, OsString},

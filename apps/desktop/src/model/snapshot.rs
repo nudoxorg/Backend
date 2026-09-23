@@ -11,6 +11,7 @@ pub use super::workspace::{
 };
 use crate::core::ids::{DocumentId, LocalProjectId, PackageId, ResourceIdentity, VersionedRoot};
 use crate::core::state::Resource;
+use crate::model::local_package::LocalPackage;
 use crate::navigation::{Overlay, Route, RouteHistory, Selection};
 use std::sync::Arc;
 
@@ -210,6 +211,7 @@ struct SnapshotData {
     documents: Arc<DocumentState>,
     project: Resource<ProjectState>,
     catalog: Resource<CatalogState>,
+    local_package: Resource<LocalPackage>,
     settings: Arc<SettingsState>,
     session: Arc<SessionState>,
     delta: Option<DeltaId>,
@@ -234,6 +236,7 @@ impl AppSnapshot {
                 documents: Arc::new(DocumentState::default()),
                 project: Resource::not_yet(),
                 catalog: Resource::not_yet(),
+                local_package: Resource::not_yet(),
                 settings: Arc::new(SettingsState::default()),
                 session: Arc::new(SessionState::default()),
                 delta: None,
@@ -289,6 +292,13 @@ impl AppSnapshot {
         &self.data.catalog
     }
 
+    /// Returns the offline package facts of the most recently read local
+    /// project. The value names its project; callers match it to theirs.
+    #[must_use]
+    pub fn local_package(&self) -> &Resource<LocalPackage> {
+        &self.data.local_package
+    }
+
     /// Returns the settings branch.
     #[must_use]
     pub fn settings(&self) -> &SettingsState {
@@ -330,6 +340,7 @@ impl AppSnapshot {
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
             catalog: self.data.catalog.clone(),
+            local_package: self.data.local_package.clone(),
             settings: Arc::clone(&self.data.settings),
             session: Arc::clone(&self.data.session),
             delta,
@@ -348,6 +359,7 @@ impl AppSnapshot {
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
             catalog: self.data.catalog.clone(),
+            local_package: self.data.local_package.clone(),
             settings: Arc::clone(&self.data.settings),
             session: Arc::new(session),
             delta: self.data.delta,
@@ -365,6 +377,7 @@ impl AppSnapshot {
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
             catalog: self.data.catalog.clone(),
+            local_package: self.data.local_package.clone(),
             settings: Arc::clone(&self.data.settings),
             session: Arc::clone(&self.data.session),
             delta: self.data.delta,
@@ -382,6 +395,7 @@ impl AppSnapshot {
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
             catalog: self.data.catalog.clone(),
+            local_package: self.data.local_package.clone(),
             settings: Arc::new(settings),
             session: Arc::clone(&self.data.session),
             delta: self.data.delta,
@@ -399,6 +413,7 @@ impl AppSnapshot {
             documents: Arc::clone(&self.data.documents),
             project: Resource::loaded_at(project, key),
             catalog: self.data.catalog.clone(),
+            local_package: self.data.local_package.clone(),
             settings: Arc::clone(&self.data.settings),
             session: Arc::clone(&self.data.session),
             delta: self.data.delta,
@@ -416,6 +431,28 @@ impl AppSnapshot {
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
             catalog: Resource::loaded_at(catalog, key),
+            local_package: self.data.local_package.clone(),
+            settings: Arc::clone(&self.data.settings),
+            session: Arc::clone(&self.data.session),
+            delta: self.data.delta,
+        });
+        next
+    }
+
+    /// Returns a copy with a replaced local package-facts branch.
+    ///
+    /// The facts are local files rather than producer state; a loaded value
+    /// records the root that was current when it was admitted.
+    #[must_use]
+    pub(crate) fn with_local_package(&self, package: Resource<LocalPackage>) -> Self {
+        let mut next = self.clone();
+        next.data = Arc::new(SnapshotData {
+            shelf: Arc::clone(&self.data.shelf),
+            workspace: Arc::clone(&self.data.workspace),
+            documents: Arc::clone(&self.data.documents),
+            project: self.data.project.clone(),
+            catalog: self.data.catalog.clone(),
+            local_package: package,
             settings: Arc::clone(&self.data.settings),
             session: Arc::clone(&self.data.session),
             delta: self.data.delta,
@@ -433,6 +470,7 @@ impl AppSnapshot {
             documents: Arc::clone(&self.data.documents),
             project: self.data.project.clone(),
             catalog: self.data.catalog.clone(),
+            local_package: self.data.local_package.clone(),
             settings: Arc::clone(&self.data.settings),
             session: Arc::clone(&self.data.session),
             delta: self.data.delta,

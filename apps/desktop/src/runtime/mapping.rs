@@ -2,7 +2,7 @@
 
 use super::actor::{EngineDto, EngineEvent, EngineFault};
 use super::client::package_summary;
-use crate::core::VersionedRoot;
+use crate::core::{Resource, VersionedRoot};
 use crate::model::{AppSnapshot, CatalogState, ProjectPhase};
 use crate::navigation::RequestId;
 use std::sync::Arc;
@@ -215,12 +215,42 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
             } else {
                 current.clone()
             };
+            // A re-index is the user's signal that the folder changed; its
+            // manifest facts are read again on the next dossier render.
+            let snapshot = if snapshot
+                .local_package()
+                .loaded_value()
+                .is_some_and(|package| package.project == project)
+            {
+                snapshot.with_local_package(Resource::not_yet())
+            } else {
+                snapshot
+            };
             Ok(mark_index_ready(
                 &snapshot,
                 request,
                 &project,
                 files_indexed,
             ))
+        }
+        EngineDto::LocalPackage {
+            request,
+            basis: dto_basis,
+            package,
+        } => {
+            if request != event_request {
+                return Err(MappingError::RequestMismatch {
+                    expected: event_request,
+                    observed: request,
+                });
+            }
+            if !dto_basis.same_authority(basis) {
+                return Err(MappingError::BasisMismatch {
+                    expected: basis,
+                    observed: dto_basis,
+                });
+            }
+            Ok(current.with_local_package(Resource::loaded_arc_at(package, current.key())))
         }
     }
 }

@@ -14,7 +14,7 @@ mod tests;
 
 pub use actor::{
     ActorStartError, CancellationToken, EngineActor, EngineClient, EngineDto, EngineEvent,
-    EngineFault, EngineRequest, ProjectDto,
+    EngineFault, EngineRequest, LocalRead, ProjectDto,
 };
 pub use animation::{
     AnimationChannel, AnimationId, AnimationTimeline, Beat, CaptureFrameClock, Easing, FrameClock,

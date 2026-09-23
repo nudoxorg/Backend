@@ -7,9 +7,9 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) fn configure_stream(
-    stream: &std::os::unix::net::UnixStream,
+    stream: &backend_engine::LocalStream,
     timeout: Duration,
 ) -> Result<(), WorkerListenerError> {
     stream
@@ -49,10 +49,10 @@ pub(super) fn clear_active_tcp_stream(active_stream: &Mutex<Option<TcpStream>>) 
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) fn set_active_stream(
-    active_stream: &Mutex<Option<std::os::unix::net::UnixStream>>,
-    stream: &std::os::unix::net::UnixStream,
+    active_stream: &Mutex<Option<backend_engine::LocalStream>>,
+    stream: &backend_engine::LocalStream,
 ) {
     if let Ok(clone) = stream.try_clone()
         && let Ok(mut active) = active_stream.lock()
@@ -61,17 +61,15 @@ pub(super) fn set_active_stream(
     }
 }
 
-#[cfg(unix)]
-pub(super) fn clear_active_stream(active_stream: &Mutex<Option<std::os::unix::net::UnixStream>>) {
+#[cfg(any(unix, windows))]
+pub(super) fn clear_active_stream(active_stream: &Mutex<Option<backend_engine::LocalStream>>) {
     if let Ok(mut active) = active_stream.lock() {
         *active = None;
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) fn prepare_socket_path(path: &Path) -> Result<(), WorkerListenerError> {
-    use std::os::unix::fs::FileTypeExt;
-
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -82,10 +80,10 @@ pub(super) fn prepare_socket_path(path: &Path) -> Result<(), WorkerListenerError
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(WorkerListenerError::Io(error.kind())),
     };
-    if !metadata.file_type().is_socket() {
+    if !is_endpoint_file(&metadata) {
         return Err(WorkerListenerError::EndpointOccupied);
     }
-    match std::os::unix::net::UnixStream::connect(path) {
+    match backend_engine::LocalStream::connect(path) {
         Ok(_) => Err(WorkerListenerError::AlreadyRunning),
         Err(error)
             if matches!(
@@ -110,4 +108,23 @@ pub(super) fn set_private_socket_permissions(path: &Path) -> Result<(), WorkerLi
     permissions.set_mode(0o600);
     std::fs::set_permissions(path, permissions)
         .map_err(|error| WorkerListenerError::Io(error.kind()))
+}
+
+/// Restricts the endpoint to its owner with a protected DACL, the Windows
+/// counterpart of mode `0600`.
+#[cfg(windows)]
+pub(super) fn set_private_socket_permissions(path: &Path) -> Result<(), WorkerListenerError> {
+    backend_platform::win32::security::restrict_to_current_user(path)
+        .map_err(|error| WorkerListenerError::Io(error.kind()))
+}
+
+#[cfg(unix)]
+fn is_endpoint_file(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    metadata.file_type().is_socket()
+}
+
+#[cfg(windows)]
+fn is_endpoint_file(metadata: &std::fs::Metadata) -> bool {
+    backend_platform::win32::security::is_endpoint_metadata(metadata)
 }

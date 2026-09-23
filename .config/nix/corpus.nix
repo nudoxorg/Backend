@@ -95,7 +95,14 @@ let
       throw "unknown corpus lane ${lane}";
 
   fetchedSource =
-    pin: if pin.kind == "local" then null else pkgs.fetchurl { url = pin.url; hash = pin.hash; };
+    pin:
+    if pin.kind == "local" then
+      null
+    else
+      pkgs.fetchurl {
+        url = pin.url;
+        hash = pin.hash;
+      };
 
   # Workspace-local crate sources, materialized into the store so builds
   # stay pure and hermetic.

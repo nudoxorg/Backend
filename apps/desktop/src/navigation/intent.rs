@@ -201,6 +201,16 @@ pub enum Intent {
         /// Request identity.
         request: RequestId,
     },
+    /// Read one local project's own package facts (manifest, README) off the
+    /// UI thread. The facts are local files, not producer state.
+    RefreshLocalPackage {
+        /// Local project whose manifests are read.
+        project: LocalProjectId,
+        /// Root current when the read was requested.
+        basis: VersionedRoot,
+        /// Request identity.
+        request: RequestId,
+    },
     /// Apply a stable action from a keymap or command palette.
     Action(ActionId),
     /// No-op used by deterministic replay and reducer laws.
@@ -242,6 +252,15 @@ pub enum EngineCommand {
         /// Typed daemon-owned surface command.
         command: backend_library::SurfaceCommand,
         /// Root basis to match.
+        basis: VersionedRoot,
+        /// Request identity.
+        request: RequestId,
+    },
+    /// Read one local project's package facts on the actor's local lane.
+    ReadLocalPackage {
+        /// Local project whose manifests are read.
+        project: LocalProjectId,
+        /// Root current when the read was requested.
         basis: VersionedRoot,
         /// Request identity.
         request: RequestId,

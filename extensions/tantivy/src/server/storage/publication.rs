@@ -114,6 +114,12 @@ pub(crate) fn build_projection(
     writer
         .commit()
         .map_err(|source| backend_error(StorePhase::Commit, &index_path, source))?;
+    // Merge and garbage-collection threads keep rewriting segment files after
+    // `commit` returns. Join them before the fsync barrier, or the directory
+    // published below is still changing underneath its readers.
+    writer
+        .wait_merging_threads()
+        .map_err(|source| backend_error(StorePhase::Commit, &index_path, source))?;
     Index::open_in_dir(&index_path)
         .map_err(|source| backend_error(StorePhase::Reopen, &index_path, source))?;
     sync_directory(&index_path)
@@ -323,15 +329,7 @@ fn validate_documents(
 }
 
 pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        fs::File::open(path)?.sync_all()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
+    backend_platform::durability::open_directory(path)?.sync_all()
 }
 
 #[allow(

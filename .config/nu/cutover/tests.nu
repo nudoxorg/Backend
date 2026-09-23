@@ -18,6 +18,7 @@ let default_config = if (($env.PWD | path join ".config") | path exists) {
 } else {
     $env.PWD | path join "implementation/.config"
 }
+
 let root = $env.BACKEND_CONFIG_SNAPSHOT? | default $default_config
 let test_policy_root = "test-policy-root"
 $env.BACKEND_POLICY_ROOT_DIGEST = $test_policy_root
@@ -35,7 +36,7 @@ let fixture = open ($root | path join "fixtures/control-plane/scope-exactly-one.
 let workspace_root = $env.BACKEND_WORKSPACE_SNAPSHOT? | default ($root | path dirname)
 let git_probe = (^git -C $workspace_root rev-parse --show-toplevel | complete)
 let workspace_git_root = $git_probe.stdout | str trim
-let workspace_available = ($workspace_root | path join "Cargo.toml" | path exists)
+let workspace_available = $workspace_root | path join "Cargo.toml" | path exists
 let git_available = $git_probe.exit_code == 0 and $workspace_git_root == ($workspace_root | path expand)
 
 let discovered_paths = if $workspace_available and not $git_available {
@@ -609,7 +610,11 @@ def test-lock-liveness-and-fence [] {
     assert ($acquired.owner != "dead-owner") "dead owner fence must be replaced"
     assert ($acquired.epoch > 7) "lock epoch must advance across stale recovery"
     assert (($lock | path join "heartbeat" | path exists)) "lock must persist a heartbeat"
-    (expect-failure "foreign lock release" { release-lock "forged-owner" } "lock-owner-mismatch")
+    (expect-failure
+        "foreign lock release"
+        { release-lock "forged-owner" }
+        "lock-owner-mismatch"
+    )
     touch-lock-heartbeat
     release-lock $acquired.owner
 
@@ -894,7 +899,7 @@ def test-candidate-evaluation-and-cas [] {
     (expect-failure
         "coverage evidence forgery"
         {
-            let forged_claim = ($claim | from json | upsert coverage_evidence [] | to json)
+            let forged_claim = $claim | from json | upsert coverage_evidence [] | to json
             (as-role
                 terra-reviewer
                 evidence-admit

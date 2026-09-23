@@ -1,7 +1,10 @@
 //! Version-fenced publication transactions and row encoding.
 
 use crate::read::metadata_from;
-use crate::schema::{MAX_AUDIT_ROOTS, SCHEMA_VERSION, UPSERT_ROW};
+use crate::schema::{
+    MAX_AUDIT_ROOTS, REBUILD_BATCH_ROWS, SCHEMA_VERSION, UPSERT_COLUMNS, UPSERT_CONFLICT,
+    UPSERT_ROW,
+};
 use crate::{ProjectionError, ProjectionUpdate, TursoProjection};
 use backend_library::{
     CommittedViewDelta, Fragment, Row, RowChange, RowId, RowState, ViewDelta, ViewRoot,
@@ -21,12 +24,13 @@ impl TursoProjection {
         &mut self,
         view: &ViewRoot,
     ) -> Result<ProjectionUpdate, ProjectionError> {
-        if let Some(metadata) = self.metadata().await?
+        let expected = self.metadata().await?;
+        if let Some(metadata) = expected.as_ref()
             && metadata.root.as_slice() == view.root().as_bytes()
             && metadata.view_version.as_slice() == view.version().as_bytes()
         {
             return Ok(ProjectionUpdate::Reused {
-                rows: u64::try_from(metadata.row_count).unwrap_or(0),
+                rows: metadata.row_count.cast_unsigned(),
             });
         }
 
@@ -40,19 +44,33 @@ impl TursoProjection {
             .connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
             .await?;
-        if let Some(current) = metadata_from(&tx).await?
+        let observed = metadata_from(&tx).await?;
+        if let Some(current) = observed.as_ref()
             && current.root.as_slice() == view.root().as_bytes()
             && current.view_version.as_slice() == view.version().as_bytes()
         {
+            let rows = current.row_count.cast_unsigned();
             tx.rollback().await?;
-            return Ok(ProjectionUpdate::Reused {
-                rows: u64::try_from(current.row_count).unwrap_or(0),
-            });
+            return Ok(ProjectionUpdate::Reused { rows });
+        }
+        // Any other change since the pre-transaction read means a peer
+        // published a different root while this rebuild waited. Publishing
+        // now could overwrite a newer root with a stale complete one.
+        if observed != expected {
+            tx.rollback().await?;
+            return Err(ProjectionError::StaleTransition);
         }
         tx.execute("DELETE FROM backend_projection_rows", ())
             .await?;
-        for row in view.rows() {
-            upsert_row(&tx, row).await?;
+        for rows in view.rows().chunks(REBUILD_BATCH_ROWS) {
+            upsert_rows(&tx, rows).await?;
+        }
+        // Each SQL statement creates one immutable FTS segment. Compact the
+        // bounded rebuild batches once before publishing the root fence; hot
+        // one-row deltas remain append-only and avoid global maintenance.
+        if view.row_count() > REBUILD_BATCH_ROWS as u64 {
+            tx.execute("OPTIMIZE INDEX backend_projection_rows_fts", ())
+                .await?;
         }
         tx.execute(
             "INSERT INTO backend_projection_meta \
@@ -102,8 +120,11 @@ impl TursoProjection {
     ///
     /// # Errors
     ///
-    /// Returns [`ProjectionError::StaleTransition`] when the chain is empty,
-    /// discontinuous, or starts at a different cached root.
+    /// Returns [`ProjectionError::StaleTransition`] when an empty chain has no
+    /// initialized projection, when a nonempty chain is discontinuous, or when
+    /// it starts at a different cached root. A chain whose target fence is
+    /// already committed is replay-safe and returns
+    /// [`ProjectionUpdate::Reused`].
     pub async fn apply_all(
         &mut self,
         deltas: &[CommittedViewDelta],
@@ -114,7 +135,7 @@ impl TursoProjection {
                 .await?
                 .ok_or(ProjectionError::StaleTransition)?;
             return Ok(ProjectionUpdate::Reused {
-                rows: u64::try_from(metadata.row_count).unwrap_or(0),
+                rows: metadata.row_count.cast_unsigned(),
             });
         };
         let last = deltas.last().ok_or(ProjectionError::StaleTransition)?;
@@ -133,6 +154,16 @@ impl TursoProjection {
         let Some(metadata) = self.metadata().await? else {
             return Err(ProjectionError::StaleTransition);
         };
+        // A retried receipt whose target fence already committed is a no-op,
+        // not a stale base: replaying it must not mutate rows or force a
+        // rebuild.
+        if metadata.root.as_slice() == last.target_root().as_bytes()
+            && metadata.view_version.as_slice() == last.target_version().as_bytes()
+        {
+            return Ok(ProjectionUpdate::Reused {
+                rows: metadata.row_count.cast_unsigned(),
+            });
+        }
         if metadata.root.as_slice() != first.base_root().as_bytes()
             || metadata.view_version.as_slice() != first.base_version().as_bytes()
         {
@@ -233,6 +264,31 @@ async fn apply_delta(
 }
 
 async fn upsert_row(connection: &turso::Connection, row: &Row) -> turso::Result<u64> {
+    connection.execute(UPSERT_ROW, row_values(row)).await
+}
+
+async fn upsert_rows(connection: &turso::Connection, rows: &[Row]) -> turso::Result<u64> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let mut sql = String::with_capacity(
+        UPSERT_COLUMNS.len() + UPSERT_CONFLICT.len() + rows.len().saturating_mul(23),
+    );
+    sql.push_str(UPSERT_COLUMNS);
+    for index in 0..rows.len() {
+        if index != 0 {
+            sql.push(',');
+        }
+        sql.push_str("(?,?,?,?,?,?,?,?,?,?)");
+    }
+    sql.push_str(UPSERT_CONFLICT);
+    let values = rows.iter().flat_map(row_values).collect::<Vec<_>>();
+    connection
+        .execute(&sql, turso::params_from_iter(values))
+        .await
+}
+
+fn row_values(row: &Row) -> [turso::Value; 10] {
     let (kind, id) = row_identity(row.id);
     let state = match row.state {
         RowState::Ready => 0_i64,
@@ -252,23 +308,18 @@ async fn upsert_row(connection: &turso::Connection, row: &Row) -> turso::Result<
     let signature = row.signature.as_ref().map_or(turso::Value::Null, |value| {
         turso::Value::Text(value.clone())
     });
-    connection
-        .execute(
-            UPSERT_ROW,
-            turso::params![
-                id,
-                kind,
-                row_hash(row).as_bytes().as_slice(),
-                state,
-                row.label.as_str(),
-                score,
-                package,
-                parent,
-                signature,
-                render_document(&row.document)
-            ],
-        )
-        .await
+    [
+        turso::Value::Text(id),
+        turso::Value::Integer(kind),
+        turso::Value::Blob(row_hash(row).as_bytes().to_vec()),
+        turso::Value::Integer(state),
+        turso::Value::Text(row.label.clone()),
+        score,
+        package,
+        parent,
+        signature,
+        turso::Value::Text(render_document(&row.document)),
+    ]
 }
 
 async fn record_commit(

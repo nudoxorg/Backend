@@ -5,7 +5,7 @@ use super::snapshot::EffectSnapshotReceipt;
 use crate::fault::{Boundary, Faults};
 use crate::journal::JournalError;
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -137,7 +137,7 @@ pub(super) fn write_snapshot_pointer(
         faults
             .trip(Boundary::DirSync)
             .map_err(EffectError::Injected)?;
-        File::open(parent)
+        backend_platform::durability::open_directory(parent)
             .and_then(|directory| directory.sync_all())
             .map_err(|error| EffectError::Persistence(error.to_string()))?;
         Ok(())

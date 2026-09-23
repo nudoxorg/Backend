@@ -1,6 +1,6 @@
 //! UI-thread runtime coordinator.
 
-use super::actor::{CancellationToken, EngineActor, EngineRequest};
+use super::actor::{CancellationToken, EngineActor, EngineRequest, LocalRead};
 use super::mailbox::{CoalesceKey, Coalescible};
 use super::mapping::{MappingError, map_event};
 use crate::core::{LocalProjectId, SnapshotReadModel};
@@ -14,6 +14,9 @@ struct InflightRequest {
     cancel: CancellationToken,
     lane: Option<CoalesceKey>,
     index_project: Option<LocalProjectId>,
+    /// Whether the result is producer-root state that a newer root makes
+    /// stale. Local manifest reads are not.
+    rooted: bool,
 }
 
 /// Runtime events observed by the UI entity graph.
@@ -98,6 +101,19 @@ impl DesktopRuntime {
 
     fn submit(&mut self, command: EngineCommand) {
         let (request, engine_request, basis, cancel) = match command {
+            EngineCommand::ReadLocalPackage {
+                project,
+                basis,
+                request,
+            } => {
+                self.submit_local(LocalRead {
+                    request,
+                    project,
+                    basis,
+                    cancel: CancellationToken::new(),
+                });
+                return;
+            }
             EngineCommand::ReadRoot { basis, request } => {
                 let cancel = CancellationToken::new();
                 (
@@ -191,6 +207,7 @@ impl DesktopRuntime {
                     EngineRequest::IndexProject { project, .. } => Some(project.clone()),
                     _ => None,
                 },
+                rooted: true,
             },
         );
         match self.actor.try_submit_coalesced(engine_request) {
@@ -203,6 +220,35 @@ impl DesktopRuntime {
             super::mailbox::PushResult::Full(request)
             | super::mailbox::PushResult::Closed(request) => {
                 if let Some(old) = self.inflight.remove(&request.request()) {
+                    old.cancel.cancel();
+                }
+            }
+        }
+    }
+
+    /// Submits one local read on the actor's local lane, replacing any
+    /// older read for the same project.
+    fn submit_local(&mut self, read: LocalRead) {
+        let request = read.request;
+        let lane = read.coalesce_key();
+        self.retire_lane(request, lane);
+        self.inflight.insert(
+            request,
+            InflightRequest {
+                basis: read.basis,
+                cancel: read.cancel.clone(),
+                lane,
+                index_project: None,
+                rooted: false,
+            },
+        );
+        match self.actor.try_submit_local(read) {
+            super::mailbox::PushResult::Enqueued => {}
+            super::mailbox::PushResult::Coalesced(old) => {
+                self.inflight.remove(&old.request);
+            }
+            super::mailbox::PushResult::Full(read) | super::mailbox::PushResult::Closed(read) => {
+                if let Some(old) = self.inflight.remove(&read.request) {
                     old.cancel.cancel();
                 }
             }
@@ -247,7 +293,9 @@ impl DesktopRuntime {
             };
             let index_request = inflight.index_project.is_some();
             if !event.basis.same_authority(inflight.basis)
-                || (!index_request && !event.basis.same_authority(self.snapshot.key()))
+                || (!index_request
+                    && inflight.rooted
+                    && !event.basis.same_authority(self.snapshot.key()))
             {
                 events.push(RuntimeEvent::RejectedStale(MappingError::StaleRoot {
                     expected: self.snapshot.key(),

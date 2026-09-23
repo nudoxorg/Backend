@@ -62,17 +62,47 @@ in
     };
     viewport = {
       required = [
-        { width = 640; height = 480; }
-        { width = 800; height = 600; }
-        { width = 900; height = 600; }
-        { width = 1024; height = 768; }
-        { width = 1280; height = 800; }
-        { width = 1440; height = 900; }
-        { width = 1600; height = 1000; }
-        { width = 1920; height = 1080; }
-        { width = 2560; height = 1440; }
+        {
+          width = 640;
+          height = 480;
+        }
+        {
+          width = 800;
+          height = 600;
+        }
+        {
+          width = 900;
+          height = 600;
+        }
+        {
+          width = 1024;
+          height = 768;
+        }
+        {
+          width = 1280;
+          height = 800;
+        }
+        {
+          width = 1440;
+          height = 900;
+        }
+        {
+          width = 1600;
+          height = 1000;
+        }
+        {
+          width = 1920;
+          height = 1080;
+        }
+        {
+          width = 2560;
+          height = 1440;
+        }
       ];
-      scales = [ 1 2 ];
+      scales = [
+        1
+        2
+      ];
       defaultWidth = 1440;
       defaultHeight = 900;
       defaultScale = 1;
@@ -115,7 +145,11 @@ in
     };
     display = {
       default = "x11";
-      backends = [ "x11" "wayland" "quartz" ];
+      backends = [
+        "x11"
+        "wayland"
+        "quartz"
+      ];
       x11 = {
         display = ":99";
         screen = "0";
@@ -145,7 +179,10 @@ in
       midpointMs = 125;
       nearSettledMs = 234;
       maxFrames = 3600;
-      reducedMotion = [ "static-start" "static-settled" ];
+      reducedMotion = [
+        "static-start"
+        "static-settled"
+      ];
       requiredPhases = [
         "start"
         "first-moving"
@@ -173,7 +210,11 @@ in
       };
       frameTrace = {
         required = true;
-        detect = [ "allocation" "object" "timer" ];
+        detect = [
+          "allocation"
+          "object"
+          "timer"
+        ];
         driverArgument = "--frame-trace";
       };
       redaction = {
@@ -194,7 +235,13 @@ in
       defaultCount = 1;
       maxCount = 128;
       stableAcrossRuns = true;
-      includeTags = [ "route" "state" "input" "animation" "service" ];
+      includeTags = [
+        "route"
+        "state"
+        "input"
+        "animation"
+        "service"
+      ];
     };
     locks = {
       root = ".local/gui-locks";
@@ -229,7 +276,10 @@ in
         dryRunByDefault = true;
         requireExactStoreRoots = true;
         requireExplicitConfirmation = true;
-        preserve = [ "gui-harness" "gui-tools" ];
+        preserve = [
+          "gui-harness"
+          "gui-tools"
+        ];
       };
     };
     services = {
@@ -239,7 +289,11 @@ in
         serviceCommandEnvironment = "NUDOX_GUI_SERVICE_COMMAND";
         readinessCommandEnvironment = "NUDOX_GUI_READINESS_COMMAND";
         protocol = "nudox-locald-framed-v1";
-        authorities = [ "gui" "cli" "mcp" ];
+        authorities = [
+          "gui"
+          "cli"
+          "mcp"
+        ];
         requireLive = true;
       };
       driver = {
@@ -269,7 +323,9 @@ in
       };
     };
     journeys = {
-      manifest = ".config/gui/journeys.json";
+      # Relative to the configuration root (`.config`), which is what
+      # `gui-manifest` joins it onto in both live and immutable mode.
+      manifest = "gui/journeys.json";
       requiredTags = [
         "route"
         "loading"
@@ -285,7 +341,15 @@ in
         "cli"
         "mcp"
       ];
-      requiredModes = [ "cold" "warm" "offline-warm" "interrupted" "corrupt" "stale-endpoint" "concurrent" ];
+      requiredModes = [
+        "cold"
+        "warm"
+        "offline-warm"
+        "interrupted"
+        "corrupt"
+        "stale-endpoint"
+        "concurrent"
+      ];
       requiredFlows = [
         "package-indexing"
         "code-search"

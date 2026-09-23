@@ -142,6 +142,16 @@ impl<T> Resource<T> {
         }
     }
 
+    /// Creates a current loaded resource around an already shared value.
+    #[must_use]
+    pub fn loaded_arc_at(value: Arc<T>, root: VersionedRoot) -> Self {
+        Self {
+            value: Some((value, root)),
+            terminal: ResourceTerminal::Complete,
+            activity: Activity::Rest,
+        }
+    }
+
     /// Marks a request as waiting while retaining a last-good value.
     #[must_use]
     pub fn waiting(self) -> Self {

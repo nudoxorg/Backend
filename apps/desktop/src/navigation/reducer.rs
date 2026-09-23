@@ -135,6 +135,17 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
                 request,
             }));
         }
+        Intent::RefreshLocalPackage {
+            project,
+            basis,
+            request,
+        } => {
+            effects.push(Effect::Engine(EngineCommand::ReadLocalPackage {
+                project,
+                basis,
+                request,
+            }));
+        }
         Intent::Action(action) => {
             if let Some(intent) = action.intent() {
                 return reduce(&next, intent);
@@ -317,6 +328,33 @@ mod tests {
             panic!("source route")
         };
         assert_eq!(source.project.as_ref(), Some(&project));
+    }
+
+    #[test]
+    fn local_package_refresh_is_one_local_read_effect_without_a_snapshot_change()
+    -> Result<(), crate::core::IdentityError> {
+        let value = snapshot();
+        let basis = value.key().observed_at(5);
+        let project = crate::core::LocalProjectId::new("/tmp/nudox-local")?;
+        let request = super::super::RequestId::new(6);
+        let reduced = reduce(
+            &value,
+            Intent::RefreshLocalPackage {
+                project: project.clone(),
+                basis,
+                request,
+            },
+        );
+        assert_eq!(reduced.snapshot, value);
+        assert_eq!(
+            reduced.effects,
+            [Effect::Engine(EngineCommand::ReadLocalPackage {
+                project,
+                basis,
+                request,
+            })]
+        );
+        Ok(())
     }
 
     #[test]

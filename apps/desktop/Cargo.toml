@@ -33,6 +33,7 @@ image = { version = "0.25.10", default-features = false, features = ["png"], opt
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 
 [features]
 # Direct GPUI CE capture against the same live host/bootstrap as the product.

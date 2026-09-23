@@ -1,5 +1,6 @@
 //! Crates.io-style package dossier and registry fact lanes.
 
+use super::local_package;
 use super::primitives::{fact, heading, loading_card};
 use crate::model::{AppSnapshot, PackageSummary};
 use crate::navigation::{Intent, PackageLane, PackageRoute, Route};
@@ -27,37 +28,14 @@ pub(super) fn package_page(
             .find(|row| row.coordinate == route.package)
     });
     let Some(package) = package else {
+        // A package the live registry does not know may be the served local
+        // project itself; its dossier comes from the project's own manifest.
+        if let Some(project) = local_package::owning_project(snapshot, &route.package) {
+            return local_package::page(root, theme, snapshot, route, &project, cx);
+        }
         return loading_card(theme, snapshot.catalog().terminal()).into_any_element();
     };
-    let package_id = package.coordinate.clone();
-    let tabs = [
-        ("Overview", PackageLane::Overview),
-        ("Dependencies", PackageLane::Dependencies),
-        ("Dependents", PackageLane::Dependents),
-        ("Releases", PackageLane::Releases),
-        ("Security", PackageLane::Security),
-    ]
-    .into_iter()
-    .map(|(label, lane)| {
-        let route = Route::Package(PackageRoute {
-            project: route.project.clone(),
-            package: package_id.clone(),
-            lane,
-            selected: Some(package.object),
-        });
-        let id = format!("package-tab-{label}");
-        components::measure(
-            theme,
-            id.clone(),
-            components::button_with_state(theme, id, label, components::Weight::Quiet, false, true)
-                .selected(route == *snapshot.route())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.queue(Intent::Navigate(route.clone()), cx);
-                })),
-        )
-        .into_any_element()
-    })
-    .collect::<Vec<_>>();
+    let tabs = lane_tabs(theme, snapshot, route, Some(package.object), cx);
     let doc_route = Route::Page(crate::navigation::PageRoute {
         project: route.project.clone(),
         package: package.coordinate.clone(),
@@ -109,6 +87,44 @@ pub(super) fn package_page(
         .child(package_fact_rail(theme, package))
         .child(package_sections(root, theme, package, route, cx))
         .into_any_element()
+}
+
+/// Renders the five lane tabs for one package route.
+pub(super) fn lane_tabs(
+    theme: &Theme,
+    snapshot: &AppSnapshot,
+    route: &PackageRoute,
+    selected: Option<crate::model::ObjectId>,
+    cx: &mut Context<UiRootEntity>,
+) -> Vec<AnyElement> {
+    [
+        ("Overview", PackageLane::Overview),
+        ("Dependencies", PackageLane::Dependencies),
+        ("Dependents", PackageLane::Dependents),
+        ("Releases", PackageLane::Releases),
+        ("Security", PackageLane::Security),
+    ]
+    .into_iter()
+    .map(|(label, lane)| {
+        let route = Route::Package(PackageRoute {
+            project: route.project.clone(),
+            package: route.package.clone(),
+            lane,
+            selected,
+        });
+        let id = format!("package-tab-{label}");
+        components::measure(
+            theme,
+            id.clone(),
+            components::button_with_state(theme, id, label, components::Weight::Quiet, false, true)
+                .selected(route == *snapshot.route())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.queue(Intent::Navigate(route.clone()), cx);
+                })),
+        )
+        .into_any_element()
+    })
+    .collect()
 }
 
 fn package_fact_rail(theme: &Theme, package: &PackageSummary) -> impl IntoElement {

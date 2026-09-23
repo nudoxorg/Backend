@@ -7,6 +7,7 @@
 
 mod catalog;
 mod keys;
+mod local_package;
 mod onboarding;
 mod package;
 mod primitives;
@@ -165,7 +166,7 @@ fn sync_component_overlay(
     match desired {
         Overlay::AddProject => {
             let input = cx.new(|cx| {
-                gpui_component::input::InputState::new(window, cx).placeholder("/path/to/project")
+                gpui_component::input::InputState::new(window, cx).placeholder(project_admission::example_path())
             });
             let focus = input.read(cx).focus_handle(cx);
             let dialog_owner = owner.clone();

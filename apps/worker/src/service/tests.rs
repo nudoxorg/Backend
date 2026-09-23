@@ -480,6 +480,8 @@ fn cancellation_fixture() -> (
     (worker, admission, request, entered, limits)
 }
 
+// `UnixStream::pair` is the in-process socket pair; Windows has no equivalent.
+#[cfg(unix)]
 #[test]
 fn stream_cancel_keeps_control_loop_live_and_releases_active_capacity() {
     let (mut worker, mut admission, request, entered, limits) = cancellation_fixture();

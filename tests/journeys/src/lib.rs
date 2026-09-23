@@ -1081,7 +1081,11 @@ fn bounded_subscription_returns_real_events_and_resets_on_a_gap() {
 fn desktop_rekeys_one_snapshot_without_copying_unchanged_branches() {
     let (library, capability) = checked_library();
     let base = library.view().clone();
-    let desktop = AppSnapshot::empty(VersionedRoot::new(base.root(), 7));
+    let desktop = AppSnapshot::empty(VersionedRoot::from_revision(
+        7,
+        backend_library::Cursor::at(base.root(), 0),
+        0,
+    ));
     let shelf = desktop.shelf() as *const _;
     let documents = desktop.documents() as *const _;
     let row = Row::new(
@@ -1091,7 +1095,7 @@ fn desktop_rekeys_one_snapshot_without_copying_unchanged_branches() {
     );
     let (library, _) = advance_library(library, ViewDelta::Upsert { row }, &capability);
     let rekeyed = desktop.with_key(
-        VersionedRoot::new(library.view().root(), 7).with_generation(1),
+        VersionedRoot::from_revision(7, backend_library::Cursor::at(library.view().root(), 1), 0),
         None,
     );
     assert_eq!(rekeyed.root(), library.view().root());

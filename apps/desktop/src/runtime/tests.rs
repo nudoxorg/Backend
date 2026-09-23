@@ -199,12 +199,79 @@ fn result_coalescing_retires_the_replaced_request() {
         basis,
         request: second,
     });
-    for _ in 0..100 {
-        if !runtime.poll().is_empty() {
-            break;
-        }
+    // Replacing `first` retires it at once; its already-queued result then
+    // drains as a stale rejection. `second` is only retired once the actor
+    // has produced its own result, so poll until that happens instead of
+    // stopping at the first non-empty drain, which is `first`'s leftover.
+    assert!(!runtime.is_inflight(first));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while runtime.is_inflight(second) && std::time::Instant::now() < deadline {
+        let _ = runtime.poll();
         std::thread::yield_now();
     }
     assert!(!runtime.is_inflight(first));
     assert!(!runtime.is_inflight(second));
+}
+
+#[test]
+fn local_package_read_runs_off_the_producer_lane_and_survives_a_root_advance() -> Result<(), String>
+{
+    let folder = std::env::temp_dir().join(format!(
+        "nudox-runtime-local-package-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos())
+    ));
+    std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    std::fs::write(
+        folder.join("Cargo.toml"),
+        "[package]\nname = \"runtime-fixture\"\nversion = \"3.1.4\"\n[dependencies]\nserde = \"1\"\n",
+    )
+    .map_err(|error| error.to_string())?;
+    let project =
+        crate::core::LocalProjectId::from_path(&folder).map_err(|error| error.to_string())?;
+    let actor = super::actor::EngineActor::start_with_loader(
+        EchoClient,
+        2,
+        crate::model::LocalPackageLoader::without_cargo(),
+    )
+    .map_err(|error| error.to_string())?;
+    let mut runtime = DesktopRuntime::new(snapshot(), actor);
+    let basis = runtime.snapshot().key();
+    let local = RequestId::new(30);
+    runtime.dispatch(Intent::RefreshLocalPackage {
+        project: project.clone(),
+        basis,
+        request: local,
+    });
+    // A root advance while the read is in flight must not discard it: local
+    // manifest facts are not producer-root state.
+    let root = RequestId::new(31);
+    runtime.dispatch(Intent::RefreshRoot {
+        basis,
+        request: root,
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while (runtime.is_inflight(local) || runtime.is_inflight(root))
+        && std::time::Instant::now() < deadline
+    {
+        runtime.poll();
+        std::thread::yield_now();
+    }
+    let _removed = std::fs::remove_dir_all(&folder);
+    let snapshot = runtime.snapshot();
+    assert!(
+        snapshot.key().generation() > basis.generation(),
+        "root advanced"
+    );
+    let package = snapshot
+        .local_package()
+        .loaded_value()
+        .ok_or("local package was not admitted after the root advanced")?;
+    assert_eq!(package.project, project);
+    assert_eq!(package.name.as_ref(), "runtime-fixture");
+    assert_eq!(package.version.as_deref(), Some("3.1.4"));
+    assert_eq!(package.dependencies.len(), 1);
+    Ok(())
 }

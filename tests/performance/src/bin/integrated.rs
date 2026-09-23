@@ -1202,14 +1202,16 @@ fn run_discovery() -> BenchResult<DiscoveryMeasurement> {
         backend_engine::SourceUnavailableReason::TooLarge,
     )
     .ok()
-    .and_then(|record| record.file_fields())
-    .is_some_and(|fields| {
-        matches!(
-            fields.retention,
-            backend_engine::DeclarationRetention::Unavailable(
-                backend_engine::SourceUnavailableReason::TooLarge
+    .is_some_and(|record| {
+        // `file_fields` borrows the record, so inspect it while it lives.
+        record.file_fields().is_some_and(|fields| {
+            matches!(
+                fields.retention,
+                backend_engine::DeclarationRetention::Unavailable(
+                    backend_engine::SourceUnavailableReason::TooLarge
+                )
             )
-        )
+        })
     }) {
         1
     } else {

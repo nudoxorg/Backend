@@ -14,7 +14,7 @@
 
 use backend_client::Session;
 use backend_desktop::{
-    core::VersionedRoot,
+    core::{LocalProjectId, VersionedRoot},
     navigation::RequestId,
     runtime::{CancellationToken, EngineClient, EngineDto, EngineRequest, LocalEngineClient},
 };
@@ -609,10 +609,9 @@ fn assert_registry_facts(endpoint: &Path, coordinate: &str, package_name: &str) 
             assert_ne!(record.facts_version, [0; 32]);
             match &record.downloads {
                 RegistryDownloadCount::Exact(_) | RegistryDownloadCount::Approximate(_) => {}
-                RegistryDownloadCount::NotReported(reason) => assert!(
-                    !reason.as_str().is_empty(),
-                    "missing download data must carry a source gap"
-                ),
+                // A missing count is carried as typed source coverage, so the
+                // gap is structural rather than a human-readable reason.
+                RegistryDownloadCount::Unavailable(_) => {}
             }
             assert_ne!(record.advisory.schema, 0);
             if matches!(
@@ -699,15 +698,16 @@ fn assert_registry_facts(endpoint: &Path, coordinate: &str, package_name: &str) 
     record.bytes
 }
 
-fn assert_desktop_root(endpoint: &Path) -> (backend_library::ViewRoot, String) {
+fn assert_desktop_root(endpoint: &Path, workspace: &Path) -> (backend_library::ViewRoot, String) {
     let mut session = Session::connect(endpoint).expect("desktop session connect");
     let reply = session.packages().expect("desktop package snapshot");
     let CommandReply::Packages(snapshot) = reply.reply else {
         panic!("desktop package reply changed shape");
     };
     let root = snapshot.root;
-    let basis = VersionedRoot::new(root.root(), 1);
-    let mut desktop = LocalEngineClient::new(endpoint, "live-registry");
+    let basis = VersionedRoot::from_revision(1, backend_library::Cursor::at(root.root(), 0), 0);
+    let project = LocalProjectId::from_path(workspace).expect("served workspace identity");
+    let mut desktop = LocalEngineClient::new(endpoint, project);
     let mapped = desktop
         .execute(&EngineRequest::Root {
             request: RequestId::new(1),
@@ -718,7 +718,7 @@ fn assert_desktop_root(endpoint: &Path) -> (backend_library::ViewRoot, String) {
     let EngineDto::Root { key, .. } = mapped else {
         panic!("desktop root request changed shape");
     };
-    assert_eq!(key.root, root.root());
+    assert_eq!(key.root(), root.root());
     assert!(root.rows().iter().any(|row| row.label.starts_with("pkg:")));
 
     // Exercise the semantic-side desktop journey against the same root. A
@@ -1036,7 +1036,7 @@ fn pinned_native_registries_ingest_through_cli_mcp_and_desktop() {
         );
         assert_mcp_profile(&mcp, &coordinate);
 
-        let (_root, project_name) = assert_desktop_root(&endpoint);
+        let (_root, project_name) = assert_desktop_root(&endpoint, &workspace);
         let mut desktop = Session::connect(&endpoint).expect("desktop settings reconnect");
         let package = PackageReference::parse(&coordinate).expect("desktop project package");
         let added_to_project = desktop

@@ -889,6 +889,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -985,6 +986,7 @@ dependencies = [
 name = "backend-extension-tantivy"
 version = "0.1.0"
 dependencies = [
+ "backend-platform",
  "backend-semantic",
  "backend-version",
  "blake3",
@@ -1406,6 +1408,7 @@ dependencies = [
  "backend-engine",
  "backend-extension-tantivy",
  "backend-extension-trustfall",
+ "backend-platform",
  "backend-semantic",
  "backend-version",
  "blake3",
@@ -1454,6 +1457,7 @@ name = "backend-worker"
 version = "0.1.0"
 dependencies = [
  "backend-engine",
+ "backend-platform",
  "rustix 1.1.4",
 ]
 
@@ -11190,6 +11194,7 @@ dependencies = [
  "cfg_block",
  "chrono",
  "crc32c",
+ "crc32fast",
  "crossbeam-epoch",
  "crossbeam-utils",
  "either",
@@ -11228,6 +11233,7 @@ dependencies = [
  "smallvec",
  "strum 0.26.3",
  "strum_macros 0.26.4",
+ "tantivy",
  "tempfile",
  "thiserror 2.0.20",
  "tracing",

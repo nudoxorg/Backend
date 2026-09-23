@@ -5,7 +5,9 @@
 set -eu
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
-source_script="$repo_root/.config/scripts/cargo-shared-cache.sh"
+# A Nix check runs this file as a lone store path, where the repository layout
+# is gone; it names the script under test explicitly instead.
+source_script="${NUDOX_CARGO_CACHE_SCRIPT:-$repo_root/.config/scripts/cargo-shared-cache.sh}"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/nudox-cargo-cache.XXXXXX")"
 cleanup() {
   if [ -n "${socket_pid:-}" ]; then

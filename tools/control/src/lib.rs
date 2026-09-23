@@ -9,6 +9,7 @@
 pub mod context;
 mod custody;
 mod error;
+pub mod evidence;
 pub mod ids;
 pub mod ledger;
 pub mod record;

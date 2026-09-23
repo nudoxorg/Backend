@@ -32,13 +32,24 @@ in
 
   # Exercises the Cargo lease protocol with fake Cargo/git/sccache processes;
   # it is deliberately independent from the workspace build graph.
-  cargo-cache-protocol = pkgs.runCommand "nudox-cargo-cache-protocol" {
-    nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.gawk pkgs.python3 ];
-  } ''
-    ${pkgs.bash}/bin/bash ${../../tests/cargo-shared-cache.sh}
-    mkdir -p $out/share
-    "validated" > $out/share/cargo-cache-protocol
-  '';
+  cargo-cache-protocol =
+    pkgs.runCommand "nudox-cargo-cache-protocol"
+      {
+        nativeBuildInputs = [
+          pkgs.bash
+          pkgs.coreutils
+          pkgs.gawk
+          # Lease recovery compares an owner's process start time via `ps`.
+          pkgs.ps
+          pkgs.python3
+        ];
+      }
+      ''
+        NUDOX_CARGO_CACHE_SCRIPT=${../scripts/cargo-shared-cache.sh} \
+          ${pkgs.bash}/bin/bash ${../../tests/cargo-shared-cache.sh}
+        mkdir -p $out/share
+        echo validated > $out/share/cargo-cache-protocol
+      '';
 
   # Guard the public `luna-tools` shell's actual Nix requisites. Checking
   # PATH alone would allow a wrapper to hide an accidental backend/GUI
@@ -77,7 +88,11 @@ in
   gui-contract = helpers.nuCheck {
     inherit pkgs;
     name = "nudox-gui-contract";
-    packages = [ commands.backend gui.toolsBundle pkgs.jq ];
+    packages = [
+      commands.backend
+      gui.toolsBundle
+      pkgs.jq
+    ];
     environment = {
       BACKEND_CONFIG_MODE = "immutable";
       BACKEND_CONFIG_SNAPSHOT = toString ../.;
@@ -86,9 +101,9 @@ in
     };
     build = ''
       backend gui validate
-      jq --exit-status \
-        '(.schema == 1) and (.viewport.required | length == 9) and (.viewport.scales == [1,2]) and (.animation.requiredPhases | length == 8) and (.acceptance.loops | map(.name) == ["property","randomized","differential","metamorphic"]) and (.gpu.framework == "gpui-ce") and (.gpu.componentFramework == "gpui-ce-component") and (.services.serverIndex.protocol == "nudox-locald-framed-v1") and (.services.hiddenHoldouts.required == true)' \
-        "$BACKEND_GUI_CONFIG"
+      # The build script is Nushell: one command per line, no `\` continuations,
+      # and environment variables are read through `$env`.
+      ^jq --exit-status '(.schema == 1) and (.viewport.required | length == 9) and (.viewport.scales == [1,2]) and (.animation.requiredPhases | length == 8) and (.acceptance.loops | map(.name) == ["property","randomized","differential","metamorphic"]) and (.gpu.framework == "gpui-ce") and (.gpu.componentFramework == "gpui-ce-component") and (.services.serverIndex.protocol == "nudox-locald-framed-v1") and (.services.hiddenHoldouts.required == true)' $env.BACKEND_GUI_CONFIG
       mkdir ($env.out | path join "share")
       "validated" | save ($env.out | path join "share" "gui-contract")
     '';
@@ -102,17 +117,18 @@ in
       BACKEND_CONFIG_MODE = "immutable";
       BACKEND_GUI_CONFIG = "${gui.configFile}/share/nudox/gui-control-plane.json";
     };
-    build = if tools.guiRuntime == null then
-      ''
-        echo "GUI service contract requires the workspace runtime closure" >&2
-        exit 78
-      ''
-    else
-      ''
-        nudox-gui-service-test
-        mkdir ($env.out | path join "share")
-        "validated" | save ($env.out | path join "share" "gui-service-contract")
-      '';
+    build =
+      if tools.guiRuntime == null then
+        ''
+          echo "GUI service contract requires the workspace runtime closure" >&2
+          exit 78
+        ''
+      else
+        ''
+          nudox-gui-service-test
+          mkdir ($env.out | path join "share")
+          "validated" | save ($env.out | path join "share" "gui-service-contract")
+        '';
   };
 
   ast-grep-rules = helpers.nuCheck {

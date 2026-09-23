@@ -31,6 +31,7 @@ impl TursoProjection {
         // next to the database.
         let database = turso::Builder::new_local(text)
             .experimental_multiprocess_wal(true)
+            .experimental_index_method(true)
             .build()
             .await?;
         let connection = database.connect()?;
@@ -49,4 +50,45 @@ impl TursoProjection {
         }
         Ok(projection)
     }
+
+    /// Opens the projection, rebuilding one written under an older schema.
+    ///
+    /// The projection is derived entirely from the authoritative workspace
+    /// journal, so an older on-disk schema is discarded rather than migrated
+    /// and the caller's next `synchronize` repopulates it. A newer schema is
+    /// still refused: an older binary must never destroy a newer file.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`Self::open`] error except an older schema, and
+    /// [`ProjectionError::Discard`] when the outdated files cannot be removed.
+    pub async fn open_or_rebuild(path: impl AsRef<Path>) -> Result<Self, ProjectionError> {
+        let path = path.as_ref();
+        match Self::open(path).await {
+            Err(ProjectionError::Schema { found }) if found < schema::SCHEMA_VERSION => {
+                discard(path)?;
+                Self::open(path).await
+            }
+            opened => opened,
+        }
+    }
+}
+
+/// Removes a projection database and the sidecars Turso keeps beside it.
+fn discard(path: &Path) -> Result<(), ProjectionError> {
+    let mut targets = vec![path.to_path_buf()];
+    for suffix in ["-wal", "-shm", "-tshm"] {
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(suffix);
+        targets.push(sidecar.into());
+    }
+    for target in targets {
+        match std::fs::remove_file(&target) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(ProjectionError::Discard(error));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }

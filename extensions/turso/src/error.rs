@@ -21,6 +21,13 @@ pub enum ProjectionError {
     RowCountOverflow,
     /// A package graph exceeded the bounded SQL graph projection size.
     GraphRowCountOverflow,
+    /// Persisted projection metadata is structurally invalid.
+    CorruptMetadata {
+        /// Name of the malformed metadata field.
+        field: &'static str,
+    },
+    /// A projection file from an older schema could not be discarded.
+    Discard(std::io::Error),
 }
 
 impl fmt::Display for ProjectionError {
@@ -43,6 +50,12 @@ impl fmt::Display for ProjectionError {
             Self::RowCountOverflow => formatter.write_str("projection row count overflows i64"),
             Self::GraphRowCountOverflow => {
                 formatter.write_str("package graph row count overflows i64")
+            }
+            Self::CorruptMetadata { field } => {
+                write!(formatter, "projection metadata field {field} is invalid")
+            }
+            Self::Discard(error) => {
+                write!(formatter, "discard outdated Turso projection: {error}")
             }
         }
     }

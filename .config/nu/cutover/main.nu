@@ -511,7 +511,8 @@ def typed-control [command: string, arguments: list<string>]: nothing -> any {
 def typed-control-ledger [ledger: path] {
     if ($ledger | is-empty) { [] } else {
         [
-            "--ledger" ($ledger | path expand)
+            "--ledger"
+            ($ledger | path expand)
         ]
     }
 }
@@ -525,7 +526,8 @@ def "main cutover control status" [--after: string = "", --limit: int = 256, --l
         $arguments | append ["--after" $after]
     }
     let arguments = $arguments | append [
-        "--limit" ($limit | into string)
+        "--limit"
+        ($limit | into string)
     ]
     typed-control "status" $arguments
 }
@@ -669,14 +671,16 @@ def "main cutover control decision" [
 # @class control-plane
 def "main cutover control fail" [work_key: string, fence: string, --ledger: path = ""]: nothing -> record {
     require-tool "control-fail" "controller"
-    typed-control "fail" ((typed-control-ledger $ledger) | append ["--key" $work_key "--fence" $fence])
+    let arguments = typed-control-ledger $ledger | append ["--key" $work_key "--fence" $fence]
+    typed-control "fail" $arguments
 }
 
 # Cancels one active typed attempt.
 # @class control-plane
 def "main cutover control cancel" [work_key: string, fence: string, --ledger: path = ""]: nothing -> record {
     require-tool "control-cancel" "controller"
-    typed-control "cancel" ((typed-control-ledger $ledger) | append ["--key" $work_key "--fence" $fence])
+    let arguments = typed-control-ledger $ledger | append ["--key" $work_key "--fence" $fence]
+    typed-control "cancel" $arguments
 }
 
 # Reaps expired typed attempts through the expiry projection.
@@ -690,7 +694,8 @@ def "main cutover control recover" [--ledger: path = ""]: nothing -> record {
 # @class control-plane
 def "main cutover control invalidate" [work_key: string, --ledger: path = ""]: nothing -> record {
     require-tool "control-invalidate" "controller"
-    typed-control "invalidate" ((typed-control-ledger $ledger) | append ["--key" $work_key])
+    let arguments = typed-control-ledger $ledger | append ["--key" $work_key]
+    typed-control "invalidate" $arguments
 }
 
 # The commands below own bootstrap evidence custody. Keep their wire shapes

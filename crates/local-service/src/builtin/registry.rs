@@ -695,7 +695,7 @@ pub(super) fn stage_archive(
         let _ = fs::remove_dir_all(&temporary);
         return Err(RegistryAddError::UnsupportedArchive);
     }
-    File::open(&temporary)
+    backend_platform::durability::open_directory(&temporary)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| RegistryAddError::Acquisition(AcquisitionError::Io(error)))?;
     if let Err(error) = fs::rename(&temporary, &directory) {
@@ -706,7 +706,7 @@ pub(super) fn stage_archive(
             return Err(RegistryAddError::Acquisition(AcquisitionError::Io(error)));
         }
     }
-    File::open(&staging_root)
+    backend_platform::durability::open_directory(&staging_root)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| RegistryAddError::Acquisition(AcquisitionError::Io(error)))?;
     Ok(StagedProject { path: directory })

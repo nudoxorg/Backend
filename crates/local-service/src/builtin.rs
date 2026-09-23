@@ -866,7 +866,7 @@ pub(crate) fn compose_owner(
         .map_err(|error| ProcessError::Profile(format!("repair product view: {error}")))?;
     let projection_path = config.workspace.join(backend_extension_turso::FILE_NAME);
     let mut sql_projection = futures_executor::block_on(
-        backend_extension_turso::TursoProjection::open(&projection_path),
+        backend_extension_turso::TursoProjection::open_or_rebuild(&projection_path),
     )
     .map_err(|error| {
         ProcessError::Profile(format!(

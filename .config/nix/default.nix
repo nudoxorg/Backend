@@ -25,21 +25,27 @@ let
           [ ]
       ) names
     );
-  workspacePolicyFiles = if builtins.pathExists (workspaceRoot + "/Cargo.toml") then [
-    (workspaceRoot + "/flake.nix")
-    (workspaceRoot + "/flake.lock")
-  ] else [ ];
-  policyFiles = workspacePolicyFiles ++ [
-    ../flake.nix
-    ../flake.lock
-  ]
-  ++ readPolicyTree ./.
-  ++ readPolicyTree ../nu/core
-  ++ readPolicyTree ../nu/scope
-  ++ readPolicyTree ../nu/cutover
-  ++ readPolicyTree ../contracts
-  ++ readPolicyTree ../gui
-  ++ readPolicyTree ../fixtures;
+  workspacePolicyFiles =
+    if builtins.pathExists (workspaceRoot + "/Cargo.toml") then
+      [
+        (workspaceRoot + "/flake.nix")
+        (workspaceRoot + "/flake.lock")
+      ]
+    else
+      [ ];
+  policyFiles =
+    workspacePolicyFiles
+    ++ [
+      ../flake.nix
+      ../flake.lock
+    ]
+    ++ readPolicyTree ./.
+    ++ readPolicyTree ../nu/core
+    ++ readPolicyTree ../nu/scope
+    ++ readPolicyTree ../nu/cutover
+    ++ readPolicyTree ../contracts
+    ++ readPolicyTree ../gui
+    ++ readPolicyTree ../fixtures;
   policyRootDigest = builtins.hashString "sha256" (
     builtins.concatStringsSep "\n" (
       map (path: "${toString path}:" + builtins.readFile path) policyFiles
