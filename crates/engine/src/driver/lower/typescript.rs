@@ -1964,7 +1964,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     } else {
                         0
                     };
-                    cells.push_child(target, None, flags)?;
+                    // A standalone function type mints no `Parameter` fact
+                    // for its parameters, so the written pattern is the only
+                    // source of a name; pass it explicitly rather than
+                    // leaving the child unnamed.
+                    let name = self.slice_span(parameter.pattern.span());
+                    cells.push_child(target, name, flags)?;
                 }
                 if let Some(rest) = function_type.params.rest.as_ref() {
                     let target = match rest.type_annotation.as_ref() {
@@ -1974,7 +1979,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         }
                         None => self.unannotated_fact(rest.span())?,
                     };
-                    cells.push_child(target, None, SemanticTypeChild::FLAG_REST)?;
+                    let name = self.slice_span(rest.rest.argument.span());
+                    cells.push_child(target, name, SemanticTypeChild::FLAG_REST)?;
                 }
                 let returned = function_type.return_type.type_annotation.span();
                 let target = self.child_target(returned.start, returned.end, next_depth)?;
