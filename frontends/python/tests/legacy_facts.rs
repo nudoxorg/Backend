@@ -123,8 +123,12 @@ fn spans_are_utf8_bytes_not_utf16_units() -> Result<(), TestError> {
         .iter()
         .find(|fact| fact.name == "héllo")
         .ok_or(TestError::MissingDeclaration("héllo"))?;
-    assert_eq!(hello.span, Span { start: 28, end: 41 });
-    assert_ne!(hello.span.end - hello.span.start, 12);
+    // The declaration extent is the complete definition (header and body);
+    // the header still ends at its colon, measured in UTF-8 bytes.
+    assert_eq!(hello.span, Span { start: 28, end: 50 });
+    assert_eq!(hello.header_end, Some(41));
+    assert_ne!(hello.span.end - hello.span.start, 21);
+    assert_ne!(41 - hello.span.start, 12);
     Ok(())
 }
 
