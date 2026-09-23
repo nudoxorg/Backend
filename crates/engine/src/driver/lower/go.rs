@@ -2187,9 +2187,13 @@ impl<'x, 'source> Projector<'x, 'source> {
                     let name = self.signature_parameter_name(row_index, ordinal_in_signature)?;
                     let ordinal = self.carrier(*child, name)?;
                     results.push(ordinal);
+                    // Only a source-named result labels its callable slot;
+                    // the positional `_`/`_1` carrier spelling is identity,
+                    // not a name the declaration wrote.
+                    let label = self.source_parameter_name(row_index, ordinal_in_signature)?;
                     carriers.push(TypeChild {
                         target: ordinal,
-                        name: None,
+                        name: label,
                         flags: 0,
                     });
                 }
@@ -2284,6 +2288,24 @@ impl<'x, 'source> Projector<'x, 'source> {
         owner: u32,
         ordinal: usize,
     ) -> Result<&'source [u8], GoCollectError> {
+        // An unnamed carrier is absent from the image; a source may also spell
+        // one with Go's blank identifier. Both are blanks, so both take the
+        // positional spelling: `_` at position zero and `_1`, `_2`, … after
+        // it. Without this, a signature such as
+        // `filter(_ *state, _ reflect.Type, _, _ reflect.Value)` frames four
+        // byte-identical carrier identities and collides as a duplicate.
+        Ok(self
+            .source_parameter_name(owner, ordinal)?
+            .unwrap_or_else(|| absent_name(ordinal)))
+    }
+
+    /// The carrier name exactly as the source wrote it; `None` for an
+    /// unnamed carrier or Go's blank identifier.
+    fn source_parameter_name(
+        &self,
+        owner: u32,
+        ordinal: usize,
+    ) -> Result<Option<&'source [u8]>, GoCollectError> {
         let parameter = self
             .image
             .signature_parameters()
@@ -2297,17 +2319,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             })
             .transpose()?
             .unwrap_or(&[]);
-        // An unnamed carrier is absent from the image; a source may also spell
-        // one with Go's blank identifier. Both are blanks, so both take the
-        // positional spelling: `_` at position zero and `_1`, `_2`, … after
-        // it. Without this, a signature such as
-        // `filter(_ *state, _ reflect.Type, _, _ reflect.Value)` frames four
-        // byte-identical carrier identities and collides as a duplicate.
-        Ok(if parameter.is_empty() || parameter == b"_" {
-            absent_name(ordinal)
-        } else {
-            parameter
-        })
+        Ok((!parameter.is_empty() && parameter != b"_").then_some(parameter))
     }
 
     fn carrier(&mut self, row_index: u32, name: &'source [u8]) -> Result<u32, GoCollectError> {

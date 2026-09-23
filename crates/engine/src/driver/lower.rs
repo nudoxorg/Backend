@@ -4373,15 +4373,20 @@ fn live_type<'source>(
             let result_start = scratch.begin_tuple_elements(result_count, row)?;
             for result in 0..result_count {
                 let position = parameter_count + result;
-                let (target, child_name, flags) =
+                let (_, child_name, flags) =
                     child(position).ok_or(backend_semantic::ir::BuildError::Dangling {
                         space: backend_semantic::ir::SemanticSpace::Type,
                         raw: row,
                     })?;
-                let target = target as usize;
-                let name = child_name.or_else(|| (target < facts.len).then(|| facts.names[target]));
+                // A result label is only ever the explicit child name a
+                // producer attached (a Go named result). Unlike a parameter,
+                // a result slot's target row is not a source-named binding:
+                // its fact name is the owning function's name (Rust,
+                // Python), a type spelling (TypeScript), or a synthesized
+                // positional identity (Go `_1`). Inheriting it would render
+                // `-> (apply: u8)` for a plain `-> u8`.
                 scratch.tuple_elements.push(TupleElement {
-                    label: name.map(|name| tree.intern_atom(name)).transpose()?,
+                    label: child_name.map(|name| tree.intern_atom(name)).transpose()?,
                     ty: child_type(position)?,
                     kind: if flags & SemanticTypeChild::FLAG_REST != 0 {
                         TupleElementKind::Rest
