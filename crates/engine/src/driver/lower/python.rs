@@ -729,7 +729,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
         // The shape each minted parameter fact carries, kept so the result
         // slot below can prove identity reuse instead of minting a duplicate
         // declaration.
-        let mut parameter_shapes: Vec<(SemanticTypeRecord<'source>, Vec<u32>)> = Vec::new();
+        let mut parameter_shapes: Vec<(&'source [u8], SemanticTypeRecord<'source>, Vec<u32>)> =
+            Vec::new();
         let mut any_resolved = false;
         let mut any_checked = false;
         for parameter in &declaration.parameters {
@@ -775,7 +776,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
             let coordinate = Self::coordinate(parameter.name_span, ordinal)?;
             parameter_ordinals.push(coordinate);
-            parameter_shapes.push((lowered_record, children));
+            parameter_shapes.push((parameter_name, lowered_record, children));
             self.child_rows
                 .push((coordinate, index, parameter.name_span));
         }
@@ -798,8 +799,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
             let reused = parameter_ordinals
                 .iter()
                 .zip(&parameter_shapes)
-                .find(|(_, (record, children))| {
-                    *record == lowered.record && *children == lowered.children
+                .find(|(_, (parameter_name, record, children))| {
+                    *parameter_name == name
+                        && *record == lowered.record
+                        && *children == lowered.children
                 })
                 .map(|(ordinal, _)| *ordinal);
             if let Some(ordinal) = reused {

@@ -729,6 +729,26 @@ fn python_fragment_apply_base_decodes_to_the_list_builtin_row() -> Result<(), Te
 }
 
 #[test]
+fn result_slot_is_its_own_row_even_when_a_parameter_shares_its_shape() -> Result<(), TestError> {
+    // `value` and the result are both `int`, but only a parameter named like
+    // the function is the result slot's own declaration; a same-shaped
+    // parameter under another name must not absorb the result.
+    let ir = compile_source(b"def same(value: int) -> int: ...\n")?;
+    exact_signature(&ir, "same", ItemKind::Function, "fn same(value: integer) -> integer")?;
+    let parameters: Vec<Vec<u8>> = ir
+        .items()
+        .filter(|item| item.kind() == ItemKind::Parameter)
+        .map(|item| item.name().to_vec())
+        .collect();
+    if parameters != vec![b"value".to_vec(), b"same".to_vec()] {
+        return Err(TestError::Falsified(
+            "the result slot collapsed into a same-shaped parameter",
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn checker_inference_is_rendered_when_pyrefly_is_available() -> Result<(), TestError> {
     let checker = backend_frontend_python::legacy::Pyrefly::from_env();
     if !checker.is_available() {
