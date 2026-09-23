@@ -17,6 +17,14 @@ use backend_frontend_go::legacy::GoOracle;
 use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
 use thiserror::Error;
 
+/// Distinguishes fixture directories created by parallel test threads within
+/// one process, where the clock and pid alone can repeat.
+static FIXTURE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn fixture_sequence() -> u64 {
+    FIXTURE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 const SOURCE: &[u8] = br#"// Package demo documents the semantic lane.
 package demo
 
@@ -128,7 +136,11 @@ fn compile_source(source: &[u8]) -> Result<Ir, TestError> {
         .map_err(|_| TestError::Resolve)?
         .as_nanos();
     let root =
-        std::env::temp_dir().join(format!("nudox-go-render-{nonce}-{}", std::process::id()));
+        std::env::temp_dir().join(format!(
+        "nudox-go-render-{nonce}-{}-{}",
+        std::process::id(),
+        fixture_sequence()
+    ));
     fs::create_dir_all(&root).map_err(TestError::Io)?;
     fs::write(
         root.join("go.mod"),

@@ -18,6 +18,14 @@ use backend_semantic::ir::{
 use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage};
 use thiserror::Error;
 
+/// Distinguishes fixture directories created by parallel test threads within
+/// one process, where the clock and pid alone can repeat.
+static FIXTURE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn fixture_sequence() -> u64 {
+    FIXTURE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 const SOURCE: &[u8] = br#""""A documented Python module."""
 import typing
 from pathlib import Path as LocalPath
@@ -164,7 +172,11 @@ fn compile_source(source: &'static [u8]) -> Result<Ir, TestError> {
         .duration_since(UNIX_EPOCH)
         .map_err(TestError::Clock)?
         .as_nanos();
-    let work = std::env::temp_dir().join(format!("nudox-python-render-{nonce}-{}", std::process::id()));
+    let work = std::env::temp_dir().join(format!(
+        "nudox-python-render-{nonce}-{}-{}",
+        std::process::id(),
+        fixture_sequence()
+    ));
     fs::create_dir_all(&work).map_err(TestError::Io)?;
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0_u8; 4096];
@@ -216,7 +228,11 @@ fn compile_fragment(source: &'static [u8]) -> Result<Vec<u8>, TestError> {
         .duration_since(UNIX_EPOCH)
         .map_err(TestError::Clock)?
         .as_nanos();
-    let work = std::env::temp_dir().join(format!("nudox-python-forward-{nonce}-{}", std::process::id()));
+    let work = std::env::temp_dir().join(format!(
+        "nudox-python-forward-{nonce}-{}-{}",
+        std::process::id(),
+        fixture_sequence()
+    ));
     fs::create_dir_all(&work).map_err(TestError::Io)?;
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0_u8; 4096];

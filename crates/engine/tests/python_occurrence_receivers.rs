@@ -29,6 +29,14 @@ use backend_semantic::ir::{
 use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage};
 use thiserror::Error;
 
+/// Distinguishes fixture directories created by parallel test threads within
+/// one process, where the clock and pid alone can repeat.
+static FIXTURE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn fixture_sequence() -> u64 {
+    FIXTURE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 const SOURCE: &[u8] = b"\
 import json
 from base64 import b64decode
@@ -104,8 +112,9 @@ fn python_receiver_occurrences_resolve_honestly() -> Result<(), TestError> {
         .map_err(TestError::Clock)?
         .as_nanos();
     let work = std::env::temp_dir().join(format!(
-        "nudox-python-receiver-{nonce}-{}",
-        std::process::id()
+        "nudox-python-receiver-{nonce}-{}-{}",
+        std::process::id(),
+        fixture_sequence()
     ));
     fs::create_dir_all(&work).map_err(|source| TestError::Io("create scratch", source))?;
     let cancelled = AtomicBool::new(false);

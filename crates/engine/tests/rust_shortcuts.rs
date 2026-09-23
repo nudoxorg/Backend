@@ -17,10 +17,19 @@ use backend_semantic::ir::{FragmentView, TypeFactSegment};
 use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 
+/// Distinguishes fixture directories created by parallel test threads within
+/// one process, where the clock and pid alone can repeat.
+static FIXTURE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn fixture_sequence() -> u64 {
+    FIXTURE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 fn fixture(source: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let root = std::env::temp_dir().join(format!(
-        "nudox-shortcuts-{}-{}",
+        "nudox-shortcuts-{}-{}-{}",
         std::process::id(),
+        fixture_sequence(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir_all(root.join("src"))?;
