@@ -32,6 +32,16 @@ use thiserror::Error;
 
 const PROFILE: LanguageProfile = LanguageProfile::Go(GoVersion::Go125);
 const STAGE: Stage = Stage::LowerIr;
+// These are the `errgroup` package's own exported names. The list used to
+// also assert `Do`, `DoChan`, and `Forget` — methods of a wholly different
+// sibling package, `singleflight.Group` — because this test predates
+// `GoOracle::authority_image_for_package` and drove the whole-module
+// `authority_image` instead, which serialized every package under the
+// module root (errgroup, semaphore, singleflight, syncmap) into one image.
+// Those sibling symbols only "worked" because they leaked in; scoping the
+// image to the selected package is exactly what stops two same-named
+// declarations in different packages (a real collision the frontend hit
+// on this same module) from colliding as one coordinate-free identity.
 const SYNC_SYMBOLS: &[&[u8]] = &[
     b"Group",
     b"Go",
@@ -39,9 +49,6 @@ const SYNC_SYMBOLS: &[&[u8]] = &[
     b"Wait",
     b"SetLimit",
     b"WithContext",
-    b"Do",
-    b"DoChan",
-    b"Forget",
 ];
 
 #[derive(Debug, Error)]
@@ -208,7 +215,7 @@ fn lifecycle(
     let source = fs::read(&primary).map_err(io)?;
     let oracle = GoOracle::default();
     let image_bytes = oracle
-        .authority_image(&primary, &module_root)
+        .authority_image_for_package(&primary, &module_root)
         .map_err(|source| TestError::Oracle { source })?;
     let image = GoImage::open(&image_bytes).map_err(|cause| {
         TestError::Fact(if cause.to_string().is_empty() {
@@ -413,7 +420,7 @@ fn lifecycle(
     .concat();
     fs::write(&primary, &modified).map_err(io)?;
     let second_image = oracle
-        .authority_image(&primary, &module_root)
+        .authority_image_for_package(&primary, &module_root)
         .map_err(|source| TestError::Oracle { source })?;
     let mut second_output = vec![0; 8 * 1024 * 1024];
     let second = compile_fragment(&modified, &second_image, &toolchain()?, &mut second_output)?;
