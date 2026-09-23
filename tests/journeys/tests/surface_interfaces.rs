@@ -285,7 +285,16 @@ fn surface_cases(root: &Path) -> Vec<SurfaceCase> {
         .expect("admit lockfile path");
     let profile = SemanticLanguageProfile::new(LanguageProfile::Rust(RustEdition::Rust2024));
     let generation = SemanticGenerationId::new([7; 32]);
+    let forge = ProductText::new("https://github.com/acme/example@tag:v1.0.0")
+        .expect("admit forge coordinate");
     vec![
+        SurfaceCase {
+            command: SurfaceCommand::Advisory {
+                package: package.clone(),
+                override_evidence: None,
+            },
+            expectation: SurfaceExpectation::Result("advisory"),
+        },
         SurfaceCase {
             command: SurfaceCommand::Read {
                 locators: vec![ProductText::new("missing::symbol").expect("admit locator")]
@@ -318,10 +327,26 @@ fn surface_cases(root: &Path) -> Vec<SurfaceCase> {
             expectation: SurfaceExpectation::Result("package"),
         },
         SurfaceCase {
+            command: SurfaceCommand::ForgeAdd {
+                coordinate: forge.clone(),
+            },
+            expectation: SurfaceExpectation::Result("forge-package-added"),
+        },
+        SurfaceCase {
+            command: SurfaceCommand::ForgeReference { coordinate: forge },
+            expectation: SurfaceExpectation::Result("forge-package-referenced"),
+        },
+        SurfaceCase {
             command: SurfaceCommand::Dependents {
                 package: package.clone(),
             },
             expectation: SurfaceExpectation::Result("dependents"),
+        },
+        SurfaceCase {
+            command: SurfaceCommand::Dependencies {
+                package: package.clone(),
+            },
+            expectation: SurfaceExpectation::Result("dependencies"),
         },
         SurfaceCase {
             command: SurfaceCommand::Owner {
@@ -457,17 +482,17 @@ fn assert_surface_registry_matches_cases(cases: &[SurfaceCase]) {
     let rows = registry_surface_rows();
     assert_eq!(
         COMMANDS.len(),
-        35,
+        40,
         "the closed command registry changed size"
     );
     assert_eq!(
         rows.len(),
-        24,
+        28,
         "the registry surface projection changed size"
     );
     assert_eq!(
         cases.len(),
-        24,
+        28,
         "the live SurfaceCommand matrix is incomplete"
     );
     let registry_ids = rows.iter().map(|row| row.id).collect::<BTreeSet<_>>();
@@ -639,9 +664,18 @@ fn assert_mcp_surface_reply(value: &Value, case: &SurfaceCase, label: &str) {
     }
 }
 
-fn run_mcp_surface_matrix(root: &Path, endpoint: &Path, project: &Path, cases: &[SurfaceCase]) {
+fn run_mcp_surface_matrix(
+    root: &Path,
+    endpoint: &Path,
+    project: &Path,
+    authority: &Path,
+    cases: &[SurfaceCase],
+) {
     let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_backend-journey-mcp"));
+    // The MCP process signs cursors with the owner's authority credential
+    // (d10dd4d83), so it must read the same file the locald was given.
     command
+        .env("BACKEND_LOCALD_AUTHORITY_SECRET_FILE", authority)
         .args(["--endpoint"])
         .arg(endpoint)
         .args(["--workspace"])
@@ -798,7 +832,13 @@ fn every_surface_variant_crosses_the_real_cli_and_mcp_processes() {
     let mcp_args = locald_args(&mcp_endpoint, &mcp_workspace, &mcp_authority);
     let mut mcp_locald = ChildGuard::spawn(&mcp_args, explicit_rustc().as_deref());
     wait_for_socket(&mcp_endpoint, &mut mcp_locald);
-    run_mcp_surface_matrix(&mcp_root, &mcp_endpoint, &mcp_project, &cases);
+    run_mcp_surface_matrix(
+        &mcp_root,
+        &mcp_endpoint,
+        &mcp_project,
+        &mcp_authority,
+        &cases,
+    );
 }
 
 #[test]
