@@ -27,6 +27,126 @@ const UNICODE_SOURCE: &[u8] = include_bytes!("fixtures/producer/unicode.cs");
 const UNICODE_IMAGE: &[u8] = include_bytes!("fixtures/producer/unicode.ncaimg");
 const DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v4\0";
 
+/// Strips the machine-specific absolute-path prefix the Roslyn oracle bakes
+/// into every atom naming the bound source file, leaving only the portion
+/// from `marker` onward.
+///
+/// `SourceLoader.CollectSourceFiles` resolves every root/source file through
+/// `Path.GetFullPath` before Roslyn parses it, and `AuthorityImage` embeds
+/// that exact `tree.FilePath` verbatim (`Atom(tree.FilePath)`). That is
+/// correct for the real production pipeline
+/// (`CSharpAuthorityProducer::authority_image` canonicalizes and passes real
+/// absolute paths too), but it means a byte-exact checked-in golden can only
+/// ever match a regeneration performed from the *exact same absolute
+/// checkout path* it was captured from. This repository runs many
+/// concurrent git worktrees at different absolute paths, and the committed
+/// `fidelity.ncaimg`/`unicode.ncaimg` fixtures were captured from a
+/// `backend-fix-csharp` worktree, so a raw byte compare mismatches from any
+/// other checkout — including the one the gate itself builds from.
+/// Normalizing both sides to the checkout-independent relative form restores
+/// a comparison that verifies the extraction is genuinely byte-reproducible
+/// (every declaration, span, type, reference and doc row still compares
+/// byte-for-byte) without depending on where the repository happens to live
+/// on disk.
+fn normalize_authority_image_paths(bytes: &[u8], marker: &str) -> Vec<u8> {
+    const HEADER_BYTES: usize = 256;
+    const DIRECTORY_OFFSET: usize = 48;
+    const DIRECTORY_ENTRY_BYTES: usize = 16;
+    const SECTION_COUNT: usize = 11;
+    const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v4\0";
+
+    struct DirEntry {
+        tag: u16,
+        row_bytes: u16,
+        count: u32,
+        offset: u32,
+        byte_count: u32,
+    }
+
+    let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]);
+    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+
+    let entries: Vec<DirEntry> = (0..SECTION_COUNT)
+        .map(|index| {
+            let at = DIRECTORY_OFFSET + index * DIRECTORY_ENTRY_BYTES;
+            DirEntry {
+                tag: u16_at(bytes, at),
+                row_bytes: u16_at(bytes, at + 2),
+                count: u32_at(bytes, at + 4),
+                offset: u32_at(bytes, at + 8),
+                byte_count: u32_at(bytes, at + 12),
+            }
+        })
+        .collect();
+
+    // Directory index 0 is `Section::Atoms` (offset/length pairs), index 1
+    // is `Section::AtomBytes` (the concatenated UTF-8 backing bytes). Every
+    // other section references an atom by table *index*, never by raw byte
+    // offset, so rewriting only these first two sections' content keeps
+    // every later section's bytes valid unchanged.
+    let atoms = &entries[0];
+    let atom_bytes_section = &entries[1];
+    let atoms_off = atoms.offset as usize;
+    let atom_bytes_off = atom_bytes_section.offset as usize;
+
+    let mut new_atom_bytes: Vec<u8> = Vec::new();
+    let mut new_atom_rows: Vec<u8> = Vec::with_capacity(atoms.count as usize * 8);
+    for index in 0..atoms.count as usize {
+        let row_at = atoms_off + index * 8;
+        let off = u32_at(bytes, row_at) as usize;
+        let len = u32_at(bytes, row_at + 4) as usize;
+        let raw = &bytes[atom_bytes_off + off..atom_bytes_off + off + len];
+        let rewritten = match std::str::from_utf8(raw).ok().and_then(|s| s.find(marker)) {
+            Some(at) => raw[at..].to_vec(),
+            None => raw.to_vec(),
+        };
+        let new_off = u32::try_from(new_atom_bytes.len()).unwrap_or(u32::MAX);
+        let new_len = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
+        new_atom_bytes.extend_from_slice(&rewritten);
+        new_atom_rows.extend_from_slice(&new_off.to_le_bytes());
+        new_atom_rows.extend_from_slice(&new_len.to_le_bytes());
+    }
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&new_atom_rows);
+    body.extend_from_slice(&new_atom_bytes);
+    for entry in &entries[2..] {
+        let start = entry.offset as usize;
+        let len = entry.byte_count as usize;
+        body.extend_from_slice(&bytes[start..start + len]);
+    }
+
+    let mut out = vec![0u8; HEADER_BYTES];
+    out.copy_from_slice(&bytes[..HEADER_BYTES]);
+    let total_len = u32::try_from(HEADER_BYTES + body.len()).unwrap_or(u32::MAX);
+    out[8..12].copy_from_slice(&total_len.to_le_bytes());
+
+    let mut cursor = u32::try_from(HEADER_BYTES).unwrap_or(u32::MAX);
+    for (index, entry) in entries.iter().enumerate() {
+        let at = DIRECTORY_OFFSET + index * DIRECTORY_ENTRY_BYTES;
+        let byte_count = if index == 1 {
+            u32::try_from(new_atom_bytes.len()).unwrap_or(u32::MAX)
+        } else {
+            entry.byte_count
+        };
+        out[at..at + 2].copy_from_slice(&entry.tag.to_le_bytes());
+        out[at + 2..at + 4].copy_from_slice(&entry.row_bytes.to_le_bytes());
+        out[at + 4..at + 8].copy_from_slice(&entry.count.to_le_bytes());
+        out[at + 8..at + 12].copy_from_slice(&cursor.to_le_bytes());
+        out[at + 12..at + 16].copy_from_slice(&byte_count.to_le_bytes());
+        cursor += byte_count;
+    }
+    out.extend_from_slice(&body);
+
+    let mut hasher = Sha256::new();
+    hasher.update(DIGEST_DOMAIN);
+    hasher.update(&out[..224]);
+    hasher.update(&out[256..]);
+    let digest = hasher.finalize();
+    out[224..256].copy_from_slice(&digest);
+    out
+}
+
 fn image(bytes: &[u8]) -> Result<CSharpImage<'_>, Box<dyn Error>> {
     CSharpImage::open(bytes).map_err(|error| format!("image rejected: {error:?}").into())
 }
@@ -251,7 +371,18 @@ fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn E
     }
     let first_bytes = fs::read(&first)?;
     let second_bytes = fs::read(&second)?;
-    assert_eq!(first_bytes, IMAGE);
+    // `IMAGE` was captured from a different worktree's absolute checkout
+    // path than this one (see `normalize_authority_image_paths`'s doc
+    // comment); compare the checkout-independent form so this assertion
+    // verifies real Roslyn-extraction parity instead of an absolute-path
+    // coincidence. `first_bytes == second_bytes` below still compares raw,
+    // unnormalized bytes: both regenerations ran in this same process, so a
+    // raw mismatch there would be genuine non-determinism.
+    const MARKER: &str = "frontends/csharp/tests/fixtures/producer/fidelity.cs";
+    assert_eq!(
+        normalize_authority_image_paths(&first_bytes, MARKER),
+        normalize_authority_image_paths(IMAGE, MARKER)
+    );
     assert_eq!(first_bytes, second_bytes);
     let unicode_output = std::env::temp_dir().join("nudox-csharp-fidelity-unicode.ncaimg");
     let status = Command::new(&dotnet)
@@ -272,7 +403,11 @@ fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn E
         status.success(),
         "unicode oracle regeneration failed: {status}"
     );
-    assert_eq!(fs::read(unicode_output)?, UNICODE_IMAGE);
+    const UNICODE_MARKER: &str = "frontends/csharp/tests/fixtures/producer/unicode.cs";
+    assert_eq!(
+        normalize_authority_image_paths(&fs::read(unicode_output)?, UNICODE_MARKER),
+        normalize_authority_image_paths(UNICODE_IMAGE, UNICODE_MARKER)
+    );
     Ok(())
 }
 

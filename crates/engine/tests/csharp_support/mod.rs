@@ -5,7 +5,7 @@
 //! every journey runs its authority images through.
 
 use flate2::read::DeflateDecoder;
-use sha2::{Digest, Sha512};
+use sha2::{Digest, Sha256, Sha512};
 use std::{
     io::{self, Read},
     path::{Path, PathBuf},
@@ -805,6 +805,138 @@ pub fn primary(root: &Path, relative: &str) -> Result<PathBuf, Error> {
     } else {
         Err(Error::MissingSource)
     }
+}
+
+/// v4 Roslyn authority image header/directory geometry (mirrors
+/// `frontends/csharp/src/legacy/image.rs`'s private layout constants; kept
+/// in lockstep with that file's doc comment for the wire format).
+mod image_geometry {
+    pub const HEADER_BYTES: usize = 256;
+    pub const DIRECTORY_OFFSET: usize = 48;
+    pub const DIRECTORY_ENTRY_BYTES: usize = 16;
+    pub const SECTION_COUNT: usize = 11;
+    pub const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v4\0";
+}
+
+/// Strips the machine-specific absolute-path prefix that the Roslyn oracle
+/// bakes into every atom naming the bound source file, leaving only the
+/// portion from `marker` onward.
+///
+/// The oracle always resolves `--root`/`--source-binding` through
+/// `Path.GetFullPath` before binding `SyntaxTree.FilePath`
+/// (`SourceLoader.CollectSourceFiles`), and `AuthorityImage` embeds that
+/// exact `tree.FilePath` verbatim into the atom table
+/// (`Atom(tree.FilePath)` in `AuthorityImage.cs`). That is deliberate for
+/// the real production pipeline (`CSharpAuthorityProducer::authority_image`
+/// canonicalizes and passes real absolute paths too, and downstream
+/// provenance is meant to carry them), but it means a byte-exact checked-in
+/// golden can only ever match a regeneration performed from the *exact same
+/// absolute checkout path* it was captured from. This repository runs many
+/// concurrent git worktrees at different absolute paths (`backend`,
+/// `backend-fix-native`, `backend-fix-csharp`, ...), so no single committed
+/// absolute path is ever universally reproducible; the committed
+/// `fidelity.ncaimg`/`unicode.ncaimg` fixtures were captured from a
+/// `backend-fix-csharp` worktree and therefore mismatch a byte-exact regen
+/// from any other checkout, including the one the gate itself builds from.
+/// Normalizing both sides to the portion of the path from `marker` onward
+/// (a fixed, checkout-independent relative form) restores a comparison that
+/// actually verifies the extraction is byte-reproducible, without weakening
+/// it: everything other than the checkout-specific path prefix — every
+/// declaration, span, type, reference and doc row — is still compared
+/// byte-for-byte.
+pub fn normalize_authority_image_paths(bytes: &[u8], marker: &str) -> Vec<u8> {
+    use image_geometry::{DIGEST_DOMAIN, DIRECTORY_ENTRY_BYTES, DIRECTORY_OFFSET, HEADER_BYTES};
+
+    struct DirEntry {
+        tag: u16,
+        row_bytes: u16,
+        count: u32,
+        offset: u32,
+        byte_count: u32,
+    }
+
+    let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]);
+    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+
+    let entries: Vec<DirEntry> = (0..image_geometry::SECTION_COUNT)
+        .map(|index| {
+            let at = DIRECTORY_OFFSET + index * DIRECTORY_ENTRY_BYTES;
+            DirEntry {
+                tag: u16_at(bytes, at),
+                row_bytes: u16_at(bytes, at + 2),
+                count: u32_at(bytes, at + 4),
+                offset: u32_at(bytes, at + 8),
+                byte_count: u32_at(bytes, at + 12),
+            }
+        })
+        .collect();
+
+    // Directory index 0 is `Section::Atoms` (offset/length pairs), index 1
+    // is `Section::AtomBytes` (the concatenated UTF-8 backing bytes). Every
+    // other section references an atom by table *index*, never by raw byte
+    // offset, so rewriting only these first two sections' content keeps
+    // every later section's bytes valid unchanged.
+    let atoms = &entries[0];
+    let atom_bytes_section = &entries[1];
+    let atoms_off = atoms.offset as usize;
+    let atom_bytes_off = atom_bytes_section.offset as usize;
+
+    let mut new_atom_bytes: Vec<u8> = Vec::new();
+    let mut new_atom_rows: Vec<u8> = Vec::with_capacity(atoms.count as usize * 8);
+    for index in 0..atoms.count as usize {
+        let row_at = atoms_off + index * 8;
+        let off = u32_at(bytes, row_at) as usize;
+        let len = u32_at(bytes, row_at + 4) as usize;
+        let raw = &bytes[atom_bytes_off + off..atom_bytes_off + off + len];
+        let rewritten = match std::str::from_utf8(raw).ok().and_then(|s| s.find(marker)) {
+            Some(at) => raw[at..].to_vec(),
+            None => raw.to_vec(),
+        };
+        let new_off = u32::try_from(new_atom_bytes.len()).expect("image atom bytes fit u32");
+        let new_len = u32::try_from(rewritten.len()).expect("image atom fits u32");
+        new_atom_bytes.extend_from_slice(&rewritten);
+        new_atom_rows.extend_from_slice(&new_off.to_le_bytes());
+        new_atom_rows.extend_from_slice(&new_len.to_le_bytes());
+    }
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&new_atom_rows);
+    body.extend_from_slice(&new_atom_bytes);
+    for entry in &entries[2..] {
+        let start = entry.offset as usize;
+        let len = entry.byte_count as usize;
+        body.extend_from_slice(&bytes[start..start + len]);
+    }
+
+    let mut out = vec![0u8; HEADER_BYTES];
+    out.copy_from_slice(&bytes[..HEADER_BYTES]);
+    let total_len = u32::try_from(HEADER_BYTES + body.len()).expect("image total fits u32");
+    out[8..12].copy_from_slice(&total_len.to_le_bytes());
+
+    let mut cursor = u32::try_from(HEADER_BYTES).expect("header fits u32");
+    for (index, entry) in entries.iter().enumerate() {
+        let at = DIRECTORY_OFFSET + index * DIRECTORY_ENTRY_BYTES;
+        let byte_count = if index == 1 {
+            u32::try_from(new_atom_bytes.len()).expect("atom bytes fit u32")
+        } else {
+            entry.byte_count
+        };
+        out[at..at + 2].copy_from_slice(&entry.tag.to_le_bytes());
+        out[at + 2..at + 4].copy_from_slice(&entry.row_bytes.to_le_bytes());
+        out[at + 4..at + 8].copy_from_slice(&entry.count.to_le_bytes());
+        out[at + 8..at + 12].copy_from_slice(&cursor.to_le_bytes());
+        out[at + 12..at + 16].copy_from_slice(&byte_count.to_le_bytes());
+        cursor += byte_count;
+    }
+    out.extend_from_slice(&body);
+
+    let mut hasher = Sha256::new();
+    hasher.update(DIGEST_DOMAIN);
+    hasher.update(&out[..224]);
+    hasher.update(&out[256..]);
+    let digest = hasher.finalize();
+    out[224..256].copy_from_slice(&digest);
+    out
 }
 
 /// Copies one directory tree recursively, preserving file contents. Used to
