@@ -563,6 +563,62 @@ in
             priority = 80;
           }
           {
+            # `rust_remaining_terminals`'s two probes each drive the full
+            # direct-HIR compile (`RustProject::open_with_source` +
+            # `compile_semantic`, real `cargo metadata`/rust-analyzer
+            # bootstrap) once per tiny synthetic fixture body, with no
+            # cross-call caching. Neither test name contains
+            # "corpus"/"multilingual"/"native"/"real_package", so neither
+            # matches the general native-compiler filter below and both fell
+            # through to the closure profile's own 60s x 3 = 180s default.
+            # Measured standalone (debug build, `.#complete`):
+            # `rust_cfg_disabled_items_do_not_leak` "finished in 255.94s"
+            # (14 fixtures); `rust_gated_and_facade_crate_roots_admit_the_empty_product`
+            # "finished in 143.87s" (8 fixtures + 5 real corpus crates).
+            filter = "test(rust_cfg_disabled_items_do_not_leak) | test(rust_gated_and_facade_crate_roots_admit_the_empty_product)";
+            test-group = "native-compiler";
+            threads-required = 2;
+            priority = 90;
+            slow-timeout = {
+              period = "90s";
+              terminate-after = 6;
+            };
+          }
+          {
+            # `rust_real_corpus_repro`'s two whole-fleet probes and
+            # `compiler_corpus`'s `real_package_inventory_...` all match the
+            # general `/corpus|...|real_package/` filter below, so they
+            # already run in the "native-compiler" group, but its 45s x 3 =
+            # 135s budget (tuned for ordinary corpus checks) is too tight
+            # for these three. Measured standalone (debug build,
+            # `.#complete`): `rust_real_corpus_regression_fixtures`
+            # "finished in 207.25s" (10 fixed regression fixtures);
+            # `rust_real_corpus_crates_lower` needs ~165-270s to reach its
+            # own (pre-existing, out-of-scope) `winnow-0.5.40`
+            # `DuplicateDeclarationIdentity` assertion failure rather than
+            # being cut off mid-run; `real_package_inventory_...` walks a
+            # real multi-language package corpus and, after fixing the
+            # `Utf16Index` quadratic rescan in
+            # `crates/engine/src/driver/lower/java.rs`'s `push_use`, still
+            # legitimately takes several minutes end to end. NOTE:
+            # `real_package_inventory_...` was observed still getting killed
+            # under this override in both a full-workspace gate run (SIGTERM
+            # at 363.7s) and an isolated single-test run (exactly 135.007s,
+            # the un-overridden 45s x 3 default) — this group's budget does
+            # not reliably reach that one test even though it does reach the
+            # other two named here; the root cause (an nextest override
+            # precedence interaction this lane could not pin down) is still
+            # open.
+            filter = "test(rust_real_corpus_crates_lower) | test(rust_real_corpus_regression_fixtures) | test(real_package_inventory_keeps_source_provenance_and_closed_terminals)";
+            test-group = "native-compiler";
+            threads-required = 2;
+            priority = 90;
+            slow-timeout = {
+              period = "150s";
+              terminate-after = 8;
+            };
+          }
+          {
             # The frozen twenty-row Maven corpus journey and its real-package
             # dump mirror walk every source file of packages as large as
             # commons-lang3 (100+ files) through a real per-file javac
