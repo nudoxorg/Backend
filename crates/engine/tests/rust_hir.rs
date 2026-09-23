@@ -45,7 +45,7 @@ enum TestError {
     /// A validated entity named an atom absent from its own compact fragment.
     #[error("validated entity referenced a missing compact atom")]
     MissingAtom,
-    /// The source-backed RustToolchain declaration was not admitted from HIR.
+    /// The source-backed `Boxed` declaration was not admitted from HIR.
     #[error("rust-analyzer declaration identity did not survive compact admission")]
     RustToolchain,
 }
@@ -53,8 +53,30 @@ enum TestError {
 /// Proves one real Cargo package reaches the direct HIR fact lane without a scanner.
 #[test]
 fn real_rust_analyzer_project_admits_source_backed_declarations() -> Result<(), TestError> {
-    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../languages/rust");
-    let source_path = project_root.join("lib.rs");
+    // Pre-cutover this dogfooded `compiler/languages/rust/lib.rs`, addressed
+    // relative to the (also pre-cutover) `compiler/engine` manifest dir, and
+    // that single file declared `RustToolchain` directly. Commit 4298579e0
+    // ("cutover(w7): fold compiler-language-* into frontends/* as legacy
+    // modules") folded that crate into `frontends/rust`, whose crate root
+    // (`frontends/rust/lib.rs`) now only re-exports `RustToolchain` — the
+    // struct itself moved into a submodule file
+    // (`frontends/rust/src/legacy/authority.rs`) reached only through a
+    // `#[path]`-redirected `mod`. `RustProject::analyze_with_features` opens
+    // rust-analyzer's VFS by exact path and only a crate's own registered
+    // target root (its `[lib]`/`[[bin]]`/`[[test]]` path — never an
+    // arbitrary file reached transitively via `mod`) is guaranteed to be
+    // loaded there, so pointing at the submodule file directly fails with a
+    // typed `SourceNotLoaded`, not a lowering result. Every other caller in
+    // this codebase (the corpus tests, `rust_semantic_lane`, `rust_shortcuts`)
+    // already keeps to this rule by construction: they always hand it a
+    // package's own crate root. `frontends/rust/fixtures/rich_project` is an
+    // existing small standalone Cargo package built for exactly this direct-
+    // HIR purpose (already used as a fixture by
+    // `crates/engine/src/driver/lower/tests.rs`) whose crate root declares
+    // `pub struct Boxed` directly, so this proof uses that instead.
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../frontends/rust/fixtures/rich_project");
+    let source_path = project_root.join("src/lib.rs");
     let source = fs::read(&source_path).map_err(TestError::Source)?;
     let tool = std::env::var_os("RUSTC").map_or_else(
         || PathBuf::from("/etc/profiles/per-user/mileswirht/bin/rustc"),
@@ -64,11 +86,12 @@ fn real_rust_analyzer_project_admits_source_backed_declarations() -> Result<(), 
         return Err(TestError::MissingRustCompiler);
     }
     let frontend_toolchain = RustToolchain::discover(&tool).map_err(RustAuthorityError::from)?;
+    // `rich_project`'s own manifest declares `edition = "2021"`.
     let project = RustProject::open_with_source(
         &project_root,
         &source_path,
         &frontend_toolchain,
-        RustEdition::Rust2024,
+        RustEdition::Rust2021,
     )?;
     let resolved = ResolvedToolchain::from_version(
         NativeTool::Rustc,
@@ -80,7 +103,7 @@ fn real_rust_analyzer_project_admits_source_backed_declarations() -> Result<(), 
     let mut fragment_output = [0; 65_536];
     let compiled = match compile(
         CompileRequest {
-            profile: LanguageProfile::Rust(RustEdition::Rust2024),
+            profile: LanguageProfile::Rust(RustEdition::Rust2021),
             stage: Stage::LowerIr,
             source: &source,
             declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
@@ -150,7 +173,7 @@ fn real_rust_analyzer_project_admits_source_backed_declarations() -> Result<(), 
         let Some(name) = compiled.fragment.atoms().nth(atom) else {
             return Err(TestError::MissingAtom);
         };
-        if name.bytes == b"RustToolchain" {
+        if name.bytes == b"Boxed" {
             found = true;
             break;
         }

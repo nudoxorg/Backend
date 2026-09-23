@@ -161,7 +161,16 @@ fn compile_body(root: &PathBuf, body: &str) -> Result<Vec<u8>, TestError> {
         toolchain: ToolchainSelection::ResolvedNative(resolved),
         authority: SemanticAuthorityInput::Rust {
             project: &project,
-            maximum_source_bytes: SourceByteLimit::from(65_536),
+            // Every ordinary fixture in this file sits well under 64 KiB, so
+            // the floor keeps their admitted budget unchanged; the capacity
+            // falsifier below deliberately writes a much larger body (enough
+            // declarations to exceed `MAX_EMISSION_FACTS`) and needs the
+            // ceiling to scale with it instead of being source-length
+            // rejected before it ever reaches the fact-capacity check it
+            // means to prove.
+            maximum_source_bytes: SourceByteLimit::from(
+                u32::try_from(body.len().max(65_536)).unwrap_or(u32::MAX),
+            ),
             features: RustFeatureControl::default(),
         },
         control: CompileControl {
@@ -709,16 +718,36 @@ fn docs_lower_prose_and_local_links() -> Result<(), TestError> {
 
 /// A source beyond the lane's emission-fact bound is the exact typed
 /// lowering rejection, never a truncated emission.
+///
+/// `MAX_EMISSION_FACTS` (the hard fact-reservation ceiling every
+/// `ResourcePlan::for_source` clamp bottoms out at) was 2048 when this test
+/// was written, but it was later raised intentionally: 1024 -> 2048 in
+/// 21eaea220 ("admit the full corpus at measured emission geometry"), then
+/// progressively further, most recently to the current 32768 in ce74f843e
+/// (the versioned-engine/corpus cutover). One request byte-derived
+/// reservation now comfortably covers 2049 declarations, so this golden
+/// tracks the live ceiling in `crates/engine/src/driver/lower.rs`
+/// (`MAX_EMISSION_FACTS`) instead of the stale historical 2048: one fact per
+/// declaration means a source declaring one more item than that ceiling can
+/// never fit, regardless of how generously its byte-derived reservation
+/// scales.
 #[test]
-fn capacity_beyond_2048_is_the_exact_lowering_rejection() -> Result<(), TestError> {
+fn capacity_beyond_max_emission_facts_is_the_exact_lowering_rejection() -> Result<(), TestError> {
+    const MAX_EMISSION_FACTS: usize = 32768;
     let mut body = String::new();
-    for ordinal in 0..2049 {
+    for ordinal in 0..=MAX_EMISSION_FACTS {
         body.push_str(&format!("pub struct S{ordinal};\n"));
     }
+    // A capacity overflow at `push()` maps through the typed `FactRejected`
+    // cause (`crates/engine/src/driver/lower/rust.rs`'s `push` wrapper),
+    // which `failure_label` reports as `"fact-rejected"`, not the generic
+    // `"lowering-unsupported"` catch-all a zero-declaration source hits.
     match compile_fixture(body.as_str()) {
-        Err(TestError::Compile("lowering-unsupported")) => Ok(()),
+        Err(TestError::Compile("fact-rejected")) => Ok(()),
         Err(other) => Err(other),
-        Ok(_) => Err(TestError::Falsified("2049 declarations were admitted")),
+        Ok(_) => Err(TestError::Falsified(
+            "MAX_EMISSION_FACTS + 1 declarations were admitted",
+        )),
     }
 }
 

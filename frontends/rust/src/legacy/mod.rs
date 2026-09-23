@@ -15,8 +15,8 @@ mod purl;
 
 pub use self::authority::{
     ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
-    RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustMethodCall,
-    RustProject, SemanticKind, SourceByteLimit, SourceOrigin,
+    RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustInferredExpression,
+    RustMethodCall, RustProject, RustReexport, SemanticKind, SourceByteLimit, SourceOrigin,
 };
 pub use self::purl::{RustLocatedPackage, RustPackageUrl, RustPurlError};
 

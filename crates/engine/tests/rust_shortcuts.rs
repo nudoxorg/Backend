@@ -209,6 +209,15 @@ fn doc_locator_prefers_exact_content_span() -> Result<(), Box<dyn std::error::Er
 
 /// F1: the identity oracle's compact plane counts are fixed by the pre-change
 /// harness (commit 2eb5ad834; 2026-09-04; machine load may affect elapsed time).
+///
+/// The first fixture's own entity count was raised by one afterwards,
+/// intentionally, in ce74f843e (the versioned-engine/corpus cutover): a
+/// `macro_rules!` definition now commits its own closed `Macro` entity row
+/// (see the module doc comment on `crates/engine/src/driver/lower/rust.rs`,
+/// "a crate whose only written declaration is a macro still lowers instead
+/// of rejecting"), so `m!` is now a third entity beside `run` and pushes one
+/// more declared type fact along with it. The other two fixtures declare no
+/// macro, so their counts are untouched.
 #[test]
 fn identity_counts_match_prechange_oracle() -> Result<(), Box<dyn std::error::Error>> {
     let fixtures = [
@@ -220,6 +229,6 @@ fn identity_counts_match_prechange_oracle() -> Result<(), Box<dyn std::error::Er
         .into_iter()
         .map(|source| fixture(source).and_then(|bytes| facts(&bytes)))
         .collect::<Result<_, _>>()?;
-    assert_eq!(observed, [(2, 4, 3, 0), (3, 13, 4, 0), (2, 5, 2, 0)]);
+    assert_eq!(observed, [(3, 5, 3, 0), (3, 13, 4, 0), (2, 5, 2, 0)]);
     Ok(())
 }

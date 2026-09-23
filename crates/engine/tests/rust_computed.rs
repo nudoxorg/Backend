@@ -18,8 +18,18 @@ use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn compile_fixture(body: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    // Nextest runs each `#[test]` fn in its own process, so `FIXTURE_SEQUENCE`
+    // (a per-process atomic) resets to 0 for every test in this file. Without
+    // the process id, concurrently scheduled test processes all raced to
+    // write and read the identical path
+    // `<tmp>/nudox-rust-computed-fixture-0`, so one test's fixture body could
+    // land on disk just before another read its own `source_path`, producing
+    // a `SourceBinding` authority mismatch instead of a deterministic result.
     let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!("nudox-rust-computed-fixture-{sequence}"));
+    let root = std::env::temp_dir().join(format!(
+        "nudox-rust-computed-fixture-{}-{sequence}",
+        std::process::id()
+    ));
     fs::create_dir_all(root.join("src"))?;
     fs::write(
         root.join("Cargo.toml"),
@@ -56,7 +66,15 @@ fn compile_fixture(body: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
             toolchain: ToolchainSelection::ResolvedNative(resolved),
             authority: SemanticAuthorityInput::Rust {
                 project: &project,
-                maximum_source_bytes: SourceByteLimit::from(65_536),
+                // The floor keeps every ordinary small fixture's admitted
+                // budget unchanged; `computed_capacity_is_a_typed_rejection`
+                // deliberately writes a much larger body and needs the
+                // ceiling to scale with it, or it would hit the source-length
+                // rejection before ever reaching the computed-row-capacity
+                // check it means to prove.
+                maximum_source_bytes: SourceByteLimit::from(
+                    u32::try_from(body.len().max(65_536)).unwrap_or(u32::MAX),
+                ),
                 features: RustFeatureControl::default(),
             },
             control: CompileControl {
@@ -157,8 +175,14 @@ fn glob_use_does_not_fabricate_a_reexport() -> Result<(), Box<dyn std::error::Er
 
 #[test]
 fn computed_capacity_is_a_typed_rejection() -> Result<(), Box<dyn std::error::Error>> {
+    // `MAX_COMPUTED_TYPE_ROWS` (`crates/engine/src/driver/lower.rs`) was
+    // 1024 when this test was written but has since been raised, in step
+    // with every other emission ceiling, to 32768; 1025 let-bindings no
+    // longer overflows it. One past the live ceiling always will, since a
+    // proven computed row is never truncated into a fabricated one.
+    const MAX_COMPUTED_TYPE_ROWS: usize = 32768;
     let mut body = String::from("pub fn run() {");
-    for index in 0..1025 {
+    for index in 0..=MAX_COMPUTED_TYPE_ROWS {
         body.push_str(&format!("let value_{index} = {index}u32;"));
     }
     body.push('}');
