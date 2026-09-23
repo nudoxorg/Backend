@@ -68,7 +68,15 @@ const ROWS: &[(&str, &str, &[&[u8]])] = &[
     (
         "golang:golang.org/x/tools@v0.30.0",
         "golang.org/x/tools@v0.30.0",
-        &[b"Pass", b"Analyzer", b"Inspect", b"Reportf", b"ResultOf"],
+        // "Inspect" used to be asserted here too, but it names an unrelated
+        // method on `internal/astutil/cursor.Cursor`, not anything in
+        // `go/analysis` (the selected package, see `primary()` below). It
+        // only appeared because this test predates
+        // `GoOracle::authority_image_for_package` and drove the
+        // whole-module `authority_image`, which serialized every package
+        // under the module root into one image and let sibling-package
+        // names leak into the selected package's fragment.
+        &[b"Pass", b"Analyzer", b"Reportf", b"ResultOf"],
     ),
     (
         "golang:github.com/pelletier/go-toml/v2@v2.2.2",
@@ -238,7 +246,7 @@ fn row(
         output_limit: 32 * 1024 * 1024,
         timeout: Duration::from_secs(300),
     };
-    let image_bytes = match oracle.authority_image(&path, &module_root) {
+    let image_bytes = match oracle.authority_image_for_package(&path, &module_root) {
         Ok(image) => image,
         Err(_error) if module.starts_with("golang.org/x/tools") => {
             fs::remove_dir_all(root).map_err(|e| Error::Failure(e.to_string()))?;

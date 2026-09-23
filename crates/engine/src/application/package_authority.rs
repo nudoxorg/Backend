@@ -352,6 +352,15 @@ pub fn enter_package_authority<'request, 'config>(
                             profile: request.profile,
                             stage: PackageAuthorityStage::GoOracle,
                         })?;
+                // NOTE(package_authority-go-whole-module-collision): this
+                // should call an `authority_image_for_package`-equivalent,
+                // but `ConfiguredGoOracle` (the executable-bound wrapper used
+                // here) has no such method — only the unconfigured
+                // `GoOracle::authority_image_for_package` exists, used by
+                // tests that talk to `NUDOX_GO_ORACLE_BIN`/`go run` directly.
+                // See the reported product-bug task for the full fix (adding
+                // a package-scoped mode to `configured_command` and a
+                // `ConfiguredGoOracle::authority_image_for_package`).
                 let image = oracle
                     .authority_image(request.source_path, request.package_root)
                     .map_err(PackageAuthorityError::GoOracle)?;
