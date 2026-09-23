@@ -39,6 +39,7 @@ use backend_engine::publication::manifest_store::ImmutableManifestStore;
 use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use backend_semantic::vocabulary::{JavaRelease, LanguageProfile, NativeTool, Stage};
 use backend_engine::index_build::{IndexBuildScratch, build};
 use backend_engine::index_publish::{
@@ -151,6 +152,36 @@ impl Bench {
         }
         Ok(())
     }
+}
+
+/// Strips `//` and `/* */` comments so a keyword search over the remaining
+/// bytes never misreads prose (e.g. a javadoc line mentioning "interface")
+/// as a declaration. Not a full lexer: string/char literals are not
+/// tracked, so a comment-marker byte sequence quoted inside one would still
+/// be treated as a comment start. The frozen corpus files this drives never
+/// do that inside the file's leading declaration region, so the shortcut is
+/// safe for this test-only classification.
+fn strip_java_comments(source: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(source.len());
+    let mut index = 0;
+    while index < source.len() {
+        if source[index] == b'/' && source.get(index + 1) == Some(&b'/') {
+            while index < source.len() && source[index] != b'\n' {
+                index += 1;
+            }
+        } else if source[index] == b'/' && source.get(index + 1) == Some(&b'*') {
+            index += 2;
+            while index + 1 < source.len() && !(source[index] == b'*' && source[index + 1] == b'/')
+            {
+                index += 1;
+            }
+            index = (index + 2).min(source.len());
+        } else {
+            out.push(source[index]);
+            index += 1;
+        }
+    }
+    out
 }
 
 fn compile_fragment<'a>(
@@ -933,13 +964,52 @@ fn publication_leg(
         .rposition(|byte| *byte == b'}')
         .ok_or(TestError::Fact("generation-2 target has no closing brace"))?;
     let mut modified = parser_source[..closing].to_vec();
-    // Annotation-type members are abstract: a body would be a javac error.
-    // Every other kind admits a normal method body.
-    if parser_source
-        .windows(10)
-        .any(|window| window == b"@interface")
-    {
-        modified.extend_from_slice(b"  public void added();\n}\n");
+    // The declared top-level kind decides the only legal shape for the
+    // added member. Comments are stripped first so a stray "interface" in a
+    // javadoc line can't misclassify a class or enum, and the search is
+    // further limited to the header text before the outermost declaration
+    // body's `{`: a top-level class can and does declare its own nested
+    // `interface` (or `@interface`) in its body, which is irrelevant to the
+    // top-level kind that governs a member appended just inside the file's
+    // last `}`. The outermost `{` is the first one at paren-depth zero, not
+    // simply the first `{` in the file: a leading annotation's array
+    // argument (e.g. `@Target({ ElementType.METHOD })`) opens a `{` of its
+    // own, nested inside that annotation's `(...)`, before the real
+    // declaration is reached.
+    let uncommented = strip_java_comments(parser_source);
+    let mut header_end = uncommented.len();
+    let mut paren_depth = 0_i32;
+    for (offset, byte) in uncommented.iter().enumerate() {
+        match byte {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth -= 1,
+            b'{' if paren_depth == 0 => {
+                header_end = offset;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let header = &uncommented[..header_end];
+    let is_annotation = header.windows(10).any(|window| window == b"@interface");
+    let is_interface = !is_annotation && header.windows(10).any(|window| window == b" interface");
+    if is_annotation {
+        // Annotation-type members are abstract (a body would be a javac
+        // error) and must return one of the closed annotation-element
+        // types — `void` is not among them ("invalid type for annotation
+        // interface element"), so a defaulted `int` return keeps the added
+        // element legal even when the target `@interface` (e.g. JUnit's
+        // empty `BeforeEach`) declares no other elements to borrow a valid
+        // type from.
+        modified.extend_from_slice(b"  int added() default 0;\n}\n");
+    } else if is_interface {
+        // A plain interface method with a body is a javac error ("interface
+        // abstract methods cannot have body"), and a real abstract member
+        // would in turn break every class in the same file that already
+        // implements the interface ("is not abstract and does not override
+        // abstract method"), e.g. vavr's `Either`/`Left`/`Right`. `default`
+        // supplies a body without minting a new abstract obligation.
+        modified.extend_from_slice(b"  default void added() {}\n}\n");
     } else {
         modified.extend_from_slice(b"  public void added() {}\n}\n");
     }
@@ -1005,9 +1075,26 @@ fn publication_leg(
         .map_err(|e| TestError::Publish(e.to_string()))?
         .open(first_identity, &mut old_manifest, &mut old_facts)
         .map_err(|e| TestError::Publish(e.to_string()))?;
-    for (position, fact) in old.fragments().enumerate() {
-        let original = first_bytes
-            .get(position)
+    // `old.fragments()` walks the manifest in canonical package order, which
+    // `CompilationPrepare::prepare` sorts by content-addressed fragment
+    // identity (see `crates/engine/src/publication/manifest/build.rs`), not
+    // by the compile-time extraction order captured in `first_bytes`. Match
+    // each stored fragment back to its original by that identity rather than
+    // position, with no weakening: every original fragment must still be
+    // found, byte for byte.
+    let mut original_by_identity: std::collections::HashMap<
+        ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
+        &Vec<u8>,
+    > = std::collections::HashMap::with_capacity(first_bytes.len());
+    for original in &first_bytes {
+        let identity =
+            ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(original);
+        original_by_identity.insert(identity, original);
+    }
+    let mut matched = 0usize;
+    for fact in old.fragments() {
+        let original = original_by_identity
+            .get(&fact.fragment)
             .ok_or(TestError::Fact("first-generation fragment facts diverged"))?;
         let mut old_bytes = vec![0; 16 << 20];
         let old_bytes = ImmutableArtifactStore::new(&artifacts)
@@ -1019,6 +1106,10 @@ fn publication_leg(
         }
         FragmentView::validate(old_bytes.as_ref())
             .map_err(|e| TestError::Fragment(e.to_string()))?;
+        matched += 1;
+    }
+    if matched != first_bytes.len() {
+        return Err(TestError::Fact("first-generation fragment count diverged"));
     }
     Ok(())
 }

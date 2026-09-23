@@ -959,14 +959,14 @@ impl GoOracle {
 
     fn configured_command(
         configuration: &GoOracleConfiguration,
-        authority_source: Option<&Path>,
+        authority_source: Option<(&str, &Path)>,
         module: &Path,
     ) -> std::process::Command {
         match configuration {
             GoOracleConfiguration::OracleBinary(executable) => {
                 let mut command = std::process::Command::new(executable.as_ref());
-                if let Some(source) = authority_source {
-                    command.arg("--authority-image").arg(source);
+                if let Some((mode, source)) = authority_source {
+                    command.arg(mode).arg(source);
                 }
                 command.arg(module);
                 command
@@ -975,8 +975,8 @@ impl GoOracle {
                 let oracle_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/legacy/oracle");
                 let mut command = std::process::Command::new(executable.as_ref());
                 command.args(["run", "."]);
-                if let Some(source) = authority_source {
-                    command.arg("--authority-image").arg(source);
+                if let Some((mode, source)) = authority_source {
+                    command.arg(mode).arg(source);
                 }
                 command.arg(module).current_dir(oracle_dir);
                 command
@@ -1000,7 +1000,22 @@ impl GoOracle {
         source: &Path,
         module: &Path,
     ) -> Result<Vec<u8>, OracleError> {
-        let mut command = Self::configured_command(configuration, Some(source), module);
+        let mut command =
+            Self::configured_command(configuration, Some(("--authority-image", source)), module);
+        self.execute_configured(&mut command)
+    }
+
+    fn authority_image_for_package_configured(
+        &self,
+        configuration: &GoOracleConfiguration,
+        source: &Path,
+        module: &Path,
+    ) -> Result<Vec<u8>, OracleError> {
+        let mut command = Self::configured_command(
+            configuration,
+            Some(("--authority-image-package", source)),
+            module,
+        );
         self.execute_configured(&mut command)
     }
 
@@ -1194,6 +1209,22 @@ impl ConfiguredGoOracle {
     pub fn authority_image(&self, source: &Path, module: &Path) -> Result<Vec<u8>, OracleError> {
         self.oracle
             .authority_image_configured(&self.configuration, source, module)
+    }
+
+    /// Produces the authority image for exactly the package that owns
+    /// `source`, resolving imports from the module rooted at `module`. Unlike
+    /// [`ConfiguredGoOracle::authority_image`], sibling packages are import
+    /// context only and are never serialized, so a module whose subpackages
+    /// share a declaration spelling (e.g. `errgroup.Group` next to
+    /// `singleflight.Group` in `golang.org/x/sync`) cannot inject a
+    /// coordinate-free collision into the selected package's image.
+    pub fn authority_image_for_package(
+        &self,
+        source: &Path,
+        module: &Path,
+    ) -> Result<Vec<u8>, OracleError> {
+        self.oracle
+            .authority_image_for_package_configured(&self.configuration, source, module)
     }
 }
 

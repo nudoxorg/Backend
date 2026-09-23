@@ -8,7 +8,7 @@ use backend_engine::driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use backend_semantic::ir::{FragmentView, ImageProvenance};
-use backend_frontend_go::legacy::{GoImage, GoOracle};
+use backend_frontend_go::legacy::{ConfiguredGoOracle, GoImage, GoOracle, GoOracleConfiguration};
 use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published,
 };
@@ -499,5 +499,108 @@ fn twenty_one_real_modules_have_decoded_source_truth() -> Result<(), Error> {
         let (entities, outcome, wall, oracle) = row(purl, module, symbols, relative)?;
         println!("{purl} outcome={outcome} entities={entities} wall_ms={wall} oracle_ms={oracle}");
     }
+    Ok(())
+}
+
+/// Regression for the production Go authority path
+/// (`crates/engine/src/application/package_authority.rs`): a multi-package
+/// module must not leak a sibling package's same-named declaration into the
+/// selected package's image. `golang.org/x/sync` is the ready-made repro —
+/// `errgroup.Group` and `singleflight.Group` are both top-level `Group`
+/// structs in different packages of the same module — and it previously hit
+/// `enter_package_authority`'s Go branch through `ConfiguredGoOracle`, the
+/// only oracle wrapper production actually uses, via its whole-module
+/// `authority_image`. That call now goes through
+/// `ConfiguredGoOracle::authority_image_for_package`, so compiling
+/// `errgroup/errgroup.go` alone must no longer collide with `singleflight`'s
+/// `Group`, exactly as the already-package-scoped test-only `GoOracle` path
+/// (`twenty_one_real_modules_have_decoded_source_truth`'s `x/sync` row)
+/// does not.
+#[test]
+fn production_go_authority_scopes_a_multi_package_module_to_its_owning_package() -> Result<(), Error>
+{
+    let purl = "golang:golang.org/x/sync@v0.10.0";
+    let module = "golang.org/x/sync@v0.10.0";
+    let parsed = go_support::Purl::parse(purl)?;
+    let (url, expected) = go_support::locate(&parsed)?;
+    let archive = go_support::download(&url, 32 * 1024 * 1024, Instant::now() + Duration::from_secs(300))?;
+    if expected.is_some_and(|digest| go_support::sha256(&archive) != digest) {
+        return Err(Error::Failure("zip digest mismatch".into()));
+    }
+    let root = go_support::fresh_dir("package-authority")?;
+    go_support::unpack(&archive, &root)?;
+    go_support::ensure_module(&root, module)?;
+    let path = go_support::find_primary(&root, module, "errgroup/errgroup.go")?;
+    let source = fs::read(&path).map_err(|e| Error::Failure(e.to_string()))?;
+    let module_root = root.join(module);
+
+    let compiler = std::env::var_os("COMPILER_GO_COMPILER")
+        .ok_or_else(|| Error::Failure("COMPILER_GO_COMPILER is not set".into()))?;
+    let compiler = std::path::PathBuf::from(compiler)
+        .canonicalize()
+        .map_err(|e| Error::Failure(e.to_string()))?;
+    let configuration = GoOracleConfiguration::go_toolchain(compiler)
+        .map_err(|e| Error::Failure(e.to_string()))?;
+    let oracle = GoOracle {
+        output_limit: 32 * 1024 * 1024,
+        timeout: Duration::from_secs(300),
+    }
+    .with_configuration(configuration);
+
+    let cancelled = AtomicBool::new(false);
+    let owner = backend_engine::application::enter_package_authority(
+        backend_engine::application::PackageAuthorityRequest {
+            package_root: &module_root,
+            source_path: &path,
+            source: &source,
+            profile: PROFILE,
+            toolchain: ToolchainSelection::ResolvedNative(toolchain()?),
+            control: CompileControl {
+                deadline: Instant::now() + Duration::from_secs(300),
+                cancelled: &cancelled,
+            },
+            configuration: backend_engine::application::PackageAuthorityConfiguration {
+                go: Some(&oracle),
+                maximum_image_bytes: 32 * 1024 * 1024,
+                ..backend_engine::application::PackageAuthorityConfiguration::UNAVAILABLE
+            },
+        },
+    )
+    .map_err(|e| Error::Failure(format!("package authority: {e}")))?;
+
+    let mut diagnostic = vec![0; 64 * 1024];
+    let request = CompileRequest {
+        profile: PROFILE,
+        stage: STAGE,
+        source: &source,
+        declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
+        toolchain: ToolchainSelection::ResolvedNative(toolchain()?),
+        authority: owner.input(),
+        control: CompileControl {
+            deadline: Instant::now() + Duration::from_secs(300),
+            cancelled: &cancelled,
+        },
+    };
+    let ir = compile_ir(
+        request,
+        CompileScratch {
+            diagnostic_output: &mut diagnostic,
+            native_work: &module_root,
+        },
+    )
+    .map_err(|e| Error::Failure(format!("compile_ir: {e:?}")))?;
+    let names = ir.ir.entity_columns().names;
+    let atom = |id: backend_semantic::ir::AtomId| ir.ir.atom(id);
+    if !names
+        .iter()
+        .filter_map(|id| atom(*id))
+        .any(|name| name == b"Group")
+    {
+        return Err(Error::Failure(
+            "absent source-truth symbol \"Group\" from errgroup.go".into(),
+        ));
+    }
+
+    fs::remove_dir_all(root).map_err(|e| Error::Failure(e.to_string()))?;
     Ok(())
 }
