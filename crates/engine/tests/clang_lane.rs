@@ -133,39 +133,6 @@ fn type_fact_rows(bytes: &[u8]) -> Result<usize, TestError> {
         .ok_or(TestError::Check("row count overflow"))
 }
 
-fn child_target(view: &FragmentView<'_>) -> Result<u32, TestError> {
-    let payload = view
-        .type_fact_payload()
-        .ok_or(TestError::Check("missing type facts"))?;
-    let count = type_fact_rows(payload)?;
-    let mut at = 8_usize;
-    for _ in 0..count {
-        at = at
-            .checked_add(13)
-            .ok_or(TestError::Check("offset overflow"))?;
-        skip_name(payload, &mut at)?;
-        skip_name(payload, &mut at)?;
-        match payload.get(at).copied() {
-            Some(0) => at += 1,
-            Some(1) => at += 5,
-            Some(2) => at += 21,
-            _ => return Err(TestError::Check("invalid nominal cell")),
-        }
-        at = at
-            .checked_add(8)
-            .ok_or(TestError::Check("offset overflow"))?;
-    }
-    let child_count = word(payload, at)?;
-    if child_count == 0 {
-        return Err(TestError::Check("missing child"));
-    }
-    at += 4;
-    if payload.get(at).copied() != Some(0) {
-        return Err(TestError::Check("child is not local"));
-    }
-    word(payload, at + 1)
-}
-
 fn inspect<F>(source: &[u8], check: F) -> Result<(), TestError>
 where
     F: FnOnce(&FragmentView<'_>) -> Result<(), TestError>,
@@ -260,9 +227,12 @@ where
 fn override_occurrences<'a>(
     view: &'a FragmentView<'a>,
 ) -> Result<Vec<backend_semantic::ir::DecodedOccurrence<'a>>, TestError> {
-    view.occurrences()
-        .ok_or(TestError::Check("occurrences"))?
-        .collect::<Result<Vec<_>, _>>()
+    // An absent occurrence plane is the lowerer's honest "no references"
+    // product (443bea2a0), so it reads as no override rows.
+    let Some(rows) = view.occurrences() else {
+        return Ok(Vec::new());
+    };
+    rows.collect::<Result<Vec<_>, _>>()
         .map(|rows| {
             rows.into_iter()
                 .filter(|row| row.occurrence.kind == backend_semantic::ir::ReferenceKind::Overrides)
@@ -328,64 +298,6 @@ fn extension(
         + usize::try_from(index).map_err(|_| TestError::Check("fact index overflow"))? * stride;
     backend_semantic::ir::ClangFacts::decode(payload, at)
         .ok_or(TestError::Check("extension row undecodable"))
-}
-
-fn override_identity(
-    view: &FragmentView<'_>,
-    ordinal: usize,
-) -> Result<Option<[u8; 16]>, TestError> {
-    let payload = view
-        .language_extension_payload()
-        .ok_or(TestError::Check("missing extensions"))?;
-    let directory = 16 + 6 * 20;
-    let rows = usize::try_from(word(payload, directory + 4)?)
-        .map_err(|_| TestError::Check("row count overflow"))?;
-    let offset = usize::try_from(word(payload, directory + 12)?)
-        .map_err(|_| TestError::Check("fact offset overflow"))?;
-    let fact = usize::try_from(word(payload, offset + ordinal * 4)?)
-        .map_err(|_| TestError::Check("fact index overflow"))?;
-    if fact == usize::try_from(u32::MAX).unwrap_or(usize::MAX) {
-        return Ok(None);
-    }
-    let identity_ordinal = word(payload, offset + rows * 4 + fact * 32 + 28)?;
-    if identity_ordinal == u32::MAX {
-        return Ok(None);
-    }
-    let pool = view
-        .extension_pool_payload()
-        .ok_or(TestError::Check("missing extension pool"))?;
-    let mut at = 4;
-    let parameter_count = usize::try_from(word(pool, 0)?)
-        .map_err(|_| TestError::Check("parameter count overflow"))?;
-    for _ in 0..parameter_count {
-        let length = usize::try_from(word(pool, at + 1)?)
-            .map_err(|_| TestError::Check("parameter length overflow"))?;
-        at += 5 + length + 10;
-    }
-    for _ in 0..3 {
-        let list_count = usize::try_from(word(pool, at)?)
-            .map_err(|_| TestError::Check("list count overflow"))?;
-        at += 4;
-        for _ in 0..list_count {
-            let length = usize::try_from(word(pool, at)?)
-                .map_err(|_| TestError::Check("list length overflow"))?;
-            at += 4 + length * 4;
-        }
-    }
-    let count = usize::try_from(word(pool, at)?)
-        .map_err(|_| TestError::Check("identity count overflow"))?;
-    let identity_index = usize::try_from(identity_ordinal)
-        .map_err(|_| TestError::Check("identity index overflow"))?;
-    if identity_index >= count {
-        return Err(TestError::Check("identity index outside pool"));
-    }
-    let start = at + 4 + identity_index * 16;
-    let bytes = pool
-        .get(start..start + 16)
-        .ok_or(TestError::Check("identity cell truncated"))?;
-    let identity =
-        <[u8; 16]>::try_from(bytes).map_err(|_| TestError::Check("identity cell width"))?;
-    Ok((identity != [0; 16]).then_some(identity))
 }
 
 fn children<'a>(
@@ -533,7 +445,7 @@ fn mutual_recursion_collapses_forwards_and_names_pointer_children() -> Result<()
                 .find(|row| {
                     row.owner.raw == owner
                         && row.record.tag == SemanticTypeTag::Primitive
-                        && row.record.payload0 == u32::from(PrimitiveShape::MutPointer)
+                        && row.record.payload0 == u32::from(PrimitiveShape::CPointer)
                         && row.record.payload1 == 0
                         && row.record.children.length == 1
                 })
@@ -588,42 +500,32 @@ fn build_ir_preserves_authority_members_and_parents() -> Result<(), TestError> {
     })
 }
 
+/// C-family declarations have no lossless source-syntax renderer yet: the
+/// profile dispatch returns the exact `CFamilyDeclarator` stage rather than
+/// the Rust-flavoured neutral signature (92d492498).
 #[test]
-fn c_render_is_visibility_free_qualified_and_byte_stable() -> Result<(), TestError> {
+fn c_family_source_syntax_is_typed_unsupported() -> Result<(), TestError> {
     let source = b"struct RenderNode { const struct RenderNode *next; int value; };";
-    let render = || {
-        let mut rendered = String::new();
-        inspect_ir(source, |ir| {
-            let item = ir
-                .items_named(b"RenderNode")
-                .next()
-                .ok_or(TestError::Check("RenderNode item"))?;
-            let signature = ir
-                .signature(item.id())
-                .ok_or(TestError::Check("RenderNode signature"))?;
-            rendered = signature.to_string();
-            Ok(())
-        })?;
-        Ok::<String, TestError>(rendered)
-    };
-    let first = render()?;
-    if first
-        .lines()
-        .any(|line| line.trim_start().starts_with("pub "))
-    {
-        return Err(TestError::Check("C rendering has pub prefix"));
-    }
-    if !first.starts_with("struct RenderNode {") {
-        return Err(TestError::Check("C struct opening"));
-    }
-    if first != "struct RenderNode {\n    const struct RenderNode *next;\n    int value;\n};" {
-        return Err(TestError::Check("C qualified member rendering"));
-    }
-    let second = render()?;
-    if first != second {
-        return Err(TestError::Check("C rendering changed across runs"));
-    }
-    Ok(())
+    inspect_ir(source, |ir| {
+        let item = ir
+            .items_named(b"RenderNode")
+            .next()
+            .ok_or(TestError::Check("RenderNode item"))?;
+        match backend_semantic::ir::prepare_profile(
+            LanguageProfile::C(CStandard::C23),
+            ir,
+            item.id(),
+        ) {
+            Err(backend_semantic::ir::RenderFailure::Unsupported(
+                backend_semantic::ir::UnsupportedSemanticStage::CFamilyDeclarator {
+                    profile,
+                    entity,
+                },
+            )) if profile == LanguageProfile::C(CStandard::C23) && entity == item.id() => Ok(()),
+            Err(_) => Err(TestError::Check("wrong C render terminal")),
+            Ok(_) => Err(TestError::Check("C declarator unexpectedly rendered")),
+        }
+    })
 }
 
 #[test]
@@ -652,8 +554,9 @@ fn enumerators_and_typedef_have_content_addressed_rows() -> Result<(), TestError
                 .ok_or(TestError::Check("RED row"))?;
             if row.record.tag != SemanticTypeTag::Primitive
                 || row.record.payload0 != u32::from(PrimitiveShape::Integer)
-                || row.record.payload1
-                    != (32 << 1) | backend_semantic::ir::SemanticTypeRecord::INTEGER_SIGNED_FLAG
+                // The enum's measured underlying integer (`unsigned int` for a
+                // non-negative C enum), not a guessed signed `int` (443bea2a0).
+                || row.record.payload1 != 32 << 1
             {
                 return Err(TestError::Check("RED integer payload"));
             }
@@ -875,36 +778,16 @@ fn include_atoms_share_one_extension_pool_list() -> Result<(), TestError> {
                 return Err(TestError::Check("include atoms"));
             }
             let fact = extension(view, 0)?;
-            let pool = view
-                .extension_pool_payload()
+            let pools = view
+                .discover()
+                .extension_pools()
+                .map_err(|_| TestError::Check("extension pool reopen"))?
                 .ok_or(TestError::Check("extension pool"))?;
-            let parameter_count =
-                usize::try_from(word(pool, 0)?).map_err(|_| TestError::Check("pool count"))?;
-            let mut at = 4;
-            for _ in 0..parameter_count {
-                let length = usize::try_from(word(pool, at + 1)?)
-                    .map_err(|_| TestError::Check("pool parameter"))?;
-                at += 5 + length + 10;
-            }
-            let list_count =
-                usize::try_from(word(pool, at)?).map_err(|_| TestError::Check("list count"))?;
-            at += 4;
-            let index = fact.includes.raw as usize;
-            if index >= list_count {
-                return Err(TestError::Check("include list index"));
-            }
-            let mut list = Vec::new();
-            for list_index in 0..list_count {
-                let length = usize::try_from(word(pool, at)?)
-                    .map_err(|_| TestError::Check("list length"))?;
-                at += 4;
-                if list_index == index {
-                    for item in 0..length {
-                        list.push(word(pool, at + item * 4)?);
-                    }
-                }
-                at += length * 4;
-            }
+            let list = pools
+                .atom_list(fact.includes.raw)
+                .map_err(|_| TestError::Check("include list index"))?
+                .iter()
+                .collect::<Vec<_>>();
             if list.len() != 2
                 || !list.iter().all(|coordinate| {
                     atoms
@@ -919,8 +802,11 @@ fn include_atoms_share_one_extension_pool_list() -> Result<(), TestError> {
     )
 }
 
+/// libclang's raw comment text does not prove link resolution, so a doxygen
+/// `@ref` whose spelling collides with a pushed declaration still stays an
+/// explicit foreign `c` link rather than a fabricated local one (24eddc9ac).
 #[test]
-fn doxygen_ref_is_a_local_link_with_text_fragments() -> Result<(), TestError> {
+fn doxygen_ref_is_a_foreign_link_with_text_fragments() -> Result<(), TestError> {
     let source = b"/// Adds one.\n/// See @ref add and foreign things.\nint add(int a);\n";
     inspect(source, |view| {
         let docs = view
@@ -928,18 +814,19 @@ fn doxygen_ref_is_a_local_link_with_text_fragments() -> Result<(), TestError> {
             .ok_or(TestError::Check("docs"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| TestError::Check("doc decode"))?;
-        let add = entities(view)
-            .iter()
-            .position(|(name, kind)| *name == b"add" && *kind == EntityKind::Function)
-            .ok_or(TestError::Check("add entity"))? as u32;
         let mut link = false;
         for doc in &docs {
             if let backend_semantic::ir::DocFragmentInput::Link { label, target } = &doc.fragment {
-                if *label == b"add"
-                    && *target == backend_semantic::ir::DocLinkTarget::Local(backend_semantic::ir::EntityId::new(add))
+                if *label != b"add"
+                    || *target
+                        != (backend_semantic::ir::DocLinkTarget::Foreign {
+                            ecosystem: &b"c"[..],
+                            path: &b"add"[..],
+                        })
                 {
-                    link = true;
+                    return Err(TestError::Check("doxygen link target"));
                 }
+                link = true;
             }
         }
         if docs.len() < 4 || !link {
@@ -950,22 +837,18 @@ fn doxygen_ref_is_a_local_link_with_text_fragments() -> Result<(), TestError> {
 }
 
 #[test]
-fn macro_definition_and_invocation_are_typed_facts() -> Result<(), TestError> {
+fn macro_definition_is_a_typed_fact_without_a_fabricated_occurrence() -> Result<(), TestError> {
     inspect(b"#define LIMIT 100\nint x = LIMIT;\n", |view| {
         let got = entities(view);
-        if !got.contains(&(&b"LIMIT"[..], EntityKind::Constant)) {
-            return Err(TestError::Check("LIMIT constant"));
+        if !got.contains(&(&b"LIMIT"[..], EntityKind::Macro)) {
+            return Err(TestError::Check("LIMIT macro"));
         }
-        let invocation = view
-            .occurrences()
-            .ok_or(TestError::Check("occurrences"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| TestError::Check("occurrence decode"))?
-            .into_iter()
-            .find(|row| row.occurrence.kind == backend_semantic::ir::ReferenceKind::MacroInvocation)
-            .ok_or(TestError::Check("macro invocation"))?;
-        if invocation.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle {
-            return Err(TestError::Check("macro confidence"));
+        // libclang proves the macro definition and its extent, but binds this
+        // expansion to no declaration owner, so the lowerer keeps the macro
+        // and leaves the occurrence plane absent rather than fabricate an
+        // owner-relative reference (443bea2a0).
+        if view.occurrences().is_some() {
+            return Err(TestError::Check("ownerless macro occurrence"));
         }
         Ok(())
     })
@@ -973,8 +856,12 @@ fn macro_definition_and_invocation_are_typed_facts() -> Result<(), TestError> {
 
 #[test]
 fn capacity_terminal_preserves_clang_scratch_capacity_cause() -> Result<(), TestError> {
+    let capacity = backend_frontend_clang::legacy::MAX_CLANG_DECLARATIONS;
+    let required = capacity
+        .checked_add(1)
+        .ok_or(TestError::Check("clang declaration capacity wrap"))?;
     let mut source = String::new();
-    for ordinal in 0..1025 {
+    for ordinal in 0..required {
         source.push_str(&format!("struct value_{ordinal};\n"));
     }
     let work = std::env::temp_dir().join(format!("nudox-clang-capacity-{}", std::process::id()));
@@ -1023,13 +910,13 @@ fn capacity_terminal_preserves_clang_scratch_capacity_cause() -> Result<(), Test
                     cause:
                         backend_frontend_clang::legacy::CollectError::ScratchCapacity {
                             lane: backend_frontend_clang::legacy::ScratchLane::Declarations,
-                            capacity: 1024,
-                            required: 1025,
+                            capacity: observed_capacity,
+                            required: observed_required,
                         },
                     ..
                 },
             ..
-        }) => Ok(()),
+        }) if observed_capacity == capacity && observed_required == required => Ok(()),
         Ok(_) => Err(TestError::Check("capacity admitted")),
         Err(_) => Err(TestError::Check("wrong capacity terminal")),
     }
@@ -1084,7 +971,7 @@ fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> 
             .filter(|row| {
                 row.owner.raw == 1
                     && row.record.tag == SemanticTypeTag::Primitive
-                    && row.record.payload0 == u32::from(PrimitiveShape::MutPointer)
+                    && row.record.payload0 == u32::from(PrimitiveShape::CPointer)
                     && row.record.children.length == 1
             })
             .collect();
@@ -1094,7 +981,11 @@ fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> 
         if pointers[0].record.payload1 != 0 {
             return Err(TestError::Check("mutable pointer payload"));
         }
-        let target = child_target(&view)?;
+        let target = children(&view, pointers[0])?
+            .into_iter()
+            .next()
+            .map(|(_, target, _)| target)
+            .ok_or(TestError::Check("recursive pointer child"))?;
         let anchor = rows
             .get(
                 usize::try_from(target)
@@ -1123,12 +1014,29 @@ fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> 
             .ok_or(TestError::Check("missing mutated facts"))?
             .collect::<Result<_, _>>()
             .map_err(|_| TestError::Check("mutated row decode"))?;
-        if !rows.iter().any(|row| {
-            row.owner.raw == 1
-                && row.record.tag == SemanticTypeTag::Primitive
-                && row.record.payload0 == u32::from(PrimitiveShape::ConstPointer)
-        }) {
-            return Err(TestError::Check("const pointer falsifier"));
+        // `const T*` keeps the C pointer shape and moves the qualifier onto a
+        // separate `CQualified` pointee row (69f6e4700).
+        let pointer = rows
+            .iter()
+            .find(|row| {
+                row.owner.raw == 1
+                    && row.record.tag == SemanticTypeTag::Primitive
+                    && row.record.payload0 == u32::from(PrimitiveShape::CPointer)
+            })
+            .ok_or(TestError::Check("const pointer row"))?;
+        let mut has_qualified_pointee = false;
+        for (_, target, _) in children(&view, pointer)? {
+            let index = usize::try_from(target)
+                .map_err(|_| TestError::Check("const pointer child coordinate overflow"))?;
+            if rows
+                .get(index)
+                .is_some_and(|row| row.record.tag == SemanticTypeTag::CQualified)
+            {
+                has_qualified_pointee = true;
+            }
+        }
+        if !has_qualified_pointee {
+            return Err(TestError::Check("const pointer qualified pointee"));
         }
         view.as_ref().to_vec()
     };
@@ -1208,13 +1116,6 @@ fn virtual_override_absence_and_plain_shadowing_are_distinct_bytes() -> Result<(
             &mut plain_bytes,
             &work,
         )?;
-        let plain_method = entities(&view)
-            .iter()
-            .rposition(|(name, kind)| *name == b"f" && *kind == EntityKind::Function)
-            .ok_or(TestError::Check("plain method"))?;
-        if override_identity(&view, plain_method)?.is_some() {
-            return Err(TestError::Check("plain override identity"));
-        }
         (
             !override_occurrences(&view)?.is_empty(),
             view.as_ref().to_vec(),
@@ -1234,8 +1135,12 @@ fn virtual_override_absence_and_plain_shadowing_are_distinct_bytes() -> Result<(
     Ok(())
 }
 
+/// An override of a base declared outside the project root (here an absolute
+/// header with no project supplied) keeps the libclang-proved USR against the
+/// fixed, path-free system fragment: one oracle `Overrides` occurrence owned by
+/// the overriding method, never a fabricated local edge (56c1ecfb9).
 #[test]
-fn foreign_virtual_override_is_recorded_schema_two_deferral() -> Result<(), TestError> {
+fn foreign_virtual_override_is_a_stable_system_fragment_occurrence() -> Result<(), TestError> {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| TestError::Check("clock before epoch"))?
@@ -1263,38 +1168,45 @@ fn foreign_virtual_override_is_recorded_schema_two_deferral() -> Result<(), Test
         .iter()
         .rposition(|(name, kind)| *name == b"f" && *kind == EntityKind::Function)
         .ok_or(TestError::Check("foreign method"))?;
-    if override_identity(&view, method)?.is_none() {
-        return Err(TestError::Check("foreign identity pool"));
-    }
-    if !override_occurrences(&view)?.is_empty() {
-        return Err(TestError::Check("foreign override fabricated"));
+    let rows = override_occurrences(&view)?;
+    let [row] = rows.as_slice() else {
+        return Err(TestError::Check("foreign override count"));
+    };
+    if usize::try_from(row.owner.raw).ok() != Some(method)
+        || !matches!(
+            row.occurrence.target,
+            backend_semantic::ir::OccurrenceTarget::Stable(_)
+        )
+        || row.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle
+    {
+        return Err(TestError::Check("foreign override occurrence"));
     }
     drop(view);
     std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))
 }
 
-/// A translation unit whose include spellings exceed the shared emission
-/// lane's pooled-list element bound must fail with the exact typed rejection
-/// (ordinal, cause `RefListElements`), never the cause-erased unsupported
-/// declaration terminal.  Sixteen includes stay representable; seventeen
-/// cross the pooled row and name the wall precisely.
+/// Include spellings use the shared flat atom-list arena rather than a
+/// fixed-width staging row (86cd8c2a1). Seventy distinct spellings cross the
+/// retired sixty-four-element wall, reopen from the emitted extension pool in
+/// order, and leave the caller's output tail untouched.
 #[test]
-fn include_list_over_the_pooled_bound_names_the_exact_cause() -> Result<(), TestError> {
-    use backend_engine::driver::{DatabaseCompileFailure, compile_database_translation_unit};
+fn include_list_over_the_retired_row_width_reopens_every_spelling() -> Result<(), TestError> {
+    use backend_engine::driver::compile_database_translation_unit;
     use std::path::Path;
 
+    const INCLUDES: u32 = 70;
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| TestError::Check("clock before epoch"))?
         .as_nanos();
     let serial = WORK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let work = std::env::temp_dir().join(format!(
-        "nudox-clang-lane-{}-{nonce}-{serial}",
+        "nudox-clang-includes-{}-{nonce}-{serial}",
         std::process::id()
     ));
     std::fs::create_dir_all(work.join("include"))
         .map_err(|_| TestError::Check("create include dir"))?;
-    for index in 0..17u32 {
+    for index in 0..INCLUDES {
         std::fs::write(
             work.join("include").join(format!("header_{index}.h")),
             format!("int included_{index};\n"),
@@ -1302,7 +1214,7 @@ fn include_list_over_the_pooled_bound_names_the_exact_cause() -> Result<(), Test
         .map_err(|_| TestError::Check("write header"))?;
     }
     let mut source = String::new();
-    for index in 0..17u32 {
+    for index in 0..INCLUDES {
         source.push_str(&format!("#include \"header_{index}.h\"\n"));
     }
     source.push_str("int included_total;\n");
@@ -1319,10 +1231,10 @@ fn include_list_over_the_pooled_bound_names_the_exact_cause() -> Result<(), Test
     let toolchain = ResolvedToolchain::from_identity(
         NativeTool::Clang,
         Path::new("/usr/bin/clang"),
-        ContentId::from_canonical_bytes(b"clang-lane-pooled-bound"),
+        ContentId::from_canonical_bytes(b"clang-lane-flat-includes"),
     )
     .map_err(|_| TestError::Check("toolchain"))?;
-    let result = compile_database_translation_unit(
+    let compiled = compile_database_translation_unit(
         &work,
         Path::new("src.c"),
         LanguageProfile::C(CStandard::C23),
@@ -1331,26 +1243,45 @@ fn include_list_over_the_pooled_bound_names_the_exact_cause() -> Result<(), Test
         toolchain,
         &cancelled,
         &mut output,
-    );
-    match result {
-        Err(DatabaseCompileFailure::Rejected { rejected, .. }) => {
-            if rejected.cause != backend_engine::driver::FactFault::RefListElements {
-                return Err(TestError::Check("wrong pooled-bound cause"));
-            }
-        }
-        Err(_) => return Err(TestError::Check("wrong pooled-bound terminal")),
-        Ok(_) => return Err(TestError::Check("pooled-bound wall admitted")),
+    )
+    .map_err(|_| TestError::Compile)?;
+    let length = compiled.fragment.as_ref().len();
+    let view = FragmentView::validate(compiled.fragment.as_ref())
+        .map_err(|_| TestError::Check("fragment validation"))?;
+    let atoms: Vec<&[u8]> = view.atoms().map(|atom| atom.bytes).collect();
+    let fact = extension(&view, 0)?;
+    let pools = view
+        .discover()
+        .extension_pools()
+        .map_err(|_| TestError::Check("extension pool reopen"))?
+        .ok_or(TestError::Check("extension pool"))?;
+    let includes = pools
+        .atom_list(fact.includes.raw)
+        .map_err(|_| TestError::Check("include list index"))?;
+    if includes.len() != INCLUDES as usize {
+        return Err(TestError::Check("include list length"));
     }
-    if !output.iter().all(|byte| *byte == 0xa5) {
-        return Err(TestError::Check("rejected compile touched the output"));
+    for (index, coordinate) in includes.iter().enumerate() {
+        let expected = format!("header_{index}.h");
+        if atoms
+            .get(coordinate as usize)
+            .is_none_or(|atom| *atom != expected.as_bytes())
+        {
+            return Err(TestError::Check("include spelling"));
+        }
+    }
+    drop(view);
+    drop(compiled);
+    if output[length..].iter().any(|byte| *byte != 0xa5) {
+        return Err(TestError::Check("output tail changed"));
     }
     std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))
 }
 
 /// A function whose signature exceeds the lane's fixed child width is an
-/// exact typed rejection — never a silently shortened signature. Sixteen
-/// parameters remain representable; seventeen cross the lane and name the
-/// cause.
+/// exact typed rejection — never a silently shortened signature. The width
+/// is sixty-four children (d40260a45), so sixty-five parameters cross the
+/// lane and name the cause.
 #[test]
 fn signature_beyond_the_child_width_is_an_exact_rejection() -> Result<(), TestError> {
     use backend_engine::driver::{DatabaseCompileFailure, compile_database_translation_unit};
@@ -1368,7 +1299,7 @@ fn signature_beyond_the_child_width_is_an_exact_rejection() -> Result<(), TestEr
     std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
     let mut source = String::new();
     let mut call_arguments = String::new();
-    for index in 0..17u32 {
+    for index in 0..65u32 {
         source.push_str(&format!("int parameter_{index};\n"));
         if index > 0 {
             call_arguments.push_str(", ");
