@@ -1849,6 +1849,7 @@ fn semantic_versions(
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic version history: {error}")))?;
     let mut selected = BTreeMap::<(PackageUrl, LanguageProfile), [u8; 32]>::new();
+    let mut unavailable = None;
     let mut generations = Vec::new();
     let mut after = None;
     loop {
@@ -1868,10 +1869,13 @@ fn semantic_versions(
                 ProductSemanticPublicationRecord::Published { coverage, claim } => {
                     (*coverage, *claim)
                 }
+                // One language whose authority is unavailable must not hide
+                // the history every other language of the package published.
+                // The typed refusal is kept for a package with no published
+                // target at all, below.
                 ProductSemanticPublicationRecord::Unavailable(reason) if key.is_selected() => {
-                    return Err(BuiltinModelError(format!(
-                        "semantic publication unavailable: {reason}"
-                    )));
+                    unavailable.get_or_insert(*reason);
+                    continue;
                 }
                 ProductSemanticPublicationRecord::Unavailable(_) => continue,
             };
@@ -1904,6 +1908,13 @@ fn semantic_versions(
             break;
         };
         after = Some(next);
+    }
+    if selected.is_empty()
+        && let Some(reason) = unavailable
+    {
+        return Err(BuiltinModelError(format!(
+            "semantic publication unavailable: {reason}"
+        )));
     }
     for (target, record) in &mut generations {
         record.selected = selected.get(target).copied() == Some(record.generation.to_bytes());
