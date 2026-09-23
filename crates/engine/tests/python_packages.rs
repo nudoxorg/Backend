@@ -805,63 +805,23 @@ fn python_extension_row(
         .ok_or_else(|| fact("python extension fact decode"))
 }
 
-/// Reads one pooled atom list from the extension-pool payload: the
-/// type-parameter segment first, then the three ref-list lanes.
-fn pooled_atom_list(package: &str, pool: &[u8], index: u32) -> Result<Vec<u32>, Error> {
+/// Reads one pooled atom list from the validated extension pools. The
+/// schema-aware reopen owns the exact schema-5+ type-parameter cell widths;
+/// this helper never infers a list boundary from a hand-rolled cursor.
+fn pooled_atom_list(package: &str, view: &FragmentView<'_>, index: u32) -> Result<Vec<u32>, Error> {
     let fact = |message: &'static str| Error::Fact {
         package: package.into(),
         message: message.into(),
     };
-    let mut cursor = 4usize;
-    let parameter_count = word(pool, 0).ok_or_else(|| fact("pool parameter count"))?;
-    for _ in 0..parameter_count {
-        let name_len = word(pool, cursor + 1).ok_or_else(|| fact("pool parameter name"))?;
-        cursor = cursor
-            .checked_add(5)
-            .and_then(|at| {
-                usize::try_from(name_len)
-                    .ok()
-                    .and_then(|width| at.checked_add(width))
-            })
-            .ok_or_else(|| fact("pool parameter name"))?;
-        for _ in 0..2 {
-            let present = pool.get(cursor).copied().ok_or_else(|| fact("pool cell"))?;
-            cursor = cursor.checked_add(1).ok_or_else(|| fact("pool cell"))?;
-            if present != 0 {
-                word(pool, cursor).ok_or_else(|| fact("pool reference"))?;
-                cursor = cursor
-                    .checked_add(4)
-                    .ok_or_else(|| fact("pool reference"))?;
-            }
-        }
-    }
-    let list_count = word(pool, cursor).ok_or_else(|| fact("pool list count"))?;
-    cursor = cursor
-        .checked_add(4)
-        .ok_or_else(|| fact("pool list count"))?;
-    for list in 0..list_count {
-        let length = word(pool, cursor).ok_or_else(|| fact("pool list length"))?;
-        cursor = cursor
-            .checked_add(4)
-            .ok_or_else(|| fact("pool list length"))?;
-        let length = usize::try_from(length).map_err(|_| fact("pool list length"))?;
-        if list == index {
-            let mut elements = Vec::new();
-            for position in 0..length {
-                elements
-                    .push(word(pool, cursor + position * 4).ok_or_else(|| fact("pool element"))?);
-            }
-            return Ok(elements);
-        }
-        cursor = cursor
-            .checked_add(
-                length
-                    .checked_mul(4)
-                    .ok_or_else(|| fact("pool list length"))?,
-            )
-            .ok_or_else(|| fact("pool list length"))?;
-    }
-    Err(fact("atom list absent"))
+    let pools = view
+        .discover()
+        .extension_pools()
+        .map_err(|_| fact("extension pools failed to reopen"))?
+        .ok_or_else(|| fact("extension pool absent"))?;
+    let list = pools
+        .atom_list(index)
+        .map_err(|_| fact("atom list absent"))?;
+    Ok(list.iter().collect())
 }
 
 fn source_declares(source_text: &str, symbol: &str) -> bool {
@@ -907,12 +867,9 @@ fn assert_spot(
             let payload = view
                 .language_extension_payload()
                 .ok_or_else(|| fact("extension section absent".into()))?;
-            let pool = view
-                .extension_pool_payload()
-                .ok_or_else(|| fact("extension pool absent".into()))?;
             let row = python_extension_row(package, payload, ordinal)?
                 .ok_or_else(|| fact(format!("spot extension row {symbol} absent")))?;
-            let actual = pooled_atom_list(package, pool, row.decorators.raw)?;
+            let actual = pooled_atom_list(package, view, row.decorators.raw)?;
             let atoms: Vec<&[u8]> = actual
                 .into_iter()
                 .map(|raw| {
@@ -1070,13 +1027,10 @@ fn assert_lanes(
         let payload = view
             .language_extension_payload()
             .ok_or_else(|| fact("extension section absent"))?;
-        let pool = view
-            .extension_pool_payload()
-            .ok_or_else(|| fact("extension pool absent"))?;
         let mut spelled: Vec<&[u8]> = Vec::new();
         for ordinal in 0..entities.len() {
             if let Some(facts) = python_extension_row(package, payload, ordinal)? {
-                for element in pooled_atom_list(package, pool, facts.decorators.raw)? {
+                for element in pooled_atom_list(package, view, facts.decorators.raw)? {
                     let atom = usize::try_from(element)
                         .ok()
                         .and_then(|at| atoms.get(at).copied())
