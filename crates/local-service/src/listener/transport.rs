@@ -128,10 +128,21 @@ fn serve_one_frame(
     // report a timeout for work the owner then completed anyway.
     match reply_receiver.recv_timeout(windows.owner_reply) {
         Ok(Ok(response)) => Some(response),
-        // The owner loop has already validated and, when possible, emitted a
-        // correlated response. On a hard protocol fault this connection
-        // closes rather than desynchronizing later frames.
-        Ok(Err(error)) => refuse(stream, &error),
+        // The owner loop has already validated the request and framed a
+        // correlated reply for it. Whether that reply carries `Ok` or a
+        // typed failure (for example a `related` probe that legitimately
+        // found no edges) says nothing about the wire itself, so only a
+        // fault that can leave the byte stream desynchronized — a decode or
+        // I/O failure below the owner, never a clean `CommandExecution`
+        // outcome — closes the connection. Closing on every typed failure
+        // used to send an unrelated *next* request to a freshly reopened
+        // connection, which could observe different state than the one the
+        // caller was already talking to.
+        Ok(Err(error)) if error.closes_connection() => refuse(stream, &error),
+        // A recoverable typed failure is framed exactly like a success reply
+        // and handed to the caller's normal write path so the connection
+        // keeps serving this client's next frame.
+        Ok(Err(error)) => Some(crate::service::error_payload(correlation, &error, limits)),
         Err(mpsc::RecvTimeoutError::Timeout) => refuse(stream, &ProtocolError::Timeout),
         Err(mpsc::RecvTimeoutError::Disconnected) => None,
     }

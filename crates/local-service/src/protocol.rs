@@ -278,6 +278,27 @@ pub enum ProtocolError {
     Backpressure,
 }
 
+impl ProtocolError {
+    /// Returns whether the listener must close the connection after framing
+    /// and writing this error as the reply.
+    ///
+    /// A frame that decoded cleanly and reached the owner got a correlated
+    /// reply either way: [`Self::CommandExecution`] means the owner
+    /// validated and ran an admitted command and *that* failed (for example
+    /// a `related` probe that legitimately found no edges), which is as safe
+    /// to keep serving on as an `Ok` reply, so the connection stays open. A
+    /// fault below that boundary — truncated bytes, an oversized frame, a
+    /// control envelope or command that never decoded, a raw I/O failure, or
+    /// a reply that could not fit its negotiated replication bound — can
+    /// leave the peer's next bytes desynchronized from where this listener
+    /// expects a frame to start, so those close the connection rather than
+    /// risk parsing a later frame from the wrong offset.
+    #[must_use]
+    pub const fn closes_connection(&self) -> bool {
+        !matches!(self, Self::CommandExecution(_))
+    }
+}
+
 impl fmt::Display for ProtocolError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

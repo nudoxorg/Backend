@@ -175,6 +175,7 @@ pub fn split(args: &[String]) -> Result<(Options, Vec<String>), Fault> {
         }
     }
     let format = format.unwrap_or_default();
+    let detail = detail.unwrap_or_else(|| default_detail(rest.first().map(String::as_str)));
     Ok((
         Options {
             format,
@@ -183,10 +184,26 @@ pub fn split(args: &[String]) -> Result<(Options, Vec<String>), Fault> {
             workspace,
             endpoint,
             limit,
-            detail: detail.unwrap_or_default(),
+            detail,
         },
         rest,
     ))
+}
+
+/// The useful default projection for one command, absent an explicit
+/// `--detail`.
+///
+/// `show` and `source` name one exact declaration the reader asked for by
+/// coordinate, so their summary-only default would silently drop the
+/// signature and source text a caller almost always wants; every other
+/// command still defaults to [`Detail::Summary`]. This mirrors MCP's own
+/// `backend.document`/`backend.source` default (`apps/mcp/src/jsonrpc.rs`),
+/// so the two surfaces answer an identical `show <coordinate>` the same way.
+fn default_detail(command: Option<&str>) -> Detail {
+    match command {
+        Some("show" | "source") => Detail::Standard,
+        _ => Detail::Summary,
+    }
 }
 
 fn take(args: &[String], at: &mut usize, option: &str) -> Result<String, Fault> {
