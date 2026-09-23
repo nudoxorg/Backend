@@ -51,6 +51,37 @@ enum TypeScriptPublicationError {
     Shutdown(#[source] backend_store::journal::ShutdownError),
 }
 
+/// A source-bound checker report with no computed facts. Since 88bd8e4b4 a
+/// TypeScript request without a supplied report runs the owned `tsc` checker
+/// (there is no syntax-only fallback), so the direct-OXC proofs supply the
+/// checker authority explicitly: the OXC bindings then fill the fragment and
+/// no checker process is spawned.
+fn supplied_typescript_report(source: &[u8]) -> backend_frontend_typescript::legacy::Report {
+    let digest = backend_frontend_typescript::legacy::source_digest(source);
+    backend_frontend_typescript::legacy::Report {
+        schema_version: 1,
+        source_digest: digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+        declaration_file: false,
+        diagnostics: Box::new([]),
+        declarations: Box::new([]),
+        references: Box::new([]),
+        narrowings: Box::new([]),
+    }
+}
+
+fn typescript_request<'source, 'path, 'cancel>(
+    source: &'source [u8],
+    report: &'source backend_frontend_typescript::legacy::Report,
+    toolchain: ToolchainSelection<'path>,
+    cancelled: &'cancel AtomicBool,
+    deadline: Instant,
+) -> backend_engine::driver::CompileRequest<'source, 'path, 'cancel> {
+    backend_engine::driver::CompileRequest {
+        authority: backend_engine::driver::SemanticAuthorityInput::TypeScript { report },
+        ..request(Language::TypeScript, source, toolchain, cancelled, deadline)
+    }
+}
+
 #[test]
 fn external_profiles_require_bound_authority_images_before_any_native_work()
 -> Result<(), TestFailure> {
@@ -126,10 +157,12 @@ fn direct_oxc_bindings_fill_the_compact_fragment_without_a_tsc_spawn() -> Result
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0xa5; 128];
     let mut output = [0xa5; 4_096];
+    let source: &[u8] = b"export interface Shape { area(): number; } export const value = 1;";
+    let report = supplied_typescript_report(source);
     let compiled = compile(
-        request(
-            Language::TypeScript,
-            b"export interface Shape { area(): number; } export const value = 1;",
+        typescript_request(
+            source,
+            &report,
             ToolchainSelection::ResolvedNative(toolchain),
             &cancelled,
             Instant::now() + Duration::from_secs(1),
@@ -172,10 +205,12 @@ fn direct_oxc_compact_fragment_survives_durable_reopen() -> Result<(), TypeScrip
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0xa5; 128];
     let mut output = [0xa5; 4_096];
+    let source: &[u8] = b"export interface ReopenedShape {} export const reopened = 1;";
+    let report = supplied_typescript_report(source);
     let compiled = compile(
-        request(
-            Language::TypeScript,
-            b"export interface ReopenedShape {} export const reopened = 1;",
+        typescript_request(
+            source,
+            &report,
             ToolchainSelection::ResolvedNative(toolchain),
             &cancelled,
             Instant::now() + Duration::from_secs(1),

@@ -528,6 +528,18 @@ pub fn validate_payload(
         at: if schema >= 2 { 8 } else { 4 },
         ordinal: 0,
     };
+    // Child cells are variable-width, so the section is walked by one
+    // forward cursor. Records emit their child spans in ascending order, so
+    // each cell is skipped once overall; a span that starts before the
+    // cursor rewinds it to the section start. Re-scanning from the start for
+    // every child made validation quadratic in the child count.
+    let first_child = child_section + 4;
+    let mut cursor = Reader {
+        bytes: payload,
+        at: first_child,
+        ordinal: 0,
+    };
+    let mut cursor_index = 0_u32;
     for ordinal in 0..count {
         records.ordinal = ordinal;
         let owner = EntityId::new(records.u32()?);
@@ -555,14 +567,20 @@ pub fn validate_payload(
             .map_err(|fault| TypeFactFault::Record { ordinal, fault })?;
         for position in 0..record.children.length {
             let child_index = record.children.start + position;
+            if child_index < cursor_index {
+                cursor.at = first_child;
+                cursor_index = 0;
+            }
+            cursor.ordinal = ordinal;
+            while cursor_index < child_index {
+                skip_child(&mut cursor)?;
+                cursor_index += 1;
+            }
             let mut child_reader = Reader {
                 bytes: payload,
-                at: child_section + 4,
+                at: cursor.at,
                 ordinal,
             };
-            for _ in 0..child_index {
-                skip_child(&mut child_reader)?;
-            }
             let child = decode_child(&mut child_reader, ordinal, position)?;
             record
                 .validate_child_in_row(position, record.children.length, &child)

@@ -436,6 +436,37 @@ fn foreign_generic_reference_is_unknown_without_checker_module_authority() {
     assert_eq!(f.record.text, Some(&b"Map"[..]));
 }
 
+/// Syntactic type lowering recurses once per object-literal nesting level,
+/// and the compiler owner thread runs it on a default 2 MiB stack. The
+/// `typescript` package's own `.d.ts` nests literals deeply enough that an
+/// inline 64-wide `TypeCells` child array (about 2 KiB per value, dozens live
+/// per frame) overflowed that stack; twelve levels overflowed it before the
+/// child lane moved to the heap.
+#[test]
+fn nested_object_literal_types_lower_on_a_small_stack() {
+    const LEVELS: usize = 12;
+    let mut source = String::from("export type Deep = ");
+    for level in 0..LEVELS {
+        source.push_str(&format!("{{ f{level}: "));
+    }
+    source.push_str("number");
+    for _ in 0..LEVELS {
+        source.push_str(" }");
+    }
+    source.push_str(";\n");
+    let source: &'static [u8] = Box::leak(source.into_bytes().into_boxed_slice());
+    let lowered = thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            let authority = report(source);
+            try_lower(source, Some(&authority)).is_ok()
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(lowered, "nested object literal type must lower");
+}
+
 #[test]
 fn self_referential_alias_is_bounded_on_a_small_stack() {
     const SOURCE: &[u8] = b"export type A = A | false; export const x: A = false;";
@@ -842,9 +873,11 @@ fn forward_nominal_checker_and_lowering_keep_the_later_class() {
         .typescript
         .get(a.id())
         .unwrap();
+    // The observed cell is the checker's nominal `B` itself (df520c779), not
+    // a `typeof a` query over the owner.
     assert_eq!(
         ir_tag_shape(&lowered.ir, extension.observed.unwrap()),
-        (SemanticTypeTag::Nominal, 1)
+        (SemanticTypeTag::Nominal, 0)
     );
     let decoded = view(SOURCE, Some(&checker));
     let (owner, _) = named(&decoded, b"a");
@@ -1099,7 +1132,10 @@ fn golden_lowered_facts_match_the_frozen_table() {
             name: b"term",
             kind: EntityKind::Constant,
             declared: SemanticTypeTag::Unknown,
-            computed: SemanticTypeTag::Nominal,
+            // The checker's `Console` is a lib type the source never spells,
+            // so it cannot back a text-bearing external nominal and stays an
+            // honest oracle-gap unknown (ce74f843e).
+            computed: SemanticTypeTag::Unknown,
             shape: 0,
             has_computed: true,
         },
@@ -1175,13 +1211,13 @@ fn golden_lowered_facts_match_the_frozen_table() {
             "row {row_index} {:?}",
             row.name
         );
+        // Since df520c779 the observed cell is projected from the checker's
+        // staged computed row itself, not wrapped as a `typeof owner` query,
+        // so it carries the frozen computed tag. The frozen shape counts
+        // fragment children (an `Apply` row's constructor plus arguments) and
+        // is asserted on the fragment path below.
         if let Some(computed) = computed {
-            assert_eq!(
-                (computed.0, computed.1),
-                (SemanticTypeTag::Nominal, 1),
-                "row {row_index} {:?}",
-                row.name
-            );
+            assert_eq!(computed.0, row.computed, "row {row_index} {:?}", row.name);
         }
         identities.push(item.id());
     }
