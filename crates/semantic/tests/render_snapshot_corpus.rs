@@ -1297,9 +1297,10 @@ language_snapshot!(
 // # - Record/Enum/Trait signatures render the head only: the legacy
 // #   neutral formatter's record arm (crates/semantic/src/ir/render.rs:148-154)
 // #   renders no member body even though the IR carries members().
-// # - Foreign crate types render `?unresolved-external(Name)` and macro
-// #   rows `?unannotated` (upstream type-row availability, not the
-// #   renderer's choice).
+// # - Foreign ADTs rust-analyzer resolves render by their written
+// #   spelling (`Option<One>`, `AtomicUsize`); a foreign position with no
+// #   written spelling stays `?oracle-gap`, and macro rows `?unannotated`
+// #   (upstream type-row availability, not the renderer's choice).
 #[rustfmt::skip]
 const EXPECTED_RUST: &str = r"# rust render snapshot
 package ahash-0.8.11 file=ahash-0.8.11/src/random_state.rs bytes=18534
@@ -1310,25 +1311,25 @@ package ahash-0.8.11 file=ahash-0.8.11/src/random_state.rs bytes=18534
 	Constant PI2 :: pub(crate) const PI2: [u64; 4]
 	Parameter self :: self: &Self
 	Parameter gen_hasher_seed :: gen_hasher_seed: native-uint
-	Function gen_hasher_seed :: fn gen_hasher_seed(self: &Self) -> (gen_hasher_seed: native-uint)
-	Field counter :: counter: ?unresolved-external(AtomicUsize) [placeholder:?unresolved-external]
+	Function gen_hasher_seed :: fn gen_hasher_seed(self: &Self) -> native-uint
+	Field counter :: counter: AtomicUsize
 	Implementation DefaultRandomSource :: impl DefaultRandomSource = DefaultRandomSource
 	Parameter new :: new: DefaultRandomSource
-	Function new :: fn new() -> (new: DefaultRandomSource)
-	Implementation DefaultRandomSource :: impl DefaultRandomSource = DefaultRandomSource
+	Function new :: fn new() -> DefaultRandomSource
 	Field k0 :: pub(crate) k0: u64
 	Field k1 :: pub(crate) k1: u64
 	Field k2 :: pub(crate) k2: u64
 	Field k3 :: pub(crate) k3: u64
 	Implementation RandomState :: impl RandomState = RandomState
 	Parameter self :: self: &RandomState
-	Parameter f :: f: &mut ?unresolved-external(Formatter) [placeholder:?unresolved-external]
-	Parameter fmt :: fmt: ?unresolved-external(Result) [placeholder:?unresolved-external]
-	Function fmt :: fn fmt(self: &RandomState, f: &mut ?unresolved-external(Formatter)) -> (fmt: ?unresolved-external(Result)) [placeholder:?unresolved-external]
-	Implementation RandomState :: impl RandomState = RandomState
+	Parameter f :: f: &mut Formatter
+	Parameter fmt :: fmt: Result
+	Function fmt :: fn fmt(self: &RandomState, f: &mut Formatter) -> Result
 	Parameter new :: pub new: RandomState
-	Function new :: pub fn new() -> (new: RandomState)
-summary entities=25 signature rendered=25 unavailable=0 placeholder=4 malformed=0 canonical ok=25 err=0 document ok=25 err=0
+	Function new :: pub fn new() -> RandomState
+	Parameter k0 :: k0: u64
+	Parameter k1 :: k1: u64
+summary entities=25 signature rendered=25 unavailable=0 placeholder=0 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 package bitflags-2.6.0 file=bitflags-2.6.0/src/lib.rs bytes=27206
 	Module iter :: pub mod iter
 	Module parser :: pub mod parser
@@ -1348,26 +1349,26 @@ package itoa-1.0.14 file=itoa-1.0.14/src/lib.rs bytes=11578
 	Trait Integer :: pub trait Integer
 	Module private :: mod private
 	Trait Sealed :: pub trait Sealed
-	Parameter MaybeUninit<u8> :: MaybeUninit<u8>: ?unresolved-external(MaybeUninit)<u8> [placeholder:?unresolved-external]
-	Field bytes :: bytes: [?unresolved-external(MaybeUninit)<u8>; i128::MAX_STR_LEN] [placeholder:?unresolved-external]
+	Parameter MaybeUninit<u8> :: MaybeUninit<u8>: MaybeUninit<u8>
+	Field bytes :: bytes: [MaybeUninit<u8>; i128::MAX_STR_LEN]
 	Implementation Buffer :: impl Buffer = Buffer
 	Parameter default :: default: Buffer
-	Function default :: fn default() -> (default: Buffer)
-	Implementation Buffer :: impl Buffer = Buffer
-	Implementation Buffer :: impl Buffer = Buffer
+	Function default :: fn default() -> Buffer
 	Parameter self :: self: &Buffer
 	Parameter clone :: clone: Buffer
-	Function clone :: fn clone(self: &Buffer) -> (clone: Buffer)
-	Implementation Buffer :: impl Buffer = Buffer
+	Function clone :: fn clone(self: &Buffer) -> Buffer
 	Parameter new :: pub new: Buffer
-	Function new :: pub fn new() -> (new: Buffer)
+	Function new :: pub fn new() -> Buffer
 	Parameter self :: self: &mut Buffer
 	Parameter i :: i: I
 	Parameter format :: pub format: &str
-	Function format :: pub fn format(self: &mut Buffer, i: I) -> (format: &str)
+	Function format :: pub fn format(self: &mut Buffer, i: I) -> &str
 	Constant MAX_STR_LEN :: const MAX_STR_LEN: native-uint
 	Alias Buffer :: type Buffer = ?oracle-gap [placeholder:?oracle-gap]
 	Parameter self :: self: Self
+	Parameter buf :: buf: &mut ?oracle-gap [placeholder:?oracle-gap]
+	Parameter write :: write: &str
+	Function write :: fn write(self: Self, buf: &mut ?oracle-gap) -> &str [placeholder:?oracle-gap]
 summary entities=25 signature rendered=25 unavailable=0 placeholder=3 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 package log-0.4.22 file=log-0.4.22/src/lib.rs bytes=60684
 	Module macros :: mod macros
@@ -1386,16 +1387,16 @@ package log-0.4.22 file=log-0.4.22/src/lib.rs bytes=60684
 	Module __private_api :: pub mod __private_api
 	Parameter dyn Log :: dyn Log: dyn Log
 	Static LOGGER :: static LOGGER: &dyn Log
-	Static STATE :: static STATE: ?unresolved-external(AtomicUsize) [placeholder:?unresolved-external]
+	Static STATE :: static STATE: AtomicUsize
 	Constant UNINITIALIZED :: const UNINITIALIZED: native-uint
 	Constant INITIALIZING :: const INITIALIZING: native-uint
 	Constant INITIALIZED :: const INITIALIZED: native-uint
-	Static MAX_LOG_LEVEL_FILTER :: static MAX_LOG_LEVEL_FILTER: ?unresolved-external(AtomicUsize) [placeholder:?unresolved-external]
+	Static MAX_LOG_LEVEL_FILTER :: static MAX_LOG_LEVEL_FILTER: AtomicUsize
 	Parameter &str :: &str: &str
 	Static LOG_LEVEL_NAMES :: static LOG_LEVEL_NAMES: [&str; 6]
 	Static SET_LOGGER_ERROR :: static SET_LOGGER_ERROR: &str
 	Static LEVEL_PARSE_ERROR :: static LEVEL_PARSE_ERROR: &str
-summary entities=25 signature rendered=25 unavailable=0 placeholder=2 malformed=0 canonical ok=25 err=0 document ok=25 err=0
+summary entities=25 signature rendered=25 unavailable=0 placeholder=0 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 package memchr-2.7.4 file=memchr-2.7.4/src/arch/x86_64/avx2/memchr.rs bytes=50366
 	Record One :: pub struct One
 	Record OneIter :: pub struct OneIter
@@ -1407,28 +1408,29 @@ package memchr-2.7.4 file=memchr-2.7.4/src/arch/x86_64/avx2/memchr.rs bytes=5036
 	Field avx2 :: avx2: ?oracle-gap [placeholder:?oracle-gap]
 	Implementation One :: impl One = One
 	Parameter needle :: needle: u8
-	Parameter new :: pub new: ?unresolved-external(Option)<One> [placeholder:?unresolved-external]
-	Function new :: pub fn new(needle: u8) -> (new: ?unresolved-external(Option)<One>) [placeholder:?unresolved-external]
+	Parameter new :: pub new: Option<One>
+	Function new :: pub fn new(needle: u8) -> Option<One>
 	Parameter needle :: needle: u8
 	Parameter new_unchecked :: pub new_unchecked: One
-	Function new_unchecked :: pub fn new_unchecked(needle: u8) -> (new_unchecked: One)
+	Function new_unchecked :: pub fn new_unchecked(needle: u8) -> One
 	Parameter is_available :: pub is_available: bool
-	Function is_available :: pub fn is_available() -> (is_available: bool)
+	Function is_available :: pub fn is_available() -> bool
 	Parameter self :: self: &One
 	Parameter [u8] :: [u8]: [u8]
 	Parameter haystack :: haystack: &[u8]
-	Parameter find :: pub find: ?unresolved-external(Option)<native-uint> [placeholder:?unresolved-external]
-	Function find :: pub fn find(self: &One, haystack: &[u8]) -> (find: ?unresolved-external(Option)<native-uint>) [placeholder:?unresolved-external]
+	Parameter find :: pub find: Option<native-uint>
+	Function find :: pub fn find(self: &One, haystack: &[u8]) -> Option<native-uint>
 	Parameter self :: self: &One
 	Parameter haystack :: haystack: &[u8]
-	Parameter rfind :: pub rfind: ?unresolved-external(Option)<native-uint> [placeholder:?unresolved-external]
-summary entities=25 signature rendered=25 unavailable=0 placeholder=7 malformed=0 canonical ok=25 err=0 document ok=25 err=0
+	Parameter rfind :: pub rfind: Option<native-uint>
+summary entities=25 signature rendered=25 unavailable=0 placeholder=2 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 ";
 
 // # KNOWN GAPS (go, pinned 2026-09):
 // # - struct signatures render the head only (render.rs record arm).
-// # - Cross-package types (error, net/http Handler, ...) render
-// #   `?unresolved-external`; oracle-unprojected types render
+// # - Cross-package types (net/http Handler, ...) render
+// #   `?unresolved-external`; universe builtins without a lattice row
+// #   (`error`) and oracle-unprojected types render
 // #   `?no-ir-representation` (upstream authority/type rows).
 #[rustfmt::skip]
 const EXPECTED_GO: &str = r"# go render snapshot
@@ -1442,20 +1444,20 @@ package github.com/google/uuid@v1.6.0 file=github.com/google/uuid@v1.6.0/uuid.go
 	Record Version :: struct Version
 	Record invalidLengthError :: struct invalidLengthError
 	Parameter _ :: _: native-int
-	Function ClockSequence :: fn ClockSequence() -> (_: native-int)
+	Function ClockSequence :: fn ClockSequence() -> native-int
 	Function DisableRandPool :: fn DisableRandPool()
 	Parameter _ :: _: str
-	Function String :: fn String() -> (_: str)
+	Function String :: fn String() -> str
 	Function EnableRandPool :: fn EnableRandPool()
 	Parameter b :: b: [u8]
 	Parameter uuid :: uuid: UUID
-	Parameter err :: err: ?unresolved-external(error) [placeholder:?unresolved-external]
-	Function FromBytes :: fn FromBytes(b: [u8]) -> (uuid: UUID, err: ?unresolved-external(error)) [placeholder:?unresolved-external]
+	Parameter err :: err: ?no-ir-representation(error) [placeholder:?no-ir-representation]
+	Function FromBytes :: fn FromBytes(b: [u8]) -> (uuid: UUID, err: ?no-ir-representation(error)) [placeholder:?no-ir-representation]
 	Constant Future :: const Future: Variant
 	Parameter _ :: _: Time
 	Parameter _1 :: _1: u16
-	Parameter _2 :: _2: ?unresolved-external(error) [placeholder:?unresolved-external]
-	Function GetTime :: fn GetTime() -> (_: Time, _1: u16, _2: ?unresolved-external(error)) [placeholder:?unresolved-external]
+	Parameter _2 :: _2: ?no-ir-representation(error) [placeholder:?no-ir-representation]
+	Function GetTime :: fn GetTime() -> (Time, u16, ?no-ir-representation(error)) [placeholder:?no-ir-representation]
 	Constant Group :: const Group: Domain
 	Constant Invalid :: const Invalid: Variant
 summary entities=25 signature rendered=25 unavailable=0 placeholder=4 malformed=0 canonical ok=25 err=0 document ok=25 err=0
@@ -1466,8 +1468,8 @@ package github.com/go-chi/chi/v5@v5.0.12 file=github.com/go-chi/chi/v5@v5.0.12/t
 	Record Mux :: struct Mux
 	Record Route :: struct Route
 	Record RouteParams :: struct RouteParams
-	Record Router :: struct Router
-	Record Routes :: struct Routes
+	Trait Router :: trait Router
+	Trait Routes :: trait Routes
 	Record WalkFunc :: struct WalkFunc
 	Record contextKey :: struct contextKey
 	Record endpoint :: struct endpoint
@@ -1478,7 +1480,7 @@ package github.com/go-chi/chi/v5@v5.0.12 file=github.com/go-chi/chi/v5@v5.0.12/t
 	Record nodes :: struct nodes
 	Parameter middlewares :: middlewares: [fn(?no-ir-representation(Handler)) -> ?no-ir-representation(Handler)] [placeholder:?no-ir-representation]
 	Parameter _1 :: _1: Middlewares
-	Function Chain :: fn Chain(...middlewares: [fn(?no-ir-representation(Handler)) -> ?no-ir-representation(Handler)]) -> (_1: Middlewares) [placeholder:?no-ir-representation]
+	Function Chain :: fn Chain(...middlewares: [fn(?no-ir-representation(Handler)) -> ?no-ir-representation(Handler)]) -> Middlewares [placeholder:?no-ir-representation]
 	Field Endpoint :: Endpoint: ?unresolved-external(Handler) [placeholder:?unresolved-external]
 	Field chain :: chain: ?unresolved-external(Handler) [placeholder:?unresolved-external]
 	Field Middlewares :: Middlewares: Middlewares
@@ -1489,20 +1491,20 @@ summary entities=25 signature rendered=25 unavailable=0 placeholder=7 malformed=
 package github.com/google/go-cmp@v0.6.0 file=github.com/google/go-cmp@v0.6.0/cmp/compare.go bytes=22889
 	Record Indirect :: struct Indirect
 	Record MapIndex :: struct MapIndex
-	Record Option :: struct Option
+	Trait Option :: trait Option
 	Record Options :: struct Options
 	Record Path :: struct Path
-	Record PathStep :: struct PathStep
+	Trait PathStep :: trait PathStep
 	Record Result :: struct Result
 	Record SliceIndex :: struct SliceIndex
 	Record StructField :: struct StructField
 	Record Transform :: struct Transform
 	Record TypeAssertion :: struct TypeAssertion
-	Record applicableOption :: struct applicableOption
+	Trait applicableOption :: trait applicableOption
 	Record commentString :: struct commentString
 	Record comparer :: struct comparer
 	Record core :: struct core
-	Record coreOption :: struct coreOption
+	Trait coreOption :: trait coreOption
 	Record defaultReporter :: struct defaultReporter
 	Record diffMode :: struct diffMode
 	Record diffStats :: struct diffStats
@@ -1516,18 +1518,18 @@ summary entities=25 signature rendered=25 unavailable=0 placeholder=0 malformed=
 package gopkg.in/yaml.v3@v3.0.1 file=gopkg.in/yaml.v3@v3.0.1/scannerc.go bytes=87960
 	Record Decoder :: struct Decoder
 	Record Encoder :: struct Encoder
-	Record IsZeroer :: struct IsZeroer
+	Trait IsZeroer :: trait IsZeroer
 	Record Kind :: struct Kind
-	Record Marshaler :: struct Marshaler
+	Trait Marshaler :: trait Marshaler
 	Record Node :: struct Node
 	Record Style :: struct Style
 	Record TypeError :: struct TypeError
-	Record Unmarshaler :: struct Unmarshaler
+	Trait Unmarshaler :: trait Unmarshaler
 	Record decoder :: struct decoder
 	Record encoder :: struct encoder
 	Record fieldInfo :: struct fieldInfo
 	Record keyList :: struct keyList
-	Record obsoleteUnmarshaler :: struct obsoleteUnmarshaler
+	Trait obsoleteUnmarshaler :: trait obsoleteUnmarshaler
 	Record parser :: struct parser
 	Record resolveMapItem :: struct resolveMapItem
 	Record structInfo :: struct structInfo
@@ -1547,7 +1549,7 @@ package golang.org/x/mod@v0.17.0 file=golang.org/x/mod@v0.17.0/modfile/rule.go b
 	Record Error :: struct Error
 	Record ErrorList :: struct ErrorList
 	Record Exclude :: struct Exclude
-	Record Expr :: struct Expr
+	Trait Expr :: trait Expr
 	Record File :: struct File
 	Record FileSyntax :: struct FileSyntax
 	Record Go :: struct Go
@@ -1618,16 +1620,16 @@ package chalk-5.3.0 file=chalk-5.3.0/source/index.d.ts bytes=6911
 	Alias unknown :: type unknown = any
 	Parameter ...text :: ...text: []any
 	Alias string :: type string = str
-	Function (...text: unknown[]): string; :: fn (...text: unknown[]): string;(......text: []any) -> (string: str)
+	Function (...text: unknown[]): string; :: fn (...text: unknown[]): string;(......text: []any) -> str
 	Field level :: level: ColorSupportLevel
 	Alias number :: type number = f64
 	Alias this :: type this = this
-	Field rgb :: rgb: fn(number: f64, number: f64, number: f64) -> (this: this)
-	Field hex :: hex: fn(string: str) -> (this: this)
-	Field ansi256 :: ansi256: fn(number: f64) -> (this: this)
-	Field bgRgb :: bgRgb: fn(number: f64, number: f64, number: f64) -> (this: this)
-	Field bgHex :: bgHex: fn(string: str) -> (this: this)
-	Field bgAnsi256 :: bgAnsi256: fn(number: f64) -> (this: this)
+	Field rgb :: rgb: fn(number: f64, number: f64, number: f64) -> this
+	Field hex :: hex: fn(string: str) -> this
+	Field ansi256 :: ansi256: fn(number: f64) -> this
+	Field bgRgb :: bgRgb: fn(number: f64, number: f64, number: f64) -> this
+	Field bgHex :: bgHex: fn(string: str) -> this
+	Field bgAnsi256 :: bgAnsi256: fn(number: f64) -> this
 	Field reset :: reset: this
 	Field bold :: bold: this
 summary entities=25 signature rendered=25 unavailable=0 placeholder=7 malformed=0 canonical ok=25 err=0 document ok=25 err=0
@@ -1666,47 +1668,49 @@ package detect-libc-2.1.2 file=detect-libc-2.1.2/index.d.ts bytes=436
 	Alias null :: type null = null
 	Alias string | null :: type string | null = str | null
 	Alias Promise<string | null> :: type Promise<string | null> = Promise<str | null>
-	Function family :: fn family() -> (Promise<string | null>: Promise<str | null>)
-	Function familySync :: fn familySync() -> (string | null: str | null)
+	Function family :: fn family() -> Promise<str | null>
+	Function familySync :: fn familySync() -> str | null
 	Alias boolean :: type boolean = bool
 	Alias Promise<boolean> :: type Promise<boolean> = Promise<bool>
-	Function isNonGlibcLinux :: fn isNonGlibcLinux() -> (Promise<boolean>: Promise<bool>)
-	Function isNonGlibcLinuxSync :: fn isNonGlibcLinuxSync() -> (boolean: bool)
-	Function version :: fn version() -> (Promise<string | null>: Promise<str | null>)
-	Function versionSync :: fn versionSync() -> (string | null: str | null)
+	Function isNonGlibcLinux :: fn isNonGlibcLinux() -> Promise<bool>
+	Function isNonGlibcLinuxSync :: fn isNonGlibcLinuxSync() -> bool
+	Function version :: fn version() -> Promise<str | null>
+	Function versionSync :: fn versionSync() -> str | null
 summary entities=15 signature rendered=15 unavailable=0 placeholder=0 malformed=0 canonical ok=15 err=0 document ok=15 err=0
 package tslib-2.8.1 file=tslib-2.8.1/tslib.d.ts bytes=18317
 	Parameter d :: d: Function
 	Parameter b :: b: Function
 	Alias void :: type void = void
-	Function __extends :: fn __extends(d: Function, b: Function) -> (void: void)
+	Function __extends :: fn __extends(d: Function, b: Function) -> void
 	Parameter t :: t: ?dynamic [placeholder:?dynamic]
 	Alias any :: type any = ?dynamic [placeholder:?dynamic]
 	Parameter ...sources :: ...sources: []?dynamic [placeholder:?dynamic]
-	Function __assign :: fn __assign(t: ?dynamic, ......sources: []?dynamic) -> (any: ?dynamic) [placeholder:?dynamic]
+	Function __assign :: fn __assign(t: ?dynamic, ......sources: []?dynamic) -> ?dynamic [placeholder:?dynamic]
 	Parameter t :: t: ?dynamic [placeholder:?dynamic]
 	Alias string :: type string = str
 	Alias symbol :: type symbol = ?no-ir-representation(symbol) [placeholder:?no-ir-representation]
 	Alias (string | symbol) :: type (string | symbol) = str | ?no-ir-representation(symbol) [placeholder:?no-ir-representation]
 	Parameter propertyNames :: propertyNames: []str | ?no-ir-representation(symbol) [placeholder:?no-ir-representation]
-	Function __rest :: fn __rest(t: ?dynamic, propertyNames: []str | ?no-ir-representation(symbol)) -> (any: ?dynamic) [placeholder:?dynamic]
+	Function __rest :: fn __rest(t: ?dynamic, propertyNames: []str | ?no-ir-representation(symbol)) -> ?dynamic [placeholder:?dynamic]
 	Alias Function :: type Function = Function
 	Parameter decorators :: decorators: []Function
 	Parameter target :: target: ?dynamic [placeholder:?dynamic]
 	Parameter key :: key: str | ?no-ir-representation(symbol) [placeholder:?no-ir-representation]
 	Parameter desc :: desc: ?dynamic [placeholder:?dynamic]
-	Function __decorate :: fn __decorate(decorators: []Function, target: ?dynamic, key?: str | ?no-ir-representation(symbol), desc?: ?dynamic) -> (any: ?dynamic) [placeholder:?dynamic]
+	Function __decorate :: fn __decorate(decorators: []Function, target: ?dynamic, key?: str | ?no-ir-representation(symbol), desc?: ?dynamic) -> ?dynamic [placeholder:?dynamic]
 	Parameter paramIndex :: paramIndex: f64
 	Parameter decorator :: decorator: Function
-	Function __param :: fn __param(paramIndex: f64, decorator: Function) -> (Function: Function)
+	Function __param :: fn __param(paramIndex: f64, decorator: Function) -> Function
 	Alias null :: type null = null
 	Parameter ctor :: ctor: Function | null
 summary entities=25 signature rendered=25 unavailable=0 placeholder=13 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 "#;
 
 // # KNOWN GAPS (python, pinned 2026-09):
-// # - Unannotated code renders `?unannotated` and inferred-only module
-// #   constants `?oracle-gap` (honest, checker-bounded).
+// # - Pinned under the Nix shell, where pyrefly (NUDOX_PYREFLY_BIN) always
+// #   runs: unannotated positions take the checker's inference, stay
+// #   `?unannotated` when it proved nothing, and `?oracle-gap` when it
+// #   answered a shape the lane cannot host (honest, checker-bounded).
 // # - Star-imports lower an Alias literally named `*` (upstream naming).
 #[rustfmt::skip]
 const EXPECTED_PYTHON: &str = r"# python render snapshot
@@ -1717,26 +1721,26 @@ package PyYAML-6.0.2 file=PyYAML-6.0.2/lib/yaml/scanner.py bytes=51279
 	Static __all__ :: static __all__: list<str>
 	Alias MarkedYAMLError :: type MarkedYAMLError = ?unannotated [placeholder:?unannotated]
 	Alias * :: type * = ?unannotated [placeholder:?unannotated]
-	Parameter self :: self: ?unannotated [placeholder:?unannotated]
+	Parameter self :: self: SimpleKey
 	Parameter token_number :: token_number: ?unannotated [placeholder:?unannotated]
 	Parameter required :: required: ?unannotated [placeholder:?unannotated]
 	Parameter index :: index: ?unannotated [placeholder:?unannotated]
 	Parameter line :: line: ?unannotated [placeholder:?unannotated]
 	Parameter column :: column: ?unannotated [placeholder:?unannotated]
 	Parameter mark :: mark: ?unannotated [placeholder:?unannotated]
-	Function __init__ :: fn __init__(self: ?unannotated, token_number: ?unannotated, required: ?unannotated, index: ?unannotated, line: ?unannotated, column: ?unannotated, mark: ?unannotated) [placeholder:?unannotated]
-	Parameter self :: self: ?unannotated [placeholder:?unannotated]
-	Function __init__ :: fn __init__(self: ?unannotated) [placeholder:?unannotated]
-	Parameter self :: self: ?unannotated [placeholder:?unannotated]
-	Parameter choices :: choices: ?unannotated [placeholder:?unannotated]
-	Function check_token :: fn check_token(self: ?unannotated, choices: ?unannotated) [placeholder:?unannotated]
-	Parameter self :: self: ?unannotated [placeholder:?unannotated]
-	Function peek_token :: fn peek_token(self: ?unannotated) [placeholder:?unannotated]
-	Parameter self :: self: ?unannotated [placeholder:?unannotated]
-	Function get_token :: fn get_token(self: ?unannotated) [placeholder:?unannotated]
-	Parameter self :: self: ?unannotated [placeholder:?unannotated]
-	Function need_more_tokens :: fn need_more_tokens(self: ?unannotated) [placeholder:?unannotated]
-summary entities=25 signature rendered=25 unavailable=0 placeholder=21 malformed=0 canonical ok=25 err=0 document ok=25 err=0
+	Function __init__ :: fn __init__(self: SimpleKey, token_number: ?unannotated, required: ?unannotated, index: ?unannotated, line: ?unannotated, column: ?unannotated, mark: ?unannotated) [placeholder:?unannotated]
+	Parameter self :: self: Scanner
+	Function __init__ :: fn __init__(self: Scanner)
+	Parameter self :: self: Scanner
+	Parameter choices :: choices: ?oracle-gap [placeholder:?oracle-gap]
+	Function check_token :: fn check_token(self: Scanner, choices: ?oracle-gap) [placeholder:?oracle-gap]
+	Parameter self :: self: Scanner
+	Function peek_token :: fn peek_token(self: Scanner)
+	Parameter self :: self: Scanner
+	Function get_token :: fn get_token(self: Scanner)
+	Parameter self :: self: Scanner
+	Function need_more_tokens :: fn need_more_tokens(self: Scanner)
+summary entities=25 signature rendered=25 unavailable=0 placeholder=11 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 package anyio-4.14.2 file=anyio-4.14.2/src/anyio/_backends/_asyncio.py bytes=104400
 	Record _State :: struct _State
 	Record Runner :: struct Runner
@@ -1775,22 +1779,22 @@ package appdirs-1.4.4 file=appdirs-1.4.4/appdirs.py bytes=24720
 	Alias platform :: type platform = ?unannotated [placeholder:?unannotated]
 	Static os_name :: static os_name: ?unannotated [placeholder:?unannotated]
 	Static system :: static system: str
-	Parameter appname :: appname: str
-	Parameter appauthor :: appauthor: str
-	Parameter version :: version: ?unannotated [placeholder:?unannotated]
-	Parameter roaming :: roaming: ?unannotated [placeholder:?unannotated]
-	Function user_data_dir :: fn user_data_dir(appname: str, appauthor: str, version: ?unannotated, roaming: ?unannotated) [placeholder:?unannotated]
-	Parameter appname :: appname: str
-	Parameter appauthor :: appauthor: str
-	Parameter version :: version: ?unannotated [placeholder:?unannotated]
-	Parameter multipath :: multipath: ?unannotated [placeholder:?unannotated]
-	Function site_data_dir :: fn site_data_dir(appname: str, appauthor: str, version: ?unannotated, multipath: ?unannotated) [placeholder:?unannotated]
-	Parameter appname :: appname: str
-	Parameter appauthor :: appauthor: str
-	Parameter version :: version: ?unannotated [placeholder:?unannotated]
-	Parameter roaming :: roaming: ?unannotated [placeholder:?unannotated]
-	Function user_config_dir :: fn user_config_dir(appname: str, appauthor: str, version: ?unannotated, roaming: ?unannotated) [placeholder:?unannotated]
-summary entities=25 signature rendered=25 unavailable=0 placeholder=15 malformed=0 canonical ok=25 err=0 document ok=25 err=0
+	Parameter appname :: appname: None
+	Parameter appauthor :: appauthor: None
+	Parameter version :: version: None
+	Parameter roaming :: roaming: bool
+	Function user_data_dir :: fn user_data_dir(appname: None, appauthor: None, version: None, roaming: bool)
+	Parameter appname :: appname: None
+	Parameter appauthor :: appauthor: None
+	Parameter version :: version: None
+	Parameter multipath :: multipath: bool
+	Function site_data_dir :: fn site_data_dir(appname: None, appauthor: None, version: None, multipath: bool)
+	Parameter appname :: appname: None
+	Parameter appauthor :: appauthor: None
+	Parameter version :: version: None
+	Parameter roaming :: roaming: bool
+	Function user_config_dir :: fn user_config_dir(appname: None, appauthor: None, version: None, roaming: bool)
+summary entities=25 signature rendered=25 unavailable=0 placeholder=6 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 package attrs-25.3.0 file=attrs-25.3.0/src/attr/_make.py bytes=96664
 	Record _Nothing :: struct _Nothing
 	Record _CacheHashWrapper :: struct _CacheHashWrapper
@@ -1948,11 +1952,11 @@ package maven:org.opentest4j:opentest4j@1.3.0 file=org/opentest4j/opentest4j/1.3
 	Field nullValueWrapper :: nullValueWrapper: org.opentest4j.ValueWrapper
 	Parameter value :: value: ?no-ir-representation(java.lang.Object) [placeholder:?no-ir-representation]
 	Parameter org.opentest4j.ValueWrapper :: org.opentest4j.ValueWrapper: org.opentest4j.ValueWrapper
-	Function create :: fn create(value: ?no-ir-representation(java.lang.Object)) -> (org.opentest4j.ValueWrapper: org.opentest4j.ValueWrapper) [placeholder:?no-ir-representation]
+	Function create :: fn create(value: ?no-ir-representation(java.lang.Object)) -> org.opentest4j.ValueWrapper [placeholder:?no-ir-representation]
 	Parameter value :: value: ?no-ir-representation(java.lang.Object) [placeholder:?no-ir-representation]
 	Parameter stringRepresentation :: stringRepresentation: ?no-ir-representation(java.lang.String) [placeholder:?no-ir-representation]
 	Parameter org.opentest4j.ValueWrapper :: org.opentest4j.ValueWrapper: org.opentest4j.ValueWrapper
-	Function create :: fn create(value: ?no-ir-representation(java.lang.Object), stringRepresentation: ?no-ir-representation(java.lang.String)) -> (org.opentest4j.ValueWrapper: org.opentest4j.ValueWrapper) [placeholder:?no-ir-representation]
+	Function create :: fn create(value: ?no-ir-representation(java.lang.Object), stringRepresentation: ?no-ir-representation(java.lang.String)) -> org.opentest4j.ValueWrapper [placeholder:?no-ir-representation]
 	Field value :: value: ?no-ir-representation(java.io.Serializable) [placeholder:?no-ir-representation]
 	Field type :: type: ?no-ir-representation(java.lang.Class) [placeholder:?no-ir-representation]
 	Field stringRepresentation :: stringRepresentation: ?no-ir-representation(java.lang.String) [placeholder:?no-ir-representation]
@@ -2004,17 +2008,17 @@ package morelinq.source.moreenumerable.batch/1.0.1 file=morelinq.source.moreenum
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
 	Parameter size :: size: i32
 	Parameter System.Collections.Generic.IEnumerable<System.Collections.Generic.IEnumerable<TSource>> :: System.Collections.Generic.IEnumerable<System.Collections.Generic.IEnumerable<TSource>>: ?unresolved-external(System.Collections.Generic.IEnumerable<System.Collections.Generic.IEnumerable<TSource>>) [placeholder:?unresolved-external]
-	Function Batch :: fn Batch(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), size: i32) -> (System.Collections.Generic.IEnumerable<System.Collections.Generic.IEnumerable<TSource>>: ?unresolved-external(System.Collections.Generic.IEnumerable<System.Collections.Generic.IEnumerable<TSource>>)) [placeholder:?unresolved-external]
+	Function Batch :: fn Batch(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), size: i32) -> ?unresolved-external(System.Collections.Generic.IEnumerable<System.Collections.Generic.IEnumerable<TSource>>) [placeholder:?unresolved-external]
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
 	Parameter size :: size: i32
 	Parameter resultSelector :: resultSelector: ?unresolved-external(System.Func<System.Collections.Generic.IEnumerable<TSource>, TResult>) [placeholder:?unresolved-external]
 	Parameter System.Collections.Generic.IEnumerable<TResult> :: System.Collections.Generic.IEnumerable<TResult>: ?unresolved-external(System.Collections.Generic.IEnumerable<TResult>) [placeholder:?unresolved-external]
-	Function Batch :: fn Batch(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), size: i32, resultSelector: ?unresolved-external(System.Func<System.Collections.Generic.IEnumerable<TSource>, TResult>)) -> (System.Collections.Generic.IEnumerable<TResult>: ?unresolved-external(System.Collections.Generic.IEnumerable<TResult>)) [placeholder:?unresolved-external]
+	Function Batch :: fn Batch(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), size: i32, resultSelector: ?unresolved-external(System.Func<System.Collections.Generic.IEnumerable<TSource>, TResult>)) -> ?unresolved-external(System.Collections.Generic.IEnumerable<TResult>) [placeholder:?unresolved-external]
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
 	Parameter size :: size: i32
 	Parameter resultSelector :: resultSelector: ?unresolved-external(System.Func<System.Collections.Generic.IEnumerable<TSource>, TResult>) [placeholder:?unresolved-external]
 	Parameter System.Collections.Generic.IEnumerable<TResult> :: System.Collections.Generic.IEnumerable<TResult>: ?unresolved-external(System.Collections.Generic.IEnumerable<TResult>) [placeholder:?unresolved-external]
-	Function BatchImpl :: fn BatchImpl(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), size: i32, resultSelector: ?unresolved-external(System.Func<System.Collections.Generic.IEnumerable<TSource>, TResult>)) -> (System.Collections.Generic.IEnumerable<TResult>: ?unresolved-external(System.Collections.Generic.IEnumerable<TResult>)) [placeholder:?unresolved-external]
+	Function BatchImpl :: fn BatchImpl(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), size: i32, resultSelector: ?unresolved-external(System.Func<System.Collections.Generic.IEnumerable<TSource>, TResult>)) -> ?unresolved-external(System.Collections.Generic.IEnumerable<TResult>) [placeholder:?unresolved-external]
 summary entities=16 signature rendered=16 unavailable=0 placeholder=11 malformed=0 canonical ok=16 err=0 document ok=16 err=0
 package morelinq.source.moreenumerable.assertcount/1.0.2 file=morelinq.source.moreenumerable.assertcount/1.0.2/content/net20/MoreLinq/MoreEnumerable.AssertCount.cs bytes=5239
 	Namespace MoreLinq :: namespace MoreLinq
@@ -2023,12 +2027,12 @@ package morelinq.source.moreenumerable.assertcount/1.0.2 file=morelinq.source.mo
 	Parameter count :: count: i32
 	Parameter errorSelector :: errorSelector: ?unresolved-external(System.Func<int, int, System.Exception>) [placeholder:?unresolved-external]
 	Parameter System.Collections.Generic.IEnumerable<TSource> :: System.Collections.Generic.IEnumerable<TSource>: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
-	Function AssertCountImpl :: fn AssertCountImpl(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), count: i32, errorSelector: ?unresolved-external(System.Func<int, int, System.Exception>)) -> (System.Collections.Generic.IEnumerable<TSource>: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>)) [placeholder:?unresolved-external]
+	Function AssertCountImpl :: fn AssertCountImpl(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), count: i32, errorSelector: ?unresolved-external(System.Func<int, int, System.Exception>)) -> ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
 	Parameter count :: count: i32
 	Parameter errorSelector :: errorSelector: ?unresolved-external(System.Func<int, int, System.Exception>) [placeholder:?unresolved-external]
 	Parameter System.Collections.Generic.IEnumerable<TSource> :: System.Collections.Generic.IEnumerable<TSource>: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
-	Function ExpectingCountYieldingImpl :: fn ExpectingCountYieldingImpl(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), count: i32, errorSelector: ?unresolved-external(System.Func<int, int, System.Exception>)) -> (System.Collections.Generic.IEnumerable<TSource>: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>)) [placeholder:?unresolved-external]
+	Function ExpectingCountYieldingImpl :: fn ExpectingCountYieldingImpl(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), count: i32, errorSelector: ?unresolved-external(System.Func<int, int, System.Exception>)) -> ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
 summary entities=12 signature rendered=12 unavailable=0 placeholder=8 malformed=0 canonical ok=12 err=0 document ok=12 err=0
 package morelinq.source.moreenumerable.groupadjacent/1.0.1 file=morelinq.source.moreenumerable.groupadjacent/1.0.1/content/net20/MoreLinq/MoreEnumerable.GroupAdjacent.cs bytes=11660
 	Namespace MoreLinq :: namespace MoreLinq
@@ -2038,23 +2042,23 @@ package morelinq.source.moreenumerable.groupadjacent/1.0.1 file=morelinq.source.
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
 	Parameter keySelector :: keySelector: ?unresolved-external(System.Func<TSource, TKey>) [placeholder:?unresolved-external]
 	Parameter System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TSource>> :: System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TSource>>: ?unresolved-external(System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TSource>>) [placeholder:?unresolved-external]
-	Function GroupAdjacent :: fn GroupAdjacent(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), keySelector: ?unresolved-external(System.Func<TSource, TKey>)) -> (System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TSource>>: ?unresolved-external(System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TSource>>)) [placeholder:?unresolved-external]
+	Function GroupAdjacent :: fn GroupAdjacent(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), keySelector: ?unresolved-external(System.Func<TSource, TKey>)) -> ?unresolved-external(System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TSource>>) [placeholder:?unresolved-external]
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
 	Parameter keySelector :: keySelector: ?unresolved-external(System.Func<TSource, TKey>) [placeholder:?unresolved-external]
 	Parameter comparer :: comparer: ?unresolved-external(System.Collections.Generic.IEqualityComparer<TKey>) [placeholder:?unresolved-external]
 	Parameter System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TSource>> :: System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TSource>>: ?unresolved-external(System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TSource>>) [placeholder:?unresolved-external]
-	Function GroupAdjacent :: fn GroupAdjacent(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), keySelector: ?unresolved-external(System.Func<TSource, TKey>), comparer: ?unresolved-external(System.Collections.Generic.IEqualityComparer<TKey>)) -> (System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TSource>>: ?unresolved-external(System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TSource>>)) [placeholder:?unresolved-external]
+	Function GroupAdjacent :: fn GroupAdjacent(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), keySelector: ?unresolved-external(System.Func<TSource, TKey>), comparer: ?unresolved-external(System.Collections.Generic.IEqualityComparer<TKey>)) -> ?unresolved-external(System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TSource>>) [placeholder:?unresolved-external]
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
 	Parameter keySelector :: keySelector: ?unresolved-external(System.Func<TSource, TKey>) [placeholder:?unresolved-external]
 	Parameter elementSelector :: elementSelector: ?unresolved-external(System.Func<TSource, TElement>) [placeholder:?unresolved-external]
 	Parameter System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TElement>> :: System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TElement>>: ?unresolved-external(System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TElement>>) [placeholder:?unresolved-external]
-	Function GroupAdjacent :: fn GroupAdjacent(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), keySelector: ?unresolved-external(System.Func<TSource, TKey>), elementSelector: ?unresolved-external(System.Func<TSource, TElement>)) -> (System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TElement>>: ?unresolved-external(System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TElement>>)) [placeholder:?unresolved-external]
+	Function GroupAdjacent :: fn GroupAdjacent(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), keySelector: ?unresolved-external(System.Func<TSource, TKey>), elementSelector: ?unresolved-external(System.Func<TSource, TElement>)) -> ?unresolved-external(System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TElement>>) [placeholder:?unresolved-external]
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
 	Parameter keySelector :: keySelector: ?unresolved-external(System.Func<TSource, TKey>) [placeholder:?unresolved-external]
 	Parameter elementSelector :: elementSelector: ?unresolved-external(System.Func<TSource, TElement>) [placeholder:?unresolved-external]
 	Parameter comparer :: comparer: ?unresolved-external(System.Collections.Generic.IEqualityComparer<TKey>) [placeholder:?unresolved-external]
 	Parameter System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TElement>> :: System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TElement>>: ?unresolved-external(System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TElement>>) [placeholder:?unresolved-external]
-	Function GroupAdjacent :: fn GroupAdjacent(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), keySelector: ?unresolved-external(System.Func<TSource, TKey>), elementSelector: ?unresolved-external(System.Func<TSource, TElement>), comparer: ?unresolved-external(System.Collections.Generic.IEqualityComparer<TKey>)) -> (System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TElement>>: ?unresolved-external(System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TElement>>)) [placeholder:?unresolved-external]
+	Function GroupAdjacent :: fn GroupAdjacent(source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>), keySelector: ?unresolved-external(System.Func<TSource, TKey>), elementSelector: ?unresolved-external(System.Func<TSource, TElement>), comparer: ?unresolved-external(System.Collections.Generic.IEqualityComparer<TKey>)) -> ?unresolved-external(System.Collections.Generic.IEnumerable<System.Linq.IGrouping<TKey, TElement>>) [placeholder:?unresolved-external]
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<TSource>) [placeholder:?unresolved-external]
 summary entities=25 signature rendered=25 unavailable=0 placeholder=21 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 package morelinq.source.moreenumerable.todelimitedstring/1.1.2 file=morelinq.source.moreenumerable.todelimitedstring/1.1.2/content/net20/MoreLinq/MoreEnumerable.ToDelimitedString.g.cs bytes=34127
@@ -2063,23 +2067,23 @@ package morelinq.source.moreenumerable.todelimitedstring/1.1.2 file=morelinq.sou
 	Record StringBuilderAppenders :: struct StringBuilderAppenders
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<bool>) [placeholder:?unresolved-external]
 	Parameter string :: string: str
-	Function ToDelimitedString :: fn ToDelimitedString(source: ?unresolved-external(System.Collections.Generic.IEnumerable<bool>)) -> (string: str) [placeholder:?unresolved-external]
+	Function ToDelimitedString :: fn ToDelimitedString(source: ?unresolved-external(System.Collections.Generic.IEnumerable<bool>)) -> str [placeholder:?unresolved-external]
 	Field Boolean :: Boolean: ?unresolved-external(System.Func<System.Text.StringBuilder, bool, System.Text.StringBuilder>) [placeholder:?unresolved-external]
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<bool>) [placeholder:?unresolved-external]
 	Parameter delimiter :: delimiter: str
 	Parameter string :: string: str
-	Function ToDelimitedString :: fn ToDelimitedString(source: ?unresolved-external(System.Collections.Generic.IEnumerable<bool>), delimiter: str) -> (string: str) [placeholder:?unresolved-external]
+	Function ToDelimitedString :: fn ToDelimitedString(source: ?unresolved-external(System.Collections.Generic.IEnumerable<bool>), delimiter: str) -> str [placeholder:?unresolved-external]
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<byte>) [placeholder:?unresolved-external]
 	Parameter string :: string: str
-	Function ToDelimitedString :: fn ToDelimitedString(source: ?unresolved-external(System.Collections.Generic.IEnumerable<byte>)) -> (string: str) [placeholder:?unresolved-external]
+	Function ToDelimitedString :: fn ToDelimitedString(source: ?unresolved-external(System.Collections.Generic.IEnumerable<byte>)) -> str [placeholder:?unresolved-external]
 	Field Byte :: Byte: ?unresolved-external(System.Func<System.Text.StringBuilder, byte, System.Text.StringBuilder>) [placeholder:?unresolved-external]
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<byte>) [placeholder:?unresolved-external]
 	Parameter delimiter :: delimiter: str
 	Parameter string :: string: str
-	Function ToDelimitedString :: fn ToDelimitedString(source: ?unresolved-external(System.Collections.Generic.IEnumerable<byte>), delimiter: str) -> (string: str) [placeholder:?unresolved-external]
+	Function ToDelimitedString :: fn ToDelimitedString(source: ?unresolved-external(System.Collections.Generic.IEnumerable<byte>), delimiter: str) -> str [placeholder:?unresolved-external]
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<char>) [placeholder:?unresolved-external]
 	Parameter string :: string: str
-	Function ToDelimitedString :: fn ToDelimitedString(source: ?unresolved-external(System.Collections.Generic.IEnumerable<char>)) -> (string: str) [placeholder:?unresolved-external]
+	Function ToDelimitedString :: fn ToDelimitedString(source: ?unresolved-external(System.Collections.Generic.IEnumerable<char>)) -> str [placeholder:?unresolved-external]
 	Field Char :: Char: ?unresolved-external(System.Func<System.Text.StringBuilder, char, System.Text.StringBuilder>) [placeholder:?unresolved-external]
 	Parameter source :: source: ?unresolved-external(System.Collections.Generic.IEnumerable<char>) [placeholder:?unresolved-external]
 	Parameter delimiter :: delimiter: str
@@ -2100,6 +2104,10 @@ summary entities=4 signature rendered=4 unavailable=0 placeholder=2 malformed=0 
 // #   snapshot pins the current head-only state.
 // # - Macros render `?unannotated`, extern globals `?external`, and
 // #   template/macro-dependent pointees `?oracle-gap` (upstream rows).
+// # - Shell-sensitive: pinned under `.#development`, where brotli's
+// #   `uint8_t` does not resolve and clang recovers it as `int`
+// #   (`const i32[]`). Under `.#complete` the typedef resolves and the same
+// #   rows render `[const unsigned-char[8]; 122784]`.
 #[rustfmt::skip]
 const EXPECTED_CLANG: &str = r"# clang render snapshot
 package cJSON file=cJSON/tests/unity/test/tests/testunity.c bytes=123592
@@ -2119,7 +2127,7 @@ package cJSON file=cJSON/tests/unity/test/tests/testunity.c bytes=123592
 	Function startPutcharSpy :: fn startPutcharSpy()
 	Function endPutcharSpy :: fn endPutcharSpy()
 	Parameter getBufferPutcharSpy :: getBufferPutcharSpy: c-char-signed[8]*
-	Function getBufferPutcharSpy :: fn getBufferPutcharSpy() -> (getBufferPutcharSpy: c-char-signed[8]*)
+	Function getBufferPutcharSpy :: fn getBufferPutcharSpy() -> c-char-signed[8]*
 	Static SetToOneToFailInTearDown :: static SetToOneToFailInTearDown: i32
 	Static SetToOneMeanWeAlreadyCheckedThisGuy :: static SetToOneMeanWeAlreadyCheckedThisGuy: i32
 	Function setUp :: fn setUp()
@@ -2187,7 +2195,7 @@ package brotli file=brotli/c/common/dictionary.c bytes=472009
 	Static kBrotliDictionaryData :: static kBrotliDictionaryData: const i32[]
 	Static kBrotliDictionary :: static kBrotliDictionary: const ?external [placeholder:?external]
 	Parameter BrotliGetDictionary :: BrotliGetDictionary: const ?external* [placeholder:?external]
-	Function BrotliGetDictionary :: fn BrotliGetDictionary() -> (BrotliGetDictionary: const ?external*) [placeholder:?external]
+	Function BrotliGetDictionary :: fn BrotliGetDictionary() -> const ?external* [placeholder:?external]
 	Parameter data :: data: const i32*
 	Function BrotliSetDictionaryData :: fn BrotliSetDictionaryData(data: const i32*)
 	Module dictionary.h :: mod dictionary.h
