@@ -211,7 +211,8 @@ fn function_named(view: &FragmentView<'_>, wanted: &[u8]) -> bool {
 
 fn entity_kind(kind: DeclarationKind) -> EntityKind {
     match kind {
-        DeclarationKind::Module | DeclarationKind::Package => EntityKind::Module,
+        DeclarationKind::Module => EntityKind::Module,
+        DeclarationKind::Package => EntityKind::Namespace,
         DeclarationKind::Class => EntityKind::Record,
         DeclarationKind::Interface | DeclarationKind::Annotation => EntityKind::Trait,
         DeclarationKind::Record => EntityKind::Record,
@@ -287,7 +288,21 @@ fn deep_review(
             })?;
             extension_count += 1;
         }
-        if extension_count > 0 && view.language_extension_payload().is_none() {
+        // The Java lowerer's `EmissionExtension::Java` plane is fed only by
+        // executables (`push_executable`'s `java_facts` call in
+        // `driver/lower/java.rs`) — throws, parameter conventions, and
+        // record components ride on a method or constructor's own fact. A
+        // meta-annotation the image records directly on a type or field
+        // declaration (e.g. `@Retention`/`@Target` on a bodyless
+        // `@interface` with no members at all, such as
+        // `commons-lang3`'s `DiffExclude`) has no executable in the file to
+        // carry it and is not lowered into this plane; that is the
+        // documented shape, not a dropped fact.
+        let is_executable = matches!(
+            declaration.kind,
+            DeclarationKind::Constructor | DeclarationKind::Method
+        );
+        if is_executable && extension_count > 0 && view.language_extension_payload().is_none() {
             return Err(TestError::Law {
                 purl,
                 path: path.to_owned(),
@@ -295,7 +310,7 @@ fn deep_review(
             });
         }
     }
-    let references = authority.image.references().count();
+    let references = authority.image.references().count() + authority.image.uses().count();
     let mut occurrences = 0;
     if let Some(rows) = view.occurrences() {
         for row in rows {
@@ -368,8 +383,17 @@ fn render_review(
     // (`org.apache.commons.lang3.AnnotationUtils`), matching the declared
     // qualified-name entity law, so the primary item is looked up by the
     // path-derived qualified name while the rendered check keeps the simple
-    // name.
-    let qualified = qualified_name(path);
+    // name. A package-info entry's retainable entity is its PACKAGE row (see
+    // the identical special case below in the main per-file law): the
+    // qualified name is the package name, not a `...package-info` type
+    // spelling that no declaration in the image ever carries.
+    let qualified = if path.rsplit('/').next() == Some("package-info.java") {
+        path.strip_suffix("package-info.java")
+            .map(|directory| qualified_name(directory.trim_end_matches('/')))
+            .unwrap_or_else(|| qualified_name(path))
+    } else {
+        qualified_name(path)
+    };
     let simple = qualified
         .rsplit('.')
         .next()
@@ -455,24 +479,42 @@ fn open_one<'a>(
     .ok_or(TestError::Fact("publication had no compilation"))
 }
 
+// `whole_artifact` (row 0, commons-lang3) publishes every fragment in the
+// package, including files like `StringUtils.java` whose entity/type-child
+// count comfortably exceeds the 512-slot capacity this scratch buffer was
+// originally sized for when every row selected only a handful of files.
+// 4096 is a generous ceiling above the largest observed need (568) rather
+// than a tight fit, so a slightly bigger file in a future dependency bump
+// does not reopen this same capacity error. The six scratch planes are
+// heap-allocated (`Vec`-backed boxed slices), not stack arrays: one
+// `IndexScratch` at this capacity is several megabytes, and this test
+// constructs one per fragment (up to 246 for the whole-artifact row), which
+// overflows the default thread stack if held as `[MaybeUninit<T>; N]`.
+const INDEX_SCRATCH_CAPACITY: usize = 4096;
+
 struct IndexScratch<'bytes> {
-    projections: [MaybeUninit<backend_engine::index_build::EntityProjection<'bytes>>; 512],
-    entities: [MaybeUninit<backend_engine::index_build::EntityFact<'bytes>>; 512],
-    exact: [MaybeUninit<backend_semantic::index_core::ExactRow<'bytes>>; 512],
-    lexical: [MaybeUninit<backend_semantic::index_core::LexicalRow<'bytes>>; 512],
-    atoms: [MaybeUninit<backend_semantic::ir::Atom<'bytes>>; 512],
-    types: [MaybeUninit<backend_semantic::ir::TypeNode>; 512],
+    projections: Box<[MaybeUninit<backend_engine::index_build::EntityProjection<'bytes>>]>,
+    entities: Box<[MaybeUninit<backend_engine::index_build::EntityFact<'bytes>>]>,
+    exact: Box<[MaybeUninit<backend_semantic::index_core::ExactRow<'bytes>>]>,
+    lexical: Box<[MaybeUninit<backend_semantic::index_core::LexicalRow<'bytes>>]>,
+    atoms: Box<[MaybeUninit<backend_semantic::ir::Atom<'bytes>>]>,
+    types: Box<[MaybeUninit<backend_semantic::ir::TypeNode>]>,
 }
 
 impl IndexScratch<'_> {
     fn new() -> Self {
+        fn uninit_slice<T>() -> Box<[MaybeUninit<T>]> {
+            (0..INDEX_SCRATCH_CAPACITY)
+                .map(|_| MaybeUninit::uninit())
+                .collect()
+        }
         Self {
-            projections: [MaybeUninit::uninit(); 512],
-            entities: [MaybeUninit::uninit(); 512],
-            exact: [MaybeUninit::uninit(); 512],
-            lexical: [MaybeUninit::uninit(); 512],
-            atoms: [MaybeUninit::uninit(); 512],
-            types: [MaybeUninit::uninit(); 512],
+            projections: uninit_slice(),
+            entities: uninit_slice(),
+            exact: uninit_slice(),
+            lexical: uninit_slice(),
+            atoms: uninit_slice(),
+            types: uninit_slice(),
         }
     }
 }
@@ -594,7 +636,20 @@ fn lower_frozen_file(
             cause: "declared entity missing by qualified name".into(),
         });
     }
-    if view.language_extension_payload().is_none() || view.type_facts().is_none() {
+    // An unannotated `package-info.java` declares no type and carries no
+    // annotation, so its fragment has no type facts and no extension
+    // payload to demand; that is not a lowering gap, it is the file.
+    let is_package_info = path.rsplit('/').next() == Some("package-info.java");
+    // `EmissionExtension::Java` is fed only by executables (see the matching
+    // note in `deep_review`); a file whose only declaration is a bodyless
+    // `@interface` (e.g. commons-lang3's marker annotation `DiffExclude`,
+    // which carries meta-annotations but declares no member) has no
+    // executable to carry one and legitimately has no extension payload.
+    let has_executable = view.entities().any(|entity| entity.kind == EntityKind::Function);
+    if !is_package_info
+        && (view.type_facts().is_none()
+            || (has_executable && view.language_extension_payload().is_none()))
+    {
         return Err(TestError::Law {
             purl,
             path: path.to_owned(),
@@ -863,7 +918,15 @@ fn publication_leg(
     }
     index(opened, qualified_name(&extracted[0].0).as_bytes())?;
 
-    let last = extracted.len() - 1;
+    // `package-info.java` declares no type and has no closing brace to
+    // append a generation-2 member into (the plain last-file choice worked
+    // for the frozen small rows, but the whole-artifact row 0 sorts every
+    // real `.java` file alphabetically, and `package-info.java` can and
+    // does land last within a subpackage, e.g. commons-lang3's `util/`).
+    let last = extracted
+        .iter()
+        .rposition(|(name, _)| !name.ends_with("package-info.java"))
+        .ok_or(TestError::Fact("row has no generation-2 eligible file"))?;
     let parser_source = &extracted[last].1;
     let closing = parser_source
         .iter()
