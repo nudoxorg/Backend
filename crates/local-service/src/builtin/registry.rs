@@ -645,6 +645,37 @@ pub(super) struct StagedProject {
 }
 
 impl StagedProject {
+    /// Names the package root inside one staged archive.
+    ///
+    /// Registry archives wrap their sources in one conventional packaging
+    /// directory: `package/` for npm, `<name>-<version>/` for crates and
+    /// source distributions, `<module>@<version>/` for Go module zips. That
+    /// wrapper is packaging, not source layout, so when it is the archive's
+    /// only entry it is descended into. Every path a reader sees is then
+    /// relative to the package (`src/lib.rs`), as the identity contract
+    /// states, rather than to the archive (`package/src/lib.rs`).
+    ///
+    /// Only a recognized wrapper is descended into: `package`, or a name
+    /// ending in the release version. A lone directory that is source layout
+    /// (a Maven sources jar holding only `com/`) keeps its place, because a
+    /// Java package path must stay intact.
+    fn at(directory: PathBuf, version: &str) -> Result<Self, RegistryAddError> {
+        let io = |error| RegistryAddError::Acquisition(AcquisitionError::Io(error));
+        let mut entries = fs::read_dir(&directory).map_err(io)?;
+        let (Some(only), None) = (entries.next(), entries.next()) else {
+            return Ok(Self { path: directory });
+        };
+        let only = only.map_err(io)?;
+        let name = only.file_name();
+        let wrapper = name.to_str().is_some_and(|name| {
+            name == "package" || (!version.is_empty() && name.ends_with(version))
+        });
+        if wrapper && only.file_type().map_err(io)?.is_dir() {
+            return Ok(Self { path: only.path() });
+        }
+        Ok(Self { path: directory })
+    }
+
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
@@ -667,10 +698,13 @@ static STAGING_NONCE: AtomicU64 = AtomicU64::new(0);
 /// supported ecosystem registries. Every other byte shape reaches the typed
 /// unsupported terminal instead of being published as a label-only package.
 pub(super) fn stage_archive(
-    _coordinate: &PackageCoordinate,
+    coordinate: &PackageCoordinate,
     archive: &[u8],
     workspace_root: impl AsRef<Path>,
 ) -> Result<StagedProject, RegistryAddError> {
+    let version = admit_registry_coordinate(coordinate)
+        .map(|admitted| admitted.version().as_str().to_owned())
+        .unwrap_or_default();
     if archive.is_empty() {
         return Err(RegistryAddError::UnsupportedArchive);
     }
@@ -680,7 +714,7 @@ pub(super) fn stage_archive(
     let digest = blake3::hash(archive);
     let directory = staging_root.join(hex(digest.as_bytes()));
     if directory.exists() {
-        return Ok(StagedProject { path: directory });
+        return StagedProject::at(directory, &version);
     }
     let temporary = staging_root.join(format!(
         ".{}.{}.{}.tmp",
@@ -714,7 +748,7 @@ pub(super) fn stage_archive(
     backend_platform::durability::open_directory(&staging_root)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| RegistryAddError::Acquisition(AcquisitionError::Io(error)))?;
-    Ok(StagedProject { path: directory })
+    StagedProject::at(directory, &version)
 }
 
 struct StageWriter {
@@ -1317,13 +1351,42 @@ mod tests {
         let coordinate = PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate");
         let archive = tar_file("package/src/lib.rs", b"pub fn from_registry() {}");
         let staged = stage_archive(&coordinate, &archive, &root).expect("stage archive");
-        let source = fs::read(staged.path().join("package/src/lib.rs")).expect("read source");
+        let source = fs::read(staged.path().join("src/lib.rs")).expect("read source");
+        assert!(
+            staged.path().ends_with("package"),
+            "the npm-style wrapper is the package root"
+        );
         assert_eq!(source, b"pub fn from_registry() {}");
         let path = staged.path().to_path_buf();
         drop(staged);
         assert!(path.exists());
         let reused = stage_archive(&coordinate, &archive, &root).expect("reuse archive");
         assert_eq!(reused.path(), path);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_versioned_wrapper_is_the_package_root_but_source_layout_is_kept() {
+        let root = scratch();
+        let crate_coordinate =
+            PackageCoordinate::parse("pkg:cargo/demo@1.4.0").expect("coordinate");
+        let crate_archive = tar_file("demo-1.4.0/src/lib.rs", b"pub fn wrapped() {}");
+        let staged = stage_archive(&crate_coordinate, &crate_archive, &root).expect("stage crate");
+        assert_eq!(
+            fs::read(staged.path().join("src/lib.rs")).expect("crate source at package root"),
+            b"pub fn wrapped() {}"
+        );
+        // A Maven sources jar whose only entry is the `com/` package tree:
+        // that directory is Java source layout, not a packaging wrapper.
+        let jar_coordinate =
+            PackageCoordinate::parse("pkg:maven/com.demo/demo@2.0.0").expect("coordinate");
+        let jar_archive = tar_file("com/demo/Demo.java", b"package com.demo; class Demo {}");
+        let jar = stage_archive(&jar_coordinate, &jar_archive, &root).expect("stage jar");
+        assert!(
+            jar.path().join("com/demo/Demo.java").is_file(),
+            "the Java package path must stay intact under {}",
+            jar.path().display()
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1348,7 +1411,7 @@ mod tests {
         let valid = stored_zip_file("package/src/index.mts", source, crc32(source));
         let staged = stage_archive(&coordinate, &valid, &root).expect("valid zip");
         assert_eq!(
-            fs::read(staged.path().join("package/src/index.mts")).expect("source"),
+            fs::read(staged.path().join("src/index.mts")).expect("source"),
             source
         );
 
