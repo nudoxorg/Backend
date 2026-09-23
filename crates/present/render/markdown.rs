@@ -65,9 +65,23 @@ pub fn fault(fault: &Fault) -> String {
     };
     let _ = write!(out, "\n{}", fault.cause().sentence());
     if let Some(call) = fault.affordance().tool_call() {
-        let _ = write!(out, "\n→ `{call}`");
+        let _ = write!(out, "\n→ `{}`", tool_call_text(&call));
     }
     out
+}
+
+/// Spells one tool call as `{"name":…,"arguments":…}`, in MCP's own
+/// `tools/call` field order.
+///
+/// `serde_json::Value` objects order their keys by whatever `serde_json`
+/// features the build happened to unify (sorted by default, insertion order
+/// once any crate enables `preserve_order`), so displaying the value directly
+/// made these bytes depend on which packages shared the build.
+fn tool_call_text(call: &serde_json::Value) -> String {
+    let null = serde_json::Value::Null;
+    let name = call.get("name").unwrap_or(&null);
+    let arguments = call.get("arguments").unwrap_or(&null);
+    format!("{{\"name\":{name},\"arguments\":{arguments}}}")
 }
 
 /// Renders one declaration page, identity first.
