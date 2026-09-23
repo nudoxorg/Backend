@@ -9,7 +9,9 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use backend_engine::capability::CapabilityArtifactId;
-use backend_engine::registry::{RegistryEcosystem, RegistryEndpoint, storage_root};
+use backend_engine::registry::{
+    storage_root, RegistryEcosystem, RegistryEndpoint, RegistrySource, REGISTRY_SOURCE_ROOT_VERSION,
+};
 use backend_runtime::WorkspacePaths;
 use std::ffi::OsString;
 use std::io::{Read, Write};
@@ -299,13 +301,15 @@ fn cli_name(endpoint: &Path, workspace: &Path) -> Output {
     run_bounded(command, "backend-cli name")
 }
 
-fn mcp_packages(endpoint: &Path, workspace: &Path) -> Output {
+fn mcp_packages(endpoint: &Path, workspace: &Path, project: &Path) -> Output {
     let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_backend-journey-mcp"));
     command
         .arg("--endpoint")
         .arg(endpoint)
         .arg("--workspace")
-        .arg(workspace);
+        .arg(workspace)
+        .arg("--project")
+        .arg(project);
     let input = concat!(
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"restart-journey","version":"1"}}}"#,
         "\n",
@@ -375,6 +379,11 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
     let root = unique_root();
     let workspace = root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("create daemon workspace");
+    // The MCP entry point indexes its `--project` at startup. Without one,
+    // it falls back to the process working directory, which is this test
+    // binary's own cwd rather than this journey's isolated fixture root.
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).expect("create empty MCP project directory");
     let endpoint = derive_endpoint(&workspace);
     let canonical_workspace = workspace.canonicalize().expect("canonical workspace");
     let cli_identity =
@@ -412,8 +421,15 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
     server.join().expect("loopback registry server");
     let registry_endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, registry.clone())
         .expect("registry endpoint");
-    let journal =
-        storage_root(&workspace.join("registry"), &registry_endpoint).join("registry.journal");
+    // `--registry-endpoint` composes a canonical-feed (non-native) override
+    // source under the versioned router root (see `RegistryGateway::open` and
+    // `RegistrySource::endpoint_for_owner`), not the raw endpoint identity.
+    let registry_source = RegistrySource::new(registry_endpoint).with_native(false);
+    let journal = storage_root(
+        &workspace.join("registry").join(REGISTRY_SOURCE_ROOT_VERSION),
+        &registry_source.endpoint_for_owner(),
+    )
+    .join("registry.journal");
     let journal_bytes = std::fs::read(&journal).expect("read registry journal after first add");
     assert!(
         !journal_bytes
@@ -451,7 +467,7 @@ fn remote_add_materializes_searchable_rows_and_reuses_cursor_after_restart() {
         "restart add unexpectedly advanced the registry cursor"
     );
 
-    let mcp = mcp_packages(&endpoint, &workspace);
+    let mcp = mcp_packages(&endpoint, &workspace, &project);
     assert!(
         mcp.status.success() && String::from_utf8_lossy(&mcp.stdout).contains("demo"),
         "MCP restart query lost the persisted package: stdout={} stderr={}",

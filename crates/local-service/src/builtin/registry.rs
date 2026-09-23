@@ -416,7 +416,12 @@ impl RegistryGateway {
         source: &RegistrySource,
         coordinate: &PackageCoordinate,
     ) -> Result<HttpRegistryTransport, RegistryAddError> {
-        let endpoint = source.endpoint().clone();
+        // The owner is opened with `source.endpoint_for_owner()`, whose id is
+        // salted by adapter/namespace (see `source_identity`). The transport
+        // must carry the same salted id so its cursor-registry check against
+        // the owner-issued `FeedRequest` agrees with the owner that reserved
+        // it, rather than the source's raw, unsalted endpoint identity.
+        let endpoint = source.endpoint_for_owner();
         let admitted =
             admit_registry_coordinate(coordinate).map_err(RegistryAddError::Acquisition)?;
         if endpoint.ecosystem() != admitted.ecosystem() {

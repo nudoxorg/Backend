@@ -15,7 +15,9 @@ mod surface_matrix;
 
 use backend_client::{LocalSubscriptionTransport, Session, SubscriptionRequest};
 use backend_engine::capability::CapabilityArtifactId;
-use backend_engine::registry::{RegistryEcosystem, RegistryEndpoint, storage_root};
+use backend_engine::registry::{
+    storage_root, RegistryEcosystem, RegistryEndpoint, RegistrySource, REGISTRY_SOURCE_ROOT_VERSION,
+};
 use backend_library::{
     CursorRead, GraphValue, PackageReference, ProjectName, SurfaceCommand, SurfaceReply,
     ViewRevision, encode_id,
@@ -1545,8 +1547,15 @@ fn registry_archive_cache_reuses_published_object_after_process_restart() {
     let registry_url = registry.clone();
     let registry_endpoint =
         RegistryEndpoint::new(RegistryEcosystem::Cargo, registry).expect("admit registry endpoint");
-    let journal =
-        storage_root(&workspace.join("registry"), &registry_endpoint).join("registry.journal");
+    // `--registry-endpoint` composes a canonical-feed (non-native) override
+    // source under the versioned router root (see `RegistryGateway::open` and
+    // `RegistrySource::endpoint_for_owner`), not the raw endpoint identity.
+    let registry_source = RegistrySource::new(registry_endpoint).with_native(false);
+    let journal = storage_root(
+        &workspace.join("registry").join(REGISTRY_SOURCE_ROOT_VERSION),
+        &registry_source.endpoint_for_owner(),
+    )
+    .join("registry.journal");
     let journal_len = std::fs::metadata(&journal)
         .expect("registry journal after first add")
         .len();
