@@ -206,6 +206,12 @@ fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn E
         .current_dir(&helper_dir)
         .status()?;
     assert!(restored.success(), "locked oracle restore failed: {restored}");
+    // `UseSharedCompilation=false`: see this file's doc comment above — the
+    // isolated `obj/`/`bin/` directories rule out a file-system race, but
+    // MSBuild's ambient VBCSCompiler node is shared across every concurrent
+    // `dotnet build`/`publish` on this machine regardless of directory
+    // isolation, so force this build to spawn its own isolated `csc`
+    // process instead.
     let published = Command::new(&dotnet)
         .args([
             "publish",
@@ -214,6 +220,7 @@ fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn E
             "Release",
             "--nologo",
             "--no-restore",
+            "-p:UseSharedCompilation=false",
         ])
         .arg(&intermediate_arg)
         .arg(&output_base_arg)

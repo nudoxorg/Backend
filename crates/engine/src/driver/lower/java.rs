@@ -448,7 +448,8 @@ pub(crate) fn collect<'source>(
     }
     let image = authority.image;
     let source_text = str::from_utf8(source).map_err(|_| terminal(ProjectionFault::SourceUtf8))?;
-    let utf16_len = utf16_length(source_text).map_err(terminal)?;
+    let utf16_index = Utf16Index::build(source_text).map_err(terminal)?;
+    let utf16_len = utf16_index.total_units;
 
     // The issuer's byte-derived reservation assumes one selected file. A
     // whole-package image carries every declaration, parameter carrier, and
@@ -584,8 +585,8 @@ pub(crate) fn collect<'source>(
         let Some(end16) = extent.end else {
             continue;
         };
-        let start = utf16_byte_offset(source_text, start16, utf16_len).map_err(terminal)?;
-        let end = utf16_byte_offset(source_text, end16, utf16_len).map_err(terminal)?;
+        let start = utf16_byte_offset(&utf16_index, start16, utf16_len).map_err(terminal)?;
+        let end = utf16_byte_offset(&utf16_index, end16, utf16_len).map_err(terminal)?;
         let span = StagedSourceSpan::new(start, end).ok_or_else(|| {
             terminal(ProjectionFault::Utf16Range {
                 start: start16,
@@ -610,7 +611,7 @@ pub(crate) fn collect<'source>(
             image,
             &symbols,
             &symbol_bases,
-            source_text,
+            &utf16_index,
             utf16_len,
             &reference,
         )
@@ -627,7 +628,7 @@ pub(crate) fn collect<'source>(
             &symbols,
             &members,
             &bases,
-            source_text,
+            &utf16_index,
             utf16_len,
             &resolved,
         )
@@ -1769,7 +1770,7 @@ fn push_occurrence<'source>(
     image: JavaImage<'source>,
     symbols: &SymbolIndex,
     symbol_bases: &SymbolBases,
-    source_text: &'source str,
+    utf16_index: &Utf16Index,
     utf16_len: u32,
     reference: &Reference<'source>,
 ) -> Result<(), ProjectionFault> {
@@ -1808,8 +1809,8 @@ fn push_occurrence<'source>(
             OccurrenceTarget::Foreign(key)
         }
     };
-    let start = utf16_byte_offset(source_text, reference.start, utf16_len)?;
-    let end = utf16_byte_offset(source_text, reference.end, utf16_len)?;
+    let start = utf16_byte_offset(utf16_index, reference.start, utf16_len)?;
+    let end = utf16_byte_offset(utf16_index, reference.end, utf16_len)?;
     let span = owner_relative_span(symbol_bases.lookup(reference.owner), start, end)?;
     facts
         .push_occurrence(
@@ -1844,7 +1845,7 @@ fn push_use<'source>(
     symbols: &SymbolIndex,
     members: &MemberIndex<'source>,
     bases: &OwnerBases,
-    source_text: &'source str,
+    utf16_index: &Utf16Index,
     utf16_len: u32,
     resolved: &ResolvedUse<'source>,
 ) -> Result<(), ProjectionFault> {
@@ -1914,8 +1915,8 @@ fn push_use<'source>(
             }
         },
     };
-    let start = utf16_byte_offset(source_text, resolved.start, utf16_len)?;
-    let end = utf16_byte_offset(source_text, resolved.end, utf16_len)?;
+    let start = utf16_byte_offset(utf16_index, resolved.start, utf16_len)?;
+    let end = utf16_byte_offset(utf16_index, resolved.end, utf16_len)?;
     let span = owner_relative_span(bases.lookup(resolved.owner), start, end)?;
     facts
         .push_occurrence(
@@ -2012,44 +2013,74 @@ fn owner_relative_span(
         .map_err(|_| ProjectionFault::Utf16Range { start, end })
 }
 
-/// Projects one javac UTF-16 coordinate onto the bound source's byte domain.
-fn utf16_byte_offset(source: &str, units: u32, utf16_len: u32) -> Result<u32, ProjectionFault> {
-    let mut seen = 0_u32;
-    for (offset, character) in source.char_indices() {
-        if seen == units {
-            return u32::try_from(offset).map_err(|_| ProjectionFault::Utf16 { units, utf16_len });
-        }
-        let Ok(width) = u32::try_from(character.len_utf16()) else {
-            return Err(ProjectionFault::Utf16 { units, utf16_len });
-        };
-        seen = match seen.checked_add(width) {
-            Some(seen) => seen,
-            None => return Err(ProjectionFault::Utf16 { units, utf16_len }),
-        };
-    }
-    if seen == units {
-        return u32::try_from(source.len())
-            .map_err(|_| ProjectionFault::Utf16 { units, utf16_len });
-    }
-    Err(ProjectionFault::Utf16 { units, utf16_len })
+/// A UTF-16-code-unit-to-byte-offset lookup, built once per source file so
+/// `collect`'s per-declaration, per-occurrence, and per-use passes can each
+/// project a javac UTF-16 coordinate without re-scanning the file from byte
+/// zero.
+///
+/// `utf16_byte_offset` used to walk `source.char_indices()` from the start
+/// on every call; a real package's whole-file image projects every
+/// declaration extent plus every resolved occurrence and use this way, so a
+/// file with `U` such coordinates paid `O(U * source.len())` — quadratic in
+/// practice for a large, real, densely-referenced source file (sampled with
+/// `sample(1)` against the `compiler_corpus` real-package-inventory journey:
+/// over half of on-CPU time inside `real_audit_row_worker` for a large real
+/// Java package was `push_use` -> `utf16_byte_offset` -> `CharIndices::next`
+/// rescanning from the top of the file). `checkpoints` records the running
+/// UTF-16-unit count immediately before each character alongside that
+/// character's byte offset, once, in the same single pass that used to only
+/// compute the file's total UTF-16 length; the per-coordinate scan below
+/// becomes a binary search instead of a linear one.
+struct Utf16Index {
+    /// `(units_before_this_char, byte_offset_of_this_char)`, strictly
+    /// increasing in both fields (`char::len_utf16()` is always >= 1).
+    checkpoints: Vec<(u32, u32)>,
+    total_units: u32,
+    total_bytes: u32,
 }
 
-/// The bound source's total UTF-16 length, or an explicit capacity fault when
-/// it cannot fit the compact coordinate width.
-fn utf16_length(source: &str) -> Result<u32, ProjectionFault> {
-    let mut total = 0_u32;
-    for character in source.chars() {
-        let width =
-            u32::try_from(character.len_utf16()).map_err(|_| ProjectionFault::IndexCapacity {
+impl Utf16Index {
+    /// Builds the index and returns the source's total UTF-16 length in the
+    /// same pass `utf16_length` used to compute alone.
+    fn build(source: &str) -> Result<Self, ProjectionFault> {
+        let mut checkpoints = Vec::with_capacity(source.len());
+        let mut units = 0_u32;
+        for (offset, character) in source.char_indices() {
+            let byte = u32::try_from(offset).map_err(|_| ProjectionFault::IndexCapacity {
                 phase: JavaProjectionIndexPhase::Utf16,
             })?;
-        total = total
-            .checked_add(width)
-            .ok_or(ProjectionFault::IndexCapacity {
+            checkpoints.push((units, byte));
+            let width =
+                u32::try_from(character.len_utf16()).map_err(|_| ProjectionFault::IndexCapacity {
+                    phase: JavaProjectionIndexPhase::Utf16,
+                })?;
+            units = units
+                .checked_add(width)
+                .ok_or(ProjectionFault::IndexCapacity {
+                    phase: JavaProjectionIndexPhase::Utf16,
+                })?;
+        }
+        let total_bytes =
+            u32::try_from(source.len()).map_err(|_| ProjectionFault::IndexCapacity {
                 phase: JavaProjectionIndexPhase::Utf16,
             })?;
+        Ok(Self {
+            checkpoints,
+            total_units: units,
+            total_bytes,
+        })
     }
-    Ok(total)
+}
+
+/// Projects one javac UTF-16 coordinate onto the bound source's byte domain,
+/// via a binary search over the file's precomputed `Utf16Index` instead of a
+/// linear rescan from byte zero (see `Utf16Index`'s doc comment).
+fn utf16_byte_offset(index: &Utf16Index, units: u32, utf16_len: u32) -> Result<u32, ProjectionFault> {
+    match index.checkpoints.binary_search_by_key(&units, |&(seen, _)| seen) {
+        Ok(found) => Ok(index.checkpoints[found].1),
+        Err(_) if units == index.total_units => Ok(index.total_bytes),
+        Err(_) => Err(ProjectionFault::Utf16 { units, utf16_len }),
+    }
 }
 
 /// Closed capacity terminal for the fact-ordinal phase.
