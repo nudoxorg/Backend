@@ -5,6 +5,7 @@ use super::{
     Relation, WorkerError, complete_coverage, schema_object_version_identity_claim,
     semantic_publication_row_bytes,
 };
+use backend_engine::CanonicalRelation as _;
 
 impl BuiltinAdmission {
     #[allow(clippy::too_many_lines)]
@@ -157,7 +158,7 @@ impl BuiltinAdmission {
                         expected.map_err(|_| WorkerError::InputProof("relation branch proof"))?;
                     let key = {
                         let mut bytes = Vec::new();
-                        ProductRelation::encode_key(&expected.first_key, &mut bytes);
+                        ProductRelation::encode_order_key(&expected.first_key, &mut bytes);
                         bytes
                     };
                     if key != child.first_key
@@ -177,7 +178,7 @@ impl BuiltinAdmission {
                         .get(offset.saturating_add(index))
                         .ok_or(WorkerError::InputProof("relation leaf offset"))?;
                     let mut key_bytes = Vec::new();
-                    ProductRelation::encode_key(key, &mut key_bytes);
+                    ProductRelation::encode_order_key(key, &mut key_bytes);
                     let row = semantic_publication_row_bytes(key, value);
                     let version = ObjectVersion::<ImmutableObjectSchema>::from_value(&row);
                     let key_id = ObjectKey::<ImmutableObjectSchema>::from_value(&row);

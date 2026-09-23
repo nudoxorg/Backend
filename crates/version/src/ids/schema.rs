@@ -72,6 +72,18 @@ pub trait CanonicalRelation: Relation {
     /// not expose a decoder, or [`RelationDecodeError::Malformed`] when the
     /// body cannot be decoded as one value.
     fn decode_value(bytes: &[u8]) -> Result<Self::Value, RelationDecodeError>;
+    /// Writes a key whose byte order is exactly the relation's key order.
+    ///
+    /// Replication compares keys as raw bytes: a Merkle page must list its
+    /// rows in strictly ascending key bytes, and the reconcile walk merges two
+    /// trees by key bytes. The canonical tree, however, is ordered by
+    /// [`Relation::Key`]'s `Ord`. The default is [`Relation::encode_key`],
+    /// which is correct for fixed-width keys; a relation whose canonical key
+    /// encoding does not preserve its `Ord` (such as a length-prefixed text
+    /// field) must override this with an order-preserving encoding.
+    fn encode_order_key(key: &Self::Key, output: &mut Vec<u8>) {
+        Self::encode_key(key, output);
+    }
 }
 use core::fmt;
 
