@@ -51,9 +51,7 @@ pub trait CertifiedSubscriptionTransport: SubscriptionTransport {
     ///
     /// A `None` capability admits identity-bearing events and incomplete view
     /// roots. A complete reset/view requires the source coverage capability
-    /// returned by the trusted producer boundary; a local transport whose
-    /// same-user peer was authenticated at connect is that boundary, and
-    /// admits a reset through it when no capability is supplied.
+    /// returned by the trusted producer boundary.
     ///
     /// # Errors
     ///
