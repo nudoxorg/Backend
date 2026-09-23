@@ -187,35 +187,19 @@ fn locked_roslyn_packaging_round_trips_fixture_and_rejects_tracked_outputs() -> 
     let produced = fs::read(&output).map_err(io)?;
     fs::remove_dir_all(output_root).map_err(io)?;
     let _ = fs::remove_dir_all(&build_root);
-    // The oracle binds `tree.FilePath` from `Path.GetFullPath`, so every
-    // reference/doc atom embeds the *absolute* checkout path this process
-    // ran from (see `csharp_support::normalize_authority_image_paths`'s doc
-    // comment). This repository runs many concurrent git worktrees at
-    // different absolute paths, and the committed `fidelity.ncaimg` was
-    // captured from a `backend-fix-csharp` worktree, so a raw byte compare
-    // against it only ever succeeds from that one exact checkout location.
-    // Normalize both sides to the checkout-independent relative form before
-    // comparing so this test verifies real Roslyn-extraction determinism
-    // instead of an accidental absolute-path coincidence.
-    const MARKER: &str = "frontends/csharp/tests/fixtures/producer/fidelity.cs";
-    let produced_normalized = csharp_support::normalize_authority_image_paths(&produced, MARKER);
-    let golden_normalized =
-        csharp_support::normalize_authority_image_paths(FIDELITY_IMAGE, MARKER);
-    if produced_normalized != golden_normalized {
+    // The oracle embeds each bound file's path relative to `--root` (see
+    // `AuthorityImage.RelativeSourcePath` and `SourceLoader.LoadedCompilation.Root`),
+    // not the OS absolute path it happened to run from, so the image is a
+    // pure function of the source and is byte-identical regardless of
+    // which checkout location produced it.
+    if produced != FIDELITY_IMAGE {
         return Err(TestError::Fact(
             "Roslyn authority image changed in documented round-trip".into(),
         ));
     }
-    // Bound to `produced`, not the committed `FIDELITY_IMAGE` golden: the
-    // golden embeds whatever absolute checkout path it happened to be
-    // regenerated from (see the normalization above), so checking its
-    // binding against *this* run's `bound_path` would fail from any other
-    // checkout for the same reason the raw byte compare did. `produced` is
-    // this run's own fresh output, which always binds to `bound_path`.
     let image = CSharpImage::open(&produced)
         .map_err(|_| TestError::Fact("produced image rejected".into()))?;
-    let bound_path = producer.join("fidelity.cs");
-    let bound_path = bound_path.to_string_lossy();
+    let bound_path = "fidelity.cs";
     let docs = image
         .docs()
         .collect::<Result<Vec<_>, _>>()

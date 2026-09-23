@@ -29,15 +29,33 @@ internal static class AuthorityImage
         var offsets = Extractor.BuildByteOffsets(
             tree,
             source.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }) ? 3 : 0);
-        var image = new Builder(loaded.Compilation, tree, offsets).Build(source);
+        var image = new Builder(loaded.Compilation, tree, offsets, loaded.Root).Build(source);
         destination.Write(image);
     }
+
+    /// <summary>
+    /// The path embedded for a bound syntax tree's file: relative to
+    /// <paramref name="root"/>, with separators normalized to <c>/</c>.
+    /// </summary>
+    /// <remarks>
+    /// Every other declaration-identity path in this engine is
+    /// package-relative, never the literal OS absolute path the oracle
+    /// happened to run from (see <c>DeclarationScope</c>'s doc comment) —
+    /// that is machine- and checkout-specific, so a raw absolute path here
+    /// would make even a content-addressed image non-reproducible across
+    /// two checkouts of the identical source at different locations.
+    /// Normalizing <c>\</c> to <c>/</c> keeps the embedded bytes identical
+    /// across platforms too.
+    /// </remarks>
+    private static string RelativeSourcePath(string root, string treeFilePath) =>
+        Path.GetRelativePath(root, treeFilePath).Replace('\\', '/');
 
     private sealed class Builder
     {
         private readonly CSharpCompilation compilation;
         private readonly SyntaxTree tree;
         private readonly int[] offsets;
+        private readonly string root;
         private readonly Dictionary<string, uint> atomMap = new(StringComparer.Ordinal);
         private readonly List<byte> atomBytes = [];
         private readonly List<byte[]> declarations = [];
@@ -55,12 +73,16 @@ internal static class AuthorityImage
         private readonly Dictionary<ITypeSymbol, uint> typeMap = new(SymbolEqualityComparer.Default);
         private readonly HashSet<ITypeSymbol> typeInProgress = new(SymbolEqualityComparer.Default);
 
-        public Builder(CSharpCompilation compilation, SyntaxTree tree, int[] offsets)
+        public Builder(CSharpCompilation compilation, SyntaxTree tree, int[] offsets, string root)
         {
             this.compilation = compilation;
             this.tree = tree;
             this.offsets = offsets;
+            this.root = root;
         }
+
+        /// <summary>The atom for the bound tree's own file, root-relative.</summary>
+        private uint TreeFileAtom() => Atom(RelativeSourcePath(root, tree.FilePath));
 
         public byte[] Build(byte[] source)
         {
@@ -311,7 +333,7 @@ internal static class AuthorityImage
             if (!string.IsNullOrWhiteSpace(xml))
             {
                 var row = new byte[20];
-                Put(row, 0, owner); Put(row, 4, Atom(tree.FilePath));
+                Put(row, 0, owner); Put(row, 4, TreeFileAtom());
                 var comment = DocumentationSpan(info.Node);
                 Put(row, 8, U(offsets[comment.Start])); Put(row, 12, U(offsets[comment.End]));
                 Put(row, 16, Atom(xml));
@@ -326,7 +348,7 @@ internal static class AuthorityImage
             {
                 var ownerNode = node.Ancestors().FirstOrDefault(n => DeclaredSymbol(model, n) is not null);
                 if (ownerNode is null || DeclaredSymbol(model, ownerNode) is not { } owner || !declarationMap.TryGetValue(owner, out var ownerRow)) continue;
-                var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, Absent); Put(row, 8, Atom(node.Name?.ToString() ?? "")); Put(row, 12, Atom(tree.FilePath)); var s = Span(node); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = 4; references.Add(row);
+                var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, Absent); Put(row, 8, Atom(node.Name?.ToString() ?? "")); Put(row, 12, TreeFileAtom()); var s = Span(node); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = 4; references.Add(row);
             }
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()) AddReference(model, node, 1, node.Expression);
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<ObjectCreationExpressionSyntax>()) AddReference(model, node, 2, node.Type);
@@ -372,7 +394,7 @@ internal static class AuthorityImage
                     var span = Span(info.Span);
                     var nameEnd = U(offsets[info.NameSpan.End]);
                     var binding = new byte[28]; Put(binding, 0, owner); Put(binding, 4, targetRow);
-                    Put(binding, 8, Atom(target.Name)); Put(binding, 12, Atom(tree.FilePath));
+                    Put(binding, 8, Atom(target.Name)); Put(binding, 12, TreeFileAtom());
                     Put(binding, 16, span.Start); Put(binding, 20, nameEnd); binding[24] = 5; references.Add(binding);
                 }
             }
@@ -383,7 +405,7 @@ internal static class AuthorityImage
             var ownerNode = node.Ancestors().FirstOrDefault(syntaxMap.ContainsKey);
             if (ownerNode is null || !syntaxMap.TryGetValue(ownerNode, out var ownerRow)) return;
             var target = ResolveTarget(model.GetSymbolInfo(node).Symbol);
-            var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, target); Put(row, 8, Atom(spellingNode.ToString())); Put(row, 12, Atom(tree.FilePath)); var s = Span(spellingNode); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = tag; references.Add(row);
+            var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, target); Put(row, 8, Atom(spellingNode.ToString())); Put(row, 12, TreeFileAtom()); var s = Span(spellingNode); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = tag; references.Add(row);
         }
 
         private uint ResolveTarget(ISymbol? symbol)

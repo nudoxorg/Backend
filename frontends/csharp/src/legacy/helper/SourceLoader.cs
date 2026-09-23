@@ -30,6 +30,23 @@ internal sealed record LoadedCompilation
 
     /// <summary>Whether configured source generators ran successfully.</summary>
     public required string GeneratorSupport { get; init; }
+
+    /// <summary>
+    /// The absolute, fully-resolved effective root every bound
+    /// <see cref="Microsoft.CodeAnalysis.SyntaxTree.FilePath"/> was found
+    /// under (the first <c>--root</c>, narrowed by
+    /// <see cref="SourceLoader.ScopeToMatchingProject"/> exactly as the
+    /// bound sources themselves were).
+    /// </summary>
+    /// <remarks>
+    /// Every other declaration-identity path in this engine — see
+    /// <c>DeclarationScope</c>'s "package-relative path" — is relative to a
+    /// package root, never a raw OS absolute path. <see cref="AuthorityImage"/>
+    /// uses this to embed the same convention instead of the literal
+    /// filesystem location the oracle happened to run from, which is
+    /// machine- and checkout-specific and therefore not reproducible.
+    /// </remarks>
+    public required string Root { get; init; }
 }
 
 /// <summary>
@@ -169,6 +186,7 @@ internal static class SourceLoader
             ErrorCount = errors.Count,
             ReportableDiagnostics = reported,
             GeneratorSupport = generatorSupport,
+            Root = Path.GetFullPath(roots[0]),
         };
     }
 
