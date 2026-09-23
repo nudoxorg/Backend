@@ -101,7 +101,9 @@ pub(super) fn dialog(
                             text::text_at(&theme, TypeScale::Small, Paint::Silver2)
                                 .child("Project folder"),
                         )
-                        .child(
+                        .child(components::measure(
+                            &theme,
+                            "add-project-path",
                             components::input_with_state(
                                 &theme,
                                 &content_input,
@@ -111,7 +113,7 @@ pub(super) fn dialog(
                                 focused,
                             )
                             .w_full(),
-                        )
+                        ))
                         .child(
                             text::faint(&theme)
                                 .child("Paste a path and press Enter, or use Browse for the native picker."),

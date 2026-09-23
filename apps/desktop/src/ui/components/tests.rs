@@ -146,6 +146,66 @@ fn measured_registry_keeps_real_rectangles_and_rendered_focus_owner() {
 }
 
 #[test]
+fn focus_order_reflects_a_late_registered_dialog_control_after_finalize() {
+    // A CE `Dialog`'s footer is built eagerly, but its own body is built by
+    // a lazy `content` closure that GPUI does not run until the real
+    // prepaint pass, after the frame's other controls (see `render_root` in
+    // `apps/desktop/src/views/mod.rs`). The add-project dialog's own text
+    // input registers exactly this way, so its focus order used to freeze at
+    // whatever raw registration index it happened to get, instead of its
+    // real position among the dialog's other controls.
+    let frames = super::ActionFrames::default();
+    let token = frames.begin_id(42, "home");
+    frames.register(
+        token,
+        ActionMetadata::new(
+            "add-project-dialog",
+            "Add a local project",
+            ActionRole::Dialog,
+        ),
+    );
+    frames.register(
+        token,
+        ActionMetadata::new("add-project-browse", "Browse…", ActionRole::Button),
+    );
+    // Recording bounds for the eagerly-built footer button happens before
+    // the dialog's lazy content has registered anything at all.
+    frames.record_bounds(
+        token,
+        "add-project-browse".into(),
+        Bounds::new(point(px(0.0), px(0.0)), size(px(80.0), px(32.0))),
+    );
+    // The dialog's lazy content registers its input only now, simulating
+    // `Dialog::content`'s deferred builder.
+    frames.register(
+        token,
+        ActionMetadata::new(
+            "add-project-path",
+            "Project folder path",
+            ActionRole::TextInput,
+        ),
+    );
+    frames.record_bounds(
+        token,
+        "add-project-path".into(),
+        Bounds::new(point(px(0.0), px(40.0)), size(px(280.0), px(44.0))),
+    );
+    // The frame is published only after every control -- including the
+    // dialog's lazily-registered input -- has registered.
+    frames.finalize_id(42);
+
+    let order = frames.snapshot_focus_order_id(42);
+    assert_eq!(order.get("add-project-browse"), Some(&0));
+    assert_eq!(
+        order.get("add-project-path"),
+        Some(&1),
+        "a dialog's lazily-registered control must get a contiguous focus \
+         order once the frame is finalized, not the raw registration index \
+         it happened to have when its bounds were recorded"
+    );
+}
+
+#[test]
 fn native_owner_reconciliation_updates_the_single_action_tree() {
     let mut tree = ActionTree::default();
     tree.registrar()

@@ -111,13 +111,24 @@ pub(crate) fn render_root(
     register_overlay_actions(&theme, snapshot.overlay());
     let sheet_layer = gpui_component::Root::render_sheet_layer(window, cx);
     let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
-    theme.publish_action_frame(window);
     // Keep the frame token and its per-window collector available to the next
     // harness probe without making the action tree process-global.
+    let publish_theme = theme.clone();
     cx.set_global(theme);
     shell
         .children(sheet_layer)
         .children(dialog_layer)
+        // A CE `Dialog`/`Sheet` builds its content lazily: `dialog_layer`
+        // above is only the unexecuted element, and the overlay's own
+        // controls (for example the add-project text input) register their
+        // semantic actions later, while this tree actually prepaints. Publish
+        // the action frame only once that prepaint is done, so a dialog
+        // control's modal reindex and focus order reflect its own
+        // registration instead of the empty frame that existed before the
+        // dialog's content ever ran.
+        .on_children_prepainted(move |_, window, _| {
+            publish_theme.publish_action_frame(window);
+        })
         .into_any_element()
 }
 

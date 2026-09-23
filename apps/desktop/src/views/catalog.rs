@@ -128,7 +128,12 @@ fn local_package_cards(
             let card =
                 components::card_button(theme, action_id.clone(), package.to_string(), description)
                     .border_color(theme.paint(Paint::Rule2))
-                    .hover(|style| style.bg(theme.paint(Paint::Tint)))
+                    // `Button::render` already installs its own hover style
+                    // for every non-disabled, non-selected, interactive
+                    // button (gpui_ce_components' button.rs). A second
+                    // `.hover(...)` here re-set the same interactivity slot
+                    // and tripped GPUI's `debug_assert!("hover style already
+                    // set")` the first time this card ever actually painted.
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.queue(Intent::Navigate(route.clone()), cx);
                     }))
@@ -181,7 +186,10 @@ fn package_card(
         ),
     )
     .border_color(theme.paint(Paint::Rule2))
-    .hover(|style| style.bg(theme.paint(Paint::Tint)))
+    // See the matching comment in `local_package_cards`: `Button::render`
+    // already installs a hover style for an interactive, non-disabled,
+    // non-selected button, so a second `.hover(...)` here panics the first
+    // time this card actually paints.
     .on_click(cx.listener(move |this, _, _, cx| {
         this.queue(Intent::Navigate(click_route.clone()), cx);
     }))

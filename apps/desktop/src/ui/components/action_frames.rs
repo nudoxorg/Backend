@@ -141,7 +141,10 @@ impl ActionFrames {
     }
 
     pub(crate) fn finalize(&self, window: &Window) {
-        let window_id = window.window_handle().window_id().as_u64();
+        self.finalize_id(window.window_handle().window_id().as_u64());
+    }
+
+    pub(super) fn finalize_id(&self, window_id: u64) {
         let mut states = self.states.borrow_mut();
         let Some(state) = states.get_mut(&window_id) else {
             return;
@@ -342,6 +345,13 @@ impl ActionFrames {
 
     /// Returns focus order proven by the same measured controls that supplied
     /// the rectangles. A metadata-only action never enters this map.
+    ///
+    /// This reads the order straight from the finalized tree instead of a
+    /// value cached at `record_bounds` time. A dialog's content is built
+    /// lazily by the CE `Dialog` element, so its controls can register after
+    /// the frame's modal reindex has already run; caching the order at
+    /// measurement time would freeze that control's pre-reindex (raw
+    /// registration) position instead of its true tab-stop ordinal.
     pub(crate) fn snapshot_focus_order(&self, window: &Window) -> HashMap<String, u32> {
         self.snapshot_focus_order_id(window.window_handle().window_id().as_u64())
     }
@@ -350,7 +360,19 @@ impl ActionFrames {
         self.states
             .borrow()
             .get(&window_id)
-            .map(|state| state.measured.focus_order.clone())
+            .map(|state| {
+                state
+                    .measured
+                    .bounds
+                    .keys()
+                    .filter_map(|id| {
+                        state
+                            .tree
+                            .get(id)
+                            .map(|action| (id.clone(), action.focus_order() as u32))
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
