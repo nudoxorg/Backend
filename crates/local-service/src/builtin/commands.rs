@@ -2198,6 +2198,7 @@ impl CommandAdapter {
         } else {
             Command::Graph(query)
         };
+        let query = Self::claimed_graph_source(daemon, query, certificate.as_ref());
         let reply = execute_semantic_graph(daemon, &self.compiler, query, include_incoming)?
             .map_or_else(
                 || {
@@ -2211,6 +2212,56 @@ impl CommandAdapter {
                 CommandReply::Graph,
             );
         Self::certify(daemon, &command, reply, certificate)
+    }
+
+    /// Resolves a graph source named by the canonical coordinate a caller
+    /// copied from a result page.
+    ///
+    /// A client addresses a declaration by `symbol_key(coordinate)`, which is
+    /// the row key of a structural declaration but not of a semantic one: a
+    /// compiler-backed row is keyed by its compiler-owned identity. Like
+    /// `canonical_claim_document`, this reads the coordinate from the
+    /// caller's admitted key claim and, when no view row carries the
+    /// requested key, selects the one row whose label is exactly that
+    /// coordinate. Without it every `graph` and `related` request for a
+    /// semantic declaration failed with "semantic graph source is absent".
+    fn claimed_graph_source(
+        daemon: &ProductDaemon,
+        query: backend_engine::GraphNeighborhoodQuery,
+        certificate: Option<&WireCertificate>,
+    ) -> backend_engine::GraphNeighborhoodQuery {
+        let library = daemon.engine().daemon().library();
+        let view = library.view();
+        let requested = query.resolve_symbol(view);
+        if requested.is_some_and(|symbol| view.row(backend_engine::RowId::Symbol(symbol)).is_some())
+            || !query.basis().matches(library.revision_root())
+        {
+            return query;
+        }
+        let Some(label) = certificate.and_then(|certificate| {
+            certificate.claims.iter().find_map(|claim| match claim {
+                WireClaim::Key {
+                    schema: backend_engine::WireSchema::Symbol,
+                    id,
+                    value,
+                } if id
+                    == &backend_engine::encode_id(backend_engine::symbol_key(value).as_bytes())
+                    && requested == Some(backend_engine::symbol_key(value)) =>
+                {
+                    Some(value.as_str())
+                }
+                _ => None,
+            })
+        }) else {
+            return query;
+        };
+        view.rows()
+            .iter()
+            .find_map(|row| match row.id {
+                backend_engine::RowId::Symbol(symbol) if row.label == label => Some(symbol),
+                _ => None,
+            })
+            .map_or(query, |symbol| query.with_resolved_symbol(symbol))
     }
 
     fn surface(
