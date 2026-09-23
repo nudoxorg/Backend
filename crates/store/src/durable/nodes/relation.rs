@@ -508,7 +508,7 @@ impl FileStore {
         Ok(())
     }
 
-    pub(super) fn relation_ref_matches(
+    pub(in crate::durable) fn relation_ref_matches(
         &self,
         schema: SchemaIdentity,
         version: &Hash,

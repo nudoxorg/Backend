@@ -706,7 +706,7 @@ fn an_unknown_coordinate_is_refused_with_the_operand_and_a_next_tool_call() {
         "the search is the reader's own word, not an invented one"
     );
     assert!(
-        text.contains("→ `{\"arguments\":{\"query\":\"nothing\"},\"name\":\"backend.search\"}`"),
+        text.contains("→ `{\"name\":\"backend.search\",\"arguments\":{\"query\":\"nothing\"}}`"),
         "{text}"
     );
 }
