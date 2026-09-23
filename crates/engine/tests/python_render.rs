@@ -312,29 +312,29 @@ fn python_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         &ir,
         "overloaded",
         ItemKind::Function,
-        "fn overloaded(value: int) -> str",
+        "fn overloaded(value: integer) -> str",
     )?;
     exact_signature(
         &ir,
         "calls",
         ItemKind::Function,
-        "fn calls(value: int, enabled: bool) -> str",
+        "fn calls(value: integer, enabled: bool) -> str",
     )?;
-    exact_signature(&ir, "answer", ItemKind::Static, "static answer: int | None")?;
-    exact_signature(&ir, "items", ItemKind::Static, "static items: list<int>")?;
+    exact_signature(&ir, "answer", ItemKind::Static, "static answer: integer | None")?;
+    exact_signature(&ir, "items", ItemKind::Static, "static items: list<integer>")?;
     exact_signature(
         &ir,
         "lookup",
         ItemKind::Static,
-        "static lookup: dict<str, int>",
+        "static lookup: dict<str, integer>",
     )?;
     exact_signature(
         &ir,
         "callback",
         ItemKind::Static,
-        "static callback: fn(int) -> str",
+        "static callback: fn(integer) -> str",
     )?;
-    exact_signature(&ir, "maybe", ItemKind::Static, "static maybe: int | None")?;
+    exact_signature(&ir, "maybe", ItemKind::Static, "static maybe: integer | None")?;
     exact_signature(&ir, "choice", ItemKind::Static, "static choice: str")?;
     let plain = entity(&ir, "Plain", ItemKind::Record)?;
     let docs = ir
@@ -385,14 +385,14 @@ fn python_lane_renders_compound_types_and_is_deterministic() -> Result<(), TestE
     if first_text != second_text {
         return Err(TestError::Falsified("independent renders differ"));
     }
-    exact_type(&first, "items", "list<int>")?;
-    exact_type(&first, "lookup", "dict<str, int>")?;
-    exact_type(&first, "callback", "fn(int) -> str")?;
-    exact_type(&first, "answer", "int | None")?;
-    exact_type(&first, "maybe", "int | None")?;
+    exact_type(&first, "items", "list<integer>")?;
+    exact_type(&first, "lookup", "dict<str, integer>")?;
+    exact_type(&first, "callback", "fn(integer) -> str")?;
+    exact_type(&first, "answer", "integer | None")?;
+    exact_type(&first, "maybe", "integer | None")?;
     let alternate = compile_source(b"left: int\nright: str\n")?;
     entity(&alternate, "left", ItemKind::Static)?;
-    exact_type(&alternate, "left", "int")?;
+    exact_type(&alternate, "left", "integer")?;
     exact_type(&alternate, "right", "str")?;
     exact_type(&first, "choice", "str")?;
     Ok(())
@@ -518,16 +518,21 @@ fn python_fragment_planes_carry_what_the_ir_tree_omits() -> Result<(), TestError
             occurrences.push(row.map_err(|_| TestError::Falsified("occurrence decode"))?);
         }
     }
-    // The fragment path is the deterministic syntax-only lane: import
-    // bindings resolve to foreign pypi package keys at Index tier, and the
-    // checker's Import/Oracle upgrades live on the checker-provisioned
-    // paths (see the live-Ir tests and the real-package matrix).
+    // `compile` runs pyrefly whenever it is provisioned (`Pyrefly::from_env`,
+    // exactly as the lane's `checked_report` does). Without it the call
+    // resolves syntactically at the Index tier; with it the checker proves
+    // the same local target and upgrades the call to the Oracle tier.
+    let expected_tier = if backend_frontend_python::legacy::Pyrefly::from_env().is_available() {
+        backend_semantic::ir::OccurrenceConfidence::Oracle
+    } else {
+        backend_semantic::ir::OccurrenceConfidence::Index
+    };
     if !occurrences.iter().any(|fact| {
-        fact.occurrence.confidence == backend_semantic::ir::OccurrenceConfidence::Index
+        fact.occurrence.confidence == expected_tier
             && matches!(fact.occurrence.target, OccurrenceTarget::Local(target) if target.raw as usize == overloaded)
     }) {
         return Err(TestError::Falsified(
-            "overloaded call occurrence absent at the index tier",
+            "overloaded call occurrence absent at the lane's authority tier",
         ));
     }
     fs::remove_dir_all(&work).map_err(TestError::Io)?;
@@ -739,12 +744,13 @@ fn checker_inference_is_rendered_when_pyrefly_is_available() -> Result<(), TestE
         .display_type(ty)
         .ok_or(TestError::Falsified("inferred display unavailable"))?
         .to_string();
-    if actual == "i32" {
+    // Python's `int` is arbitrary precision, never a machine word (69f6e4700).
+    if actual == "integer" {
         Ok(())
     } else {
         Err(TestError::Mismatch {
             name: "inferred",
-            expected: "i32".to_owned(),
+            expected: "integer".to_owned(),
             actual,
         })
     }

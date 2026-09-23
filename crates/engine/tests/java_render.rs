@@ -139,14 +139,12 @@ fn java_kind_prefixes_and_overloads_are_exact() {
 fn java_type_rows_render_exactly() {
     let ir = fixture();
     assert_eq!(primitive(&ir), "i32");
-    // Trunk 4d1cceba9 exposes live type rows: `input`'s fixture row is an
-    // Array whose arity cell "[]" renders as the length and whose component
-    // is interned as an unknown row, while `label`'s wildcard and
-    // `Outer.Inner`'s qualified path have no live Ir shape and fold to
-    // ?unsupported.
-    assert_eq!(field_type(&ir, b"input"), "[?unsupported; []]");
-    assert_eq!(field_type(&ir, b"label"), "?unsupported");
-    assert_eq!(field_type(&ir, b"Outer.Inner"), "?unsupported");
+    // ba97930fc closed the structural forms these rows use: `input`'s Array
+    // row is one structural sequence over its `Widget` component, `label`'s
+    // wildcard is `? extends Widget`, and `Outer.Inner` is a qualified path.
+    assert_eq!(field_type(&ir, b"input"), "[]Widget");
+    assert_eq!(field_type(&ir, b"label"), "? extends Widget");
+    assert_eq!(field_type(&ir, b"Outer.Inner"), "Outer.Inner");
 }
 
 #[test]

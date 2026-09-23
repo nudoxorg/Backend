@@ -1,6 +1,7 @@
-mod Fïdelity
+namespace Fïdelity
+type: ?unannotated
 struct Café
 docs: Non-ASCII 😀 identifier.
 type: Café
-Привет: str
-type: str
+Привет: str?
+type: str?

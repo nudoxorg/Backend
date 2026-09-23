@@ -1,11 +1,10 @@
-mod Fidelity
+namespace Fidelity
+type: ?unannotated
 trait IProperties
 type: IProperties
 trait IContract
 docs: Documented contract with a[Widget.Run](Widget.Run).
 type: IContract
-struct Widget
-type: Widget
 struct Widget
 type: Widget
 enum Color
@@ -26,15 +25,16 @@ value: i32
 type: i32
 other: i32
 type: i32
-rest: [i32; []]
-type: [i32; []]
+rest: i32[]
+type: i32[]
 int: i32
 type: i32
-fn Compute(value: i32, other: i32, rest: [i32; []]) -> i32
-type: fn(value: i32, other: i32, rest: [i32; []]) -> i32
+fn Compute(value: i32, other: i32, rest: i32[]) -> i32
+type: fn(value: i32, other: i32, rest: i32[]) -> i32
 Number: i32
 type: i32
-Happened
+Happened: ?unresolved-external(System.Action)
+type: ?unresolved-external(System.Action)
 value: str
 type: str
 fn Run(value: str)
@@ -45,10 +45,12 @@ Shared: i32
 type: i32
 Name: str
 type: str
-Changed
+Changed: ?unresolved-external(System.Action)
+type: ?unresolved-external(System.Action)
 Number: i32
 type: i32
-Happened
+Happened: ?unresolved-external(System.Action)
+type: ?unresolved-external(System.Action)
 fn Widget()
 type: fn()
 value: str
@@ -85,11 +87,12 @@ fn Widget(value: i32) -> Widget
 type: fn(value: i32) -> Widget
 input: i32
 type: i32
-values: [i32; []]
-type: [i32; []]
-System.Threading.Tasks.Task
-fn Async(input: i32, values: [i32; []]) -> System.Threading.Tasks.Task
-type: fn(input: i32, values: [i32; []]) -> System.Threading.Tasks.Task
+values: i32[]
+type: i32[]
+System.Threading.Tasks.Task: ?unresolved-external(System.Threading.Tasks.Task)
+type: ?unresolved-external(System.Threading.Tasks.Task)
+fn Async(input: i32, values: i32[]) -> ?unresolved-external(System.Threading.Tasks.Task)
+type: fn(input: i32, values: i32[]) -> ?unresolved-external(System.Threading.Tasks.Task)
 input: i32
 type: i32
 output: i32
@@ -102,30 +105,34 @@ value: i32
 type: i32
 fn References(input: i32, output: i32, result: i32, view: i32, value: i32)
 type: fn(input: i32, output: i32, result: i32, view: i32, value: i32)
-System.Collections.Generic.IEnumerable<int>
-fn Iterate() -> System.Collections.Generic.IEnumerable<int>
-type: fn() -> System.Collections.Generic.IEnumerable<int>
+System.Collections.Generic.IEnumerable<int>: ?unresolved-external(System.Collections.Generic.IEnumerable<int>)
+type: ?unresolved-external(System.Collections.Generic.IEnumerable<int>)
+fn Iterate() -> ?unresolved-external(System.Collections.Generic.IEnumerable<int>)
+type: fn() -> ?unresolved-external(System.Collections.Generic.IEnumerable<int>)
 fn Call()
 type: fn()
-values: [i32; []]
-type: [i32; []]
-matrix: [i32; [,]]
-type: [i32; [,]]
-jagged: [[i32; []]; []]
-type: [[i32; []]; []]
+values: i32[]
+type: i32[]
+matrix: i32[,]
+type: i32[,]
+jagged: i32[][]
+type: i32[][]
 int*: *mut i32
 type: *mut i32
-fn Pointer(values: [i32; []], matrix: [i32; [,]], jagged: [[i32; []]; []]) -> *mut i32
-type: fn(values: [i32; []], matrix: [i32; [,]], jagged: [[i32; []]; []]) -> *mut i32
-tuple: ?unsupported
-type: ?unsupported
-nullable: [i32; [,]]
-type: [i32; [,]]
-map
-value
-missing
-fn Types(tuple: ?unsupported, nullable: [i32; [,]], map: System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int[]>>, value: ?unsupported, missing: ?unsupported)
-type: fn(tuple: ?unsupported, nullable: [i32; [,]], map: System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int[]>>, value: ?unsupported, missing: ?unsupported)
+fn Pointer(values: i32[], matrix: i32[,], jagged: i32[][]) -> *mut i32
+type: fn(values: i32[], matrix: i32[,], jagged: i32[][]) -> *mut i32
+tuple: (A: i32, B: str)?
+type: (A: i32, B: str)?
+nullable: i32?[]
+type: i32?[]
+map: ?unresolved-external(System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int[]>>)
+type: ?unresolved-external(System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int[]>>)
+value: ?dynamic
+type: ?dynamic
+missing: ?no-ir-representation(MissingType)
+type: ?no-ir-representation(MissingType)
+fn Types(tuple: (A: i32, B: str)?, nullable: i32?[], map: ?unresolved-external(System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int[]>>), value: ?dynamic, missing: ?no-ir-representation(MissingType))
+type: fn(tuple: (A: i32, B: str)?, nullable: i32?[], map: ?unresolved-external(System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int[]>>), value: ?dynamic, missing: ?no-ir-representation(MissingType))
 managed: fn(i32)
 type: fn(i32)
 native: fn(i32) -> i32

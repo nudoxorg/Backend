@@ -52,6 +52,12 @@ func Combine[T any, U interface{ ~int | ~string }](left T, right U) T {
 	return left
 }
 
+// Split names both of its results.
+func Split(value string) (head string, count int) { return value, len(value) }
+
+// Pair leaves both of its results unnamed.
+func Pair() (string, int) { return "", 0 }
+
 // Value is a value-receiver method.
 func (widget Widget) Value() string { return widget.Name }
 
@@ -223,7 +229,7 @@ fn go_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         (
             "Reader method-set member",
             render_signature(&ir, "Read", ItemKind::Function)?,
-            "fn Read(size: int) -> str",
+            "fn Read(size: native-int) -> str",
         ),
         (
             "generic function",
@@ -233,7 +239,17 @@ fn go_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         (
             "pointer method",
             render_signature(&ir, "Pointer", ItemKind::Function)?,
-            "fn Pointer() -> int",
+            "fn Pointer() -> native-int",
+        ),
+        (
+            "named results",
+            render_signature(&ir, "Split", ItemKind::Function)?,
+            "fn Split(value: str) -> (head: str, count: native-int)",
+        ),
+        (
+            "unnamed results",
+            render_signature(&ir, "Pair", ItemKind::Function)?,
+            "fn Pair() -> (str, native-int)",
         ),
         (
             "function docs",
@@ -243,7 +259,9 @@ fn go_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         (
             "constant",
             render_signature(&ir, "First", ItemKind::Constant)?,
-            "const First",
+            // An `iota` constant is an untyped integer constant: exact and
+            // arbitrary precision, so it renders as the `integer` builtin.
+            "const First: integer",
         ),
     ];
     for (name, actual, expected) in goldens {
@@ -301,10 +319,10 @@ fn go_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
             .ok_or(TestError::MissingEntity { name: "Name" })?
             .to_string()
     };
-    if mutated_field != "int" || original_field == mutated_field {
+    if mutated_field != "native-int" || original_field == mutated_field {
         return Err(TestError::Mismatch {
             name: "mutated field type",
-            expected: "int".to_owned(),
+            expected: "native-int".to_owned(),
             actual: mutated_field,
         });
     }
