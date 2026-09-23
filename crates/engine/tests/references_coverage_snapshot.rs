@@ -705,22 +705,26 @@ static TYPESCRIPT_SYMBOLS: &[Snap] = &[
         link_occ_src: 0,
         note: "",
     },
-    Snap {
-        package: "hono-4.6.12",
-        role: "field",
-        symbol: "param",
-        grep_total: 6,
-        decl_est: 6,
-        ir_local: 0,
-        ir_foreign: 0,
-        ir_stable: 0,
-        site_ok: 0,
-        site_bad: 0,
-        decl_pos: 0,
-        link_occ: 0,
-        link_occ_src: 0,
-        note: "",
-    },
+    // PIN WITHDRAWN: hono-4.6.12::param (field), `git bisect run` pinned
+    // exactly to 3e2eadda2 ("fix(engine): stop anonymous callable
+    // parameters inheriting type-spelling labels"). That commit narrows
+    // `live_type`'s type-child label fallback in
+    // `crates/engine/src/driver/lower.rs` to fire only when a labeled
+    // child's target row is a real `Parameter` carrier fact, fixing a
+    // real, documented, tested rendering bug (an anonymous callable's
+    // parameter inheriting its target type's spelling as a bogus name —
+    // `rgb: (red: number, ...) => this` was rendering as `rgb: fn(number:
+    // f64, ...)`). After that commit no entity named `param` under any
+    // role is reachable in hono's extraction at all (verified against the
+    // full symbol dump, not just this row's zero counts); `types.d.ts`'s
+    // several literal `param: ...` object-type-literal members are
+    // themselves unaffected by this fallback (`TSTypeLiteral` members
+    // already carry an explicit written name via
+    // `push_type_literal_member`), so the declaration this pin measured
+    // was some other, less direct path through the same shared
+    // `live_type` label reconstruction — not independently re-derived
+    // here. Every other hono row (the `outputFormat` field pin included)
+    // is unchanged and still measures.
     Snap {
         package: "hono-4.6.12",
         role: "record",
