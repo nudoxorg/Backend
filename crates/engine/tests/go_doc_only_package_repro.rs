@@ -43,7 +43,10 @@ fn stage_doc_only_module() -> Result<(PathBuf, PathBuf), String> {
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!("nudox-go-doc-only-{nonce}-{sequence}"));
+    let root = std::env::temp_dir().join(format!(
+        "nudox-go-doc-only-{nonce}-{}-{sequence}",
+        std::process::id()
+    ));
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     fs::write(root.join("go.mod"), b"module doconly.example/fixture\n\ngo 1.24\n")
         .map_err(|error| error.to_string())?;

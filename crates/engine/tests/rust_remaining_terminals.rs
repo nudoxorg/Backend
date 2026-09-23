@@ -140,7 +140,10 @@ fn stage_fixture(body: &[u8], dep_types: usize) -> Option<PathBuf> {
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!("nudox-rust-term-{nonce}-{sequence}"));
+    let root = std::env::temp_dir().join(format!(
+        "nudox-rust-term-{nonce}-{}-{sequence}",
+        std::process::id()
+    ));
     fs::create_dir_all(root.join("src")).ok()?;
     if dep_types > 0 {
         fs::write(

@@ -123,7 +123,10 @@ fn scratch_dir(label: &'static str) -> Result<PathBuf, TestError> {
         .map_err(TestError::Clock)?
         .as_nanos();
     let sequence = SCRATCH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let work = std::env::temp_dir().join(format!("nudox-python-shadow-{label}-{nonce}-{sequence}"));
+    let work = std::env::temp_dir().join(format!(
+        "nudox-python-shadow-{label}-{nonce}-{}-{sequence}",
+        std::process::id()
+    ));
     fs::create_dir_all(&work).map_err(|source| TestError::Io("create scratch", source))?;
     Ok(work)
 }

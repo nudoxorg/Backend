@@ -164,7 +164,7 @@ fn compile_source(source: &'static [u8]) -> Result<Ir, TestError> {
         .duration_since(UNIX_EPOCH)
         .map_err(TestError::Clock)?
         .as_nanos();
-    let work = std::env::temp_dir().join(format!("nudox-python-render-{nonce}"));
+    let work = std::env::temp_dir().join(format!("nudox-python-render-{nonce}-{}", std::process::id()));
     fs::create_dir_all(&work).map_err(TestError::Io)?;
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0_u8; 4096];
@@ -216,7 +216,7 @@ fn compile_fragment(source: &'static [u8]) -> Result<Vec<u8>, TestError> {
         .duration_since(UNIX_EPOCH)
         .map_err(TestError::Clock)?
         .as_nanos();
-    let work = std::env::temp_dir().join(format!("nudox-python-forward-{nonce}"));
+    let work = std::env::temp_dir().join(format!("nudox-python-forward-{nonce}-{}", std::process::id()));
     fs::create_dir_all(&work).map_err(TestError::Io)?;
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0_u8; 4096];
@@ -422,7 +422,7 @@ fn python_fragment_planes_carry_what_the_ir_tree_omits() -> Result<(), TestError
         .duration_since(UNIX_EPOCH)
         .map_err(TestError::Clock)?
         .as_nanos();
-    let work = std::env::temp_dir().join(format!("nudox-python-fragment-{nonce}"));
+    let work = std::env::temp_dir().join(format!("nudox-python-fragment-{nonce}-{}", std::process::id()));
     fs::create_dir_all(&work).map_err(TestError::Io)?;
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0_u8; 4096];

@@ -65,7 +65,10 @@ fn fresh(label: &str) -> Result<PathBuf, TestError> {
         .map_err(|_| TestError::Fact("clock preceded epoch"))?
         .as_nanos();
     let number = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!("nudox-rust-purl-{label}-{nonce}-{number}"));
+    let root = std::env::temp_dir().join(format!(
+        "nudox-rust-purl-{label}-{nonce}-{}-{number}",
+        std::process::id()
+    ));
     fs::create_dir_all(&root).map_err(|source| io("create temporary root", source))?;
     Ok(root)
 }
