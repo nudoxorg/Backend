@@ -19,6 +19,9 @@ mod terminal;
 mod typescript;
 mod work;
 
+#[cfg(all(test, unix))]
+mod bounded_tests;
+
 pub(crate) fn parse_with_native_tool<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     recipe: NativeRecipe<'source, 'toolchain>,
     source: SourceIdentity,
