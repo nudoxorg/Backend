@@ -153,7 +153,15 @@ struct CorpusRow {
 /// attribute spellings; the shared reference-list bound was raised from 16
 /// to 128 and then to 255 in `crates/engine/src/driver/lower.rs`
 /// (`MAX_REF_LIST_ELEMENTS`, commit ce74f843e "enjoy"), so 23 spellings no
-/// longer breach it and the row completes the full journey.
+/// longer breach it and the row completes the full journey. The 23
+/// attribute applications are a separate, symbol-level plane
+/// (`AuthorityImage.cs`'s `info.Symbol.GetAttributes()`, unioned across
+/// every duplicate TFM copy of this file the package root ships) and are
+/// never counted as occurrences: `occurrences: 3` covers only the syntax
+/// this row's own bound file writes — one `using global::System;` and the
+/// two `AttributeTargets.Method`/`.Property` member accesses inside its
+/// lone `[AttributeUsage(...)]` application — verified directly against a
+/// live oracle run over the real fetched package.
 const NULLABLE_ROW: CorpusRow = CorpusRow {
     label: "nullable 1.3.1",
     purl: "nuget:nullable@1.3.1",
@@ -225,6 +233,15 @@ const POLYFILL_ROW: CorpusRow = CorpusRow {
 /// devlooped.tablestorage.source 5.5.0 — the largest `.cs` ships in two TFM
 /// folders of equal depth; the lexicographic winner is netstandard2.0.
 /// Symbols read from `contentFiles/cs/netstandard2.0/TableRepositoryQuery\`1.cs`.
+/// `occurrences` rose by exactly one `InterfaceImplementation` row (this
+/// row's type implements a BCL/out-of-assembly interface member). Commit
+/// ce74f843e's `AuthorityImage.cs` replaced an early `continue` that
+/// silently dropped an implementation binding whose interface member has
+/// no local declaration row with a retained row carrying an absent target
+/// and the foreign member name; verified by rebuilding the pre-ce74f843e
+/// oracle from git history and re-running it over the same real file,
+/// which produced 293 (no `InterfaceImplementation` row at all) against
+/// today's 294.
 const DEVLOOPED_ROW: CorpusRow = CorpusRow {
     label: "devlooped.tablestorage.source 5.5.0",
     purl: "nuget:devlooped.tablestorage.source@5.5.0",
@@ -257,6 +274,11 @@ const TINYIOC_RC1_ROW: CorpusRow = CorpusRow {
 
 /// ramltoopenapiconverter.sourceonly 0.21.0 — largest `.cs`. Symbols read
 /// from `contentFiles/cs/any/RamlToOpenApiConverter/RamlConverter.Components.cs`.
+/// `occurrences` rose by exactly 6, all `FieldWrite`: commit ce74f843e
+/// added the bare-identifier `FieldRead`/`FieldWrite` reference kinds
+/// (`AuthorityImage.cs`'s `IdentifierNameSyntax` sweep), which v3 never
+/// emitted at all. Verified directly: a live probe over this file counts
+/// 6 `FieldWrite` rows and 0 `FieldRead`, matching 192 -> 198 exactly.
 const RAML_0210_ROW: CorpusRow = CorpusRow {
     label: "ramltoopenapiconverter.sourceonly 0.21.0",
     purl: "nuget:ramltoopenapiconverter.sourceonly@0.21.0",
@@ -293,7 +315,11 @@ const RAML_080_ROW: CorpusRow = CorpusRow {
 /// parameterless `void` executables (`Router` ctor, `PurgeEventQueues`)
 /// were the zero-children function-pointer panic at `lower.rs:1595`; the
 /// typed `Dangling` rejection and legal zero-arity path landed, and the
-/// row now completes the full journey.
+/// row now completes the full journey. `occurrences` also rose by
+/// exactly 15 (10 `FieldRead` + 5 `FieldWrite`) — the new bare-identifier
+/// reference kinds `ce74f843e` added; v3 emitted none of them. Verified
+/// by a live probe over this file: 218 -> 233 matches the field-kind
+/// count exactly.
 const ESP_NET_064_ROW: CorpusRow = CorpusRow {
     label: "esp-net-source 0.6.4",
     purl: "nuget:esp-net-source@0.6.4",
@@ -312,6 +338,9 @@ const ESP_NET_064_ROW: CorpusRow = CorpusRow {
 /// `content/App_Packages/Esp.Net.0.2.3/Router.cs` (`PurgeEventQueue`,
 /// `ThrowIfHalted`, `ThrowIfInvalidThread`, …). Was red on the same
 /// parameterless-`void` lane panic as `ESP_NET_064_ROW`; fixed with it.
+/// `occurrences` also rose by exactly 15 (11 `FieldRead` + 4
+/// `FieldWrite`) for the same reason as `ESP_NET_064_ROW`: 116 -> 131
+/// verified by a live probe.
 const ESP_NET_023_ROW: CorpusRow = CorpusRow {
     label: "esp-net-source 0.2.3",
     purl: "nuget:esp-net-source@0.2.3",
@@ -331,7 +360,10 @@ const ESP_NET_023_ROW: CorpusRow = CorpusRow {
 /// nullability.source 2.3.0 — largest `.cs`. Symbols read from
 /// `contentFiles/cs/netstandard2.0/Nullability.Source/NullabilityInfoContext.cs`.
 /// Was red on the same parameterless-`void` lane panic as `ESP_NET_064_ROW`
-/// (`EnsureIsSupported`); fixed with it.
+/// (`EnsureIsSupported`); fixed with it. `occurrences` also rose by
+/// exactly 4 `FieldRead` rows (0 `FieldWrite`) for the same
+/// bare-identifier reason as `ESP_NET_064_ROW`: 346 -> 350 verified by a
+/// live probe.
 const NULLABILITY_230_ROW: CorpusRow = CorpusRow {
     label: "nullability.source 2.3.0",
     purl: "nuget:nullability.source@2.3.0",
@@ -350,7 +382,10 @@ const NULLABILITY_230_ROW: CorpusRow = CorpusRow {
 /// nullability.source 2.1.0 — largest `.cs`. Symbols read from
 /// `contentFiles/cs/netstandard2.0/Nullability.Source/NullabilityInfoContext.cs`.
 /// Was red on the same parameterless-`void` lane panic as `ESP_NET_064_ROW`
-/// (`EnsureIsSupported`); fixed with it.
+/// (`EnsureIsSupported`); fixed with it. `occurrences` also rose by
+/// exactly 4 `FieldRead` rows (0 `FieldWrite`) for the same
+/// bare-identifier reason as `ESP_NET_064_ROW`: 343 -> 347 verified by a
+/// live probe.
 const NULLABILITY_210_ROW: CorpusRow = CorpusRow {
     label: "nullability.source 2.1.0",
     purl: "nuget:nullability.source@2.1.0",
@@ -486,9 +521,12 @@ const MORELINQ_GENERATEBYINDEX_ROW: CorpusRow = CorpusRow {
 };
 
 /// tinyioc 1.3.0 — the package's single source file (`Content/TinyIoC.cs`)
-/// resolves 1170 references and now completes under the authorized 8192-row
+/// resolves 1252 references and now completes under the authorized 8192-row
 /// occurrence scratch bound; its 876 reopened entities stop the index build
-/// at the shared 256-entity exact/lexical segment bound.
+/// at the shared 256-entity exact/lexical segment bound. `occurrences` rose
+/// by exactly 82 (59 `FieldRead` + 23 `FieldWrite`) for the same
+/// bare-identifier reason as `ESP_NET_064_ROW` (commit ce74f843e added the
+/// two kinds; v3 emitted neither): 1170 -> 1252 verified by a live probe.
 const TINYIOC_130_ROW: CorpusRow = CorpusRow {
     label: "tinyioc 1.3.0",
     purl: "nuget:tinyioc@1.3.0",
