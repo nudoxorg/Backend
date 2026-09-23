@@ -181,8 +181,28 @@ fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn E
             .map_or(0, |duration| duration.as_nanos())
     ));
     fs::create_dir_all(&publish)?;
+    // Every concurrently running C# test builds the same checked-in helper
+    // project. Restore and publish both write intermediate build state
+    // (`obj/`, `BaseIntermediateOutputPath`) under the project directory by
+    // default, and publish also builds into the default `bin/`
+    // (`BaseOutputPath`) before copying to `-o` — `-o` alone does not
+    // redirect that intermediate build step. Without explicit, per-process
+    // overrides for both, every concurrent process races on the same
+    // files, which is what actually produced the "byte-exact" failure under
+    // full-suite load: a manual, isolated reproduction of these exact steps
+    // is byte-identical to the committed fixture (see the fix commit for
+    // this test file).
+    let intermediate = publish.join("obj");
+    let mut intermediate_arg = std::ffi::OsString::from("-p:BaseIntermediateOutputPath=");
+    intermediate_arg.push(&intermediate);
+    intermediate_arg.push(std::path::MAIN_SEPARATOR.to_string());
+    let output_base = publish.join("bin");
+    let mut output_base_arg = std::ffi::OsString::from("-p:BaseOutputPath=");
+    output_base_arg.push(&output_base);
+    output_base_arg.push(std::path::MAIN_SEPARATOR.to_string());
     let restored = Command::new(&dotnet)
         .args(["restore", "oracle.csproj", "--locked-mode", "--nologo"])
+        .arg(&intermediate_arg)
         .current_dir(&helper_dir)
         .status()?;
     assert!(restored.success(), "locked oracle restore failed: {restored}");
@@ -194,8 +214,10 @@ fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn E
             "Release",
             "--nologo",
             "--no-restore",
-            "-o",
         ])
+        .arg(&intermediate_arg)
+        .arg(&output_base_arg)
+        .arg("-o")
         .arg(&publish)
         .current_dir(&helper_dir)
         .status()?;
