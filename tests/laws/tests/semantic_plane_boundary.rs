@@ -299,6 +299,16 @@ fn tree_sitter_is_confined_to_structural_frontends_and_syntax_compile() {
         while let Some(path) = pending.pop() {
             let metadata = fs::symlink_metadata(&path).expect("inspect source tree");
             if metadata.is_dir() {
+                // Generated build trees (`.local/target`, stray `target/`)
+                // hold copied manifests such as trybuild's, which are not
+                // shipping source.
+                let generated = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == ".local" || name == "target");
+                if generated {
+                    continue;
+                }
                 for entry in fs::read_dir(path).expect("read source directory") {
                     pending.push(entry.expect("read source entry").path());
                 }

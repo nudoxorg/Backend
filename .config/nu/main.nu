@@ -2,6 +2,17 @@
 # Keeps individual command files focused while presenting one discoverable CLI.
 # Provides a cheap doctor before any command is trusted with repository state.
 
+# The wrapper bakes `CARGO_TARGET_DIR` as the relative `.local/target`, as the
+# interactive shells resolve it against the entered repository. Resolve it the
+# same way here: a relative value otherwise follows every child process's own
+# working directory, so a trybuild or build-script cargo run inside
+# `crates/<name>` would scatter a second target tree into that crate.
+let target_root = (^git rev-parse --show-toplevel | complete)
+$env.CARGO_TARGET_DIR = (
+    if $target_root.exit_code == 0 { $target_root.stdout | str trim } else { $env.PWD }
+    | path join ($env.CARGO_TARGET_DIR? | default ".local/target")
+)
+
 # Shows the typed command catalog when no subcommand is supplied.
 # @class inspection
 def main []: nothing -> table {
