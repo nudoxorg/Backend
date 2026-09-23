@@ -1785,9 +1785,12 @@ impl<'a, 'source> Emitter<'a, 'source> {
         inferred: &InferredType,
         tables: &TypeTables<'source>,
     ) -> Result<Option<(SemanticTypeRecord<'source>, Vec<u32>)>, PythonCollectError> {
-        let Some(anchor) = self.anchor() else {
-            return Ok(None);
-        };
+        // Only a compound needs an anchor: its pooled child rows are owned
+        // by an already-pushed fact. A scalar or local nominal is the root
+        // record itself, so a module whose first declaration is an inferred
+        // constant (`inferred = 1`) still takes the checker's answer instead
+        // of an oracle gap.
+        let anchor = self.anchor();
         match inferred {
             InferredType::Integer => Ok(Some((integer_record(), Vec::new()))),
             InferredType::Float => Ok(Some((float64_record(), Vec::new()))),
@@ -1800,14 +1803,23 @@ impl<'a, 'source> Emitter<'a, 'source> {
             InferredType::Complex => Ok(Some((builtin_record(b"complex"), Vec::new()))),
             InferredType::NoneType => Ok(Some((none_record(), Vec::new()))),
             InferredType::List(element) => {
+                let Some(anchor) = anchor else {
+                    return Ok(None);
+                };
                 let (base, element) = (builtin_record(b"list"), element.as_deref());
                 self.inferred_apply(base, element, tables, anchor)
             }
             InferredType::Set(element) => {
+                let Some(anchor) = anchor else {
+                    return Ok(None);
+                };
                 let (base, element) = (builtin_record(b"set"), element.as_deref());
                 self.inferred_apply(base, element, tables, anchor)
             }
             InferredType::Dict(pair) => {
+                let Some(anchor) = anchor else {
+                    return Ok(None);
+                };
                 let mut children = Vec::new();
                 let Some(base_row) = self.leaf_row(builtin_record(b"dict"), anchor)? else {
                     return Ok(None);
@@ -1824,6 +1836,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 Ok(Some((apply_record(), children)))
             }
             InferredType::Tuple(elements) => {
+                let Some(anchor) = anchor else {
+                    return Ok(None);
+                };
                 if elements.len() > MAX_TYPE_CHILDREN {
                     return Ok(None);
                 }
@@ -1837,6 +1852,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 Ok(Some((tuple_record(), children)))
             }
             InferredType::Union(members) => {
+                let Some(anchor) = anchor else {
+                    return Ok(None);
+                };
                 if members.len() > MAX_TYPE_CHILDREN {
                     return Ok(None);
                 }
@@ -1850,6 +1868,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 Ok(Some((union_record(), children)))
             }
             InferredType::Callable { params, result } => {
+                let Some(anchor) = anchor else {
+                    return Ok(None);
+                };
                 if params.len().saturating_add(usize::from(result.is_some())) > MAX_TYPE_CHILDREN {
                     return Ok(None);
                 }
