@@ -19,16 +19,38 @@ mod workspace_settings;
 
 use crate::core::layout::{LayoutCache, PanelPreferences, ResponsiveLayout};
 use crate::model::AppSnapshot;
-use crate::navigation::{OrbitRoute, Overlay, Route};
+use crate::navigation::{ActionId, OrbitRoute, Overlay, Route};
 use crate::runtime::UiRootEntity;
 use crate::theme::Theme;
 use crate::ui::surface;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Focusable as _, IntoElement, ParentElement, Styled,
-    Window, div, px,
+    AnyElement, App, AppContext as _, Context, Focusable as _, IntoElement, ParentElement,
+    Styled, WeakEntity, Window, div, px,
 };
 use gpui_component::WindowExt as _;
+
+/// Binds the product's default shell keyboard chords and routes each one to
+/// its typed [`Intent`](crate::navigation::Intent) on the root entity.
+///
+/// Every shortcut in [`keys`] is otherwise inert: a [`gpui::KeyBinding`] only
+/// produces a [`keys::ShellAction`], and nothing dispatches that action
+/// without this global handler, so a keystroke (`cmd-n`, `cmd-p`, ...) would
+/// silently do nothing.
+pub(crate) fn install_shell_keymap(cx: &mut App, root: WeakEntity<UiRootEntity>) {
+    cx.bind_keys(keys::bindings());
+    cx.on_action(move |action: &keys::ShellAction, cx| {
+        let Some(id) = ActionId::from_u16(action.id) else {
+            return;
+        };
+        let Some(intent) = id.intent() else {
+            return;
+        };
+        if let Some(root) = root.upgrade() {
+            root.update(cx, |root, cx| root.queue(intent, cx));
+        }
+    });
+}
 
 /// Renders the complete production window from one root entity.
 pub(crate) fn render_root(

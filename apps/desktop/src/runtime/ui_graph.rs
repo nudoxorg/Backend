@@ -702,6 +702,7 @@ impl UiEntityGraph {
         persistence: Option<PersistentState>,
     ) -> Self {
         let root = cx.new(|_| UiRootEntity::new(runtime, persistence));
+        crate::views::install_shell_keymap(cx, root.downgrade());
         Self { root }
     }
 }
