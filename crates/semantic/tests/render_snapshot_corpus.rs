@@ -997,8 +997,24 @@ fn published_oracle(dotnet: &Path) -> Option<PathBuf> {
                 .join("../../frontends/csharp/src/legacy/helper");
             let publish = scratch_dir("csharp-publish").join("publish");
             fs::create_dir_all(&publish).ok()?;
+            // Isolate this process's intermediate AND build-output state:
+            // every concurrently running C# test builds the same checked-in
+            // helper project, and `dotnet restore`/`publish` write `obj/`
+            // (`BaseIntermediateOutputPath`) and build into `bin/`
+            // (`BaseOutputPath`) under the project directory by default —
+            // `-o` only redirects the final publish copy, not that
+            // intermediate build step.
+            let intermediate = publish.join("obj");
+            let mut intermediate_arg = std::ffi::OsString::from("-p:BaseIntermediateOutputPath=");
+            intermediate_arg.push(&intermediate);
+            intermediate_arg.push(std::path::MAIN_SEPARATOR.to_string());
+            let output_base = publish.join("bin");
+            let mut output_base_arg = std::ffi::OsString::from("-p:BaseOutputPath=");
+            output_base_arg.push(&output_base);
+            output_base_arg.push(std::path::MAIN_SEPARATOR.to_string());
             let restored = std::process::Command::new(dotnet)
                 .args(["restore", "oracle.csproj", "--locked-mode", "--nologo"])
+                .arg(&intermediate_arg)
                 .current_dir(&helper)
                 .status()
                 .ok()?;
@@ -1013,8 +1029,10 @@ fn published_oracle(dotnet: &Path) -> Option<PathBuf> {
                     "Release",
                     "--nologo",
                     "--no-restore",
-                    "-o",
                 ])
+                .arg(&intermediate_arg)
+                .arg(&output_base_arg)
+                .arg("-o")
                 .arg(&publish)
                 .current_dir(&helper)
                 .status()

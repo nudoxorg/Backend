@@ -36,6 +36,21 @@
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- The default SDK item-glob exclusion for `obj/`/`bin/` is computed
+      from the CURRENT value of $(BaseIntermediateOutputPath)/$(BaseOutputPath),
+      so any build that overrides those (every isolated test build in
+      crates/engine/tests, crates/semantic/tests, crates/flow/tests, and
+      frontends/csharp/tests does, to give concurrent `dotnet build`/`publish`
+      invocations of this shared, checked-in project their own directories)
+      stops excluding this project's own literal `obj/`/`bin/` directories.
+      Any stray, stale generated files left there by an older/unisolated
+      build (or a hand run `dotnet build` in this directory) then get swept
+      into the default `**/*.cs` compile glob as extra source files,
+      producing spurious CS0579 "duplicate attribute" errors. Exclude both
+      literal paths unconditionally so stale build output here can never be
+      compiled in, regardless of which directories any given build run
+      isolates its own state into. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj/**;bin/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
