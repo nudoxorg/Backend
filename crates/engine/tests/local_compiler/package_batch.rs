@@ -160,9 +160,18 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
         )?,
     )?;
     let client = LocalCompilerClient::start(configuration)?;
+    // Clang package authority opens the exact translation unit beneath the
+    // package root (ce74f843e), so each owned source is also staged on disk.
+    let alpha = "int alpha(void) { return 1; }\n";
+    let beta = "int beta(void) { return 2; }\n";
+    let gamma = "int gamma(void) { return 3; }\n";
+    fs::write(package_root.join("src/alpha.c"), alpha)?;
+    fs::write(package_root.join("src/beta.c"), beta)?;
+    fs::create_dir_all(root.join("replacement/src"))?;
+    fs::write(root.join("replacement/src/gamma.c"), gamma)?;
     let sources = vec![
-        OwnedPackageSource::new("src/alpha.c", "int alpha(void) { return 1; }\n")?,
-        OwnedPackageSource::new("src/beta.c", "int beta(void) { return 2; }\n")?,
+        OwnedPackageSource::new("src/alpha.c", alpha)?,
+        OwnedPackageSource::new("src/beta.c", beta)?,
     ]
     .into_boxed_slice();
     let published = client.compile_package_sources(OwnedPackageSourceSet::new(
@@ -176,10 +185,7 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
     let replacement = client.compile_package_sources(OwnedPackageSourceSet::new(
         request,
         root.join("replacement"),
-        vec![OwnedPackageSource::new(
-            "src/gamma.c",
-            "int gamma(void) { return 3; }\n",
-        )?]
+        vec![OwnedPackageSource::new("src/gamma.c", gamma)?]
         .into_boxed_slice(),
     )?)?;
     assert_ne!(
