@@ -62,7 +62,7 @@
 //! | `MAX_COMPOUND_CHILDREN` (8) | `NoIrRepresentation`, or enclosing `OracleGap` without a written shape | retain spelling when available; otherwise retain the gap row |
 //! | `MAX_DEDUPED_FOREIGN_ROWS` (512) | `NoSupportedDeclaration` | a distinct foreign spelling beyond the cap rejects exactly |
 //! | `TUPLE_FIELD_NAMES` (16 entries) | positional-name fold | positions beyond 15 are not materialized by the module walk |
-//! | computed rows (1024) | `ComputedRowCapacity` | not applicable: computed rows belong to the checker lane |
+//! | computed rows (`MAX_COMPUTED_TYPE_ROWS`, 32768) | `ComputedRowCapacity` | a proven let-initializer or method-call result type beyond the cap is dropped, never truncated into a fabricated row |
 
 use std::{collections::HashMap, vec::Vec};
 
@@ -401,6 +401,10 @@ struct Emitter<'authority, 'analysis, 'source> {
     scoped_names: std::collections::HashSet<(Option<(u32, u32)>, u8, Vec<u8>)>,
     /// Declaration rows ordered by source start for logarithmic owner admission.
     owner_order: Vec<usize>,
+    /// The declaration ordinal currently hosting a computed (inferred) type
+    /// row, set only while [`Self::emit_computed`] walks its sorted
+    /// expression list.
+    computed_owner: Option<u32>,
 }
 
 impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
@@ -426,6 +430,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             macro_sites: Vec::new(),
             scoped_names: std::collections::HashSet::new(),
             owner_order: Vec::new(),
+            computed_owner: None,
         }
     }
 
@@ -436,11 +441,14 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.collect_macro_sites()?;
         self.emit_type_roots(&declarations)?;
         self.emit_members(&declarations)?;
+        self.emit_reexports()?;
         self.rebuild_owner_order();
         self.emit_parentage()?;
         self.attach_macros()?;
         self.emit_occurrences()?;
+        self.emit_computed()?;
         self.emit_docs(&declarations)?;
+        self.emit_reexport_docs()?;
         Ok(())
     }
 
@@ -2070,6 +2078,16 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         lowered: Lowered<'source>,
         anchor: Option<&ast::Type>,
     ) -> Result<Option<u32>, RustAuthorityError> {
+        // A computed (inferred) type's nested positions are never a pending
+        // declared fact: no new row follows this lowering, so the reserved-
+        // anchor convention below (which assumes the caller pushes a fact at
+        // exactly `self.facts.len()` immediately after) would stage an
+        // anonymous row owned by an ordinal that is never fulfilled. Route
+        // straight into the computed lane instead, which owns every child
+        // position through the already-hosted computed row.
+        if self.computed_owner.is_some() {
+            return self.host_computed(lowered).map(Some);
+        }
         if lowered.children.is_empty() {
             if let Some(NominalRef::Local(target)) = lowered.record.nominal {
                 return Ok(Some(target.raw));
@@ -2849,6 +2867,155 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             self.facts
                 .push_doc(owner, fragment)
                 .map_err(|_| admission())?;
+        }
+        Ok(())
+    }
+
+    /// Emits one leaf `Reexport` entity per resolvable local binding in a
+    /// written `use` item; a glob import proves no honest single-name
+    /// declaration, so its written law admits no fact at all.
+    fn emit_reexports(&mut self) -> Result<(), RustAuthorityError> {
+        for reexport in self.authority.reexports() {
+            if !reexport.resolved {
+                continue;
+            }
+            let name_span = self.authority.span(&reexport.name)?;
+            let name = self.bytes_of(name_span)?;
+            // Rust's single-name law (E0428) applies to a reexported binding
+            // exactly as it does to any other declaration: an authority that
+            // does not evaluate every cfg gate (or a facade re-exporting the
+            // same name from two branches) can stream cfg-disjoint twins.
+            // Reuse the declaration walk's dedup key so a later twin is
+            // dropped instead of minting a byte-identical `Reexport`
+            // identity the image build must reject.
+            let scope = self.enclosing_item_span(reexport.item.syntax())?;
+            if !self
+                .scoped_names
+                .insert((scope, EntityKind::Reexport as u8, name.to_vec()))
+            {
+                continue;
+            }
+            let extension = self.empty_extension(RustOwnership::Value)?;
+            let fact = SemanticFact::new(EntityKind::Reexport, name, LEAF_PRODUCT)
+                .with_visibility(self.visibility_of(&reexport.item.syntax().clone()))
+                .typed(unknown_record(TypeReason::NoIrRepresentation, Some(name)))
+                .with_extension(EmissionExtension::Rust(extension));
+            let ordinal = coordinate(push(self.facts, fact)?)?;
+            self.rows.push(Row {
+                ordinal,
+                name,
+                span: self.authority.span(reexport.item.syntax())?,
+                extension,
+            });
+        }
+        Ok(())
+    }
+
+    /// Captures the written visibility prefix of one syntax item.
+    fn visibility_of(&self, syntax: &ra_ap_syntax::SyntaxNode) -> backend_semantic::ir::Visibility {
+        let Some(visibility) = ast::AnyHasVisibility::cast(syntax.clone())
+            .and_then(|item| item.visibility())
+        else {
+            return backend_semantic::ir::Visibility::Private;
+        };
+        let range = visibility.syntax().text_range();
+        let Some(start) = usize::try_from(u32::from(range.start())).ok() else {
+            return backend_semantic::ir::Visibility::Unknown;
+        };
+        let Some(end) = usize::try_from(u32::from(range.end())).ok() else {
+            return backend_semantic::ir::Visibility::Unknown;
+        };
+        let Some(bytes) = self.source.get(start..end) else {
+            return backend_semantic::ir::Visibility::Unknown;
+        };
+        if bytes == b"pub(crate)" {
+            backend_semantic::ir::Visibility::Package
+        } else if bytes.starts_with(b"pub(") {
+            backend_semantic::ir::Visibility::Restricted
+        } else {
+            backend_semantic::ir::Visibility::Public
+        }
+    }
+
+    /// Emits proven let initializer and method-call result types in source order.
+    fn emit_computed(&mut self) -> Result<(), RustAuthorityError> {
+        let mut expressions = Vec::new();
+        for expression in self.authority.inferred_let_initializers() {
+            let span = self.authority.span(expression.expression.syntax())?;
+            if let Some(inferred) = expression
+                .inferred
+                .filter(|inferred| !inferred.original.is_unknown())
+            {
+                expressions.push((span, inferred.original, None));
+            }
+        }
+        for call in self.authority.method_calls() {
+            let span = match call.projected_span {
+                Some(span) => span,
+                None => self.authority.span(call.syntax.syntax())?,
+            };
+            if let Some(inferred) = call
+                .inferred
+                .filter(|inferred| !inferred.original.is_unknown())
+            {
+                expressions.push((span, inferred.original, None));
+            }
+        }
+        expressions.sort_by_key(|(span, _, _)| span.start);
+        for (span, semantic, anchor) in expressions {
+            let Some(owner) = self.owner_of(span) else {
+                continue;
+            };
+            self.computed_owner = Some(owner);
+            let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
+            self.host_computed(lowered)?;
+            self.computed_owner = None;
+        }
+        Ok(())
+    }
+
+    /// Commits one lowered inferred type into the schema-2 computed segment.
+    fn host_computed(&mut self, lowered: Lowered<'source>) -> Result<u32, RustAuthorityError> {
+        let owner = self.computed_owner.ok_or_else(admission)?;
+        for target in lowered.children {
+            self.facts
+                .computed_type_child(target, None, 0)
+                .map_err(|_| admission())?;
+        }
+        self.facts
+            .intern_computed_type_row(owner, lowered.record)
+            .map_err(|_| admission())
+    }
+
+    /// Pushes documentation belonging to each emitted re-export declaration.
+    fn emit_reexport_docs(&mut self) -> Result<(), RustAuthorityError> {
+        for reexport in self.authority.reexports() {
+            if !reexport.resolved {
+                continue;
+            }
+            let name = self.bytes_of(self.authority.span(&reexport.name)?)?;
+            let item_span = self.authority.span(reexport.item.syntax())?;
+            let Some(owner) = self
+                .rows
+                .iter()
+                .find(|row| row.name == name && row.span == item_span)
+                .map(|row| row.ordinal)
+            else {
+                continue;
+            };
+            let mut lines = Vec::new();
+            {
+                let authority = self.authority;
+                let emitter = &*self;
+                authority.visit_documentation(reexport.item.syntax(), |line| {
+                    if let Some(span) = emitter.span_of_text(line)
+                        && let Ok(bytes) = emitter.bytes_of(span)
+                    {
+                        lines.push(bytes);
+                    }
+                });
+            }
+            self.push_doc_lines(owner, &lines)?;
         }
         Ok(())
     }

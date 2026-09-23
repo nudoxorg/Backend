@@ -20,7 +20,7 @@ use ra_ap_hir::{
 use ra_ap_project_model::{CargoConfig, CargoFeatures, RustLibSource};
 use ra_ap_syntax::{
     AstNode,
-    ast::{self, HasName},
+    ast::{self, HasName, HasVisibility},
 };
 use ra_ap_vfs::{AbsPathBuf, VfsPath};
 
@@ -476,6 +476,45 @@ impl<'analysis> RustAuthority<'analysis> {
     #[must_use]
     pub fn inferred_type(&self, expression: &ast::Expr) -> Option<TypeInfo<'analysis>> {
         self.semantics.type_of_expr(expression)
+    }
+
+    /// Streams written let initializers with their analyzer-proven result types.
+    pub fn inferred_let_initializers(
+        &self,
+    ) -> impl Iterator<Item = RustInferredExpression<'analysis>> + '_ {
+        self.root.syntax().descendants().filter_map(|syntax| {
+            let statement = ast::LetStmt::cast(syntax)?;
+            let expression = statement.initializer()?;
+            Some(RustInferredExpression {
+                expression: expression.clone(),
+                inferred: self.inferred_type(&expression),
+            })
+        })
+    }
+
+    /// Returns resolvable written bindings from source-level `use` items.
+    pub fn reexports(&self) -> Vec<RustReexport> {
+        let mut result = Vec::new();
+        for syntax in self.root.syntax().descendants() {
+            let Some(item) = ast::Use::cast(syntax) else {
+                continue;
+            };
+            // A private `use` is a local alias, not a re-export: it never
+            // enters the crate's public surface, so admitting it here can
+            // mint a `Reexport` entity that shadows the identity of the same
+            // name's genuine public binding in a different scope (observed
+            // on `generic-array@1.4.5`, whose crate root privately
+            // `use`-imports two names a nested `pub mod` also re-exports
+            // under `#[cfg(feature = "internals")]`).
+            if item.visibility().is_none() {
+                continue;
+            }
+            let Some(tree) = item.use_tree() else {
+                continue;
+            };
+            collect_reexports(self, &item, &tree, &mut result);
+        }
+        result
     }
 
     /// Converts one syntax node's local range into an exact validated original-byte span.
@@ -1061,6 +1100,62 @@ pub struct RustFieldAccess {
     /// Named field selected by the analyzer, when the base type provably
     /// owns one; tuple-index accesses stay unresolved.
     pub target: Option<Field>,
+}
+
+/// One written expression and its unrendered inferred type, when inference succeeded.
+pub struct RustInferredExpression<'analysis> {
+    /// The original expression syntax.
+    pub expression: ast::Expr,
+    /// The analyzer's semantic result, absent for unresolved expressions.
+    pub inferred: Option<TypeInfo<'analysis>>,
+}
+
+/// One written local spelling in a resolvable `use` binding.
+pub struct RustReexport {
+    /// The use item, retained for visibility and documentation projection.
+    pub item: ast::Use,
+    /// Exact written local name span.
+    pub name: ra_ap_syntax::SyntaxNode,
+    /// Whether rust-analyzer resolved the imported path.
+    pub resolved: bool,
+}
+
+fn collect_reexports<'analysis>(
+    authority: &RustAuthority<'analysis>,
+    item: &ast::Use,
+    tree: &ast::UseTree,
+    result: &mut Vec<RustReexport>,
+) {
+    if tree.star_token().is_some() {
+        return;
+    }
+    if let Some(list) = tree.use_tree_list() {
+        for child in list.use_trees() {
+            collect_reexports(authority, item, &child, result);
+        }
+        return;
+    }
+    let Some(path) = tree.path() else {
+        return;
+    };
+    let name = tree
+        .rename()
+        .and_then(|rename| rename.name())
+        .map(|name| name.syntax().clone())
+        .or_else(|| {
+            path.segments()
+                .last()
+                .and_then(|segment| segment.name_ref())
+                .map(|name| name.syntax().clone())
+        });
+    let Some(name) = name else {
+        return;
+    };
+    result.push(RustReexport {
+        item: item.clone(),
+        name,
+        resolved: authority.resolve_path(&path).is_some(),
+    });
 }
 
 /// One HIR-walked declaration with its projected original-source coordinates.
