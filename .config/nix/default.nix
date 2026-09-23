@@ -144,6 +144,7 @@ let
           toolchains
           tools
           workspaceRoot
+          corpus
           ;
       };
       shells = import ./shells.nix {

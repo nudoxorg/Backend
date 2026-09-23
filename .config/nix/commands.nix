@@ -12,6 +12,7 @@
   control,
   gui,
   workspaceRoot,
+  corpus,
 }:
 let
   sourceParts = [
@@ -37,6 +38,20 @@ let
     ../nu/main.nu
   ];
   source = builtins.concatStringsSep "\n\n" (map builtins.readFile sourceParts);
+  # Native-toolchain and corpus authorities for the seven-language corpus,
+  # shared with the interactive `.#complete` shell (`shells.nix`) so
+  # `backend test workspace` sees the same compilers and corpus data that
+  # tests pass under interactively. Referencing these store paths from the
+  # wrapper derivation also makes them gate dependencies, so `nix store gc`
+  # cannot strand the corpora between runs.
+  nativeTestEnv = import ./corpus-env.nix {
+    inherit
+      pkgs
+      tools
+      toolchains
+      corpus
+      ;
+  };
 in
 let
   makeBackend =
@@ -47,48 +62,56 @@ let
     pkgs.nuenv.writeShellApplication {
       name = "backend";
       text = source;
-      runtimeInputs = tools.qualityTools ++ tools.serviceTools ++ gui.allPackages ++ runtimeInputs;
-      runtimeEnv = {
-        CARGO_TARGET_DIR = ".local/target";
-        BACKEND_CONFIG_SNAPSHOT = toString ../.;
-        BACKEND_AST_GREP = "${astGrepSuite}/sgconfig.yml";
-        BACKEND_KOJI_CONFIG = artifacts.koji;
-        BACKEND_NEXTEST_CONFIG = artifacts.nextest;
-        BACKEND_OTEL_COLLECTOR = artifacts.otelCollector;
-        BACKEND_TREEFMT = "${formatting.wrapper}/bin/treefmt";
-        BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
-        BACKEND_POLICY_ROOT_DIGEST = control.policyRootDigest;
-        BACKEND_COMMAND_CATALOG_DIGEST = builtins.hashString "sha256" source;
-        BACKEND_STABLE_CARGO = toolchains.stableCargo;
-        BACKEND_CONTROL_SOURCE = toString workspaceRoot;
-        # The control binary remains available as the dedicated
-        # `.#backend-control` package. Keeping it out of this general shell
-        # prevents each Cargo.lock edit from vendoring and rebuilding the
-        # workspace before ordinary checks can begin; cutover commands retain
-        # their explicit pinned `cargo run` fallback.
-        BACKEND_CONTROL_BIN = "";
-        BACKEND_DYLINT_TOOLCHAIN = toolchains.dylintToolchain;
-        BACKEND_RUSTFMT = toolchains.rustfmt;
-        BACKEND_GUI_CONFIG = "${gui.configFile}/share/nudox/gui-control-plane.json";
-        BACKEND_GUI_FONTCONFIG = gui.fontConfig;
-        BACKEND_GUI_FONT_MANIFEST = "${gui.fontManifest}/share/nudox/fonts.sha256";
-        NUDOX_GUI_GPUI_SOURCE_DIGEST = gui.gpuiSourceDigest;
-        NUDOX_GUI_GPUI_COMPONENT_SOURCE_DIGEST =
-          if gui.gpuiComponentSourceDigest == null then "" else gui.gpuiComponentSourceDigest;
-        NUDOX_GUI_GPUI_SOURCE_MANIFEST = gui.gpuiSourceManifest;
-        NUDOX_GUI_DEPENDENCY_GRAPH_SHA256 = gui.dependencyGraphDigest;
-        NUDOX_GUI_GPU_BACKEND = control.gui.gpu.defaultGpuBackend;
-        NUDOX_GUI_GPU_DEVICE = control.gui.gpu.expectedGpuDevice;
-        NUDOX_GUI_GPU_PROBE = "${gui.gpuProbe}/bin/nudox-gui-gpu-probe";
-        WGPU_BACKEND = control.gui.gpu.forceEnvironment.WGPU_BACKEND;
-        LIBGL_ALWAYS_SOFTWARE = control.gui.gpu.forceEnvironment.LIBGL_ALWAYS_SOFTWARE;
-        MESA_LOADER_DRIVER_OVERRIDE = control.gui.gpu.forceEnvironment.MESA_LOADER_DRIVER_OVERRIDE;
-        NUDOX_GUI_TOOLCHAIN = toString toolchains.stable;
-        NUDOX_GUI_ENCODER_VERSION = pkgs.ffmpeg.version;
-        NUDOX_GUI_TOOL_CLOSURE = "${gui.toolsBundle}";
-        NUDOX_GUI_HARNESS = "nix shell .#gui-harness .#gui-tools .#gui-runtime";
-      }
-      // runtimeEnv;
+      runtimeInputs =
+        tools.qualityTools
+        ++ tools.serviceTools
+        ++ tools.nativeCompilers
+        ++ tools.authorityHelpers
+        ++ gui.allPackages
+        ++ runtimeInputs;
+      runtimeEnv =
+        nativeTestEnv
+        // {
+          CARGO_TARGET_DIR = ".local/target";
+          BACKEND_CONFIG_SNAPSHOT = toString ../.;
+          BACKEND_AST_GREP = "${astGrepSuite}/sgconfig.yml";
+          BACKEND_KOJI_CONFIG = artifacts.koji;
+          BACKEND_NEXTEST_CONFIG = artifacts.nextest;
+          BACKEND_OTEL_COLLECTOR = artifacts.otelCollector;
+          BACKEND_TREEFMT = "${formatting.wrapper}/bin/treefmt";
+          BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
+          BACKEND_POLICY_ROOT_DIGEST = control.policyRootDigest;
+          BACKEND_COMMAND_CATALOG_DIGEST = builtins.hashString "sha256" source;
+          BACKEND_STABLE_CARGO = toolchains.stableCargo;
+          BACKEND_CONTROL_SOURCE = toString workspaceRoot;
+          # The control binary remains available as the dedicated
+          # `.#backend-control` package. Keeping it out of this general shell
+          # prevents each Cargo.lock edit from vendoring and rebuilding the
+          # workspace before ordinary checks can begin; cutover commands retain
+          # their explicit pinned `cargo run` fallback.
+          BACKEND_CONTROL_BIN = "";
+          BACKEND_DYLINT_TOOLCHAIN = toolchains.dylintToolchain;
+          BACKEND_RUSTFMT = toolchains.rustfmt;
+          BACKEND_GUI_CONFIG = "${gui.configFile}/share/nudox/gui-control-plane.json";
+          BACKEND_GUI_FONTCONFIG = gui.fontConfig;
+          BACKEND_GUI_FONT_MANIFEST = "${gui.fontManifest}/share/nudox/fonts.sha256";
+          NUDOX_GUI_GPUI_SOURCE_DIGEST = gui.gpuiSourceDigest;
+          NUDOX_GUI_GPUI_COMPONENT_SOURCE_DIGEST =
+            if gui.gpuiComponentSourceDigest == null then "" else gui.gpuiComponentSourceDigest;
+          NUDOX_GUI_GPUI_SOURCE_MANIFEST = gui.gpuiSourceManifest;
+          NUDOX_GUI_DEPENDENCY_GRAPH_SHA256 = gui.dependencyGraphDigest;
+          NUDOX_GUI_GPU_BACKEND = control.gui.gpu.defaultGpuBackend;
+          NUDOX_GUI_GPU_DEVICE = control.gui.gpu.expectedGpuDevice;
+          NUDOX_GUI_GPU_PROBE = "${gui.gpuProbe}/bin/nudox-gui-gpu-probe";
+          WGPU_BACKEND = control.gui.gpu.forceEnvironment.WGPU_BACKEND;
+          LIBGL_ALWAYS_SOFTWARE = control.gui.gpu.forceEnvironment.LIBGL_ALWAYS_SOFTWARE;
+          MESA_LOADER_DRIVER_OVERRIDE = control.gui.gpu.forceEnvironment.MESA_LOADER_DRIVER_OVERRIDE;
+          NUDOX_GUI_TOOLCHAIN = toString toolchains.stable;
+          NUDOX_GUI_ENCODER_VERSION = pkgs.ffmpeg.version;
+          NUDOX_GUI_TOOL_CLOSURE = "${gui.toolsBundle}";
+          NUDOX_GUI_HARNESS = "nix shell .#gui-harness .#gui-tools .#gui-runtime";
+        }
+        // runtimeEnv;
     };
 in
 rec {
