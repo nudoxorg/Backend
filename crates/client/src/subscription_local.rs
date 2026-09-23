@@ -386,8 +386,58 @@ impl LocalSubscriptionTransport {
             credit: request.credit,
         };
         let response = self.request(&raw)?;
+        if let Some(read) =
+            self.peer_admitted_reset(&response, request_id, request, capability.clone())?
+        {
+            return enforce_credit(read, request.credit);
+        }
         let read = decode_control_response(response, request_id, request, capability)?;
         enforce_credit(read, request.credit)
+    }
+
+    /// Admits a complete reset through this connection's authenticated peer
+    /// when the caller holds no coverage capability.
+    ///
+    /// A resumed cursor can legitimately be answered by a reset, most plainly
+    /// after the owner restarted and its retained suffix is gone. A complete
+    /// view is admitted only against a capability issued by the trusted
+    /// producer boundary; for a local transport that boundary is the
+    /// same-user peer authenticated when the connection was made, exactly as
+    /// [`Self::bootstrap_root`] uses it. Without this, a caller that had not
+    /// retained a capability for the new root (and none can, across a
+    /// restart) could never resume, only fail. A caller-supplied capability
+    /// still takes precedence, and an unauthenticated stream still refuses.
+    fn peer_admitted_reset(
+        &self,
+        response: &LocalControlResponse,
+        request_id: u64,
+        request: SubscriptionRequest,
+        capability: Option<CoverageCapability>,
+    ) -> Result<Option<CursorRead>, ClientError> {
+        let (None, Some(peer)) = (capability.as_ref(), self.peer.as_ref()) else {
+            return Ok(None);
+        };
+        let LocalControlResponse::AcceptedPayload {
+            request_id: observed,
+            payload,
+        } = response
+        else {
+            return Ok(None);
+        };
+        if *observed != request_id || !is_reset_page(payload) {
+            return Ok(None);
+        }
+        let claim = snapshot_page_from_bytes_with_verifier(payload, request.cursor, None, peer)?;
+        if claim.next_after().is_some() {
+            return Err(ClientError::Protocol(
+                "paged reset requires a durable snapshot lease".to_owned(),
+            ));
+        }
+        SnapshotHydrator::start(request.cursor, claim)
+            .map_err(ClientError::Protocol)?
+            .finish()
+            .map(Some)
+            .map_err(ClientError::Protocol)
     }
 
     fn exchange_against(
@@ -407,6 +457,11 @@ impl LocalSubscriptionTransport {
             credit: request.credit,
         };
         let response = self.request(&raw)?;
+        if let Some(read) =
+            self.peer_admitted_reset(&response, request_id, request, capability.clone())?
+        {
+            return enforce_credit(read, request.credit);
+        }
         let read = match response {
             LocalControlResponse::AcceptedPayload {
                 request_id: observed,
@@ -423,6 +478,19 @@ impl LocalSubscriptionTransport {
         };
         enforce_credit(read, request.credit)
     }
+}
+
+#[cfg(any(unix, windows))]
+fn is_reset_page(payload: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|kind| kind == "reset_page")
 }
 
 #[cfg(any(unix, windows))]
