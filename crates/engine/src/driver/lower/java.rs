@@ -23,15 +23,16 @@
 use core::{iter::ExactSizeIterator, str};
 
 use backend_frontend_java::legacy::{
-    AtomError, BoundImageError, Declaration, DeclarationKind, DocFlavor, HeaderError, ImageError,
+    AtomError, BoundImageError, Declaration, DeclarationExtension, DeclarationKind, DocFlavor,
+    HeaderError, ImageError,
     ImagePlane, JavaAuthorityImage, JavaImage, JavaRelease, Reference, ResolvedUse, SectionError,
     SymbolRef, TypeFact, TypeKind, TypeRef, UseTag,
 };
 use backend_semantic::ir::{
-    AtomListId, DocFactInput, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, EntityListId,
+    DocFactInput, DocFragmentInput, DocLinkTarget, EntityId, EntityKind,
     ForeignKey, ForeignKeyFault, ForeignOrigin, JavaFacts, NominalRef, Occurrence,
     OccurrenceConfidence, OccurrenceTarget, ProductChildRole, ReferenceKind, RelSpan,
-    SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, TypeListId, TypeReason,
+    SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, TypeReason,
     TypeWidth,
 };
 use backend_semantic::vocabulary::{
@@ -524,6 +525,7 @@ pub(crate) fn collect<'source>(
                     &mut executables,
                     &mut symbols,
                     &declared,
+                    coordinate,
                 )?;
                 ordinals.record(coordinate, ordinal).map_err(terminal)?;
             }
@@ -535,6 +537,30 @@ pub(crate) fn collect<'source>(
             | DeclarationKind::Enum
             | DeclarationKind::Annotation => {}
         }
+    }
+
+    // Pass two-b: javac extension facts (annotations, record components) for
+    // every non-executable declaration. Executables take theirs inside
+    // `push_executable` beside their overload list. This runs after pass two
+    // because a record's components are field ordinals admitted there.
+    for (coordinate, declared) in image.declarations().enumerate() {
+        let declared =
+            declared.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
+        if matches!(
+            declared.kind,
+            DeclarationKind::Constructor | DeclarationKind::Method
+        ) {
+            continue;
+        }
+        let Some(ordinal) = ordinals.lookup(coordinate) else {
+            continue;
+        };
+        let lists = extension_lists(facts, image, Some(&ordinals), coordinate)?;
+        let extension = java_facts(facts, &[], lists)
+            .map_err(|cause| lane_rejection(ordinal as usize, declared.name.bytes.len(), cause))?;
+        facts
+            .attach_extension(ordinal as usize, EmissionExtension::Java(extension))
+            .map_err(|cause| lane_rejection(ordinal as usize, declared.name.bytes.len(), cause))?;
     }
 
     // Pass three: lexical parentage from the image-owned enclosing owner.
@@ -1566,6 +1592,7 @@ fn push_executable<'source>(
     executables: &mut Executables<'source>,
     symbols: &mut SymbolIndex,
     declared: &Declaration<'source>,
+    coordinate: usize,
 ) -> Result<u32, JavaCollectError> {
     let symbol_reference = match declared.symbol {
         Some(reference) => reference,
@@ -1681,7 +1708,8 @@ fn push_executable<'source>(
             phase: JavaProjectionIndexPhase::ExecutableIndex,
         }));
     };
-    let extension = java_facts(facts, sibling_ordinals)
+    let lists = extension_lists(facts, image, None, coordinate)?;
+    let extension = java_facts(facts, sibling_ordinals, lists)
         .map_err(|cause| lane_rejection(facts.len(), declared.name.bytes.len(), cause))?;
 
     let parameter_total = u32::try_from(parameter_count).map_err(|_| {
@@ -1739,22 +1767,74 @@ fn push_executable<'source>(
     Ok(ordinal)
 }
 
-/// Builds one Java extension row. Throws, annotations, and record components
-/// stay on the empty pooled lists because image version 1 carries no such
-/// planes; interning the empty lists keeps every pooled coordinate valid
+/// The javac extension entries of one declaration, as fact-lane lists.
+struct ExtensionLists {
+    /// Exact javac annotation spellings, interned as extension atoms.
+    annotations: Vec<u32>,
+    /// Record component field ordinals in declaration order.
+    record_components: Vec<u32>,
+}
+
+/// Reads one declaration's javac extension entries: every annotation mirror
+/// in source order and, for a record, its component fields. Thrown types stay
+/// on the empty pooled list: a `throws` clause names a type row, and this
+/// lane has no fact coordinate for a foreign exception type to point at.
+/// `ordinals` is `None` for executables, which carry no record components.
+fn extension_lists<'source>(
+    facts: &mut FactSet<'source>,
+    image: JavaImage<'source>,
+    ordinals: Option<&DeclarationOrdinals>,
+    coordinate: usize,
+) -> Result<ExtensionLists, JavaCollectError> {
+    let mut lists = ExtensionLists {
+        annotations: Vec::new(),
+        record_components: Vec::new(),
+    };
+    let entries = image
+        .declaration_extensions(coordinate)
+        .map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
+    for entry in entries {
+        match entry.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))? {
+            DeclarationExtension::Throws(_) => {}
+            DeclarationExtension::Annotation(atom) => {
+                let atom = facts
+                    .intern_atom(atom.bytes)
+                    .map_err(|cause| lane_rejection(facts.len(), atom.bytes.len(), cause))?;
+                lists.annotations.push(atom);
+            }
+            DeclarationExtension::RecordComponent(component) => {
+                let ordinal = ordinals
+                    .and_then(|ordinals| ordinals.lookup(component))
+                    .ok_or_else(|| {
+                        terminal(ProjectionFault::IndexCapacity {
+                            phase: JavaProjectionIndexPhase::FactOrdinal,
+                        })
+                    })?;
+                lists.record_components.push(ordinal);
+            }
+        }
+    }
+    Ok(lists)
+}
+
+/// Builds one Java extension row from its overload siblings and javac
+/// extension lists. Thrown types stay on the empty pooled list (see
+/// [`extension_lists`]); interning it keeps every pooled coordinate valid
 /// against the reopened pools lane.
 fn java_facts<'source>(
     facts: &mut FactSet<'source>,
     siblings: &[u32],
+    lists: ExtensionLists,
 ) -> Result<JavaFacts, FactFault> {
     let overloads = facts.intern_entity_list(siblings)?;
-    let _ = facts.intern_atom_list(&[])?;
-    let _ = facts.intern_type_list(&[])?;
+    let annotations = facts.intern_atom_list(&lists.annotations)?;
+    let record_components = facts.intern_entity_list(&lists.record_components)?;
+    let throws = facts.intern_type_list(&[])?;
     Ok(JavaFacts {
-        throws: TypeListId::new(0),
-        annotations: AtomListId::new(0),
+        throws,
+        annotations,
         overloads,
-        record_components: EntityListId::new(0),
+        record_components,
     })
 }
 
@@ -2099,6 +2179,8 @@ struct ProjectionDemand {
     facts: usize,
     /// Compiler-resolved call occurrences and non-invocation uses.
     occurrences: usize,
+    /// Annotation extension entries: an upper bound on distinct atoms.
+    annotations: usize,
 }
 
 /// Counts the exact fact and occurrence demand this image will project.
@@ -2112,10 +2194,21 @@ fn projection_demand(image: JavaImage<'_>) -> Result<ProjectionDemand, JavaColle
     let mut declarations = 0usize;
     let mut parameters = 0usize;
     let mut results = 0usize;
-    for declared in image.declarations() {
+    let mut annotations = 0usize;
+    for (coordinate, declared) in image.declarations().enumerate() {
         let declared =
             declared.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
         declarations = declarations.checked_add(1).ok_or_else(demand_capacity)?;
+        for entry in image
+            .declaration_extensions(coordinate)
+            .map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?
+        {
+            if let DeclarationExtension::Annotation(_) =
+                entry.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?
+            {
+                annotations = annotations.checked_add(1).ok_or_else(demand_capacity)?;
+            }
+        }
         if !matches!(
             declared.kind,
             DeclarationKind::Constructor | DeclarationKind::Method
@@ -2151,7 +2244,11 @@ fn projection_demand(image: JavaImage<'_>) -> Result<ProjectionDemand, JavaColle
         .len()
         .checked_add(image.uses().len())
         .ok_or_else(demand_capacity)?;
-    Ok(ProjectionDemand { facts, occurrences })
+    Ok(ProjectionDemand {
+        facts,
+        occurrences,
+        annotations,
+    })
 }
 
 /// Grows the shared fact and occurrence lanes to the validated image's exact
@@ -2166,12 +2263,19 @@ fn reserve_projection<'source>(facts: &mut FactSet<'source>, demand: ProjectionD
     let Some(source_len) = facts.primary_source_len else {
         return;
     };
-    if demand.facts <= facts.plan.facts && demand.occurrences <= facts.plan.occurrences {
+    let annotations = demand
+        .annotations
+        .min(crate::driver::lower::MAX_EXTENSION_ATOMS);
+    if demand.facts <= facts.plan.facts
+        && demand.occurrences <= facts.plan.occurrences
+        && annotations <= facts.plan.extension_atoms
+    {
         return;
     }
     let mut plan = facts.plan;
     plan.facts = plan.facts.max(demand.facts);
     plan.occurrences = plan.occurrences.max(demand.occurrences);
+    plan.extension_atoms = plan.extension_atoms.max(annotations);
     plan.ref_lists = plan
         .ref_lists
         .max(demand.facts.min(crate::driver::lower::MAX_REF_LISTS));
@@ -2676,6 +2780,10 @@ mod tests {
         declarations: Vec<DeclarationRow>,
         references: Vec<ReferenceRow>,
         uses: Vec<UseRow>,
+        /// javac extension entries as `(declaration, tag, value)`: tag 1 a
+        /// thrown type row, 2 an annotation atom, 3 a record-component
+        /// declaration, exactly as the doclet writer encodes them.
+        extensions: Vec<(usize, u8, u32)>,
     }
 
     impl Fixture {
@@ -2821,8 +2929,28 @@ mod tests {
                 spans.extend_from_slice(&start.to_le_bytes());
                 spans.extend_from_slice(&end.to_le_bytes());
             }
-            let declaration_extensions = vec![0_u8; 8 * self.declarations.len()];
-            let extension_entries: Vec<u8> = Vec::new();
+            // Grouped per declaration in declaration order; an empty run
+            // records start 0, mirroring the doclet writer.
+            let mut declaration_extensions = Vec::new();
+            let mut extension_entries = Vec::new();
+            let mut start = 0_u32;
+            for declaration in 0..self.declarations.len() {
+                let entries: Vec<_> = self
+                    .extensions
+                    .iter()
+                    .filter(|(owner, _, _)| *owner == declaration)
+                    .collect();
+                let count = u32::try_from(entries.len())?;
+                let row_start = if count == 0 { 0 } else { start };
+                declaration_extensions.extend_from_slice(&row_start.to_le_bytes());
+                declaration_extensions.extend_from_slice(&count.to_le_bytes());
+                for (_, tag, value) in entries {
+                    extension_entries.push(*tag);
+                    extension_entries.extend_from_slice(&[0; 3]);
+                    extension_entries.extend_from_slice(&value.to_le_bytes());
+                }
+                start += count;
+            }
             let sections = [
                 atoms,
                 atom_bytes,
@@ -3158,6 +3286,104 @@ mod tests {
         }
         if row(&view, 12).is_ok() {
             return Err(TestError::Missing("exact fact count"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn annotations_and_record_components_reach_every_declaration_kind() -> Result<(), TestError> {
+        use backend_semantic::ir::SemanticReader as _;
+        let mut fix = Fixture::default();
+        // 0 record demo.P, 1 component field x, 2 method m.
+        fix.declarations.push(DeclarationRow {
+            kind: 5,
+            name: 0,
+            owner: None,
+            documentation: None,
+            semantic_type: None,
+            symbol: None,
+            span: None,
+        });
+        let record_name = fix.atom(b"demo.P");
+        let record_type = fix.declared(b"demo.P");
+        fix.declarations[0].name = record_name;
+        fix.declarations[0].semantic_type = Some(record_type);
+        let int_atom = fix.atom(b"int");
+        fix.types.push(TypeRow {
+            kind: 1,
+            flags: 0,
+            atom: Some(int_atom),
+            children: Vec::new(),
+        });
+        let int_row = u32::try_from(fix.types.len() - 1)?;
+        let x = fix.atom(b"x");
+        fix.declarations.push(DeclarationRow {
+            kind: 8,
+            name: x,
+            owner: Some(record_name),
+            documentation: None,
+            semantic_type: Some(int_row),
+            symbol: None,
+            span: None,
+        });
+        let m = fix.atom(b"m");
+        fix.symbols.push(SymbolRow {
+            owner: record_name,
+            name: m,
+            parameters: Vec::new(),
+        });
+        fix.declarations.push(DeclarationRow {
+            kind: 11,
+            name: m,
+            owner: Some(record_name),
+            documentation: None,
+            semantic_type: Some(int_row),
+            symbol: Some(0),
+            span: None,
+        });
+        let deprecated = u32::try_from(fix.atom(b"@java.lang.Deprecated"))?;
+        let nonnull = u32::try_from(fix.atom(b"@org.jetbrains.annotations.NotNull"))?;
+        let beta = u32::try_from(fix.atom(b"@demo.Beta"))?;
+        fix.extensions = vec![
+            (0, 2, deprecated),
+            (0, 3, 1),
+            (1, 2, nonnull),
+            (2, 2, beta),
+        ];
+        let source = b"record P(int x) { int m() { return x; } }";
+        let ir = owned(&fix, source)?;
+        let named = |name: &[u8]| {
+            ir.canonical_entities()
+                .find(|entity| ir.atom(entity.name) == Some(name))
+                .ok_or(TestError::Missing("declaration"))
+        };
+        let annotations = |entity: backend_semantic::ir::EntityId| -> Result<Vec<Vec<u8>>, TestError> {
+            let facts = ir
+                .java_extension(entity)
+                .ok_or(TestError::Missing("java extension"))?;
+            Ok(ir
+                .atom_list(facts.annotations)
+                .ok_or(TestError::Missing("annotation list"))?
+                .iter()
+                .filter_map(|atom| ir.atom(*atom).map(<[u8]>::to_vec))
+                .collect())
+        };
+        let record = named(b"demo.P")?;
+        let field = named(b"x")?;
+        let method = named(b"m")?;
+        if annotations(record.id)? != vec![b"@java.lang.Deprecated".to_vec()]
+            || annotations(field.id)? != vec![b"@org.jetbrains.annotations.NotNull".to_vec()]
+            || annotations(method.id)? != vec![b"@demo.Beta".to_vec()]
+        {
+            return Err(TestError::Missing("annotation spelling on its own declaration"));
+        }
+        let components: Vec<_> = ir
+            .java_extension(record.id)
+            .and_then(|facts| ir.entity_list(facts.record_components))
+            .ok_or(TestError::Missing("record components"))?
+            .collect();
+        if components != vec![field.id] {
+            return Err(TestError::Missing("record component is the field"));
         }
         Ok(())
     }
