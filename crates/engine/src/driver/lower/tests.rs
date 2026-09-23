@@ -476,8 +476,10 @@ fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids() -> Re
             .child(ProductChildRole::FunctionResult, 5)
             .typed(many)
             .type_child(3, None, 0)
-            .type_child(4, None, 0)
-            .type_child(5, None, 0),
+            // Result labels come only from an explicit child name (a Go
+            // named result); the target row's fact name is never inherited.
+            .type_child(4, Some(b"left"), 0)
+            .type_child(5, Some(b"right"), 0),
         )
         .map_err(rejected)?;
     for child in [3_u32, 4, 5] {
@@ -539,7 +541,7 @@ fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids() -> Re
             )
             .child(ProductChildRole::FunctionResult, 10)
             .typed(single)
-            .type_child(10, None, 0),
+            .type_child(10, Some(b"solo"), 0),
         )
         .map_err(rejected)?;
     facts.attach_parent(10, 11).map_err(lane_fault)?;

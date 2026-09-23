@@ -28,12 +28,15 @@
 //!   re-lays pooled children per row and cannot soundly address child-bearing
 //!   anonymous rows. Nested compounds therefore cost one carrier fact per
 //!   nesting level, never a fabricated declaration shape.
-//! - Foreign named types (`std` and every other dependency) keep their exact
-//!   written spelling as an `Unknown(UnresolvedExternal)` row; an applied
-//!   foreign type (`HashMap<String, u64>`) still commits its application
-//!   structure over those leaf rows. The lane borrows source bytes only, so
-//!   no rust-analyzer-rendered qualified path can be manufactured into any
-//!   cell. Positions the walk cannot prove stay `Unknown` rows with the exact
+//! - Foreign named types (`std` and every other dependency) that
+//!   rust-analyzer resolves become external `Nominal` rows bound to their
+//!   defining crate module and displayed by their exact written spelling;
+//!   an applied foreign type (`HashMap<String, u64>`) still commits its
+//!   application structure over those leaf rows. The lane borrows source
+//!   bytes only, so no rust-analyzer-rendered qualified path can be
+//!   manufactured into any text cell; a foreign position without a written
+//!   spelling stays the gap row, and a foreign trait bound keeps its written
+//!   spelling as an `Unknown(UnresolvedExternal)` row. Positions the walk cannot prove stay `Unknown` rows with the exact
 //!   closed reason, never an invented shape.
 //! - Occurrences resolve through rust-analyzer: method calls, field accesses,
 //!   and paths with a static target land `Local` or foreign at oracle
@@ -72,7 +75,8 @@ use backend_frontend_rust::legacy::{
     SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir, ra_ap_ide_db, ra_ap_syntax,
 };
 use backend_semantic::ir::{
-    AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey, ForeignOrigin,
+    AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
+    ExternalFragmentId, ForeignKey, ForeignOrigin,
     ListSpan, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PrimitiveShape,
     ProductChildRole, ReferenceKind, RelSpan, RustFacts, RustOwnership, SemanticProductConstructor,
     SemanticTypeRecord, SemanticTypeTag, TypeParameterListId, TypeReason, TypeWidth,
@@ -389,8 +393,10 @@ struct Emitter<'authority, 'analysis, 'source> {
     covered_impls: Vec<ra_ap_hir::Impl>,
     /// Lane ordinal per materialized declaration index.
     ordinals: Vec<Option<u32>>,
-    /// Dedup table of interned foreign-unknown leaf rows, keyed by spelling.
-    foreign_rows: Vec<(&'source [u8], u32)>,
+    /// Dedup table of interned foreign leaf rows (resolved external
+    /// nominals and unresolved unknowns), keyed by spelling and, for a
+    /// resolved row, its external authority.
+    foreign_rows: Vec<(&'source [u8], Option<ExternalEntityRef>, u32)>,
     /// Dedup table of compound-type carrier facts, keyed by written spelling.
     carrier_rows: Vec<(&'source [u8], u32)>,
     /// Macro invocation sites collected before emission.
@@ -2092,14 +2098,16 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             if let Some(NominalRef::Local(target)) = lowered.record.nominal {
                 return Ok(Some(target.raw));
             }
-            let foreign = if lowered.record.tag == SemanticTypeTag::Unknown {
-                lowered.record.text
-            } else {
-                None
+            let foreign = match (lowered.record.tag, lowered.record.nominal) {
+                (SemanticTypeTag::Unknown, _) => lowered.record.text.map(|text| (text, None)),
+                (SemanticTypeTag::Nominal, Some(NominalRef::External(external))) => {
+                    lowered.record.text.map(|text| (text, Some(external)))
+                }
+                _ => None,
             };
-            if let Some(text) = foreign {
-                for (known, ordinal) in &self.foreign_rows {
-                    if *known == text {
+            if let Some((text, external)) = foreign {
+                for (known, known_external, ordinal) in &self.foreign_rows {
+                    if *known == text && *known_external == external {
                         return Ok(Some(*ordinal));
                     }
                 }
@@ -2115,8 +2123,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .facts
                 .intern_reserved_anchor_type_row(anchor_row, lowered.record)
                 .map_err(|_| admission())?;
-            if let Some(text) = foreign {
-                self.foreign_rows.push((text, row));
+            if let Some((text, external)) = foreign {
+                self.foreign_rows.push((text, external, row));
             }
             return Ok(Some(row));
         }
@@ -2399,18 +2407,21 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     ) -> Result<Lowered<'source>, RustAuthorityError> {
         let written = self.written_type_name(anchor);
         let Some(ordinal) = self.ordinal_of_adt(adt) else {
-            // A foreign named type keeps its exact written spelling as an
-            // unresolved leaf; an applied foreign type still commits its
-            // application structure: the unresolved base row followed by one
-            // hosted row per written argument.
+            // A foreign named type rust-analyzer resolved (`Option`, `Box`,
+            // any dependency ADT) is an external nominal over its defining
+            // crate module, displayed by its exact written spelling; only a
+            // position with no written spelling keeps the gap row. An
+            // applied foreign type still commits its application structure:
+            // the base row followed by one hosted row per written argument.
             let typed_arguments: Vec<ra_ap_hir::Type<'_>> = arguments
                 .iter()
                 .filter_map(|argument| argument.as_ref())
                 .cloned()
                 .take(written_type_argument_count(anchor))
                 .collect();
+            let base_record = self.foreign_adt_record(adt, written);
             if typed_arguments.is_empty() {
-                return Ok(Lowered::leaf(self.unresolved_record_with(written)));
+                return Ok(Lowered::leaf(base_record));
             }
             if typed_arguments.len() + 1 > MAX_COMPOUND_CHILDREN {
                 return Ok(Lowered::leaf(match written {
@@ -2418,9 +2429,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     None => unknown_record(TypeReason::OracleGap, None),
                 }));
             }
-            let Some(base) =
-                self.host(Lowered::leaf(self.unresolved_record_with(written)), None)?
-            else {
+            let Some(base) = self.host(Lowered::leaf(base_record), None)? else {
                 return Ok(self.folded_rowless(anchor));
             };
             let mut children = vec![base];
@@ -2546,6 +2555,45 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             Some(text) => unknown_record(TypeReason::UnresolvedExternal, Some(text)),
             None => unknown_record(TypeReason::OracleGap, None),
         }
+    }
+
+    /// The record for one foreign ADT that rust-analyzer resolved: an
+    /// external nominal whose authority is the ADT's defining crate module
+    /// (`core::option`, `alloc::boxed`), displayed by the exact written
+    /// spelling. The authority is derived from the oracle's resolution, never
+    /// from the spelling, so std and prelude types are never unresolved.
+    /// Without a written spelling the display cell cannot be borrowed and the
+    /// position keeps the gap reason.
+    fn foreign_adt_record(
+        &self,
+        adt: ra_ap_hir::Adt,
+        written: Option<&'source [u8]>,
+    ) -> SemanticTypeRecord<'source> {
+        let (Some(text), Some(fragment)) = (written, self.foreign_module_fragment(adt)) else {
+            return self.unresolved_record_with(written);
+        };
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
+        record.nominal = Some(NominalRef::External(ExternalEntityRef::bind(fragment, 0)));
+        record.text = Some(text);
+        record
+    }
+
+    /// The external fragment authority of one foreign ADT's defining module:
+    /// the canonical crate name followed by the module path from the crate
+    /// root, the same module-granular authority the TypeScript lane binds.
+    fn foreign_module_fragment(&self, adt: ra_ap_hir::Adt) -> Option<ExternalFragmentId> {
+        let module = adt.module(self.database);
+        let krate = module.krate(self.database).display_name(self.database)?;
+        let mut canonical = String::from(CARGO_ECOSYSTEM);
+        canonical.push(':');
+        canonical.push_str(krate.canonical_name().as_str());
+        for segment in module.path_to_root(self.database).into_iter().rev() {
+            if let Some(name) = segment.name(self.database) {
+                canonical.push_str("::");
+                canonical.push_str(name.as_str());
+            }
+        }
+        Some(ExternalFragmentId::from_canonical_bytes(canonical.as_bytes()))
     }
 
     /// Borrows the written lifetime behind one reference anchor.
@@ -3847,8 +3895,8 @@ mod tests {
     }
 
     /// A recursive local nominal rides its own fact ordinal and an applied
-    /// foreign type commits its application structure over unresolved leaf
-    /// rows, with nested compounds hosted by backward carrier facts.
+    /// foreign type commits its application structure over external nominal
+    /// leaf rows, with nested compounds hosted by backward carrier facts.
     #[test]
     fn recursive_nominal_and_foreign_application_commit_their_structures() -> Result<(), TestError>
     {
@@ -3868,10 +3916,13 @@ mod tests {
         }
         let name_ordinal = fact_of(&view, b"name", EntityKind::Field)?;
         let name_row = row_for_entity(&view, name_ordinal)?;
-        if name_row.record.tag != SemanticTypeTag::Unknown
+        // rust-analyzer resolves `String`, so it is an external nominal over
+        // its defining crate module, displayed by its written spelling.
+        if name_row.record.tag != SemanticTypeTag::Nominal
+            || !matches!(name_row.record.nominal, Some(NominalRef::External(_)))
             || name_row.record.text != Some(b"String".as_slice())
         {
-            return Err(TestError::Missing("foreign String unresolved leaf"));
+            return Err(TestError::Missing("foreign String external nominal"));
         }
         let next_ordinal = fact_of(&view, b"next", EntityKind::Field)?;
         let next_row = row_for_entity(&view, next_ordinal)?;

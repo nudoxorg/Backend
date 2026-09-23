@@ -1482,9 +1482,15 @@ impl SemanticTypeRecord<'_> {
             }
             return Ok(());
         }
+        // A callable element may carry the label its source wrote (a Go
+        // named result). It is optional: every other callable element takes
+        // its label from the carrier fact it targets, and a result slot
+        // without an explicit label is unlabelled.
         let name_allowed = matches!(
             tag,
-            SemanticTypeTag::Tuple | SemanticTypeTag::AnonymousRecord
+            SemanticTypeTag::Tuple
+                | SemanticTypeTag::AnonymousRecord
+                | SemanticTypeTag::FunctionPointer
         );
         let name_required = tag == SemanticTypeTag::AnonymousRecord;
         if !name_allowed && child.name.is_some() {

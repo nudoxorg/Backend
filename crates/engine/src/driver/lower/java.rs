@@ -39,7 +39,7 @@ use backend_semantic::vocabulary::{
     JavaImageSectionFault, JavaProjectionFault, JavaProjectionIndexPhase, JavaProjectionTypeKind,
     JavaRelease as ProfileRelease, JavaSymbolAtom, LoweringUnsupported,
 };
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 
 use crate::driver::lower::{
     EmissionExtension, FactSet, LEAF_PRODUCT, MAX_EMISSION_FACTS, MAX_FACT_CHILDREN,
@@ -441,7 +441,7 @@ pub(crate) fn collect<'source>(
             observed: authority.image.release,
         });
     }
-    let expected: [u8; 32] = sha2::Sha256::digest(source).into();
+    let expected: [u8; 32] = Sha256::digest(source).into();
     let observed = authority.source_digest();
     if observed != expected {
         return Err(JavaCollectError::SourceBinding { expected, observed });
@@ -1544,6 +1544,17 @@ fn push_member<'source>(
     Ok(ordinal)
 }
 
+/// The identity discriminator of an unnamed parameter carrier: its exact
+/// position in the executable's signature.
+fn unnamed_parameter_discriminator(position: usize) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"compiler.java.unnamed-parameter-position.v1\0");
+    hash.update((position as u64).to_le_bytes());
+    let mut discriminator = [0_u8; 16];
+    discriminator.copy_from_slice(&hash.finalize()[..16]);
+    discriminator
+}
+
 /// Pushes one constructor or method: its parameter and result carrier facts
 /// first, then the executable fact whose function product and function-pointer
 /// row target those carriers, the overload sibling list, and its docs.
@@ -1595,13 +1606,22 @@ fn push_executable<'source>(
         // of the same type stay distinct. A genuinely absent name (v1/v2
         // images, or a compiler-synthesized parameter) falls back to the type
         // spelling, so identity never invents a name.
-        let name = match parameter_names.next() {
-            Some(Ok(Some(atom))) => atom.bytes,
-            Some(Ok(None)) | None => spelling,
+        let (name, named) = match parameter_names.next() {
+            Some(Ok(Some(atom))) => (atom.bytes, true),
+            Some(Ok(None)) | None => (spelling, false),
             Some(Err(cause)) => return Err(terminal(ProjectionFault::Image(cause))),
         };
-        let carrier =
+        let mut carrier =
             projected.attach(SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT));
+        // Two unnamed parameters of one type (`run(int, int)` from a v1/v2
+        // image) would otherwise frame byte-identical carrier identities.
+        // Their authority-proven signature position distinguishes them
+        // without inventing a name.
+        if !named {
+            carrier = carrier.with_identity_discriminator(unnamed_parameter_discriminator(
+                parameter_count,
+            ));
+        }
         let ordinal = push(facts, carrier)?;
         if let Some(slot) = parameter_ordinals.get_mut(parameter_count) {
             *slot = ordinal;

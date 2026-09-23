@@ -10,7 +10,7 @@ use backend_engine::driver::{
     CompileControl, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
-use backend_semantic::ir::{EntityId, Ir, ItemKind};
+use backend_semantic::ir::{EntityId, Ir, ItemKind, TypeExpr, UnknownReason, UnknownType};
 use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
 
 const CASES: &[(&str, &[u8])] = &[
@@ -95,9 +95,22 @@ fn type_of(ir: &Ir, name: &'static str, kind: ItemKind, expected: &str) {
 
 fn declared_unknown_with_computed_type(ir: &Ir, name: &'static str, kind: ItemKind) {
     let id = item(ir, name, kind);
+    // An unannotated declaration's declared type is the explicit
+    // `Unknown(Unannotated)` row, never the checker's inference (f7af7b808:
+    // a source `Unknown` is semantic truth, not absence).
+    let declared = ir
+        .item(id)
+        .and_then(|item| item.semantic_type())
+        .and_then(|ty| ir.ty(ty));
     assert!(
-        ir.item(id).and_then(|item| item.semantic_type()).is_none(),
-        "{name} must keep its declared type unknown"
+        matches!(
+            declared,
+            Some(TypeExpr::Unknown(UnknownType {
+                reason: UnknownReason::Unannotated,
+                spelling: None,
+            }))
+        ),
+        "{name} must keep its declared type unknown, got {declared:?}"
     );
     assert!(
         ir.storage_columns()
@@ -145,22 +158,24 @@ fn conditional_renders() {
 #[test]
 fn mapped_renders() {
     let ir = compile(CASES[4].1);
-    // Fork-pending operand class: mapped `keyof`/indexed-access keys have no
-    // declared-plane record representation, so ?unsupported is honest.
+    // Mapped `keyof`/indexed-access operands have no declared-plane record
+    // representation; they stay reasoned unknowns that keep their written
+    // spelling (f7af7b808). The written `readonly` survives as the explicit
+    // `Add` modifier, which the renderer spells in its canonical `+` form.
     signature(
         &ir,
         "Readonlyify",
         ItemKind::TypeAlias,
-        "type Readonlyify = { [K in ?unsupported]-?: ?unsupported }",
+        "type Readonlyify = { +readonly [K in ?no-ir-representation(keyof T)]: ?no-ir-representation(T[K]) }",
     );
 }
 
 #[test]
 fn template_renders() {
     let ir = compile(CASES[5].1);
-    // Fork-pending operand class: template text parts have no declared-plane
-    // record representation; the placeholder remains structurally decoded.
-    signature(&ir, "Greet", ItemKind::TypeAlias, "type Greet = `${str}`");
+    // Template text parts are staged as text children (f7af7b808), so the
+    // literal segment renders alongside the structurally decoded placeholder.
+    signature(&ir, "Greet", ItemKind::TypeAlias, "type Greet = `hi ${str}`");
 }
 
 #[test]
@@ -170,7 +185,7 @@ fn literals_render() {
         &ir,
         "Literals",
         ItemKind::TypeAlias,
-        "type Literals = \"ok\" | \"42\" | false | true",
+        "type Literals = \"ok\" | 42 | 1n | true",
     );
 }
 
