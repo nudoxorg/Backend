@@ -23,9 +23,11 @@ pub const CENTRAL_HOST: &str = "https://repo.maven.apache.org/maven2/";
 pub const PUBLICATION_ROW: usize = 5;
 
 /// Zero-based position of the frozen jetbrains-annotations row (1-based row 18).
-/// Its entries are annotation-type declarations with no bodies, so no fragment
-/// of the row can carry a compiler-resolved method invocation: the row asserts
-/// the typed occurrence absence instead of an occurrence row.
+/// `NotNull` and `Nullable` declare annotation types with no executable, so
+/// they carry no call, while `ApiStatus`'s private constructor calls
+/// `new AssertionError(...)`. The row asserts exactly that, and that the
+/// `NotNull.exception() default Exception.class` type reference survives
+/// lowering.
 pub const ANNOTATIONS_ROW: usize = 17;
 
 /// One frozen corpus row: release PURL, frozen entry paths inside the sources
