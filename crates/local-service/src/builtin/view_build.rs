@@ -599,12 +599,14 @@ pub(super) fn rows_for_indexed_sources(
     }
     let current_paths = profile_source_paths(sources)?;
     let current_identities = profile_source_identities(sources)?;
+    let sites = StructuralSites::of(sources)?;
     let semantics = semantic_rows(
         snapshot,
         compiler,
         &sources.projects,
         &current_paths,
         &current_identities,
+        &sites,
         initial,
         MAX_REBUILD_PACKAGES - sources.projects.len(),
     )?;
@@ -900,6 +902,7 @@ fn semantic_rows(
     projects: &BTreeMap<[u8; 32], super::IndexedProject>,
     current_paths: &ProfileSourcePaths,
     current_identities: &ProfileSourceIdentities,
+    sites: &StructuralSites<'_>,
     initial: &ViewRoot,
     row_capacity: usize,
 ) -> Result<SemanticRows, BuiltinModelError> {
@@ -927,7 +930,10 @@ fn semantic_rows(
             if !key.is_selected() {
                 continue;
             }
-            let target = (*key.package_key().as_bytes(), key.profile());
+            let target = (
+                *key.package_key().as_bytes(),
+                super::ingest::lane_profile(key.profile()),
+            );
             let ProductSemanticPublicationRecord::Published {
                 coverage: backend_engine::builtin::SemanticPublicationCoverage::Complete,
                 claim,
@@ -966,6 +972,14 @@ fn semantic_rows(
                     Some(identity) => decision.image_stale(&path, *identity),
                     None => decision.path_sets_differ,
                 };
+                // A stale image was compiled from other bytes than the
+                // file's current structural declarations, so their lines
+                // cannot be trusted for it.
+                let site_declarations = if stale {
+                    &[][..]
+                } else {
+                    sites.declarations(key.package_key().as_bytes(), &path)
+                };
                 let mut sink = SemanticRowSink {
                     initial,
                     symbols: &mut symbols,
@@ -973,10 +987,15 @@ fn semantic_rows(
                     capacity: row_capacity,
                     remaining_bytes: &mut remaining_bytes,
                     stale,
+                    path: &path,
+                    site_declarations,
                 };
                 append_image_rows(&view, project, key.profile(), &mut sink)?;
             }
-            complete.insert((project.package.to_bytes(), key.profile()));
+            complete.insert((
+                project.package.to_bytes(),
+                super::ingest::lane_profile(key.profile()),
+            ));
             if !decision.stale_paths.is_empty() {
                 stale_paths.insert(target, decision.stale_paths.clone());
                 for path in &decision.stale_paths {
@@ -1160,6 +1179,135 @@ struct SemanticRowSink<'a> {
     /// rows stay semantic (never silently structural) and carry an explicit
     /// staleness note in their document.
     stale: bool,
+    /// The project-relative path this image was compiled from.
+    path: &'a str,
+    /// The structural declarations extracted from the same current bytes of
+    /// [`Self::path`]; empty when the image is stale.
+    site_declarations: &'a [&'a backend_compile::SourceDeclaration],
+}
+
+/// Structural declarations of every indexed file, keyed by owning project
+/// and project-relative path.
+///
+/// A semantic image records each declaration's byte span but not its line,
+/// and the view does not retain whole source files. The structural lane,
+/// however, extracted every declaration of the same file bytes with its
+/// exact line and bounded excerpt. Those sites let a semantic row carry the
+/// source location and text a reader needs, instead of rendering every
+/// compiler-backed row without a path, language, or source.
+pub(super) struct StructuralSites<'a> {
+    files: BTreeMap<([u8; 32], String), Vec<&'a backend_compile::SourceDeclaration>>,
+}
+
+impl<'a> StructuralSites<'a> {
+    fn of(sources: &'a IndexedSources) -> Result<Self, BuiltinModelError> {
+        let mut files = BTreeMap::new();
+        for (_, record) in &sources.files {
+            let file = record
+                .file_fields()
+                .ok_or_else(|| BuiltinModelError("expected a source file record".to_owned()))?;
+            files.insert(
+                (file.project, file.path.to_owned()),
+                file.declarations.iter().collect::<Vec<_>>(),
+            );
+        }
+        Ok(Self { files })
+    }
+
+    fn declarations(
+        &self,
+        project: &[u8; 32],
+        path: &str,
+    ) -> &[&'a backend_compile::SourceDeclaration] {
+        self.files
+            .get(&(*project, path.to_owned()))
+            .map_or(&[][..], Vec::as_slice)
+    }
+}
+
+/// Coarse declaration family shared by the structural and semantic lanes.
+///
+/// The two extractors name kinds differently (a Python method is a semantic
+/// `Function` but a structural `Method`), yet they never confuse a callable
+/// with a type or a binding: a compiler may also report the module-level
+/// binding a `def` introduces, which must not pair with the `def` itself.
+fn declaration_family(kind: DeclarationKind) -> u8 {
+    match kind {
+        DeclarationKind::Function | DeclarationKind::Method | DeclarationKind::Constructor => 0,
+        DeclarationKind::Class
+        | DeclarationKind::Interface
+        | DeclarationKind::Type
+        | DeclarationKind::Enum
+        | DeclarationKind::Struct
+        | DeclarationKind::Trait
+        | DeclarationKind::Union => 1,
+        DeclarationKind::Constant
+        | DeclarationKind::Field
+        | DeclarationKind::Property
+        | DeclarationKind::Variable
+        | DeclarationKind::Variant => 2,
+        DeclarationKind::Module => 3,
+        DeclarationKind::Import => 4,
+        DeclarationKind::Macro => 5,
+        _ => 6,
+    }
+}
+
+/// Pairs each semantic declaration with the structural declaration of the
+/// same name and declaration family in the same file bytes.
+///
+/// Same-keyed declarations are paired by source order: the k-th semantic
+/// entity by span start with the k-th structural declaration by line. A key
+/// whose two extractions disagree on the count, or whose semantic spans are
+/// not all captured, is ambiguous and keeps no site rather than a guess.
+fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
+    session: &DocumentationSession<'_, Reader>,
+    declarations: &[&'a backend_compile::SourceDeclaration],
+) -> Result<BTreeMap<DeclarationIdentity, &'a backend_compile::SourceDeclaration>, BuiltinModelError>
+{
+    let mut sites = BTreeMap::new();
+    if declarations.is_empty() {
+        return Ok(sites);
+    }
+    let mut structural = BTreeMap::<(&str, u8), Vec<&'a backend_compile::SourceDeclaration>>::new();
+    for declaration in declarations {
+        structural
+            .entry((declaration.name(), declaration_family(declaration.kind())))
+            .or_default()
+            .push(declaration);
+    }
+    for same_name in structural.values_mut() {
+        same_name.sort_by_key(|declaration| declaration.line());
+    }
+    let mut semantic = BTreeMap::<(Vec<u8>, u8), Vec<(Option<u32>, DeclarationIdentity)>>::new();
+    for entity in session.canonical_entities() {
+        let entity = entity
+            .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
+        let family = declaration_family(declaration_kind(entity.entity.kind));
+        semantic
+            .entry((entity.name.to_vec(), family))
+            .or_default()
+            .push((
+                entity.entity.source.map(|span| span.start()),
+                entity.entity.version.identity(),
+            ));
+    }
+    for ((name, family), mut entities) in semantic {
+        let Ok(name) = std::str::from_utf8(&name) else {
+            continue;
+        };
+        let Some(candidates) = structural.get(&(name, family)) else {
+            continue;
+        };
+        if candidates.len() != entities.len() || entities.iter().any(|(start, _)| start.is_none()) {
+            continue;
+        }
+        entities.sort_by_key(|(start, _)| *start);
+        for ((_, identity), declaration) in entities.into_iter().zip(candidates) {
+            sites.insert(identity, *declaration);
+        }
+    }
+    Ok(sites)
 }
 
 struct SemanticRowContent {
@@ -1176,6 +1324,7 @@ fn append_image_rows(
 ) -> Result<(), BuiltinModelError> {
     let session = DocumentationSession::new(image);
     let image_identity = *blake3::hash(image.as_ref()).as_bytes();
+    let sites = semantic_sites(&session, sink.site_declarations)?;
     let canonical_identities = session
         .canonical_entities()
         .map(|entity| {
@@ -1239,7 +1388,36 @@ fn append_image_rows(
         .map_err(|error| BuiltinModelError(format!("semantic row identity preimage: {error}")))?
         .with_kind(declaration_kind(entity.entity.kind))
         .with_document(document);
-        if let Some(signature) = content.signature {
+        if let Some(site) = sites.get(&identity) {
+            let excerpt_bytes = site.source_excerpt().text().map_or(0, str::len);
+            *sink.remaining_bytes =
+                sink.remaining_bytes
+                    .checked_sub(excerpt_bytes)
+                    .ok_or_else(|| {
+                        BuiltinModelError(
+                            "workspace semantic declarations exceed the rebuild byte bound"
+                                .to_owned(),
+                        )
+                    })?;
+            let location =
+                backend_compile::SourceLocation::new(sink.path, site.line()).map_err(|error| {
+                    BuiltinModelError(format!("semantic declaration source site: {error}"))
+                })?;
+            row = row
+                .with_source(location)
+                .with_excerpt(site.source_excerpt().clone());
+        }
+        // A reader's signature is the declaration as written. The semantic
+        // type renders as canonical IR text (`function(parameters=[element(
+        // kind=required,label=x"6C6576656C",type=builtin(u64))],...)`, the
+        // parameter name hex-encoded), which stays in the document's code
+        // fragment as the compiler's typed answer; the paired source site
+        // supplies the written text when there is one.
+        let written = sites
+            .get(&identity)
+            .map(|site| site.signature())
+            .filter(|signature| !signature.trim().is_empty());
+        if let Some(signature) = written.map(str::to_owned).or(content.signature) {
             row = row.with_signature(signature);
         }
         if let Some(parent) = entity.entity.parent {
@@ -1331,18 +1509,21 @@ fn semantic_row_content<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
         .map_err(|error| BuiltinModelError(format!("project semantic documentation: {error}")))?;
     let documentation_bytes = documentation_bytes(&documentation)?;
     let signature = semantic_signature(entity)?;
-    let encoded_bytes = prepared
-        .encoded_len
-        .checked_add(documentation_bytes)
-        .and_then(|bytes| bytes.checked_add(signature.as_ref().map_or(0, String::len)))
+    let encoded_bytes = documentation_bytes
+        .checked_add(signature.as_ref().map_or(0, String::len))
         .ok_or_else(|| BuiltinModelError("project semantic row byte count overflow".to_owned()))?;
+    // The canonical semantic document is rendered (and so validated against
+    // its type-depth and size bounds) but not shown. It is an injective
+    // machine encoding that spells every name as hex (`name=x"626561636F6E
+    // 5F656E747279"`) and every type as canonical IR; placing it first in
+    // the document put that dump at the top of every compiler-backed page and
+    // into every documentation fact. A reader gets the written signature and
+    // the declaration's own documentation instead.
     let mut output = vec![0; prepared.encoded_len];
-    let rendered = prepared
+    prepared
         .write_into(&mut output)
-        .map_err(|error| BuiltinModelError(format!("write project semantic document: {error}")))?
-        .to_owned();
-    let mut document = Vec::with_capacity(documentation.len().saturating_add(1));
-    document.push(Fragment::Code(rendered));
+        .map_err(|error| BuiltinModelError(format!("write project semantic document: {error}")))?;
+    let mut document = Vec::with_capacity(documentation.len());
     document.extend(
         documentation
             .into_iter()
@@ -1740,7 +1921,10 @@ fn append_compiler_query_facts(
                     ));
                 }
             }
-            complete.insert((project.package.to_bytes(), key.profile()));
+            complete.insert((
+                project.package.to_bytes(),
+                super::ingest::lane_profile(key.profile()),
+            ));
         }
         let Some(next) = page.next().cloned() else {
             break;
@@ -2089,6 +2273,8 @@ pub fn execute() {}
             capacity: 64,
             remaining_bytes: &mut remaining,
             stale,
+            path: FIXTURE_PATH,
+            site_declarations: &[],
         };
         super::append_image_rows(
             &view,

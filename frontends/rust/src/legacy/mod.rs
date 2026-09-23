@@ -18,7 +18,7 @@ pub use self::authority::{
     RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustInferredExpression,
     RustMethodCall, RustProject, RustReexport, SemanticKind, SourceByteLimit, SourceOrigin,
 };
-pub use self::purl::{RustLocatedPackage, RustPackageUrl, RustPurlError};
+pub use self::purl::{RustLocatedPackage, RustPackageUrl, RustPurlError, manifest_edition};
 
 /// The pinned rust-analyzer HIR facade this authority borrows from.
 ///

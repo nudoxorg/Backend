@@ -313,14 +313,31 @@ impl LocalCompilerCapabilities {
         &self.0
     }
 
-    /// Finds the exact profile capability without allocating or consulting ambient state.
+    /// Finds the capability that governs one profile without allocating or
+    /// consulting ambient state.
+    ///
+    /// The table advertises one row per product profile. A compile may name a
+    /// profile outside that set only by a language revision the row's
+    /// toolchain and package authority already serve, such as a Rust crate
+    /// whose `Cargo.toml` selects edition 2021: rustc and the Cargo project
+    /// authority are the same for every edition, so that compile is governed
+    /// by the one Rust row rather than panicking the compiler owner.
     #[must_use]
     pub fn for_profile(&self, profile: LanguageProfile) -> LocalCompilerCapability {
         self.0
             .iter()
             .copied()
             .find(|capability| capability.profile == profile)
-            .expect("fixed compiler capability table contains every product profile")
+            .or_else(|| {
+                let LanguageProfile::Rust(_) = profile else {
+                    return None;
+                };
+                self.0
+                    .iter()
+                    .copied()
+                    .find(|capability| matches!(capability.profile, LanguageProfile::Rust(_)))
+            })
+            .expect("fixed compiler capability table governs every compiled profile")
     }
 }
 

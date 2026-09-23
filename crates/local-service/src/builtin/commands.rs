@@ -1579,7 +1579,8 @@ fn compile_semantic_publications(
 ) -> Result<Vec<BuiltinSemanticChange>, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
     for source in sources {
-        by_profile.entry(source.profile).or_default().push(
+        let profile = compile_profile(context.source_root, &source);
+        by_profile.entry(profile).or_default().push(
             OwnedPackageSource::new(&source.relative_path, &source.source)
                 .map_err(|error| BuiltinModelError(error.to_string()))?,
         );
@@ -1667,6 +1668,36 @@ fn compile_semantic_publications(
         }
     }
     Ok(changes)
+}
+
+/// Selects the exact profile one source is compiled under.
+///
+/// A file's extension names its language, but a Rust file's edition is a
+/// fact of the crate that owns it: the authority checks it against Cargo's
+/// own metadata and refuses a mismatch. Compiling every `.rs` file as edition
+/// 2024 therefore sent every 2015, 2018, and 2021 crate (most of crates.io)
+/// to a terminal `ProjectAuthority` failure and a structural-only answer. The
+/// edition is read from the nearest `Cargo.toml` with a `[package]` table
+/// between the file and the source root, exactly as Cargo resolves it.
+fn compile_profile(source_root: &Path, source: &ingest::CompilerSource) -> LanguageProfile {
+    let LanguageProfile::Rust(_) = source.profile else {
+        return source.profile;
+    };
+    let mut directory = source_root.join(&source.relative_path);
+    while directory.pop() && directory.starts_with(source_root) {
+        let manifest = directory.join("Cargo.toml");
+        let declares_package = std::fs::read_to_string(&manifest)
+            .is_ok_and(|contents| contents.lines().any(|line| line.trim() == "[package]"));
+        if declares_package {
+            // An unreadable or unknown edition keeps the default profile; the
+            // authority then reports the exact mismatch as a typed terminal
+            // rather than this scan failing the whole package.
+            return backend_frontend_rust::legacy::manifest_edition(&directory)
+                .map_or(source.profile, LanguageProfile::Rust);
+        }
+    }
+    // No owning manifest: the authority reports the missing project itself.
+    source.profile
 }
 
 fn semantic_coordinate(
