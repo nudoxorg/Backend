@@ -2105,10 +2105,19 @@ summary entities=4 signature rendered=4 unavailable=0 placeholder=2 malformed=0 
 // #   snapshot pins the current head-only state.
 // # - Macros render `?unannotated`, extern globals `?external`, and
 // #   template/macro-dependent pointees `?oracle-gap` (upstream rows).
-// # - Shell-sensitive: pinned under `.#development`, where brotli's
-// #   `uint8_t` does not resolve and clang recovers it as `int`
-// #   (`const i32[]`). Under `.#complete` the typedef resolves and the same
-// #   rows render `[const unsigned-char[8]; 122784]`.
+// # - Shell-sensitive: under `.#development` brotli's `uint8_t` does not
+// #   resolve and clang recovers it as `int` (`const i32[]`); under
+// #   `.#complete` the typedef resolves and the same row renders
+// #   `[const unsigned-char[8]; 122784]`. Both shells hand libclang the same
+// #   pinned `NUDOX_CLANG_DRIVER` and the same `SDKROOT`, and that driver
+// #   resolves `<stdint.h>` fine when run directly in either shell (verified
+// #   2026-09-23), so the gap is inside the corpus lane's own libclang
+// #   invocation, not a missing system header. This snapshot pins the
+// #   `.#complete` rendering: the recorded full-suite gate run
+// #   (clusters/full-run-796f.log) was produced under `.#complete`, so that
+// #   is the shell whose output this gate actually checks in.
+// #   `.#development`'s `int`-recovered rendering is a known, narrower
+// #   capability gap in that shell only.
 #[rustfmt::skip]
 const EXPECTED_CLANG: &str = r"# clang render snapshot
 package cJSON file=cJSON/tests/unity/test/tests/testunity.c bytes=123592
@@ -2193,12 +2202,12 @@ package STC file=STC/include/stc/priv/cregex_prv.c bytes=41971
 	Macro _BIGLISTSIZE :: macro _BIGLISTSIZE: ?unannotated [placeholder:?unannotated]
 summary entities=25 signature rendered=25 unavailable=0 placeholder=6 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 package brotli file=brotli/c/common/dictionary.c bytes=472009
-	Static kBrotliDictionaryData :: static kBrotliDictionaryData: const i32[]
+	Static kBrotliDictionaryData :: static kBrotliDictionaryData: [const unsigned-char[8]; 122784]
 	Static kBrotliDictionary :: static kBrotliDictionary: const ?external [placeholder:?external]
 	Parameter BrotliGetDictionary :: BrotliGetDictionary: const ?external* [placeholder:?external]
 	Function BrotliGetDictionary :: fn BrotliGetDictionary() -> const ?external* [placeholder:?external]
-	Parameter data :: data: const i32*
-	Function BrotliSetDictionaryData :: fn BrotliSetDictionaryData(data: const i32*)
+	Parameter data :: data: const unsigned-char[8]*
+	Function BrotliSetDictionaryData :: fn BrotliSetDictionaryData(data: const unsigned-char[8]*)
 	Module dictionary.h :: mod dictionary.h
 	Module platform.h :: mod platform.h
 summary entities=8 signature rendered=8 unavailable=0 placeholder=3 malformed=0 canonical ok=8 err=0 document ok=8 err=0
