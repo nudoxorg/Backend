@@ -11,6 +11,72 @@
 }:
 let
   compilers = tools.compilers;
+  # `nix develop` assembles `NIX_CFLAGS_COMPILE`/`NIX_LDFLAGS` (and the
+  # per-target-triple "role marker" that gates them, e.g.
+  # `NIX_CC_WRAPPER_TARGET_HOST_<triple>`) from every `packages`/`buildInput`'s
+  # setup hook as the shell starts; the `backend`/`backendVerifier` wrappers
+  # (`pkgs.nuenv.writeShellApplication` in `commands.nix`) are a plain script
+  # with a fixed `runtimeEnv`, so no setup hook ever runs for them and those
+  # variables are silently absent. That gap is invisible for most tests
+  # (their C toolchain calls resolve `-isystem`/`-isysroot` from the pinned
+  # driver's own baked-in defaults, or through
+  # `frontends/clang/system_includes.rs`, which asks the pinned driver
+  # directly), but a real C corpus package that itself `#include <...>`s an
+  # angle-bracket header belonging to another pinned tool
+  # (`brotli/c/common/platform.h` reaching for `<brotli/types.h>`, which the
+  # checked-out corpus source does not ship on any `-I` path of its own)
+  # depends on that closure's setup-hook-propagated dev headers to resolve at
+  # all. `.#complete`'s shell has them because every tool in `tools.complete`
+  # is a `packages` entry there; the wrapper does not. Build a real
+  # `stdenv.mkDerivation` (`runCommand`, unlike `mkShell`, actually runs its
+  # build phase) over the exact same `tools.complete` closure and capture
+  # what its setup hooks produced, so the gate and every interactive shell
+  # agree on this compiler environment byte-for-byte instead of drifting
+  # whenever the closure's package set changes. The role-marker variable
+  # names themselves carry the host triple (e.g. `_arm64_apple_darwin`),
+  # which must stay whatever this build platform's own cc-wrapper spells it
+  # as, not a hardcoded string, so this discovers their names from the
+  # captured environment rather than assuming one.
+  nativeCompilerShellEnv =
+    pkgs.runCommand "backend-native-compiler-shell-env"
+      {
+        nativeBuildInputs = tools.complete;
+      }
+      ''
+        {
+          for name in NIX_CFLAGS_COMPILE NIX_CFLAGS_COMPILE_BEFORE NIX_CFLAGS_LINK \
+            NIX_LDFLAGS NIX_LDFLAGS_BEFORE NIX_CXXSTDLIB_COMPILE NIX_CXXSTDLIB_LINK \
+            NIX_HARDENING_ENABLE NIX_ENFORCE_NO_NATIVE; do
+            printf '%s\t%s\n' "$name" "''${!name-}"
+          done
+          # The setup-hook role markers (`NIX_CC_WRAPPER_TARGET_HOST_<triple>`
+          # and friends) that gate whether the wrapped compiler picks up the
+          # variables above at all; every wrapped-compiler invocation
+          # re-derives its own triple-suffixed flags from these plus the
+          # bare names each time it runs, so both must be forwarded.
+          env | grep -E '^NIX_(CC|BINTOOLS|PKG_CONFIG)_WRAPPER_TARGET_HOST_' | while IFS='=' read -r roleName roleValue; do
+            printf '%s\t%s\n' "$roleName" "$roleValue"
+          done
+        } > $out
+      '';
+  nativeCompilerShellEnvVars = builtins.listToAttrs (
+    map
+      (
+        line:
+        let
+          parts = pkgs.lib.splitString "\t" line;
+        in
+        {
+          name = builtins.unsafeDiscardStringContext (builtins.elemAt parts 0);
+          value = builtins.elemAt parts 1;
+        }
+      )
+      (
+        builtins.filter (line: line != "") (
+          pkgs.lib.splitString "\n" (builtins.readFile nativeCompilerShellEnv)
+        )
+      )
+  );
   optionalEnv = pkgs.lib.optionalAttrs (tools.typescriptChecker != null) {
     NUDOX_TYPESCRIPT_CHECKER_BIN = "${tools.typescriptChecker}/bin/nudox-typescript-checker";
   };
@@ -70,3 +136,4 @@ in
 // optionalEnv
 // optionalOracleEnv
 // optionalCorpusEnv
+// nativeCompilerShellEnvVars
