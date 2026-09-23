@@ -236,10 +236,9 @@ fn unix_transport_executes_one_correlated_request() {
         let body = serde_json::to_vec(&reply).expect("reply");
         write_frame(&mut server, &body).expect("reply frame");
     });
-    let client_stream = std::os::unix::net::UnixStream::connect(&path).expect("connect probe");
+    // `connect` opens the endpoint and authenticates its owner as one step.
+    let mut transport = UnixCommandTransport::connect(&path).expect("connect");
     accepted_rx.recv().expect("accepted");
-    let mut transport =
-        UnixCommandTransport::from_authenticated_stream(client_stream, &path).expect("connect");
     let reply = transport
         .request(CommandDto::new(12, Command::Health))
         .expect("transport reply");

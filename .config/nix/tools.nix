@@ -40,7 +40,10 @@ let
             ]
             ++ controlSourceRoots
           )
-          || builtins.any (root: pkgs.lib.hasPrefix "${root}/" relative) controlSourceRoots;
+          || builtins.any (root: pkgs.lib.hasPrefix "${root}/" relative) controlSourceRoots
+          # A nested root (`vendor/gpui_ce_components`) is only reached when
+          # its ancestor directories survive the filter as well.
+          || (type == "directory" && builtins.any (root: pkgs.lib.hasPrefix "${relative}/" root) controlSourceRoots);
       }
     else
       null;

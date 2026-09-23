@@ -174,6 +174,9 @@ let
           *) arguments+=("$argument") ;;
         esac
       done
+      # zig reads the host's Nix compiler variables to find system headers;
+      # every target here is foreign, so none of the host's may leak in.
+      unset NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS SDKROOT
       exec ${pkgs.zig}/bin/zig cc -target ${target} "''${arguments[@]}"
     '';
   zigAr = pkgs.writeShellScriptBin "ar-zig" ''
@@ -216,6 +219,9 @@ let
       # the rustc that carries the target standard libraries.
       RUSTC = "${toolchains.cross}/bin/rustc";
       NUDOX_CROSS_TARGETS = builtins.concatStringsSep " " toolchains.crossTargets;
+      # Compile checks have no Linux sysroot for pkg-config to search; the
+      # dlopen configuration of fontconfig-sys compiles without one.
+      RUST_FONTCONFIG_DLOPEN = "on";
       CC_x86_64_pc_windows_gnu = "cc-x86_64-windows-gnu";
       CC_x86_64_unknown_linux_gnu = "cc-x86_64-linux-gnu";
       CC_aarch64_unknown_linux_gnu = "cc-aarch64-linux-gnu";
