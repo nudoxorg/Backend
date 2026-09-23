@@ -275,6 +275,23 @@ func extractWithPattern(dir, pattern string) (*Output, error) {
 	// module, not only its own package. See collectInterfaceCandidates.
 	candidates := collectInterfaceCandidates(selected)
 	for _, pkg := range selected {
+		// An external `foo_test` package (files ending in `_test.go`
+		// declaring `package foo_test`) is never compiled by a plain `go
+		// build`; Go's one-package-per-directory rule makes it unreachable
+		// except through this exact test-only construction, so every one of
+		// its CompiledGoFiles ends in `_test.go`. Its declarations stay out
+		// of `out.Packages` (they can never be the source file an authority
+		// image is bound to) but the package remains in `selected` above, so
+		// its interfaces still count as satisfaction candidates. Skipping it
+		// here is what keeps a same-named external-test declaration (e.g.
+		// `toml_test.parser`) from colliding, under the coordinate-free
+		// declaration identity, with the real package's own same-named
+		// declaration (e.g. `toml.parser`): the identity has no room for a
+		// package discriminant, so the only correct fix is to never
+		// serialize the test-only declaration in the first place.
+		if isExternalTestPackage(pkg) {
+			continue
+		}
 		out.Packages = append(out.Packages, extractPackage(pkg, candidates))
 	}
 
@@ -359,6 +376,25 @@ func richerPackageVariant(candidate, current *packages.Package) bool {
 		return candidateTests > currentTests
 	}
 	return packageVariantKey(candidate) < packageVariantKey(current)
+}
+
+// isExternalTestPackage reports whether every file packages.Load compiled
+// into pkg ends in `_test.go`. The internal test-augmented variant
+// richerPackageVariant prefers always mixes production files in (that is
+// what makes it "richer"), so a package left with nothing but `_test.go`
+// files is, by construction, an external `foo_test` package: Go admits at
+// most one non-test package name per directory, so files besides `_test.go`
+// ones can never carry a second package name there.
+func isExternalTestPackage(pkg *packages.Package) bool {
+	if len(pkg.CompiledGoFiles) == 0 {
+		return false
+	}
+	for _, file := range pkg.CompiledGoFiles {
+		if !strings.HasSuffix(file, "_test.go") {
+			return false
+		}
+	}
+	return true
 }
 
 func testFileCount(pkg *packages.Package) int {
