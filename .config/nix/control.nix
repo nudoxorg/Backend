@@ -585,6 +585,33 @@ in
             };
           }
           {
+            # `rust_references_snapshot` drives `rust_prepare` +
+            # `compile_semantic` (`RustProject::open_with_source`, a real
+            # `ra_ap_load_cargo::load_workspace_at` sysroot bootstrap) once
+            # per crate over five corpus crates (log, once_cell, httpdate,
+            # aho-corasick, memchr), same class of uncached, per-fixture
+            # rust-analyzer bootstrap as `rust_remaining_terminals` above.
+            # "rust_references_snapshot" contains none of
+            # corpus/multilingual/native/real_package, so it also falls
+            # through the general native-compiler filter below to the bare
+            # closure-profile default (60s x 3 = 180s), which the gate
+            # observed timing out at exactly 180.006s. Measured standalone
+            # (debug build, `.#complete`): ~135s. A `sample`(1) profile of
+            # the measurement child process shows the CPU-bound time is
+            # real rowan/ra_ap_parser lexing and green-tree construction
+            # inside the sysroot load, not a spin or a redundant rescan —
+            # no product inefficiency found to fix, so this test gets the
+            # same scoped budget as its siblings instead.
+            filter = "test(rust_references_snapshot)";
+            test-group = "native-compiler";
+            threads-required = 2;
+            priority = 90;
+            slow-timeout = {
+              period = "90s";
+              terminate-after = 3;
+            };
+          }
+          {
             # `rust_real_corpus_repro`'s two whole-fleet probes and
             # `compiler_corpus`'s `real_package_inventory_...` all match the
             # general `/corpus|...|real_package/` filter below, so they
