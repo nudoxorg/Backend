@@ -431,6 +431,23 @@ fn terminate_process_group(pid: u32) -> Result<(), ProcessError> {
             if result.is_ok_and(|status| status.success()) {
                 return Ok(());
             }
+            // A child that already exited leaves no group to signal, and
+            // `kill` then fails with "no such process". That group is torn
+            // down, not unsupported: reporting it as an unsupported limit
+            // replaced the verdict that ended the run (for example the
+            // workspace growth that stopped a fast child) with a false
+            // platform fault whenever the child won the race.
+            let exists = Command::new(executable)
+                .arg("-0")
+                .arg("--")
+                .arg(&argument)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if exists.is_ok_and(|status| !status.success()) {
+                return Ok(());
+            }
         }
         Err(ProcessError::UnsupportedLimit(
             crate::UnsupportedLimit::ProcessGroup,
