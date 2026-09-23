@@ -1625,12 +1625,12 @@ package chalk-5.3.0 file=chalk-5.3.0/source/index.d.ts bytes=6911
 	Field level :: level: ColorSupportLevel
 	Alias number :: type number = f64
 	Alias this :: type this = this
-	Field rgb :: rgb: fn(number: f64, number: f64, number: f64) -> this
-	Field hex :: hex: fn(string: str) -> this
-	Field ansi256 :: ansi256: fn(number: f64) -> this
-	Field bgRgb :: bgRgb: fn(number: f64, number: f64, number: f64) -> this
-	Field bgHex :: bgHex: fn(string: str) -> this
-	Field bgAnsi256 :: bgAnsi256: fn(number: f64) -> this
+	Field rgb :: rgb: fn(red: f64, green: f64, blue: f64) -> this
+	Field hex :: hex: fn(color: str) -> this
+	Field ansi256 :: ansi256: fn(index: f64) -> this
+	Field bgRgb :: bgRgb: fn(red: f64, green: f64, blue: f64) -> this
+	Field bgHex :: bgHex: fn(color: str) -> this
+	Field bgAnsi256 :: bgAnsi256: fn(index: f64) -> this
 	Field reset :: reset: this
 	Field bold :: bold: this
 summary entities=25 signature rendered=25 unavailable=0 placeholder=7 malformed=0 canonical ok=25 err=0 document ok=25 err=0

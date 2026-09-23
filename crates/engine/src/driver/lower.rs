@@ -4363,7 +4363,18 @@ fn live_type<'source>(
                         raw: row,
                     })?;
                 let target = target as usize;
-                let name = child_name.or_else(|| (target < facts.len).then(|| facts.names[target]));
+                // A parameter label is only ever the explicit child name a
+                // producer attached, or the target row's own name when that
+                // row is a real `Parameter` carrier fact (a declared
+                // executable's parameter binding). For an anonymous function
+                // type the target is a type row whose fact name is a type
+                // spelling (TypeScript) or an unrelated identity; inheriting
+                // it would render `rgb: fn(number: f64, ...)` for a written
+                // `rgb: (red: number, ...) => this`.
+                let name = child_name.or_else(|| {
+                    (target < facts.len && facts.kinds[target] == EntityKind::Parameter)
+                        .then(|| facts.names[target])
+                });
                 scratch.tuple_elements.push(TupleElement {
                     label: name.map(|name| tree.intern_atom(name)).transpose()?,
                     ty: child_type(position)?,

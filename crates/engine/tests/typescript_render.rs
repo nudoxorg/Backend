@@ -28,6 +28,10 @@ const CASES: &[(&str, &[u8])] = &[
     ("jsdoc", b"/** Adds two values.\n * @param left first value\n * @param right second value\n * @returns their sum\n */\nfunction add(left: number, right: number): number { return left + right; }"),
     ("overloads", b"declare function g(value: number): string;\ndeclare function g(value: string): number;\nconst a = g(1);\nconst b = g(\"x\");"),
     ("extensions", b"interface Box<T> { value: T }"),
+    (
+        "anonymous-callable",
+        b"interface Paint { rgb: (red: number, green: number, blue: number) => void; }\ntype Variadic = (label: string, ...values: number[]) => void;",
+    ),
 ];
 
 fn compile(source: &'static [u8]) -> Ir {
@@ -257,6 +261,26 @@ fn extensions_render() {
         ir.type_parameters(fact.type_parameters)
             .is_some_and(|parameters| parameters.len() == 1)
     }));
+}
+
+#[test]
+fn anonymous_callable_renders() {
+    // A function type's parameters are never `Parameter` carrier facts (only
+    // a declared executable's parameters are); the label must come from the
+    // written pattern, not from the target row's own (unrelated) fact name.
+    let ir = compile(CASES[14].1);
+    type_of(
+        &ir,
+        "rgb",
+        ItemKind::Field,
+        "fn(red: f64, green: f64, blue: f64) -> void",
+    );
+    signature(
+        &ir,
+        "Variadic",
+        ItemKind::TypeAlias,
+        "type Variadic = fn(label: str, ...values: []f64) -> void",
+    );
 }
 
 #[test]
