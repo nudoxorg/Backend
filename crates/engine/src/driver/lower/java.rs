@@ -960,6 +960,12 @@ fn declared<'image>(
     if total == 0 {
         return Ok(match names.lookup(spelling) {
             Some(ordinal) => ProjectedType::leaf(nominal_record(ordinal), Some(spelling)),
+            None if is_language_builtin(spelling) => {
+                let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
+                record.payload0 = SHAPE_BUILTIN;
+                record.text = Some(spelling);
+                ProjectedType::leaf(record, Some(spelling))
+            }
             None => unknown_declared(spelling),
         });
     }
@@ -1008,6 +1014,14 @@ fn declared<'image>(
         }
     }
     Ok(projected)
+}
+
+/// `java.lang.String` and `java.lang.Object` are the language's own string
+/// and root types, so they lower to the shared `String`/`Object` builtins
+/// (C# lowers `System.String` the same way) instead of an unrepresented
+/// foreign spelling. The builtin spelling table already names both.
+fn is_language_builtin(spelling: &[u8]) -> bool {
+    matches!(spelling, b"java.lang.String" | b"java.lang.Object")
 }
 
 /// Projects one array row into one structural sequence node per written `[]`.
@@ -4126,7 +4140,7 @@ mod tests {
             symbol: None,
             span: None,
         });
-        let foreign = fix.declared(b"java.lang.String");
+        let foreign = fix.declared(b"java.time.Instant");
         fix.declarations.push(DeclarationRow {
             kind: 8,
             name: named,
@@ -4136,12 +4150,23 @@ mod tests {
             symbol: None,
             span: None,
         });
+        let text = fix.atom(b"text");
+        let string = fix.declared(b"java.lang.String");
+        fix.declarations.push(DeclarationRow {
+            kind: 8,
+            name: text,
+            owner: Some(0),
+            documentation: None,
+            semantic_type: Some(string),
+            symbol: None,
+            span: None,
+        });
         let bytes = lower(
             &fix,
-            b"class Cafe { Cafe<Node> pair; Node[] many; String named; }",
+            b"class Cafe { Cafe<Node> pair; Node[] many; Instant named; String text; }",
         )?;
         let view = FragmentView::validate(&bytes)?;
-        // Facts: 0 Cafe, 1 Node, 2 pair, 3 many, 4 named.
+        // Facts: 0 Cafe, 1 Node, 2 pair, 3 many, 4 named, 5 text.
         let pair_row = row(&view, 2)?;
         if pair_row.record.tag != SemanticTypeTag::Apply
             || pair_row.record.children.length != 2
@@ -4155,9 +4180,18 @@ mod tests {
         }
         let foreign_row = row(&view, 4)?;
         if foreign_row.record.tag != SemanticTypeTag::Unknown
-            || foreign_row.record.text != Some(b"java.lang.String".as_slice())
+            || foreign_row.record.text != Some(b"java.time.Instant".as_slice())
         {
             return Err(TestError::Missing("foreign declared unknown"));
+        }
+        // `java.lang.String` is the language's string type, not a foreign
+        // unknown: it lowers to the shared builtin spelling.
+        let string_row = row(&view, 5)?;
+        if string_row.record.tag != SemanticTypeTag::Primitive
+            || string_row.record.payload0 != SHAPE_BUILTIN
+            || string_row.record.text != Some(b"java.lang.String".as_slice())
+        {
+            return Err(TestError::Missing("java.lang.String builtin"));
         }
         Ok(())
     }
