@@ -842,9 +842,11 @@ fn forward_nominal_checker_and_lowering_keep_the_later_class() {
         .typescript
         .get(a.id())
         .unwrap();
+    // The observed cell is the checker's nominal `B` itself (df520c779), not
+    // a `typeof a` query over the owner.
     assert_eq!(
         ir_tag_shape(&lowered.ir, extension.observed.unwrap()),
-        (SemanticTypeTag::Nominal, 1)
+        (SemanticTypeTag::Nominal, 0)
     );
     let decoded = view(SOURCE, Some(&checker));
     let (owner, _) = named(&decoded, b"a");
@@ -1099,7 +1101,10 @@ fn golden_lowered_facts_match_the_frozen_table() {
             name: b"term",
             kind: EntityKind::Constant,
             declared: SemanticTypeTag::Unknown,
-            computed: SemanticTypeTag::Nominal,
+            // The checker's `Console` is a lib type the source never spells,
+            // so it cannot back a text-bearing external nominal and stays an
+            // honest oracle-gap unknown (ce74f843e).
+            computed: SemanticTypeTag::Unknown,
             shape: 0,
             has_computed: true,
         },
@@ -1175,13 +1180,13 @@ fn golden_lowered_facts_match_the_frozen_table() {
             "row {row_index} {:?}",
             row.name
         );
+        // Since df520c779 the observed cell is projected from the checker's
+        // staged computed row itself, not wrapped as a `typeof owner` query,
+        // so it carries the frozen computed tag. The frozen shape counts
+        // fragment children (an `Apply` row's constructor plus arguments) and
+        // is asserted on the fragment path below.
         if let Some(computed) = computed {
-            assert_eq!(
-                (computed.0, computed.1),
-                (SemanticTypeTag::Nominal, 1),
-                "row {row_index} {:?}",
-                row.name
-            );
+            assert_eq!(computed.0, row.computed, "row {row_index} {:?}", row.name);
         }
         identities.push(item.id());
     }
