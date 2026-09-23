@@ -550,7 +550,8 @@ pub(crate) fn collect<'source>(
             | DeclarationKind::Property
             | DeclarationKind::Indexer
             | DeclarationKind::Event => {
-                let ordinal = push_member(facts, &image, &names, &ordinals, source, &declared)?;
+                let ordinal =
+                    push_member(facts, &image, &names, &ordinals, source, coordinate, &declared)?;
                 ordinals.record(coordinate, ordinal).map_err(terminal)?;
             }
             DeclarationKind::Constructor
@@ -558,7 +559,9 @@ pub(crate) fn collect<'source>(
             | DeclarationKind::Method
             | DeclarationKind::Operator
             | DeclarationKind::Conversion => {
-                let ordinal = push_executable(facts, &image, &names, &ordinals, source, &declared)?;
+                let ordinal = push_executable(
+                    facts, &image, &names, &ordinals, source, coordinate, &declared,
+                )?;
                 ordinals.record(coordinate, ordinal).map_err(terminal)?;
             }
         }
@@ -972,6 +975,50 @@ fn push_type_root<'source>(
     push(facts, fact)
 }
 
+/// The identity discriminator of a member whose name, owner, kind, and
+/// type alone do not identify it.
+///
+/// - An explicit interface implementation (`int IProperties.Number`) and an
+///   implicit `public int Number` in the same type are distinct members. The
+///   implemented interface member is authority-proven: Roslyn's
+///   `InterfaceImplementation` binding row owned by this declaration spells
+///   it (`Fidelity.IProperties.Number`), so two explicit implementations of
+///   same-named members of different interfaces stay distinct too.
+/// - The implementing half of a partial method or property repeats its
+///   defining half's signature exactly. Both halves are retained (each owns
+///   its own docs, extent, and body occurrences), so the implementation
+///   half is marked by its partial role.
+///
+/// Every other member frames no new bytes.
+fn member_discriminator(
+    image: &CSharpImage<'_>,
+    coordinate: usize,
+    declared: &Declaration<'_>,
+) -> Result<Option<[u8; 16]>, CSharpCollectError> {
+    let explicit = declared.flags.is_explicit_interface;
+    let implementation = declared.partial == PartialRole::Implementation;
+    if !explicit && !implementation {
+        return Ok(None);
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"compiler.csharp.member-discriminator.v1\0");
+    hash.update([u8::from(implementation)]);
+    if explicit {
+        for reference in image.references() {
+            let reference = reference.map_err(ProjectionFault::Image).map_err(terminal)?;
+            if usize::try_from(reference.owner).is_ok_and(|owner| owner == coordinate)
+                && reference.kind == ReferenceTag::InterfaceImplementation
+            {
+                hash.update((reference.spelling.bytes.len() as u64).to_le_bytes());
+                hash.update(reference.spelling.bytes);
+            }
+        }
+    }
+    let mut discriminator = [0_u8; 16];
+    discriminator.copy_from_slice(&hash.finalize()[..16]);
+    Ok(Some(discriminator))
+}
+
 /// Resolves the enclosing fact anchor for anonymous rows of one declaration.
 /// The owner must be the declaration's actual authority parent; an absent or
 /// un-emitted parent is an exact projection terminal, never an unrelated
@@ -1062,6 +1109,7 @@ fn push_member<'source>(
     names: &Names<'source>,
     ordinals: &Ordinals,
     source: &'source [u8],
+    coordinate: usize,
     declared: &Declaration<'source>,
 ) -> Result<u32, CSharpCollectError> {
     let name = checked_name(source, declared)?;
@@ -1114,6 +1162,9 @@ fn push_member<'source>(
     for ordinal in parameter_ordinals.iter().copied() {
         fact = fact.child(ProductChildRole::ProductMember, ordinal);
     }
+    if let Some(discriminator) = member_discriminator(image, coordinate, declared)? {
+        fact = fact.with_identity_discriminator(discriminator);
+    }
     let ordinal = push(facts, fact)?;
     // Indexer parameter carriers are local members of the member fact; bind
     // each to it so the member payload can prove its ordered role and two
@@ -1136,6 +1187,7 @@ fn push_executable<'source>(
     names: &Names<'source>,
     ordinals: &Ordinals,
     source: &'source [u8],
+    coordinate: usize,
     declared: &Declaration<'source>,
 ) -> Result<u32, CSharpCollectError> {
     let name = checked_name(source, declared)?;
@@ -1151,7 +1203,10 @@ fn push_executable<'source>(
     if let Some(return_type) = declared.declared_type {
         signature.push_result(facts, image, names, ordinals, anchor, return_type)?;
     }
-    let fact = signature.finish(name)?;
+    let mut fact = signature.finish(name)?;
+    if let Some(discriminator) = member_discriminator(image, coordinate, declared)? {
+        fact = fact.with_identity_discriminator(discriminator);
+    }
     let ordinal = push(facts, fact)?;
     // Signature carriers share names and types across executables; bind each
     // to its executable so identical carriers stay distinct.
