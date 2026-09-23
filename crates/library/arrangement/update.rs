@@ -7,7 +7,7 @@ use super::{
     ProjectionArrangement, SearchPostingKey, SearchPostingRelation, SearchPostingTree,
     UnscopedIndexRelation, WorkCounters, search_grams, searchable_text,
 };
-use crate::{CommittedViewDelta, Row, RowChange, RowId, ViewDelta, ViewRoot};
+use crate::{CommittedViewDelta, DeclarationKind, Row, RowChange, RowId, ViewDelta, ViewRoot};
 use backend_flow::MaterializedIndex;
 use backend_version::{CoverageWitness, Relation, TreeError};
 use std::collections::BTreeMap;
@@ -48,6 +48,8 @@ impl ProjectionArrangement {
                 let base = delta.base_for_wire();
                 let old = base.row(row.id);
                 let arrangement = previous.update_one(
+                    base,
+                    view,
                     old.as_ref(),
                     Some(row),
                     view.flow_frontier().frontier(),
@@ -60,6 +62,8 @@ impl ProjectionArrangement {
                 let base = delta.base_for_wire();
                 let old = base.row(*id);
                 let arrangement = previous.update_one(
+                    base,
+                    view,
                     old.as_ref(),
                     None,
                     view.flow_frontier().frontier(),
@@ -76,6 +80,8 @@ impl ProjectionArrangement {
                         RowChange::Upsert(row) => {
                             let old = base.row(row.id);
                             arrangement.update_one(
+                                base,
+                                view,
                                 old.as_ref(),
                                 Some(row.as_ref()),
                                 view.flow_frontier().frontier(),
@@ -85,6 +91,8 @@ impl ProjectionArrangement {
                         RowChange::Remove(id) => {
                             let old = base.row(*id);
                             arrangement.update_one(
+                                base,
+                                view,
                                 old.as_ref(),
                                 None,
                                 view.flow_frontier().frontier(),
@@ -125,21 +133,7 @@ impl ProjectionArrangement {
                         unscoped_symbols.push(row.id);
                     }
                     let key = name_key(row);
-                    // A producer can mint a synthetic child fact that is
-                    // named exactly like its own parent declaration only for
-                    // identity purposes, most notably a function's
-                    // return-type "result slot" (see
-                    // `crates/engine/src/driver/lower/{python,rust}.rs`).
-                    // That coincidence never happens for a real, distinct
-                    // declaration, so it is used here to keep a phantom
-                    // child out of name/search lookup: otherwise `name
-                    // <function>` returns both the function and its own
-                    // nameless result slot under the same spelling.
-                    let shares_parent_name = row
-                        .parent
-                        .and_then(|parent| view.row(RowId::Symbol(parent)))
-                        .is_some_and(|parent_row| name_key(&parent_row).normalized == key.normalized);
-                    if !shares_parent_name {
+                    if !is_synthetic_result_slot(row, |id| view.row(id)) {
                         names.push(key.clone());
                         for gram in search_grams(&key.normalized) {
                             name_postings.push(NamePostingKey {
@@ -269,6 +263,8 @@ impl ProjectionArrangement {
 
     fn update_one(
         &self,
+        base: &ViewRoot,
+        view: &ViewRoot,
         old: Option<&Row>,
         new: Option<&Row>,
         frontier: backend_flow::Frontier,
@@ -310,29 +306,41 @@ impl ProjectionArrangement {
             frontier.clone(),
             work,
         )?);
+        // `old_searchable`/`new_searchable` additionally drop a synthetic
+        // result-slot row from name/search admission, matching
+        // `build_inner`, so an incrementally-updated arrangement and a
+        // freshly rebuilt one agree on what a name search returns. The
+        // parent lookup reads whichever view the row itself came from: the
+        // pre-delta `base` for an old row, the current `view` for a new one.
+        // `package_symbols`/`children` keep using the unfiltered `old_name`/
+        // `new_name`: the row is still a real, addressable member of its
+        // package and parentage tree, it just isn't independently
+        // name-searchable.
+        let old_name = old.filter(|row| matches!(row.id, RowId::Symbol(_)));
+        let new_name = new.filter(|row| matches!(row.id, RowId::Symbol(_)));
+        let old_searchable =
+            old_name.filter(|row| !is_synthetic_result_slot(row, |id| base.row(id)));
+        let new_searchable =
+            new_name.filter(|row| !is_synthetic_result_slot(row, |id| view.row(id)));
         next.names = Some(update_unit(
             names,
-            old.filter(|row| matches!(row.id, RowId::Symbol(_)))
-                .map(name_key),
-            new.filter(|row| matches!(row.id, RowId::Symbol(_)))
-                .map(name_key),
+            old_searchable.map(name_key),
+            new_searchable.map(name_key),
             frontier.clone(),
             work,
         )?);
 
-        let old_name = old.filter(|row| matches!(row.id, RowId::Symbol(_)));
-        let new_name = new.filter(|row| matches!(row.id, RowId::Symbol(_)));
         next.name_postings = Some(update_name_postings(
             name_postings,
-            old_name,
-            new_name,
+            old_searchable,
+            new_searchable,
             frontier.clone(),
             work,
         )?);
         next.search_postings = Some(update_search_postings(
             search_postings,
-            old_name,
-            new_name,
+            old_searchable,
+            new_searchable,
             frontier.clone(),
             work,
         )?);
@@ -572,4 +580,38 @@ fn name_key(row: &Row) -> NameKey {
             .to_lowercase(),
         id: row.id,
     }
+}
+
+/// Returns whether `row` is a producer-minted synthetic child fact that
+/// exists only to give a function's return-type "result slot" a
+/// content-addressed identity (see
+/// `crates/engine/src/driver/lower/{python,rust}.rs`), rather than a real,
+/// independently searchable declaration.
+///
+/// A real declaration can coincidentally share its exact spelling with its
+/// parent -- a constructor (`class Foo { Foo() {} }`), a Rust
+/// `mod foo { pub fn foo() }`, a method named like its class -- so name
+/// sharing alone is not a safe signal; those must stay searchable. What is
+/// unique to the synthetic slot is its *kind*: it is the only
+/// `DeclarationKind::Variable` row whose immediate parent is itself callable
+/// (a function or method). A real field, constructor, or nested function
+/// never presents as `Variable`, so requiring that kind and a callable
+/// parent, on top of the name match, narrows this to exactly the synthetic
+/// result slot.
+///
+/// `row_at` looks the parent up in whichever view `row` itself was read
+/// from (the pre-delta base for an old row, the current view for a new
+/// one), so an incremental update and a full rebuild agree.
+fn is_synthetic_result_slot(row: &Row, row_at: impl Fn(RowId) -> Option<Row>) -> bool {
+    row.kind == Some(DeclarationKind::Variable)
+        && row
+            .parent
+            .and_then(|parent| row_at(RowId::Symbol(parent)))
+            .is_some_and(|parent_row| {
+                name_key(&parent_row).normalized == name_key(row).normalized
+                    && matches!(
+                        parent_row.kind,
+                        Some(DeclarationKind::Function | DeclarationKind::Method)
+                    )
+            })
 }

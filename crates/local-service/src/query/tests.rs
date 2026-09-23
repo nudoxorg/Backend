@@ -192,6 +192,147 @@ fn semantic_candidate_identity_is_scoped_to_the_immutable_view() {
     assert_ne!(first, second);
 }
 
+/// A producer's synthetic function return-type "result slot" is a
+/// `Variable`-kind row named exactly like its parent function, minted only
+/// so the slot has a content-addressed identity (see
+/// `crates/engine/src/driver/lower/{python,rust}.rs`). It must not surface
+/// from `backend.search`. A class's own constructor, named exactly like the
+/// class, must still surface: excluding every row that merely shares its
+/// parent's name (rather than requiring `Variable` kind and a callable
+/// parent) would wrongly hide it too. This asserts on the actual returned
+/// rows, not counts.
+#[test]
+fn local_search_excludes_only_the_synthetic_result_slot() {
+    let head = crate::builtin::genesis().expect("genesis");
+    let (base, _) = crate::builtin::initial_view().expect("initial view");
+    let capability = crate::builtin::test_builtin_view_capability().expect("capability");
+    let workspace = head.root();
+    let package = backend_engine::package_key("pkg");
+
+    let ferris_id = backend_engine::symbol_key("pkg::ferris");
+    let slot_id = backend_engine::symbol_key("pkg::ferris::ferris");
+    let class_id = backend_engine::symbol_key("pkg::Foo");
+    let ctor_id = backend_engine::symbol_key("pkg::Foo::Foo");
+
+    let project = Row::new(RowId::Package(package), base.basis(), "pkg");
+    let ferris = Row::in_package(RowId::Symbol(ferris_id), base.basis(), package, "pkg::ferris")
+        .with_kind(backend_engine::DeclarationKind::Function);
+    // The result slot's own label ends in "::ferris" too: it is named
+    // exactly like the function it belongs to.
+    let slot = Row::in_package(
+        RowId::Symbol(slot_id),
+        base.basis(),
+        package,
+        "pkg::ferris::ferris",
+    )
+    .with_kind(backend_engine::DeclarationKind::Variable)
+    .with_parent(ferris_id);
+    let class = Row::in_package(RowId::Symbol(class_id), base.basis(), package, "pkg::Foo")
+        .with_kind(backend_engine::DeclarationKind::Class);
+    let ctor = Row::in_package(
+        RowId::Symbol(ctor_id),
+        base.basis(),
+        package,
+        "pkg::Foo::Foo",
+    )
+    .with_kind(backend_engine::DeclarationKind::Constructor)
+    .with_parent(class_id);
+
+    let view = backend_engine::ViewRoot::new_checked(
+        base.recipe(),
+        base.basis(),
+        base.frontier(),
+        vec![
+            project.clone(),
+            ferris.clone(),
+            slot.clone(),
+            class.clone(),
+            ctor.clone(),
+        ],
+        vec![ViewCoverage::Complete],
+        capability,
+    )
+    .expect("selected view");
+
+    let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
+        backend_semantic::vocabulary::RustEdition::Rust2021,
+    );
+    let project_id = RowId::Package(package).stable_key();
+    let fact = |row: &Row, parent: Option<RowId>| {
+        let evidence = if row.id == RowId::Package(package) {
+            backend_extension_trustfall::SemanticQueryEvidence::Package(
+                backend_extension_trustfall::PackageScopeEvidence::new(package),
+            )
+        } else {
+            backend_extension_trustfall::SemanticQueryEvidence::StructuralFallback(
+                backend_extension_trustfall::StructuralFallbackEvidence::new(
+                    package, profile, [7; 32], [8; 32],
+                ),
+            )
+        };
+        backend_extension_trustfall::SemanticQueryFact::new(
+            evidence,
+            backend_extension_trustfall::SemanticQueryPresentation {
+                id: row.id.stable_key(),
+                kind: row
+                    .kind
+                    .map_or("project", backend_engine::DeclarationKind::name)
+                    .to_owned(),
+                coordinate: row.label.clone(),
+                name: row.label.rsplit("::").next().unwrap_or(&row.label).to_owned(),
+                signature: None,
+                documentation: String::new(),
+                score: None,
+                project: (row.id != RowId::Package(package)).then(|| project_id.clone()),
+                parent: parent.map(|id| id.stable_key()),
+                related: Box::new([]),
+            },
+        )
+    };
+    let facts = vec![
+        fact(&project, None),
+        fact(&ferris, None),
+        fact(&slot, Some(RowId::Symbol(ferris_id))),
+        fact(&class, None),
+        fact(&ctor, Some(RowId::Symbol(class_id))),
+    ];
+    let evidence =
+        backend_extension_trustfall::SemanticQueryCorpus::admit(workspace, facts).expect("typed evidence");
+
+    let coordinator = QueryCoordinator::new(
+        workspace,
+        view,
+        crate::builtin::admitted_coverage().expect("coverage"),
+        evidence,
+    )
+    .expect("coordinator");
+
+    let ferris_hits = coordinator
+        .search_local(LocalQuery::prefix("ferris", 10).expect("query"))
+        .expect("local search")
+        .rows
+        .into_iter()
+        .map(|ranked| ranked.row.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ferris_hits,
+        vec![RowId::Symbol(ferris_id)],
+        "the synthetic result slot must not surface from `backend.search`"
+    );
+
+    let foo_hits = coordinator
+        .search_local(LocalQuery::prefix("foo", 10).expect("query"))
+        .expect("local search")
+        .rows
+        .into_iter()
+        .map(|ranked| ranked.row.id)
+        .collect::<Vec<_>>();
+    assert!(
+        foo_hits.contains(&RowId::Symbol(ctor_id)),
+        "a constructor named like its class must stay searchable: {foo_hits:?}"
+    );
+}
+
 fn recipe() -> semantic::EmbeddingRecipe {
     semantic::EmbeddingRecipe {
         model: semantic::ModelVersion::from_value(&[8; 32]),

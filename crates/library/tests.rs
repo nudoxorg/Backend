@@ -244,6 +244,133 @@ fn names_documents_and_outlines_are_pinned_to_one_basis() {
     assert_eq!(basis.root, root);
 }
 
+/// A producer's synthetic function return-type "result slot" is a
+/// `Variable`-kind row named exactly like its parent function, minted only
+/// so the slot has a content-addressed identity (see
+/// `crates/engine/src/driver/lower/{python,rust}.rs`). It must never
+/// surface from a plain name search: the search fixture used to exclude
+/// *any* row sharing its parent's exact name, which also hid a class's own
+/// constructor, a method named like its class, and a Rust `fn foo` nested
+/// in `mod foo`. This asserts on the concrete returned rows, not counts, so
+/// a regression that brings back either failure mode -- the phantom
+/// reappearing, or a real declaration disappearing -- is caught here.
+#[test]
+fn name_search_excludes_only_the_synthetic_result_slot() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+
+    let ferris = symbol_key("pkg::ferris");
+    let ferris_result = symbol_key("pkg::ferris::result");
+    let foo_class = symbol_key("pkg::Foo");
+    let foo_ctor = symbol_key("pkg::Foo::Foo");
+    let mod_foo = symbol_key("pkg::foo");
+    let fn_foo = symbol_key("pkg::foo::foo");
+
+    let library = projection(vec![
+        // The real function and its synthetic, nameless-in-spirit result
+        // slot: both literally named "ferris", the slot parented to the
+        // function.
+        Row::new(RowId::Symbol(ferris), basis, "pkg::ferris").with_kind(DeclarationKind::Function),
+        // The result slot's own label ends in "::ferris" too: it is named
+        // exactly like the function it belongs to.
+        Row::new(RowId::Symbol(ferris_result), basis, "pkg::ferris::ferris")
+            .with_kind(DeclarationKind::Variable)
+            .with_parent(ferris),
+        // A class and its own constructor, named exactly like the class --
+        // a real declaration that must stay searchable.
+        Row::new(RowId::Symbol(foo_class), basis, "pkg::Foo").with_kind(DeclarationKind::Class),
+        Row::new(RowId::Symbol(foo_ctor), basis, "pkg::Foo::Foo")
+            .with_kind(DeclarationKind::Constructor)
+            .with_parent(foo_class),
+        // `mod foo { pub fn foo() {} }` -- a function named like its own
+        // parent module, which must also stay searchable.
+        Row::new(RowId::Symbol(mod_foo), basis, "pkg::foo").with_kind(DeclarationKind::Module),
+        Row::new(RowId::Symbol(fn_foo), basis, "pkg::foo::foo")
+            .with_kind(DeclarationKind::Function)
+            .with_parent(mod_foo),
+    ]);
+    let revision = library.revision_root();
+
+    let ferris_hits = library
+        .names(&NameQuery::new(
+            "ferris",
+            revision,
+            QueryLimit::default(),
+        ))
+        .expect("name query")
+        .root
+        .rows()
+        .iter()
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ferris_hits,
+        vec![RowId::Symbol(ferris)],
+        "the synthetic result slot must not surface from a name search"
+    );
+
+    let foo_hits = library
+        .names(&NameQuery::new("foo", revision, QueryLimit::default()))
+        .expect("name query")
+        .root
+        .rows()
+        .iter()
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+    assert!(
+        foo_hits.contains(&RowId::Symbol(foo_ctor)),
+        "a constructor named like its class must stay searchable: {foo_hits:?}"
+    );
+    assert!(
+        foo_hits.contains(&RowId::Symbol(fn_foo)),
+        "a Rust `fn foo` inside `mod foo` must stay searchable: {foo_hits:?}"
+    );
+}
+
+/// The same fixture as `name_search_excludes_only_the_synthetic_result_slot`,
+/// but the result slot arrives through a committed delta after the function
+/// is already indexed, exercising `ProjectionArrangement::update_one`'s
+/// incremental path instead of a full rebuild. An index must answer a name
+/// search the same way regardless of how it was built.
+#[test]
+fn incrementally_admitted_result_slot_is_excluded_the_same_as_a_full_rebuild() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let ferris = symbol_key("pkg::ferris");
+    let ferris_result = symbol_key("pkg::ferris::result");
+
+    let library = projection(vec![
+        Row::new(RowId::Symbol(ferris), basis, "pkg::ferris").with_kind(DeclarationKind::Function),
+    ]);
+    let result_row = Row::new(RowId::Symbol(ferris_result), basis, "pkg::ferris::ferris")
+        .with_kind(DeclarationKind::Variable)
+        .with_parent(ferris);
+    let (library, _) = advance(
+        library,
+        ViewDelta::Upsert { row: result_row },
+        capability(object),
+    );
+    let revision = library.revision_root();
+
+    let hits = library
+        .names(&NameQuery::new(
+            "ferris",
+            revision,
+            QueryLimit::default(),
+        ))
+        .expect("name query")
+        .root
+        .rows()
+        .iter()
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        hits,
+        vec![RowId::Symbol(ferris)],
+        "an incrementally admitted synthetic result slot must not surface either"
+    );
+}
+
 #[test]
 fn document_projection_uses_the_complete_row_document() {
     let (root, object) = source();

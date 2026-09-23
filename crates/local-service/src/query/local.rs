@@ -579,23 +579,30 @@ fn collect_selected_documents(
         cursor = next;
     }
     // A producer can mint a synthetic child fact that carries its own
-    // declaration's name for identity purposes only, most notably a
-    // function's return-type "result slot", which several lowering passes
-    // admit as a `Parameter` fact literally named like the owning function
-    // (see `driver/lower/python.rs` and `driver/lower/rust.rs`). That name
-    // was never chosen for user-facing lookup; it exists so the slot's
-    // content-addressed coordinate has one. Indexing it under the lexical
-    // "name" field anyway turns every name search for the function into two
-    // hits: the function itself and this phantom child sharing its name.
-    // A real, distinct declaration essentially never shares its own parent's
-    // exact name, so that coincidence is used here as the signal to leave a
-    // fact out of top-level name search without needing a new IR/wire bit.
-    let names_by_id: BTreeMap<&str, &str> = semantic_evidence
+    // owning function's name for identity purposes only: a function's
+    // return-type "result slot", admitted as a `Parameter`-kind fact
+    // literally named like the function (see `driver/lower/python.rs` and
+    // `driver/lower/rust.rs`). That name was never chosen for user-facing
+    // lookup; it exists so the slot's content-addressed coordinate has one.
+    // Indexing it under the lexical "name" field anyway turns every name
+    // search for the function into two hits.
+    //
+    // A real, distinct declaration can coincidentally share its exact
+    // spelling with its parent -- a constructor (`class Foo { Foo() {} }`),
+    // a Rust `mod foo { pub fn foo() }`, a method named like its class -- so
+    // name-sharing alone is not a safe signal; those must stay searchable.
+    // What is unique to the synthetic slot is its *kind*: it is the only
+    // "variable"-presented fact whose immediate parent is itself callable
+    // (a function or method). A real field, constructor, or nested function
+    // never presents as `variable`, so requiring `variable` kind and a
+    // callable parent, on top of the name match, narrows this to exactly
+    // the synthetic result slot without a new IR/wire bit.
+    let facts_by_id: BTreeMap<&str, &SemanticQueryPresentation> = semantic_evidence
         .facts()
         .iter()
         .map(|fact| {
             let presentation = fact.presentation();
-            (presentation.id.as_str(), presentation.name.as_str())
+            (presentation.id.as_str(), presentation)
         })
         .collect();
     let mut semantic_documents = Vec::with_capacity(semantic_evidence.facts().len());
@@ -612,11 +619,15 @@ fn collect_selected_documents(
             {
                 return Err(QueryError::IdentityCollision);
             }
-            let shares_parent_name = presentation
-                .parent
-                .as_deref()
-                .and_then(|parent| names_by_id.get(parent))
-                .is_some_and(|parent_name| *parent_name == presentation.name);
+            let is_synthetic_result_slot = presentation.kind == "variable"
+                && presentation
+                    .parent
+                    .as_deref()
+                    .and_then(|parent| facts_by_id.get(parent))
+                    .is_some_and(|parent_fact| {
+                        parent_fact.name == presentation.name
+                            && matches!(parent_fact.kind.as_str(), "function" | "method")
+                    });
             // The coordinate itself ends in `::<name>`, so merely dropping
             // the "name" field would still leave this fact lexically
             // matchable through its own "coordinate" field. Leaving the row
@@ -625,7 +636,7 @@ fn collect_selected_documents(
             // member of `entities`/`candidates`/`semantic_documents`; so
             // direct coordinate lookups (`show`) and the semantic/vector
             // lane are unaffected.
-            if !shares_parent_name {
+            if !is_synthetic_result_slot {
                 let row_fields = fields(presentation);
                 document_bytes = checked_document_bytes(document_bytes, &row_fields)?;
                 documents.push((entity, row_fields));
