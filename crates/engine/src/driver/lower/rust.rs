@@ -559,12 +559,29 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             // `#[rustversion::since]`) streams both. Commit the first and
             // keep each later twin out rather than minting byte-identical
             // declaration identities the image build must reject.
-            let scope = self.enclosing_item_span(&declaration.syntax)?;
-            if !self
-                .scoped_names
-                .insert((scope, declaration.kind as u8, name.to_vec()))
-            {
-                continue;
+            //
+            // An implementation is exempt: E0428 never governs impl blocks,
+            // so a source legally carries many written impls whose self
+            // type spells the same bytes — several inherent blocks for one
+            // type, or several traits impl'd for one self type (`IntoIterator`
+            // and `TryFrom<&[T]>` both written `for &'a GenericArray<T, N>`).
+            // `declaration_name` deliberately narrows an impl's name to its
+            // self type alone (see its doc comment), so keying this same-name
+            // gate on that name would silently drop every later sibling here,
+            // orphaning its members to a fabricated root scope instead of
+            // reaching the trait/generics/member-aware declaration identity
+            // built to discriminate real impl siblings. A genuine cfg-twin
+            // impl (identical trait, generics, and members) still reaches
+            // that identity pass unfiltered and is rejected there as the
+            // honest `DuplicateDeclarationIdentity` terminal.
+            if declaration.kind != SemanticKind::Implementation {
+                let scope = self.enclosing_item_span(&declaration.syntax)?;
+                if !self
+                    .scoped_names
+                    .insert((scope, declaration.kind as u8, name.to_vec()))
+                {
+                    continue;
+                }
             }
             match &declaration.definition {
                 RustDefinition::Field(field) => self.covered_fields.push(*field),

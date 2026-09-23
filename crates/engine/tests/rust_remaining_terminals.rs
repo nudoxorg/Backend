@@ -648,9 +648,20 @@ fn rust_hrtb_where_predicates_lower_into_the_free_lane() {
 /// Implementations commit their whole written self type as the declaration
 /// name, so two blocks of one trait whose self types differ only in generic
 /// arguments (`U<N, false>` versus `U<N, true>`) stay distinct declarations
-/// and the image build raises no duplicate-identity terminal. The corpus
-/// guard pins the audit row (`cargo:generic-array@1.4.5`) whose twin
-/// `ArrayLength` impls previously collided.
+/// and the image build raises no duplicate-identity terminal. The written
+/// syntax walk's own same-name gate (guarding against a tool-attribute cfg
+/// twin such as `#[rustversion::since]`) exempts implementations for the same
+/// reason: E0428 never governs impl blocks, so several written impls legally
+/// share one self type's exact spelling — several inherent blocks for one
+/// type, or several distinct traits impl'd for one self type — and keying
+/// that gate on the self-type-only name would silently drop every later
+/// sibling before the trait/generics/member-aware declaration identity ever
+/// sees it, orphaning its members to a fabricated root scope. The corpus
+/// guard pins the audit rows (`cargo:generic-array@1.4.5`, whose three
+/// `GenericArray<T, N>` inherent blocks and whose `IntoIterator`/`TryFrom`
+/// pair sharing one reference self type both previously collapsed this way,
+/// and `cargo:winnow@0.5.40`, whose `Stream`/`Offset` pairs share a self type
+/// too).
 #[test]
 fn rust_impl_self_type_names_discriminate_generic_argument_variants() {
     let bodies = [
@@ -669,6 +680,14 @@ fn rust_impl_self_type_names_discriminate_generic_argument_variants() {
         (
             "associated-types",
             "trait S { type Item; }\nstruct U<N, const B: bool>(N);\nimpl<N> S for U<N, false> { type Item = u8; }\nimpl<N> S for U<N, true> { type Item = u16; }\n",
+        ),
+        (
+            "inherent-blocks-share-self-type",
+            "struct U<N>(N);\nimpl<N> U<N> {\n    fn a(&self) -> u8 { 1 }\n}\nimpl<N> U<N> {\n    fn b(&self) -> u8 { 2 }\n}\nimpl<N> U<N> {\n    fn c(&self) -> u8 { 3 }\n}\n",
+        ),
+        (
+            "different-traits-share-self-type",
+            "trait A { type Item; fn a(self) -> Self::Item; }\ntrait B { type Item; fn b(self) -> Self::Item; }\nstruct U<N>(N);\nimpl<'x, N> A for &'x U<N> {\n    type Item = u8;\n    fn a(self) -> u8 { 1 }\n}\nimpl<'x, N> B for &'x U<N> {\n    type Item = u16;\n    fn b(self) -> u16 { 2 }\n}\n",
         ),
     ];
     for (label, body) in bodies {
