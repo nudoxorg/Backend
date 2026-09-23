@@ -812,11 +812,20 @@ fn rust_gated_and_facade_crate_roots_admit_the_empty_product() {
 }
 
 /// TEMPORARY bisect driver.
+///
+/// This walks an ad hoc, hand-populated directory of numbered prefix
+/// fixtures (`GA_PREFIX_DIR`) that a developer builds locally while
+/// bisecting a specific regression; it names no corpus or fixture the repo
+/// or Nix ships, so there is nothing to assert here without that directory.
+/// Skip exactly like the other `NUDOX_*_CORPUS_DIR`-gated probes in this
+/// file when the variable is unset, instead of panicking in every sandbox
+/// that lacks a bisect session in flight.
 #[test]
 fn diag_bisect_ga() {
-    let dir = std::path::PathBuf::from(
-        std::env::var("GA_PREFIX_DIR").expect("GA_PREFIX_DIR"),
-    );
+    let Some(dir) = std::env::var_os("GA_PREFIX_DIR").map(std::path::PathBuf::from) else {
+        eprintln!("GA_PREFIX_DIR unset; skipping ad hoc bisect driver");
+        return;
+    };
     let mut failures = Vec::new();
     for entry in fs::read_dir(&dir).expect("dir") {
         let path = entry.expect("entry").path();
