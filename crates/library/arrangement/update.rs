@@ -125,18 +125,34 @@ impl ProjectionArrangement {
                         unscoped_symbols.push(row.id);
                     }
                     let key = name_key(row);
-                    names.push(key.clone());
-                    for gram in search_grams(&key.normalized) {
-                        name_postings.push(NamePostingKey {
-                            gram,
-                            id: Some(key.id),
-                        });
-                    }
-                    for gram in search_grams(&searchable_text(row)) {
-                        search_postings.push(SearchPostingKey {
-                            gram,
-                            id: Some(row.id),
-                        });
+                    // A producer can mint a synthetic child fact that is
+                    // named exactly like its own parent declaration only for
+                    // identity purposes, most notably a function's
+                    // return-type "result slot" (see
+                    // `crates/engine/src/driver/lower/{python,rust}.rs`).
+                    // That coincidence never happens for a real, distinct
+                    // declaration, so it is used here to keep a phantom
+                    // child out of name/search lookup: otherwise `name
+                    // <function>` returns both the function and its own
+                    // nameless result slot under the same spelling.
+                    let shares_parent_name = row
+                        .parent
+                        .and_then(|parent| view.row(RowId::Symbol(parent)))
+                        .is_some_and(|parent_row| name_key(&parent_row).normalized == key.normalized);
+                    if !shares_parent_name {
+                        names.push(key.clone());
+                        for gram in search_grams(&key.normalized) {
+                            name_postings.push(NamePostingKey {
+                                gram,
+                                id: Some(key.id),
+                            });
+                        }
+                        for gram in search_grams(&searchable_text(row)) {
+                            search_postings.push(SearchPostingKey {
+                                gram,
+                                id: Some(row.id),
+                            });
+                        }
                     }
                     if let Some(package) = row.package {
                         package_symbols.push(PackageRowKey {

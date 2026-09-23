@@ -578,6 +578,26 @@ fn collect_selected_documents(
         let Some(next) = page.next() else { break };
         cursor = next;
     }
+    // A producer can mint a synthetic child fact that carries its own
+    // declaration's name for identity purposes only, most notably a
+    // function's return-type "result slot", which several lowering passes
+    // admit as a `Parameter` fact literally named like the owning function
+    // (see `driver/lower/python.rs` and `driver/lower/rust.rs`). That name
+    // was never chosen for user-facing lookup; it exists so the slot's
+    // content-addressed coordinate has one. Indexing it under the lexical
+    // "name" field anyway turns every name search for the function into two
+    // hits: the function itself and this phantom child sharing its name.
+    // A real, distinct declaration essentially never shares its own parent's
+    // exact name, so that coincidence is used here as the signal to leave a
+    // fact out of top-level name search without needing a new IR/wire bit.
+    let names_by_id: BTreeMap<&str, &str> = semantic_evidence
+        .facts()
+        .iter()
+        .map(|fact| {
+            let presentation = fact.presentation();
+            (presentation.id.as_str(), presentation.name.as_str())
+        })
+        .collect();
     let mut semantic_documents = Vec::with_capacity(semantic_evidence.facts().len());
     for fact in semantic_evidence.facts() {
         let presentation = fact.presentation();
@@ -592,9 +612,24 @@ fn collect_selected_documents(
             {
                 return Err(QueryError::IdentityCollision);
             }
-            let row_fields = fields(presentation);
-            document_bytes = checked_document_bytes(document_bytes, &row_fields)?;
-            documents.push((entity, row_fields));
+            let shares_parent_name = presentation
+                .parent
+                .as_deref()
+                .and_then(|parent| names_by_id.get(parent))
+                .is_some_and(|parent_name| *parent_name == presentation.name);
+            // The coordinate itself ends in `::<name>`, so merely dropping
+            // the "name" field would still leave this fact lexically
+            // matchable through its own "coordinate" field. Leaving the row
+            // out of the lexical corpus entirely is the only way a name
+            // search for the parent stops finding it too; it stays a normal
+            // member of `entities`/`candidates`/`semantic_documents`; so
+            // direct coordinate lookups (`show`) and the semantic/vector
+            // lane are unaffected.
+            if !shares_parent_name {
+                let row_fields = fields(presentation);
+                document_bytes = checked_document_bytes(document_bytes, &row_fields)?;
+                documents.push((entity, row_fields));
+            }
             semantic_documents.push(SemanticDocument {
                 row,
                 text: semantic_text(presentation),
