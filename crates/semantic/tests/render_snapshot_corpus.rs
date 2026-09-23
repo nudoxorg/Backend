@@ -1334,6 +1334,7 @@ package ahash-0.8.11 file=ahash-0.8.11/src/random_state.rs bytes=18534
 	Implementation DefaultRandomSource :: impl DefaultRandomSource = DefaultRandomSource
 	Parameter new :: new: DefaultRandomSource
 	Function new :: fn new() -> DefaultRandomSource
+	Implementation DefaultRandomSource :: impl DefaultRandomSource = DefaultRandomSource
 	Field k0 :: pub(crate) k0: u64
 	Field k1 :: pub(crate) k1: u64
 	Field k2 :: pub(crate) k2: u64
@@ -1343,10 +1344,9 @@ package ahash-0.8.11 file=ahash-0.8.11/src/random_state.rs bytes=18534
 	Parameter f :: f: &mut Formatter
 	Parameter fmt :: fmt: Result
 	Function fmt :: fn fmt(self: &RandomState, f: &mut Formatter) -> Result
+	Implementation RandomState :: impl RandomState = RandomState
 	Parameter new :: pub new: RandomState
 	Function new :: pub fn new() -> RandomState
-	Parameter k0 :: k0: u64
-	Parameter k1 :: k1: u64
 summary entities=25 signature rendered=25 unavailable=0 placeholder=0 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 package bitflags-2.6.0 file=bitflags-2.6.0/src/lib.rs bytes=27206
 	Module iter :: pub mod iter
@@ -1373,9 +1373,12 @@ package itoa-1.0.14 file=itoa-1.0.14/src/lib.rs bytes=11578
 	Implementation Buffer :: impl Buffer = Buffer
 	Parameter default :: default: Buffer
 	Function default :: fn default() -> Buffer
+	Implementation Buffer :: impl Buffer = Buffer
+	Implementation Buffer :: impl Buffer = Buffer
 	Parameter self :: self: &Buffer
 	Parameter clone :: clone: Buffer
 	Function clone :: fn clone(self: &Buffer) -> Buffer
+	Implementation Buffer :: impl Buffer = Buffer
 	Parameter new :: pub new: Buffer
 	Function new :: pub fn new() -> Buffer
 	Parameter self :: self: &mut Buffer
@@ -1385,10 +1388,7 @@ package itoa-1.0.14 file=itoa-1.0.14/src/lib.rs bytes=11578
 	Constant MAX_STR_LEN :: const MAX_STR_LEN: native-uint
 	Alias Buffer :: type Buffer = ?oracle-gap [placeholder:?oracle-gap]
 	Parameter self :: self: Self
-	Parameter buf :: buf: &mut ?oracle-gap [placeholder:?oracle-gap]
-	Parameter write :: write: &str
-	Function write :: fn write(self: Self, buf: &mut ?oracle-gap) -> &str [placeholder:?oracle-gap]
-summary entities=25 signature rendered=25 unavailable=0 placeholder=3 malformed=0 canonical ok=25 err=0 document ok=25 err=0
+summary entities=25 signature rendered=25 unavailable=0 placeholder=1 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 package log-0.4.22 file=log-0.4.22/src/lib.rs bytes=60684
 	Module macros :: mod macros
 	Module serde :: mod serde
