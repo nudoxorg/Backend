@@ -1564,9 +1564,10 @@ mod tests {
         let SurfaceReply::Advisory(dto) = decoded else {
             panic!("advisory reply shape");
         };
+        // Unknown coverage warns without blocking acquisition (e7aeabfb1).
         assert!(matches!(
             dto.decision,
-            backend_advisory::AcquisitionDecision::Deny(_)
+            backend_advisory::AcquisitionDecision::Warn(_)
         ));
     }
 
