@@ -563,6 +563,24 @@ in
             priority = 80;
           }
           {
+            # The frozen twenty-row Maven corpus journey and its real-package
+            # dump mirror walk every source file of packages as large as
+            # commons-lang3 (100+ files) through a real per-file javac
+            # dispatch. The shared `native-compiler` slow-timeout (45s x 3)
+            # exists for ordinary corpus checks and is far too tight for
+            # these two whole-fleet journeys; give them their own budget
+            # instead of widening the shared one for every other test that
+            # matches `/corpus|native/`.
+            filter = "test(real_maven_corpus_lowers_and_publishes) | test(dump_real_package_outcomes)";
+            test-group = "native-compiler";
+            threads-required = 2;
+            priority = 90;
+            slow-timeout = {
+              period = "120s";
+              terminate-after = 10;
+            };
+          }
+          {
             filter = "test(/qdrant|real_service|live_service/)";
             test-group = "live-qdrant";
             threads-required = 2;
@@ -585,7 +603,7 @@ in
             priority = 60;
           }
           {
-            filter = "test(/corpus|multilingual|native/)";
+            filter = "test(/corpus|multilingual|native|real_package/)";
             test-group = "native-compiler";
             threads-required = 2;
             slow-timeout = {
