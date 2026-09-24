@@ -12,6 +12,15 @@ let
     cargo = toolchains.stable;
     rustc = toolchains.stable;
   };
+  # These generated scripts run in checks with an otherwise isolated PATH and
+  # are also shipped as runtime entry points. Keep their shell tools in the
+  # runtime closure rather than relying on utilities installed on the host.
+  guiServiceToolPath = pkgs.lib.makeBinPath [
+    pkgs.coreutils
+    pkgs.gawk
+    pkgs.gnused
+    pkgs.ps
+  ];
   controlSourceRoots = [
     "crates"
     "frontends"
@@ -280,6 +289,8 @@ let
                     cat > "$out/bin/nudox-gui-service" <<'EOF'
           #!/bin/sh
           set -eu
+          PATH="${guiServiceToolPath}:''${PATH:-}"
+          export PATH
           action=''${1:-status}
           if [ "$#" -gt 0 ]; then shift; fi
           endpoint=''${NUDOX_GUI_LOCALD_ENDPOINT:-}
@@ -400,6 +411,8 @@ let
                     cat > "$out/bin/nudox-gui-probe" <<'EOF'
           #!/bin/sh
           set -eu
+          PATH="${guiServiceToolPath}:''${PATH:-}"
+          export PATH
           endpoint=''${NUDOX_GUI_LOCALD_ENDPOINT:-}
           workspace=''${NUDOX_GUI_WORKSPACE:-}
           while [ "$#" -gt 0 ]; do
@@ -418,6 +431,8 @@ let
                     cat > "$out/bin/nudox-gui-service-test" <<'EOF'
           #!/bin/sh
           set -eu
+          PATH="${guiServiceToolPath}:''${PATH:-}"
+          export PATH
           bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
           root=$(mktemp -d "''${TMPDIR:-/tmp}/nudox-gui-service-test.XXXXXX")
           endpoint="$root/locald.sock"
