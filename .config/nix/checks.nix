@@ -152,6 +152,9 @@ in
       pkgs.coreutils
       pkgs.stdenv.cc
       pkgs.libiconv
+      # dylint/test.nu starts a nested Cargo build; openssl-sys needs the
+      # discovery tool in this isolated check.
+      pkgs.pkg-config
       pkgs.zlib
     ];
     environment = {
@@ -161,6 +164,9 @@ in
         map (rule: rule.id) (builtins.filter (rule: rule.engine == "dylint") control.lint.rules)
       );
       BACKEND_NIGHTLY_CARGO = toolchains.nightlyCargo;
+      # nuenv only adds packages to PATH; it does not run stdenv setup hooks
+      # that would discover OpenSSL's .pc file automatically.
+      PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
       LIBRARY_PATH = pkgs.lib.makeLibraryPath [
         pkgs.libiconv
         pkgs.zlib
@@ -170,6 +176,8 @@ in
       SDKROOT = pkgs.apple-sdk.sdkroot;
     };
     build = ''
+      # Fail before the expensive nested Cargo build if native discovery drifts.
+      pkg-config --modversion openssl
       with-env { BACKEND_DYLINT_ARTIFACTS: ($env.TMPDIR | path join "dylint") } {
         nu --no-config-file ${../.}/dylint/test.nu
       }
