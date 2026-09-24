@@ -24,7 +24,16 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use backend_semantic::ir::{EntityKind, FragmentView, ItemKind};
+use backend_engine::index_build::{IndexBuildScratch, build};
+use backend_engine::index_publish::{
+    CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
+};
+use backend_engine::publication::immutable::ImmutableArtifactStore;
+use backend_engine::publication::manifest::StoredFragmentFacts;
+use backend_engine::publication::manifest_store::ImmutableManifestStore;
+use backend_engine::publication::{
+    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
+};
 use backend_frontend_java::legacy::{DeclarationKind, JavaAuthorityImage};
 use backend_frontend_java::legacy::{
     JavaRelease as HarnessRelease,
@@ -33,19 +42,10 @@ use backend_frontend_java::legacy::{
     jar::Jar,
     purl::MavenCoordinates,
 };
-use backend_engine::publication::immutable::ImmutableArtifactStore;
-use backend_engine::publication::manifest::StoredFragmentFacts;
-use backend_engine::publication::manifest_store::ImmutableManifestStore;
-use backend_engine::publication::{
-    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
-};
-use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+use backend_semantic::ir::{EntityKind, FragmentView, ItemKind};
 use backend_semantic::vocabulary::{JavaRelease, LanguageProfile, NativeTool, Stage};
-use backend_engine::index_build::{IndexBuildScratch, build};
-use backend_engine::index_publish::{
-    CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
-};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -676,7 +676,9 @@ fn lower_frozen_file(
     // `@interface` (e.g. commons-lang3's marker annotation `DiffExclude`,
     // which carries meta-annotations but declares no member) has no
     // executable to carry one and legitimately has no extension payload.
-    let has_executable = view.entities().any(|entity| entity.kind == EntityKind::Function);
+    let has_executable = view
+        .entities()
+        .any(|entity| entity.kind == EntityKind::Function);
     if !is_package_info
         && (view.type_facts().is_none()
             || (has_executable && view.language_extension_payload().is_none()))
@@ -795,14 +797,12 @@ fn journey_row(
     let mut total_image_bytes = 0;
     let mut total_fragment_bytes = 0;
     let mut occurrence_present = false;
-    let mut occurrence_absent = true;
     let mut fragments = Vec::with_capacity(extracted.len());
     for (name, bytes) in &extracted {
         let laws = lower_frozen_file(row.purl, name, bytes, &classpath, &temp.path, bench)?;
         total_image_bytes += laws.image_bytes;
         total_fragment_bytes += laws.fragment_bytes;
         occurrence_present |= laws.occurrence_present;
-        occurrence_absent &= laws.occurrence_absent;
         println!(
             "CORPUS|{}|{}|{}|{}|{}|{}|{}",
             row.purl,
@@ -815,20 +815,34 @@ fn journey_row(
         );
         fragments.push(laws.fragment);
     }
-    if row_index == ANNOTATIONS_ROW {
-        if occurrence_present || !occurrence_absent {
-            return Err(TestError::Law {
-                purl: row.purl,
-                path: extracted[0].0.clone(),
-                cause: "annotation-only row did not assert the typed occurrence absence".into(),
-            });
-        }
-    } else if !occurrence_present {
+    if !occurrence_present {
         return Err(TestError::Law {
             purl: row.purl,
             path: extracted[0].0.clone(),
             cause: "row carried no occurrence row".into(),
         });
+    }
+    if row_index == ANNOTATIONS_ROW {
+        // NotNull and its neighboring annotations use @Target, @Retention,
+        // and other meta-annotations: those are real typed references. Keep
+        // the negative-plane proof, but ground it in a genuinely reference-
+        // free package declaration instead of pretending the corpus row is
+        // empty. This fixture runs through the same javac and lowerer path.
+        let empty_package = lower_frozen_file(
+            "fixture:empty-package",
+            "fixture/package-info.java",
+            b"package fixture;\n",
+            &[],
+            &temp.path,
+            bench,
+        )?;
+        if !empty_package.occurrence_absent || empty_package.occurrence_present {
+            return Err(TestError::Law {
+                purl: row.purl,
+                path: "fixture/package-info.java".into(),
+                cause: "reference-free package did not assert typed occurrence absence".into(),
+            });
+        }
     }
     println!(
         "CORPUS|{}|{}|{}|{}|{}|{}|{}",

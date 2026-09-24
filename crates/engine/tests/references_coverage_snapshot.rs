@@ -410,13 +410,13 @@ static RUST_SYMBOLS: &[Snap] = &[
         role: "record",
         symbol: "OnceCell",
         grep_total: 156,
-        decl_est: 9,
+        decl_est: 1,
         ir_local: 16,
         ir_foreign: 0,
         ir_stable: 0,
         site_ok: 16,
         site_bad: 0,
-        decl_pos: 8,
+        decl_pos: 0,
         link_occ: 16,
         link_occ_src: 16,
         note: "ce74f843e names an implementation row by its whole written self type, so `impl<'a, 'h> X<'a, 'h>` no longer counts as a declaration token of `X`.",
@@ -522,13 +522,13 @@ static RUST_SYMBOLS: &[Snap] = &[
         role: "record",
         symbol: "ThreeIter",
         grep_total: 6,
-        decl_est: 3,
+        decl_est: 1,
         ir_local: 5,
         ir_foreign: 0,
         ir_stable: 0,
         site_ok: 5,
         site_bad: 0,
-        decl_pos: 2,
+        decl_pos: 0,
         link_occ: 5,
         link_occ_src: 5,
         note: "ce74f843e names an implementation row by its whole written self type, so `impl<'a, 'h> X<'a, 'h>` no longer counts as a declaration token of `X`.",
@@ -2577,7 +2577,7 @@ fn measure(label: &str, prepared: Prepared) -> Result<PackageOutcome, String> {
     // exactly what a durable reader would see.
     let view = FragmentView::validate(&output[..written])
         .map_err(|cause| format!("fragment validation failed: {cause:?}"))?;
-    let mut outcome = measure_fragment(&view, ir, &source);
+    let mut outcome = measure_fragment(&view, ir, &source, label);
     outcome.package = label.to_owned();
     Ok(outcome)
 }
@@ -2616,6 +2616,7 @@ fn measure_fragment<'fragment>(
     view: &FragmentView<'fragment>,
     ir: Ir,
     source: &[u8],
+    package: &str,
 ) -> PackageOutcome {
     let mut outcome = PackageOutcome::default();
     // Entity inventory with names, parents, and source spans.
@@ -2849,7 +2850,7 @@ fn measure_fragment<'fragment>(
     // occurrences by (name, kind) in fragment space and links by id in
     // owned space, and takes site truth from the link plane's absolute
     // source spans rather than re-deriving positions from RelSpans.
-    for sampled in sample_symbols(&entities, source) {
+    for sampled in sample_symbols(&entities, source, package) {
         let mut symbol = SymbolOutcome {
             role: sampled.role.to_owned(),
             name: String::from_utf8_lossy(&sampled.name).into_owned(),
@@ -3028,20 +3029,41 @@ fn kind_matches(entity: &EntityInfo, entities: &[EntityInfo], role: &str) -> boo
     }
 }
 
-/// Deterministic symbol sampling: first entity per required role whose name
-/// has at least two in-file matches (a use is plausible), else the first with
-/// one. Roles: variant (fallback constant), field, method, function, record,
-/// enum.
-fn sample_symbols(entities: &[EntityInfo], source: &[u8]) -> Vec<Sampled> {
+/// Prefer the pinned symbol for each package/role when it still exists. Entity
+/// enumeration order is not a semantic guarantee: a new implementation row
+/// can otherwise silently switch the sampled method and leave a valid pin
+/// unmeasured. Missing pinned entities still fail the parent snapshot check.
+/// Unpinned roles retain the deterministic first-with-a-use fallback.
+fn sample_symbols(entities: &[EntityInfo], source: &[u8], package: &str) -> Vec<Sampled> {
     let mut sampled: Vec<Sampled> = Vec::new();
     let mut seen: Vec<Vec<u8>> = Vec::new();
     for role in ["variant", "field", "method", "function", "record", "enum"] {
         let mut candidates = entities
             .iter()
             .filter(|entity| kind_matches(entity, entities, role));
-        let best = candidates
-            .clone()
-            .find(|entity| identifier_matches(source, &entity.name).len() >= 2)
+        let pin = [
+            RUST_SYMBOLS,
+            TYPESCRIPT_SYMBOLS,
+            PYTHON_SYMBOLS,
+            GO_SYMBOLS,
+            JAVA_SYMBOLS,
+            CSHARP_SYMBOLS,
+            CLANG_SYMBOLS,
+        ]
+        .into_iter()
+        .flatten()
+        .find(|pin| pin.package == package && pin.role == role);
+        let best = pin
+            .and_then(|pin| {
+                candidates
+                    .clone()
+                    .find(|entity| entity.name == pin.symbol.as_bytes())
+            })
+            .or_else(|| {
+                candidates
+                    .clone()
+                    .find(|entity| identifier_matches(source, &entity.name).len() >= 2)
+            })
             .or_else(|| candidates.next());
         if let Some(entity) = best {
             if !seen.contains(&entity.name) {
@@ -3056,6 +3078,43 @@ fn sample_symbols(entities: &[EntityInfo], source: &[u8]) -> Vec<Sampled> {
         }
     }
     sampled
+}
+
+#[test]
+fn pinned_method_sample_does_not_follow_entity_order() {
+    let entities = vec![
+        EntityInfo {
+            id: EntityId::new(0),
+            name: b"OnceCell".to_vec(),
+            kind: EntityKind::Record,
+            parent: None,
+            span: None,
+        },
+        EntityInfo {
+            id: EntityId::new(1),
+            name: b"get".to_vec(),
+            kind: EntityKind::Function,
+            parent: Some(EntityId::new(0)),
+            span: None,
+        },
+        EntityInfo {
+            id: EntityId::new(2),
+            name: b"new".to_vec(),
+            kind: EntityKind::Function,
+            parent: Some(EntityId::new(0)),
+            span: None,
+        },
+    ];
+    let samples = sample_symbols(
+        &entities,
+        b"get(); get(); new(); new();",
+        "once_cell-1.20.2",
+    );
+    assert!(
+        samples
+            .iter()
+            .any(|sample| { sample.role == "method" && sample.name.as_slice() == b"new" })
+    );
 }
 
 /// Every word-boundary match position of `name` in `source`.

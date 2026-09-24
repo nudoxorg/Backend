@@ -159,3 +159,29 @@ def "main test workspace" []: nothing -> record {
         evidence: $invocation.evidence
     }
 }
+
+# Required PR workspace lane. The 1,000-package sequential fleet audit has a
+# separate deep lane (`test workspace`), but every other workspace test stays
+# required here. Keep the exclusion exact so new tests join the gate by default.
+# @class closure
+def "main test pr" []: nothing -> record {
+    require-command "test-workspace"
+    let invocation = (nextest-invocation "pr")
+    process-require $env.BACKEND_STABLE_CARGO [
+        "nextest"
+        "run"
+        "--locked"
+        "--no-tests=fail"
+        "--workspace"
+        "--config-file" $invocation.config
+        "--profile" "pr"
+        "-E"
+        "not test(real_package_inventory_keeps_source_provenance_and_closed_terminals)"
+    ] | ignore
+    {
+        level: "pr"
+        owner: (active-role)
+        run: $invocation.id
+        evidence: $invocation.evidence
+    }
+}

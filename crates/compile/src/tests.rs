@@ -5,6 +5,38 @@ use std::{
     thread, time::Duration,
 };
 
+fn test_coreutils_executable(name: &str) -> PathBuf {
+    std::env::var_os("NUDOX_TEST_COREUTILS_BIN").map_or_else(
+        || match name {
+            "cat" => PathBuf::from("/bin/cat"),
+            "true" => PathBuf::from("/usr/bin/true"),
+            _ => panic!("unexpected test coreutil: {name}"),
+        },
+        |directory| PathBuf::from(directory).join(name),
+    )
+}
+
+#[cfg(unix)]
+fn test_python_executable() -> Option<PathBuf> {
+    if let Some(configured) = std::env::var_os("COMPILER_PYTHON_COMPILER") {
+        let path = PathBuf::from(configured);
+        assert!(
+            path.is_file(),
+            "pinned Python fixture path is unavailable: {}",
+            path.display()
+        );
+        return Some(path);
+    }
+    [
+        "/usr/bin/python3",
+        "/usr/local/bin/python3",
+        "/opt/homebrew/bin/python3",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|path| path.is_file())
+}
+
 #[test]
 fn declaration_metadata_is_typed_and_canonical() -> Result<(), String> {
     assert_eq!(
@@ -743,7 +775,7 @@ fn process_configuration_rejects_ambient_or_unbounded_inputs() -> Result<(), Box
     );
     assert_eq!(
         SupervisedCommand::new(
-            PathBuf::from("/usr/bin/true"),
+            test_coreutils_executable("true"),
             vec!["x".repeat(64 * 1024 + 1)],
             PathBuf::from("/tmp"),
             ProcessEnvironment::new(Vec::new())?,
@@ -760,7 +792,7 @@ fn process_input_and_output_limits_are_independent() -> Result<(), Box<dyn Error
     let input_heavy =
         ProcessLimits::new(1, 1, Duration::from_secs(1), 1)?.with_input_bytes_limit(64)?;
     let process = SupervisedCommand::new(
-        PathBuf::from("/usr/bin/true"),
+        test_coreutils_executable("true"),
         Vec::new(),
         PathBuf::from("/tmp"),
         ProcessEnvironment::new(Vec::new())?,
@@ -795,8 +827,8 @@ fn native_cold_runner_keeps_output_and_coverage_separate() -> Result<(), Box<dyn
     let snapshot = authority.discover()?;
     let key = session_key(&authority, &snapshot);
     let command = SupervisedCommand::for_authority(
-        PathBuf::from("/bin/sh"),
-        vec!["-c".into(), "cat".into()],
+        test_coreutils_executable("cat"),
+        Vec::new(),
         ProcessEnvironment::new(Vec::new())?,
         PathBuf::from("/tmp"),
         ProcessStdin::bytes(b"raw authority bytes"),
@@ -831,7 +863,7 @@ fn native_persistent_runner_requires_advertised_protocol_and_key() -> Result<(),
     let toolchain = typed_of::<ToolchainSchema>(b"tool");
     let limits = limits(128, 64, Duration::from_secs(1), 192)?;
     let cold = SupervisedCommand::for_authority(
-        PathBuf::from("/bin/cat"),
+        test_coreutils_executable("cat"),
         Vec::new(),
         ProcessEnvironment::new(Vec::new())?,
         PathBuf::from("/tmp"),
@@ -852,7 +884,7 @@ fn native_persistent_runner_requires_advertised_protocol_and_key() -> Result<(),
     };
     let snapshot = authority.discover()?;
     let command = SupervisedCommand::for_authority(
-        PathBuf::from("/bin/cat"),
+        test_coreutils_executable("cat"),
         Vec::new(),
         ProcessEnvironment::new(Vec::new())?,
         PathBuf::from("/tmp"),
@@ -1363,15 +1395,7 @@ fn executable_lease_copies_macho_before_original_mutation() -> Result<(), Box<dy
 #[cfg(unix)]
 #[test]
 fn persistent_observation_separates_frame_and_validated_payload() -> Result<(), Box<dyn Error>> {
-    let python = [
-        "/usr/bin/python3",
-        "/usr/local/bin/python3",
-        "/opt/homebrew/bin/python3",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .find(|path| path.is_file());
-    let Some(python) = python else {
+    let Some(python) = test_python_executable() else {
         return Ok(());
     };
     let authority = MockAuthority {
@@ -1469,15 +1493,7 @@ while True:
 )]
 fn persistent_session_cache_native_fixture_reuses_one_pid_across_serial_and_concurrent_requests()
 -> Result<(), Box<dyn Error>> {
-    let python = [
-        "/usr/bin/python3",
-        "/usr/local/bin/python3",
-        "/opt/homebrew/bin/python3",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .find(|path| path.is_file());
-    let Some(python) = python else {
+    let Some(python) = test_python_executable() else {
         return Ok(());
     };
     let authority = MockAuthority {

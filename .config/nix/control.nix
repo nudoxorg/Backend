@@ -733,6 +733,20 @@ in
           store-failure-output = true;
         };
       };
+      pr = {
+        inherits = "closure";
+        # The required PR lane runs the entire workspace except the
+        # 1,000-package sequential fleet audit. The latter remains in
+        # `backend test workspace` for the deep-assurance lane; its own
+        # 15-minute per-row cap makes it unsuitable for a PR wall clock.
+        junit = {
+          path = "junit.xml";
+          report-name = "backend-pr";
+          report-skipped = "all";
+          store-success-output = false;
+          store-failure-output = true;
+        };
+      };
     };
     test-groups = {
       allocator-global.max-threads = 1;

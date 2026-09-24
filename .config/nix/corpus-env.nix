@@ -108,6 +108,9 @@ in
   COMPILER_GO_COMPILER = "${compilers.go}/bin/go";
   COMPILER_JAVA_COMPILER = "${compilers.jdk}/bin/javac";
   COMPILER_PYTHON_COMPILER = "${compilers.python}/bin/python3";
+  # Tests that execute coreutils after ProcessEnvironment::env_clear() must
+  # pass an absolute executable, not rely on the host's /bin layout or PATH.
+  NUDOX_TEST_COREUTILS_BIN = "${pkgs.coreutils}/bin";
   COMPILER_STABLE_TOOLCHAIN = "${toolchains.stable}";
   COMPILER_TYPESCRIPT_COMPILER = "${compilers.typescript}/bin/tsc";
   LIBCLANG_PATH = "${compilers.libclang.lib}/lib";

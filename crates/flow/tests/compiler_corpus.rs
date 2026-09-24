@@ -525,6 +525,58 @@ fn all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render()
     grouped::run_grouped_audit(&hosts, &resolved, &authorities)
 }
 
+/// The required PR lane validates the full selected fleet's source identity
+/// without running 1,000 native compiler transactions serially. A provisioned
+/// compiler shell must bind every selected row to real source bytes; the deep
+/// audit separately checks each row's authority and semantic output.
+#[test]
+fn fleet_source_inventory_binds_all_selected_rows() -> Result<(), CorpusAuditError> {
+    let inventory: RealInventorySummary =
+        validate_source_inventory().map_err(|cause| CorpusAuditError::Inventory { cause })?;
+    let attempted: usize = inventory.attempted.iter().sum();
+    if attempted != REAL_PACKAGE_COUNT {
+        return Err(CorpusAuditError::Inventory {
+            cause: InventoryInvariant::TotalCount {
+                observed: attempted,
+                expected: REAL_PACKAGE_COUNT,
+            },
+        });
+    }
+    let roots = [
+        "NUDOX_RUST_CORPUS_DIR",
+        "NUDOX_TYPESCRIPT_CORPUS_DIR",
+        "NUDOX_PYTHON_CORPUS_DIR",
+        "NUDOX_GO_CORPUS_DIR",
+        "NUDOX_JAVA_CORPUS_DIR",
+        "NUDOX_CSHARP_CORPUS_DIR",
+        "NUDOX_CLANG_CORPUS_DIR",
+    ];
+    let provisioned = roots
+        .iter()
+        .filter(|name| std::env::var_os(*name).is_some())
+        .count();
+    if provisioned != 0 && provisioned != roots.len() {
+        return Err(CorpusAuditError::Inventory {
+            cause: InventoryInvariant::TotalCount {
+                observed: provisioned,
+                expected: roots.len(),
+            },
+        });
+    }
+    if provisioned == roots.len() {
+        let bound: usize = inventory.source_bound.iter().sum();
+        if bound != REAL_PACKAGE_COUNT {
+            return Err(CorpusAuditError::Inventory {
+                cause: InventoryInvariant::TotalCount {
+                    observed: bound,
+                    expected: REAL_PACKAGE_COUNT,
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Audits the frozen real-package source inventory through the fused semantic
 /// compiler/publication boundary.  Source absence, authority absence, and
 /// deferred reader planes remain typed red outcomes; none can be converted to

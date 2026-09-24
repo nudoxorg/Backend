@@ -55,6 +55,12 @@ use backend_frontend_typescript::TypeScriptFrontend;
 use backend_semantic::vocabulary::{JavaRelease, LanguageProfile};
 #[cfg(test)]
 use std::error::Error;
+#[cfg(test)]
+use std::{
+    fs,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 #[cfg(test)]
 const FIXTURES: &[(&str, &[u8], &str)] = &[
@@ -105,6 +111,77 @@ const NATIVE_PARTIAL_HELPER: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../frontends/rust/fixtures/partial_authority.py"
 );
+
+#[cfg(test)]
+static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+struct PythonFixture {
+    path: PathBuf,
+}
+
+#[cfg(test)]
+impl PythonFixture {
+    fn new(source: &str) -> Result<Self, Box<dyn Error>> {
+        let python = std::env::var_os("COMPILER_PYTHON_COMPILER")
+            .map(PathBuf::from)
+            .or_else(|| {
+                [
+                    "/usr/bin/python3",
+                    "/opt/homebrew/bin/python3",
+                    "/usr/local/bin/python3",
+                ]
+                .into_iter()
+                .map(PathBuf::from)
+                .find(|path| path.is_file())
+            })
+            .ok_or("Python fixture requires COMPILER_PYTHON_COMPILER or an installed Python 3")?;
+        if !python.is_absolute() || !python.is_file() {
+            return Err(format!(
+                "Python fixture interpreter is unavailable: {}",
+                python.display()
+            )
+            .into());
+        }
+        let bytes = fs::read(source)?;
+        let shebang_end = bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or("Python fixture is missing its shebang line")?;
+        if !bytes[..shebang_end].starts_with(b"#!") {
+            return Err("Python fixture is missing its shebang".into());
+        }
+        let path = std::env::temp_dir().join(format!(
+            "nudox-native-fixture-{}-{}-{}.py",
+            std::process::id(),
+            FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace('/', "_")
+        ));
+        let mut executable = format!("#!{}\n", python.display()).into_bytes();
+        executable.extend_from_slice(&bytes[shebang_end + 1..]);
+        fs::write(&path, executable)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &str {
+        self.path.to_str().expect("temporary fixture path is UTF-8")
+    }
+}
+
+#[cfg(test)]
+impl Drop for PythonFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
 
 #[cfg(test)]
 fn corpus_input(language: &str) -> Result<&'static [u8], Box<dyn Error>> {
@@ -206,25 +283,27 @@ enum FixtureMode {
 const AUTHORITY_LEGS: &[&str] = &["clang", "typescript"];
 
 #[cfg(test)]
-fn authority_for(language: &str, mode: FixtureMode) -> Result<Box<dyn Authority>, Box<dyn Error>> {
+fn authority_for(
+    language: &str,
+    mode: FixtureMode,
+    helper: &str,
+) -> Result<Box<dyn Authority>, Box<dyn Error>> {
     let input = corpus_input(language)?.to_vec();
     let authority: Box<dyn Authority> = match language {
         "clang" => Box::new(match mode {
-            FixtureMode::Cold => {
-                ClangFrontend::with_helper(input, "/bin/sh", NATIVE_HELPER, "-O0")?
-            }
+            FixtureMode::Cold => ClangFrontend::with_helper(input, "/bin/sh", helper, "-O0")?,
             FixtureMode::Persistent => {
-                ClangFrontend::with_persistent_helper(input, "/bin/sh", NATIVE_HELPER, "-O0")?
+                ClangFrontend::with_persistent_helper(input, "/bin/sh", helper, "-O0")?
             }
         }),
         "typescript" => Box::new(match mode {
             FixtureMode::Cold => {
-                TypeScriptFrontend::with_helper(input, "/bin/sh", NATIVE_HELPER, "ts", Vec::new())?
+                TypeScriptFrontend::with_helper(input, "/bin/sh", helper, "ts", Vec::new())?
             }
             FixtureMode::Persistent => TypeScriptFrontend::with_persistent_helper(
                 input,
                 "/bin/sh",
-                NATIVE_HELPER,
+                helper,
                 "ts",
                 Vec::new(),
             )?,
@@ -236,6 +315,7 @@ fn authority_for(language: &str, mode: FixtureMode) -> Result<Box<dyn Authority>
 
 #[test]
 fn native_authorities_bind_facts_to_their_discovery_root() -> Result<(), Box<dyn Error>> {
+    let helper = PythonFixture::new(NATIVE_HELPER)?;
     // Deliberately two lanes: the C#, Go, Java, Python, and Rust native stub
     // authorities were deleted with their manifest-only frontends (see the
     // module-level cutover rationale and [`AUTHORITY_LEGS`]). The surviving
@@ -243,7 +323,7 @@ fn native_authorities_bind_facts_to_their_discovery_root() -> Result<(), Box<dyn
     // production lanes for the retired languages prove it in the engine
     // suites that drive them.
     for &language in AUTHORITY_LEGS {
-        let authority = authority_for(language, FixtureMode::Cold)?;
+        let authority = authority_for(language, FixtureMode::Cold, helper.path())?;
         let snapshot = authority.discover()?;
         let key = SessionKey::new(
             authority.identity(),
@@ -298,11 +378,12 @@ fn native_authorities_bind_facts_to_their_discovery_root() -> Result<(), Box<dyn
 
 #[test]
 fn native_authorities_complete_the_persistent_protocol() -> Result<(), Box<dyn Error>> {
+    let helper = PythonFixture::new(NATIVE_HELPER)?;
     // Deliberately two lanes: the C#, Go, Java, Python, and Rust native stub
     // authorities were deleted with their manifest-only frontends (see the
     // module-level cutover rationale and [`AUTHORITY_LEGS`]).
     for &language in AUTHORITY_LEGS {
-        let authority = authority_for(language, FixtureMode::Persistent)?;
+        let authority = authority_for(language, FixtureMode::Persistent, helper.path())?;
         let snapshot = authority.discover()?;
         let key = SessionKey::new(
             authority.identity(),
@@ -331,6 +412,7 @@ fn native_authorities_complete_the_persistent_protocol() -> Result<(), Box<dyn E
 
 #[test]
 fn partial_native_authority_keeps_scope_incomplete() -> Result<(), Box<dyn Error>> {
+    let helper = PythonFixture::new(NATIVE_PARTIAL_HELPER)?;
     // Re-based from `RustFrontend` onto the live TypeScript native lane. The
     // `partial_authority.py` fixture speaks the language-agnostic protocol,
     // echoes the requested language, and emits the same generic record shape
@@ -341,7 +423,7 @@ fn partial_native_authority_keeps_scope_incomplete() -> Result<(), Box<dyn Error
     let authority = TypeScriptFrontend::with_helper(
         b"export function main(): number { return 0; }\n".to_vec(),
         "/bin/sh",
-        NATIVE_PARTIAL_HELPER,
+        helper.path(),
         "ts",
         Vec::new(),
     )?;
