@@ -47,6 +47,9 @@ let
     NUDOX_GUI_ENCODER_VERSION = pkgs.ffmpeg.version;
     NUDOX_GUI_TOOL_CLOSURE = "${gui.toolsBundle}";
     NUDOX_GUI_HARNESS = "nix shell .#gui-harness .#gui-tools .#gui-runtime";
+    # Cargo test executables do not receive Nix's fixup/RPATH pass. On Linux,
+    # nextest needs the declared GUI shared libraries even to list tests.
+    LD_LIBRARY_PATH = tools.linuxDesktopRuntimePath;
     shellHook = ''
       export CARGO_TARGET_DIR="$PWD/.local/target"
       export CLIPPY_CONF_DIR="$PWD/.config"

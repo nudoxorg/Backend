@@ -521,6 +521,10 @@ let
     pkgs.wayland-protocols
     pkgs.xorg.libXdmcp
   ];
+  # Cargo/nextest binaries built inside a dev shell are not Nix-fixed-up
+  # outputs. They need the same GUI libraries at runtime, not just at link
+  # time, even to list tests before any display is opened.
+  linuxDesktopRuntimePath = pkgs.lib.makeLibraryPath linuxDesktopLibraries;
   nativeCompilers = builtins.attrValues compilers ++ nativeLibraries ++ linuxDesktopLibraries;
   # Go semantic oracle. The coordinate is the workspace's own vendored Go
   # module (`frontends/go/src/legacy/oracle`); its `vendorHash` is the exact
@@ -611,6 +615,7 @@ in
     compilers
     dylintLink
     goOracle
+    linuxDesktopRuntimePath
     nativeCompilers
     qualityTools
     serviceTools
