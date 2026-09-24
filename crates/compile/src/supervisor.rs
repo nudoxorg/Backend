@@ -269,7 +269,12 @@ fn spawn(
 /// shell interpolation.
 pub(crate) fn authority_command(command: &SupervisedCommand, executable: &Path) -> Command {
     let mut process = if command.limits().uses_unix_resource_limits() {
-        let mut process = Command::new("/bin/sh");
+        // NixOS does not provide /bin/sh. The authority host supplies an
+        // absolute, pinned shell when resource limits need the POSIX wrapper.
+        let shell = std::env::var_os("NUDOX_PROCESS_SHELL")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/bin/sh"));
+        let mut process = Command::new(shell);
         process
             .arg("-c")
             .arg(RESOURCE_LIMIT_SCRIPT)

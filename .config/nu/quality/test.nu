@@ -173,6 +173,7 @@ def "main test pr" []: nothing -> record {
         "--locked"
         "--no-tests=fail"
         "--workspace"
+        "--no-fail-fast"
         "--config-file" $invocation.config
         "--profile" "pr"
         "-E"

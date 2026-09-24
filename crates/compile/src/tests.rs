@@ -10,10 +10,20 @@ fn test_coreutils_executable(name: &str) -> PathBuf {
         || match name {
             "cat" => PathBuf::from("/bin/cat"),
             "true" => PathBuf::from("/usr/bin/true"),
+            "sleep" => PathBuf::from("/bin/sleep"),
+            "kill" => PathBuf::from("/bin/kill"),
+            "mv" => PathBuf::from("/bin/mv"),
             _ => panic!("unexpected test coreutil: {name}"),
         },
         |directory| PathBuf::from(directory).join(name),
     )
+}
+
+#[cfg(unix)]
+fn test_shell_executable() -> PathBuf {
+    std::env::var_os("NUDOX_PROCESS_SHELL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/bin/sh"))
 }
 
 #[cfg(unix)]
@@ -804,7 +814,7 @@ fn process_input_and_output_limits_are_independent() -> Result<(), Box<dyn Error
     let output_heavy =
         ProcessLimits::new(64, 64, Duration::from_secs(1), 64)?.with_input_bytes_limit(1)?;
     let process = SupervisedCommand::new(
-        PathBuf::from("/bin/sh"),
+        test_shell_executable(),
         vec!["-c".into(), "printf output".into()],
         PathBuf::from("/tmp"),
         ProcessEnvironment::new(Vec::new())?,
@@ -838,7 +848,13 @@ fn native_cold_runner_keeps_output_and_coverage_separate() -> Result<(), Box<dyn
         limits(64, 64, Duration::from_secs(1), 128)?,
     )?;
     let observation = NativeAuthorityRunner::new(command).run_cold()?;
-    assert_eq!(observation.stdout(), b"raw authority bytes");
+    assert_eq!(
+        observation.stdout(),
+        b"raw authority bytes",
+        "cold authority exit={:?} stderr={:?}",
+        observation.exit(),
+        String::from_utf8_lossy(observation.stderr())
+    );
     assert!(observation.stderr().is_empty());
     assert_eq!(observation.exit(), NativeExit::Success(Some(0)));
     assert_eq!(observation.coverage(), Coverage::Unavailable);
@@ -1079,12 +1095,12 @@ fn pool_leases_are_bounded_and_return_scratch_on_drop() -> Result<(), Box<dyn Er
 
 #[cfg(unix)]
 fn command(
-    program: &str,
+    program: PathBuf,
     args: &[&str],
     process_limits: ProcessLimits,
 ) -> Result<SupervisedCommand, ProcessError> {
     SupervisedCommand::new(
-        PathBuf::from(program),
+        program,
         args.iter().map(|arg| (*arg).to_owned()).collect(),
         PathBuf::from("/tmp"),
         ProcessEnvironment::new(Vec::new())?,
@@ -1096,7 +1112,11 @@ fn command(
 #[test]
 fn supervisor_returns_a_reaped_bounded_success_receipt() -> Result<(), Box<dyn Error>> {
     let process_limits = limits(32, 32, Duration::from_secs(1), 64)?;
-    let process = command("/bin/sh", &["-c", "printf hello"], process_limits)?;
+    let process = command(
+        test_shell_executable(),
+        &["-c", "printf hello"],
+        process_limits,
+    )?;
     let running = ProcessSupervisor::new(process).start()?;
     let receipt = running.finish()?;
     assert_eq!(receipt.terminal(), ProcessTerminal::Success);
@@ -1111,11 +1131,15 @@ fn supervisor_returns_a_reaped_bounded_success_receipt() -> Result<(), Box<dyn E
 #[test]
 fn supervisor_kills_on_output_limit_and_deadline() -> Result<(), Box<dyn Error>> {
     let output_limits = limits(3, 3, Duration::from_secs(1), 6)?;
-    let output_process = command("/bin/sh", &["-c", "printf 123456"], output_limits)?;
+    let output_process = command(
+        test_shell_executable(),
+        &["-c", "printf 123456"],
+        output_limits,
+    )?;
     assert_eq!(output_process.run(), Err(ProcessError::OutputLimit));
 
     let deadline_limits = limits(32, 32, Duration::from_millis(20), 64)?;
-    let sleep_process = command("/bin/sleep", &["1"], deadline_limits)?;
+    let sleep_process = command(test_coreutils_executable("sleep"), &["1"], deadline_limits)?;
     assert_eq!(sleep_process.run(), Err(ProcessError::Deadline));
     Ok(())
 }
@@ -1124,7 +1148,7 @@ fn supervisor_kills_on_output_limit_and_deadline() -> Result<(), Box<dyn Error>>
 #[test]
 fn supervisor_kills_when_the_caller_cancels() -> Result<(), Box<dyn Error>> {
     let process_limits = limits(32, 32, Duration::from_secs(2), 64)?;
-    let process = command("/bin/sleep", &["1"], process_limits)?;
+    let process = command(test_coreutils_executable("sleep"), &["1"], process_limits)?;
     let (cancellation, handle) = Cancellation::new();
     let join = thread::spawn(move || process.run_with_cancellation(&cancellation));
     thread::sleep(Duration::from_millis(20));
@@ -1145,13 +1169,15 @@ fn supervisor_cancels_the_entire_process_group() -> Result<(), Box<dyn Error>> {
     let pid_tmp_path = pid_path.with_extension("pid.tmp");
     let _ = fs::remove_file(&pid_tmp_path);
     let script = format!(
-        "sleep 30 & child=$!; printf '%s' \"$child\" > {}; mv {} {}; wait",
+        "{} 30 & child=$!; printf '%s' \"$child\" > {}; {} {} {}; wait",
+        test_coreutils_executable("sleep").display(),
         pid_tmp_path.display(),
+        test_coreutils_executable("mv").display(),
         pid_tmp_path.display(),
         pid_path.display(),
     );
     let process_limits = limits(64, 64, Duration::from_secs(2), 128)?;
-    let process = command("/bin/sh", &["-c", &script], process_limits)?;
+    let process = command(test_shell_executable(), &["-c", &script], process_limits)?;
     let (cancellation, handle) = Cancellation::new();
     let join = thread::spawn(move || process.run_with_cancellation(&cancellation));
     // The shell creates/truncates the file before `printf` writes the PID;
@@ -1172,7 +1198,7 @@ fn supervisor_cancels_the_entire_process_group() -> Result<(), Box<dyn Error>> {
     let result = join.join().map_err(|_| "supervisor thread panicked")?;
     assert_eq!(result, Err(ProcessError::Cancelled));
     for _ in 0..100 {
-        let alive = Command::new("/bin/kill")
+        let alive = Command::new(test_coreutils_executable("kill"))
             .arg("-0")
             .arg(child_pid.to_string())
             .status()
@@ -1182,7 +1208,7 @@ fn supervisor_cancels_the_entire_process_group() -> Result<(), Box<dyn Error>> {
         }
         thread::sleep(Duration::from_millis(2));
     }
-    let alive = Command::new("/bin/kill")
+    let alive = Command::new(test_coreutils_executable("kill"))
         .arg("-0")
         .arg(child_pid.to_string())
         .status()
@@ -1202,7 +1228,7 @@ fn supervisor_enforces_workspace_growth() -> Result<(), Box<dyn Error>> {
     fs::create_dir(&workspace)?;
     let process_limits = limits(64, 64, Duration::from_secs(1), 128)?.with_workspace_limit(4)?;
     let process = SupervisedCommand::new(
-        PathBuf::from("/bin/sh"),
+        test_shell_executable(),
         vec!["-c".into(), "printf 12345 > created".into()],
         workspace.clone(),
         ProcessEnvironment::new(Vec::new())?,
@@ -1218,7 +1244,8 @@ fn supervisor_enforces_workspace_growth() -> Result<(), Box<dyn Error>> {
 fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> {
     let process_limits =
         limits(64, 64, Duration::from_secs(2), 128)?.with_process_count_limit(1)?;
-    let process = command("/bin/sh", &["-c", "sleep 1 & wait"], process_limits)?;
+    let script = format!("{} 1 & wait", test_coreutils_executable("sleep").display());
+    let process = command(test_shell_executable(), &["-c", &script], process_limits)?;
     let receipt = process.run()?;
     assert_eq!(receipt.terminal(), ProcessTerminal::Exit);
     assert_ne!(receipt.status(), Some(0));
@@ -1231,7 +1258,11 @@ fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> 
 fn supervisor_enforces_unix_cpu_time_limit() -> Result<(), Box<dyn Error>> {
     let process_limits =
         limits(64, 64, Duration::from_secs(3), 128)?.with_cpu_time_limit(Duration::from_secs(1))?;
-    let process = command("/bin/sh", &["-c", "while :; do :; done"], process_limits)?;
+    let process = command(
+        test_shell_executable(),
+        &["-c", "while :; do :; done"],
+        process_limits,
+    )?;
     let receipt = process.run()?;
     assert_eq!(receipt.terminal(), ProcessTerminal::Exit);
     assert_ne!(receipt.status(), Some(0));
@@ -1239,17 +1270,38 @@ fn supervisor_enforces_unix_cpu_time_limit() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 #[test]
 fn unsupported_resource_bounds_are_reported_before_spawn() -> Result<(), Box<dyn Error>> {
     let process_limits = limits(32, 32, Duration::from_secs(1), 64)?.with_memory_bytes_limit(1)?;
-    let process = command("/bin/true", &[], process_limits)?;
+    let process = command(test_coreutils_executable("true"), &[], process_limits)?;
     assert_eq!(
         process.run(),
         Err(ProcessError::UnsupportedLimit(
             UnsupportedLimit::MemoryBytes
         ))
     );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn supervisor_enforces_linux_memory_limit() -> Result<(), Box<dyn Error>> {
+    let unbounded = command(
+        test_coreutils_executable("true"),
+        &[],
+        limits(32, 32, Duration::from_secs(1), 64)?,
+    )?;
+    assert_eq!(unbounded.run()?.terminal(), ProcessTerminal::Success);
+
+    let bounded = command(
+        test_coreutils_executable("true"),
+        &[],
+        limits(1024, 1024, Duration::from_secs(1), 2048)?.with_memory_bytes_limit(1024)?,
+    )?;
+    let receipt = bounded.run()?;
+    assert_eq!(receipt.terminal(), ProcessTerminal::Exit);
+    assert_ne!(receipt.status(), Some(0));
     Ok(())
 }
 
@@ -1720,7 +1772,7 @@ while True:
         .ok_or("persistent fixture PID was not published")?;
     assert!(cache.invalidate(preparation_key));
     for _ in 0..100 {
-        let alive = Command::new("/bin/kill")
+        let alive = Command::new(test_coreutils_executable("kill"))
             .arg("-0")
             .arg(pid.to_string())
             .status()
@@ -1730,7 +1782,7 @@ while True:
         }
         thread::sleep(Duration::from_millis(2));
     }
-    let alive = Command::new("/bin/kill")
+    let alive = Command::new(test_coreutils_executable("kill"))
         .arg("-0")
         .arg(pid.to_string())
         .status()
