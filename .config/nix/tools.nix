@@ -248,13 +248,16 @@ let
         };
         doCheck = false;
         installPhase = ''
+                    # Match the pinned cargoInstallHook's target subdirectory.
+                    # cargoBuildHook always passes --target, even for native builds.
+                    release_dir="target/${pkgs.stdenv.targetPlatform.rust.cargoShortTarget}/$cargoBuildType"
                     mkdir -p "$out/bin"
                     for binary in backend-locald backend-cli backend-mcp; do
-                      if [ ! -x "target/release/$binary" ]; then
-                        echo "gui runtime did not build expected $binary" >&2
+                      if [ ! -x "$release_dir/$binary" ]; then
+                        echo "gui runtime did not build expected $binary under $release_dir" >&2
                         exit 1
                       fi
-                      cp "target/release/$binary" "$out/bin/$binary"
+                      cp "$release_dir/$binary" "$out/bin/$binary"
                     done
                     mkdir -p "$out/share/nudox"
                     cargo metadata --locked --offline --format-version 1 > "$out/share/nudox/cargo-metadata.json"
