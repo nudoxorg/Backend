@@ -48,21 +48,34 @@ printf '%s\n' '#!/bin/sh' \
   'exit 0' > "$test_root/bin/git"
 chmod +x "$test_root/bin/git"
 
-printf '%s\n' '#!/bin/sh' \
-  'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then mkdir -p "$CARGO_BUILD_BUILD_DIR"; fi' \
-  'if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then' \
-  '  marker="$CARGO_BUILD_BUILD_DIR/fake-public-api.rmeta"' \
-  '  if [ "${1:-}" = consumer ] && [ -f "$marker" ] && [ "$(cat "$marker")" != "$NUDOX_TEST_WORKTREE" ]; then exit 42; fi' \
-  '  printf "%s\\n" "$NUDOX_TEST_WORKTREE" > "$marker"' \
-  'fi' \
-  'printf "%s|%s|%s\\n" "${NUDOX_TEST_WORKTREE:-}" "${CARGO_BUILD_BUILD_DIR:-}" "${1:-}" >> "$NUDOX_TEST_LOG"' \
-  'if [ -n "${NUDOX_TEST_CHILD_PID_FILE:-}" ]; then printf "%s\\n" "$$" > "$NUDOX_TEST_CHILD_PID_FILE"; fi' \
-  'trap '\''if [ -n "${NUDOX_TEST_CHILD_DONE_FILE:-}" ]; then : > "$NUDOX_TEST_CHILD_DONE_FILE"; fi; exit 143'\'' HUP INT TERM' \
-  'if [ "${NUDOX_TEST_CARGO_SLEEP:-0}" != 0 ]; then' \
-  '  end=$(( $(date +%s) + NUDOX_TEST_CARGO_SLEEP ))' \
-  '  while [ "$(date +%s)" -lt "$end" ]; do :; done' \
-  'fi' \
-  'exit "${NUDOX_TEST_CARGO_STATUS:-0}"' > "$test_root/bin/cargo"
+# TERM during `$(date +%s)` races bash's parser on Linux (CI build 2313).
+# `sleep` is interruptible and has no nested substitutions.
+cat > "$test_root/bin/cargo" <<'EOF'
+#!/bin/sh
+if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then
+  mkdir -p "$CARGO_BUILD_BUILD_DIR"
+  marker="$CARGO_BUILD_BUILD_DIR/fake-public-api.rmeta"
+  if [ "${1:-}" = consumer ] && [ -f "$marker" ] && [ "$(cat "$marker")" != "$NUDOX_TEST_WORKTREE" ]; then
+    exit 42
+  fi
+  printf '%s\n' "$NUDOX_TEST_WORKTREE" > "$marker"
+fi
+printf '%s|%s|%s\n' "${NUDOX_TEST_WORKTREE:-}" "${CARGO_BUILD_BUILD_DIR:-}" "${1:-}" >> "$NUDOX_TEST_LOG"
+if [ -n "${NUDOX_TEST_CHILD_PID_FILE:-}" ]; then
+  printf '%s\n' "$$" > "$NUDOX_TEST_CHILD_PID_FILE"
+fi
+term_handler() {
+  if [ -n "${NUDOX_TEST_CHILD_DONE_FILE:-}" ]; then
+    : > "$NUDOX_TEST_CHILD_DONE_FILE"
+  fi
+  exit 143
+}
+trap term_handler HUP INT TERM
+if [ "${NUDOX_TEST_CARGO_SLEEP:-0}" != 0 ]; then
+  sleep "$NUDOX_TEST_CARGO_SLEEP"
+fi
+exit "${NUDOX_TEST_CARGO_STATUS:-0}"
+EOF
 chmod +x "$test_root/bin/cargo"
 
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$test_root/bin/sccache"
