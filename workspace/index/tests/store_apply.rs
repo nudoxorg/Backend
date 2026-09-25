@@ -6,9 +6,11 @@ mod common;
 use common::{gen_stamp, migrated_writer, stem_id, version_id};
 
 use heart::query::{AsOf, UnixMilliseconds};
-use index::enums::{IrStatus, ListingStatus, SinkKind};
-use index::protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates};
-use index::store::{Catalog, CatalogCursor, MetaError, MetaStore};
+use index::{
+    enums::{EdgeKind, EdgeSource, IrStatus, ListingStatus, SinkKind},
+    protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates},
+    store::{Catalog, CatalogCursor, MetaError, MetaStore},
+};
 
 /// Build a valid UpsertPackage op for a stem seed.
 fn upsert_package(seed: u8) -> CatalogOp {
@@ -24,10 +26,10 @@ fn upsert_package(seed: u8) -> CatalogOp {
     }
 }
 
-/// Build a valid UpsertVersion op tying a version to a stem. Each `version_seed`
-/// yields a distinct `version_canonical` so that two different version ids never
-/// collide on the `UNIQUE(stem_id, version_canonical)` constraint (a version's
-/// identity *is* its stem + canonical string).
+/// Build a valid UpsertVersion op tying a version to a stem. Each
+/// `version_seed` yields a distinct `version_canonical` so that two different
+/// version ids never collide on the `UNIQUE(stem_id, version_canonical)`
+/// constraint (a version's identity *is* its stem + canonical string).
 fn upsert_version(stem_seed: u8, version_seed: u8) -> CatalogOp {
     CatalogOp::UpsertVersion {
         coordinates: VersionCoordinates {
@@ -98,6 +100,39 @@ fn reapplying_identical_package_and_version_emits_no_duplicate_outbox() {
         1,
         "only the first application should enqueue"
     );
+}
+
+fn edge(requirement: &str) -> EdgeWire {
+    EdgeWire {
+        dep_ecosystem: heart::Language::Rust,
+        dep_name_canonical: "serde".to_owned(),
+        requirement: requirement.to_owned(),
+        kind: EdgeKind::Runtime,
+        source: EdgeSource::Feed,
+        resolved_stem: None,
+    }
+}
+
+#[test]
+fn reapplying_the_same_edge_emits_nothing_and_a_new_requirement_does() {
+    let writer = migrated_writer();
+    let mut first = upsert_version(1, 1);
+    if let CatalogOp::UpsertVersion { edges, .. } = &mut first {
+        edges.push(edge("1"));
+    }
+    writer
+        .apply_ops(&[upsert_package(1), first.clone()])
+        .expect("seed");
+
+    let again = writer.apply_ops(&[first]).expect("identical edge");
+    assert_eq!(again.outbox_rows, 0, "an unchanged edge must not notify");
+
+    let mut revised = upsert_version(1, 1);
+    if let CatalogOp::UpsertVersion { edges, .. } = &mut revised {
+        edges.push(edge("^1"));
+    }
+    let report = writer.apply_ops(&[revised]).expect("requirement change");
+    assert_eq!(report.outbox_rows, 1, "a changed requirement must notify");
 }
 
 #[test]

@@ -4,20 +4,24 @@
 //! Writes are SeaORM `ActiveModel` inserts with `OnConflict`; the catalog
 //! engine only sees the rendered [`Statement`].
 
-use sea_orm::sea_query::OnConflict;
-use sea_orm::{ActiveValue::Set, DbBackend, EntityTrait, QueryTrait};
-
-use crate::engine::{self, CatalogEngine, Value};
-use crate::entity::{
-    advisories, edges, generations, git_watermarks, listing_events, outbox, package_aliases,
-    packages, repo_facts, repo_lineage, sink_watermarks,
+use sea_orm::{
+    ActiveValue::Set,
+    DbBackend, EntityTrait, QueryTrait,
+    sea_query::{Alias, BinOper, Expr, OnConflict},
 };
-use crate::enums::{OutboxOperation, SinkKind, SourceKind, TextEnum};
-use crate::ids::PackageId;
-use crate::protocol::{CatalogOp, VersionDelta};
 
-use super::read::current_watermark;
-use super::{ApplyReport, GenerationRegistration, MetaError};
+use crate::{
+    engine::{self, CatalogEngine, Value},
+    entity::{
+        advisories, edges, generations, git_watermarks, listing_events, outbox, package_aliases,
+        packages, repo_facts, repo_lineage, sink_watermarks,
+    },
+    enums::{OutboxOperation, SinkKind, SourceKind, TextEnum},
+    ids::PackageId,
+    protocol::{CatalogOp, VersionDelta},
+};
+
+use super::{ApplyReport, GenerationRegistration, MetaError, read::current_watermark};
 
 /// Apply a batch of ops atomically, emitting outbox fan-out rows in the same
 /// transaction (ID-3).
@@ -162,18 +166,15 @@ fn apply_run(tx: &dyn CatalogEngine, run: &[CatalogOp]) -> Result<usize, MetaErr
                     VersionDelta::Removed { version_id, .. } => {
                         let version_blob = crate::ids::version_id::to_blob(version_id).to_vec();
                         let uuid_blob = version_id.as_uuid().as_bytes().to_vec();
-                        tx.execute(
-                            "DELETE FROM edges WHERE dependent_version = ?",
-                            &[Value::Blob(uuid_blob.clone())],
-                        )?;
-                        tx.execute(
-                            "DELETE FROM facets WHERE version_id = ?",
-                            &[Value::Blob(uuid_blob)],
-                        )?;
-                        tx.execute(
-                            "DELETE FROM versions WHERE id = ?",
-                            &[Value::Blob(version_blob)],
-                        )?;
+                        tx.execute("DELETE FROM edges WHERE dependent_version = ?", &[
+                            Value::Blob(uuid_blob.clone()),
+                        ])?;
+                        tx.execute("DELETE FROM facets WHERE version_id = ?", &[Value::Blob(
+                            uuid_blob,
+                        )])?;
+                        tx.execute("DELETE FROM versions WHERE id = ?", &[Value::Blob(
+                            version_blob,
+                        )])?;
                         emit_outbox_row(
                             tx,
                             Some(*version_id),
@@ -470,6 +471,18 @@ fn apply_run(tx: &dyn CatalogEngine, run: &[CatalogOp]) -> Result<usize, MetaErr
     }
 }
 
+/// True when the incoming edge payload is not the stored one.
+///
+/// `IS NOT` keeps a NULL `resolved_stem` comparable: `!=` would drop the row
+/// whenever either side is NULL and the requirement would never update.
+fn edge_payload_differs() -> sea_orm::sea_query::SimpleExpr {
+    let excluded = |column| Expr::col((Alias::new("excluded"), column));
+    let differs = |column| Expr::col(column).binary(BinOper::IsNot, excluded(column));
+    differs(edges::Column::Requirement)
+        .or(differs(edges::Column::ResolvedStem))
+        .or(differs(edges::Column::Source))
+}
+
 /// Batch-write the `versions`, `edges`, and `facets` rows for a run of
 /// `UpsertVersion` ops: one `insert_many` per table (edges flattened across
 /// every op in the run) instead of `1 + edges.len() + 1` statements per op.
@@ -559,23 +572,27 @@ fn upsert_versions_batch(
         }
     }
 
-    // Flatten every op's edges into one insert, preserving both cross-op
-    // order (op[0]'s edges before op[1]'s, …) and within-op order, so a
-    // duplicate key's conflict-update still resolves to the same value it
-    // would issuing one statement per edge.
-    let edge_models: Vec<_> = run
-        .iter()
-        .flat_map(|op| {
-            let CatalogOp::UpsertVersion {
-                coordinates,
-                edges: edge_wires,
-                ..
-            } = op
-            else {
-                unreachable!("run is homogeneous by construction")
-            };
-            let dependent_version = *coordinates.version_id.as_uuid();
-            edge_wires.iter().map(move |edge| edges::ActiveModel {
+    // One statement per version so an unchanged edge set reports zero affected
+    // rows and does not join the outbox. A requirement or source change does.
+    // Removed names stay: this upsert is additive. Replacement goes through
+    // `replace_runtime_edges`.
+    let mut edges_by_version: Vec<(PackageId, Vec<edges::ActiveModel>)> = Vec::new();
+    for op in run {
+        let CatalogOp::UpsertVersion {
+            coordinates,
+            edges: edge_wires,
+            ..
+        } = op
+        else {
+            unreachable!("run is homogeneous by construction")
+        };
+        if edge_wires.is_empty() {
+            continue;
+        }
+        let dependent_version = *coordinates.version_id.as_uuid();
+        let models = edge_wires
+            .iter()
+            .map(|edge| edges::ActiveModel {
                 dependent_version: Set(dependent_version),
                 dep_ecosystem: Set(edge.dep_ecosystem.as_token().to_owned()),
                 dep_name_canonical: Set(edge.dep_name_canonical.clone()),
@@ -584,10 +601,18 @@ fn upsert_versions_batch(
                 resolved_stem: Set(edge.resolved_stem),
                 source: Set(edge.source),
             })
-        })
-        .collect();
-    if !edge_models.is_empty() {
-        let stmt = edges::Entity::insert_many(edge_models)
+            .collect();
+        if let Some((_, existing)) = edges_by_version
+            .iter_mut()
+            .find(|(id, _)| *id == coordinates.version_id)
+        {
+            existing.extend(models);
+        } else {
+            edges_by_version.push((coordinates.version_id, models));
+        }
+    }
+    for (version, models) in edges_by_version {
+        let stmt = edges::Entity::insert_many(models)
             .on_conflict(
                 OnConflict::columns([
                     edges::Column::DependentVersion,
@@ -600,10 +625,14 @@ fn upsert_versions_batch(
                     edges::Column::ResolvedStem,
                     edges::Column::Source,
                 ])
+                .action_and_where(edge_payload_differs())
                 .to_owned(),
             )
             .build(DbBackend::Sqlite);
-        engine::exec(tx, stmt)?;
+        let affected = engine::exec(tx, stmt)?;
+        if affected != 0 && !changed.contains(&version) {
+            changed.push(version);
+        }
     }
 
     // Facets are part of the version's search projection too. A plain
