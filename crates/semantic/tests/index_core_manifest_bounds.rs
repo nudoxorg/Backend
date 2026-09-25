@@ -184,3 +184,56 @@ fn duplicate_present_and_reversed_order_rejected_for_exact_and_lexical_manifests
         })
     );
 }
+
+#[test]
+fn three_present_segments_report_leftmost_duplicate_not_smaller_id() {
+    let a_exact_rows = [ExactRow::present(b"key", b"old")];
+    let b_exact_rows = [ExactRow::present(b"key", b"new")];
+    let c_exact_rows = [ExactRow::present(b"extra", b"value")];
+    let a_exact = ExactSegment::new(&a_exact_rows).expect("a exact segment");
+    let b_exact = ExactSegment::new(&b_exact_rows).expect("b exact segment");
+    let c_exact = ExactSegment::new(&c_exact_rows).expect("c exact segment");
+    let exact_selected = [b_exact.id, a_exact.id, c_exact.id];
+    let exact_snapshot =
+        IndexSnapshot::new(generation(), &exact_selected, &[]).expect("exact snapshot");
+    let duplicate_exact = [b_exact, a_exact, b_exact];
+    assert_eq!(
+        ExactManifest::new(exact_snapshot, &duplicate_exact, &[]),
+        Err(ExactManifestError::DuplicatePresentSegment {
+            left_position: 0,
+            right_position: 2,
+            id: b_exact.id,
+        })
+    );
+
+    let a_lexical_rows = [LexicalRow::new(
+        b"needle",
+        document(1),
+        LexicalScore::from(9),
+    )];
+    let b_lexical_rows = [LexicalRow::new(
+        b"needle",
+        document(1),
+        LexicalScore::from(2),
+    )];
+    let c_lexical_rows = [LexicalRow::new(
+        b"extra",
+        document(2),
+        LexicalScore::from(1),
+    )];
+    let a_lexical = LexicalSegment::new(&a_lexical_rows).expect("a lexical segment");
+    let b_lexical = LexicalSegment::new(&b_lexical_rows).expect("b lexical segment");
+    let c_lexical = LexicalSegment::new(&c_lexical_rows).expect("c lexical segment");
+    let lexical_selected = [b_lexical.id, a_lexical.id, c_lexical.id];
+    let lexical_snapshot =
+        IndexSnapshot::new(generation(), &[], &lexical_selected).expect("lexical snapshot");
+    let duplicate_lexical = [b_lexical, a_lexical, b_lexical];
+    assert_eq!(
+        LexicalManifest::new(lexical_snapshot, &duplicate_lexical, &[]),
+        Err(LexicalManifestError::DuplicatePresentSegment {
+            left_position: 0,
+            right_position: 2,
+            id: b_lexical.id,
+        })
+    );
+}
