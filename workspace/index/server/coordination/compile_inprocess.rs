@@ -222,15 +222,22 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
         }));
     }
 
-    // ── IR payload section: empty-but-valid ─────────────────────────────────
-    // There is no forward semantic→wire encoder in the workspace
-    // (`ir_vcs::lower` is wire→semantic only, and the guest producer that emits
-    // the NdIrF1 `Symbols` stream is out-of-repo), so a faithful
-    // `Vec<OwnedEntryPayload>` cannot be rebuilt from the sealed table here.
-    // Nothing decodes this section as payloads yet — only its byte-integrity is
-    // audited (`crate::server::save::blobs`) — so it stays empty-but-valid; the
-    // real reference graph above is the functional fix. Revisit when a
-    // semantic→wire lowering + the reverse-`occ` index land (INDEX-PLAN §5.5).
+    // The opaque wire section stays empty: there is no semantic→wire encoder.
+    // The generation root is the payload store. It is addressed by
+    // `entry_storage_hash`, and a prior root from the object store keeps
+    // unchanged entries out of the write set.
+    let prior = super::indexing::ir_stream::prior_entry_keys(&stores.blobs, coordinates).await;
+    if let Err(error) = super::indexing::ir_stream::attach_table_generation_root(
+        builder,
+        table,
+        &lineage,
+        &prior,
+    ) {
+        return Err(ServerError::Internal(InternalError::InProcessCompile {
+            package: name.clone(),
+            reason: error,
+        }));
+    }
     super::indexing::set_empty_ir_section(builder);
 
     tracing::info!(

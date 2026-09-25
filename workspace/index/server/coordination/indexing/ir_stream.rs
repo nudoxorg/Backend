@@ -360,6 +360,53 @@ fn attach_generation_root(
         bodies.push(ir::content::entry_storage_payload(&entry));
     }
 
+    commit_root(builder, package, rows, keys, bodies, prior)
+}
+
+/// Dual-write a generation root from a sealed in-process table.
+///
+/// The table already holds semantic [`ir::entry::Entry`] values, so this path
+/// does not go through the wire payload. Location stays on the root row.
+/// [`crate::frontier::ir::project`] omits payloads whose intro hash is already
+/// stored.
+pub(in crate::server::coordination) fn attach_table_generation_root(
+    builder: &mut BlobBuilder,
+    table: &ir::apply::PristineIntroTable,
+    package: &ir::change::PackageLineageId,
+    prior: &[crate::frontier::ir::IrEntryKey],
+) -> Result<Vec<crate::frontier::ir::IrEntryKey>, String> {
+    if table.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut rows = Vec::with_capacity(table.len());
+    let mut keys = Vec::with_capacity(table.len());
+    let mut bodies = Vec::with_capacity(table.len());
+    for (intro, entry) in table.iter_sorted() {
+        let content = ir::content::entry_storage_hash(entry);
+        keys.push(crate::frontier::ir::IrEntryKey {
+            intro_id: *intro.as_bytes(),
+            content_hash: *content.as_bytes(),
+        });
+        rows.push(ir::generation::RootEntry {
+            intro,
+            content,
+            parent: table.parent_of(intro),
+            source: entry.sym().source.clone(),
+            span: entry.sym().span.clone(),
+        });
+        bodies.push(ir::content::entry_storage_payload(entry));
+    }
+    commit_root(builder, package, rows, keys, bodies, prior)
+}
+
+fn commit_root(
+    builder: &mut BlobBuilder,
+    package: &ir::change::PackageLineageId,
+    rows: Vec<ir::generation::RootEntry>,
+    keys: Vec<crate::frontier::ir::IrEntryKey>,
+    bodies: Vec<Vec<u8>>,
+    prior: &[crate::frontier::ir::IrEntryKey],
+) -> Result<Vec<crate::frontier::ir::IrEntryKey>, String> {
     let delta = crate::frontier::ir::project(prior, &keys);
     let mut write = std::collections::HashSet::with_capacity(delta.added.len() + delta.changed.len());
     for key in delta.added.iter().chain(delta.changed.iter()) {
@@ -387,7 +434,7 @@ fn attach_generation_root(
 /// A missing pointer, a manifest with no root, or a root that does not decode
 /// yields an empty prior. The next ingest then queues every payload, and the
 /// object store dedups by hash.
-pub(super) async fn prior_entry_keys(
+pub(in crate::server::coordination) async fn prior_entry_keys(
     blobs: &crate::cas::Store<heart::connection::Live>,
     coordinates: &crate::package::Coordinates,
 ) -> Vec<crate::frontier::ir::IrEntryKey> {
@@ -1113,6 +1160,119 @@ mod tests {
             sections.iter().any(|section| section.hash == hash)
         });
         assert_eq!(queued.count(), 0, "unchanged payloads must not be queued");
+    }
+
+    fn semantic_module(name: &str, docs: &str, span: std::ops::Range<usize>) -> ir::entry::Entry {
+        use ir::entry::{Entry, Node, Symbol, Visibility};
+        use ir::index::RawRef;
+        use ir::kind::Kind;
+        use ir::kinds::Module;
+        Entry::new(
+            Symbol {
+                name: name.to_owned(),
+                visibility: Visibility::Public,
+                documentation: docs.to_owned(),
+                source: std::path::PathBuf::from("src/lib.rs"),
+                span,
+                aliases: Box::new([]),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            },
+            Node::build(None::<RawRef>, []),
+            Kind::Module(Module),
+        )
+    }
+
+    fn queue_count(
+        keys: &[crate::frontier::ir::IrEntryKey],
+        sections: &[crate::blob::creation::PendingSection],
+    ) -> usize {
+        keys.iter()
+            .filter(|key| {
+                let hash = heart::content::ContentHash::from_bytes(key.content_hash);
+                sections.iter().any(|section| section.hash == hash)
+            })
+            .count()
+    }
+
+    #[test]
+    fn table_generation_root_skips_a_pure_move() {
+        use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
+
+        let package = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("acme"));
+        let alpha = IntroId::from_domain("nudox.test.intro", b"alpha");
+        let beta = IntroId::from_domain("nudox.test.intro", b"beta");
+        let mut table = ir::apply::PristineIntroTable::new();
+        table.insert_live(
+            alpha,
+            semantic_module("alpha", "The alpha module.", 0..8),
+            None,
+        );
+        table.insert_live(
+            beta,
+            semantic_module("beta", "The beta module.", 20..28),
+            Some(alpha),
+        );
+
+        let mut builder = BlobBuilder::new(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+        );
+        builder
+            .push_file("src/lib.rs".into(), bytes::Bytes::from_static(b"fn main() {}\n"))
+            .expect("file");
+        let keys = attach_table_generation_root(&mut builder, &table, &package, &[]).expect("root");
+        super::super::set_empty_ir_section(&mut builder);
+        let _ = builder.set_references(&crate::server::registry::blob::ReferenceSet {
+            by_file: Vec::new(),
+        });
+        let (manifest, sections) = builder.finalize().expect("finalize");
+        assert!(manifest.root_ref.is_some());
+        assert_eq!(queue_count(&keys, &sections), 2);
+
+        let mut moved = ir::apply::PristineIntroTable::new();
+        moved.insert_live(
+            alpha,
+            semantic_module("alpha", "The alpha module.", 400..408),
+            None,
+        );
+        moved.insert_live(
+            beta,
+            semantic_module("beta", "The beta module, rewritten.", 20..28),
+            Some(alpha),
+        );
+        let mut again = BlobBuilder::new(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+        );
+        again
+            .push_file("src/lib.rs".into(), bytes::Bytes::from_static(b"fn main() {}\n"))
+            .expect("file");
+        let second = attach_table_generation_root(&mut again, &moved, &package, &keys).expect("root");
+        super::super::set_empty_ir_section(&mut again);
+        let _ = again.set_references(&crate::server::registry::blob::ReferenceSet {
+            by_file: Vec::new(),
+        });
+        let (_manifest, sections) = again.finalize().expect("finalize");
+        assert_eq!(queue_count(&second, &sections), 1);
+        let root_bytes = sections
+            .iter()
+            .find(|section| section.hash == _manifest.root_ref.expect("root"))
+            .expect("root section")
+            .bytes
+            .clone();
+        let decoded = ir::generation::GenerationRoot::decode(&root_bytes).expect("decode");
+        let alpha_row = decoded
+            .entries
+            .iter()
+            .find(|row| row.intro == alpha)
+            .expect("alpha");
+        assert_eq!(alpha_row.span.start, 400);
+        assert_eq!(alpha_row.parent, None);
+        let beta_row = decoded.entries.iter().find(|row| row.intro == beta).expect("beta");
+        assert_eq!(beta_row.parent, Some(alpha));
     }
 
     // ── In-process path: real reference edges flow from the sealed table ──
