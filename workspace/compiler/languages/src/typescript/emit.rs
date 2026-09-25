@@ -440,6 +440,9 @@ fn emit_interface(
         Trait::builder().generics(generics).supers(supers).build(),
     );
     declare_generic_bindings(&id, &id, &body.generics, out, names);
+    for (index, ty) in body.extends.iter().enumerate() {
+        declare_nested_params(&id, &id, &format!("extends{index}"), ty, out, names);
+    }
 
     // Emit methods as child Function entries.
     //
@@ -513,6 +516,9 @@ fn emit_interface(
                 .attributes(attrs)
                 .build(),
         );
+        if let Some(ty) = &prop.ty {
+            declare_nested_params(&id, &id, &prop.name, ty, out, names);
+        }
     }
 
     // Emit call signatures as synthetic `__call` functions. A method may
@@ -710,6 +716,9 @@ fn emit_class(
                         .attributes(attrs)
                         .build(),
                 );
+                if let Some(ty) = ty {
+                    declare_nested_params(&id, &id, &member.name, ty, out, names);
+                }
             }
             _ => {} // Methods / StaticBlock get their own emit below.
         }
@@ -727,6 +736,12 @@ fn emit_class(
             .build(),
     );
     declare_generic_bindings(&id, &id, &body.generics, out, names);
+    for (index, ty) in body.extends.iter().enumerate() {
+        declare_nested_params(&id, &id, &format!("extends{index}"), ty, out, names);
+    }
+    for (index, ty) in body.implements.iter().enumerate() {
+        declare_nested_params(&id, &id, &format!("implements{index}"), ty, out, names);
+    }
 
     // Emit method members.
     for (idx, member) in body.members.iter().enumerate() {
@@ -1464,7 +1479,7 @@ fn emit_const(
         .as_ref()
         .map_or(Type::UNANNOTATED, |t| lower_type(t, out, names, &id.module));
     let _: Ref<Const> = out.declare(
-        id,
+        id.clone(),
         parent,
         sym,
         Const::builder()
@@ -1477,6 +1492,9 @@ fn emit_const(
             }))
             .build(),
     );
+    if let Some(ty) = &body.ty {
+        declare_nested_params(&id, &id, "ty", ty, out, names);
+    }
 }
 
 fn emit_static(
