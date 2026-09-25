@@ -22,8 +22,8 @@ use thiserror::Error;
 use super::{
     AdmissionFault, EmissionExtension, FactFault, FactSet, MAX_ANONYMOUS_TYPE_ROWS,
     MAX_EMISSION_DOC_FRAGMENTS, MAX_EMISSION_FACTS, MAX_EMISSION_OCCURRENCES, MAX_EXTENSION_ATOMS,
-    MAX_FACT_CHILDREN, MAX_REF_LISTS, MAX_TYPE_CHILDREN, MAX_TYPE_PARAMETERS, RejectedFact,
-    SemanticFact,
+    MAX_FACT_CHILDREN, MAX_REF_LISTS, MAX_TYPE_CHILDREN, MAX_TYPE_PARAMETERS,
+    PRODUCT_CHILD_POOL_STRIDE, RejectedFact, SemanticFact,
 };
 use crate::driver::types::{ParentageState, SourceSpanFact};
 
@@ -419,6 +419,41 @@ fn wide_anonymous_type_row_keeps_sixty_five_children() -> Result<(), TestError> 
         Err(FactFault::TypeChildCapacity) => Ok(()),
         Err(cause) => Err(lane_fault(cause)),
         Ok(()) => Err(TestError::UnexpectedPush),
+    }
+}
+
+#[test]
+fn wide_product_keeps_sixty_five_children() -> Result<(), TestError> {
+    let mut plan = super::ResourcePlan::for_source(LanguageProfile::Rust(RustEdition::Rust2024), 0);
+    plan.facts = 3;
+    plan.product_children = MAX_FACT_CHILDREN;
+    let mut facts = FactSet::with_plan(plan);
+    push_pending_seed(&mut facts)?;
+    let mut wide = SemanticFact::new(
+        EntityKind::Record,
+        b"wide",
+        SemanticProductConstructor::PRODUCT,
+    );
+    for _ in 0..65 {
+        wide = wide.child(ProductChildRole::ProductMember, 0);
+    }
+    facts.push(wide).map_err(rejected)?;
+    let mut overflow = SemanticFact::new(
+        EntityKind::Record,
+        b"overflow",
+        SemanticProductConstructor::PRODUCT,
+    );
+    for _ in 0..=MAX_FACT_CHILDREN {
+        overflow = overflow.child(ProductChildRole::ProductMember, 0);
+    }
+    match facts.push(overflow) {
+        Err(RejectedFact {
+            name: b"overflow",
+            cause: FactFault::ChildCapacity,
+            ..
+        }) => Ok(()),
+        Err(failure) => Err(rejected(failure)),
+        Ok(_) => Err(TestError::UnexpectedPush),
     }
 }
 
@@ -924,10 +959,10 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
         Ok(_) => return Err(TestError::UnexpectedPush),
     }
 
-    // The exact maximal lane admits with every fact after the first carrying
-    // the full ordered child count targeting the first fact. One fact with
-    // more children than the bounded child lane is the exact typed truncation
-    // rejection while the lane still has room.
+    // The pool admits every fact after the first at the stride. One row may
+    // still name [`MAX_FACT_CHILDREN`] children; filling every fact to that
+    // width would exceed the pooled ceiling. One fact with more children
+    // than the per-row lane is the exact typed truncation rejection.
     let mut maximal = FactSet::new();
     let mut overflowing_child = SemanticFact::new(
         EntityKind::Record,
@@ -953,7 +988,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
             SemanticProductConstructor::PRODUCT,
         );
         if ordinal > 0 {
-            for _ in 0..MAX_FACT_CHILDREN {
+            for _ in 0..PRODUCT_CHILD_POOL_STRIDE {
                 fact = fact.child(ProductChildRole::ProductMember, 0);
             }
         }
@@ -1060,10 +1095,9 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
 
     // The maximal lane writes one complete validated fragment within the
     // conservation reservation, with its exact entity count committed.
-    // The raised lane's exact eight-child product payload is larger than the
-    // former 64 KiB fixture; retain the same untouched-tail proof with ample
-    // caller-owned output scratch.
-    let mut output = vec![0xa5_u8; 8 * 1024 * 1024];
+    // Occurrences now run to four times the declaration ceiling, so the
+    // former 8 MiB scratch is no longer enough for this full lane.
+    let mut output = vec![0xa5_u8; 16 * 1024 * 1024];
     let length = super::admit(
         &maximal,
         identity()?,

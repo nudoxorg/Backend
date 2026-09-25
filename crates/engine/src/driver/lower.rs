@@ -57,8 +57,15 @@ use provenance::{MemberSetCapture, Provenance, local_parent};
 /// 32,768 slots × 4-byte `u32` coordinate = 128 KiB; measured high-water 6,882 facts, and the clang authority mirror measures 32,768 declaration-lane rows for fmt's deferred-parameter traversal, so the coupled protocol geometry moves with it. Roll back to 16,384 if every target package stays below 8,192 facts.
 pub(super) const MAX_EMISSION_FACTS: usize = 32768;
 /// Dense bound of one fact's ordered product children.
-/// 64 slots × 8-byte child = 512 bytes per fact; measured target high-water 244 pooled children. Roll back to 32 if it stays below 16 per fact.
-pub(super) const MAX_FACT_CHILDREN: usize = 64;
+///
+/// A signature or product may name this many children. The count is a `u8`,
+/// so 255 is the hard per-row maximum. The pooled lane stays at
+/// [`PRODUCT_CHILD_POOL_STRIDE`] on average so `protocol_maximum` does not
+/// reserve a 255-wide slot for every fact.
+pub(super) const MAX_FACT_CHILDREN: usize = 255;
+/// Average product-child slots reserved per fact in the pooled lane.
+const PRODUCT_CHILD_POOL_STRIDE: usize = 64;
+const _: () = assert!(MAX_FACT_CHILDREN <= u8::MAX as usize);
 /// Dense bound of one fact's ordered type-record children.
 ///
 /// A compound row may name this many children. The count is a `u8`, so 255
@@ -75,7 +82,7 @@ const TYPE_CHILD_POOL_STRIDE: usize = 64;
 /// Total pooled product-child ceiling across one request. Per-row legality is
 /// still governed by [`MAX_FACT_CHILDREN`]; production allocation uses the
 /// request's measured aggregate demand rather than this Cartesian maximum.
-const MAX_EMISSION_CHILDREN: usize = MAX_EMISSION_FACTS * MAX_FACT_CHILDREN;
+const MAX_EMISSION_CHILDREN: usize = MAX_EMISSION_FACTS * PRODUCT_CHILD_POOL_STRIDE;
 /// Total pooled declared-type-child ceiling across one request.
 const MAX_EMISSION_TYPE_CHILDREN: usize = MAX_EMISSION_FACTS * TYPE_CHILD_POOL_STRIDE;
 /// The uncommitted portion of either fixed type-child lane can never exceed
