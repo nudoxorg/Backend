@@ -53,37 +53,14 @@ let
       mainProgram ? "",
       description ? "",
     }:
-    let
-      cargoHashes = {
-        "grit-lib-0.5.0" = "sha256-1nNJ9zlGKxIu3at0jVs9Lo7BQLyCmspuJRjDuvWw+0s=";
-        "lsp-types-0.95.2" = "sha256-+f3XtEm0fSvgl12LVSeGJGnPElGScAufh9dmMOqKnI8=";
-        "pyrefly-1.3.0-dev.1" = "sha256-ngBgvB7SRIRWuc/BdbIao3Sr4wj7l+L2qkITsv+Ekag=";
-        "smolfile-1.6.1" = "sha256-6foxhpMNKEfrEqIcrz7g04aN/2fd0cEzOcIOgWQE1XI=";
-        "tsz-binder-0.1.48" = "sha256-dmOcoNcf+c8op4y3x3426gGcR9qbPiXOUXJuDn010h4=";
-        "trustfall-0.8.1" = "sha256-BeT7dLLJvurdpO0HkFA3wtn202OQFSLkoTZrNMPiI9w=";
-        "turso_versioning-0.8.0-pre.7" = "sha256-7KTwfmax5uB6IlwIGlgzH6UIxGe5ihoZfZPn4X16cSU=";
-      };
-      # crates.io trustfall 0.8.1 and the git fork share one vendor directory
-      # name. Keep the second tree under its full store name so the link does
-      # not land inside the first crate.
-      cargoDeps = (pkgs.rustPlatform.importCargoLock {
-        lockFile = "${src}/Cargo.lock";
-        outputHashes = cargoHashes;
-      }).overrideAttrs (old: {
-        buildCommand = builtins.replaceStrings
-          [ ''ln -s "$crate" $out/$(basename "$crate" | cut -c 34-)'' ]
-          [ ''
-            dest=$(basename "$crate" | cut -c 34-)
-            if [ -e "$out/$dest" ]; then
-              dest=$(basename "$crate")
-            fi
-            ln -s "$crate" "$out/$dest"
-          '' ]
-          old.buildCommand;
-      });
-    in
     pkgs.rustPlatform.buildRustPackage {
-      inherit pname version src cargoDeps;
+      inherit pname version src;
+      # cargo vendor, not importCargoLock: the lockfile contains two
+      # trustfall 0.8.1 crates and cargo is the tool that names both.
+      cargoHash = "sha256-XwLTqM9Mm+T6OR6gw7nuwhAT+J7p+RsZ9/ebL2m23Io=";
+      depsExtraArgs = {
+        GIT_CONFIG_GLOBAL = ./git-https-instead-of-ssh.config;
+      };
       cargoBuildFlags = [
         "-p"
         cargoPackage
