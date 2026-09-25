@@ -8,23 +8,22 @@
 //!    cpp stem.
 //! 2. [`enumerate_git_versions`] pulls `ls-remote` bytes via the
 //!    [`GitRepository`] adapter and hands them to the ecosystem's **pure** cpp
-//!    listing parser (`crate::ecosystem::cpp::listing::parse_ls_remote`), which does
-//!    all tag/peel logic and pins the peeled commit oid in the `raw` slot as
-//!    `"<tag>@<oid>"` (RL-14).
-//! 3. Each listed version becomes an [`UpsertVersion`] op with
-//!    `source: Git { url, rev: <peeled oid>, registry_checksum: None }`.
+//!    listing parser (`crate::ecosystem::cpp::listing::parse_ls_remote`), which
+//!    does all tag/peel logic and pins the peeled commit oid in the `raw` slot
+//!    as `"<tag>@<oid>"` (RL-14).
+//! 3. Each listed version becomes an [`UpsertVersion`] op with `source: Git {
+//!    url, rev: <peeled oid>, registry_checksum: None }`.
 //! 4. Zero tags ⇒ one pseudo-version synthesized from `HEAD` via
 //!    `crate::ecosystem::cpp::synthesize_pseudo_version` (§3.3).
 //!
 //! Sealing the ObjectPack and queueing IR are **other planes** (RL-15); this
 //! module stops at catalog ops.
 
-use crate::ecosystem::Language;
-use crate::ecosystem::cpp::listing::parse_ls_remote;
-use crate::enums::SourceKind;
-use crate::ids::{PackageId, PackageStemId};
-use crate::protocol::{
-    CatalogOp, FacetWire, PackageStemWire, SourceAcquisitionWire, VersionCoordinates,
+use crate::{
+    ecosystem::{Language, cpp::listing::parse_ls_remote},
+    enums::SourceKind,
+    ids::{PackageId, PackageStemId},
+    protocol::{CatalogOp, FacetWire, PackageStemWire, SourceAcquisitionWire, VersionCoordinates},
 };
 use heart::identity::derive;
 
@@ -149,6 +148,62 @@ pub fn enumerate_git_versions<Repository: GitRepository>(
     Ok(ops)
 }
 
+/// Keep `SourceMoved` and only the versions whose peeled rev differs from
+/// `prior`. A prior canonical absent from this listing becomes
+/// [`VersionDelta::Removed`]. An empty `prior` keeps every version (first
+/// poll).
+pub fn retain_changed_versions(
+    ops: Vec<CatalogOp>,
+    prior: &std::collections::BTreeMap<String, Option<String>>,
+    stem_id: PackageStemId,
+) -> Vec<CatalogOp> {
+    use std::collections::BTreeSet;
+
+    let mut observed = BTreeSet::new();
+    let mut kept = Vec::with_capacity(ops.len());
+    for op in ops {
+        match op {
+            CatalogOp::UpsertVersion {
+                coordinates,
+                published_at,
+                toolchain,
+                license,
+                edges,
+                facets,
+                source,
+            } if coordinates.stem_id == stem_id => {
+                let rev = source.as_ref().and_then(|source| source.source_rev.clone());
+                observed.insert(coordinates.version_canonical.clone());
+                if prior.get(&coordinates.version_canonical) == Some(&rev) {
+                    continue;
+                }
+                kept.push(CatalogOp::UpsertVersion {
+                    coordinates,
+                    published_at,
+                    toolchain,
+                    license,
+                    edges,
+                    facets,
+                    source,
+                });
+            }
+            other => kept.push(other),
+        }
+    }
+    for (canonical, _) in prior {
+        if observed.contains(canonical) {
+            continue;
+        }
+        kept.push(CatalogOp::VersionDelta {
+            delta: crate::protocol::VersionDelta::Removed {
+                stem_id,
+                version_id: cpp_version_id(stem_id, canonical),
+            },
+        });
+    }
+    kept
+}
+
 /// Synthesize the single pseudo-version op for an untagged repo from `HEAD`
 /// (REGISTRYLESS-PLAN §7.4 step 2 fallback, §3.3). Returns `None` only via the
 /// [`Error::NoVersions`] error when `HEAD` is unreadable.
@@ -201,10 +256,11 @@ fn enumerate_pseudo_version<Repository: GitRepository>(
 mod tests {
     use super::*;
 
-    /// Cross-crate consistency: the ingestor's `cpp_stem_id` MUST agree with the
-    /// shared heart framing law for the same slug. If a second producer (the
-    /// add-by-URL route, P6 sealing) derives the id straight from heart, it has
-    /// to land on the exact same stem — otherwise catalog rows orphan.
+    /// Cross-crate consistency: the ingestor's `cpp_stem_id` MUST agree with
+    /// the shared heart framing law for the same slug. If a second producer
+    /// (the add-by-URL route, P6 sealing) derives the id straight from
+    /// heart, it has to land on the exact same stem — otherwise catalog
+    /// rows orphan.
     #[test]
     fn cpp_stem_id_agrees_with_shared_heart_law() {
         for slug in ["github.com/madler/zlib", "system/pthread"] {
@@ -223,8 +279,49 @@ mod tests {
         }
     }
 
-    /// A version id derives from `(stem_blob, version_canonical)` under the same
-    /// law, and is stable across calls.
+    /// A version id derives from `(stem_blob, version_canonical)` under the
+    /// same law, and is stable across calls.
+    #[test]
+    fn retain_changed_versions_drops_stable_revs_and_emits_removals() {
+        use std::collections::BTreeMap;
+        let stem = cpp_stem_id("example.test/repo");
+        let gone_id = cpp_version_id(stem, "v0");
+        let ops = vec![CatalogOp::UpsertVersion {
+            coordinates: VersionCoordinates {
+                version_id: cpp_version_id(stem, "v1"),
+                stem_id: stem,
+                version_canonical: "v1".into(),
+                version_original: "v1".into(),
+            },
+            published_at: None,
+            toolchain: None,
+            license: None,
+            edges: Vec::new(),
+            facets: FacetWire::default(),
+            source: Some(SourceAcquisitionWire {
+                source_kind: SourceKind::Git,
+                source_pack: None,
+                source_rev: Some("aaa".into()),
+                registry_checksum: None,
+                registry_package_uri: None,
+            }),
+        }];
+        let mut prior = BTreeMap::new();
+        prior.insert("v1".into(), Some("aaa".into()));
+        prior.insert("v0".into(), Some("old".into()));
+        let kept = retain_changed_versions(ops, &prior, stem);
+        assert!(
+            kept.iter()
+                .all(|op| !matches!(op, CatalogOp::UpsertVersion { .. })),
+            "unchanged rev is omitted"
+        );
+        assert!(kept.iter().any(|op| matches!(
+            op,
+            CatalogOp::VersionDelta { delta: crate::protocol::VersionDelta::Removed { version_id, .. } }
+                if *version_id == gone_id
+        )));
+    }
+
     #[test]
     fn cpp_version_id_is_stable_and_law_framed() {
         let stem = cpp_stem_id("github.com/madler/zlib");

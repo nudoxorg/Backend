@@ -13,10 +13,12 @@ use std::process::Command;
 use common::FakeGitRepository;
 use index::protocol::CatalogOp;
 
-use index::ingest::enumerate::{cpp_stem_id, enumerate_git_versions};
-use index::ingest::git::{GitCommandAdapter, GitRepository};
-use index::ingest::grit::GritAdapter;
-use index::ingest::monitor::{GitMonitor, TickOutcome};
+use index::ingest::{
+    enumerate::{cpp_stem_id, enumerate_git_versions},
+    git::{GitCommandAdapter, GitRepository},
+    grit::GritAdapter,
+    monitor::{GitMonitor, TickOutcome},
+};
 
 /// `git` command in a directory with deterministic identity, arg-vector only.
 fn git(dir: &std::path::Path, args: &[&str]) {
@@ -292,6 +294,7 @@ fn monitor_reports_unchanged_when_ref_digest_matches() {
             "example.test/repo",
             url,
             None,
+            &std::collections::BTreeMap::new(),
             1000,
             20_250_101_000_000,
         )
@@ -315,6 +318,7 @@ fn monitor_reports_unchanged_when_ref_digest_matches() {
             "example.test/repo",
             url,
             Some(&digest),
+            &std::collections::BTreeMap::new(),
             2000,
             20_250_101_000_000,
         )
@@ -339,6 +343,7 @@ fn monitor_emits_source_moved_and_versions_on_change() {
             "example.test/repo",
             url,
             Some("stale-digest"),
+            &std::collections::BTreeMap::new(),
             3000,
             20_250_101_000_000,
         )
@@ -370,6 +375,7 @@ fn monitor_git_failure_is_typed_error() {
         "example.test/gone",
         url,
         None,
+        &std::collections::BTreeMap::new(),
         4000,
         20_250_101_000_000,
     );

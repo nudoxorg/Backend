@@ -66,18 +66,21 @@ use sea_orm::{
 
 use common::{init_repo_with_tags, migrated_writer, push_one_more_tagged_commit};
 
-use index::engine::Configured;
-use index::entity::{git_watermarks, versions};
-use index::ids::PackageStemId;
-use index::ingest::enumerate::{cpp_stem_id, enumerate_git_versions, upsert_cpp_package};
-use index::ingest::git::{GitCommandAdapter, GitRepository};
-use index::ingest::grit::GritAdapter;
-use index::ingest::monitor::{GitMonitor, TickOutcome};
-use index::ingest::watermark::{GitWatermark, MemoryWatermarkStore, WatermarkStore};
-use index::ingest::{FollowerDriver, GitDriveOutcome};
-use index::protocol::CatalogOp;
-use index::store::writer::CatalogWriter;
-use index::store::{Catalog, CatalogCursor, MetaStore};
+use index::{
+    engine::Configured,
+    entity::{git_watermarks, versions},
+    ids::PackageStemId,
+    ingest::{
+        FollowerDriver, GitDriveOutcome,
+        enumerate::{cpp_stem_id, enumerate_git_versions, upsert_cpp_package},
+        git::{GitCommandAdapter, GitRepository},
+        grit::GritAdapter,
+        monitor::{GitMonitor, TickOutcome},
+        watermark::{GitWatermark, MemoryWatermarkStore, WatermarkStore},
+    },
+    protocol::CatalogOp,
+    store::{Catalog, CatalogCursor, MetaStore, writer::CatalogWriter},
+};
 
 const SLUG: &str = "example.test/real-pipeline";
 
@@ -106,9 +109,10 @@ fn committed_versions(
 /// The CATALOG's own `git_watermarks` row for `stem`, read straight off the
 /// table by a raw SeaORM select — nothing else in the crate reads this table
 /// back (it is written only as a side effect of applying
-/// `CatalogOp::SourceMoved`). Distinct from `MemoryWatermarkStore::git_watermark`,
-/// which is the driver-side seam `drive_one_git_poll` actually reads/writes on
-/// every tick — see the module doc for why the two disagree on purpose.
+/// `CatalogOp::SourceMoved`). Distinct from
+/// `MemoryWatermarkStore::git_watermark`, which is the driver-side seam
+/// `drive_one_git_poll` actually reads/writes on every tick — see the module
+/// doc for why the two disagree on purpose.
 fn catalog_git_watermark_row(
     writer: &CatalogWriter<Configured>,
     stem: PackageStemId,
@@ -144,8 +148,18 @@ fn drive_one_git_poll<Repository: GitRepository>(
         .expect("read git watermark")
         .and_then(|w| w.last_rev);
 
+    let prior: std::collections::BTreeMap<String, Option<String>> =
+        committed_versions(writer, stem).into_iter().collect();
     let outcome = monitor
-        .tick(stem, SLUG, repo_url, previous.as_deref(), now_ms, commit_ts)
+        .tick(
+            stem,
+            SLUG,
+            repo_url,
+            previous.as_deref(),
+            &prior,
+            now_ms,
+            commit_ts,
+        )
         .expect("tick against a real repo must not fail");
 
     match &outcome {
@@ -379,15 +393,9 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
             .count(),
         TickOutcome::Unchanged { .. } => panic!("a genuinely new tag must read as a move"),
     };
-    // The finding worth reporting: re-enumeration re-lists EVERY tag on ANY
-    // change, not just the new one — one new release re-notifies all N+1
-    // versions' worth of ops and outbox rows, not 1. See the crate report for
-    // the throughput implication (cost per poll scales with total catalog
-    // size for the stem, not with what actually changed).
     assert_eq!(
-        version_ops_in_poll3,
-        N + 1,
-        "re-enumeration re-lists the whole ref set on any change, not just the delta"
+        version_ops_in_poll3, 1,
+        "a new tag emits one version op; unchanged tags stay off the batch"
     );
 
     let rows_after = committed_versions(&writer, stem);

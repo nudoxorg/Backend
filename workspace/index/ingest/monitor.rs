@@ -6,8 +6,8 @@
 //! # Behaviour
 //!
 //! `tick(stem)`:
-//! 1. `ls-remote` the stem's URL via the [`GitRepository`] adapter and compute a
-//!    single **combined ref digest** — a deterministic fingerprint of every
+//! 1. `ls-remote` the stem's URL via the [`GitRepository`] adapter and compute
+//!    a single **combined ref digest** — a deterministic fingerprint of every
 //!    `(oid, ref)` pair — as the comparable watermark. HEAD is the natural
 //!    single-rev anchor, but a monitor must react to *any* new tag, so the
 //!    digest over all refs is the honest high-water mark.
@@ -16,21 +16,26 @@
 //! 3. Changed digest ⇒ emit `SourceMoved { rev: <digest> }` and re-enumerate
 //!    versions (`enumerate::enumerate_git_versions`), returning both as one op
 //!    batch the driver applies atomically.
-//! 4. On a git failure the tick returns a [`Error`] carrying the message
-//!    the caller writes to `git_watermarks.last_error`; the watermark's
-//!    `last_rev` is **not** advanced on failure.
+//! 4. On a git failure the tick returns a [`Error`] carrying the message the
+//!    caller writes to `git_watermarks.last_error`; the watermark's `last_rev`
+//!    is **not** advanced on failure.
 //!
 //! The monitor is pure over its adapter, so tests drive it with a fake
 //! [`GitRepository`]. Persisting the watermark and applying ops is the driver's
-//! job; this type hands back a typed [`TickOutcome`] describing what to persist.
+//! job; this type hands back a typed [`TickOutcome`] describing what to
+//! persist.
 
 use std::fmt::Write as _;
 
-use crate::ids::PackageStemId;
-use crate::protocol::{CatalogOp, GitRev};
+use crate::{
+    ids::PackageStemId,
+    protocol::{CatalogOp, GitRev},
+};
 
-use crate::ingest::enumerate::{Error as EnumerateError, enumerate_git_versions};
-use crate::ingest::git::{Error as GitRepositoryError, GitRepository};
+use crate::ingest::{
+    enumerate::{Error as EnumerateError, enumerate_git_versions},
+    git::{Error as GitRepositoryError, GitRepository},
+};
 
 /// What one [`GitMonitor::tick`] observed — the driver turns this into a
 /// watermark write and (when changed) an atomic op batch.
@@ -53,7 +58,8 @@ pub enum TickOutcome {
 }
 
 /// Why a tick failed. The caller records `to_string()` in
-/// `git_watermarks.last_error` and leaves `last_rev` untouched (INDEX-PLAN §6.4).
+/// `git_watermarks.last_error` and leaves `last_rev` untouched (INDEX-PLAN
+/// §6.4).
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The git adapter failed to list refs.
@@ -91,6 +97,7 @@ impl<Repository: GitRepository> GitMonitor<Repository> {
         repo_slug: &str,
         repo_url: &str,
         last_rev: Option<&str>,
+        prior_revs: &std::collections::BTreeMap<String, Option<String>>,
         checked_at: i64,
         commit_time: u64,
     ) -> Result<TickOutcome, Error> {
@@ -115,6 +122,7 @@ impl<Repository: GitRepository> GitMonitor<Repository> {
             repo_url,
             commit_time,
         )?);
+        let ops = crate::ingest::enumerate::retain_changed_versions(ops, prior_revs, stem_id);
 
         Ok(TickOutcome::Moved { rev: digest, ops })
     }

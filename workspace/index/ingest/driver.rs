@@ -21,26 +21,30 @@
 //! not against whichever engine a build selected. Every build and every test
 //! instantiates it with the real DoltLite writer.
 
-use crate::engine::{CatalogEngine, VersioningEngine};
-use crate::protocol::{CatalogOp, VersionDelta, VersionRecordWire};
-use crate::store::writer::CatalogWriter;
-use crate::store::{Catalog, MetaStore};
+use crate::{
+    engine::{CatalogEngine, VersioningEngine},
+    protocol::{CatalogOp, VersionDelta, VersionRecordWire},
+    store::{Catalog, MetaStore, writer::CatalogWriter},
+};
 
-use crate::ingest::follower::{Follower, FollowerError};
-use crate::ingest::git::GitRepository;
-use crate::ingest::homebrew::HomebrewFollower;
-use crate::ingest::monitor::{GitMonitor, MonitorError, TickOutcome};
-use crate::ingest::transport::HttpTransport;
-use crate::ingest::watermark::{FileWatermarkStore, GitWatermark, WatermarkError, WatermarkStore};
+use crate::ingest::{
+    follower::{Follower, FollowerError},
+    git::GitRepository,
+    homebrew::HomebrewFollower,
+    monitor::{GitMonitor, MonitorError, TickOutcome},
+    transport::HttpTransport,
+    watermark::{FileWatermarkStore, GitWatermark, WatermarkError, WatermarkStore},
+};
 
 /// Add advisory listings for catalog versions an OSV event range covers.
 pub fn expand_advisory_ranges<E: CatalogEngine>(
     engine: &E,
     ops: &[CatalogOp],
 ) -> Result<Vec<CatalogOp>, crate::store::MetaError> {
-    use crate::ingest::advisory::range_listings_for;
-    use crate::ingest::advisory::AdvisorySource;
-    use crate::store::read::version_snapshots;
+    use crate::{
+        ingest::advisory::{AdvisorySource, range_listings_for},
+        store::read::version_snapshots,
+    };
 
     let mut expanded = Vec::with_capacity(ops.len());
     for op in ops {
@@ -77,7 +81,8 @@ pub fn expand_advisory_ranges<E: CatalogEngine>(
 /// What one drive step did — for logging and test assertions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriveOutcome {
-    /// The batch committed; `applied` ops and a watermark advance were persisted.
+    /// The batch committed; `applied` ops and a watermark advance were
+    /// persisted.
     Committed {
         /// How many ops were applied in the batch.
         applied: usize,
@@ -118,7 +123,8 @@ pub use self::Error as DriveError;
 /// What one git-monitor drive step did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitDriveOutcome {
-    /// The remote ref digest was unchanged; only the checked-at timestamp moved.
+    /// The remote ref digest was unchanged; only the checked-at timestamp
+    /// moved.
     NoChange,
     /// A changed ref set was committed and its watermark persisted.
     Committed {
@@ -218,13 +224,10 @@ where
                 message: error.to_string(),
             }
         })?;
-        let report = self
-            .writer
-            .apply_ops(&ops)
-            .map_err(|error| Error::Commit {
-                feed: feed.clone(),
-                message: error.to_string(),
-            })?;
+        let report = self.writer.apply_ops(&ops).map_err(|error| Error::Commit {
+            feed: feed.clone(),
+            message: error.to_string(),
+        })?;
 
         self.writer
             .commit_batch(&format!("ingestor: {feed} batch ({} ops)", report.applied))
@@ -262,11 +265,13 @@ where
             .watermarks
             .git_watermark(stem)?
             .and_then(|watermark| watermark.last_rev);
+        let prior = self.version_revs(stem)?;
         let outcome = monitor.tick(
             stem,
             repo_slug,
             repo_url,
             previous.as_deref(),
+            &prior,
             checked_at,
             commit_time,
         )?;
@@ -316,7 +321,7 @@ where
         stem: crate::ids::PackageStemId,
         ops: Vec<CatalogOp>,
     ) -> Result<Vec<CatalogOp>, Error> {
-        use std::collections::{BTreeMap, BTreeSet};
+        use std::collections::BTreeMap;
 
         let existing = self
             .writer
@@ -329,7 +334,6 @@ where
             .into_iter()
             .map(|version| (version.version_canonical.clone(), version))
             .collect();
-        let mut observed = BTreeSet::new();
         let mut result = Vec::with_capacity(ops.len());
 
         for op in ops {
@@ -354,7 +358,6 @@ where
                         source,
                     };
                     let canonical = record.coordinates.version_canonical.clone();
-                    observed.insert(canonical.clone());
                     let delta = match existing.get(&canonical) {
                         None => VersionDelta::Added { version: record },
                         Some(previous) if previous.source_rev != source_rev => {
@@ -368,16 +371,23 @@ where
             }
         }
 
-        for (canonical, previous) in existing {
-            if !observed.contains(&canonical) {
-                result.push(CatalogOp::VersionDelta {
-                    delta: VersionDelta::Removed {
-                        stem_id: stem,
-                        version_id: previous.version_id,
-                    },
-                });
-            }
-        }
         Ok(result)
+    }
+
+    fn version_revs(
+        &self,
+        stem: crate::ids::PackageStemId,
+    ) -> Result<std::collections::BTreeMap<String, Option<String>>, Error> {
+        let existing = self
+            .writer
+            .version_snapshots(stem)
+            .map_err(|error| Error::Commit {
+                feed: format!("stem {stem}"),
+                message: error.to_string(),
+            })?;
+        Ok(existing
+            .into_iter()
+            .map(|version| (version.version_canonical, version.source_rev))
+            .collect())
     }
 }
