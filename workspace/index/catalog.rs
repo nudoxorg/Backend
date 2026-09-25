@@ -493,31 +493,36 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
         };
 
         let pages = self.collect_facet_pages()?;
-        let mut edges_by_version: HashMap<PackageId, Vec<smol_str::SmolStr>> = HashMap::new();
-        for (version, name) in lifecycle::scan_runtime_edges(self.engine())? {
-            edges_by_version
-                .entry(version)
+        let mut deps_by_package: HashMap<(String, String), Vec<smol_str::SmolStr>> = HashMap::new();
+        for (ecosystem, package_name, dependency) in
+            lifecycle::distinct_runtime_dependents(self.engine())?
+        {
+            deps_by_package
+                .entry((ecosystem, package_name))
                 .or_default()
-                .push(smol_str::SmolStr::new(name));
+                .push(smol_str::SmolStr::new(dependency));
         }
+        let edged = lifecycle::versions_with_runtime_edges(self.engine())?;
         let rows: Vec<DependencyRow> = pages
             .iter()
             .filter_map(|(package, ecosystem, name, facets)| {
-                let runtime = edges_by_version
-                    .get(package)
+                let key = (ecosystem.as_token().to_owned(), name.to_string());
+                let runtime = deps_by_package
+                    .get(&key)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
+                let version_edges = if edged.contains(package) { runtime } else { &[] };
                 let facet_names = facets
                     .as_ref()
                     .map(|facets| facets.dependencies.as_slice())
                     .unwrap_or(&[]);
-                if facets.is_none() && runtime.is_empty() {
+                if facets.is_none() && version_edges.is_empty() {
                     return None;
                 }
                 Some(DependencyRow {
                     ecosystem: *ecosystem,
                     name: name.clone(),
-                    dependencies: names_for_sweep(runtime, facet_names),
+                    dependencies: names_for_sweep(version_edges, facet_names),
                 })
             })
             .collect();

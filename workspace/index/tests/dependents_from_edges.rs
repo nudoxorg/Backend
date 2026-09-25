@@ -149,6 +149,47 @@ async fn sweep_counts_runtime_edges_and_falls_back_to_facets() {
     );
 }
 
+#[tokio::test]
+async fn two_versions_of_one_package_union_their_runtime_edges() {
+    let writer = Arc::new(migrated_writer());
+    let ops = vec![
+        package(1, "serde"),
+        package(2, "tokio"),
+        package(5, "app"),
+        version(1, "1.0.0", vec![], facets_of(&[])),
+        version(2, "1.0.0", vec![], facets_of(&[])),
+        version(
+            5,
+            "1.0.0",
+            vec![runtime(heart::Language::Rust, "serde")],
+            facets_of(&[]),
+        ),
+        CatalogOp::UpsertVersion {
+            coordinates: VersionCoordinates {
+                version_id: version_id(9),
+                stem_id: stem_id(5),
+                version_canonical: "2.0.0".to_owned(),
+                version_original: "2.0.0".to_owned(),
+            },
+            published_at: None,
+            toolchain: None,
+            license: None,
+            edges: vec![runtime(heart::Language::Rust, "tokio")],
+            facets: facets_of(&[]),
+            source: None,
+        },
+    ];
+    writer.apply_ops(&ops).expect("catalog writes");
+    let store = GlobalStore::new(
+        Arc::clone(&writer),
+        InstanceToken::new("test/dependents-union").expect("instance"),
+    );
+    store.refresh_dependents().await.expect("sweep");
+    let engine = writer.engine();
+    assert_eq!(dependents_of(engine, 1), 1, "serde from the first version");
+    assert_eq!(dependents_of(engine, 2), 1, "tokio from the second version");
+}
+
 fn stored_package(name: &str, dependencies: &[&str]) -> index::GlobalPackage {
     let coordinates = Coordinates {
         origin: RegistryOrigin::CratesIo,

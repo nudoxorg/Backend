@@ -645,6 +645,84 @@ pub fn scan_runtime_edges<E: CatalogEngine>(
     .map_err(MetaError::from)
 }
 
+/// One row per `(ecosystem, package, dependency)` runtime edge.
+///
+/// Several versions of one package that name the same dependency collapse
+/// here, so the sweep unions them instead of copying every version's edge list.
+pub fn distinct_runtime_dependents<E: CatalogEngine>(
+    engine: &E,
+) -> Result<Vec<(String, String, String)>, MetaError> {
+    use sea_orm::sea_query::{BinOper, Query};
+
+    let mut select = Query::select();
+    select
+        .column((packages::Entity, packages::Column::Ecosystem))
+        .column((packages::Entity, packages::Column::NameCanonical))
+        .column((edges::Entity, edges::Column::DepNameCanonical))
+        .from(edges::Entity)
+        .inner_join(
+            versions::Entity,
+            Expr::col((edges::Entity, edges::Column::DependentVersion))
+                .equals((versions::Entity, versions::Column::Id)),
+        )
+        .inner_join(
+            packages::Entity,
+            Expr::col((versions::Entity, versions::Column::StemId))
+                .equals((packages::Entity, packages::Column::StemId)),
+        )
+        .and_where(Expr::col((edges::Entity, edges::Column::Kind)).eq("runtime"))
+        .and_where(
+            Expr::col((edges::Entity, edges::Column::DepEcosystem))
+                .equals((packages::Entity, packages::Column::Ecosystem)),
+        )
+        .and_where(
+            Expr::col((edges::Entity, edges::Column::DepNameCanonical)).binary(
+                BinOper::NotEqual,
+                Expr::col((packages::Entity, packages::Column::NameCanonical)),
+            ),
+        )
+        .group_by_col((packages::Entity, packages::Column::Ecosystem))
+        .group_by_col((packages::Entity, packages::Column::NameCanonical))
+        .group_by_col((edges::Entity, edges::Column::DepNameCanonical));
+    crate::engine::stmt::query_select(engine, select, &mut |row| {
+        Ok((row.get_text(0)?, row.get_text(1)?, row.get_text(2)?))
+    })
+    .map_err(MetaError::from)
+}
+
+/// Versions that stored at least one same-ecosystem runtime edge.
+pub fn versions_with_runtime_edges<E: CatalogEngine>(
+    engine: &E,
+) -> Result<std::collections::HashSet<PackageId>, MetaError> {
+    use sea_orm::sea_query::Query;
+
+    let mut select = Query::select();
+    select
+        .column((edges::Entity, edges::Column::DependentVersion))
+        .from(edges::Entity)
+        .inner_join(
+            versions::Entity,
+            Expr::col((edges::Entity, edges::Column::DependentVersion))
+                .equals((versions::Entity, versions::Column::Id)),
+        )
+        .inner_join(
+            packages::Entity,
+            Expr::col((versions::Entity, versions::Column::StemId))
+                .equals((packages::Entity, packages::Column::StemId)),
+        )
+        .and_where(Expr::col((edges::Entity, edges::Column::Kind)).eq("runtime"))
+        .and_where(
+            Expr::col((edges::Entity, edges::Column::DepEcosystem))
+                .equals((packages::Entity, packages::Column::Ecosystem)),
+        )
+        .group_by_col((edges::Entity, edges::Column::DependentVersion));
+    let ids = crate::engine::stmt::query_select(engine, select, &mut |row| {
+        version_id_from_blob(&row.get_blob(0)?)
+    })
+    .map_err(MetaError::from)?;
+    Ok(ids.into_iter().collect())
+}
+
 fn version_id_from_blob(blob: &[u8]) -> Result<PackageId, crate::engine::EngineError> {
     crate::ids::version_id::from_blob(blob)
         .map_err(|e| crate::engine::EngineError::Statement(e.to_string()))
