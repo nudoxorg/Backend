@@ -38,6 +38,33 @@ pub enum InitializationDecision {
     Hold,
 }
 
+/// How a dependency-list revision meets the catalog.
+///
+/// The first enqueue publishes the whole record. Any later revision replaces
+/// feed edges and leaves lifecycle state where it is, including a package that
+/// is already stored. An unchanged payload touches nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogTouch {
+    /// First publish: identity, facets, edges, and lifecycle.
+    Upsert,
+    /// A changed dependency list on a package that already has a catalog row.
+    ReplaceEdges,
+    /// The versioned payload matches the tip, or this call is not publishing.
+    Leave,
+}
+
+/// `first_enqueue` is the call that must create the catalog row.
+/// `revised` is a Turso payload whose hash differs from the tip.
+pub fn catalog_touch(first_enqueue: bool, revised: bool) -> CatalogTouch {
+    if first_enqueue {
+        CatalogTouch::Upsert
+    } else if revised {
+        CatalogTouch::ReplaceEdges
+    } else {
+        CatalogTouch::Leave
+    }
+}
+
 /// The decision table: current lifecycle state (`None` = never seen) plus an
 /// optional freshness verdict for stored packages.
 pub fn initialization_decision(
@@ -238,29 +265,35 @@ impl<M: EmbeddingModel> Server<M> {
                 })?
             }
         };
-        if enqueued
-            || (already_pending
-                && matches!(fact_write, crate::engine::turso_vc::FactWrite::Revised(_)))
-        {
+        let touch = catalog_touch(
+            enqueued,
+            matches!(fact_write, crate::engine::turso_vc::FactWrite::Revised(_)),
+        );
+        if touch != CatalogTouch::Leave {
             // Publishing the record and enqueueing the job are each idempotent
             // (identity upsert; unique live job per package), so this pair
             // converges even if the process dies between the two writes.
             // A later publish with a new dependency list revises the versioned
-            // row and replaces feed edges without rewriting lifecycle state.
+            // row and replaces feed edges without rewriting lifecycle state,
+            // including a package that is already stored.
             let mut record = provisional_global_package(coordinates);
             record.facets = facets_from_dependency_names(dependencies);
-            if enqueued {
-                stores
-                    .global_store
-                    .upsert(&record)
-                    .await
-                    .map_err(RegistryError::from)?;
-            } else {
-                stores
-                    .global_store
-                    .replace_feed_edges(&record)
-                    .await
-                    .map_err(RegistryError::from)?;
+            match touch {
+                CatalogTouch::Upsert => {
+                    stores
+                        .global_store
+                        .upsert(&record)
+                        .await
+                        .map_err(RegistryError::from)?;
+                }
+                CatalogTouch::ReplaceEdges => {
+                    stores
+                        .global_store
+                        .replace_feed_edges(&record)
+                        .await
+                        .map_err(RegistryError::from)?;
+                }
+                CatalogTouch::Leave => {}
             }
         }
 
@@ -323,7 +356,15 @@ impl<M: EmbeddingModel> Server<M> {
 
 #[cfg(test)]
 mod tests {
-    use super::facets_from_dependency_names;
+    use super::{CatalogTouch, catalog_touch, facets_from_dependency_names};
+
+    #[test]
+    fn a_revised_payload_replaces_edges_after_the_first_publish() {
+        assert_eq!(catalog_touch(true, true), CatalogTouch::Upsert);
+        assert_eq!(catalog_touch(true, false), CatalogTouch::Upsert);
+        assert_eq!(catalog_touch(false, true), CatalogTouch::ReplaceEdges);
+        assert_eq!(catalog_touch(false, false), CatalogTouch::Leave);
+    }
 
     #[test]
     fn dependency_names_are_trimmed_sorted_and_deduped() {

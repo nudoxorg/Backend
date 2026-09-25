@@ -544,6 +544,22 @@ pub fn scan_version_facets<E: CatalogEngine>(
     .map_err(MetaError::from)
 }
 
+/// Drop every edge of one version so the next upsert is the full set.
+pub fn delete_version_edges<E: CatalogEngine>(
+    engine: &E,
+    version: PackageId,
+) -> Result<(), MetaError> {
+    engine
+        .execute(
+            "DELETE FROM edges WHERE dependent_version = ?",
+            &[crate::engine::Value::Blob(
+                version.as_uuid().as_bytes().to_vec(),
+            )],
+        )
+        .map_err(MetaError::from)?;
+    Ok(())
+}
+
 /// Runtime edges whose `dep_ecosystem` is the dependent package's ecosystem.
 ///
 /// Cross-ecosystem names and non-runtime kinds stay out: the sweep keys

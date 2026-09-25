@@ -10,7 +10,11 @@ mod common;
 use std::sync::Arc;
 
 use common::{migrated_writer, stem_id, version_id};
+use heart::content::ContentHash;
+use heart::{Language, PackageVersion, RegistryOrigin, ResolutionState, Toolchain};
 use index::catalog::{GlobalStore, InstanceToken};
+use index::package::{Coordinates, PackageName};
+use index::Package;
 use index::store::MetaStore;
 use index::enums::{EdgeKind, EdgeSource};
 use index::metadata::SearchFacets;
@@ -135,4 +139,57 @@ async fn sweep_counts_runtime_edges_and_falls_back_to_facets() {
     assert_eq!(dependents_of(engine, 2), 1, "tokio is a facet-only fallback");
     assert_eq!(dependents_of(engine, 3), 0, "leftover facet is not an edge");
     assert_eq!(dependents_of(engine, 4), 0, "a build edge is not a dependent");
+}
+
+fn stored_package(name: &str, dependencies: &[&str]) -> index::GlobalPackage {
+    let coordinates = Coordinates {
+        origin: RegistryOrigin::CratesIo,
+        name: PackageName::from_canonical(Language::Rust, name, name),
+        version: PackageVersion::try_from((Language::Rust, "1.0.0")).expect("version"),
+    };
+    let mut facets = index::metadata::SearchFacets::default();
+    facets.dependencies = dependencies.iter().copied().map(SmolStr::new).collect();
+    index::GlobalPackage {
+        id: coordinates.id(),
+        package: Package {
+            coordinates,
+            toolchain: Toolchain::Rust {
+                compiler: semver::Version::new(1, 88, 0),
+                edition: heart::Edition::E2024,
+            },
+        },
+        state: ResolutionState::Stored {
+            hash: ContentHash::from_bytes([9u8; 32]),
+        },
+        facets: Some(facets),
+    }
+}
+
+#[tokio::test]
+async fn a_stored_package_keeps_its_state_when_edges_are_replaced() {
+    let writer = Arc::new(migrated_writer());
+    let store = GlobalStore::new(
+        Arc::clone(&writer),
+        InstanceToken::new("test/stored-edges").expect("instance"),
+    );
+    let first = stored_package("app", &["serde"]);
+    store.upsert(&first).await.expect("first publish");
+    assert!(matches!(
+        store.get_state(first.id).await.expect("state"),
+        ResolutionState::Stored { .. }
+    ));
+
+    let revised = stored_package("app", &["tokio"]);
+    store
+        .replace_feed_edges(&revised)
+        .await
+        .expect("replace edges");
+    assert!(matches!(
+        store.get_state(first.id).await.expect("state unchanged"),
+        ResolutionState::Stored { .. }
+    ));
+
+    let edges = lifecycle::scan_runtime_edges(writer.engine()).expect("edges");
+    let names: Vec<_> = edges.into_iter().map(|(_, name)| name).collect();
+    assert_eq!(names, vec!["tokio".to_owned()]);
 }

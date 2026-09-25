@@ -146,9 +146,10 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
 
     /// Replace the version's feed edges and facets without rewriting lifecycle.
     ///
-    /// Used when a package is already pending and a later publish carries a
-    /// different dependency list. [`Self::upsert`] would also rewrite state
-    /// and is reserved for the first enqueue.
+    /// Used when a package already has a catalog row and a later publish
+    /// carries a different dependency list, including a package that is
+    /// already stored. [`Self::upsert`] would also rewrite state and is
+    /// reserved for the first enqueue.
     pub async fn replace_feed_edges(&self, package: &GlobalPackage) -> Result<(), IndexError> {
         let coordinates = &package.package.coordinates;
         let facet_wire = match &package.facets {
@@ -162,6 +163,7 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             }
             None => FacetWire::default(),
         };
+        lifecycle::delete_version_edges(self.engine(), coordinates.id())?;
         let toolchain_json =
             serde_json::to_string(&package.package.toolchain).map_err(IndexError::ToolchainJson)?;
         self.writer.apply_ops(&[CatalogOp::UpsertVersion {
