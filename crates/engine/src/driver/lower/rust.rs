@@ -64,7 +64,7 @@
 //! | `MAX_TYPE_DEPTH` (16) | `TruncatedAtDepthLimit` | retain an unknown row with that reason |
 //! | `MAX_COMPOUND_CHILDREN` (the type-child lane, 255) | `NoIrRepresentation`, or enclosing `OracleGap` without a written shape | retain spelling when available; otherwise retain the gap row |
 //! | `MAX_DEDUPED_FOREIGN_ROWS` (512) | `NoSupportedDeclaration` | a distinct foreign spelling beyond the cap rejects exactly |
-//! | `TUPLE_FIELD_NAMES` (16 entries) | positional-name fold | positions beyond 15 are not materialized by the module walk |
+//! | `TUPLE_FIELD_NAMES` (256 positional spellings) | positional-name fold | a tuple field whose index has no spelling is not materialized |
 //! | computed rows (`MAX_COMPUTED_TYPE_ROWS`, 32768) | `ComputedRowCapacity` | a proven let-initializer or method-call result type beyond the cap is dropped, never truncated into a fabricated row |
 
 use std::{collections::HashMap, vec::Vec};
@@ -270,11 +270,59 @@ struct Decl<'source> {
 }
 
 /// Canonical positional names of tuple fields, exactly the spellings Rust
-/// itself uses for `.0`-style access.
-const TUPLE_FIELD_NAMES: [&[u8]; 16] = [
-    b"0", b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"8", b"9", b"10", b"11", b"12", b"13", b"14",
-    b"15",
-];
+/// itself uses for `.0`-style access. The table covers every `u8` index so
+/// a tuple struct wider than sixteen fields keeps those fields.
+const TUPLE_FIELD_NAME_LIMIT: usize = 256;
+
+const fn tuple_field_name_table() -> (
+    [u8; 1024],
+    [u16; TUPLE_FIELD_NAME_LIMIT],
+    [u16; TUPLE_FIELD_NAME_LIMIT],
+) {
+    let mut bytes = [0_u8; 1024];
+    let mut starts = [0_u16; TUPLE_FIELD_NAME_LIMIT];
+    let mut ends = [0_u16; TUPLE_FIELD_NAME_LIMIT];
+    let mut at = 0_usize;
+    let mut index = 0_usize;
+    while index < TUPLE_FIELD_NAME_LIMIT {
+        starts[index] = at as u16;
+        let mut value = index;
+        let mut digits = [0_u8; 3];
+        let mut count = 0_usize;
+        if value == 0 {
+            digits[0] = b'0';
+            count = 1;
+        } else {
+            while value > 0 {
+                digits[count] = b'0' + (value % 10) as u8;
+                value /= 10;
+                count += 1;
+            }
+        }
+        let mut cursor = count;
+        while cursor > 0 {
+            cursor -= 1;
+            bytes[at] = digits[cursor];
+            at += 1;
+        }
+        ends[index] = at as u16;
+        index += 1;
+    }
+    (bytes, starts, ends)
+}
+
+const TUPLE_FIELD_NAME_TABLE: (
+    [u8; 1024],
+    [u16; TUPLE_FIELD_NAME_LIMIT],
+    [u16; TUPLE_FIELD_NAME_LIMIT],
+) = tuple_field_name_table();
+
+fn tuple_field_name(index: usize) -> Option<&'static [u8]> {
+    let (bytes, starts, ends) = &TUPLE_FIELD_NAME_TABLE;
+    let start = usize::from(*starts.get(index)?);
+    let end = usize::from(*ends.get(index)?);
+    bytes.get(start..end)
+}
 
 /// One pushed declaration row with the coordinates every later phase needs.
 struct Row<'source> {
@@ -645,16 +693,16 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         continue;
                     };
                     let index = field.index();
-                    let Some(name) = TUPLE_FIELD_NAMES.get(usize::from(index)) else {
+                    let Some(name) = tuple_field_name(usize::from(index)) else {
                         continue;
                     };
-                    if field.name(self.database).as_str().as_bytes() != *name {
+                    if field.name(self.database).as_str().as_bytes() != name {
                         // A named expansion field whose projected name is
                         // unavailable is not a positional field. Keeping it
                         // would mint a false `.0`-style declaration.
                         continue;
                     }
-                    *name
+                    name
                 }
             };
             let expanded = authority.is_macro_expansion(&syntax);
@@ -4541,6 +4589,18 @@ mod tests {
         if row.record.tag != SemanticTypeTag::FunctionPointer || children.len() != 9 {
             return Err(TestError::Missing("nine-argument function pointer"));
         }
+        Ok(())
+    }
+
+    /// A seventeen-field tuple struct used to drop `.16` because only sixteen
+    /// positional spellings existed. The last field is a real declaration.
+    #[test]
+    fn a_seventeen_field_tuple_struct_keeps_the_last_field() -> Result<(), TestError> {
+        let view = lower(
+            "pub struct Wide(pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8);\n",
+        )?;
+        fact_of(&view, b"0", EntityKind::Field)?;
+        fact_of(&view, b"16", EntityKind::Field)?;
         Ok(())
     }
 
