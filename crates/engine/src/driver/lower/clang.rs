@@ -2599,13 +2599,19 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     /// libclang's semantic parent of a use site is often a block-scope
     /// variable or parameter the lane never admits as a declaration fact, so
     /// the walk climbs the authority's owner chain until it reaches a pushed
-    /// row (typically the enclosing function) instead of fabricating a span
-    /// on an absent parent.
+    /// row whose span contains the reference (typically the enclosing
+    /// function) instead of fabricating a span on an absent parent. When the
+    /// authority leaves the owner cell empty — macro expansions name no
+    /// semantic parent — the innermost executable whose span contains the
+    /// reference site supplies the owner; file-scope initializers stay
+    /// unowned because no executable wraps them.
     fn reference_owner(&self, reference: &ReferenceFact) -> Option<u32> {
         let mut current = reference.owner;
         while let Some(identity) = current {
             if let Some(ordinal) = self.ordinal_of(identity) {
-                return Some(ordinal);
+                if self.owner_span_covers(ordinal, reference.span) {
+                    return Some(ordinal);
+                }
             }
             current = self
                 .authority
@@ -2614,7 +2620,48 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 .find(|declaration| declaration.identity == Some(identity))
                 .and_then(|declaration| declaration.owner);
         }
-        None
+        self.executable_owner_containing(reference.span)
+    }
+
+    /// True when one pushed owner's authority span contains a reference site.
+    fn owner_span_covers(&self, owner: u32, reference: SourceSpan) -> bool {
+        self.owner_span(owner)
+            .is_some_and(|owner_span| span_contains(owner_span, reference))
+    }
+
+    /// The innermost pushed executable whose authority span contains one
+    /// reference site. Used only when libclang leaves the owner cell empty.
+    fn executable_owner_containing(&self, reference: SourceSpan) -> Option<u32> {
+        let mut best: Option<(u32, u32)> = None;
+        for (index, ordinal) in self.ordinals.iter().enumerate() {
+            let Some(ordinal) = *ordinal else {
+                continue;
+            };
+            let Some(declaration) = self.authority.declarations.get(index) else {
+                continue;
+            };
+            if !matches!(
+                declaration.kind,
+                DeclarationKind::Function
+                    | DeclarationKind::Method
+                    | DeclarationKind::Constructor
+                    | DeclarationKind::Destructor
+            ) {
+                continue;
+            }
+            if !span_contains(declaration.span, reference) {
+                continue;
+            }
+            let extent = declaration
+                .span
+                .end
+                .checked_sub(declaration.span.start)
+                .unwrap_or(u32::MAX);
+            if best.is_none_or(|(_, best_extent)| extent < best_extent) {
+                best = Some((ordinal, extent));
+            }
+        }
+        best.map(|(ordinal, _)| ordinal)
     }
 
     /// Resolves a foreign override target to its stable cross-fragment key when
@@ -4027,6 +4074,54 @@ mod tests {
         .is_some()
         {
             return Err(TestError::Missing("escaping rejection"));
+        }
+        Ok(())
+    }
+
+    /// A macro expansion inside a function body targets the pushed macro row
+    /// at oracle confidence rather than disappearing when libclang leaves the
+    /// reference owner cell empty.
+    #[test]
+    fn macro_use_inside_a_function_targets_the_pushed_macro_row() -> Result<(), TestError> {
+        let source = b"#define LIMIT 100\nint use_macro(void) { return LIMIT; }\n";
+        let bytes = lower(source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let function = entity_of(&view, b"use_macro", EntityKind::Function)?;
+        let macro_row = entity_of(&view, b"LIMIT", EntityKind::Macro)?;
+        let use_site = source
+            .windows(5)
+            .rposition(|window| window == b"LIMIT")
+            .ok_or(TestError::Absent)?;
+        let owner_start = source
+            .windows(b"int use_macro".len())
+            .position(|window| window == b"int use_macro")
+            .ok_or(TestError::Absent)?;
+        let mut found = false;
+        for row in occurrences(&view)? {
+            if row.owner != function {
+                continue;
+            }
+            let OccurrenceTarget::Local(target) = row.occurrence.target else {
+                continue;
+            };
+            if target != macro_row {
+                continue;
+            }
+            found = true;
+            if row.occurrence.kind != backend_semantic::ir::ReferenceKind::MacroInvocation {
+                return Err(TestError::Missing("macro-invocation kind"));
+            }
+            if row.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle {
+                return Err(TestError::Missing("oracle confidence"));
+            }
+            if row.occurrence.span.start
+                != u32::try_from(use_site - owner_start).map_err(|_| TestError::Tail)?
+            {
+                return Err(TestError::Missing("owner-relative name extent"));
+            }
+        }
+        if !found {
+            return Err(TestError::Absent);
         }
         Ok(())
     }
