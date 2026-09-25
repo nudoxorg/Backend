@@ -13,7 +13,8 @@
 //! SHA-256 checksum, then eight plane row counts (types, references, methods,
 //! type parameters, members, docs, build constraints, satisfactions), the
 //! module count, the package count, the signature-parameter count, and the
-//! method-set count, with four reserved bytes sealing the envelope.
+//! method-set count, and the unresolved-cgo count (version 6; zero keeps
+//! every prior image byte-identical in the body).
 //!
 //! Body planes, in order: declarations (56 B rows), type rows (52 B),
 //! methods (64 B), type parameters (16 B), members — struct fields and
@@ -614,6 +615,7 @@ pub struct GoImage<'image> {
     constraint_count: usize,
     satisfaction_count: usize,
     child_count: usize,
+    unresolved_cgo_count: usize,
     packages_offset: usize,
     declarations_offset: usize,
     types_offset: usize,
@@ -628,6 +630,7 @@ pub struct GoImage<'image> {
     satisfactions_offset: usize,
     module_offset: usize,
     children_offset: usize,
+    cgo_offset: usize,
     atom_offset: usize,
     atom_bytes: usize,
     source_digest: [u8; 32],
@@ -694,9 +697,7 @@ impl<'image> GoImage<'image> {
         let package_count = plane_count(bytes, 120, actual_body)?;
         let signature_parameter_count = plane_count(bytes, 124, actual_body)?;
         let method_set_count = plane_count(bytes, 128, actual_body)?;
-        if bytes[132..HEADER_BYTES] != [0; 4] {
-            return Err(ImageError::Header(HeaderError::Reserved));
-        }
+        let unresolved_cgo_count = plane_count(bytes, 132, actual_body)?;
 
         let mut source_digest = [0; 32];
         source_digest.copy_from_slice(&bytes[20..52]);
@@ -704,7 +705,7 @@ impl<'image> GoImage<'image> {
         // Body planes, in frozen order: declarations, types, methods, type
         // parameters, members, docs, references, constraints, satisfactions,
         // module, packages, signature parameters, interface method sets,
-        // pooled children, atoms.
+        // pooled children, unresolved-cgo cells, atoms.
         let declarations_offset = HEADER_BYTES;
         let types_offset = declarations_offset + declaration_count * declaration_bytes;
         let methods_offset = types_offset + type_count * TYPE_ROW_BYTES;
@@ -732,21 +733,33 @@ impl<'image> GoImage<'image> {
                 actual: actual_body,
             }));
         }
+        let cgo_plane_bytes = unresolved_cgo_count
+            .checked_mul(CHILD_BYTES)
+            .ok_or(ImageError::Header(HeaderError::BodyLength {
+                declared: body_bytes,
+                actual: actual_body,
+            }))?;
         let Some(atom_offset) = atoms_end.checked_sub(atom_bytes) else {
             return Err(ImageError::Header(HeaderError::BodyLength {
                 declared: body_bytes,
                 actual: actual_body,
             }));
         };
-        if atom_offset < children_offset
-            || !(atom_offset - children_offset).is_multiple_of(CHILD_BYTES)
+        let Some(cgo_offset) = atom_offset.checked_sub(cgo_plane_bytes) else {
+            return Err(ImageError::Header(HeaderError::BodyLength {
+                declared: body_bytes,
+                actual: actual_body,
+            }));
+        };
+        if cgo_offset < children_offset
+            || !(cgo_offset - children_offset).is_multiple_of(CHILD_BYTES)
         {
             return Err(ImageError::Header(HeaderError::BodyLength {
                 declared: body_bytes,
                 actual: actual_body,
             }));
         }
-        let child_count = (atom_offset - children_offset) / CHILD_BYTES;
+        let child_count = (cgo_offset - children_offset) / CHILD_BYTES;
         // Every fixed plane must sit inside the children plane origin, so no
         // declared count can push a row read past the validated body.
         let chain = [
@@ -792,6 +805,7 @@ impl<'image> GoImage<'image> {
             constraint_count,
             satisfaction_count,
             child_count,
+            unresolved_cgo_count,
             declarations_offset,
             types_offset,
             methods_offset,
@@ -806,6 +820,7 @@ impl<'image> GoImage<'image> {
             signature_parameters_offset,
             method_sets_offset,
             children_offset,
+            cgo_offset,
             atom_offset,
             atom_bytes,
             source_digest,
@@ -884,6 +899,25 @@ impl<'image> GoImage<'image> {
     #[must_use]
     pub const fn satisfaction_count(self) -> usize {
         self.satisfaction_count
+    }
+
+    /// Number of unresolved-cgo name cells carried before the atom plane.
+    #[must_use]
+    pub const fn unresolved_cgo_count(self) -> usize {
+        self.unresolved_cgo_count
+    }
+
+    /// Borrows one unresolved-cgo name atom by index.
+    pub fn unresolved_cgo(self, index: usize) -> Result<&'image [u8], ImageError> {
+        if index >= self.unresolved_cgo_count {
+            return Err(ImageError::RowBounds {
+                plane: "unresolved cgo",
+                index,
+                count: self.unresolved_cgo_count,
+            });
+        }
+        let row = self.plane_row(self.cgo_offset, index, CHILD_BYTES);
+        self.atom("unresolved cgo", index, u32_at(row, 0), u32_at(row, 4))
     }
 
     /// Borrows one validated declaration row.
@@ -2797,4 +2831,114 @@ const fn u32_at(bytes: &[u8], offset: usize) -> u32 {
         bytes[offset + 2],
         bytes[offset + 3],
     ])
+}
+
+#[cfg(test)]
+mod unresolved_cgo_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    const DIGEST_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v6\x00";
+    /// Atoms: import path, package name, files blob, declaration name, then
+    /// the two unresolved-cgo spellings.
+    const ATOMS: &[u8] =
+        b"example.com/cgo\0cgo\0main.go\0Conn\0C.sqlite3\0example.com/cgo.Conn";
+
+    fn cells(values: &[u32]) -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
+    }
+
+    fn reseal(image: &mut [u8]) {
+        let mut digest = Sha256::new();
+        digest.update(DIGEST_DOMAIN);
+        digest.update(&image[..52]);
+        digest.update(&image[84..HEADER_BYTES]);
+        digest.update(&image[HEADER_BYTES..]);
+        image[52..84].copy_from_slice(digest.finalize().as_slice());
+    }
+
+    fn package_row() -> Vec<u8> {
+        let row = cells(&[0, 15, 16, 3, 20, 8, 1]);
+        assert_eq!(row.len(), PACKAGE_BYTES);
+        row
+    }
+
+    fn declaration_row() -> Vec<u8> {
+        let mut row = vec![0_u8; DECLARATION_BYTES_V6];
+        row[0] = 1;
+        row[1] = 1;
+        row[4..8].copy_from_slice(&28_u32.to_le_bytes());
+        row[8..12].copy_from_slice(&4_u32.to_le_bytes());
+        row[12..16].copy_from_slice(&0_u32.to_le_bytes());
+        row[16..20].copy_from_slice(&15_u32.to_le_bytes());
+        row[20..24].copy_from_slice(&NONE.to_le_bytes());
+        row[24..28].copy_from_slice(&NONE.to_le_bytes());
+        row[28..32].copy_from_slice(&NONE.to_le_bytes());
+        row
+    }
+
+    fn write_header(image: &mut [u8], body_bytes: usize, unresolved_cgo_count: u32) {
+        image[..4].copy_from_slice(b"NGAI");
+        image[4..6].copy_from_slice(&6_u16.to_le_bytes());
+        image[6..8].copy_from_slice(&(HEADER_BYTES as u16).to_le_bytes());
+        image[8..12].copy_from_slice(&1_u32.to_le_bytes());
+        image[12..16].copy_from_slice(&(ATOMS.len() as u32).to_le_bytes());
+        image[16..20].copy_from_slice(&(body_bytes as u32).to_le_bytes());
+        image[116..120].copy_from_slice(&0_u32.to_le_bytes());
+        image[120..124].copy_from_slice(&1_u32.to_le_bytes());
+        image[132..136].copy_from_slice(&unresolved_cgo_count.to_le_bytes());
+    }
+
+    /// Minimal version-6 image: one package, one declaration, two
+    /// unresolved-cgo cells before the atom plane.
+    fn image_with_unresolved_cgo() -> Vec<u8> {
+        let cgo_plane = 16;
+        let body = DECLARATION_BYTES_V6 + PACKAGE_BYTES + cgo_plane + ATOMS.len();
+        let mut image = vec![0_u8; HEADER_BYTES + body];
+        write_header(&mut image, body, 2);
+        let mut cursor = HEADER_BYTES;
+        image[cursor..cursor + DECLARATION_BYTES_V6]
+            .copy_from_slice(declaration_row().as_slice());
+        cursor += DECLARATION_BYTES_V6;
+        image[cursor..cursor + PACKAGE_BYTES].copy_from_slice(package_row().as_slice());
+        cursor += PACKAGE_BYTES;
+        image[cursor..cursor + 8].copy_from_slice(&cells(&[33, 9]));
+        image[cursor + 8..cursor + 16].copy_from_slice(&cells(&[43, 20]));
+        cursor += cgo_plane;
+        image[cursor..cursor + ATOMS.len()].copy_from_slice(ATOMS);
+        reseal(&mut image);
+        image
+    }
+
+    #[test]
+    fn unresolved_cgo_plane_round_trips_both_names() {
+        let bytes = image_with_unresolved_cgo();
+        let image = GoImage::open(&bytes).expect("open");
+        assert_eq!(image.unresolved_cgo_count(), 2);
+        assert_eq!(image.unresolved_cgo(0).expect("first"), b"C.sqlite3");
+        assert_eq!(
+            image.unresolved_cgo(1).expect("second"),
+            b"example.com/cgo.Conn"
+        );
+    }
+
+    #[test]
+    fn zero_unresolved_cgo_count_keeps_child_plane_before_atoms() {
+        let body = DECLARATION_BYTES_V6 + PACKAGE_BYTES + ATOMS.len();
+        let mut image = vec![0_u8; HEADER_BYTES + body];
+        write_header(&mut image, body, 0);
+        let mut cursor = HEADER_BYTES;
+        image[cursor..cursor + DECLARATION_BYTES_V6]
+            .copy_from_slice(declaration_row().as_slice());
+        cursor += DECLARATION_BYTES_V6;
+        image[cursor..cursor + PACKAGE_BYTES].copy_from_slice(package_row().as_slice());
+        cursor += PACKAGE_BYTES;
+        image[cursor..cursor + ATOMS.len()].copy_from_slice(ATOMS);
+        reseal(&mut image);
+        let image = GoImage::open(&image).expect("legacy zero count opens");
+        assert_eq!(image.unresolved_cgo_count(), 0);
+    }
 }

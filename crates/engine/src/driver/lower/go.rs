@@ -1045,6 +1045,7 @@ pub(crate) fn collect<'source>(
             DeclarationKind::Alias => {}
         }
     }
+    go.unresolved_cgo()?;
     // Pass three: declarations excluded by build constraints.
     go.constraints()?;
     // Pass four: documentation fragments.
@@ -1318,6 +1319,50 @@ impl<'x, 'source> Projector<'x, 'source> {
             .iter()
             .find(|(known_package, known, _)| *known_package == package && *known == name)
             .map(|(_, _, ordinal)| *ordinal)
+    }
+
+    /// Reports whether one unqualified identifier already names a declaration
+    /// row in the authority image.
+    fn image_declared(&self, name: &[u8]) -> Result<bool, GoCollectError> {
+        for index in 0..self.image.declaration_count() {
+            let declaration = self
+                .image
+                .declaration(index)
+                .map_err(GoCollectError::Image)?;
+            if declaration.name == name {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Emits one package-level alias per unresolved-cgo name whose
+    /// unqualified identifier is not already a declaration in this image.
+    fn unresolved_cgo(&mut self) -> Result<(), GoCollectError> {
+        for index in 0..self.image.unresolved_cgo_count() {
+            let spelling = self
+                .image
+                .unresolved_cgo(index)
+                .map_err(GoCollectError::Image)?;
+            let unqualified = match spelling.iter().rposition(|byte| *byte == b'.') {
+                Some(index) => &spelling[index + 1..],
+                None => spelling,
+            };
+            if self.image_declared(unqualified)? {
+                continue;
+            }
+            let fact = RootType::leaf(unknown_record(TypeReason::UnresolvedExternal, Some(spelling)))
+                .attach(SemanticFact::new(
+                    EntityKind::Alias,
+                    spelling,
+                    constructor(EntityKind::Alias),
+                ));
+            let ordinal = push(self.facts, fact)?;
+            self.facts
+                .mark_parentage_root(ordinal)
+                .map_err(|fault| lane_terminal_ordinal(ordinal, spelling.len(), fault))?;
+        }
+        Ok(())
     }
 
     /// Resolves one receiver-qualified member spelling to its pushed fact
@@ -3405,6 +3450,7 @@ mod tests {
         constraints: Vec<ConstraintF>,
         satisfactions: Vec<SatisfactionF>,
         children: Vec<u32>,
+        unresolved_cgo_cells: Vec<Cell>,
         signature_parameter_names: Vec<(u32, u32, Cell)>,
     }
 
@@ -3701,6 +3747,11 @@ mod tests {
                 type_root,
                 package,
             });
+        }
+
+        fn unresolved_cgo(&mut self, name: &[u8]) {
+            let cell = self.atom(name);
+            self.unresolved_cgo_cells.push(cell);
         }
 
         fn declaration(&mut self, kind: u8, name: &[u8], type_root: Option<u32>) -> usize {
@@ -4022,6 +4073,11 @@ mod tests {
                 children.extend_from_slice(&target.to_le_bytes());
                 children.extend_from_slice(&0_u32.to_le_bytes());
             }
+            let mut unresolved_cgo = Vec::new();
+            for row in &self.unresolved_cgo_cells {
+                unresolved_cgo.extend_from_slice(&row.offset.to_le_bytes());
+                unresolved_cgo.extend_from_slice(&row.length.to_le_bytes());
+            }
             // The fixture has no resolved module metadata.  Keep the module
             // plane absent, as required by its zero header count; packages
             // therefore begin immediately after satisfactions.
@@ -4155,6 +4211,7 @@ mod tests {
                 signature_parameters,
                 method_sets,
                 children,
+                unresolved_cgo,
                 self.atom_bytes.clone(),
             ];
             let counts = [
@@ -4193,6 +4250,7 @@ mod tests {
             image[120..124].copy_from_slice(&package_count.to_le_bytes());
             image[124..128].copy_from_slice(&count(sections[11].len() / 28)?.to_le_bytes());
             image[128..132].copy_from_slice(&count(sections[12].len() / 24)?.to_le_bytes());
+            image[132..136].copy_from_slice(&count(self.unresolved_cgo_cells.len())?.to_le_bytes());
             let mut digest = Sha256::new();
             digest.update(IMAGE_DOMAIN);
             digest.update(&image[..52]);
@@ -5799,6 +5857,43 @@ mod tests {
             != 1
         {
             return Err(TestError::Missing("ungrouped value atom"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unresolved_cgo_plane_projects_foreign_names() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        fix.declaration(KIND_TYPE, b"Conn", None);
+        fix.unresolved_cgo(b"C.sqlite3");
+        fix.unresolved_cgo(b"example.com/cgo.Conn");
+        let source = b"package cgo\n";
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let conn_count = view
+            .entities()
+            .filter(|entity| {
+                usize::try_from(entity.name.raw)
+                    .ok()
+                    .and_then(|index| view.atoms().nth(index))
+                    .is_some_and(|atom| atom.bytes == b"Conn")
+            })
+            .count();
+        if conn_count != 1 {
+            return Err(TestError::Missing("exactly one Conn entity"));
+        }
+        let sqlite = row_for_name(&view, b"C.sqlite3")?;
+        if entity_kind_of(&view, b"C.sqlite3")? != EntityKind::Alias
+            || sqlite.record.tag != SemanticTypeTag::Unknown
+            || sqlite.record.payload0 != TypeReason::UnresolvedExternal as u32
+            || sqlite.record.text != Some(b"C.sqlite3".as_slice())
+        {
+            return Err(TestError::Missing("foreign cgo alias type"));
+        }
+        if entity_of(&view, b"example.com/cgo.Conn").is_ok() {
+            return Err(TestError::Missing(
+                "duplicate Conn must not project from unresolved cgo plane",
+            ));
         }
         Ok(())
     }

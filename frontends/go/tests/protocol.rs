@@ -1213,7 +1213,7 @@ mod mutation_battery {
         image[124..128].copy_from_slice(&1_u32.to_le_bytes()); // signature parameters
         image[128..132].copy_from_slice(&2_u32.to_le_bytes()); // method sets
 
-        // Bytes 132..136 stay zero: the reserved envelope tail.
+        // Bytes 132..136 hold the unresolved-cgo count (zero here).
         image[PACKAGES_AT..PACKAGES_AT + 28].copy_from_slice(&package_row([0, 5], [9, 1]));
         image[PACKAGES_AT + 28..PACKAGES_AT + 56].copy_from_slice(&package_row([5, 4], [10, 1]));
 
@@ -1298,11 +1298,14 @@ mod mutation_battery {
     }
 
     #[test]
-    fn reserved_tail_mutation_is_rejected() {
+    fn unresolved_cgo_count_without_plane_is_rejected() {
         let mut image = build();
-        image[132] = 1;
+        image[132..136].copy_from_slice(&2_u32.to_le_bytes());
         reseal(&mut image);
-        assert_eq!(open(&image), ImageError::Header(HeaderError::Reserved));
+        assert!(matches!(
+            open(&image),
+            ImageError::Header(HeaderError::BodyLength { .. })
+        ));
     }
 
     #[test]

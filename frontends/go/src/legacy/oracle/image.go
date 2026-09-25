@@ -258,7 +258,8 @@ type imagePlan struct {
 	docs       []docPlan
 	refs       []refPlan
 	cons       []conPlan
-	sats       []satPlan
+	sats           []satPlan
+	unresolvedCgo  []atomCell
 
 	// memberRequests stashes each struct/interface row's member rows until
 	// finalize lays the member plane out in type-row order. Nested anonymous
@@ -1309,6 +1310,28 @@ func buildAuthorityPlan(output *Output, boundSource string) (*imagePlan, error) 
 		return string(p.atoms[left.offset:left.offset+left.length]) <
 			string(p.atoms[right.offset:right.offset+right.length])
 	})
+	seen := make(map[string]struct{})
+	var unresolved []string
+	for _, pkg := range output.Packages {
+		for _, name := range pkg.UnresolvedCgo {
+			if name == "" {
+				return nil, fmt.Errorf("go/types emitted an empty unresolved cgo name")
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			unresolved = append(unresolved, name)
+		}
+	}
+	sort.Strings(unresolved)
+	for _, name := range unresolved {
+		cell, err := p.atom(name)
+		if err != nil {
+			return nil, err
+		}
+		p.unresolvedCgo = append(p.unresolvedCgo, cell)
+	}
 	return p, nil
 }
 
@@ -1597,14 +1620,22 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 		binary.LittleEndian.PutUint32(cellBytes[4:8], cell.flags)
 		children = append(children, cellBytes...)
 	}
+	unresolvedCgo := make([]byte, 0, len(p.unresolvedCgo)*authorityChildBytes)
+	for _, cell := range p.unresolvedCgo {
+		cellBytes := make([]byte, authorityChildBytes)
+		binary.LittleEndian.PutUint32(cellBytes[0:4], cell.offset)
+		binary.LittleEndian.PutUint32(cellBytes[4:8], cell.length)
+		unresolvedCgo = append(unresolvedCgo, cellBytes...)
+	}
 
 	// Frozen body order: declarations, types, methods, type parameters,
 	// members, docs, references, constraints, satisfactions, module,
 	// packages, signature parameters, interface method sets, children,
-	// atoms. The Rust reader locates every plane from this exact sequence.
+	// unresolved-cgo cells, atoms. The Rust reader locates every plane from
+	// this exact sequence.
 	bodyParts := [][]byte{
 		decls, types, methods, params, members, docs, refs, cons, sats,
-		module, packages, sigParams, methodSets, children, p.atoms,
+		module, packages, sigParams, methodSets, children, unresolvedCgo, p.atoms,
 	}
 	bodyBytes := 0
 	for _, part := range bodyParts {
@@ -1637,6 +1668,7 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 	binary.LittleEndian.PutUint32(image[120:124], uint32(len(p.packages)))
 	binary.LittleEndian.PutUint32(image[124:128], uint32(len(p.sigParams)))
 	binary.LittleEndian.PutUint32(image[128:132], uint32(len(p.methodSets)))
+	binary.LittleEndian.PutUint32(image[132:136], uint32(len(p.unresolvedCgo)))
 	cursor := authorityHeaderBytes
 	for _, part := range bodyParts {
 		copy(image[cursor:], part)
