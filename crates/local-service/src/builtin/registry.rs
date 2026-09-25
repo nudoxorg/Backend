@@ -93,6 +93,11 @@ impl fmt::Display for RegistryAddError {
 }
 
 impl RegistryGateway {
+    /// Returns the daemon workspace root that owns registry staging.
+    pub(super) fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
     /// Projects the complete recovered local catalog without network I/O.
     pub(super) fn catalog(&mut self) -> Result<Vec<backend_engine::RegistryPackageRecord>, String> {
         let mut records = Vec::new();

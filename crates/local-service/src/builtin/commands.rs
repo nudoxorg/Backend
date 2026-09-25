@@ -2055,6 +2055,7 @@ fn semantic_version_record(
 fn semantic_versions(
     daemon: &ProductDaemon,
     package: &backend_engine::PackageReference,
+    workspace: Option<&Path>,
 ) -> Result<Box<[backend_engine::SemanticVersionRecord]>, BuiltinModelError> {
     let relation = daemon
         .engine()
@@ -2123,6 +2124,15 @@ fn semantic_versions(
             break;
         };
         after = Some(next);
+    }
+    if generations.is_empty() {
+        let view = daemon.engine().daemon().library().view();
+        let fallback =
+            super::product_state::indexed_semantic_versions(view, package, workspace)
+                .map_err(BuiltinModelError)?;
+        if !fallback.is_empty() {
+            return Ok(fallback);
+        }
     }
     if selected.is_empty()
         && let Some(reason) = unavailable
@@ -2517,9 +2527,13 @@ impl CommandAdapter {
                     |rows| CommandReply::Surface(backend_engine::SurfaceReply::Diff(rows)),
                 )
             }
-            backend_engine::SurfaceCommand::SemanticVersions { package } => semantic_versions(
-                daemon, &package,
-            )
+            backend_engine::SurfaceCommand::SemanticVersions { package } => {
+                let workspace = self
+                    .registry
+                    .as_ref()
+                    .map(|gateway| gateway.workspace_root());
+                semantic_versions(daemon, &package, workspace)
+            }
             .map_or_else(
                 |error| {
                     CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
@@ -2585,12 +2599,17 @@ impl CommandAdapter {
                 .map_err(|error| {
                     BuiltinModelError(format!("align package graph projection: {error}"))
                 })?;
+                let workspace = self
+                    .registry
+                    .as_ref()
+                    .map(|gateway| gateway.workspace_root());
                 self.product_state
                     .execute(
                         surface,
                         daemon.engine().daemon().library().view(),
                         &catalog,
                         &dependency_facts,
+                        workspace,
                     )
                     .map_or_else(
                         |error| {
